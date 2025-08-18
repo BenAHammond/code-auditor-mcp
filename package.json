@@ -1,0 +1,62 @@
+{
+  "name": "code-auditor-mcp",
+  "version": "1.0.0",
+  "description": "TypeScript/JavaScript code quality auditor with MCP server - Analyze code for SOLID principles, DRY violations, security patterns, and more",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "bin": {
+    "code-audit": "./dist/cli.js",
+    "code-auditor-mcp": "./dist/mcp-standalone.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "dev": "tsx src/cli.ts",
+    "audit": "node dist/cli.js",
+    "prepublishOnly": "npm run build",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "audit",
+    "code-quality",
+    "typescript",
+    "javascript",
+    "analyzer",
+    "solid-principles",
+    "dry",
+    "security",
+    "linter",
+    "code-review",
+    "static-analysis"
+  ],
+  "author": "benahammond",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.1",
+    "chalk": "^5.3.0",
+    "typescript": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "examples/**/*",
+    "configs/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/code-auditor/code-auditor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/code-auditor/code-auditor/issues"
+  },
+  "homepage": "https://github.com/code-auditor/code-auditor#readme"
+}

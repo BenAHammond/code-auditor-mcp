@@ -1,0 +1,65 @@
+{
+  "projectRoot": ".",
+  "reportTitle": "Next.js Project Audit",
+  
+  "includePaths": [
+    "app/**/*.{ts,tsx,js,jsx}",
+    "pages/**/*.{ts,tsx,js,jsx}",
+    "components/**/*.{ts,tsx,js,jsx}",
+    "lib/**/*.{ts,tsx,js,jsx}",
+    "utils/**/*.{ts,tsx,js,jsx}"
+  ],
+  
+  "excludePaths": [
+    "**/node_modules/**",
+    "**/.next/**",
+    "**/out/**",
+    "**/public/**",
+    "**/*.test.{ts,tsx}",
+    "**/*.spec.{ts,tsx}",
+    "**/__tests__/**",
+    "**/coverage/**"
+  ],
+  
+  "enabledAnalyzers": [
+    "component",
+    "security",
+    "solid",
+    "dry",
+    "data-access"
+  ],
+  
+  "analyzerConfig": {
+    "component": {
+      "checkErrorBoundaries": true,
+      "checkPropTypes": false,
+      "maxComplexity": 15
+    },
+    "security": {
+      "authPatterns": ["withAuth", "useSession", "getServerSession"],
+      "publicPatterns": ["public", "skipAuth"]
+    }
+  },
+  
+  "customPatterns": {
+    "components": [
+      "**/app/**/page.{ts,tsx}",
+      "**/app/**/layout.{ts,tsx}",
+      "**/pages/**/*.{ts,tsx}",
+      "**/components/**/*.{ts,tsx}"
+    ],
+    "endpoints": [
+      "**/app/api/**/route.{ts,js}",
+      "**/pages/api/**/*.{ts,js}"
+    ]
+  },
+  
+  "outputFormats": ["html"],
+  "outputDirectory": "./audit-reports",
+  
+  "thresholds": {
+    "maxCritical": 0,
+    "maxWarnings": 20,
+    "minHealthScore": 85
+  }
+}

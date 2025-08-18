@@ -1,0 +1,168 @@
+{
+  "projectRoot": "../..",
+  "reportTitle": "HHRA Architecture & Code Quality Audit",
+  
+  "includePaths": [
+    "app/**/*.{ts,tsx}",
+    "src/**/*.{ts,tsx}",
+    "scripts/**/*.ts"
+  ],
+  
+  "excludePaths": [
+    "**/node_modules/**",
+    "**/.next/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/coverage/**",
+    "**/*.test.{ts,tsx}",
+    "**/*.spec.{ts,tsx}",
+    "**/tests/**",
+    "**/e2e/**",
+    "**/.vercel/**",
+    "**/public/**",
+    "code-auditor/**"
+  ],
+  
+  "enabledAnalyzers": [
+    "component",
+    "security",
+    "solid",
+    "dry",
+    "data-access"
+  ],
+  
+  "analyzerConfig": {
+    "security": {
+      "authPatterns": [
+        "withAuth",
+        "withAdminAuth",
+        "requireAuth",
+        "SessionAuth",
+        "useSession"
+      ],
+      "adminPatterns": [
+        "withAdminAuth",
+        "requireAdmin",
+        "adminOnly"
+      ],
+      "rateLimitPatterns": [
+        "rateLimit",
+        "withRateLimit",
+        "rateLimitGuard"
+      ],
+      "publicPatterns": [
+        "public",
+        "noAuth",
+        "skipAuth"
+      ]
+    },
+    
+    "component": {
+      "frameworkPatterns": {
+        "react": {
+          "components": ["*.tsx", "*.jsx"],
+          "hooks": ["use*"],
+          "context": ["*Context", "*Provider"]
+        }
+      },
+      "checkErrorBoundaries": true,
+      "checkPropTypes": false,
+      "maxComplexity": 15,
+      "maxNesting": 4
+    },
+    
+    "data-access": {
+      "databasePatterns": {
+        "postgres": ["app-db", "org-tracker-db", "@neondatabase", "neon"],
+        "drizzle": ["drizzle-orm", "db.query", "db.select", "db.insert", "db.update", "db.delete"]
+      },
+      "ormPatterns": {
+        "drizzle": ["drizzle-orm", "drizzle", "schema"]
+      },
+      "securityPatterns": {
+        "parameterized": ["?", "$1", ":param", "prepared"],
+        "sanitized": ["sanitize", "escape", "clean", "safe"]
+      },
+      "performanceThresholds": {
+        "maxJoins": 5,
+        "warnOnSelectStar": true
+      }
+    },
+    
+    "solid": {
+      "maxMethodsPerClass": 10,
+      "maxLinesPerMethod": 50,
+      "maxParametersPerMethod": 4,
+      "maxImportsPerFile": 20,
+      "maxComplexity": 10
+    },
+    
+    "dry": {
+      "minLineThreshold": 5,
+      "similarityThreshold": 0.85,
+      "excludePatterns": [
+        "**/*.test.ts",
+        "**/*.spec.ts",
+        "**/tests/**",
+        "**/migrations/**"
+      ],
+      "checkImports": true,
+      "checkStrings": true
+    }
+  },
+  
+  "customPatterns": {
+    "components": [
+      "**/app/**/page.{ts,tsx}",
+      "**/app/**/layout.{ts,tsx}",
+      "**/app/**/error.{ts,tsx}",
+      "**/app/**/loading.{ts,tsx}",
+      "**/app/**/not-found.{ts,tsx}",
+      "**/components/**/*.{ts,tsx}",
+      "**/app/components/**/*.{ts,tsx}"
+    ],
+    "endpoints": [
+      "**/app/api/**/route.{ts,tsx}",
+      "**/pages/api/**/*.{ts,tsx}",
+      "**/api/**/*.{ts,tsx}"
+    ],
+    "tests": [
+      "**/*.test.{ts,tsx}",
+      "**/*.spec.{ts,tsx}",
+      "**/tests/**",
+      "**/e2e/**",
+      "**/__tests__/**"
+    ]
+  },
+  
+  "outputFormats": ["html", "json"],
+  "outputDirectory": "./audit-reports",
+  
+  "minSeverity": "suggestion",
+  "failOnCritical": false,
+  "verbose": false,
+  "showProgress": true,
+  
+  "thresholds": {
+    "maxCritical": 0,
+    "maxWarnings": 100,
+    "minHealthScore": 75,
+    "maxComplexity": 10,
+    "maxDuplication": 10
+  },
+  
+  "reportTheme": {
+    "primaryColor": "#0070f3",
+    "criticalColor": "#e00",
+    "warningColor": "#f5a623",
+    "suggestionColor": "#0070f3"
+  },
+  
+  "integrations": {
+    "ci": {
+      "provider": "github",
+      "failOnThreshold": true,
+      "commentOnPR": false
+    }
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "projectRoot": ".",
+  "reportTitle": "Node.js API Audit",
+  
+  "includePaths": [
+    "src/**/*.{ts,js}",
+    "lib/**/*.{ts,js}",
+    "api/**/*.{ts,js}",
+    "routes/**/*.{ts,js}",
+    "controllers/**/*.{ts,js}",
+    "services/**/*.{ts,js}",
+    "models/**/*.{ts,js}"
+  ],
+  
+  "excludePaths": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/*.test.{ts,js}",
+    "**/*.spec.{ts,js}",
+    "**/__tests__/**",
+    "**/coverage/**"
+  ],
+  
+  "enabledAnalyzers": [
+    "security",
+    "data-access",
+    "solid",
+    "dry"
+  ],
+  
+  "analyzerConfig": {
+    "security": {
+      "authPatterns": ["authenticate", "authorize", "requireAuth", "passport"],
+      "rateLimitPatterns": ["rateLimit", "throttle", "limiter"],
+      "securityHeaders": [
+        "helmet",
+        "cors",
+        "Content-Security-Policy"
+      ]
+    },
+    "data-access": {
+      "databasePatterns": {
+        "postgres": ["pg", "postgres"],
+        "mysql": ["mysql", "mysql2"],
+        "mongodb": ["mongodb", "mongoose"]
+      },
+      "securityPatterns": {
+        "parameterized": ["?", "$1", ":id"],
+        "sanitized": ["sanitize", "escape", "validator"]
+      },
+      "performanceThresholds": {
+        "maxJoins": 4,
+        "warnOnSelectStar": true
+      }
+    },
+    "solid": {
+      "maxMethodsPerClass": 12,
+      "maxLinesPerMethod": 60,
+      "maxParametersPerMethod": 5
+    }
+  },
+  
+  "outputFormats": ["json", "html"],
+  "outputDirectory": "./audit-reports",
+  
+  "minSeverity": "warning",
+  "failOnCritical": true,
+  
+  "thresholds": {
+    "maxCritical": 0,
+    "maxWarnings": 10,
+    "minHealthScore": 90
+  },
+  
+  "integrations": {
+    "ci": {
+      "provider": "github",
+      "failOnThreshold": true
+    }
+  }
+}

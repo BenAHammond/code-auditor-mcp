@@ -1,0 +1,12 @@
+{
+  "enabledAnalyzers": ["dry"],
+  "analyzerConfigs": {
+    "dry": {
+      "debug": true,
+      "debugLogPath": "./dry-analyzer-debug.log",
+      "minLineThreshold": 3,
+      "similarityThreshold": 0.75
+    }
+  }
+}
+EOF < /dev/null

@@ -1,0 +1,201 @@
+{
+  "// Configuration for TypeScript/JavaScript Code Auditor": "",
+  "// This example shows common configuration options": "",
+  "// Remove comment lines before using this file": "",
+  
+  "// Project Settings": "",
+  "projectRoot": ".",
+  "reportTitle": "My Project Code Quality Audit",
+  
+  "// File Discovery": "",
+  "// Specify which files to include in the audit": "",
+  "includePaths": [
+    "src/**/*.{ts,tsx,js,jsx}",
+    "app/**/*.{ts,tsx,js,jsx}",
+    "lib/**/*.{ts,tsx,js,jsx}",
+    "components/**/*.{ts,tsx,js,jsx}"
+  ],
+  
+  "// Files and directories to exclude": "",
+  "excludePaths": [
+    "**/node_modules/**",
+    "**/.next/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/coverage/**",
+    "**/*.test.{ts,tsx,js,jsx}",
+    "**/*.spec.{ts,tsx,js,jsx}",
+    "**/__tests__/**",
+    "**/vendor/**",
+    "**/*.min.js"
+  ],
+  
+  "// Analyzers": "",
+  "// Enable or disable specific analyzers": "",
+  "// Available: solid, dry, security, component, data-access": "",
+  "enabledAnalyzers": [
+    "solid",
+    "dry",
+    "security",
+    "component",
+    "data-access"
+  ],
+  
+  "// Analyzer-specific configuration": "",
+  "analyzerConfig": {
+    "solid": {
+      "// Maximum allowed methods per class": "",
+      "maxMethodsPerClass": 10,
+      "// Maximum lines per method": "",
+      "maxLinesPerMethod": 50,
+      "// Maximum parameters per method": "",
+      "maxParametersPerMethod": 4,
+      "// Maximum cyclomatic complexity": "",
+      "maxComplexity": 10,
+      "// Which SOLID principles to check": "",
+      "checkPatterns": {
+        "singleResponsibility": true,
+        "openClosed": true,
+        "liskovSubstitution": true,
+        "interfaceSegregation": true,
+        "dependencyInversion": true
+      }
+    },
+    
+    "dry": {
+      "// Minimum lines to consider as duplication": "",
+      "minLineThreshold": 5,
+      "// Similarity threshold (0-1)": "",
+      "similarityThreshold": 0.85,
+      "// Check for duplicate imports": "",
+      "checkImports": true,
+      "// Check for duplicate string literals": "",
+      "checkStrings": true
+    },
+    
+    "security": {
+      "// Authentication wrapper patterns to look for": "",
+      "authPatterns": [
+        "withAuth",
+        "requireAuth",
+        "isAuthenticated",
+        "useAuth"
+      ],
+      "// Admin authentication patterns": "",
+      "adminPatterns": [
+        "withAdminAuth",
+        "requireAdmin",
+        "isAdmin"
+      ],
+      "// Rate limiting patterns": "",
+      "rateLimitPatterns": [
+        "rateLimit",
+        "withRateLimit",
+        "throttle"
+      ]
+    },
+    
+    "component": {
+      "// Check for error boundaries": "",
+      "checkErrorBoundaries": true,
+      "// Check for prop type validation": "",
+      "checkPropTypes": true,
+      "// Maximum component complexity": "",
+      "maxComplexity": 15,
+      "// Maximum nesting depth": "",
+      "maxNesting": 4
+    },
+    
+    "data-access": {
+      "// Security patterns to look for": "",
+      "securityPatterns": {
+        "parameterized": ["?", "$1", ":param"],
+        "sanitized": ["sanitize", "escape", "clean"]
+      },
+      "// Performance thresholds": "",
+      "performanceThresholds": {
+        "maxJoins": 5,
+        "warnOnSelectStar": true
+      }
+    }
+  },
+  
+  "// Output Configuration": "",
+  "// Available formats: html, json, csv": "",
+  "outputFormats": ["html", "json"],
+  "outputDirectory": "./audit-reports",
+  
+  "// Report Theme (for HTML reports)": "",
+  "reportTheme": {
+    "primaryColor": "#007bff",
+    "criticalColor": "#dc3545",
+    "warningColor": "#ffc107",
+    "suggestionColor": "#17a2b8"
+  },
+  
+  "// Behavior": "",
+  "// Minimum severity level to report: critical, warning, suggestion": "",
+  "minSeverity": "suggestion",
+  "// Exit with error code if critical issues found": "",
+  "failOnCritical": false,
+  "// Show detailed progress during analysis": "",
+  "verbose": false,
+  "// Show progress indicators": "",
+  "showProgress": true,
+  
+  "// Performance": "",
+  "// Run analyzers in parallel": "",
+  "parallel": true,
+  "// Maximum concurrent operations": "",
+  "maxConcurrency": 4,
+  
+  "// Quality Thresholds": "",
+  "// Set to undefined to disable threshold": "",
+  "thresholds": {
+    "// Maximum allowed critical issues": "",
+    "maxCritical": 0,
+    "// Maximum allowed warnings": "",
+    "maxWarnings": 50,
+    "// Minimum required health score (0-100)": "",
+    "minHealthScore": 80,
+    "// Maximum allowed complexity per file": "",
+    "maxComplexity": 10,
+    "// Maximum allowed code duplication instances": "",
+    "maxDuplication": 5
+  },
+  
+  "// Custom Patterns": "",
+  "// Additional patterns for file discovery": "",
+  "customPatterns": {
+    "// Component file patterns": "",
+    "components": [
+      "**/*Component.{ts,tsx,js,jsx}",
+      "**/*Page.{ts,tsx,js,jsx}",
+      "**/*View.{ts,tsx,js,jsx}"
+    ],
+    "// API endpoint patterns": "",
+    "endpoints": [
+      "**/api/**/*.{ts,js}",
+      "**/routes/**/*.{ts,js}",
+      "**/controllers/**/*.{ts,js}"
+    ],
+    "// Test file patterns": "",
+    "tests": [
+      "**/*.test.{ts,tsx,js,jsx}",
+      "**/*.spec.{ts,tsx,js,jsx}",
+      "**/__tests__/**"
+    ]
+  },
+  
+  "// CI/CD Integration": "",
+  "integrations": {
+    "ci": {
+      "// CI provider: github, gitlab, jenkins, circleci": "",
+      "provider": "github",
+      "// Fail the build if thresholds are exceeded": "",
+      "failOnThreshold": true,
+      "// Comment on pull requests with audit results": "",
+      "commentOnPR": true
+    }
+  }
+}
