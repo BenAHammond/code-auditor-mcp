@@ -101,3 +101,5 @@ desktop.ini
 # Debug files
 debug/
 .debug/
+
+docs_example/

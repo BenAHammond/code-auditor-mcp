@@ -304,11 +304,36 @@ stage('Code Audit') {
 
 Code Auditor includes a built-in MCP (Model Context Protocol) server that enables AI assistants like Claude to analyze your code interactively.
 
-### Setting up with Claude Desktop
+### Using with Claude Code CLI
+
+The easiest way to use Code Auditor with Claude is through the Claude Code CLI:
+
+```bash
+# Add the Code Auditor MCP server to your project
+claude mcp add code-auditor -- npx code-auditor-mcp
+
+# The MCP server is now available in your Claude Code session
+# Just ask Claude to analyze your code!
+```
+
+Alternative installation methods:
+
+```bash
+# Using npm start (if installed locally)
+claude mcp add code-auditor -- npm start
+
+# Using global installation
+npm install -g code-auditor-mcp
+claude mcp add code-auditor -- code-auditor-mcp
+```
+
+### Manual Setup with Claude Desktop
+
+If you prefer to configure Claude Desktop manually:
 
 1. Install code-auditor globally:
    ```bash
-   npm install -g code-auditor
+   npm install -g code-auditor-mcp
    ```
 
 2. Add to your Claude Desktop configuration:
@@ -333,7 +358,9 @@ Code Auditor includes a built-in MCP (Model Context Protocol) server that enable
 ### Available MCP Tools
 
 - **audit_run** - Run a comprehensive code audit
+- **audit_analyze_file** - Analyze a specific file for issues
 - **audit_check_health** - Get a quick health score for your codebase
+- **audit_list_analyzers** - List all available analyzers and their capabilities
 
 ### Usage Examples with Claude
 
@@ -341,6 +368,8 @@ Code Auditor includes a built-in MCP (Model Context Protocol) server that enable
 "Run a code audit on my project and show me the critical issues"
 "Check the health score of the src directory"
 "Analyze my code for SOLID principle violations"
+"Find security vulnerabilities in my authentication code"
+"Show me all code duplication in the components folder"
 ```
 
 ## Contributing

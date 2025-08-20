@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "TypeScript/JavaScript code quality auditor with MCP server - Analyze code for SOLID principles, DRY violations, security patterns, and more",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,6 +14,7 @@
     "watch": "tsc --watch",
     "dev": "tsx src/cli.ts",
     "audit": "node dist/cli.js",
+    "start": "node dist/mcp-standalone.js",
     "prepublishOnly": "npm run build",
     "test": "echo \"No tests yet\" && exit 0"
   },
