@@ -155,3 +155,13 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     }
   }
 };
+
+/**
+ * Default code index configuration
+ */
+export const DEFAULT_CODE_INDEX_CONFIG = {
+  databasePath: './.code-index/index.db',
+  maxBatchSize: 1000,
+  searchResultLimit: 100,
+  enableAutoIndex: false
+};

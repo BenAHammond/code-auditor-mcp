@@ -1,0 +1,239 @@
+/**
+ * Code Index Service
+ * Main service functions for managing the function index using LokiJS + FlexSearch
+ */
+
+import { FunctionMetadata, SearchOptions, RegisterResult, SearchResult, IndexStats } from './types.js';
+import { CodeIndexDB } from './codeIndexDB.js';
+import { loadConfig } from './config/configLoader.js';
+import path from 'path';
+
+// Custom error types
+export class CodeIndexError extends Error {
+  constructor(message: string, public code: string) {
+    super(message);
+    this.name = 'CodeIndexError';
+  }
+}
+
+export class ValidationError extends CodeIndexError {
+  constructor(message: string) {
+    super(message, 'VALIDATION_ERROR');
+  }
+}
+
+export class DatabaseError extends CodeIndexError {
+  constructor(message: string) {
+    super(message, 'DATABASE_ERROR');
+  }
+}
+
+export class SearchError extends CodeIndexError {
+  constructor(message: string) {
+    super(message, 'SEARCH_ERROR');
+  }
+}
+
+// Database instance storage
+let dbInstance: CodeIndexDB | null = null;
+
+/**
+ * Initialize database with schema
+ */
+export async function initializeCodeIndex(dbPath?: string): Promise<CodeIndexDB> {
+  try {
+    // Load config if path not provided
+    if (!dbPath) {
+      const config = await loadConfig();
+      dbPath = (config as any).codeIndex?.databasePath || './.code-index/index.db';
+    }
+    
+    // Resolve absolute path
+    const absolutePath = path.resolve(dbPath);
+    
+    // Create and initialize database
+    const db = new CodeIndexDB(absolutePath);
+    await db.initialize();
+    
+    // Store instance for reuse
+    dbInstance = db;
+    
+    return db;
+  } catch (error) {
+    throw new DatabaseError(`Failed to initialize code index: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Get or create database instance
+ */
+export async function getDatabase(): Promise<CodeIndexDB> {
+  if (!dbInstance) {
+    dbInstance = await initializeCodeIndex();
+  }
+  return dbInstance;
+}
+
+/**
+ * Validate function metadata
+ */
+export function validateFunctionMetadata(func: any): string | null {
+  if (!func || typeof func !== 'object') {
+    return 'Function metadata must be an object';
+  }
+  
+  if (!func.name || typeof func.name !== 'string' || func.name.trim().length === 0) {
+    return 'Function name is required and must be a non-empty string';
+  }
+  
+  if (!func.filePath || typeof func.filePath !== 'string' || func.filePath.trim().length === 0) {
+    return 'File path is required and must be a non-empty string';
+  }
+  
+  if (!func.purpose || typeof func.purpose !== 'string' || func.purpose.trim().length === 0) {
+    return 'Purpose is required and must be a non-empty string';
+  }
+  
+  if (!func.context || typeof func.context !== 'string' || func.context.trim().length === 0) {
+    return 'Context is required and must be a non-empty string';
+  }
+  
+  if (!Array.isArray(func.dependencies)) {
+    return 'Dependencies must be an array';
+  }
+  
+  if (func.lineNumber !== undefined && (typeof func.lineNumber !== 'number' || func.lineNumber < 1)) {
+    return 'Line number must be a positive number';
+  }
+  
+  if (func.language !== undefined && typeof func.language !== 'string') {
+    return 'Language must be a string';
+  }
+  
+  return null;
+}
+
+/**
+ * Register functions in the index
+ */
+export async function registerFunctions(
+  functions: FunctionMetadata[],
+  options: { overwrite?: boolean } = {}
+): Promise<RegisterResult> {
+  const db = await getDatabase();
+  
+  // Validate all functions first
+  const errors: Array<{ function: string; error: string }> = [];
+  const validFunctions: FunctionMetadata[] = [];
+  
+  for (const func of functions) {
+    const validationError = validateFunctionMetadata(func);
+    if (validationError) {
+      errors.push({ function: func.name || 'unknown', error: validationError });
+    } else {
+      validFunctions.push(func);
+    }
+  }
+  
+  // Register valid functions
+  const result = await db.registerFunctions(validFunctions);
+  
+  // Combine errors
+  if (errors.length > 0 && result.errors) {
+    result.errors.push(...errors);
+  } else if (errors.length > 0) {
+    result.errors = errors;
+  }
+  
+  result.failed += errors.length;
+  
+  return result;
+}
+
+/**
+ * Search functions with full-text search
+ */
+export async function searchFunctions(searchOptions: SearchOptions): Promise<SearchResult> {
+  const db = await getDatabase();
+  
+  try {
+    return await db.searchFunctions(searchOptions);
+  } catch (error) {
+    throw new SearchError(`Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Synchronize file index - ensures index matches current file state
+ */
+export async function syncFileIndex(
+  filePath: string,
+  currentFunctions: FunctionMetadata[]
+): Promise<{ added: number; updated: number; removed: number }> {
+  const db = await getDatabase();
+  
+  try {
+    return await db.syncFileIndex(filePath, currentFunctions);
+  } catch (error) {
+    throw new DatabaseError(`Failed to sync file index: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Find a specific function definition
+ */
+export async function findDefinition(
+  name: string,
+  filePath?: string
+): Promise<FunctionMetadata | null> {
+  const db = await getDatabase();
+  
+  try {
+    return await db.findDefinition(name, filePath);
+  } catch (error) {
+    throw new SearchError(`Failed to find definition: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Get index statistics
+ */
+export async function getIndexStats(): Promise<IndexStats> {
+  const db = await getDatabase();
+  
+  try {
+    const stats = await db.getStats();
+    return {
+      totalFunctions: stats.totalFunctions,
+      languages: stats.languages,
+      topDependencies: stats.topDependencies,
+      filesIndexed: stats.filesIndexed,
+      lastUpdated: stats.lastUpdated
+    };
+  } catch (error) {
+    throw new DatabaseError(`Failed to get index stats: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Clear the entire index
+ */
+export async function clearIndex(): Promise<void> {
+  const db = await getDatabase();
+  
+  try {
+    await db.clearIndex();
+  } catch (error) {
+    throw new DatabaseError(`Failed to clear index: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Close the database connection
+ */
+export async function closeDatabase(): Promise<void> {
+  if (dbInstance) {
+    await dbInstance.close();
+    dbInstance = null;
+  }
+}

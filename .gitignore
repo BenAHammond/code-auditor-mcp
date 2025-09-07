@@ -103,3 +103,20 @@ debug/
 .debug/
 
 docs_example/
+
+# Code index database
+.code-index/
+
+# Test directories
+test-configs/
+test-configs-new/
+test-custom-url/
+test-explicit-port/
+test-index-files/
+test-new-port/
+test-realistic-codebase/
+test-sync-functionality.ts
+test-jsdoc-parser.ts
+all-configs/
+custom-server/
+bug-reports/
