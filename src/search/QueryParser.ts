@@ -1,0 +1,376 @@
+import { ParsedQuery } from '../types';
+
+/**
+ * QueryParser - Parses search queries into structured format with tokenization and synonym expansion
+ * 
+ * Supports:
+ * - Multi-word queries with intelligent tokenization
+ * - Exact phrase matching with quotes
+ * - Excluded terms with minus operator
+ * - Special operators (type:, param:, return:, etc.)
+ * - Synonym expansion for common programming terms
+ * - Fuzzy search and stemming flags
+ */
+export class QueryParser {
+  // Comprehensive synonym mappings for programming terms
+  private static readonly SYNONYMS: Record<string, string[]> = {
+    // Common programming verbs
+    'get': ['fetch', 'retrieve', 'obtain', 'find', 'query', 'load', 'read'],
+    'set': ['update', 'save', 'store', 'write', 'assign', 'modify', 'change'],
+    'create': ['make', 'new', 'generate', 'build', 'construct', 'initialize', 'init'],
+    'delete': ['remove', 'destroy', 'drop', 'clear', 'purge', 'erase'],
+    'add': ['append', 'insert', 'push', 'attach', 'include'],
+    'remove': ['delete', 'pop', 'detach', 'exclude', 'eliminate'],
+    
+    // Data structures
+    'array': ['list', 'vector', 'collection', 'arr'],
+    'object': ['obj', 'dict', 'dictionary', 'map', 'hash', 'record'],
+    'string': ['str', 'text', 'chars', 'characters'],
+    'number': ['num', 'int', 'integer', 'float', 'double', 'numeric'],
+    'boolean': ['bool', 'flag', 'true/false'],
+    
+    // Common patterns
+    'validate': ['check', 'verify', 'test', 'ensure', 'confirm'],
+    'handler': ['listener', 'callback', 'processor', 'controller'],
+    'util': ['utility', 'helper', 'tools', 'utils'],
+    'config': ['configuration', 'settings', 'options', 'conf'],
+    'auth': ['authentication', 'authorization', 'authenticate', 'authorize'],
+    'user': ['users', 'person', 'account', 'member', 'client'],
+    'error': ['err', 'exception', 'fault', 'failure', 'problem'],
+    'log': ['logger', 'logging', 'trace', 'debug', 'console'],
+    
+    // HTTP/API related
+    'api': ['endpoint', 'route', 'service', 'rest', 'graphql'],
+    'request': ['req', 'http', 'call', 'fetch'],
+    'response': ['res', 'reply', 'result', 'output'],
+    
+    // Database related
+    'database': ['db', 'storage', 'datastore', 'repository'],
+    'query': ['sql', 'search', 'find', 'select'],
+    'table': ['collection', 'entity', 'model', 'schema'],
+    
+    // React/Frontend specific
+    'component': ['comp', 'widget', 'element', 'view'],
+    'render': ['display', 'show', 'present', 'draw'],
+    'state': ['status', 'data', 'store', 'context'],
+    'props': ['properties', 'attributes', 'params', 'arguments'],
+    
+    // Async patterns
+    'async': ['asynchronous', 'promise', 'await', 'concurrent'],
+    'sync': ['synchronous', 'blocking', 'sequential'],
+    'callback': ['cb', 'handler', 'listener', 'oncomplete'],
+    
+    // Testing
+    'test': ['tests', 'spec', 'suite', 'unit', 'integration', 'e2e'],
+    'mock': ['stub', 'fake', 'spy', 'double'],
+    
+    // Common abbreviations
+    'fn': ['function', 'func', 'method'],
+    'param': ['parameter', 'arg', 'argument'],
+    'return': ['returns', 'output', 'result'],
+    'doc': ['documentation', 'docs', 'comment', 'jsdoc']
+  };
+
+  // Special operators that can be used in queries
+  private static readonly OPERATORS = {
+    'type:': 'fileType',
+    'file:': 'filePath',
+    'path:': 'filePath',
+    'lang:': 'language',
+    'language:': 'language',
+    'param:': 'parameters',
+    'parameter:': 'parameters',
+    'return:': 'returnType',
+    'returns:': 'returnType',
+    'complexity:': 'complexity',
+    'jsdoc:': 'hasJsDoc',
+    'doc:': 'hasJsDoc',
+    'since:': 'dateRange',
+    'before:': 'dateRange',
+    'after:': 'dateRange'
+  } as const;
+
+  /**
+   * Parse a search query string into a structured ParsedQuery object
+   * @param query The raw search query string
+   * @returns ParsedQuery object with extracted terms, filters, and options
+   */
+  public parse(query: string): ParsedQuery {
+    const result: ParsedQuery = {
+      terms: [],
+      originalTerms: [],
+      phrases: [],
+      excludedTerms: [],
+      filters: {},
+      searchFields: undefined,
+      fuzzy: false,
+      stemming: false
+    };
+
+    if (!query || query.trim().length === 0) {
+      return result;
+    }
+
+    // Extract exact phrases (quoted strings) first
+    const phrases = this.extractPhrases(query);
+    result.phrases = phrases.map(p => p.value);
+    
+    // Remove phrases from query for further processing
+    let remainingQuery = query;
+    phrases.forEach(phrase => {
+      remainingQuery = remainingQuery.replace(phrase.original, ' ');
+    });
+
+    // Extract operators and their values
+    const { operators, cleanedQuery } = this.extractOperators(remainingQuery);
+    this.applyOperatorFilters(operators, result);
+
+    // Process remaining tokens
+    const tokens = this.tokenize(cleanedQuery);
+    
+    for (const token of tokens) {
+      if (token.startsWith('-')) {
+        // Excluded term
+        const term = token.slice(1);
+        if (term.length > 0) {
+          result.excludedTerms.push(term);
+          // Also add synonyms to excluded terms
+          const synonyms = this.getSynonyms(term);
+          result.excludedTerms.push(...synonyms);
+        }
+      } else if (token === '~' || token === 'fuzzy') {
+        // Enable fuzzy search
+        result.fuzzy = true;
+      } else if (token === 'stem' || token === 'stemming') {
+        // Enable stemming
+        result.stemming = true;
+      } else {
+        // Regular search term
+        result.originalTerms!.push(token);
+        result.terms.push(token);
+        // Add synonyms for the term
+        const synonyms = this.getSynonyms(token);
+        result.terms.push(...synonyms);
+      }
+    }
+
+    // Remove duplicates
+    result.originalTerms = [...new Set(result.originalTerms!)];
+    result.terms = [...new Set(result.terms)];
+    result.excludedTerms = [...new Set(result.excludedTerms)];
+    result.phrases = [...new Set(result.phrases)];
+
+    // Set default search fields if not specified
+    if (!result.searchFields || result.searchFields.length === 0) {
+      result.searchFields = ['name', 'signature', 'jsDoc', 'purpose', 'context'];
+    }
+
+    return result;
+  }
+
+  /**
+   * Extract quoted phrases from the query
+   * @param query The query string
+   * @returns Array of phrase objects with original and cleaned value
+   */
+  private extractPhrases(query: string): Array<{ original: string; value: string }> {
+    const phrases: Array<{ original: string; value: string }> = [];
+    const phraseRegex = /["']([^"']+)["']/g;
+    
+    let match;
+    while ((match = phraseRegex.exec(query)) !== null) {
+      phrases.push({
+        original: match[0],
+        value: match[1].trim()
+      });
+    }
+    
+    return phrases;
+  }
+
+  /**
+   * Extract operators and their values from the query
+   * @param query The query string
+   * @returns Object with operators map and cleaned query
+   */
+  private extractOperators(query: string): { 
+    operators: Map<string, string>; 
+    cleanedQuery: string 
+  } {
+    const operators = new Map<string, string>();
+    let cleanedQuery = query;
+
+    // Match operator:value patterns
+    const operatorRegex = /(\w+):(\S+)/g;
+    
+    let match;
+    while ((match = operatorRegex.exec(query)) !== null) {
+      const operator = match[1].toLowerCase() + ':';
+      const value = match[2];
+      
+      if (operator in QueryParser.OPERATORS) {
+        operators.set(operator, value);
+        cleanedQuery = cleanedQuery.replace(match[0], ' ');
+      }
+    }
+
+    return { operators, cleanedQuery: cleanedQuery.trim() };
+  }
+
+  /**
+   * Apply operator filters to the parsed query
+   * @param operators Map of operators and values
+   * @param parsedQuery The parsed query object to update
+   */
+  private applyOperatorFilters(
+    operators: Map<string, string>, 
+    parsedQuery: ParsedQuery
+  ): void {
+    operators.forEach((value, operator) => {
+      const filterKey = QueryParser.OPERATORS[operator as keyof typeof QueryParser.OPERATORS];
+      
+      switch (filterKey) {
+        case 'fileType':
+          parsedQuery.filters.fileType = value;
+          break;
+          
+        case 'filePath':
+          parsedQuery.filters.filePath = value;
+          break;
+          
+        case 'language':
+          parsedQuery.filters.language = value;
+          break;
+          
+        case 'hasJsDoc':
+          parsedQuery.filters.hasJsDoc = value.toLowerCase() === 'true' || value === '1';
+          break;
+          
+        case 'complexity':
+          if (value.includes('-')) {
+            const [min, max] = value.split('-').map(v => parseInt(v.trim(), 10));
+            if (!isNaN(min) && !isNaN(max)) {
+              parsedQuery.filters.complexity = { min, max };
+            }
+          } else {
+            const complexityValue = parseInt(value, 10);
+            if (!isNaN(complexityValue)) {
+              parsedQuery.filters.complexity = {
+                min: complexityValue,
+                max: complexityValue
+              };
+            }
+          }
+          break;
+          
+        case 'dateRange':
+          if (!parsedQuery.filters.dateRange) {
+            parsedQuery.filters.dateRange = {};
+          }
+          const date = new Date(value);
+          if (!isNaN(date.getTime())) {
+            if (operator === 'since:' || operator === 'after:') {
+              parsedQuery.filters.dateRange.start = date;
+            } else if (operator === 'before:') {
+              parsedQuery.filters.dateRange.end = date;
+            }
+          }
+          break;
+          
+        case 'parameters':
+          // Add parameter search to search fields
+          if (!parsedQuery.searchFields) {
+            parsedQuery.searchFields = [];
+          }
+          parsedQuery.searchFields.push('parameters');
+          parsedQuery.terms.push(value);
+          break;
+          
+        case 'returnType':
+          // Add return type to search fields
+          if (!parsedQuery.searchFields) {
+            parsedQuery.searchFields = [];
+          }
+          parsedQuery.searchFields.push('returnType');
+          parsedQuery.terms.push(value);
+          break;
+      }
+    });
+  }
+
+  /**
+   * Tokenize a string into individual words
+   * @param text The text to tokenize
+   * @returns Array of tokens
+   */
+  private tokenize(text: string): string[] {
+    // Split on whitespace and common delimiters, but preserve hyphenated words
+    const tokens = text
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(token => token.length > 0);
+    
+    // Further split camelCase and snake_case
+    const expandedTokens: string[] = [];
+    
+    for (const token of tokens) {
+      // Split camelCase
+      const camelCaseTokens = token.split(/(?=[A-Z])/).filter(t => t.length > 0);
+      if (camelCaseTokens.length > 1) {
+        expandedTokens.push(token); // Keep original
+        expandedTokens.push(...camelCaseTokens.map(t => t.toLowerCase()));
+      } else {
+        // Split snake_case
+        const snakeCaseTokens = token.split('_').filter(t => t.length > 0);
+        if (snakeCaseTokens.length > 1) {
+          expandedTokens.push(token); // Keep original
+          expandedTokens.push(...snakeCaseTokens);
+        } else {
+          expandedTokens.push(token);
+        }
+      }
+    }
+    
+    return [...new Set(expandedTokens)];
+  }
+
+  /**
+   * Get synonyms for a given term
+   * @param term The term to find synonyms for
+   * @returns Array of synonyms (not including the original term)
+   */
+  public getSynonyms(term: string): string[] {
+    const synonyms: string[] = [];
+    const lowerTerm = term.toLowerCase();
+    
+    // Check if term is a direct key
+    if (QueryParser.SYNONYMS[lowerTerm]) {
+      synonyms.push(...QueryParser.SYNONYMS[lowerTerm]);
+    }
+    
+    // Check if term is a value in any synonym group
+    for (const [key, values] of Object.entries(QueryParser.SYNONYMS)) {
+      if (values.includes(lowerTerm)) {
+        synonyms.push(key);
+        // Add other synonyms from the same group
+        synonyms.push(...values.filter(v => v !== lowerTerm));
+      }
+    }
+    
+    return [...new Set(synonyms)];
+  }
+
+  /**
+   * Expand a query with synonyms (utility method)
+   * @param query The original query
+   * @returns Expanded query with synonyms
+   */
+  public expandQuery(query: string): string {
+    const parsed = this.parse(query);
+    const allTerms = [...new Set([...parsed.terms, ...parsed.phrases])];
+    return allTerms.join(' ');
+  }
+}
+
+// Export a singleton instance for convenience
+export const queryParser = new QueryParser();

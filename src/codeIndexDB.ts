@@ -1,0 +1,1022 @@
+/**
+ * Code Index Database using LokiJS + FlexSearch
+ * Pure JavaScript implementation with no native dependencies
+ */
+
+import Loki, { Collection } from 'lokijs';
+import * as FlexSearch from 'flexsearch';
+import { promises as fs } from 'fs';
+import path from 'path';
+import { EnhancedFunctionMetadata, FunctionMetadata, SearchResult, SearchOptions, ParsedQuery } from './types.js';
+import { QueryParser } from './search/QueryParser.js';
+
+// Types
+interface FunctionDocument extends EnhancedFunctionMetadata {
+  $loki?: number;
+  meta?: any;
+}
+
+// Using SearchOptions and SearchResult from types.ts
+
+export class CodeIndexDB {
+  private static instance: CodeIndexDB;
+  private db: Loki;
+  private functionsCollection: Collection<FunctionDocument> | null = null;
+  private searchIndex: any; // FlexSearch Document instance
+  private dbPath: string;
+  private isInitialized = false;
+
+  constructor(dbPath: string = './.code-index/index.db') {
+    this.dbPath = dbPath;
+    this.db = new Loki(dbPath, {
+      autosave: true,
+      autosaveInterval: 4000,
+      autoload: false
+    });
+
+    // Initialize FlexSearch with full-text search configuration
+    const { Document } = FlexSearch as any;
+    this.searchIndex = new Document({
+      document: {
+        id: '$loki',
+        index: [
+          {
+            field: 'name',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 9,
+            bidirectional: true,
+            weight: 10  // Highest weight for function name matches
+          },
+          {
+            field: 'tokenizedName',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 9,
+            bidirectional: true,
+            weight: 9  // High weight for tokenized name matches
+          },
+          {
+            field: 'signature',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 9,
+            weight: 8  // High weight for signature matches
+          },
+          {
+            field: 'purpose',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 9,
+            weight: 7  // Important for semantic search
+          },
+          {
+            field: 'context',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 9,
+            weight: 6  // Contextual information
+          },
+          {
+            field: 'jsDoc.description',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 9,
+            weight: 5  // Documentation matches
+          },
+          {
+            field: 'parameters[].name',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 7,
+            weight: 4  // Parameter name matches
+          },
+          {
+            field: 'parameters[].description',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 7,
+            weight: 3  // Parameter description matches
+          },
+          {
+            field: 'returnType',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 7,
+            weight: 2  // Return type matches
+          }
+        ]
+      },
+      tokenize: 'full',  // Global full-text tokenization
+      optimize: true,
+      resolution: 9,
+      cache: 100,
+      context: {
+        depth: 3,  // Enable contextual scoring
+        bidirectional: true,  // Search in both directions
+        resolution: 9
+      },
+      threshold: 7,  // Lower threshold for fuzzy matching
+      depth: 3  // Search depth for better fuzzy matching
+    });
+  }
+
+  static getInstance(dbPath?: string): CodeIndexDB {
+    if (!CodeIndexDB.instance) {
+      CodeIndexDB.instance = new CodeIndexDB(dbPath || './.code-index/index.db');
+    }
+    return CodeIndexDB.instance;
+  }
+
+  async initialize(): Promise<void> {
+    if (this.isInitialized) return;
+
+    // Ensure directory exists
+    const dir = path.dirname(this.dbPath);
+    await fs.mkdir(dir, { recursive: true });
+
+    // Load database
+    await new Promise<void>((resolve, reject) => {
+      this.db.loadDatabase({}, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    // Get or create functions collection
+    this.functionsCollection = this.db.getCollection('functions') || 
+      this.db.addCollection('functions', {
+        indices: ['name', 'filePath', 'language']
+      });
+
+    // Rebuild search index from existing data
+    const existingDocs = this.functionsCollection.find();
+    for (const doc of existingDocs) {
+      const normalizedData = this.normalizeFunctionData(doc);
+      this.searchIndex.add(normalizedData);
+    }
+
+    this.isInitialized = true;
+  }
+
+  private ensureInitialized(): void {
+    if (!this.isInitialized || !this.functionsCollection) {
+      throw new Error('Database not initialized. Call initialize() first.');
+    }
+  }
+
+  /**
+   * Normalize function metadata for indexing
+   * Converts FunctionMetadata to have required fields for FlexSearch
+   */
+  private normalizeFunctionData(func: FunctionMetadata | EnhancedFunctionMetadata): any {
+    // If it's already enhanced, return as-is with $loki if present
+    if ('signature' in func && 'parameters' in func) {
+      const normalized = { ...func };
+      // Ensure nested jsDoc structure exists
+      if (!normalized.jsDoc) {
+        normalized.jsDoc = { description: func.purpose || '' };
+      }
+      // Add tokenized name to improve searchability
+      normalized.tokenizedName = this.tokenizeFunctionName(func.name);
+      return normalized;
+    }
+
+    // Convert basic FunctionMetadata to have searchable fields
+    const enhanced: any = {
+      ...func,
+      signature: func.name, // Use name as signature for now
+      parameters: [], // Empty parameters array
+      jsDoc: {
+        description: func.purpose || ''
+      },
+      returnType: 'unknown',
+      // Add tokenized name for better searching
+      tokenizedName: this.tokenizeFunctionName(func.name)
+    };
+
+    return enhanced;
+  }
+
+  /**
+   * Tokenize function name for better search
+   * Splits camelCase, PascalCase, and snake_case into individual words
+   */
+  private tokenizeFunctionName(name: string): string {
+    // Remove class prefix if present (e.g., "UserService.authenticate" -> "authenticate")
+    const functionName = name.includes('.') ? name.split('.').pop()! : name;
+    
+    // Split camelCase and PascalCase
+    const camelSplit = functionName
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2');
+    
+    // Split snake_case and kebab-case
+    const allSplit = camelSplit
+      .replace(/[_-]/g, ' ')
+      .toLowerCase()
+      .trim();
+    
+    return allSplit;
+  }
+
+  async registerFunction(func: FunctionMetadata | EnhancedFunctionMetadata): Promise<void> {
+    this.ensureInitialized();
+    
+    try {
+      // Check if function already exists
+      const existing = this.functionsCollection!.findOne({
+        name: func.name,
+        filePath: func.filePath
+      });
+
+      if (existing) {
+        // Update existing
+        Object.assign(existing, func);
+        this.functionsCollection!.update(existing);
+        const normalizedData = this.normalizeFunctionData(existing);
+        this.searchIndex.update(normalizedData);
+      } else {
+        // Insert new
+        const doc = this.functionsCollection!.insert(func as FunctionDocument);
+        const normalizedData = this.normalizeFunctionData(doc);
+        this.searchIndex.add(normalizedData);
+      }
+
+      // Force save
+      this.db.saveDatabase();
+    } catch (error) {
+      throw new Error(`Failed to register function: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async registerFunctions(functions: (FunctionMetadata | EnhancedFunctionMetadata)[]): Promise<{
+    success: boolean;
+    registered: number;
+    failed: number;
+    errors?: Array<{ function: string; error: string }>;
+  }> {
+    this.ensureInitialized();
+    
+    let registered = 0;
+    let failed = 0;
+    const errors: Array<{ function: string; error: string }> = [];
+
+    for (const func of functions) {
+      try {
+        await this.registerFunction(func);
+        registered++;
+      } catch (error) {
+        failed++;
+        errors.push({
+          function: func.name || 'unknown',
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    }
+
+    return {
+      success: failed === 0,
+      registered,
+      failed,
+      errors: errors.length > 0 ? errors : undefined
+    };
+  }
+
+  /**
+   * Synchronize file index - add new functions, update existing, remove deleted
+   * @param filePath The file path to synchronize
+   * @param currentFunctions The current functions found in the file
+   * @returns Sync statistics
+   */
+  async syncFileIndex(filePath: string, currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[]): Promise<{
+    added: number;
+    updated: number;
+    removed: number;
+  }> {
+    this.ensureInitialized();
+    
+    const stats = {
+      added: 0,
+      updated: 0,
+      removed: 0
+    };
+
+    try {
+      // Get all currently indexed functions for this file
+      const indexedFunctions = this.functionsCollection!.find({ filePath });
+      
+      // Create a map of current functions by name for quick lookup
+      const currentFunctionMap = new Map(
+        currentFunctions.map(f => [f.name, f])
+      );
+
+      // Update or add functions
+      for (const func of currentFunctions) {
+        const existing = indexedFunctions.find(f => f.name === func.name);
+        
+        if (existing) {
+          // Update existing function
+          Object.assign(existing, func);
+          this.functionsCollection!.update(existing);
+          const normalizedData = this.normalizeFunctionData(existing);
+          this.searchIndex.update(normalizedData);
+          stats.updated++;
+        } else {
+          // Add new function
+          const doc = this.functionsCollection!.insert(func as FunctionDocument);
+          const normalizedData = this.normalizeFunctionData(doc);
+          this.searchIndex.add(normalizedData);
+          stats.added++;
+        }
+      }
+
+      // Remove functions that no longer exist in the file
+      for (const indexed of indexedFunctions) {
+        if (!currentFunctionMap.has(indexed.name)) {
+          // Function no longer exists, remove it
+          this.functionsCollection!.remove(indexed);
+          this.searchIndex.remove(indexed.$loki);
+          stats.removed++;
+        }
+      }
+
+      // Force save
+      this.db.saveDatabase();
+
+    } catch (error) {
+      throw new Error(`Failed to sync file index: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+
+    return stats;
+  }
+
+  async searchFunctions(options: SearchOptions): Promise<SearchResult> {
+    this.ensureInitialized();
+    const startTime = Date.now();
+
+    let results: FunctionDocument[] = [];
+    let searchScores = new Map<number, number>(); // Map of $loki id to relevance score
+
+    // Parse the query if provided
+    const queryParser = new QueryParser();
+    let parsedQuery: ParsedQuery | undefined;
+    
+    if (options.query) {
+      parsedQuery = options.parsedQuery || queryParser.parse(options.query);
+      
+      // Execute multi-strategy search
+      results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+    } else if (options.parsedQuery) {
+      parsedQuery = options.parsedQuery;
+      results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+    } else {
+      // No query, get all
+      results = this.functionsCollection!.find();
+      // Give all results a base score
+      results.forEach((doc, index) => {
+        if (doc.$loki !== undefined) {
+          searchScores.set(doc.$loki, 50); // Base score for browse mode
+        }
+      });
+    }
+
+    // Apply filters from both options and parsedQuery
+    const combinedFilters = this.mergeFilters(options.filters, parsedQuery?.filters);
+    results = this.applyFilters(results, combinedFilters);
+
+    // Sort by relevance score
+    results.sort((a, b) => {
+      const scoreA = searchScores.get(a.$loki!) || 0;
+      const scoreB = searchScores.get(b.$loki!) || 0;
+      return scoreB - scoreA; // Higher scores first
+    });
+
+    // Apply pagination
+    const totalCount = results.length;
+    const limit = options.limit || 50;
+    const offset = options.offset || 0;
+    
+    results = results.slice(offset, offset + limit);
+
+    // Clean up results and add scores
+    const functions = results.map((doc) => {
+      const { $loki, meta, ...functionData } = doc;
+      const score = searchScores.get($loki!) || 0;
+      return {
+        ...functionData,
+        score
+      } as EnhancedFunctionMetadata & { score: number };
+    });
+
+    return {
+      functions,
+      totalCount,
+      query: options.query,
+      parsedQuery,
+      executionTime: Date.now() - startTime
+    };
+  }
+
+  /**
+   * Execute multi-strategy search with different approaches
+   * @param parsedQuery The parsed query object
+   * @param searchScores Map to store relevance scores
+   * @returns Array of matching documents
+   */
+  private async executeMultiStrategySearch(
+    parsedQuery: ParsedQuery,
+    searchScores: Map<number, number>
+  ): Promise<FunctionDocument[]> {
+    const resultsMap = new Map<number, FunctionDocument>(); // Map of $loki id to document
+    
+    // Strategy 1: Exact phrase matching (highest weight)
+    if (parsedQuery.phrases.length > 0) {
+      for (const phrase of parsedQuery.phrases) {
+        const phraseResults = await this.searchWithFlexSearch(phrase, 1000);
+        this.mergeSearchResults(phraseResults, resultsMap, searchScores, 100); // High weight for exact phrases
+      }
+    }
+
+    // Strategy 2: All terms must match (AND logic) - use original terms
+    const originalTerms = parsedQuery.originalTerms || parsedQuery.terms;
+    if (originalTerms.length > 0) {
+      // For each original term, search including its synonyms
+      const termResultSets: Map<string, Set<number>> = new Map();
+      
+      for (const originalTerm of originalTerms) {
+        // Get synonyms for this term
+        const queryParser = new QueryParser();
+        const synonyms = queryParser.getSynonyms(originalTerm);
+        const searchTerms = [originalTerm, ...synonyms];
+        
+        // Find documents containing ANY of the synonyms
+        const termIds = new Set<number>();
+        for (const searchTerm of searchTerms) {
+          const termResults = await this.searchWithFlexSearch(searchTerm, 1000);
+          termResults.forEach(doc => {
+            if (doc.$loki !== undefined) termIds.add(doc.$loki);
+          });
+        }
+        
+        termResultSets.set(originalTerm, termIds);
+      }
+      
+      // Find documents that contain ALL original terms (or their synonyms)
+      if (termResultSets.size > 0) {
+        const allTermIds = this.intersectSets(Array.from(termResultSets.values()));
+        
+        if (allTermIds.size > 0) {
+          const allTermDocs = this.functionsCollection!.find({
+            $loki: { $in: Array.from(allTermIds) }
+          });
+          
+          // Calculate score based on how many fields matched
+          allTermDocs.forEach(doc => {
+            const baseScore = 80; // Base score for AND matches
+            const fieldMatchBonus = this.calculateFieldMatchScore(doc, originalTerms);
+            this.mergeSearchResults([doc], resultsMap, searchScores, baseScore + fieldMatchBonus);
+          });
+        }
+      }
+    }
+
+    // Strategy 3: Any term can match (OR logic) - lower weight
+    if (parsedQuery.terms.length > 0) {
+      const orQuery = parsedQuery.terms.join(' ');
+      const orResults = await this.searchWithFlexSearch(orQuery, 1000);
+      
+      // Score based on how many terms matched
+      orResults.forEach(doc => {
+        const matchCount = this.countMatchingTerms(doc, parsedQuery.terms);
+        const score = 40 + (matchCount * 10); // Base score + bonus per matched term
+        this.mergeSearchResults([doc], resultsMap, searchScores, score);
+      });
+    }
+
+    // Strategy 4: Fuzzy search if enabled
+    if (parsedQuery.fuzzy && parsedQuery.terms.length > 0) {
+      // FlexSearch already provides fuzzy matching with threshold setting
+      const fuzzyQuery = parsedQuery.terms.join(' ');
+      const fuzzyResults = await this.searchWithFlexSearch(fuzzyQuery, 1000, true);
+      this.mergeSearchResults(fuzzyResults, resultsMap, searchScores, 30); // Lower weight for fuzzy
+    }
+
+    // Apply excluded terms filter
+    let finalResults = Array.from(resultsMap.values());
+    if (parsedQuery.excludedTerms.length > 0) {
+      finalResults = this.excludeTermsFromResults(finalResults, parsedQuery.excludedTerms);
+    }
+
+    return finalResults;
+  }
+
+  /**
+   * Search using FlexSearch and return document results
+   */
+  private async searchWithFlexSearch(
+    query: string, 
+    limit: number, 
+    fuzzy: boolean = false
+  ): Promise<FunctionDocument[]> {
+    const searchOptions: any = { limit };
+    
+    const searchResults = await this.searchIndex.search(query, searchOptions);
+    
+    // Extract loki IDs from FlexSearch results
+    const lokiIds: number[] = [];
+    for (const fieldResult of searchResults) {
+      if (fieldResult.result && Array.isArray(fieldResult.result)) {
+        lokiIds.push(...fieldResult.result);
+      }
+    }
+    
+    // Remove duplicates and fetch documents
+    const uniqueLokiIds = [...new Set(lokiIds)];
+    
+    if (uniqueLokiIds.length === 0) {
+      return [];
+    }
+    
+    return this.functionsCollection!.find({
+      $loki: { $in: uniqueLokiIds }
+    });
+  }
+
+  /**
+   * Merge search results with scoring
+   */
+  private mergeSearchResults(
+    newResults: FunctionDocument[],
+    resultsMap: Map<number, FunctionDocument>,
+    searchScores: Map<number, number>,
+    weight: number
+  ): void {
+    newResults.forEach(doc => {
+      if (doc.$loki === undefined) return;
+      
+      // Add or update document in results map
+      resultsMap.set(doc.$loki, doc);
+      
+      // Update score (accumulate if already exists)
+      const currentScore = searchScores.get(doc.$loki) || 0;
+      searchScores.set(doc.$loki, currentScore + weight);
+    });
+  }
+
+  /**
+   * Calculate bonus score based on which fields matched
+   */
+  private calculateFieldMatchScore(doc: FunctionDocument, terms: string[]): number {
+    let score = 0;
+    const lowerTerms = terms.map(t => t.toLowerCase());
+    
+    // Check each field with different weights
+    if (doc.name && lowerTerms.some(t => doc.name.toLowerCase().includes(t))) {
+      score += 15; // High bonus for name match
+    }
+    if (doc.signature && lowerTerms.some(t => doc.signature.toLowerCase().includes(t))) {
+      score += 10;
+    }
+    if (doc.purpose && lowerTerms.some(t => doc.purpose.toLowerCase().includes(t))) {
+      score += 8;
+    }
+    if (doc.jsDoc?.description && lowerTerms.some(t => doc.jsDoc.description.toLowerCase().includes(t))) {
+      score += 5;
+    }
+    
+    return score;
+  }
+
+  /**
+   * Count how many terms match in a document
+   */
+  private countMatchingTerms(doc: FunctionDocument, terms: string[]): number {
+    let count = 0;
+    const documentText = this.getDocumentSearchText(doc).toLowerCase();
+    
+    terms.forEach(term => {
+      if (documentText.includes(term.toLowerCase())) {
+        count++;
+      }
+    });
+    
+    return count;
+  }
+
+  /**
+   * Get searchable text from document
+   */
+  private getDocumentSearchText(doc: FunctionDocument): string {
+    const parts = [
+      doc.name,
+      doc.signature,
+      doc.purpose,
+      doc.context,
+      doc.jsDoc?.description,
+      doc.returnType,
+      ...(doc.parameters || []).map(p => `${p.name} ${p.description || ''}`),
+      ...doc.dependencies
+    ];
+    
+    return parts.filter(Boolean).join(' ');
+  }
+
+  /**
+   * Get synonyms for a term using QueryParser
+   */
+  private getSynonyms(term: string): string[] {
+    const queryParser = new QueryParser();
+    return queryParser.getSynonyms(term);
+  }
+
+  /**
+   * Exclude documents containing any of the excluded terms
+   */
+  private excludeTermsFromResults(
+    results: FunctionDocument[],
+    excludedTerms: string[]
+  ): FunctionDocument[] {
+    return results.filter(doc => {
+      const searchText = this.getDocumentSearchText(doc).toLowerCase();
+      return !excludedTerms.some(term => searchText.includes(term.toLowerCase()));
+    });
+  }
+
+  /**
+   * Intersect multiple sets to find common elements
+   */
+  private intersectSets<T>(sets: Set<T>[]): Set<T> {
+    if (sets.length === 0) return new Set();
+    if (sets.length === 1) return sets[0];
+    
+    const result = new Set(sets[0]);
+    for (let i = 1; i < sets.length; i++) {
+      for (const item of result) {
+        if (!sets[i].has(item)) {
+          result.delete(item);
+        }
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Merge filters from options and parsed query
+   */
+  private mergeFilters(
+    optionsFilters?: SearchOptions['filters'],
+    queryFilters?: ParsedQuery['filters']
+  ): SearchOptions['filters'] {
+    const merged: SearchOptions['filters'] = {};
+    
+    // Copy options filters
+    if (optionsFilters) {
+      Object.assign(merged, optionsFilters);
+    }
+    
+    // Merge query filters (query filters take precedence)
+    if (queryFilters) {
+      if (queryFilters.language) merged.language = queryFilters.language;
+      if (queryFilters.filePath) merged.filePath = queryFilters.filePath;
+      if (queryFilters.fileType) merged.fileType = queryFilters.fileType;
+      if (queryFilters.hasJsDoc !== undefined) merged.hasJsDoc = queryFilters.hasJsDoc;
+      if (queryFilters.complexity) merged.complexity = queryFilters.complexity;
+      if (queryFilters.dateRange) merged.dateRange = queryFilters.dateRange;
+    }
+    
+    return merged;
+  }
+
+  /**
+   * Apply filters to search results
+   */
+  private applyFilters(
+    results: FunctionDocument[],
+    filters?: SearchOptions['filters']
+  ): FunctionDocument[] {
+    if (!filters) return results;
+    
+    let filtered = results;
+    
+    if (filters.language) {
+      filtered = filtered.filter(doc => doc.language === filters.language);
+    }
+    
+    if (filters.filePath) {
+      filtered = filtered.filter(doc => doc.filePath.includes(filters.filePath!));
+    }
+    
+    if (filters.fileType) {
+      filtered = filtered.filter(doc => doc.filePath.endsWith(filters.fileType!));
+    }
+    
+    if (filters.hasJsDoc !== undefined) {
+      filtered = filtered.filter(doc => {
+        const hasJsDoc = doc.jsDoc && doc.jsDoc.description && doc.jsDoc.description.length > 0;
+        return filters.hasJsDoc ? hasJsDoc : !hasJsDoc;
+      });
+    }
+    
+    if (filters.complexity) {
+      filtered = filtered.filter(doc => {
+        if (!doc.complexity) return false;
+        const complexity = doc.complexity;
+        const min = filters.complexity!.min || 0;
+        const max = filters.complexity!.max || Infinity;
+        return complexity >= min && complexity <= max;
+      });
+    }
+    
+    if (filters.hasAnyDependency && filters.hasAnyDependency.length > 0) {
+      filtered = filtered.filter(doc => 
+        filters.hasAnyDependency!.some(dep => doc.dependencies.includes(dep))
+      );
+    }
+    
+    return filtered;
+  }
+
+  async findDefinition(name: string, filePath?: string): Promise<EnhancedFunctionMetadata | null> {
+    this.ensureInitialized();
+
+    const query: any = { name };
+    if (filePath) {
+      query.filePath = filePath;
+    }
+
+    const result = this.functionsCollection!.findOne(query);
+    if (!result) return null;
+
+    const { $loki, meta, ...functionData } = result;
+    return functionData as EnhancedFunctionMetadata;
+  }
+
+  async getStats(): Promise<{
+    totalFunctions: number;
+    languages: Record<string, number>;
+    topDependencies: Array<{ name: string; count: number }>;
+    filesIndexed: number;
+    lastUpdated: Date;
+  }> {
+    this.ensureInitialized();
+
+    const allFunctions = this.functionsCollection!.find();
+
+    // Calculate stats
+    const languages: Record<string, number> = {};
+    const dependencies: Record<string, number> = {};
+    const files = new Set<string>();
+
+    for (const func of allFunctions) {
+      // Language stats
+      if (func.language) {
+        languages[func.language] = (languages[func.language] || 0) + 1;
+      }
+
+      // Dependency stats
+      for (const dep of func.dependencies) {
+        dependencies[dep] = (dependencies[dep] || 0) + 1;
+      }
+
+      // File stats
+      files.add(func.filePath);
+    }
+
+    // Top dependencies
+    const topDependencies = Object.entries(dependencies)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([name, count]) => ({ name, count }));
+
+    return {
+      totalFunctions: allFunctions.length,
+      languages,
+      topDependencies,
+      filesIndexed: files.size,
+      lastUpdated: new Date()
+    };
+  }
+
+  async clearIndex(): Promise<void> {
+    this.ensureInitialized();
+    
+    this.functionsCollection!.clear();
+    this.searchIndex.clear();
+    this.db.saveDatabase();
+  }
+
+  async close(): Promise<void> {
+    if (this.isInitialized) {
+      this.db.close();
+      this.isInitialized = false;
+    }
+  }
+
+  /**
+   * Synchronize a single file's functions with the index
+   * Adds new functions, updates existing ones, and removes deleted ones
+   */
+  async synchronizeFile(filePath: string): Promise<{
+    added: number;
+    updated: number;
+    removed: number;
+  } | null> {
+    this.ensureInitialized();
+    
+    const fs = require('fs').promises;
+    
+    try {
+      // Check if file exists
+      await fs.access(filePath);
+    } catch {
+      // File doesn't exist, remove all its functions
+      const existingFuncs = this.functionsCollection!.find({ filePath });
+      for (const func of existingFuncs) {
+        this.functionsCollection!.remove(func);
+        if (func.$loki !== undefined) {
+          await this.searchIndex.remove(func.$loki);
+        }
+      }
+      this.db.saveDatabase();
+      return { added: 0, updated: 0, removed: existingFuncs.length };
+    }
+    
+    // Parse the file for functions
+    const { FunctionScanner } = await import('./functionScanner.js');
+    const scanner = new FunctionScanner();
+    const fileContent = await fs.readFile(filePath, 'utf-8');
+    const language = filePath.endsWith('.ts') || filePath.endsWith('.tsx') ? 'typescript' : 'javascript';
+    
+    const parsedFunctions = await scanner.scanFunctions(fileContent, filePath, language);
+    
+    // Get existing functions
+    const existingFuncs = this.functionsCollection!.find({ filePath });
+    const existingMap = new Map(existingFuncs.map(f => [f.name, f]));
+    const parsedMap = new Map(parsedFunctions.map(f => [f.name, f]));
+    
+    let added = 0, updated = 0, removed = 0;
+    
+    // Remove functions that no longer exist
+    for (const existing of existingFuncs) {
+      if (!parsedMap.has(existing.name)) {
+        this.functionsCollection!.remove(existing);
+        if (existing.$loki !== undefined) {
+          await this.searchIndex.remove(existing.$loki);
+        }
+        removed++;
+      }
+    }
+    
+    // Add or update functions
+    for (const parsed of parsedFunctions) {
+      const existing = existingMap.get(parsed.name);
+      if (existing) {
+        // Update existing
+        Object.assign(existing, parsed);
+        this.functionsCollection!.update(existing);
+        const normalizedData = this.normalizeFunctionData(existing);
+        await this.searchIndex.update(normalizedData);
+        updated++;
+      } else {
+        // Add new
+        await this.registerFunction(parsed);
+        added++;
+      }
+    }
+    
+    if (added > 0 || updated > 0 || removed > 0) {
+      this.db.saveDatabase();
+    }
+    
+    return { added, updated, removed };
+  }
+
+  /**
+   * Performs bulk cleanup of the index by verifying all indexed files still exist
+   * and removing entries for deleted files
+   */
+  async bulkCleanup(): Promise<{
+    scannedCount: number;
+    removedCount: number;
+    removedFiles: string[];
+    errors: Array<{ file: string; error: string }>;
+  }> {
+    this.ensureInitialized();
+    
+    const fs = require('fs').promises;
+    const allFunctions = this.functionsCollection!.find();
+    const fileMap = new Map<string, FunctionDocument[]>();
+    
+    // Group functions by file
+    for (const func of allFunctions) {
+      if (!fileMap.has(func.filePath)) {
+        fileMap.set(func.filePath, []);
+      }
+      fileMap.get(func.filePath)!.push(func);
+    }
+    
+    const removedFiles: string[] = [];
+    const errors: Array<{ file: string; error: string }> = [];
+    let removedCount = 0;
+    
+    // Check each file
+    for (const [filePath, functions] of fileMap) {
+      try {
+        await fs.access(filePath);
+        // File exists, no action needed
+      } catch (error) {
+        // File doesn't exist, remove all its functions
+        for (const func of functions) {
+          this.functionsCollection!.remove(func);
+          // Remove from search index
+          if (func.$loki !== undefined) {
+            await this.searchIndex.remove(func.$loki);
+          }
+          removedCount++;
+        }
+        removedFiles.push(filePath);
+      }
+    }
+    
+    // Save changes
+    if (removedCount > 0) {
+      this.db.saveDatabase();
+    }
+    
+    return {
+      scannedCount: fileMap.size,
+      removedCount,
+      removedFiles,
+      errors
+    };
+  }
+
+  /**
+   * Performs deep synchronization by re-scanning all indexed files
+   * Updates function signatures and removes stale entries
+   */
+  async deepSync(
+    progressCallback?: (progress: { current: number; total: number; file: string }) => void
+  ): Promise<{
+    syncedFiles: number;
+    addedFunctions: number;
+    updatedFunctions: number;
+    removedFunctions: number;
+    errors: Array<{ file: string; error: string }>;
+  }> {
+    this.ensureInitialized();
+    
+    const allFunctions = this.functionsCollection!.find();
+    const fileMap = new Map<string, FunctionDocument[]>();
+    
+    // Group functions by file
+    for (const func of allFunctions) {
+      if (!fileMap.has(func.filePath)) {
+        fileMap.set(func.filePath, []);
+      }
+      fileMap.get(func.filePath)!.push(func);
+    }
+    
+    let syncedFiles = 0;
+    let totalAdded = 0;
+    let totalUpdated = 0;
+    let totalRemoved = 0;
+    const errors: Array<{ file: string; error: string }> = [];
+    
+    let current = 0;
+    const total = fileMap.size;
+    
+    // Sync each file
+    for (const [filePath, _] of fileMap) {
+      current++;
+      if (progressCallback) {
+        progressCallback({ current, total, file: filePath });
+      }
+      
+      try {
+        const result = await this.synchronizeFile(filePath);
+        if (result) {
+          syncedFiles++;
+          totalAdded += result.added;
+          totalUpdated += result.updated;
+          totalRemoved += result.removed;
+        }
+      } catch (error) {
+        errors.push({
+          file: filePath,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    
+    return {
+      syncedFiles,
+      addedFunctions: totalAdded,
+      updatedFunctions: totalUpdated,
+      removedFunctions: totalRemoved,
+      errors
+    };
+  }
+}

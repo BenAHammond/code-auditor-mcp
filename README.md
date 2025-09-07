@@ -9,6 +9,10 @@ A comprehensive TypeScript/JavaScript code quality audit tool that analyzes your
 - **Security Pattern Analysis** - Verify authentication, authorization, and rate limiting implementations
 - **Component Architecture Review** - Analyze component structure, complexity, and best practices
 - **Data Access Patterns** - Check for SQL injection risks, performance issues, and security patterns
+- **Code Function Indexing** - Index and search functions across your codebase with intelligent tokenization
+- **AI Tool Configuration** - Auto-generate configurations for 10+ AI coding assistants
+- **Advanced Search** - Natural language search with synonym expansion and camelCase support
+- **Index Maintenance** - Bulk cleanup and deep synchronization tools for accurate indexing
 - **Multiple Output Formats** - Generate HTML, JSON, or CSV reports
 - **Highly Configurable** - Customize thresholds, patterns, and analysis rules
 - **Framework Support** - Built-in support for React, Vue, Angular, Svelte, and Node.js
@@ -357,20 +361,57 @@ If you prefer to configure Claude Desktop manually:
 
 ### Available MCP Tools
 
+#### Code Analysis Tools
 - **audit_run** - Run a comprehensive code audit
 - **audit_analyze_file** - Analyze a specific file for issues
 - **audit_check_health** - Get a quick health score for your codebase
 - **audit_list_analyzers** - List all available analyzers and their capabilities
 
+#### Code Index Tools
+- **index_functions** - Index functions from TypeScript/JavaScript files
+- **search_functions** - Search indexed functions with natural language queries
+- **find_definition** - Find the exact definition of a specific function
+- **register_functions** - Manually register functions with metadata
+- **get_index_stats** - Get statistics about the code index
+- **clear_index** - Clear all indexed functions
+
+#### AI Configuration Tools
+- **generate_ai_configs** - Generate configs for AI coding assistants (Cursor, Continue, Copilot, etc.)
+- **list_ai_tools** - List all supported AI tools
+- **get_ai_tool_info** - Get detailed info about a specific AI tool
+- **validate_ai_config** - Validate an AI tool configuration
+
+#### Maintenance Tools
+- **bulk_cleanup** - Remove index entries for deleted files
+- **deep_sync** - Deep synchronize all indexed files
+
 ### Usage Examples with Claude
 
 ```
+# Code Analysis
 "Run a code audit on my project and show me the critical issues"
 "Check the health score of the src directory"
 "Analyze my code for SOLID principle violations"
 "Find security vulnerabilities in my authentication code"
 "Show me all code duplication in the components folder"
+
+# Code Search & Discovery
+"Search for functions that validate email addresses"
+"Find all user authentication functions"
+"Show me any existing data table components"
+"Search for functions that send notifications"
+
+# AI Tool Configuration
+"Generate AI configurations for Cursor and Claude"
+"List all supported AI coding tools"
+"Set up my AI tools to use the code index"
+
+# Maintenance
+"Clean up stale entries in the code index"
+"Sync all indexed files to update function signatures"
 ```
+
+See [TOOLS-DOCUMENTATION.md](TOOLS-DOCUMENTATION.md) for comprehensive documentation on all MCP tools.
 
 ## Contributing
 

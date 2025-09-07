@@ -6,7 +6,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { AuditConfig } from '../types.js';
-import { getDefaultConfig } from './defaults.js';
+import { getDefaultConfig, DEFAULT_CODE_INDEX_CONFIG } from './defaults.js';
 
 /**
  * Load configuration from multiple sources
@@ -18,6 +18,9 @@ export async function loadConfig(options?: {
 }): Promise<AuditConfig> {
   // Start with defaults
   let config = getDefaultConfig();
+  
+  // Add code index defaults
+  (config as any).codeIndex = DEFAULT_CODE_INDEX_CONFIG;
   
   // Load from config file if specified
   if (options?.configPath) {
@@ -76,6 +79,21 @@ function loadFromEnvironment(baseConfig: AuditConfig, prefix: string): AuditConf
   
   if (env[`${prefix}_ANALYZERS`]) {
     envConfig.enabledAnalyzers = env[`${prefix}_ANALYZERS`].split(',');
+  }
+  
+  // Code index environment variables
+  const codeIndexConfig: any = {};
+  if (env[`${prefix}_CODE_INDEX_DB_PATH`]) {
+    codeIndexConfig.databasePath = env[`${prefix}_CODE_INDEX_DB_PATH`];
+  }
+  if (env[`${prefix}_CODE_INDEX_BATCH_SIZE`]) {
+    codeIndexConfig.maxBatchSize = parseInt(env[`${prefix}_CODE_INDEX_BATCH_SIZE`], 10);
+  }
+  if (env[`${prefix}_CODE_INDEX_SEARCH_LIMIT`]) {
+    codeIndexConfig.searchResultLimit = parseInt(env[`${prefix}_CODE_INDEX_SEARCH_LIMIT`], 10);
+  }
+  if (Object.keys(codeIndexConfig).length > 0) {
+    (envConfig as any).codeIndex = codeIndexConfig;
   }
   
   return mergeConfig(baseConfig, envConfig);

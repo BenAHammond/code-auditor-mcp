@@ -279,3 +279,143 @@ export interface AuditRunnerOptions extends AuditOptions {
   projectRoot?: string;
   analyzerConfigs?: Record<string, any>;
 }
+
+// Code Index Types
+export interface FunctionMetadata {
+  name: string;
+  filePath: string;
+  lineNumber?: number;
+  startLine?: number;
+  endLine?: number;
+  language?: string;
+  dependencies: string[];
+  purpose: string;
+  context: string;
+  metadata?: Record<string, any>;
+}
+
+// Enhanced function metadata with additional searchable fields
+export interface EnhancedFunctionMetadata extends FunctionMetadata {
+  signature: string;
+  parameters: Array<{
+    name: string;
+    type?: string;
+    description?: string;
+    optional?: boolean;
+    defaultValue?: string;
+  }>;
+  returnType?: string;
+  jsDoc?: {
+    description?: string;
+    examples?: string[];
+    tags?: Record<string, string[]>;
+  };
+  typeInfo?: {
+    generics?: string[];
+    interfaces?: string[];
+    types?: string[];
+  };
+  complexity?: number;
+  tokens?: string[];
+  tokenizedName?: string;
+  lastModified?: Date;
+}
+
+// Parsed search query structure
+export interface ParsedQuery {
+  terms: string[];
+  originalTerms?: string[]; // Original terms before synonym expansion
+  phrases: string[];
+  excludedTerms: string[];
+  filters: {
+    filePath?: string;
+    fileType?: string;
+    language?: string;
+    hasJsDoc?: boolean;
+    complexity?: {
+      min?: number;
+      max?: number;
+    };
+    dateRange?: {
+      start?: Date;
+      end?: Date;
+    };
+  };
+  searchFields?: Array<'name' | 'signature' | 'jsDoc' | 'parameters' | 'returnType' | 'purpose' | 'context'>;
+  fuzzy?: boolean;
+  stemming?: boolean;
+}
+
+export interface SearchOptions {
+  query?: string;
+  parsedQuery?: ParsedQuery;
+  filters?: {
+    language?: string;
+    filePath?: string;
+    hasAnyDependency?: string[];
+    fileType?: string;
+    hasJsDoc?: boolean;
+    complexity?: {
+      min?: number;
+      max?: number;
+    };
+    dateRange?: {
+      start?: Date;
+      end?: Date;
+    };
+  };
+  searchStrategy?: 'exact' | 'fuzzy' | 'semantic';
+  searchFields?: Array<'name' | 'signature' | 'jsDoc' | 'parameters' | 'returnType' | 'purpose' | 'context'>;
+  scoringWeights?: {
+    nameMatch?: number;
+    signatureMatch?: number;
+    jsDocMatch?: number;
+    parameterMatch?: number;
+    purposeMatch?: number;
+    contextMatch?: number;
+  };
+  limit?: number;
+  offset?: number;
+  includeSnippets?: boolean;
+  highlightMatches?: boolean;
+}
+
+export interface RegisterResult {
+  success: boolean;
+  registered: number;
+  failed: number;
+  errors?: Array<{ function: string; error: string }>;
+}
+
+export interface SearchResult {
+  functions: Array<EnhancedFunctionMetadata & {
+    score: number;  // Required for relevance ranking
+    highlights?: {
+      name?: string[];
+      signature?: string[];
+      jsDoc?: string[];
+      parameters?: string[];
+      purpose?: string[];
+      context?: string[];
+    };
+    matchedFields?: string[];
+  }>;
+  totalCount: number;
+  query?: string;
+  parsedQuery?: ParsedQuery;
+  executionTime: number;
+  facets?: {
+    languages?: Record<string, number>;
+    fileTypes?: Record<string, number>;
+    complexityRanges?: Record<string, number>;
+  };
+  suggestions?: string[];
+}
+
+export interface IndexStats {
+  totalFunctions: number;
+  languages: Record<string, number>;
+  topDependencies: Array<{ name: string; count: number }>;
+  filesIndexed: number;
+  lastUpdated: Date;
+}
