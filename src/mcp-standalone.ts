@@ -3,7 +3,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { spawn } from 'child_process';
+import { createAuditRunner } from './auditRunner.js';
+import type { AuditRunnerOptions, AuditResult, Violation, Severity } from './types.js';
 import path from 'node:path';
 import chalk from 'chalk';
 
@@ -49,44 +50,30 @@ const tools: Tool[] = [
   },
 ];
 
-async function runCliCommand(args: string[]): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const cliPath = path.join(path.dirname(new URL(import.meta.url).pathname), 'cli.js');
-    const child = spawn('node', [cliPath, ...args], {
-      cwd: process.cwd(),
-      env: process.env,
-    });
+function getAllViolations(result: AuditResult): Violation[] {
+  const violations: Violation[] = [];
+  
+  for (const [analyzerName, analyzerResult] of Object.entries(result.analyzerResults)) {
+    for (const violation of analyzerResult.violations) {
+      violations.push({
+        ...violation,
+        analyzer: analyzerName,
+      });
+    }
+  }
+  
+  return violations;
+}
 
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    child.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    child.on('error', (error) => {
-      reject(error);
-    });
-
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Command failed with exit code ${code}: ${stderr}`));
-      } else {
-        try {
-          // Try to parse as JSON first
-          const result = JSON.parse(stdout);
-          resolve(result);
-        } catch {
-          // If not JSON, return as text
-          resolve({ output: stdout, stderr });
-        }
-      }
-    });
-  });
+function calculateHealthScore(result: AuditResult): number {
+  let score = 100;
+  const critical = result.summary.criticalIssues;
+  const warning = result.summary.warnings;
+  
+  score -= critical * 10;
+  score -= warning * 2;
+  
+  return Math.max(0, Math.min(100, score));
 }
 
 async function startMcpServer() {
@@ -134,31 +121,60 @@ async function startMcpServer() {
 
       switch (name) {
         case 'audit_run': {
-          const auditPath = (args.path as string) || process.cwd();
-          result = await runCliCommand(['--json', '--path', auditPath]);
+          const auditPath = path.resolve((args.path as string) || process.cwd());
+          const options: AuditRunnerOptions = {
+            projectRoot: auditPath,
+            enabledAnalyzers: ['solid', 'dry'],
+            verbose: false,
+          };
+
+          const runner = createAuditRunner(options);
+          const auditResult = await runner.run();
+
+          // Format for MCP
+          result = {
+            summary: {
+              totalViolations: auditResult.summary.totalViolations,
+              criticalIssues: auditResult.summary.criticalIssues,
+              warnings: auditResult.summary.warnings,
+              suggestions: auditResult.summary.suggestions,
+              filesAnalyzed: auditResult.metadata.filesAnalyzed,
+              executionTime: auditResult.metadata.auditDuration,
+              healthScore: calculateHealthScore(auditResult),
+            },
+            violations: getAllViolations(auditResult).slice(0, 100), // Limit to first 100
+            recommendations: auditResult.recommendations,
+          };
           break;
         }
 
         case 'audit_check_health': {
-          const auditPath = (args.path as string) || process.cwd();
-          // Run a quick audit and calculate health score
-          const auditResult = await runCliCommand(['--json', '--path', auditPath, '--quick']);
+          const auditPath = path.resolve((args.path as string) || process.cwd());
           
-          // Simple health calculation
-          const violations = auditResult.violations || [];
-          const critical = violations.filter((v: any) => v.severity === 'critical').length;
-          const warnings = violations.filter((v: any) => v.severity === 'warning').length;
-          
-          const healthScore = Math.max(0, 100 - (critical * 10) - (warnings * 2));
-          
+          const runner = createAuditRunner({
+            projectRoot: auditPath,
+            enabledAnalyzers: ['solid', 'dry'],
+            minSeverity: 'warning',
+            verbose: false,
+          });
+
+          const auditResult = await runner.run();
+          const healthScore = calculateHealthScore(auditResult);
+
           result = {
             healthScore,
+            threshold: 70,
+            passed: healthScore >= 70,
             status: healthScore >= 70 ? 'healthy' : 'needs-attention',
             metrics: {
-              totalViolations: violations.length,
-              criticalViolations: critical,
-              warningViolations: warnings,
+              filesAnalyzed: auditResult.metadata.filesAnalyzed,
+              totalViolations: auditResult.summary.totalViolations,
+              criticalViolations: auditResult.summary.criticalIssues,
+              warningViolations: auditResult.summary.warnings,
             },
+            recommendation: healthScore >= 90 ? 'Excellent code health!' :
+                          healthScore >= 70 ? 'Good code health with room for improvement' :
+                          'Code health needs attention - run detailed audit',
           };
           break;
         }
