@@ -5,11 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.1] - 2024-12-20
+## [1.2.0] - 2024-12-20
+
+### Changed
+- **Simplified MCP tool set** - Reduced from 16 tools to 6 core tools for better usability
+  - `audit_run` → `audit` - Now handles both files and directories
+  - `audit_check_health` → `audit_health` - Clearer naming
+  - `search_functions` → `search_code` - Better reflects natural language search capability
+  - `generate_ai_configs` → `generate_ai_config` - Consistent singular naming
+  - Combined `bulk_cleanup`, `deep_sync`, `clear_index` → `sync_index` with modes
+  - Removed redundant tools: `audit_analyze_file`, `register_functions`, `index_functions`, `audit_list_analyzers`, `list_ai_tools`, `get_ai_tool_info`, `validate_ai_config`
+
+### Added
+- Function indexing during audits - audit tools now index functions by default (set `indexFunctions: false` to disable)
+- Avoids duplicate file parsing by collecting functions during the audit process
+- New `sync_index` tool with modes: `sync` (default), `cleanup`, `reset`
+- Audit tools now use `syncFileIndex` to properly handle function deletions, additions, and updates
 
 ### Fixed
 - Fixed MCP standalone server trying to pass non-existent `--json` flag to CLI
-- MCP tools (audit_run, audit_check_health) now work correctly via npx and Claude
+- MCP tools (`audit`, `audit_health`) now work correctly via npx and Claude
+- Updated mcp-standalone.ts to support all 6 simplified tools (was missing 4 tools)
 
 ## [1.1.0] - 2024-12-20
 

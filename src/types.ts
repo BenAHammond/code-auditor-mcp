@@ -116,6 +116,8 @@ export interface AuditResult {
     filesAnalyzed: number;
     analyzersRun: string[];
     configUsed?: AuditOptions;
+    collectedFunctions?: FunctionMetadata[]; // Functions collected during audit
+    fileToFunctionsMap?: Record<string, FunctionMetadata[]>; // Functions per file for sync
   };
 }
 
@@ -278,6 +280,7 @@ export interface AuditRunnerOptions extends AuditOptions {
   configName?: string;
   projectRoot?: string;
   analyzerConfigs?: Record<string, any>;
+  indexFunctions?: boolean; // Whether to index functions during audit
 }
 
 // Code Index Types

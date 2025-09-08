@@ -2,501 +2,310 @@
 
 ## Overview
 
-Code Auditor MCP provides a comprehensive suite of tools for code analysis, function indexing, and AI tool configuration management. This document covers all available tools and how to integrate them into your development workflow.
+Code Auditor MCP provides 6 tools for code analysis, function discovery, and AI tool configuration. Functions are automatically indexed during audits for seamless code search capabilities.
 
 ## Table of Contents
 
-1. [Code Analysis Tools](#code-analysis-tools)
-2. [Code Index Tools](#code-index-tools)
-3. [AI Configuration Tools](#ai-configuration-tools)
-4. [Maintenance Tools](#maintenance-tools)
-5. [Workflow Integration](#workflow-integration)
+1. [Core Analysis Tools](#core-analysis-tools)
+2. [Code Discovery Tools](#code-discovery-tools)
+3. [Index Maintenance](#index-maintenance)
+4. [AI Configuration](#ai-configuration)
+5. [Workflow Examples](#workflow-examples)
 6. [Best Practices](#best-practices)
 
-## Code Analysis Tools
+## Core Analysis Tools
 
-### audit_run
-Performs comprehensive code analysis on your codebase.
+### audit
+Performs comprehensive code analysis on files or directories with automatic function indexing.
 
 **Parameters:**
-- `path` (string, optional): Directory to audit (defaults to current directory)
-- `enabledAnalyzers` (array, optional): Analyzers to run ["solid", "dry", "security", "component", "data-access"]
+- `path` (string, optional): File or directory to audit (defaults to current directory)
+- `analyzers` (array, optional): Analyzers to run ["solid", "dry", "security", "component", "data-access"]
 - `minSeverity` (string, optional): Minimum severity to report ["info", "warning", "critical"]
+- `indexFunctions` (boolean, optional): Automatically index functions during audit (default: true)
 
 **Example:**
 ```
-audit_run(path: "./src", enabledAnalyzers: ["solid", "dry"], minSeverity: "warning")
-```
-
-**Use Case:** Run before code reviews or releases to identify potential issues.
-
-### audit_analyze_file
-Analyzes a specific file for code quality issues.
-
-**Parameters:**
-- `filePath` (string, required): File to analyze
-- `analyzers` (array, optional): Specific analyzers to run
-
-**Example:**
-```
-audit_analyze_file(filePath: "./src/components/UserProfile.tsx", analyzers: ["solid"])
-```
-
-**Use Case:** Quick analysis of files you're currently working on.
-
-### audit_check_health
-Quick health check providing key metrics about your codebase.
-
-**Parameters:**
-- `path` (string, optional): Directory to check
-- `threshold` (number, optional): Health score threshold (0-100)
-
-**Example:**
-```
-audit_check_health(path: "./src", threshold: 80)
-```
-
-**Use Case:** Regular health monitoring, CI/CD integration.
-
-### audit_list_analyzers
-Lists all available code analyzers and their capabilities.
-
-**Example:**
-```
-audit_list_analyzers()
-```
-
-**Use Case:** Discover available analysis options.
-
-## Code Index Tools
-
-### index_functions
-Indexes functions from TypeScript/JavaScript files for searchability.
-
-**Parameters:**
-- `path` (string, required): File or directory to index
-- `recursive` (boolean, optional): Recursively index directories
-- `fileTypes` (array, optional): File extensions to process
-
-**Example:**
-```
-index_functions(path: "./src", recursive: true, fileTypes: [".ts", ".tsx"])
-```
-
-**Use Case:** Initial indexing of your codebase or adding new directories.
-
-### search_functions
-Search indexed functions with advanced query capabilities.
-
-**Parameters:**
-- `query` (string, required): Search query
-- `filters` (object, optional): Filter criteria
-- `limit` (number, optional): Maximum results
-- `offset` (number, optional): Pagination offset
-
-**Example:**
-```
-search_functions(query: "user authentication", filters: { language: "typescript" })
-```
-
-**Supported Search Patterns:**
-- Natural language: "validate email", "user login"
-- CamelCase: Searches "getUserProfile" with "get user"
-- Operators: `type:string`, `param:userId`, `lang:typescript`
-- Synonyms: "create" also searches "make", "new", "generate"
-
-**Use Case:** Check if functionality exists before implementing new features.
-
-### find_definition
-Find the exact definition of a specific function.
-
-**Parameters:**
-- `name` (string, required): Function name
-- `filePath` (string, optional): File path to narrow search
-
-**Example:**
-```
-find_definition(name: "validateEmail", filePath: "./src/utils/validation.ts")
-```
-
-**Use Case:** Navigate to function definitions, understand implementations.
-
-### register_functions
-Manually register functions with metadata.
-
-**Parameters:**
-- `functions` (array, required): Array of function metadata
-- `overwrite` (boolean, optional): Overwrite existing entries
-
-**Example:**
-```
-register_functions(functions: [{
-  name: "customValidator",
-  filePath: "./src/validators.ts",
-  purpose: "Validates custom business rules",
-  dependencies: ["joi"]
-}])
-```
-
-**Use Case:** Add metadata for dynamically generated functions or external libraries.
-
-### get_index_stats
-Get statistics about the code index.
-
-**Example:**
-```
-get_index_stats()
+audit(path: "./src", analyzers: ["solid", "dry"], minSeverity: "warning")
 ```
 
 **Returns:**
-- Total functions indexed
-- Language breakdown
-- Top dependencies
-- Files indexed
-- Last update time
+- Summary of violations by severity
+- Detailed violation list
+- Function indexing stats (added, updated, removed)
+- Health score
+- Recommendations
 
-**Use Case:** Monitor index coverage and health.
+**Use Case:** Regular code quality checks with automatic function discovery. Run before code reviews or releases.
 
-### clear_index
-Clear all indexed functions.
-
-**Parameters:**
-- `confirm` (boolean, optional): Confirmation flag
-
-**Example:**
-```
-clear_index(confirm: true)
-```
-
-**Use Case:** Fresh start or before major refactoring.
-
-## AI Configuration Tools
-
-### generate_ai_configs
-Generate configuration files for AI coding assistants.
+### audit_health
+Quick health check providing key metrics and overall code quality assessment.
 
 **Parameters:**
-- `tools` (array, required): AI tools ["cursor", "continue", "copilot", "claude", etc.]
-- `outputDir` (string, optional): Output directory
-- `overwrite` (boolean, optional): Overwrite existing files
-- `serverUrl` (string, optional): MCP server URL
+- `path` (string, optional): Directory to check (defaults to current directory)
+- `threshold` (number, optional): Health score threshold 0-100 (default: 70)
+- `indexFunctions` (boolean, optional): Automatically index functions during check (default: true)
 
 **Example:**
 ```
-generate_ai_configs(tools: ["cursor", "claude"], outputDir: "./ai-configs", overwrite: true)
-```
-
-**Supported Tools:**
-- Cursor
-- Continue
-- GitHub Copilot
-- Claude Desktop
-- Zed
-- Windsurf
-- Cody
-- Aider
-- Cline
-- PearAI
-
-**Use Case:** Ensure AI assistants are properly configured to use your code index.
-
-### list_ai_tools
-List all supported AI tools.
-
-**Example:**
-```
-list_ai_tools()
-```
-
-**Use Case:** Discover available AI tool integrations.
-
-### get_ai_tool_info
-Get detailed information about a specific AI tool.
-
-**Parameters:**
-- `tool` (string, required): Tool name
-
-**Example:**
-```
-get_ai_tool_info(tool: "cursor")
+audit_health(path: "./src", threshold: 80)
 ```
 
 **Returns:**
-- Configuration requirements
-- Setup instructions
-- Sample configuration
+- Health score (0-100)
+- Pass/fail status based on threshold
+- Key metrics (files analyzed, violations by severity)
+- Function indexing stats
 
-**Use Case:** Learn how to configure specific tools.
+**Use Case:** CI/CD pipeline integration, quick health monitoring, pre-commit checks.
 
-### validate_ai_config
-Validate an AI tool configuration.
+## Code Discovery Tools
+
+### search_code
+Natural language search across your indexed codebase with intelligent query understanding.
 
 **Parameters:**
-- `tool` (string, required): Tool name
-- `config` (object, required): Configuration to validate
+- `query` (string, required): Natural language search query
+- `filters` (object, optional): Additional filters
+  - `language`: Filter by programming language
+  - `filePath`: Filter by file path pattern
+  - `dependencies`: Filter by dependencies used
+- `limit` (number, optional): Maximum results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
 
 **Example:**
 ```
-validate_ai_config(tool: "cursor", config: { mcpServers: {...} })
+# Natural language queries
+search_code(query: "validate user input")
+search_code(query: "authentication", filters: { language: "typescript" })
+
+# Technical searches
+search_code(query: "useState hooks")
+search_code(query: "async database operations")
 ```
-
-**Use Case:** Verify configurations before deployment.
-
-## Maintenance Tools
-
-### bulk_cleanup
-Remove index entries for deleted files.
-
-**Example:**
-```
-bulk_cleanup()
-```
-
-**Returns:**
-- Scanned files count
-- Removed entries count
-- List of removed files
-- Any errors encountered
-
-**Use Case:** Periodic maintenance, after file deletions or moves.
-
-### deep_sync
-Deep synchronization of all indexed files.
-
-**Example:**
-```
-deep_sync()
-```
-
-**Returns:**
-- Synced files count
-- Added functions
-- Updated functions
-- Removed functions
-- Any errors encountered
 
 **Features:**
-- Re-scans all indexed files
-- Updates function signatures
-- Removes stale entries
-- Handles renamed functions
+- Synonym expansion (e.g., "validate" → "check", "verify", "test")
+- Multi-word search support
+- Relevance scoring
+- Natural language understanding
 
-**Use Case:** After major refactoring, ensure index accuracy.
+**Use Case:** Find implementation examples, discover similar code patterns, understand codebase structure.
 
-## Workflow Integration
+### find_definition
+Quickly locate the exact definition of a specific function by name.
 
-### 1. Initial Setup
+**Parameters:**
+- `name` (string, required): Function name to find
+- `filePath` (string, optional): Narrow search to specific file
 
-```bash
-# 1. Install and configure
-npm install -g code-auditor-mcp
-
-# 2. Index your codebase
-index_functions(path: "./src", recursive: true)
-
-# 3. Generate AI configurations
-generate_ai_configs(tools: ["cursor", "claude"], outputDir: ".")
-
-# 4. Check code health
-audit_check_health(path: "./src")
+**Example:**
+```
+find_definition(name: "createAuditRunner")
+find_definition(name: "validateConfig", filePath: "./src/config")
 ```
 
-### 2. Daily Development Flow
+**Returns:**
+- Exact function location (file and line number)
+- Function metadata (async, exported, parameters)
+- Dependencies used
+- Purpose and context
 
-**Before implementing new features:**
+**Use Case:** Quick navigation, understanding function signatures, finding implementations.
+
+## Index Maintenance
+
+### sync_index
+Manage your code index with three operation modes.
+
+**Parameters:**
+- `mode` (string, optional): Operation mode (default: "sync")
+  - `"sync"`: Update all indexed functions with current signatures
+  - `"cleanup"`: Remove entries for deleted files
+  - `"reset"`: Clear entire index
+- `path` (string, optional): Specific path to sync (only for sync mode)
+
+**Examples:**
 ```
-# Search for existing implementations
-search_functions(query: "user authentication")
-search_functions(query: "email validation")
-search_functions(query: "data table component")
+# Update all function signatures
+sync_index(mode: "sync")
+
+# Clean up deleted files
+sync_index(mode: "cleanup")
+
+# Start fresh
+sync_index(mode: "reset")
+
+# Sync specific directory
+sync_index(mode: "sync", path: "./src/components")
 ```
 
-**While coding:**
-```
-# Analyze current file
-audit_analyze_file(filePath: "./src/newFeature.ts")
+**Use Case:** Manual index maintenance, recovering from index corruption.
 
-# Find function definitions
-find_definition(name: "validateUserInput")
+## AI Configuration
+
+### generate_ai_config
+Generate configuration files for AI coding assistants with proper MCP server setup.
+
+**Parameters:**
+- `tools` (array, required): List of AI tools to configure
+  - Supported: "cursor", "continue", "copilot", "claude", "zed", "windsurf", "cody", "aider", "cline", "pearai"
+- `outputDir` (string, optional): Output directory (default: ".")
+
+**Example:**
+```
+generate_ai_config(tools: ["cursor", "claude", "windsurf"])
 ```
 
-**After changes:**
-```
-# Sync modified files
-deep_sync()
+**Returns:**
+- List of generated configuration files
+- Success/error status for each tool
+- Ready-to-use configuration with MCP server URL
 
-# Run health check
-audit_check_health()
+**Use Case:** Quick setup of AI assistants with code auditor integration.
+
+## Workflow Examples
+
+### 1. Initial Project Setup
+```
+# 1. Analyze and index entire codebase
+audit(path: ".", analyzers: ["solid", "dry", "security"])
+
+# 2. Set up AI tools
+generate_ai_config(tools: ["cursor", "claude"])
+
+# 3. Search for specific patterns
+search_code(query: "TODO FIXME")
+```
+
+### 2. Pre-Commit Workflow
+```
+# 1. Quick health check
+audit_health(threshold: 80)
+
+# 2. If health check fails, run detailed audit
+audit(analyzers: ["solid", "dry"], minSeverity: "warning")
+
+# 3. Search for common issues
+search_code(query: "console.log debug")
 ```
 
 ### 3. Code Review Preparation
+```
+# 1. Audit changed files
+audit(path: "./src/features/newFeature")
 
-```bash
-# 1. Full audit
-audit_run(enabledAnalyzers: ["solid", "dry", "security"])
+# 2. Find similar implementations
+search_code(query: "similar feature pattern")
 
-# 2. Update index
-deep_sync()
-
-# 3. Generate report
-audit_check_health(threshold: 85)
+# 3. Check function definitions
+find_definition(name: "mainFunction")
 ```
 
-### 4. Maintenance Schedule
+### 4. Refactoring Workflow
+```
+# 1. Find all usages of old pattern
+search_code(query: "deprecated method")
 
-**Daily:**
-- Use `search_functions` before implementing new features
-- Run `audit_analyze_file` on modified files
+# 2. Analyze specific files
+audit(path: "./src/oldComponent.ts")
 
-**Weekly:**
-- Run `bulk_cleanup()` to remove stale entries
-- Execute `audit_check_health()` to monitor trends
-
-**Monthly:**
-- Perform `deep_sync()` for full synchronization
-- Run comprehensive `audit_run()`
-- Update AI configurations with `generate_ai_configs()`
+# 3. After refactoring, sync the index
+sync_index(mode: "sync")
+```
 
 ## Best Practices
 
-### 1. Search Before You Code
+### 1. Regular Audits with Automatic Indexing
+- Run `audit` regularly - it handles both analysis and indexing
+- The index stays synchronized with your code automatically
+- Function deletions are tracked during audits
 
-Always search for existing functionality:
-```
-# Natural language searches
-search_functions(query: "validate credit card")
-search_functions(query: "send email notification")
-search_functions(query: "format date")
+### 2. Search Before Implementation
+- Use `search_code` to find existing patterns before writing new code
+- Promotes code reuse and consistency
+- Natural language queries make discovery intuitive
 
-# Component searches
-search_functions(query: "user profile card")
-search_functions(query: "data table")
-search_functions(query: "authentication form")
-```
+### 3. Health Monitoring
+- Set up `audit_health` in CI/CD pipelines
+- Use threshold appropriate for your project maturity
+- Monitor trends over time
 
-### 2. Keep Index Updated
+### 4. Index Maintenance
+- The index is automatically maintained during audits
+- Use `sync_index` only when needed:
+  - After major refactoring without audits
+  - When you suspect index corruption
+  - To clean up after deleting many files
 
-```bash
-# After adding new files
-index_functions(path: "./src/newFeature", recursive: true)
+### 5. Incremental Analysis
+- Audit specific directories or files during development
+- Use `search_code` to understand code before modifying
+- Keep feedback loops short with targeted audits
 
-# After refactoring
-deep_sync()
+### 6. AI Tool Integration
+- Generate configs for all team members' preferred tools
+- Share configuration in version control
+- Update configs when adding new analysis capabilities
 
-# After deleting files
-bulk_cleanup()
-```
+## Available Analyzers
 
-### 3. Use Filters Effectively
+### SOLID Principles Analyzer
+Checks adherence to SOLID principles:
+- Single Responsibility Principle
+- Open/Closed Principle
+- Liskov Substitution Principle
+- Interface Segregation Principle
+- Dependency Inversion Principle
 
-```
-# Search by language
-search_functions(query: "validate", filters: { language: "typescript" })
+### DRY (Don't Repeat Yourself) Analyzer
+Identifies code duplication:
+- Exact code duplicates
+- Similar code patterns
+- Duplicate imports
+- Repeated string literals
 
-# Search by file type
-search_functions(query: "render", filters: { fileType: ".tsx" })
+### Security Analyzer
+Verifies security best practices:
+- Authentication checks
+- Authorization patterns
+- SQL injection risks
+- Input validation
 
-# Search with dependencies
-search_functions(query: "fetch", filters: { hasAnyDependency: ["axios"] })
-```
+### Component Analyzer
+Analyzes UI components (React, Vue, etc):
+- Error boundary usage
+- Render method complexity
+- Component nesting depth
+- Performance patterns
 
-### 4. Integrate with CI/CD
-
-```yaml
-# Example GitHub Actions
-- name: Code Audit
-  run: |
-    audit_run(minSeverity: "warning")
-    audit_check_health(threshold: 80)
-```
-
-### 5. Monitor Code Health Trends
-
-Track metrics over time:
-- Function count growth
-- Complexity trends
-- Violation patterns
-- Dependency usage
-
-### 6. Configure AI Tools Properly
-
-```bash
-# Generate configs for all your tools
-generate_ai_configs(tools: ["cursor", "claude", "copilot"])
-
-# Validate configurations
-validate_ai_config(tool: "cursor", config: {...})
-```
+### Data Access Analyzer
+Reviews database access patterns:
+- N+1 query detection
+- Transaction usage
+- Direct database access in UI layers
+- Query performance patterns
 
 ## Troubleshooting
 
-### Index Not Finding Functions
-
-1. Ensure files are indexed: `get_index_stats()`
-2. Check file types: `index_functions(fileTypes: [".ts", ".tsx", ".js"])`
-3. Try different search terms: Use synonyms and partial words
-
-### Search Returns Too Many Results
-
-1. Use more specific queries
-2. Apply filters: `filters: { language: "typescript", filePath: "components" }`
-3. Use exact function names with `find_definition()`
-
-### Bulk Cleanup Not Working
-
-1. Check file permissions
-2. Ensure index is initialized
-3. Run `deep_sync()` instead for full refresh
-
-### AI Configurations Not Loading
-
-1. Check file paths in generated configs
-2. Ensure MCP server is running
-3. Validate config with `validate_ai_config()`
-
-## Advanced Usage
-
-### Custom Search Queries
-
+### Index seems outdated
+Run an audit on the affected directory:
 ```
-# Type-specific searches
-search_functions(query: "type:Promise")
-search_functions(query: "param:userId")
-
-# Combined queries
-search_functions(query: "async user type:Promise")
-
-# Exclude terms
-search_functions(query: "validate -email")
+audit(path: "./src/components")
 ```
 
-### Programmatic Integration
+### Search not finding expected results
+1. Check if functions are indexed: `find_definition(name: "exactFunctionName")`
+2. Try broader search terms - the tool expands synonyms automatically
+3. Run `audit` on the directory containing the code
 
-```javascript
-// Use in build scripts
-const stats = await get_index_stats();
-if (stats.totalFunctions < 100) {
-  await index_functions({ path: "./src", recursive: true });
-}
-
-// Automated cleanup
-const cleanup = await bulk_cleanup();
-console.log(`Removed ${cleanup.removedCount} stale entries`);
+### Health score unexpectedly low
+Run detailed audit to see specific issues:
+```
+audit(minSeverity: "info")
 ```
 
-### Performance Optimization
-
-1. Index incrementally: Index new files as they're added
-2. Use file filters: Only index relevant file types
-3. Schedule maintenance: Run cleanup during off-hours
-4. Limit search results: Use appropriate limits for large codebases
-
-## Conclusion
-
-The Code Auditor MCP tools provide a comprehensive solution for:
-- Preventing duplicate implementations
-- Maintaining code quality
-- Enabling effective AI-assisted development
-- Managing technical debt
-
-By integrating these tools into your daily workflow, you can significantly improve code quality, reduce duplication, and make your codebase more maintainable.
+### AI config not working
+1. Ensure MCP server is running
+2. Check the generated config file has correct server URL
+3. Restart the AI tool after configuration changes
