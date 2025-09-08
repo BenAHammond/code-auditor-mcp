@@ -11,11 +11,13 @@ import {
   AnalyzerDefinition,
   AnalyzerResult,
   Violation,
-  AuditProgress
+  AuditProgress,
+  FunctionMetadata
 } from './types.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { loadConfig } from './config/configLoader.js';
 import { generateReport } from './reporting/reportGenerator.js';
+import { extractFunctionsFromFile } from './functionScanner.js';
 
 // Import analyzer definitions
 import { solidAnalyzer } from './analyzers/solidAnalyzer.js';
@@ -71,6 +73,41 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     
     // Discover files
     const files = await discoverProjectFiles(mergedOptions);
+    
+    // Collect functions if enabled
+    let collectedFunctions: FunctionMetadata[] = [];
+    const fileToFunctionsMap = new Map<string, FunctionMetadata[]>(); // Track functions per file for sync
+    
+    if (mergedOptions.indexFunctions) {
+      reportProgress(mergedOptions, {
+        phase: 'function-indexing',
+        message: 'Collecting functions from files...'
+      });
+      
+      // Only collect functions from TypeScript/JavaScript files
+      const scriptFiles = files.filter(f => 
+        f.endsWith('.ts') || f.endsWith('.tsx') || 
+        f.endsWith('.js') || f.endsWith('.jsx')
+      );
+      
+      for (let i = 0; i < scriptFiles.length; i++) {
+        try {
+          const fileFunctions = await extractFunctionsFromFile(scriptFiles[i]);
+          collectedFunctions.push(...fileFunctions);
+          fileToFunctionsMap.set(scriptFiles[i], fileFunctions); // Store for sync
+          
+          reportProgress(mergedOptions, {
+            phase: 'function-indexing',
+            current: i + 1,
+            total: scriptFiles.length,
+            message: `Collected ${fileFunctions.length} functions from ${scriptFiles[i]}`
+          });
+        } catch (error) {
+          // Log error but continue with other files
+          console.warn(`Failed to extract functions from ${scriptFiles[i]}:`, error);
+        }
+      }
+    }
     
     // Run analyzers
     const analyzerResults: Record<string, AnalyzerResult> = {};
@@ -129,7 +166,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         auditDuration: Date.now() - startTime,
         filesAnalyzed: files.length,
         analyzersRun: enabledAnalyzers,
-        configUsed: mergedOptions
+        configUsed: mergedOptions,
+        ...(collectedFunctions.length > 0 && { 
+          collectedFunctions,
+          fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap) 
+        })
       }
     };
     

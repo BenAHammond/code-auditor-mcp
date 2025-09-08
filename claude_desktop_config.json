@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "code-index": {
+      "command": "node",
+      "args": [
+        "/Users/ben/playground/code-auditor/dist/mcp.js",
+        "--mcp-mode"
+      ],
+      "env": {
+        "MCP_SERVER_URL": "http://localhost:11437"
+      }
+    }
+  }
+}

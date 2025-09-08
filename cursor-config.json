@@ -1,0 +1,39 @@
+{
+  "models": [
+    {
+      "title": "Code Index Search",
+      "provider": "openai",
+      "model": "code-index-search",
+      "apiBase": "http://localhost:11437/api/cursor",
+      "apiKey": "mcp-code-index",
+      "contextWindow": 128000,
+      "capabilities": {
+        "codeCompletion": true,
+        "chat": true,
+        "search": true
+      }
+    }
+  ],
+  "features": {
+    "codebaseIndexing": {
+      "enabled": true,
+      "endpoint": "http://localhost:11437/api/cursor/index"
+    },
+    "semanticSearch": {
+      "enabled": true,
+      "endpoint": "http://localhost:11437/api/cursor/search"
+    }
+  },
+  "customCommands": [
+    {
+      "name": "search-symbol",
+      "description": "Search for a symbol in the codebase",
+      "endpoint": "http://localhost:11437/api/cursor/symbol"
+    },
+    {
+      "name": "find-definition",
+      "description": "Find symbol definition",
+      "endpoint": "http://localhost:11437/api/cursor/definition"
+    }
+  ]
+}
