@@ -120,3 +120,5 @@ test-jsdoc-parser.ts
 all-configs/
 custom-server/
 bug-reports/
+
+.claude/

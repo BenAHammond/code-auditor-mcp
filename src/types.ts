@@ -343,6 +343,12 @@ export interface ParsedQuery {
       start?: Date;
       end?: Date;
     };
+    metadata?: {
+      entityType?: string;
+      componentType?: string;
+      hasHook?: string;
+      hasProp?: string;
+    };
   };
   searchFields?: Array<'name' | 'signature' | 'jsDoc' | 'parameters' | 'returnType' | 'purpose' | 'context'>;
   fuzzy?: boolean;
@@ -365,6 +371,12 @@ export interface SearchOptions {
     dateRange?: {
       start?: Date;
       end?: Date;
+    };
+    metadata?: {
+      entityType?: string;
+      componentType?: string;
+      hasHook?: string;
+      hasProp?: string;
     };
   };
   searchStrategy?: 'exact' | 'fuzzy' | 'semantic';
@@ -421,4 +433,80 @@ export interface IndexStats {
   topDependencies: Array<{ name: string; count: number }>;
   filesIndexed: number;
   lastUpdated: Date;
+}
+
+// React Component Types
+export interface ComponentMetadata extends FunctionMetadata {
+  entityType: 'component';  // Distinguishes from 'function'
+  componentType: 'functional' | 'class' | 'memo' | 'forwardRef';
+  props?: PropDefinition[];
+  hooks?: HookUsage[];
+  jsxElements?: string[];  // Direct child elements used
+  imports?: ComponentImport[];  // Component dependencies
+  hasErrorBoundary?: boolean;
+  complexity?: number;
+  isExported: boolean;
+}
+
+export interface PropDefinition {
+  name: string;
+  type?: string;
+  required: boolean;
+  hasDefault: boolean;
+}
+
+export interface HookUsage {
+  name: string;
+  line: number;
+  customHook: boolean;
+}
+
+export interface ComponentImport {
+  name: string;
+  path: string;
+  isDefault: boolean;
+}
+
+export interface ComponentRelationship {
+  parentComponent: string;
+  childComponent: string;
+  usageCount: number;
+  importPath: string;
+}
+
+export interface ReactViolation extends Violation {
+  componentName?: string;
+  violationType: 'missing-props' | 'hooks-violation' | 'no-error-boundary' | 
+                 'complexity' | 'performance' | 'accessibility';
+}
+
+export interface ReactAnalyzerConfig {
+  // Component Detection
+  detectFunctionalComponents: boolean;
+  detectClassComponents: boolean;
+  detectMemoComponents: boolean;
+  
+  // Quality Checks
+  requirePropTypes: boolean;
+  requireErrorBoundaries: boolean;
+  checkHooksRules: boolean;
+  maxComponentComplexity: number;
+  
+  // Performance
+  checkUnnecessaryRerenders: boolean;
+  requireMemoization: boolean;
+  
+  // Best Practices
+  checkAccessibility: boolean;
+  preventDirectDOMAccess: boolean;
+  requireKeyProps: boolean;
+}
+
+// Component Scanner Types
+export interface ComponentScanResult {
+  filePath: string;
+  components: ComponentMetadata[];
+  imports: ComponentImport[];
+  fileHash?: string;
+  parseErrors?: string[];
 }

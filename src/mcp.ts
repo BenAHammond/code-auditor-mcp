@@ -49,7 +49,7 @@ const tools: Tool[] = [
   // Core Audit Tools
   {
     name: 'audit',
-    description: 'Run a comprehensive code audit on files or directories',
+    description: 'Run a comprehensive code audit on files or directories, including React component analysis',
     parameters: [
       {
         name: 'path',
@@ -62,8 +62,8 @@ const tools: Tool[] = [
         name: 'analyzers',
         type: 'array',
         required: false,
-        description: 'List of analyzers to run (solid, dry, security, component, data-access)',
-        default: ['solid', 'dry', 'security'],
+        description: 'List of analyzers to run (solid, dry, security, react, data-access)',
+        default: ['solid', 'dry'],
       },
       {
         name: 'minSeverity',
@@ -113,19 +113,19 @@ const tools: Tool[] = [
   // Code Index Tools
   {
     name: 'search_code',
-    description: 'Search indexed functions with natural language queries',
+    description: 'Search indexed functions and React components with natural language queries. Supports operators: entity:component, component:functional|class|memo|forwardRef, hook:useState|useEffect|etc, prop:propName, type:fileType, file:path, lang:language, complexity:1-10, jsdoc:true|false',
     parameters: [
       {
         name: 'query',
         type: 'string',
         required: true,
-        description: 'Search query (supports natural language)',
+        description: 'Search query with natural language and/or operators. Examples: "Button component:functional", "entity:component hook:useState", "render prop:onClick"',
       },
       {
         name: 'filters',
         type: 'object',
         required: false,
-        description: 'Optional filters (language, filePath, dependencies)',
+        description: 'Optional filters (language, filePath, dependencies, componentType, entityType)',
       },
       {
         name: 'limit',
@@ -145,13 +145,13 @@ const tools: Tool[] = [
   },
   {
     name: 'find_definition',
-    description: 'Find the exact definition of a specific function',
+    description: 'Find the exact definition of a specific function or React component',
     parameters: [
       {
         name: 'name',
         type: 'string',
         required: true,
-        description: 'Function name to find',
+        description: 'Function or component name to find',
       },
       {
         name: 'filePath',

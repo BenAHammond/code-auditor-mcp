@@ -2,7 +2,13 @@
 
 ## Overview
 
-Code Auditor MCP provides 6 tools for code analysis, function discovery, and AI tool configuration. Functions are automatically indexed during audits for seamless code search capabilities.
+Code Auditor MCP provides 6 tools for code analysis, function discovery, and AI tool configuration. Functions and React components are automatically indexed during audits for seamless code search capabilities.
+
+### Key Features
+- **React Support**: Full React component detection, analysis, and search
+- **Smart Indexing**: Automatic function and component indexing during audits
+- **Natural Language Search**: Query your codebase using plain English
+- **Multiple Analyzers**: SOLID, DRY, Security, React, and Data Access analyzers
 
 ## Table of Contents
 
@@ -10,8 +16,9 @@ Code Auditor MCP provides 6 tools for code analysis, function discovery, and AI 
 2. [Code Discovery Tools](#code-discovery-tools)
 3. [Index Maintenance](#index-maintenance)
 4. [AI Configuration](#ai-configuration)
-5. [Workflow Examples](#workflow-examples)
-6. [Best Practices](#best-practices)
+5. [React Development](#react-development)
+6. [Workflow Examples](#workflow-examples)
+7. [Best Practices](#best-practices)
 
 ## Core Analysis Tools
 
@@ -20,7 +27,7 @@ Performs comprehensive code analysis on files or directories with automatic func
 
 **Parameters:**
 - `path` (string, optional): File or directory to audit (defaults to current directory)
-- `analyzers` (array, optional): Analyzers to run ["solid", "dry", "security", "component", "data-access"]
+- `analyzers` (array, optional): Analyzers to run ["solid", "dry", "security", "react", "data-access"]
 - `minSeverity` (string, optional): Minimum severity to report ["info", "warning", "critical"]
 - `indexFunctions` (boolean, optional): Automatically index functions during audit (default: true)
 
@@ -82,13 +89,37 @@ search_code(query: "authentication", filters: { language: "typescript" })
 # Technical searches
 search_code(query: "useState hooks")
 search_code(query: "async database operations")
+
+# React-specific searches
+search_code(query: "entity:component")  # Find all React components
+search_code(query: "component:functional")  # Find functional components
+search_code(query: "component:class")  # Find class components
+search_code(query: "hook:useState")  # Find components using useState
+search_code(query: "prop:onClick")  # Find components with onClick prop
+
+# Advanced operator searches
+search_code(query: "Button component:functional hook:useState")
+search_code(query: "complexity:5-10 entity:component")
 ```
+
+**Search Operators:**
+- `entity:component` - Filter for React components only
+- `component:functional|class|memo|forwardRef` - Filter by component type
+- `hook:hookName` - Find components using specific hooks
+- `prop:propName` - Find components with specific props
+- `type:extension` - Filter by file type
+- `file:pattern` - Filter by file path pattern
+- `lang:language` - Filter by programming language
+- `complexity:n` or `complexity:min-max` - Filter by complexity score
+- `jsdoc:true|false` - Filter by JSDoc presence
+- `since:date`, `before:date`, `after:date` - Filter by date
 
 **Features:**
 - Synonym expansion (e.g., "validate" → "check", "verify", "test")
 - Multi-word search support
 - Relevance scoring
 - Natural language understanding
+- Combine operators with natural language
 
 **Use Case:** Find implementation examples, discover similar code patterns, understand codebase structure.
 
@@ -163,6 +194,53 @@ generate_ai_config(tools: ["cursor", "claude", "windsurf"])
 - Ready-to-use configuration with MCP server URL
 
 **Use Case:** Quick setup of AI assistants with code auditor integration.
+
+## React Development
+
+### Component Discovery
+Find React components using specialized search operators:
+
+```
+# Find all React components
+search_code(query: "entity:component")
+
+# Find functional components
+search_code(query: "component:functional")
+
+# Find components using specific hooks
+search_code(query: "hook:useState")
+search_code(query: "hook:useEffect hook:useCallback")
+
+# Find components with specific props
+search_code(query: "prop:onClick")
+search_code(query: "prop:disabled component:functional")
+
+# Complex React searches
+search_code(query: "Button component:functional hook:useState")
+search_code(query: "entity:component complexity:5-10")
+```
+
+### React Analysis
+The React analyzer checks for:
+- **Hooks Rules**: Conditional hooks, custom hook naming
+- **Performance**: Missing memoization, inline function props
+- **Accessibility**: Missing alt attributes, click handlers on non-interactive elements
+- **Best Practices**: Missing keys in lists, error boundaries
+- **Complexity**: Component complexity scoring
+
+```
+# Run React-specific analysis
+audit(path: "./src/components", analyzers: ["react"], minSeverity: "info")
+```
+
+### Component Metadata
+Indexed components include:
+- Component type (functional, class, memo, forwardRef)
+- Props with types and defaults
+- Hooks usage with line numbers
+- JSX elements used
+- Complexity score
+- Export status
 
 ## Workflow Examples
 

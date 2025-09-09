@@ -25,6 +25,7 @@ import { dryAnalyzer } from './analyzers/dryAnalyzer.js';
 // import { securityAnalyzer } from './analyzers/securityAnalyzer.js';
 // import { componentAnalyzer } from './analyzers/componentAnalyzer.js';
 import { dataAccessAnalyzer } from './analyzers/dataAccessAnalyzer.js';
+import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
 
 /**
  * Default analyzer registry
@@ -34,7 +35,8 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
   'dry': dryAnalyzer,
   // 'security': securityAnalyzer,
   // 'component': componentAnalyzer,
-  'data-access': dataAccessAnalyzer
+  'data-access': dataAccessAnalyzer,
+  'react': reactAnalyzer
 };
 
 /**
@@ -100,7 +102,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             phase: 'function-indexing',
             current: i + 1,
             total: scriptFiles.length,
-            message: `Collected ${fileFunctions.length} functions from ${scriptFiles[i]}`
+            message: `Collected ${fileFunctions.length} items from ${scriptFiles[i]}`
           });
         } catch (error) {
           // Log error but continue with other files

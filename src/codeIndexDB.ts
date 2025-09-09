@@ -365,11 +365,34 @@ export class CodeIndexDB {
     if (options.query) {
       parsedQuery = options.parsedQuery || queryParser.parse(options.query);
       
-      // Execute multi-strategy search
-      results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+      // Check if there are search terms or just filters
+      if (parsedQuery.terms.length > 0 || parsedQuery.phrases.length > 0) {
+        // Execute multi-strategy search
+        results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+      } else {
+        // No search terms, just filters - get all
+        results = this.functionsCollection!.find();
+        results.forEach((doc, index) => {
+          if (doc.$loki !== undefined) {
+            searchScores.set(doc.$loki, 50); // Base score for browse mode
+          }
+        });
+      }
     } else if (options.parsedQuery) {
       parsedQuery = options.parsedQuery;
-      results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+      
+      // Check if there are search terms or just filters
+      if (parsedQuery.terms.length > 0 || parsedQuery.phrases.length > 0) {
+        results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+      } else {
+        // No search terms, just filters - get all
+        results = this.functionsCollection!.find();
+        results.forEach((doc, index) => {
+          if (doc.$loki !== undefined) {
+            searchScores.set(doc.$loki, 50); // Base score for browse mode
+          }
+        });
+      }
     } else {
       // No query, get all
       results = this.functionsCollection!.find();
@@ -684,6 +707,7 @@ export class CodeIndexDB {
       if (queryFilters.hasJsDoc !== undefined) merged.hasJsDoc = queryFilters.hasJsDoc;
       if (queryFilters.complexity) merged.complexity = queryFilters.complexity;
       if (queryFilters.dateRange) merged.dateRange = queryFilters.dateRange;
+      if (queryFilters.metadata) merged.metadata = queryFilters.metadata;
     }
     
     return merged;
@@ -733,6 +757,47 @@ export class CodeIndexDB {
       filtered = filtered.filter(doc => 
         filters.hasAnyDependency!.some(dep => doc.dependencies.includes(dep))
       );
+    }
+    
+    // Apply metadata filters
+    if (filters.metadata) {
+      filtered = filtered.filter(doc => {
+        if (!doc.metadata) return false;
+        
+        // Check entityType
+        if (filters.metadata!.entityType && 
+            doc.metadata.entityType !== filters.metadata!.entityType) {
+          return false;
+        }
+        
+        // Check componentType
+        if (filters.metadata!.componentType && 
+            doc.metadata.componentType !== filters.metadata!.componentType) {
+          return false;
+        }
+        
+        // Check hasHook
+        if (filters.metadata!.hasHook && doc.metadata.hooks) {
+          const hasHook = doc.metadata.hooks.some(hook => 
+            hook.name.toLowerCase().includes(filters.metadata!.hasHook!.toLowerCase())
+          );
+          if (!hasHook) return false;
+        } else if (filters.metadata!.hasHook) {
+          return false; // No hooks but filter requires one
+        }
+        
+        // Check hasProp
+        if (filters.metadata!.hasProp && doc.metadata.props) {
+          const hasProp = doc.metadata.props.some(prop => 
+            prop.name.toLowerCase().includes(filters.metadata!.hasProp!.toLowerCase())
+          );
+          if (!hasProp) return false;
+        } else if (filters.metadata!.hasProp) {
+          return false; // No props but filter requires one
+        }
+        
+        return true;
+      });
     }
     
     return filtered;

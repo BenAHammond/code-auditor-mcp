@@ -8,6 +8,14 @@ import { discoverFiles } from './utils/fileDiscovery.js';
 import { parseTypeScriptFile } from './utils/astParser.js';
 import { findNodesByKind, getNodeText, getLineAndColumn } from './utils/astUtils.js';
 import { getImports } from './utils/astUtils.js';
+import { 
+  isReactComponent, 
+  detectComponentType, 
+  getComponentName, 
+  extractHooks, 
+  extractPropTypes,
+  extractComponentImports
+} from './utils/reactDetection.js';
 import * as ts from 'typescript';
 import path from 'path';
 
@@ -165,7 +173,147 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
     }
   }
   
+  // Check if this is a React file and scan for components
+  if (filePath.endsWith('.tsx') || filePath.endsWith('.jsx') || 
+      (filePath.endsWith('.js') && dependencies.includes('react'))) {
+    
+    // Check all nodes for React components
+    const checkNode = (node: ts.Node) => {
+      if (isReactComponent(node)) {
+        const componentType = detectComponentType(node);
+        const componentName = getComponentName(node);
+        const { line } = getLineAndColumn(sourceFile, node.getStart());
+        const endLine = getLineAndColumn(sourceFile, node.getEnd()).line;
+        
+        // Skip if we already indexed this as a regular function
+        if (functions.some(f => f.name === componentName && f.lineNumber === line)) {
+          // Update the existing function with component metadata
+          const existingFunc = functions.find(f => f.name === componentName && f.lineNumber === line)!;
+          existingFunc.purpose = `React ${componentType} component`;
+          
+          // For arrow functions, we need to check the parent variable declaration for types
+          let nodeForProps = node;
+          if (ts.isArrowFunction(node) && ts.isVariableDeclaration(node.parent)) {
+            nodeForProps = node.parent;
+          }
+          
+          existingFunc.metadata = {
+            ...existingFunc.metadata,
+            entityType: 'component',
+            componentType,
+            props: extractPropTypes(nodeForProps, sourceFile),
+            hooks: extractHooks(node, sourceFile),
+            jsxElements: extractJSXElements(node),
+            isExported: isComponentExported(node),
+            complexity: calculateComponentComplexity(node)
+          };
+        } else {
+          // Add new component
+          functions.push({
+            name: componentName,
+            filePath,
+            lineNumber: line,
+            startLine: line,
+            endLine: endLine,
+            language: getLanguageFromPath(filePath),
+            dependencies,
+            purpose: `React ${componentType} component`,
+            context: `Located in ${path.basename(filePath)}`,
+            metadata: {
+              entityType: 'component',
+              componentType,
+              props: extractPropTypes(node, sourceFile),
+              hooks: extractHooks(node, sourceFile),
+              jsxElements: extractJSXElements(node),
+              isExported: isComponentExported(node),
+              complexity: calculateComponentComplexity(node)
+            }
+          });
+        }
+      }
+      
+      ts.forEachChild(node, checkNode);
+    };
+    
+    checkNode(sourceFile);
+  }
+  
   return functions;
+}
+
+// Helper functions for React component extraction
+function extractJSXElements(node: ts.Node): string[] {
+  const elements = new Set<string>();
+  
+  function visit(child: ts.Node): void {
+    if (ts.isJsxElement(child) || ts.isJsxSelfClosingElement(child)) {
+      const tagName = ts.isJsxElement(child) 
+        ? child.openingElement.tagName 
+        : child.tagName;
+      
+      if (ts.isIdentifier(tagName)) {
+        elements.add(tagName.text);
+      } else if (ts.isPropertyAccessExpression(tagName)) {
+        elements.add(tagName.getText());
+      }
+    }
+    
+    ts.forEachChild(child, visit);
+  }
+  
+  ts.forEachChild(node, visit);
+  return Array.from(elements);
+}
+
+function isComponentExported(node: ts.Node): boolean {
+  // Check for export modifier
+  if (ts.canHaveModifiers(node)) {
+    const modifiers = ts.getModifiers(node);
+    if (modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)) {
+      return true;
+    }
+  }
+  
+  // Check if parent is an export statement
+  let parent = node.parent;
+  while (parent) {
+    if (ts.isExportAssignment(parent) || ts.isExportDeclaration(parent)) {
+      return true;
+    }
+    parent = parent.parent;
+  }
+  
+  return false;
+}
+
+function calculateComponentComplexity(node: ts.Node): number {
+  let complexity = 1; // Base complexity
+  
+  function visit(child: ts.Node): void {
+    // Control flow statements
+    if (ts.isIfStatement(child) || ts.isConditionalExpression(child)) {
+      complexity++;
+    } else if (ts.isForStatement(child) || ts.isForInStatement(child) || 
+               ts.isForOfStatement(child) || ts.isWhileStatement(child)) {
+      complexity += 2;
+    } else if (ts.isSwitchStatement(child)) {
+      complexity += child.caseBlock.clauses.length;
+    }
+    
+    // Callbacks and event handlers
+    if (ts.isCallExpression(child)) {
+      const expression = child.expression;
+      if (ts.isPropertyAccessExpression(expression) && 
+          expression.name.text === 'map') {
+        complexity++;
+      }
+    }
+    
+    ts.forEachChild(child, visit);
+  }
+  
+  ts.forEachChild(node, visit);
+  return complexity;
 }
 
 /**

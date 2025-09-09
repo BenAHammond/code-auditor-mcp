@@ -50,8 +50,8 @@ export class QueryParser {
     'table': ['collection', 'entity', 'model', 'schema'],
     
     // React/Frontend specific
-    'component': ['comp', 'widget', 'element', 'view'],
-    'render': ['display', 'show', 'present', 'draw'],
+    'component': ['comp', 'widget', 'element', 'view', 'react', 'ui'],
+    'render': ['display', 'show', 'present', 'draw', 'renders', 'paint'],
     'state': ['status', 'data', 'store', 'context'],
     'props': ['properties', 'attributes', 'params', 'arguments'],
     
@@ -68,7 +68,12 @@ export class QueryParser {
     'fn': ['function', 'func', 'method'],
     'param': ['parameter', 'arg', 'argument'],
     'return': ['returns', 'output', 'result'],
-    'doc': ['documentation', 'docs', 'comment', 'jsdoc']
+    'doc': ['documentation', 'docs', 'comment', 'jsdoc'],
+    
+    // React-specific (additional)
+    'hook': ['hooks', 'useeffect', 'usestate', 'usememo', 'usecallback'],
+    'jsx': ['tsx', 'react-element', 'markup'],
+    'lifecycle': ['mount', 'unmount', 'update', 'effect']
   };
 
   // Special operators that can be used in queries
@@ -87,7 +92,14 @@ export class QueryParser {
     'doc:': 'hasJsDoc',
     'since:': 'dateRange',
     'before:': 'dateRange',
-    'after:': 'dateRange'
+    'after:': 'dateRange',
+    // React-specific operators
+    'component:': 'componentType',
+    'hook:': 'hasHook',
+    'hooks:': 'hasHook',
+    'prop:': 'hasProp',
+    'props:': 'hasProp',
+    'entity:': 'entityType'
   } as const;
 
   /**
@@ -293,6 +305,38 @@ export class QueryParser {
           }
           parsedQuery.searchFields.push('returnType');
           parsedQuery.terms.push(value);
+          break;
+          
+        case 'componentType':
+          // Filter by React component type
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.componentType = value;
+          break;
+          
+        case 'hasHook':
+          // Search for components using specific hooks
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.hasHook = value;
+          break;
+          
+        case 'hasProp':
+          // Search for components with specific props
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.hasProp = value;
+          break;
+          
+        case 'entityType':
+          // Filter by entity type (function vs component)
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.entityType = value;
           break;
       }
     });
