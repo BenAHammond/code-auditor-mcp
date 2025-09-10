@@ -202,6 +202,20 @@ const tools: Tool[] = [
       },
     ],
   },
+  
+  // Workflow Guide Tool
+  {
+    name: 'get_workflow_guide',
+    description: 'Get recommended workflows and best practices for using code auditor tools effectively',
+    parameters: [
+      {
+        name: 'scenario',
+        type: 'string',
+        required: false,
+        description: 'Specific scenario: initial-setup, react-development, code-review, find-patterns, maintenance. Leave empty to see all.',
+      },
+    ],
+  },
 ];
 
 async function startMcpServer() {
@@ -489,6 +503,29 @@ async function startMcpServer() {
             totalRequested: tools.length,
             totalGenerated: generatedFiles.length
           };
+          break;
+        }
+        
+        case 'get_workflow_guide': {
+          const scenario = args.scenario as string | undefined;
+          const { getWorkflowGuide, getWorkflowTips } = await import('./mcp-tools/workflowGuide.js');
+          
+          try {
+            const workflows = getWorkflowGuide(scenario);
+            const tips = getWorkflowTips();
+            
+            result = {
+              success: true,
+              ...(scenario ? { workflow: workflows } : { workflows }),
+              tips
+            };
+          } catch (error) {
+            result = {
+              success: false,
+              error: error instanceof Error ? error.message : 'Unknown error',
+              availableScenarios: ['initial-setup', 'react-development', 'code-review', 'find-patterns', 'maintenance']
+            };
+          }
           break;
         }
         

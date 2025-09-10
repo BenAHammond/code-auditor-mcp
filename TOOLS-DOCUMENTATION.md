@@ -1,8 +1,35 @@
 # Code Auditor MCP Tools Documentation
 
+## 🚀 Getting Started - IMPORTANT
+
+**Always start with the `get_workflow_guide` tool!** This tool provides structured, step-by-step guidance on how to use all other tools effectively.
+
+```bash
+# First command to run:
+get_workflow_guide()
+
+# Or for specific scenarios:
+get_workflow_guide(scenario: "react-development")
+```
+
+### Why Start with Workflow Guide?
+
+1. **Proper Tool Order**: Many tools depend on others (e.g., `search_code` requires `audit` to be run first with `indexFunctions:true`)
+2. **Optimal Parameters**: Learn the best parameter combinations for your use case
+3. **Avoid Common Mistakes**: The guide helps prevent issues like searching before indexing
+4. **Scenario-Based**: Get tailored guidance for your specific task (setup, React development, code review, etc.)
+5. **Best Practices**: Includes tips and performance recommendations
+
+Available scenarios:
+- `initial-setup` - First time analyzing a codebase
+- `react-development` - Working with React components
+- `code-review` - Preparing for code reviews
+- `find-patterns` - Searching for specific implementations
+- `maintenance` - Regular cleanup and quality checks
+
 ## Overview
 
-Code Auditor MCP provides 6 tools for code analysis, function discovery, and AI tool configuration. Functions and React components are automatically indexed during audits for seamless code search capabilities.
+Code Auditor MCP provides 7 tools for code analysis, function discovery, workflow guidance, and AI tool configuration. Functions and React components are automatically indexed during audits for seamless code search capabilities.
 
 ### Key Features
 - **React Support**: Full React component detection, analysis, and search
@@ -12,13 +39,48 @@ Code Auditor MCP provides 6 tools for code analysis, function discovery, and AI 
 
 ## Table of Contents
 
-1. [Core Analysis Tools](#core-analysis-tools)
-2. [Code Discovery Tools](#code-discovery-tools)
-3. [Index Maintenance](#index-maintenance)
-4. [AI Configuration](#ai-configuration)
-5. [React Development](#react-development)
-6. [Workflow Examples](#workflow-examples)
-7. [Best Practices](#best-practices)
+1. [Workflow Guidance](#workflow-guidance)
+2. [Core Analysis Tools](#core-analysis-tools)
+3. [Code Discovery Tools](#code-discovery-tools)
+4. [Index Maintenance](#index-maintenance)
+5. [AI Configuration](#ai-configuration)
+6. [React Development](#react-development)
+7. [Workflow Examples](#workflow-examples)
+8. [Best Practices](#best-practices)
+
+## Workflow Guidance
+
+### get_workflow_guide
+Provides structured guidance on using code auditor tools effectively for different scenarios.
+
+**Parameters:**
+- `scenario` (string, optional): Specific workflow scenario
+  - `"initial-setup"`: First time analyzing a codebase
+  - `"react-development"`: Working with React components
+  - `"code-review"`: Preparing for code reviews
+  - `"find-patterns"`: Searching for specific implementations
+  - `"maintenance"`: Regular cleanup and quality checks
+  - Leave empty to see all workflows
+
+**Examples:**
+```
+# Get all workflow guides
+get_workflow_guide()
+
+# Get React-specific workflow
+get_workflow_guide(scenario: "react-development")
+
+# Get code review workflow
+get_workflow_guide(scenario: "code-review")
+```
+
+**Returns:**
+- Step-by-step instructions with tool names and parameters
+- Conditional steps when appropriate
+- Tips and best practices for each workflow
+- General tips about search operators and performance
+
+**Use Case:** Start here before using other tools to understand the optimal sequence and parameters for your task.
 
 ## Core Analysis Tools
 
@@ -293,6 +355,12 @@ sync_index(mode: "sync")
 ```
 
 ## Best Practices
+
+### 0. Start with Workflow Guidance
+- **Always run `get_workflow_guide()` first** when starting a new task
+- Choose the scenario that matches your goal
+- Follow the recommended tool order to avoid common pitfalls
+- The guide ensures you use the right parameters for each tool
 
 ### 1. Regular Audits with Automatic Indexing
 - Run `audit` regularly - it handles both analysis and indexing
