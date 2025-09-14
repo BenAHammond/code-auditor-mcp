@@ -237,3 +237,74 @@ export async function closeDatabase(): Promise<void> {
     dbInstance = null;
   }
 }
+
+/**
+ * Update dependency graph for all functions or specific file
+ */
+export async function updateDependencyGraph(filePath?: string): Promise<void> {
+  const db = await getDatabase();
+  
+  try {
+    await db.updateDependencyGraph(filePath);
+  } catch (error) {
+    throw new DatabaseError(`Failed to update dependency graph: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Get transitive dependencies for a function
+ */
+export async function getTransitiveDependencies(
+  functionName: string,
+  maxDepth: number = 10
+): Promise<Array<{ name: string; depth: number }>> {
+  const db = await getDatabase();
+  
+  try {
+    return await db.getTransitiveDependencies(functionName, maxDepth);
+  } catch (error) {
+    throw new DatabaseError(`Failed to get transitive dependencies: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Get transitive callers for a function
+ */
+export async function getTransitiveCallers(
+  functionName: string,
+  maxDepth: number = 10
+): Promise<Array<{ name: string; depth: number }>> {
+  const db = await getDatabase();
+  
+  try {
+    return await db.getTransitiveCallers(functionName, maxDepth);
+  } catch (error) {
+    throw new DatabaseError(`Failed to get transitive callers: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Detect circular dependencies in the codebase
+ */
+export async function detectCircularDependencies(): Promise<Array<string[]>> {
+  const db = await getDatabase();
+  
+  try {
+    return await db.detectCircularDependencies();
+  } catch (error) {
+    throw new DatabaseError(`Failed to detect circular dependencies: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Calculate dependency depths for all functions
+ */
+export async function calculateDependencyDepths(): Promise<void> {
+  const db = await getDatabase();
+  
+  try {
+    await db.calculateDependencyDepths();
+  } catch (error) {
+    throw new DatabaseError(`Failed to calculate dependency depths: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}

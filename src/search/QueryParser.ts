@@ -99,7 +99,19 @@ export class QueryParser {
     'hooks:': 'hasHook',
     'prop:': 'hasProp',
     'props:': 'hasProp',
-    'entity:': 'entityType'
+    'entity:': 'entityType',
+    // Dependency operators
+    'dep:': 'usesDependency',
+    'dependency:': 'usesDependency',
+    'uses:': 'usesDependency',
+    'calls:': 'callsFunction',
+    'calledby:': 'calledByFunction',
+    'dependents-of:': 'calledByFunction',
+    'used-by:': 'calledByFunction',
+    'depends-on:': 'dependsOnModule',
+    'imports-from:': 'dependsOnModule',
+    'unused-imports': 'hasUnusedImports',
+    'dead-imports': 'hasUnusedImports'
   } as const;
 
   /**
@@ -156,6 +168,12 @@ export class QueryParser {
       } else if (token === 'stem' || token === 'stemming') {
         // Enable stemming
         result.stemming = true;
+      } else if (token === 'unused-imports' || token === 'dead-imports') {
+        // Special operators without colons
+        if (!result.filters.metadata) {
+          result.filters.metadata = {};
+        }
+        result.filters.metadata.hasUnusedImports = true;
       } else {
         // Regular search term
         result.originalTerms!.push(token);
@@ -337,6 +355,46 @@ export class QueryParser {
             parsedQuery.filters.metadata = {};
           }
           parsedQuery.filters.metadata.entityType = value;
+          break;
+          
+        case 'usesDependency':
+          // Filter by external dependency usage
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.usesDependency = value;
+          break;
+          
+        case 'callsFunction':
+          // Filter by functions that this function calls
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.callsFunction = value;
+          break;
+          
+        case 'calledByFunction':
+          // Filter by functions that call this function
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.calledByFunction = value;
+          break;
+          
+        case 'dependsOnModule':
+          // Filter by module/file dependencies
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.dependsOnModule = value;
+          break;
+          
+        case 'hasUnusedImports':
+          // Special filter for unused imports (boolean)
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.hasUnusedImports = true;
           break;
       }
     });

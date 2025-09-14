@@ -182,6 +182,52 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       'sync_index cleanup removes entries for deleted files',
       'Search for common antipatterns like console.log'
     ]
+  },
+  
+  'dependency-analysis': {
+    name: 'Dependency Analysis',
+    description: 'Analyzing dependencies and refactoring impact',
+    steps: [
+      {
+        order: 1,
+        tool: 'audit',
+        parameters: { path: '.', indexFunctions: true },
+        description: 'Ensure functions are indexed with dependency tracking'
+      },
+      {
+        order: 2,
+        tool: 'search_code',
+        parameters: { query: 'dep:lodash' },
+        description: 'Find all functions using a specific dependency',
+        condition: 'To see impact of updating/removing a package'
+      },
+      {
+        order: 3,
+        tool: 'search_code',
+        parameters: { query: 'calls:calculateTotal' },
+        description: 'Find all functions that call a specific function',
+        condition: 'To understand impact before refactoring'
+      },
+      {
+        order: 4,
+        tool: 'search_code',
+        parameters: { query: 'dependents-of:authenticate' },
+        description: 'Find what depends on a function you want to change'
+      },
+      {
+        order: 5,
+        tool: 'search_code',
+        parameters: { query: 'unused-imports' },
+        description: 'Find and clean up unused imports'
+      }
+    ],
+    tips: [
+      'Use dep: to find all usages of an external library',
+      'Use calls: to trace function call chains',
+      'Use dependents-of: to see what will be affected by changes',
+      'Combine with file: to limit scope (e.g., "dep:react file:components")',
+      'unused-imports helps reduce bundle size'
+    ]
   }
 };
 

@@ -341,6 +341,9 @@ export class CodeIndexDB {
         }
       }
 
+      // Update dependency graph for the affected functions
+      await this.updateDependencyGraph(filePath);
+
       // Force save
       this.db.saveDatabase();
 
@@ -349,6 +352,231 @@ export class CodeIndexDB {
     }
 
     return stats;
+  }
+
+  /**
+   * Update dependency graph - build reverse mappings for calledBy relationships
+   * @param filePath Optional file path to limit the update scope
+   */
+  async updateDependencyGraph(filePath?: string): Promise<void> {
+    this.ensureInitialized();
+    
+    try {
+      // Get all functions (or just those in the specified file)
+      const functions = filePath 
+        ? this.functionsCollection!.find({ filePath })
+        : this.functionsCollection!.find();
+      
+      // Clear existing calledBy relationships for affected functions
+      for (const func of functions) {
+        if (func.metadata) {
+          func.metadata.calledBy = [];
+        }
+      }
+      
+      // Build calledBy relationships by iterating through all functions
+      const allFunctions = this.functionsCollection!.find();
+      
+      for (const caller of allFunctions) {
+        if (caller.metadata?.functionCalls) {
+          for (const callee of caller.metadata.functionCalls) {
+            // Find the called function
+            const calledFunc = this.findFunctionByQualifiedName(callee);
+            
+            if (calledFunc && calledFunc.metadata) {
+              if (!calledFunc.metadata.calledBy) {
+                calledFunc.metadata.calledBy = [];
+              }
+              
+              // Add caller to calledBy list if not already present
+              const callerName = this.getQualifiedFunctionName(caller);
+              if (!calledFunc.metadata.calledBy.includes(callerName)) {
+                calledFunc.metadata.calledBy.push(callerName);
+                this.functionsCollection!.update(calledFunc);
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      throw new Error(`Failed to update dependency graph: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+  
+  /**
+   * Find a function by its qualified name (e.g., "filePath#functionName")
+   */
+  private findFunctionByQualifiedName(qualifiedName: string): FunctionDocument | null {
+    // Handle different name formats
+    if (qualifiedName.includes('#')) {
+      const [filePath, functionName] = qualifiedName.split('#');
+      return this.functionsCollection!.findOne({ 
+        filePath: { $regex: filePath },
+        name: functionName 
+      });
+    } else {
+      // Simple function name - search across all files
+      return this.functionsCollection!.findOne({ name: qualifiedName });
+    }
+  }
+  
+  /**
+   * Get qualified name for a function
+   */
+  private getQualifiedFunctionName(func: FunctionDocument): string {
+    return `${func.filePath}#${func.name}`;
+  }
+  
+  /**
+   * Get transitive dependencies for a function (functions it calls, directly and indirectly)
+   * @param functionName The function to analyze
+   * @param maxDepth Maximum depth to traverse (default 10)
+   * @returns Array of function names with their depth
+   */
+  async getTransitiveDependencies(
+    functionName: string, 
+    maxDepth: number = 10
+  ): Promise<Array<{ name: string; depth: number }>> {
+    this.ensureInitialized();
+    
+    const dependencies: Array<{ name: string; depth: number }> = [];
+    const visited = new Set<string>();
+    
+    const traverse = (funcName: string, depth: number) => {
+      if (depth > maxDepth || visited.has(funcName)) return;
+      visited.add(funcName);
+      
+      const func = this.findFunctionByQualifiedName(funcName);
+      if (!func?.metadata?.functionCalls) return;
+      
+      for (const callee of func.metadata.functionCalls) {
+        if (!visited.has(callee)) {
+          dependencies.push({ name: callee, depth });
+          traverse(callee, depth + 1);
+        }
+      }
+    };
+    
+    traverse(functionName, 1);
+    return dependencies;
+  }
+  
+  /**
+   * Get transitive callers for a function (functions that call it, directly and indirectly)
+   * @param functionName The function to analyze
+   * @param maxDepth Maximum depth to traverse (default 10)
+   * @returns Array of function names with their depth
+   */
+  async getTransitiveCallers(
+    functionName: string,
+    maxDepth: number = 10
+  ): Promise<Array<{ name: string; depth: number }>> {
+    this.ensureInitialized();
+    
+    const callers: Array<{ name: string; depth: number }> = [];
+    const visited = new Set<string>();
+    
+    const traverse = (funcName: string, depth: number) => {
+      if (depth > maxDepth || visited.has(funcName)) return;
+      visited.add(funcName);
+      
+      const func = this.findFunctionByQualifiedName(funcName);
+      if (!func?.metadata?.calledBy) return;
+      
+      for (const caller of func.metadata.calledBy) {
+        if (!visited.has(caller)) {
+          callers.push({ name: caller, depth });
+          traverse(caller, depth + 1);
+        }
+      }
+    };
+    
+    traverse(functionName, 1);
+    return callers;
+  }
+  
+  /**
+   * Detect circular dependencies in the codebase
+   * @returns Array of circular dependency chains
+   */
+  async detectCircularDependencies(): Promise<Array<string[]>> {
+    this.ensureInitialized();
+    
+    const cycles: Array<string[]> = [];
+    const allFunctions = this.functionsCollection!.find();
+    
+    for (const func of allFunctions) {
+      if (!func.metadata?.functionCalls) continue;
+      
+      const funcName = this.getQualifiedFunctionName(func);
+      const visited = new Set<string>();
+      const path: string[] = [];
+      
+      const hasCycle = (current: string): boolean => {
+        if (path.includes(current)) {
+          // Found a cycle - extract it
+          const cycleStart = path.indexOf(current);
+          const cycle = [...path.slice(cycleStart), current];
+          
+          // Check if we already have this cycle (in any rotation)
+          const isNewCycle = !cycles.some(existing => 
+            existing.length === cycle.length &&
+            existing.every(f => cycle.includes(f))
+          );
+          
+          if (isNewCycle) {
+            cycles.push(cycle);
+          }
+          return true;
+        }
+        
+        if (visited.has(current)) return false;
+        visited.add(current);
+        path.push(current);
+        
+        const currentFunc = this.findFunctionByQualifiedName(current);
+        if (currentFunc?.metadata?.functionCalls) {
+          for (const callee of currentFunc.metadata.functionCalls) {
+            if (hasCycle(callee)) return true;
+          }
+        }
+        
+        path.pop();
+        return false;
+      };
+      
+      hasCycle(funcName);
+    }
+    
+    return cycles;
+  }
+  
+  /**
+   * Calculate the maximum dependency depth for each function
+   * Updates the dependencyDepth field in metadata
+   */
+  async calculateDependencyDepths(): Promise<void> {
+    this.ensureInitialized();
+    
+    const allFunctions = this.functionsCollection!.find();
+    
+    for (const func of allFunctions) {
+      const funcName = this.getQualifiedFunctionName(func);
+      const dependencies = await this.getTransitiveDependencies(funcName);
+      
+      const maxDepth = dependencies.length > 0 
+        ? Math.max(...dependencies.map(d => d.depth))
+        : 0;
+      
+      if (!func.metadata) {
+        func.metadata = {};
+      }
+      
+      func.metadata.dependencyDepth = maxDepth;
+      this.functionsCollection!.update(func);
+    }
+    
+    this.db.saveDatabase();
   }
 
   async searchFunctions(options: SearchOptions): Promise<SearchResult> {
@@ -794,6 +1022,60 @@ export class CodeIndexDB {
           if (!hasProp) return false;
         } else if (filters.metadata!.hasProp) {
           return false; // No props but filter requires one
+        }
+        
+        // Check usesDependency
+        if (filters.metadata!.usesDependency) {
+          const dep = filters.metadata!.usesDependency.toLowerCase();
+          // Check in both file-level dependencies and function-specific usedImports
+          const usesDepInFile = doc.dependencies.some(d => d.toLowerCase().includes(dep));
+          const usesDepInFunction = doc.metadata.usedImports?.some(imp => 
+            imp.toLowerCase().includes(dep)
+          ) || false;
+          if (!usesDepInFile && !usesDepInFunction) return false;
+        }
+        
+        // Check callsFunction
+        if (filters.metadata!.callsFunction && doc.metadata.functionCalls) {
+          const targetFunc = filters.metadata!.callsFunction.toLowerCase();
+          const callsFunc = doc.metadata.functionCalls.some(call => 
+            call.toLowerCase().includes(targetFunc)
+          );
+          if (!callsFunc) return false;
+        } else if (filters.metadata!.callsFunction) {
+          return false; // No function calls but filter requires one
+        }
+        
+        // Check calledByFunction
+        if (filters.metadata!.calledByFunction && doc.metadata.calledBy) {
+          const callerFunc = filters.metadata!.calledByFunction.toLowerCase();
+          const isCalledBy = doc.metadata.calledBy.some(caller => 
+            caller.toLowerCase().includes(callerFunc)
+          );
+          if (!isCalledBy) return false;
+        } else if (filters.metadata!.calledByFunction) {
+          return false; // Not called by any function but filter requires one
+        }
+        
+        // Check dependsOnModule
+        if (filters.metadata!.dependsOnModule) {
+          const module = filters.metadata!.dependsOnModule.toLowerCase();
+          // Check if any import or function call references this module
+          const dependsOnFile = doc.filePath.toLowerCase().includes(module);
+          const dependsOnImport = doc.dependencies.some(dep => 
+            dep.toLowerCase().includes(module)
+          );
+          const dependsOnCall = doc.metadata.functionCalls?.some(call => 
+            call.toLowerCase().includes(module)
+          ) || false;
+          if (!dependsOnFile && !dependsOnImport && !dependsOnCall) return false;
+        }
+        
+        // Check hasUnusedImports
+        if (filters.metadata!.hasUnusedImports) {
+          const hasUnused = doc.metadata.unusedImports && 
+                           doc.metadata.unusedImports.length > 0;
+          if (!hasUnused) return false;
         }
         
         return true;

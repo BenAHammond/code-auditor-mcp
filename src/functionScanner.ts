@@ -7,7 +7,7 @@ import { FunctionMetadata } from './types.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { parseTypeScriptFile } from './utils/astParser.js';
 import { findNodesByKind, getNodeText, getLineAndColumn } from './utils/astUtils.js';
-import { getImports } from './utils/astUtils.js';
+import { getImports, getImportsDetailed, extractIdentifierUsage, isLocalFunction } from './utils/astUtils.js';
 import { 
   isReactComponent, 
   detectComponentType, 
@@ -16,6 +16,12 @@ import {
   extractPropTypes,
   extractComponentImports
 } from './utils/reactDetection.js';
+import {
+  buildImportMap,
+  extractFunctionCalls,
+  getLocalFunctionNames,
+  normalizeCallTarget
+} from './utils/dependencyExtractor.js';
 import * as ts from 'typescript';
 import path from 'path';
 
@@ -87,12 +93,36 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
     .filter(spec => !spec.startsWith('.') && !spec.startsWith('/'))
     .filter((v, i, a) => a.indexOf(v) === i); // Unique only
   
+  // Build import map for dependency tracking
+  const importMap = buildImportMap(sourceFile);
+  const detailedImports = getImportsDetailed(sourceFile);
+  const localFunctions = getLocalFunctionNames(sourceFile);
+  
+  // Track import usage across the file
+  const importNames = new Set(detailedImports.map(imp => imp.localName));
+  const fileUsageMap = extractIdentifierUsage(sourceFile, sourceFile, importNames);
+  
   // Find all function declarations
   const functionDeclarations = findNodesByKind(sourceFile, ts.SyntaxKind.FunctionDeclaration);
   for (const func of functionDeclarations) {
     const funcDecl = func as ts.FunctionDeclaration;
     if (funcDecl.name) {
       const { line } = getLineAndColumn(sourceFile, func.getStart());
+      
+      // Extract function calls
+      const functionCalls = funcDecl.body ? extractFunctionCalls(funcDecl.body, sourceFile, importMap) : [];
+      const normalizedCalls = functionCalls.map(call => 
+        normalizeCallTarget(call.callee, filePath, localFunctions)
+      );
+      
+      // Track which imports this function uses
+      const functionUsageMap = funcDecl.body ? 
+        extractIdentifierUsage(funcDecl.body, sourceFile, importNames) : new Map();
+      const usedImports = Array.from(functionUsageMap.keys());
+      const unusedImports = detailedImports
+        .filter(imp => !functionUsageMap.has(imp.localName))
+        .map(imp => imp.localName);
+      
       functions.push({
         name: funcDecl.name.text,
         filePath,
@@ -105,7 +135,10 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
           kind: 'function',
           isAsync: !!funcDecl.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword),
           isExported: !!funcDecl.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword),
-          parameterCount: funcDecl.parameters.length
+          parameterCount: funcDecl.parameters.length,
+          functionCalls: normalizedCalls,
+          usedImports,
+          unusedImports: unusedImports.length > 0 ? unusedImports : undefined
         }
       });
     }
@@ -122,6 +155,21 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
         const { line } = getLineAndColumn(sourceFile, varDecl.getStart());
         const arrowFunc = varDecl.initializer as ts.ArrowFunction;
         const varStmtNode = varStmt as ts.VariableStatement;
+        
+        // Extract function calls
+        const functionCalls = arrowFunc.body ? extractFunctionCalls(arrowFunc.body, sourceFile, importMap) : [];
+        const normalizedCalls = functionCalls.map(call => 
+          normalizeCallTarget(call.callee, filePath, localFunctions)
+        );
+        
+        // Track which imports this function uses
+        const functionUsageMap = arrowFunc.body ? 
+          extractIdentifierUsage(arrowFunc.body, sourceFile, importNames) : new Map();
+        const usedImports = Array.from(functionUsageMap.keys());
+        const unusedImports = detailedImports
+          .filter(imp => !functionUsageMap.has(imp.localName))
+          .map(imp => imp.localName);
+        
         functions.push({
           name: varDecl.name.text,
           filePath,
@@ -134,7 +182,10 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
             kind: 'arrow',
             isAsync: arrowFunc.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword) || false,
             isExported: varStmtNode.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) || false,
-            parameterCount: arrowFunc.parameters.length
+            parameterCount: arrowFunc.parameters.length,
+            functionCalls: normalizedCalls,
+            usedImports,
+            unusedImports: unusedImports.length > 0 ? unusedImports : undefined
           }
         });
       }
@@ -152,6 +203,21 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
     for (const method of methods) {
       if (ts.isIdentifier(method.name)) {
         const { line } = getLineAndColumn(sourceFile, method.getStart());
+        
+        // Extract function calls
+        const functionCalls = method.body ? extractFunctionCalls(method.body, sourceFile, importMap) : [];
+        const normalizedCalls = functionCalls.map(call => 
+          normalizeCallTarget(call.callee, filePath, localFunctions)
+        );
+        
+        // Track which imports this method uses
+        const functionUsageMap = method.body ? 
+          extractIdentifierUsage(method.body, sourceFile, importNames) : new Map();
+        const usedImports = Array.from(functionUsageMap.keys());
+        const unusedImports = detailedImports
+          .filter(imp => !functionUsageMap.has(imp.localName))
+          .map(imp => imp.localName);
+        
         functions.push({
           name: `${className}.${method.name.text}`,
           filePath,
@@ -166,7 +232,10 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
             isAsync: !!method.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword),
             isStatic: !!method.modifiers?.some(m => m.kind === ts.SyntaxKind.StaticKeyword),
             isPrivate: !!method.modifiers?.some(m => m.kind === ts.SyntaxKind.PrivateKeyword),
-            parameterCount: method.parameters.length
+            parameterCount: method.parameters.length,
+            functionCalls: normalizedCalls,
+            usedImports,
+            unusedImports: unusedImports.length > 0 ? unusedImports : undefined
           }
         });
       }

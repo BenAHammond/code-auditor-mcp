@@ -322,6 +322,21 @@ export interface EnhancedFunctionMetadata extends FunctionMetadata {
   tokens?: string[];
   tokenizedName?: string;
   lastModified?: Date;
+  metadata?: {
+    // Existing metadata fields
+    entityType?: 'function' | 'component';
+    componentType?: 'functional' | 'class' | 'memo' | 'forwardRef';
+    hooks?: HookUsage[];
+    props?: PropDefinition[];
+    
+    // New dependency fields
+    functionCalls?: string[];        // Functions this calls
+    calledBy?: string[];            // Functions that call this
+    usedImports?: string[];         // Actually used imports
+    unusedImports?: string[];       // Imported but not used
+    importUsage?: ImportUsageInfo[];
+    dependencyDepth?: number;       // Max depth in call chain
+  };
 }
 
 // Parsed search query structure
@@ -348,6 +363,12 @@ export interface ParsedQuery {
       componentType?: string;
       hasHook?: string;
       hasProp?: string;
+      // New dependency filters
+      usesDependency?: string;
+      callsFunction?: string;
+      calledByFunction?: string;
+      dependsOnModule?: string;
+      hasUnusedImports?: boolean;
     };
   };
   searchFields?: Array<'name' | 'signature' | 'jsDoc' | 'parameters' | 'returnType' | 'purpose' | 'context'>;
@@ -377,6 +398,12 @@ export interface SearchOptions {
       componentType?: string;
       hasHook?: string;
       hasProp?: string;
+      // New dependency filters
+      usesDependency?: string;
+      callsFunction?: string;
+      calledByFunction?: string;
+      dependsOnModule?: string;
+      hasUnusedImports?: boolean;
     };
   };
   searchStrategy?: 'exact' | 'fuzzy' | 'semantic';
@@ -509,4 +536,40 @@ export interface ComponentScanResult {
   imports: ComponentImport[];
   fileHash?: string;
   parseErrors?: string[];
+}
+
+// Dependency Tracking Types
+export interface FunctionCall {
+  callee: string;           // Function being called
+  callType: 'direct' | 'method' | 'dynamic';
+  line: number;
+  column: number;
+  arguments?: number;       // Argument count
+}
+
+export interface ImportMapping {
+  localName: string;        // Name used in code
+  importedName: string;     // Original export name
+  modulePath: string;       // Module/file path
+  importType: 'named' | 'default' | 'namespace';
+  isTypeOnly: boolean;
+}
+
+export interface DependencyInfo {
+  imports: ImportMapping[];
+  functionCalls: FunctionCall[];
+  identifierUsage: Map<string, UsageInfo>;
+}
+
+export interface UsageInfo {
+  usageType: 'direct' | 'type' | 'reexport';
+  usageCount: number;
+  lineNumbers: number[];
+}
+
+export interface ImportUsageInfo {
+  importPath: string;
+  usageType: 'direct' | 'type' | 'reexport';
+  usageCount: number;
+  lineNumbers: number[];
 }

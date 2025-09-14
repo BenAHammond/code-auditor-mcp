@@ -4,7 +4,7 @@
  */
 
 import * as ts from 'typescript';
-import { ImportInfo, ExportInfo } from '../types.js';
+import { ImportInfo, ExportInfo, ImportMapping, UsageInfo } from '../types.js';
 
 /**
  * Find all nodes of a specific kind in the AST
@@ -364,4 +364,144 @@ export async function parseTypeScriptFile(
   checkSyntax(sourceFile);
   
   return { sourceFile, errors };
+}
+
+/**
+ * Enhanced version of getImports that returns detailed ImportMapping[]
+ */
+export function getImportsDetailed(sourceFile: ts.SourceFile): ImportMapping[] {
+  const imports: ImportMapping[] = [];
+  
+  ts.forEachChild(sourceFile, node => {
+    if (ts.isImportDeclaration(node)) {
+      const moduleSpecifier = (node.moduleSpecifier as ts.StringLiteral).text;
+      const importClause = node.importClause;
+      
+      if (importClause) {
+        // Default import
+        if (importClause.name) {
+          imports.push({
+            localName: importClause.name.text,
+            importedName: 'default',
+            modulePath: moduleSpecifier,
+            importType: 'default',
+            isTypeOnly: importClause.isTypeOnly || false
+          });
+        }
+        
+        // Named imports
+        if (importClause.namedBindings) {
+          if (ts.isNamespaceImport(importClause.namedBindings)) {
+            imports.push({
+              localName: importClause.namedBindings.name.text,
+              importedName: '*',
+              modulePath: moduleSpecifier,
+              importType: 'namespace',
+              isTypeOnly: importClause.isTypeOnly || false
+            });
+          } else if (ts.isNamedImports(importClause.namedBindings)) {
+            importClause.namedBindings.elements.forEach(element => {
+              imports.push({
+                localName: element.name.text,
+                importedName: element.propertyName?.text || element.name.text,
+                modulePath: moduleSpecifier,
+                importType: 'named',
+                isTypeOnly: importClause.isTypeOnly || element.isTypeOnly || false
+              });
+            });
+          }
+        }
+      }
+    }
+  });
+  
+  return imports;
+}
+
+/**
+ * Extract identifier usage to track which imports are used
+ */
+export function extractIdentifierUsage(
+  node: ts.Node,
+  sourceFile: ts.SourceFile,
+  importNames: Set<string>
+): Map<string, UsageInfo> {
+  const usageMap = new Map<string, UsageInfo>();
+  
+  function visit(node: ts.Node): void {
+    if (ts.isIdentifier(node) && !ts.isPropertyAccessExpression(node.parent)) {
+      const name = node.text;
+      
+      if (importNames.has(name)) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+        const existing = usageMap.get(name) || {
+          usageType: 'direct',
+          usageCount: 0,
+          lineNumbers: []
+        };
+        
+        existing.usageCount++;
+        existing.lineNumbers.push(line + 1);
+        
+        // Determine usage type
+        if (ts.isTypeNode(node.parent) || ts.isTypeReferenceNode(node.parent)) {
+          existing.usageType = 'type';
+        } else if (ts.isExportSpecifier(node.parent)) {
+          existing.usageType = 'reexport';
+        }
+        
+        usageMap.set(name, existing);
+      }
+    }
+    
+    ts.forEachChild(node, visit);
+  }
+  
+  visit(node);
+  return usageMap;
+}
+
+/**
+ * Check if a function name is defined locally in the file
+ */
+export function isLocalFunction(name: string, sourceFile: ts.SourceFile): boolean {
+  let found = false;
+  
+  function visit(node: ts.Node): void {
+    if (found) return;
+    
+    if (ts.isFunctionDeclaration(node) && node.name && node.name.text === name) {
+      found = true;
+    } else if (ts.isVariableStatement(node)) {
+      node.declarationList.declarations.forEach(decl => {
+        if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && 
+            decl.name.text === name && decl.initializer &&
+            (ts.isFunctionExpression(decl.initializer) || ts.isArrowFunction(decl.initializer))) {
+          found = true;
+        }
+      });
+    } else if (ts.isClassDeclaration(node) && node.name && node.name.text === name) {
+      found = true;
+    }
+    
+    if (!found) {
+      ts.forEachChild(node, visit);
+    }
+  }
+  
+  visit(sourceFile);
+  return found;
+}
+
+/**
+ * Normalize a function call target for consistent naming
+ */
+export function normalizeCallTarget(callee: string, filePath: string): string {
+  // If it already has a module path separator, return as-is
+  if (callee.includes('#') || callee.includes('.')) {
+    return callee;
+  }
+  
+  // Otherwise, prefix with file path
+  return `${filePath}#${callee}`;
 }

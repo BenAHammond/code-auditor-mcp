@@ -385,6 +385,60 @@ If you prefer to configure Claude Desktop manually:
 - **bulk_cleanup** - Remove index entries for deleted files
 - **deep_sync** - Deep synchronize all indexed files
 
+### Advanced Search Functionality
+
+The `search_functions` tool (and `search_code` in MCP) supports powerful search operators that enable precise code discovery. You can use natural language queries combined with special operators to find exactly what you need.
+
+#### Search Operators Reference
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `file:` | Filter by file path | `file:utils` `file:src/components` |
+| `type:` | Filter by file type | `type:ts` `type:tsx` |
+| `lang:` `language:` | Filter by language | `lang:typescript` |
+| `entity:` | Filter by entity type | `entity:function` `entity:component` |
+| `async:` | Filter async functions | `async:true` `async:false` |
+| `exported:` | Filter by export status | `exported:true` |
+| `kind:` | Filter by function kind | `kind:arrow` `kind:method` |
+| `complexity:` | Filter by complexity | `complexity:>10` `complexity:5-10` |
+| `jsdoc:` `doc:` | Filter by documentation | `jsdoc:true` `doc:false` |
+| **Dependency Operators** | | |
+| `dep:` `dependency:` `uses:` | Find dependency usage | `dep:lodash` `uses:react` |
+| `calls:` | Functions calling a function | `calls:validateUser` |
+| `calledby:` `dependents-of:` | Functions called by | `calledby:handleRequest` |
+| `unused-imports` | Find unused imports | `unused-imports` |
+| **React Operators** | | |
+| `component:` | Filter component type | `component:functional` |
+| `hook:` `hooks:` | Find hook usage | `hook:useState` |
+| `prop:` `props:` | Find prop usage | `prop:onClick` |
+| **Search Modifiers** | | |
+| `-` | Exclude terms | `validate -test` |
+| `"..."` | Exact phrase | `"user authentication"` |
+| `~` `fuzzy` | Enable fuzzy search | `~ authenticaton` |
+| `stem` `stemming` | Enable stemming | `stem render` |
+
+#### Example Searches
+
+```bash
+# Find complex functions that need refactoring
+search_code "complexity:>10 -test"
+
+# Find undocumented exported functions
+search_code "exported:true jsdoc:false"
+
+# Find React components using hooks
+search_code "component:functional hook:useState"
+
+# Find functions with unused imports
+search_code "unused-imports file:src"
+
+# Find what depends on a function
+search_code "dependents-of:authenticate"
+
+# Combine multiple operators
+search_code "Button component:functional prop:onClick file:components"
+```
+
 ### Usage Examples with Claude
 
 ```

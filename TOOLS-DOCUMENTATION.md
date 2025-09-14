@@ -162,6 +162,13 @@ search_code(query: "prop:onClick")  # Find components with onClick prop
 # Advanced operator searches
 search_code(query: "Button component:functional hook:useState")
 search_code(query: "complexity:5-10 entity:component")
+
+# Dependency searches
+search_code(query: "dep:lodash")  # Find all code using lodash
+search_code(query: "calls:validateUser")  # Find functions calling validateUser
+search_code(query: "dependents-of:authenticate")  # Find what depends on authenticate
+search_code(query: "unused-imports")  # Find functions with unused imports
+search_code(query: "depends-on:utils/validation")  # Find code importing from validation utils
 ```
 
 **Search Operators:**
@@ -169,6 +176,11 @@ search_code(query: "complexity:5-10 entity:component")
 - `component:functional|class|memo|forwardRef` - Filter by component type
 - `hook:hookName` - Find components using specific hooks
 - `prop:propName` - Find components with specific props
+- `dep:packageName` / `dependency:packageName` / `uses:packageName` - Find code using specific dependencies
+- `calls:functionName` - Find functions that call a specific function
+- `calledby:functionName` / `dependents-of:functionName` / `used-by:functionName` - Find functions called by a specific function
+- `depends-on:module` / `imports-from:file` - Find code that depends on a module/file
+- `unused-imports` / `dead-imports` - Find functions with unused imports
 - `type:extension` - Filter by file type
 - `file:pattern` - Filter by file path pattern
 - `lang:language` - Filter by programming language

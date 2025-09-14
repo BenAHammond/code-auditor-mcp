@@ -97,19 +97,19 @@ const tools: Tool[] = [
   },
   {
     name: 'search_code',
-    description: 'Search indexed functions with natural language queries',
+    description: 'Search indexed functions and React components with natural language queries. Supports operators: entity:component, component:functional|class|memo|forwardRef, hook:useState|useEffect|etc, prop:propName, dep:packageName, dependency:lodash, uses:express, calls:functionName, calledby:functionName, dependents-of:functionName, used-by:functionName, depends-on:module, imports-from:file, unused-imports, dead-imports, type:fileType, file:path, lang:language, complexity:1-10, jsdoc:true|false',
     parameters: [
       {
         name: 'query',
         type: 'string',
         required: true,
-        description: 'Search query (supports natural language)',
+        description: 'Search query with natural language and/or operators. Examples: "Button component:functional", "entity:component hook:useState", "render prop:onClick", "dep:lodash", "calls:validateUser", "unused-imports", "dependents-of:authenticate"',
       },
       {
         name: 'filters',
         type: 'object',
         required: false,
-        description: 'Optional filters (language, filePath, dependencies)',
+        description: 'Optional filters (language, filePath, dependencies, componentType, entityType)',
       },
       {
         name: 'limit',
