@@ -429,28 +429,53 @@ export function extractIdentifierUsage(
   const usageMap = new Map<string, UsageInfo>();
   
   function visit(node: ts.Node): void {
-    if (ts.isIdentifier(node) && !ts.isPropertyAccessExpression(node.parent)) {
+    if (ts.isIdentifier(node)) {
       const name = node.text;
       
       if (importNames.has(name)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-        const existing = usageMap.get(name) || {
-          usageType: 'direct',
-          usageCount: 0,
-          lineNumbers: []
-        };
+        // Check if this identifier should be counted as usage
+        let shouldCount = true;
         
-        existing.usageCount++;
-        existing.lineNumbers.push(line + 1);
-        
-        // Determine usage type
-        if (ts.isTypeNode(node.parent) || ts.isTypeReferenceNode(node.parent)) {
-          existing.usageType = 'type';
-        } else if (ts.isExportSpecifier(node.parent)) {
-          existing.usageType = 'reexport';
+        // Skip if this is part of an import declaration
+        let parent = node.parent;
+        while (parent) {
+          if (ts.isImportDeclaration(parent) || ts.isImportSpecifier(parent) || 
+              ts.isImportClause(parent) || ts.isNamedImports(parent)) {
+            shouldCount = false;
+            break;
+          }
+          parent = parent.parent;
         }
         
-        usageMap.set(name, existing);
+        // For property access expressions, only count the leftmost identifier
+        if (shouldCount && ts.isPropertyAccessExpression(node.parent)) {
+          // Only count if this identifier is the expression (left side), not the name (right side)
+          shouldCount = node.parent.expression === node;
+        }
+        
+        if (shouldCount) {
+          const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+          const existing = usageMap.get(name) || {
+            usageType: 'direct',
+            usageCount: 0,
+            lineNumbers: []
+          };
+          
+          existing.usageCount++;
+          existing.lineNumbers.push(line + 1);
+          
+          // Determine usage type
+          if (ts.isTypeNode(node.parent) || ts.isTypeReferenceNode(node.parent)) {
+            existing.usageType = 'type';
+          } else if (ts.isExportSpecifier(node.parent)) {
+            existing.usageType = 'reexport';
+          } else if (ts.isTypeQueryNode(node.parent) || 
+                     (ts.isQualifiedName(node.parent) && node.parent.left === node)) {
+            existing.usageType = 'type';
+          }
+          
+          usageMap.set(name, existing);
+        }
       }
     }
     

@@ -94,7 +94,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       
       for (let i = 0; i < scriptFiles.length; i++) {
         try {
-          const fileFunctions = await extractFunctionsFromFile(scriptFiles[i]);
+          const fileFunctions = await extractFunctionsFromFile(scriptFiles[i], {
+            unusedImportsConfig: mergedOptions.unusedImportsConfig
+          });
           collectedFunctions.push(...fileFunctions);
           fileToFunctionsMap.set(scriptFiles[i], fileFunctions); // Store for sync
           

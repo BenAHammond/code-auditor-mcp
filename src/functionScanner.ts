@@ -3,7 +3,7 @@
  * Scans directories for functions using AST parsing
  */
 
-import { FunctionMetadata } from './types.js';
+import { FunctionMetadata, AuditOptions } from './types.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { parseTypeScriptFile } from './utils/astParser.js';
 import { findNodesByKind, getNodeText, getLineAndColumn } from './utils/astUtils.js';
@@ -36,7 +36,7 @@ export interface ScanOptions {
  */
 export async function scanDirectoryForFunctions(
   dirPath: string,
-  options?: ScanOptions
+  options?: ScanOptions & { unusedImportsConfig?: AuditOptions['unusedImportsConfig'] }
 ): Promise<FunctionMetadata[]> {
   const functions: FunctionMetadata[] = [];
   
@@ -59,7 +59,9 @@ export async function scanDirectoryForFunctions(
     // Process each file
     for (const filePath of targetFiles) {
       try {
-        const fileFunctions = await extractFunctionsFromFile(filePath);
+        const fileFunctions = await extractFunctionsFromFile(filePath, {
+          unusedImportsConfig: options?.unusedImportsConfig
+        });
         functions.push(...fileFunctions);
       } catch (error) {
         console.error(`Error processing ${filePath}:`, error);
@@ -75,7 +77,10 @@ export async function scanDirectoryForFunctions(
 /**
  * Extract functions from a single file
  */
-export async function extractFunctionsFromFile(filePath: string): Promise<FunctionMetadata[]> {
+export async function extractFunctionsFromFile(
+  filePath: string,
+  options?: { unusedImportsConfig?: AuditOptions['unusedImportsConfig'] }
+): Promise<FunctionMetadata[]> {
   const functions: FunctionMetadata[] = [];
   
   // Parse file
@@ -119,8 +124,23 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
       const functionUsageMap = funcDecl.body ? 
         extractIdentifierUsage(funcDecl.body, sourceFile, importNames) : new Map();
       const usedImports = Array.from(functionUsageMap.keys());
-      const unusedImports = detailedImports
-        .filter(imp => !functionUsageMap.has(imp.localName))
+      
+      // Apply unused imports configuration
+      const config = options?.unusedImportsConfig;
+      let unusedImports = detailedImports
+        .filter(imp => {
+          // Check if import is used
+          if (functionUsageMap.has(imp.localName)) return false;
+          
+          // Apply type-only configuration
+          if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
+          
+          // Apply ignore patterns
+          if (config?.ignorePatterns?.some(pattern => 
+            imp.localName.match(new RegExp(pattern)))) return false;
+          
+          return true;
+        })
         .map(imp => imp.localName);
       
       functions.push({
@@ -167,8 +187,23 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
         const functionUsageMap = arrowFunc.body ? 
           extractIdentifierUsage(arrowFunc.body, sourceFile, importNames) : new Map();
         const usedImports = Array.from(functionUsageMap.keys());
-        const unusedImports = detailedImports
-          .filter(imp => !functionUsageMap.has(imp.localName))
+        
+        // Apply unused imports configuration
+        const config = options?.unusedImportsConfig;
+        let unusedImports = detailedImports
+          .filter(imp => {
+            // Check if import is used
+            if (functionUsageMap.has(imp.localName)) return false;
+            
+            // Apply type-only configuration
+            if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
+            
+            // Apply ignore patterns
+            if (config?.ignorePatterns?.some(pattern => 
+              imp.localName.match(new RegExp(pattern)))) return false;
+            
+            return true;
+          })
           .map(imp => imp.localName);
         
         functions.push({
@@ -216,8 +251,23 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
         const functionUsageMap = method.body ? 
           extractIdentifierUsage(method.body, sourceFile, importNames) : new Map();
         const usedImports = Array.from(functionUsageMap.keys());
-        const unusedImports = detailedImports
-          .filter(imp => !functionUsageMap.has(imp.localName))
+        
+        // Apply unused imports configuration
+        const config = options?.unusedImportsConfig;
+        let unusedImports = detailedImports
+          .filter(imp => {
+            // Check if import is used
+            if (functionUsageMap.has(imp.localName)) return false;
+            
+            // Apply type-only configuration
+            if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
+            
+            // Apply ignore patterns
+            if (config?.ignorePatterns?.some(pattern => 
+              imp.localName.match(new RegExp(pattern)))) return false;
+            
+            return true;
+          })
           .map(imp => imp.localName);
         
         functions.push({
@@ -311,6 +361,56 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
     };
     
     checkNode(sourceFile);
+  }
+  
+  // Add file-level unused import analysis if configured
+  if (options?.unusedImportsConfig?.checkLevel === 'file' && functions.length > 0) {
+    // Get all imports used across all functions in the file
+    const allUsedImports = new Set<string>();
+    for (const func of functions) {
+      if (func.metadata?.usedImports) {
+        for (const imp of func.metadata.usedImports) {
+          allUsedImports.add(imp);
+        }
+      }
+    }
+    
+    // Calculate file-level unused imports
+    const config = options.unusedImportsConfig;
+    const fileUnusedImports = detailedImports
+      .filter(imp => {
+        // Check if import is used anywhere in the file
+        if (allUsedImports.has(imp.localName)) return false;
+        
+        // Apply type-only configuration
+        if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
+        
+        // Apply ignore patterns
+        if (config?.ignorePatterns?.some(pattern => 
+          imp.localName.match(new RegExp(pattern)))) return false;
+        
+        return true;
+      })
+      .map(imp => imp.localName);
+    
+    // Add a special file-level entry if there are unused imports
+    if (fileUnusedImports.length > 0) {
+      functions.push({
+        name: `[File-Level Analysis] ${path.basename(filePath)}`,
+        filePath,
+        lineNumber: 1,
+        language: getLanguageFromPath(filePath),
+        dependencies,
+        purpose: 'File-level unused imports analysis',
+        context: `File ${path.basename(filePath)} has unused imports at the file level`,
+        metadata: {
+          kind: 'file-analysis',
+          unusedImports: fileUnusedImports,
+          totalImports: detailedImports.length,
+          usedImportsCount: allUsedImports.size
+        }
+      });
+    }
   }
   
   return functions;

@@ -25,6 +25,10 @@ import {
   findNodesByKind,
   getImports
 } from './analyzerUtils.js';
+import {
+  getImportsDetailed,
+  extractIdentifierUsage
+} from '../utils/astUtils.js';
 
 /**
  * Debug logger
@@ -75,6 +79,7 @@ export interface DRYAnalyzerConfig {
   excludePatterns?: string[];
   checkImports?: boolean;
   checkStrings?: boolean;
+  checkUnusedImports?: boolean;
   ignoreComments?: boolean;
   ignoreWhitespace?: boolean;
   debug?: boolean;
@@ -90,6 +95,7 @@ const DEFAULT_CONFIG: DRYAnalyzerConfig = {
   excludePatterns: ['**/*.test.ts', '**/*.spec.ts'],
   checkImports: true,
   checkStrings: true,
+  checkUnusedImports: true,
   ignoreComments: true,
   ignoreWhitespace: true,
   debug: false,
@@ -118,6 +124,7 @@ interface CodeIndex {
   hashMap: Map<string, CodeBlock[]>;
   stringLiterals: Map<string, Array<{ file: string; line: number }>>;
   imports: Map<string, Array<{ file: string; line: number; modules: string[] }>>;
+  unusedImports: Map<string, Array<{ file: string; line: number; importName: string; moduleSpecifier: string }>>;
 }
 
 /**
@@ -132,7 +139,8 @@ async function buildCodeIndex(
     blocks: [],
     hashMap: new Map(),
     stringLiterals: new Map(),
-    imports: new Map()
+    imports: new Map(),
+    unusedImports: new Map()
   };
 
   logger.log(`Building code index for ${files.length} files`);
@@ -177,6 +185,13 @@ async function buildCodeIndex(
         extractImports(sourceFile, file, index.imports, logger);
         logger.log(`Found ${index.imports.size - importCount} new import patterns`);
       }
+      
+      // Extract unused imports if enabled
+      if (config.checkUnusedImports) {
+        const unusedImportCount = index.unusedImports.size;
+        extractUnusedImports(sourceFile, file, index.unusedImports, logger);
+        logger.log(`Found ${index.unusedImports.size - unusedImportCount} new unused imports`);
+      }
     } catch (error) {
       logger.log(`Error processing ${file}: ${error}`);
       // Don't use console.error to avoid MCP interference
@@ -187,7 +202,8 @@ async function buildCodeIndex(
     totalBlocks: index.blocks.length,
     uniqueHashes: index.hashMap.size,
     stringLiterals: index.stringLiterals.size,
-    importPatterns: index.imports.size
+    importPatterns: index.imports.size,
+    unusedImports: index.unusedImports.size
   });
   
   return index;
@@ -433,6 +449,49 @@ function extractImports(
 }
 
 /**
+ * Extract unused imports from a source file
+ */
+function extractUnusedImports(
+  sourceFile: ts.SourceFile,
+  filePath: string,
+  unusedImportsMap: Map<string, Array<{ file: string; line: number; importName: string; moduleSpecifier: string }>>,
+  logger: DebugLogger
+): void {
+  // Get detailed imports
+  const detailedImports = getImportsDetailed(sourceFile);
+  const importNames = new Set(detailedImports.map(imp => imp.localName));
+  
+  // Extract identifier usage across the entire file
+  const usageMap = extractIdentifierUsage(sourceFile, sourceFile, importNames);
+  
+  // Find unused imports
+  for (const imp of detailedImports) {
+    if (!usageMap.has(imp.localName)) {
+      const key = `${filePath}:${imp.localName}`;
+      
+      
+      if (!unusedImportsMap.has(key)) {
+        unusedImportsMap.set(key, []);
+      }
+      
+      // Get line number for this import
+      const importInfo = getImports(sourceFile).find(i => 
+        i.moduleSpecifier === imp.modulePath &&
+        (i.importedNames.includes(imp.localName) ||
+         i.importedNames.some(name => name === `* as ${imp.localName}`))
+      );
+      
+      unusedImportsMap.get(key)!.push({
+        file: filePath,
+        line: importInfo?.line || 0,
+        importName: imp.localName,
+        moduleSpecifier: imp.modulePath
+      });
+    }
+  }
+}
+
+/**
  * Find duplicates in the code index
  */
 function findDuplicates(index: CodeIndex, config: DRYAnalyzerConfig, logger: DebugLogger): DRYViolation[] {
@@ -478,6 +537,15 @@ function findDuplicates(index: CodeIndex, config: DRYAnalyzerConfig, logger: Deb
     for (const [importKey, locations] of index.imports) {
       if (locations.length > 3) { // More than 3 files with same imports
         violations.push(createImportDuplicateViolation(importKey, locations));
+      }
+    }
+  }
+  
+  // Find unused imports
+  if (config.checkUnusedImports) {
+    for (const [importKey, locations] of index.unusedImports) {
+      if (locations.length > 0) {
+        violations.push(createUnusedImportViolation(locations[0]));
       }
     }
   }
@@ -667,6 +735,24 @@ function createImportDuplicateViolation(
     message: `Same import pattern from "${moduleSpec}" used in ${locations.length} files`,
     recommendation: 'Consider creating a barrel export or shared import module',
     locations: locations.map(l => ({ file: l.file, line: l.line })),
+    estimatedEffort: 'small'
+  };
+}
+
+/**
+ * Create an unused import violation
+ */
+function createUnusedImportViolation(
+  location: { file: string; line: number; importName: string; moduleSpecifier: string }
+): DRYViolation {
+  return {
+    analyzer: 'dry',
+    file: location.file,
+    line: location.line,
+    severity: 'suggestion',
+    type: 'pattern-duplication',
+    message: `Unused import '${location.importName}' from '${location.moduleSpecifier}'`,
+    recommendation: `Remove this unused import to keep the codebase clean and reduce bundle size`,
     estimatedEffort: 'small'
   };
 }

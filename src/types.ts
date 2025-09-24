@@ -69,6 +69,11 @@ export interface AuditOptions {
     maxSuggestions?: number;
     minHealthScore?: number;
   };
+  unusedImportsConfig?: {
+    checkLevel?: 'function' | 'file';
+    includeTypeOnlyImports?: boolean;
+    ignorePatterns?: string[];
+  };
 }
 
 export interface ProgressCallback {

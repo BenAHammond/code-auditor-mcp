@@ -16,8 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Support for nested quotes in search queries
   - Better handling of escaped characters
   - Proper parsing of queries like `"column: 'country'"`
+- **Unused Imports Configuration** - Added configurable options for unused import detection
+  - `checkLevel`: Choose between function-level or file-level analysis
+  - `includeTypeOnlyImports`: Option to include/exclude type-only imports
+  - `ignorePatterns`: Regex patterns to ignore specific imports (e.g., React)
+- **DRY Analyzer Unused Import Detection** - DRY analyzer now detects and reports unused imports
+  - New `checkUnusedImports` configuration option (default: true)
+  - Reports unused imports as DRY violations with severity 'suggestion'
+  - Properly handles namespace imports, named imports, and default imports
+  - Excludes import declarations from usage detection to avoid false negatives
 
 ### Fixed
+- **Unused Import Detection** - Fixed major issues causing ~40% false positive rate
+  - Namespace imports (`import * as name`) now properly tracked when used
+  - Property access on imported objects now correctly detected (e.g., `config.database.host`)
+  - Method calls on imported objects now tracked (e.g., `logger.error()`)
+  - DRY analyzer now properly reports unused imports as violations (not just metadata)
 - **Search Results** - Now returns line-level matches instead of just function-level
 - **File Filtering** - Improved file path filtering logic
   - Supports exact matches, glob patterns, and substring matching

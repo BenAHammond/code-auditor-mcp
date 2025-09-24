@@ -6,6 +6,7 @@ A comprehensive TypeScript/JavaScript code quality audit tool that analyzes your
 
 - **SOLID Principles Analysis** - Detect violations of Single Responsibility, Open/Closed, and other SOLID principles
 - **DRY (Don't Repeat Yourself)** - Find code duplication and suggest refactoring opportunities
+  - **Unused Imports Detection** - Identify unused imports at function or file level with configurable options
 - **Security Pattern Analysis** - Verify authentication, authorization, and rate limiting implementations
 - **Component Architecture Review** - Analyze component structure, complexity, and best practices
 - **Data Access Patterns** - Check for SQL injection risks, performance issues, and security patterns
@@ -104,9 +105,36 @@ The auditor looks for configuration in these locations (in order):
     "maxCritical": 0,
     "maxWarnings": 50,
     "minHealthScore": 80
+  },
+  "unusedImportsConfig": {
+    "checkLevel": "function",
+    "includeTypeOnlyImports": false,
+    "ignorePatterns": ["React", "^_"]
   }
 }
 ```
+
+### Unused Imports Configuration
+
+The DRY analyzer includes unused imports detection with configurable options:
+
+```json
+{
+  "unusedImportsConfig": {
+    "checkLevel": "function",      // "function" | "file" - analyze at function or file level
+    "includeTypeOnlyImports": false,  // whether to report type-only imports as unused
+    "ignorePatterns": [              // regex patterns for imports to ignore
+      "React",                       // ignore React (often used implicitly in JSX)
+      "^_",                         // ignore imports starting with underscore
+      "test.*"                      // ignore test-related imports
+    ]
+  }
+}
+```
+
+**Check Levels:**
+- `function` (default): Analyzes each function in isolation, reporting imports unused within that specific function
+- `file`: Analyzes the entire file, reporting imports not used anywhere in the file
 
 ### Project-Specific Configurations
 
@@ -131,6 +159,7 @@ Detects code duplication:
 - Similar function implementations
 - Repeated imports
 - String literal duplication
+- Unused imports (file-level detection)
 
 ### Security Analyzer
 Verifies security patterns:
