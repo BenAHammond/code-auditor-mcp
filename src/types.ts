@@ -322,6 +322,7 @@ export interface EnhancedFunctionMetadata extends FunctionMetadata {
   tokens?: string[];
   tokenizedName?: string;
   lastModified?: Date;
+  body?: string;  // Actual function body content for content search
   metadata?: {
     // Existing metadata fields
     entityType?: 'function' | 'component';
@@ -336,6 +337,14 @@ export interface EnhancedFunctionMetadata extends FunctionMetadata {
     unusedImports?: string[];       // Imported but not used
     importUsage?: ImportUsageInfo[];
     dependencyDepth?: number;       // Max depth in call chain
+    body?: string;                  // Function body content
+    
+    // Content search fields
+    contentMatches?: Array<{ term: string; line: number; column: number }>;  // Matches found during content search
+    matchContexts?: Array<{  // Context around matches
+      match: { term: string; line: number; column: number };
+      context: { before: string[]; line: string; after: string[] };
+    }>;
   };
 }
 
@@ -408,6 +417,7 @@ export interface SearchOptions {
   };
   searchStrategy?: 'exact' | 'fuzzy' | 'semantic';
   searchFields?: Array<'name' | 'signature' | 'jsDoc' | 'parameters' | 'returnType' | 'purpose' | 'context'>;
+  searchMode?: 'metadata' | 'content' | 'both';  // New field for content search
   scoringWeights?: {
     nameMatch?: number;
     signatureMatch?: number;
@@ -441,6 +451,12 @@ export interface SearchResult {
       context?: string[];
     };
     matchedFields?: string[];
+    // Content search results
+    contentMatches?: Array<{ term: string; line: number; column: number }>;
+    matchContexts?: Array<{
+      match: { term: string; line: number; column: number };
+      context: { before: string[]; line: string; after: string[] };
+    }>;
   }>;
   totalCount: number;
   query?: string;
@@ -492,6 +508,59 @@ export interface ComponentImport {
   name: string;
   path: string;
   isDefault: boolean;
+}
+
+// Component Responsibility Types for SRP Detection
+export enum ResponsibilityType {
+  DataFetching = 'data-fetching',
+  FormHandling = 'form-handling',
+  UIState = 'ui-state',
+  BusinessLogic = 'business-logic',
+  SideEffects = 'side-effects',
+  EventHandling = 'event-handling',
+  Routing = 'routing',
+  Authentication = 'authentication',
+  Layout = 'layout-styling',
+  DataTransformation = 'data-transformation',
+  Subscriptions = 'subscriptions',
+  ErrorHandling = 'error-handling'
+}
+
+export interface ComponentResponsibility {
+  type: ResponsibilityType;
+  indicators: string[];
+  severity: 'related' | 'unrelated' | 'mixed';
+  line?: number;
+  column?: number;
+  details?: string;
+}
+
+export interface ComponentPattern {
+  name: string;
+  indicators: PatternIndicator[];
+  allowedResponsibilities: ResponsibilityType[];
+  relatedResponsibilities?: ResponsibilityType[][];
+  complexityMultiplier: number;
+  description: string;
+}
+
+export interface PatternIndicator {
+  type: 'name' | 'path' | 'hooks' | 'props' | 'imports';
+  pattern: RegExp | string;
+  weight?: number;
+}
+
+export interface ComponentPatternConfig {
+  patterns: ComponentPattern[];
+  customPatterns?: ComponentPattern[];
+  enablePatternDetection: boolean;
+}
+
+export interface RefactoringSuggestion {
+  pattern: 'extract-hook' | 'split-component' | 'container-presenter' | 'compose-components' | 'extract-service';
+  description: string;
+  example?: string;
+  relatedResponsibilities: ResponsibilityType[];
 }
 
 export interface ComponentRelationship {

@@ -135,22 +135,23 @@ export class QueryParser {
       return result;
     }
 
-    // Extract exact phrases (quoted strings) first
-    const phrases = this.extractPhrases(query);
+    // Extract operators and their values first (before phrases)
+    // This ensures operator:value patterns are processed correctly
+    const { operators, cleanedQuery } = this.extractOperators(query);
+    this.applyOperatorFilters(operators, result);
+
+    // Extract exact phrases (quoted strings) from the cleaned query
+    const phrases = this.extractPhrases(cleanedQuery);
     result.phrases = phrases.map(p => p.value);
     
-    // Remove phrases from query for further processing
-    let remainingQuery = query;
+    // Remove phrases from cleaned query for further processing
+    let remainingQuery = cleanedQuery;
     phrases.forEach(phrase => {
       remainingQuery = remainingQuery.replace(phrase.original, ' ');
     });
 
-    // Extract operators and their values
-    const { operators, cleanedQuery } = this.extractOperators(remainingQuery);
-    this.applyOperatorFilters(operators, result);
-
     // Process remaining tokens
-    const tokens = this.tokenize(cleanedQuery);
+    const tokens = this.tokenize(remainingQuery);
     
     for (const token of tokens) {
       if (token.startsWith('-')) {
@@ -200,19 +201,63 @@ export class QueryParser {
 
   /**
    * Extract quoted phrases from the query
+   * Handles nested quotes and escape sequences
    * @param query The query string
    * @returns Array of phrase objects with original and cleaned value
    */
   private extractPhrases(query: string): Array<{ original: string; value: string }> {
     const phrases: Array<{ original: string; value: string }> = [];
-    const phraseRegex = /["']([^"']+)["']/g;
+    let i = 0;
     
-    let match;
-    while ((match = phraseRegex.exec(query)) !== null) {
-      phrases.push({
-        original: match[0],
-        value: match[1].trim()
-      });
+    while (i < query.length) {
+      // Find opening quote (single or double)
+      if (query[i] === '"' || query[i] === "'") {
+        const quoteChar = query[i];
+        const startIndex = i;
+        i++; // Move past opening quote
+        
+        let value = '';
+        let closed = false;
+        
+        while (i < query.length) {
+          if (query[i] === '\\' && i + 1 < query.length) {
+            // Handle escape sequences
+            if (query[i + 1] === quoteChar || query[i + 1] === '\\') {
+              // Escaped quote or backslash
+              value += query[i + 1];
+              i += 2;
+            } else {
+              // Other escape sequences - keep the backslash
+              value += query[i];
+              i++;
+            }
+          } else if (query[i] === quoteChar) {
+            // Found closing quote
+            closed = true;
+            i++; // Move past closing quote
+            break;
+          } else {
+            // Regular character
+            value += query[i];
+            i++;
+          }
+        }
+        
+        if (closed) {
+          phrases.push({
+            original: query.substring(startIndex, i),
+            value: value.trim()
+          });
+        } else {
+          // Unclosed quote - treat the rest as a phrase
+          phrases.push({
+            original: query.substring(startIndex),
+            value: value.trim()
+          });
+        }
+      } else {
+        i++;
+      }
     }
     
     return phrases;
@@ -220,6 +265,7 @@ export class QueryParser {
 
   /**
    * Extract operators and their values from the query
+   * Handles quoted values and escape sequences
    * @param query The query string
    * @returns Object with operators map and cleaned query
    */
@@ -229,22 +275,85 @@ export class QueryParser {
   } {
     const operators = new Map<string, string>();
     let cleanedQuery = query;
-
-    // Match operator:value patterns
-    const operatorRegex = /(\w+):(\S+)/g;
+    let i = 0;
     
-    let match;
-    while ((match = operatorRegex.exec(query)) !== null) {
-      const operator = match[1].toLowerCase() + ':';
-      const value = match[2];
+    while (i < query.length) {
+      // Look for operator:value patterns
+      const operatorMatch = query.substring(i).match(/^(\w+):/);
       
-      if (operator in QueryParser.OPERATORS) {
-        operators.set(operator, value);
-        cleanedQuery = cleanedQuery.replace(match[0], ' ');
+      if (operatorMatch) {
+        const operator = operatorMatch[1].toLowerCase() + ':';
+        const operatorEndIndex = i + operatorMatch[0].length;
+        
+        if (operator in QueryParser.OPERATORS) {
+          // Extract the value after the operator
+          let valueStartIndex = operatorEndIndex;
+          let value = '';
+          let valueEndIndex = valueStartIndex;
+          
+          if (valueStartIndex < query.length) {
+            const nextChar = query[valueStartIndex];
+            
+            if (nextChar === '"' || nextChar === "'") {
+              // Quoted value - extract using quote handling logic
+              const quoteChar = nextChar;
+              valueStartIndex++; // Move past opening quote
+              let j = valueStartIndex;
+              
+              while (j < query.length) {
+                if (query[j] === '\\' && j + 1 < query.length) {
+                  // Handle escape sequences
+                  if (query[j + 1] === quoteChar || query[j + 1] === '\\') {
+                    value += query[j + 1];
+                    j += 2;
+                  } else {
+                    value += query[j];
+                    j++;
+                  }
+                } else if (query[j] === quoteChar) {
+                  // Found closing quote
+                  j++; // Move past closing quote
+                  valueEndIndex = j;
+                  break;
+                } else {
+                  value += query[j];
+                  j++;
+                }
+              }
+              
+              if (valueEndIndex === valueStartIndex) {
+                // Unclosed quote - take rest of query
+                value = query.substring(valueStartIndex);
+                valueEndIndex = query.length;
+              }
+            } else {
+              // Unquoted value - take until whitespace or next operator
+              let j = valueStartIndex;
+              while (j < query.length && !query[j].match(/\s/) && !query.substring(j).match(/^\w+:/)) {
+                value += query[j];
+                j++;
+              }
+              valueEndIndex = j;
+            }
+          }
+          
+          if (value) {
+            operators.set(operator, value);
+            // Replace the operator:value with spaces to clean the query
+            const toReplace = query.substring(i, valueEndIndex);
+            cleanedQuery = cleanedQuery.replace(toReplace, ' '.repeat(toReplace.length));
+          }
+          
+          i = valueEndIndex;
+        } else {
+          i++;
+        }
+      } else {
+        i++;
       }
     }
 
-    return { operators, cleanedQuery: cleanedQuery.trim() };
+    return { operators, cleanedQuery: cleanedQuery.trim().replace(/\s+/g, ' ') };
   }
 
   /**

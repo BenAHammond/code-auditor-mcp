@@ -138,7 +138,8 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
           parameterCount: funcDecl.parameters.length,
           functionCalls: normalizedCalls,
           usedImports,
-          unusedImports: unusedImports.length > 0 ? unusedImports : undefined
+          unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
+          body: funcDecl.body ? funcDecl.body.getText(sourceFile) : undefined
         }
       });
     }
@@ -185,7 +186,8 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
             parameterCount: arrowFunc.parameters.length,
             functionCalls: normalizedCalls,
             usedImports,
-            unusedImports: unusedImports.length > 0 ? unusedImports : undefined
+            unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
+            body: arrowFunc.body ? arrowFunc.body.getText(sourceFile) : undefined
           }
         });
       }
@@ -235,7 +237,8 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
             parameterCount: method.parameters.length,
             functionCalls: normalizedCalls,
             usedImports,
-            unusedImports: unusedImports.length > 0 ? unusedImports : undefined
+            unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
+            body: method.body ? method.body.getText(sourceFile) : undefined
           }
         });
       }
@@ -274,7 +277,8 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
             hooks: extractHooks(node, sourceFile),
             jsxElements: extractJSXElements(node),
             isExported: isComponentExported(node),
-            complexity: calculateComponentComplexity(node)
+            complexity: calculateComponentComplexity(node),
+            body: getComponentBody(node, sourceFile)
           };
         } else {
           // Add new component
@@ -295,7 +299,9 @@ export async function extractFunctionsFromFile(filePath: string): Promise<Functi
               hooks: extractHooks(node, sourceFile),
               jsxElements: extractJSXElements(node),
               isExported: isComponentExported(node),
-              complexity: calculateComponentComplexity(node)
+              complexity: calculateComponentComplexity(node),
+              body: getComponentBody(node, sourceFile),
+              calledBy: []
             }
           });
         }
@@ -533,4 +539,24 @@ export class FunctionScanner {
     
     return functions;
   }
+}
+
+// Helper function to get component body
+function getComponentBody(node: ts.Node, sourceFile: ts.SourceFile): string | undefined {
+  if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) {
+    return node.body ? node.body.getText(sourceFile) : undefined;
+  } else if (ts.isArrowFunction(node)) {
+    return node.body ? node.body.getText(sourceFile) : undefined;
+  } else if (ts.isClassDeclaration(node)) {
+    // For class components, get the render method body
+    const renderMethod = (node as ts.ClassDeclaration).members.find(
+      member => ts.isMethodDeclaration(member) && 
+      member.name && ts.isIdentifier(member.name) && 
+      member.name.text === 'render'
+    ) as ts.MethodDeclaration | undefined;
+    
+    return renderMethod?.body ? renderMethod.body.getText(sourceFile) : undefined;
+  }
+  
+  return undefined;
 }

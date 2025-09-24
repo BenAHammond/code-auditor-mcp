@@ -104,6 +104,13 @@ export class CodeIndexDB {
             optimize: true,
             resolution: 7,
             weight: 2  // Return type matches
+          },
+          {
+            field: 'body',
+            tokenize: 'full',
+            optimize: true,
+            resolution: 9,
+            weight: 1  // Body content matches (lower weight to prioritize metadata matches)
           }
         ]
       },
@@ -192,7 +199,9 @@ export class CodeIndexDB {
       },
       returnType: 'unknown',
       // Add tokenized name for better searching
-      tokenizedName: this.tokenizeFunctionName(func.name)
+      tokenizedName: this.tokenizeFunctionName(func.name),
+      // Extract body from metadata if present
+      body: func.metadata?.body
     };
 
     return enhanced;
@@ -590,13 +599,42 @@ export class CodeIndexDB {
     const queryParser = new QueryParser();
     let parsedQuery: ParsedQuery | undefined;
     
+    // Determine search mode
+    const searchMode = options.searchMode || 'metadata';
+    
     if (options.query) {
       parsedQuery = options.parsedQuery || queryParser.parse(options.query);
       
       // Check if there are search terms or just filters
       if (parsedQuery.terms.length > 0 || parsedQuery.phrases.length > 0) {
-        // Execute multi-strategy search
-        results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+        if (searchMode === 'content') {
+          // Content search only
+          results = await this.executeContentSearch(parsedQuery, searchScores);
+        } else if (searchMode === 'both') {
+          // Both metadata and content search
+          const metadataResults = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+          const contentResults = await this.executeContentSearch(parsedQuery, searchScores);
+          
+          // Merge results, combining scores for duplicates
+          const resultMap = new Map<number, FunctionDocument>();
+          metadataResults.forEach(doc => {
+            if (doc.$loki !== undefined) {
+              resultMap.set(doc.$loki, doc);
+            }
+          });
+          contentResults.forEach(doc => {
+            if (doc.$loki !== undefined) {
+              resultMap.set(doc.$loki, doc);
+              // Combine scores
+              const existingScore = searchScores.get(doc.$loki) || 0;
+              searchScores.set(doc.$loki, existingScore);
+            }
+          });
+          results = Array.from(resultMap.values());
+        } else {
+          // Metadata search only (default)
+          results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+        }
       } else {
         // No search terms, just filters - get all
         results = this.functionsCollection!.find();
@@ -611,7 +649,31 @@ export class CodeIndexDB {
       
       // Check if there are search terms or just filters
       if (parsedQuery.terms.length > 0 || parsedQuery.phrases.length > 0) {
-        results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+        if (searchMode === 'content') {
+          results = await this.executeContentSearch(parsedQuery, searchScores);
+        } else if (searchMode === 'both') {
+          const metadataResults = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+          const contentResults = await this.executeContentSearch(parsedQuery, searchScores);
+          
+          // Merge results
+          const resultMap = new Map<number, FunctionDocument>();
+          metadataResults.forEach(doc => {
+            if (doc.$loki !== undefined) {
+              resultMap.set(doc.$loki, doc);
+            }
+          });
+          contentResults.forEach(doc => {
+            if (doc.$loki !== undefined) {
+              resultMap.set(doc.$loki, doc);
+              // Combine scores
+              const existingScore = searchScores.get(doc.$loki) || 0;
+              searchScores.set(doc.$loki, existingScore);
+            }
+          });
+          results = Array.from(resultMap.values());
+        } else {
+          results = await this.executeMultiStrategySearch(parsedQuery, searchScores);
+        }
       } else {
         // No search terms, just filters - get all
         results = this.functionsCollection!.find();
@@ -957,7 +1019,23 @@ export class CodeIndexDB {
     }
     
     if (filters.filePath) {
-      filtered = filtered.filter(doc => doc.filePath.includes(filters.filePath!));
+      // Support both exact match and includes based on the filter format
+      if (filters.filePath.includes('*') || filters.filePath.includes('?')) {
+        // Glob pattern - convert to regex
+        const pattern = filters.filePath
+          .replace(/\*/g, '.*')
+          .replace(/\?/g, '.')
+          .replace(/\//g, '\\/');
+        const regex = new RegExp(pattern);
+        filtered = filtered.filter(doc => regex.test(doc.filePath));
+      } else if (filters.filePath.endsWith('.ts') || filters.filePath.endsWith('.tsx') || 
+                 filters.filePath.endsWith('.js') || filters.filePath.endsWith('.jsx')) {
+        // If it looks like a full filename, match the end of the path
+        filtered = filtered.filter(doc => doc.filePath.endsWith(filters.filePath!));
+      } else {
+        // Otherwise, do substring match (for directory paths)
+        filtered = filtered.filter(doc => doc.filePath.includes(filters.filePath!));
+      }
     }
     
     if (filters.fileType) {
@@ -1365,5 +1443,139 @@ export class CodeIndexDB {
       removedFunctions: totalRemoved,
       errors
     };
+  }
+
+  /**
+   * Execute content search - search within function bodies
+   */
+  private async executeContentSearch(
+    parsedQuery: ParsedQuery,
+    searchScores: Map<number, number>
+  ): Promise<FunctionDocument[]> {
+    const resultsMap = new Map<number, FunctionDocument>();
+    
+    // Get all functions (we'll filter them)
+    const allFunctions = this.functionsCollection!.find();
+    
+    // Search in function bodies
+    for (const doc of allFunctions) {
+      // Check for body in multiple possible locations
+      const body = doc.body || doc.metadata?.body;
+      if (!body) continue;
+      
+      let score = 0;
+      const bodyLower = body.toLowerCase();
+      const matches: Array<{ term: string; line: number; column: number }> = [];
+      
+      // Split body into lines for line-level matching
+      const lines = body.split('\n');
+      
+      // Check for exact phrases
+      for (const phrase of parsedQuery.phrases) {
+        const phraseLower = phrase.toLowerCase();
+        lines.forEach((line, lineIndex) => {
+          const lineLower = line.toLowerCase();
+          let columnIndex = lineLower.indexOf(phraseLower);
+          while (columnIndex !== -1) {
+            matches.push({
+              term: phrase,
+              line: (doc.lineNumber || 0) + lineIndex,
+              column: columnIndex + 1
+            });
+            score += 100; // High score for exact phrase match
+            columnIndex = lineLower.indexOf(phraseLower, columnIndex + 1);
+          }
+        });
+      }
+      
+      // Check for individual terms
+      for (const term of parsedQuery.terms) {
+        const termLower = term.toLowerCase();
+        lines.forEach((line, lineIndex) => {
+          const lineLower = line.toLowerCase();
+          let columnIndex = lineLower.indexOf(termLower);
+          while (columnIndex !== -1) {
+            matches.push({
+              term: term,
+              line: (doc.lineNumber || 0) + lineIndex,
+              column: columnIndex + 1
+            });
+            score += 20; // Score for term match
+            columnIndex = lineLower.indexOf(termLower, columnIndex + 1);
+          }
+        });
+      }
+      
+      // Check for excluded terms
+      let excluded = false;
+      for (const excludedTerm of parsedQuery.excludedTerms) {
+        if (bodyLower.includes(excludedTerm.toLowerCase())) {
+          excluded = true;
+          break;
+        }
+      }
+      
+      // Add to results if score > 0 and not excluded
+      if (score > 0 && !excluded && doc.$loki !== undefined) {
+        // Store match information in metadata
+        const resultDoc = { ...doc };
+        if (!resultDoc.metadata) resultDoc.metadata = {};
+        resultDoc.metadata.contentMatches = matches;
+        
+        // Add match context (surrounding lines)
+        const contextLines = 2; // Number of lines before and after to include
+        const matchContexts: Array<{
+          match: { term: string; line: number; column: number };
+          context: { before: string[]; line: string; after: string[] };
+        }> = [];
+        
+        // Group matches by line to avoid duplicate context
+        const matchesByLine = new Map<number, typeof matches[0][]>();
+        for (const match of matches) {
+          const relativeLineNum = match.line - (doc.lineNumber || 0);
+          if (!matchesByLine.has(relativeLineNum)) {
+            matchesByLine.set(relativeLineNum, []);
+          }
+          matchesByLine.get(relativeLineNum)!.push(match);
+        }
+        
+        // Build context for each unique line
+        for (const [relativeLineNum, lineMatches] of matchesByLine) {
+          if (relativeLineNum >= 0 && relativeLineNum < lines.length) {
+            const before: string[] = [];
+            const after: string[] = [];
+            
+            // Get lines before
+            for (let i = Math.max(0, relativeLineNum - contextLines); i < relativeLineNum; i++) {
+              before.push(lines[i]);
+            }
+            
+            // Get lines after
+            for (let i = relativeLineNum + 1; i < Math.min(lines.length, relativeLineNum + contextLines + 1); i++) {
+              after.push(lines[i]);
+            }
+            
+            // Add context for each match on this line
+            for (const match of lineMatches) {
+              matchContexts.push({
+                match,
+                context: {
+                  before,
+                  line: lines[relativeLineNum],
+                  after
+                }
+              });
+            }
+          }
+        }
+        
+        resultDoc.metadata.matchContexts = matchContexts;
+        
+        resultsMap.set(doc.$loki, resultDoc);
+        searchScores.set(doc.$loki, score);
+      }
+    }
+    
+    return Array.from(resultsMap.values());
   }
 }

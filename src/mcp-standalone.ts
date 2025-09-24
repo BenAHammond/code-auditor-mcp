@@ -109,7 +109,7 @@ const tools: Tool[] = [
         name: 'filters',
         type: 'object',
         required: false,
-        description: 'Optional filters (language, filePath, dependencies, componentType, entityType)',
+        description: 'Optional filters (language, filePath, dependencies, componentType, entityType, searchMode). Set searchMode to "content" to search within function bodies, "metadata" for names/signatures only, or "both" for combined search',
       },
       {
         name: 'limit',
@@ -398,7 +398,16 @@ async function startMcpServer() {
           const limit = (args.limit as number) || 50;
           const offset = (args.offset as number) || 0;
           
-          result = await searchFunctions({ query, filters, limit, offset });
+          // Extract searchMode from filters if present
+          let searchMode: 'metadata' | 'content' | 'both' | undefined;
+          if (filters && filters.searchMode) {
+            searchMode = filters.searchMode;
+            // Remove searchMode from filters as it's a top-level option
+            const { searchMode: _, ...cleanFilters } = filters;
+            result = await searchFunctions({ query, filters: cleanFilters, limit, offset, searchMode });
+          } else {
+            result = await searchFunctions({ query, filters, limit, offset });
+          }
           break;
         }
         
