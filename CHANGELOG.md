@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2024-12-21
+
+### Added
+- **Content Search** - Search within function bodies, not just metadata
+  - New `searchMode` parameter: `metadata`, `content`, or `both`
+  - Match context shows 2 lines before/after matches
+  - Line-level match tracking with line numbers and columns
+- **Enhanced Query Parsing** - Improved handling of complex queries
+  - Support for nested quotes in search queries
+  - Better handling of escaped characters
+  - Proper parsing of queries like `"column: 'country'"`
+
+### Fixed
+- **Search Results** - Now returns line-level matches instead of just function-level
+- **File Filtering** - Improved file path filtering logic
+  - Supports exact matches, glob patterns, and substring matching
+  - Properly restricts results to specified file paths
+- **Function Body Indexing** - Fixed missing body extraction for arrow functions and methods
+- **FlexSearch Configuration** - Added body field to search index
+- **SRP False Positives** - Fixed Single Responsibility Principle detection
+  - No longer flags single-element responsibility groups
+  - Better grouping logic for related functionality
+
 ## [1.2.0] - 2024-12-20
 
 ### Changed

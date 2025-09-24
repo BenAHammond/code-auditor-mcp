@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "1.4.0",
+  "version": "1.6.0",
   "description": "TypeScript/JavaScript code quality auditor with MCP server - Analyze code for SOLID principles, DRY violations, security patterns, and more",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -77,7 +77,7 @@
     "url": "https://github.com/BenAHammond/code-auditor-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/code-auditor/code-auditor/issues"
+    "url": "https://github.com/BenAHammond/code-auditor-mcp/issues"
   },
-  "homepage": "https://github.com/code-auditor/code-auditor#readme"
+  "homepage": "https://www.codeauditormcp.com/"
 }

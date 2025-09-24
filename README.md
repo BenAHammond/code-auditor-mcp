@@ -11,7 +11,7 @@ A comprehensive TypeScript/JavaScript code quality audit tool that analyzes your
 - **Data Access Patterns** - Check for SQL injection risks, performance issues, and security patterns
 - **Code Function Indexing** - Index and search functions across your codebase with intelligent tokenization
 - **AI Tool Configuration** - Auto-generate configurations for 10+ AI coding assistants
-- **Advanced Search** - Natural language search with synonym expansion and camelCase support
+- **Advanced Search** - Natural language search with content search, match context, and query parsing
 - **Index Maintenance** - Bulk cleanup and deep synchronization tools for accurate indexing
 - **Multiple Output Formats** - Generate HTML, JSON, or CSV reports
 - **Highly Configurable** - Customize thresholds, patterns, and analysis rules
@@ -389,6 +389,53 @@ If you prefer to configure Claude Desktop manually:
 
 The `search_functions` tool (and `search_code` in MCP) supports powerful search operators that enable precise code discovery. You can use natural language queries combined with special operators to find exactly what you need.
 
+#### Search Modes
+
+The search tool now supports three distinct search modes:
+
+- **metadata** (default) - Searches in function names, signatures, and metadata
+- **content** - Searches within function bodies and implementations
+- **both** - Searches in both metadata and content
+
+Set the search mode in the MCP tool by adding it to filters:
+```json
+{
+  "query": "validateUser",
+  "filters": {
+    "searchMode": "content"
+  }
+}
+```
+
+#### Match Context
+
+When using content search mode, results include match context showing 2 lines before and after each match. This helps you understand the code context without needing to open the file.
+
+Example output:
+```typescript
+{
+  "contentMatches": [
+    {
+      "line": 45,
+      "column": 8,
+      "match": "validateUser(email)"
+    }
+  ],
+  "matchContexts": [
+    {
+      "matchIndex": 0,
+      "context": [
+        "    // Check if user exists",
+        "    const user = await getUserByEmail(email);",
+        "    if (!validateUser(email)) {",
+        "      throw new Error('Invalid user');",
+        "    }"
+      ]
+    }
+  ]
+}
+```
+
 #### Search Operators Reference
 
 | Operator | Description | Example |
@@ -420,6 +467,9 @@ The `search_functions` tool (and `search_code` in MCP) supports powerful search 
 #### Example Searches
 
 ```bash
+# Content search - find where a specific pattern appears in code
+search_code "validateUser" --filters '{"searchMode": "content"}'
+
 # Find complex functions that need refactoring
 search_code "complexity:>10 -test"
 
@@ -435,8 +485,20 @@ search_code "unused-imports file:src"
 # Find what depends on a function
 search_code "dependents-of:authenticate"
 
+# Search for SQL queries in function bodies
+search_code "SELECT FROM" --filters '{"searchMode": "content"}'
+
+# Find where specific error messages are thrown
+search_code '"Invalid user"' --filters '{"searchMode": "content"}'
+
+# Complex query with nested quotes
+search_code '"column: \'country\'"' --filters '{"searchMode": "content"}'
+
 # Combine multiple operators
 search_code "Button component:functional prop:onClick file:components"
+
+# Search both metadata and content
+search_code "auth" --filters '{"searchMode": "both", "filePath": "src/services"}'
 ```
 
 ### Usage Examples with Claude
@@ -449,11 +511,25 @@ search_code "Button component:functional prop:onClick file:components"
 "Find security vulnerabilities in my authentication code"
 "Show me all code duplication in the components folder"
 
-# Code Search & Discovery
+# Code Search & Discovery (Metadata Search)
 "Search for functions that validate email addresses"
 "Find all user authentication functions"
 "Show me any existing data table components"
 "Search for functions that send notifications"
+"Find all React components that use useState hook"
+
+# Content Search (Search within function bodies)
+"Search for where we're calling the validateUser function in the code"
+"Find all SQL queries that select from the users table"
+"Show me where we're throwing 'Invalid user' errors"
+"Find all console.log statements in production code"
+"Search for TODO comments in function implementations"
+"Find where we're using the column 'country' in our queries"
+
+# Combined Search
+"Find authentication functions and show where they're called from"
+"Search for Button components and their onClick handlers"
+"Find all API endpoints and their rate limiting implementations"
 
 # AI Tool Configuration
 "Generate AI configurations for Cursor and Claude"
@@ -463,6 +539,7 @@ search_code "Button component:functional prop:onClick file:components"
 # Maintenance
 "Clean up stale entries in the code index"
 "Sync all indexed files to update function signatures"
+"Re-index the src directory to pick up recent changes"
 ```
 
 See [TOOLS-DOCUMENTATION.md](TOOLS-DOCUMENTATION.md) for comprehensive documentation on all MCP tools.
