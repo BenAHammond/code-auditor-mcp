@@ -122,3 +122,4 @@ custom-server/
 bug-reports/
 
 .claude/
+claude.backup-*
