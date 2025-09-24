@@ -7,7 +7,7 @@ import { FunctionMetadata, AuditOptions } from './types.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { parseTypeScriptFile } from './utils/astParser.js';
 import { findNodesByKind, getNodeText, getLineAndColumn } from './utils/astUtils.js';
-import { getImports, getImportsDetailed, extractIdentifierUsage, isLocalFunction } from './utils/astUtils.js';
+import { getImports, getImportsDetailed, extractIdentifierUsage, isLocalFunction, getReExports } from './utils/astUtils.js';
 import { 
   isReactComponent, 
   detectComponentType, 
@@ -107,6 +107,30 @@ export async function extractFunctionsFromFile(
   const importNames = new Set(detailedImports.map(imp => imp.localName));
   const fileUsageMap = extractIdentifierUsage(sourceFile, sourceFile, importNames);
   
+  // Track re-exports - these imports are used even if not referenced in code
+  const reExports = getReExports(sourceFile);
+  for (const reExport of reExports) {
+    // Find imports that match re-exported names
+    for (const imp of detailedImports) {
+      if (imp.importedName === reExport.name || 
+          (reExport.name === '*' && imp.modulePath === reExport.module)) {
+        // Mark this import as used for re-export
+        if (!fileUsageMap.has(imp.localName)) {
+          fileUsageMap.set(imp.localName, {
+            usageType: 'reexport',
+            usageCount: 1,
+            lineNumbers: []
+          });
+        } else {
+          const usage = fileUsageMap.get(imp.localName)!;
+          if (usage.usageType !== 'reexport') {
+            usage.usageType = 'reexport';
+          }
+        }
+      }
+    }
+  }
+  
   // Find all function declarations
   const functionDeclarations = findNodesByKind(sourceFile, ts.SyntaxKind.FunctionDeclaration);
   for (const func of functionDeclarations) {
@@ -129,6 +153,9 @@ export async function extractFunctionsFromFile(
       const config = options?.unusedImportsConfig;
       let unusedImports = detailedImports
         .filter(imp => {
+          // Skip side-effect imports - they're never "unused"
+          if ((imp.importType as any) === 'side-effect') return false;
+          
           // Check if import is used
           if (functionUsageMap.has(imp.localName)) return false;
           
@@ -192,6 +219,9 @@ export async function extractFunctionsFromFile(
         const config = options?.unusedImportsConfig;
         let unusedImports = detailedImports
           .filter(imp => {
+            // Skip side-effect imports - they're never "unused"
+            if ((imp.importType as any) === 'side-effect') return false;
+            
             // Check if import is used
             if (functionUsageMap.has(imp.localName)) return false;
             
@@ -256,6 +286,9 @@ export async function extractFunctionsFromFile(
         const config = options?.unusedImportsConfig;
         let unusedImports = detailedImports
           .filter(imp => {
+            // Skip side-effect imports - they're never "unused"
+            if ((imp.importType as any) === 'side-effect') return false;
+            
             // Check if import is used
             if (functionUsageMap.has(imp.localName)) return false;
             

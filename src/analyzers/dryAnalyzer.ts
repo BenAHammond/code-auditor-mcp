@@ -466,6 +466,9 @@ function extractUnusedImports(
   
   // Find unused imports
   for (const imp of detailedImports) {
+    // Skip side-effect imports - they're never "unused"
+    if ((imp.importType as any) === 'side-effect') continue;
+    
     if (!usageMap.has(imp.localName)) {
       const key = `${filePath}:${imp.localName}`;
       

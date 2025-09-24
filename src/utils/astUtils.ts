@@ -411,11 +411,51 @@ export function getImportsDetailed(sourceFile: ts.SourceFile): ImportMapping[] {
             });
           }
         }
+      } else {
+        // Side-effect import (no import clause) - e.g., import './polyfills'
+        imports.push({
+          localName: `[side-effect]::${moduleSpecifier}`,
+          importedName: '[side-effect]',
+          modulePath: moduleSpecifier,
+          importType: 'side-effect' as any,
+          isTypeOnly: false
+        });
       }
     }
   });
   
   return imports;
+}
+
+/**
+ * Get re-exports from a source file
+ */
+export function getReExports(sourceFile: ts.SourceFile): Array<{name: string; module: string}> {
+  const reExports: Array<{name: string; module: string}> = [];
+  
+  ts.forEachChild(sourceFile, node => {
+    // Handle export declarations with module specifier - e.g., export { x } from './y'
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+      const moduleSpecifier = (node.moduleSpecifier as ts.StringLiteral).text;
+      
+      if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+        node.exportClause.elements.forEach(element => {
+          reExports.push({
+            name: element.propertyName?.text || element.name.text,
+            module: moduleSpecifier
+          });
+        });
+      } else if (!node.exportClause) {
+        // export * from './module'
+        reExports.push({
+          name: '*',
+          module: moduleSpecifier
+        });
+      }
+    }
+  });
+  
+  return reExports;
 }
 
 /**
@@ -429,6 +469,7 @@ export function extractIdentifierUsage(
   const usageMap = new Map<string, UsageInfo>();
   
   function visit(node: ts.Node): void {
+    // Handle identifiers (most common case)
     if (ts.isIdentifier(node)) {
       const name = node.text;
       
@@ -450,6 +491,11 @@ export function extractIdentifierUsage(
         // For property access expressions, only count the leftmost identifier
         if (shouldCount && ts.isPropertyAccessExpression(node.parent)) {
           // Only count if this identifier is the expression (left side), not the name (right side)
+          shouldCount = node.parent.expression === node;
+        }
+        
+        // Handle element access (dynamic property access) - e.g., config[key]
+        if (shouldCount && ts.isElementAccessExpression(node.parent)) {
           shouldCount = node.parent.expression === node;
         }
         
@@ -476,6 +522,110 @@ export function extractIdentifierUsage(
           
           usageMap.set(name, existing);
         }
+      }
+    }
+    
+    // Handle spread operators - e.g., {...defaults}
+    else if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) {
+      const expr = node.expression;
+      if (ts.isIdentifier(expr) && importNames.has(expr.text)) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(expr.getStart());
+        const existing = usageMap.get(expr.text) || {
+          usageType: 'direct',
+          usageCount: 0,
+          lineNumbers: []
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line + 1);
+        usageMap.set(expr.text, existing);
+      }
+    }
+    
+    // Handle JSX elements - e.g., <Button /> or <Button.Primary />
+    else if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const tagName = ts.isJsxElement(node) ? node.openingElement.tagName : node.tagName;
+      
+      if (ts.isIdentifier(tagName) && importNames.has(tagName.text)) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(tagName.getStart());
+        const existing = usageMap.get(tagName.text) || {
+          usageType: 'direct',
+          usageCount: 0,
+          lineNumbers: []
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line + 1);
+        usageMap.set(tagName.text, existing);
+      } else if (ts.isPropertyAccessExpression(tagName)) {
+        // Handle compound components like <Button.Primary />
+        if (ts.isIdentifier(tagName.expression) && importNames.has(tagName.expression.text)) {
+          const { line } = sourceFile.getLineAndCharacterOfPosition(tagName.expression.getStart());
+          const existing = usageMap.get(tagName.expression.text) || {
+            usageType: 'direct',
+            usageCount: 0,
+            lineNumbers: []
+          };
+          existing.usageCount++;
+          existing.lineNumbers.push(line + 1);
+          usageMap.set(tagName.expression.text, existing);
+        }
+      }
+    }
+    
+    // Handle decorators - e.g., @withAuth
+    else if (ts.isDecorator(node)) {
+      const expr = node.expression;
+      if (ts.isIdentifier(expr) && importNames.has(expr.text)) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(expr.getStart());
+        const existing = usageMap.get(expr.text) || {
+          usageType: 'direct',
+          usageCount: 0,
+          lineNumbers: []
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line + 1);
+        usageMap.set(expr.text, existing);
+      } else if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && 
+                 importNames.has(expr.expression.text)) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(expr.expression.getStart());
+        const existing = usageMap.get(expr.expression.text) || {
+          usageType: 'direct',
+          usageCount: 0,
+          lineNumbers: []
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line + 1);
+        usageMap.set(expr.expression.text, existing);
+      }
+    }
+    
+    // Handle object literal property assignments for factory patterns
+    else if (ts.isPropertyAssignment(node)) {
+      // Check if the initializer is an imported identifier
+      if (ts.isIdentifier(node.initializer) && importNames.has(node.initializer.text)) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.initializer.getStart());
+        const existing = usageMap.get(node.initializer.text) || {
+          usageType: 'direct',
+          usageCount: 0,
+          lineNumbers: []
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line + 1);
+        usageMap.set(node.initializer.text, existing);
+      }
+    }
+    
+    // Handle shorthand property assignments - e.g., { ComponentA, ComponentB }
+    else if (ts.isShorthandPropertyAssignment(node)) {
+      if (importNames.has(node.name.text)) {
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.name.getStart());
+        const existing = usageMap.get(node.name.text) || {
+          usageType: 'direct',
+          usageCount: 0,
+          lineNumbers: []
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line + 1);
+        usageMap.set(node.name.text, existing);
       }
     }
     
