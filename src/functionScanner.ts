@@ -145,8 +145,8 @@ export async function extractFunctionsFromFile(
       );
       
       // Track which imports this function uses
-      const functionUsageMap = funcDecl.body ? 
-        extractIdentifierUsage(funcDecl.body, sourceFile, importNames) : new Map();
+      const functionUsageMap = funcDecl ? 
+        extractIdentifierUsage(funcDecl, sourceFile, importNames) : new Map();
       const usedImports = Array.from(functionUsageMap.keys());
       
       // Apply unused imports configuration
@@ -211,8 +211,8 @@ export async function extractFunctionsFromFile(
         );
         
         // Track which imports this function uses
-        const functionUsageMap = arrowFunc.body ? 
-          extractIdentifierUsage(arrowFunc.body, sourceFile, importNames) : new Map();
+        const functionUsageMap = arrowFunc ? 
+          extractIdentifierUsage(arrowFunc, sourceFile, importNames) : new Map();
         const usedImports = Array.from(functionUsageMap.keys());
         
         // Apply unused imports configuration
@@ -278,8 +278,8 @@ export async function extractFunctionsFromFile(
         );
         
         // Track which imports this method uses
-        const functionUsageMap = method.body ? 
-          extractIdentifierUsage(method.body, sourceFile, importNames) : new Map();
+        const functionUsageMap = method ? 
+          extractIdentifierUsage(method, sourceFile, importNames) : new Map();
         const usedImports = Array.from(functionUsageMap.keys());
         
         // Apply unused imports configuration

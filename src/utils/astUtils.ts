@@ -510,14 +510,11 @@ export function extractIdentifierUsage(
           existing.usageCount++;
           existing.lineNumbers.push(line + 1);
           
-          // Determine usage type
-          if (ts.isTypeNode(node.parent) || ts.isTypeReferenceNode(node.parent)) {
+          // Determine usage type - comprehensive type usage detection
+          if (isTypeOnlyUsage(node)) {
             existing.usageType = 'type';
           } else if (ts.isExportSpecifier(node.parent)) {
             existing.usageType = 'reexport';
-          } else if (ts.isTypeQueryNode(node.parent) || 
-                     (ts.isQualifiedName(node.parent) && node.parent.left === node)) {
-            existing.usageType = 'type';
           }
           
           usageMap.set(name, existing);
@@ -630,6 +627,218 @@ export function extractIdentifierUsage(
     }
     
     ts.forEachChild(node, visit);
+  }
+  
+  /**
+   * Comprehensive check for type-only usage patterns
+   */
+  function isTypeOnlyUsage(node: ts.Identifier): boolean {
+    let parent = node.parent;
+    
+    // Direct type node checks
+    if (ts.isTypeNode(parent) || ts.isTypeReferenceNode(parent)) {
+      return true;
+    }
+    
+    // Type query (typeof X)
+    if (ts.isTypeQueryNode(parent)) {
+      return true;
+    }
+    
+    // Qualified name in type position
+    if (ts.isQualifiedName(parent) && parent.left === node) {
+      return isTypeOnlyUsage(parent as any);
+    }
+    
+    // Interface extension: interface X extends BaseType
+    if (ts.isInterfaceDeclaration(parent) && parent.heritageClauses) {
+      for (const clause of parent.heritageClauses) {
+        if (clause.token === ts.SyntaxKind.ExtendsKeyword) {
+          for (const type of clause.types) {
+            if (type.expression === node || 
+                (ts.isPropertyAccessExpression(type.expression) && type.expression.expression === node)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    
+    // Type alias: type X = BaseType | BaseType & Other
+    if (ts.isTypeAliasDeclaration(parent) && parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Class implements: class X implements BaseType
+    if (ts.isClassDeclaration(parent) && parent.heritageClauses) {
+      for (const clause of parent.heritageClauses) {
+        if (clause.token === ts.SyntaxKind.ImplementsKeyword) {
+          for (const type of clause.types) {
+            if (type.expression === node || 
+                (ts.isPropertyAccessExpression(type.expression) && type.expression.expression === node)) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    
+    // Generic constraints: function test<T extends BaseType>()
+    if (ts.isTypeParameterDeclaration(parent) && parent.constraint) {
+      return isNodeInTypePosition(node, parent.constraint);
+    }
+    
+    // Type annotations in variable declarations: const x: BaseType = ...
+    if (ts.isVariableDeclaration(parent) && parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Type assertions: value as BaseType or <BaseType>value
+    if (ts.isAsExpression(parent) && parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    if (ts.isTypeAssertionExpression(parent) && parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Type parameters/arguments: Array<BaseType>, Promise<BaseType>
+    if (ts.isTypeReferenceNode(parent) && parent.typeArguments) {
+      for (const arg of parent.typeArguments) {
+        if (isNodeInTypePosition(node, arg)) {
+          return true;
+        }
+      }
+    }
+    
+    // Return type annotations: function test(): BaseType
+    if ((ts.isFunctionDeclaration(parent) || 
+         ts.isMethodDeclaration(parent) || 
+         ts.isArrowFunction(parent) || 
+         ts.isFunctionExpression(parent) ||
+         ts.isGetAccessorDeclaration(parent) ||
+         ts.isMethodSignature(parent)) && 
+        parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Parameter type annotations: function test(x: BaseType)
+    if (ts.isParameter(parent) && parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Property type annotations: { prop: BaseType } or class { prop: BaseType }
+    if ((ts.isPropertyDeclaration(parent) || 
+         ts.isPropertySignature(parent)) && 
+        parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Index signature types: { [key: string]: BaseType }
+    if (ts.isIndexSignatureDeclaration(parent) && parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Mapped type constraint or type: { [K in keyof BaseType]: ... }
+    if (ts.isMappedTypeNode(parent)) {
+      if (parent.typeParameter && parent.typeParameter.constraint) {
+        return isNodeInTypePosition(node, parent.typeParameter.constraint);
+      }
+      if (parent.type) {
+        return isNodeInTypePosition(node, parent.type);
+      }
+    }
+    
+    // Conditional types: T extends BaseType ? X : Y
+    if (ts.isConditionalTypeNode(parent)) {
+      return isNodeInTypePosition(node, parent.checkType) || 
+             isNodeInTypePosition(node, parent.extendsType) ||
+             isNodeInTypePosition(node, parent.trueType) ||
+             isNodeInTypePosition(node, parent.falseType);
+    }
+    
+    // Union and intersection types: BaseType | Other, BaseType & Other
+    if (ts.isUnionTypeNode(parent) || ts.isIntersectionTypeNode(parent)) {
+      for (const type of parent.types) {
+        if (isNodeInTypePosition(node, type)) {
+          return true;
+        }
+      }
+    }
+    
+    // Type predicate: function isX(value: any): value is BaseType
+    if (ts.isTypePredicateNode(parent) && parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Check if we need to traverse up the tree
+    if (parent.parent) {
+      // For nested type structures, check if parent is in type position
+      if (ts.isTypeNode(parent)) {
+        return true;
+      }
+      
+      // Check grandparent for certain patterns
+      const grandparent = parent.parent;
+      
+      // Heritage clauses (extends/implements) with property access
+      if (ts.isExpressionWithTypeArguments(parent) && 
+          ts.isHeritageClause(grandparent)) {
+        return true;
+      }
+      
+      // Type arguments in call expressions: func<BaseType>()
+      if (ts.isCallExpression(grandparent) && 
+          grandparent.typeArguments) {
+        for (const arg of grandparent.typeArguments) {
+          if (isNodeInTypePosition(node, arg)) {
+            return true;
+          }
+        }
+      }
+      
+      // Type arguments in new expressions: new Class<BaseType>()
+      if (ts.isNewExpression(grandparent) && 
+          grandparent.typeArguments) {
+        for (const arg of grandparent.typeArguments) {
+          if (isNodeInTypePosition(node, arg)) {
+            return true;
+          }
+        }
+      }
+      
+      // Tagged template type arguments: tag<BaseType>`...`
+      if (ts.isTaggedTemplateExpression(grandparent) && 
+          grandparent.typeArguments) {
+        for (const arg of grandparent.typeArguments) {
+          if (isNodeInTypePosition(node, arg)) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Helper to check if a node is within a type node
+   */
+  function isNodeInTypePosition(identifier: ts.Identifier, typeNode: ts.Node): boolean {
+    let found = false;
+    
+    function checkNode(node: ts.Node): void {
+      if (found) return;
+      
+      if (node === identifier) {
+        found = true;
+        return;
+      }
+      
+      ts.forEachChild(node, checkNode);
+    }
+    
+    checkNode(typeNode);
+    return found;
   }
   
   visit(node);
