@@ -382,33 +382,8 @@ async function checkDependencyInversion(
 ): Promise<Violation[]> {
   const violations: Violation[] = [];
   
-  // Check for direct imports of concrete implementations
-  const imports = findNodesOfType(sourceFile, ts.isImportDeclaration);
-  for (const imp of imports) {
-    const moduleSpecifier = imp.moduleSpecifier;
-    if (ts.isStringLiteral(moduleSpecifier)) {
-      const importPath = moduleSpecifier.text;
-      
-      // Check for concrete implementation imports
-      if (await isConcreteDependency(importPath)) {
-        const { line, column } = getNodePosition(sourceFile, imp);
-        violations.push(createViolation({
-        analyzer: 'solid',
-          file: filePath,
-          line,
-          column,
-          severity: 'warning',
-          message: `Direct import of concrete implementation: "${importPath}"`,
-          type: 'solid',
-          principle: 'dependency-inversion',
-          recommendation: 'Depend on abstractions (interfaces) rather than concrete implementations',
-          details: {
-            importPath
-          }
-        }));
-      }
-    }
-  }
+  // Skip import checking - DI principle should focus on instantiation, not imports
+  // Imports are necessary and checking them creates too many false positives
   
   // Check for 'new' expressions (direct instantiation)
   const newExpressions = findNodesOfType(sourceFile, ts.isNewExpression);
