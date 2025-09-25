@@ -27,8 +27,39 @@ console.error(chalk.blue('[INFO]'), 'Code index service loaded');
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { createWriteStream, existsSync } from 'node:fs';
 import { CodeIndexDB } from './codeIndexDB.js';
 console.error(chalk.blue('[INFO]'), 'All modules loaded successfully');
+
+// Set up file logging
+const logFilePath = path.join(process.cwd(), 'mcp-server.log');
+const logStream = createWriteStream(logFilePath, { flags: 'a' });
+
+// Save original console methods
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+
+// Override console.log
+console.log = (...args: any[]) => {
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+  ).join(' ');
+  const timestamp = new Date().toISOString();
+  logStream.write(`[${timestamp}] [LOG] ${message}\n`);
+  originalConsoleLog.apply(console, args);
+};
+
+// Override console.error
+console.error = (...args: any[]) => {
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+  ).join(' ');
+  const timestamp = new Date().toISOString();
+  logStream.write(`[${timestamp}] [ERROR] ${message}\n`);
+  originalConsoleError.apply(console, args);
+};
+
+console.error(chalk.blue('[INFO]'), `Logging to file: ${logFilePath}`);
 
 interface ToolParameter {
   name: string;
@@ -220,6 +251,9 @@ const tools: Tool[] = [
 
 async function startMcpServer() {
   console.error(chalk.blue('[INFO]'), 'Starting Code Auditor MCP Server...');
+  console.error(chalk.blue('[DEBUG]'), `Process PID: ${process.pid}`);
+  console.error(chalk.blue('[DEBUG]'), `Node version: ${process.version}`);
+  console.error(chalk.blue('[DEBUG]'), `Working directory: ${process.cwd()}`);
   
   const server = new Server(
     {
@@ -233,13 +267,22 @@ async function startMcpServer() {
   );
   
   console.error(chalk.blue('[INFO]'), 'Server instance created');
+  console.error(chalk.blue('[DEBUG]'), 'Server capabilities:', JSON.stringify({ tools: {} }));
+
+  // Add error handler
+  server.onerror = (error) => {
+    console.error(chalk.red('[ERROR]'), 'Server error occurred:', error);
+    console.error(chalk.red('[ERROR]'), 'Error stack:', error.stack);
+  };
 
   // Handle tool listing
   console.error(chalk.blue('[INFO]'), 'Setting up request handlers...');
   
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+    console.error(chalk.blue('[DEBUG]'), 'Received ListTools request');
+    console.error(chalk.blue('[DEBUG]'), 'Request:', JSON.stringify(request, null, 2));
     console.error(chalk.blue('[DEBUG]'), 'Handling ListTools request');
-    return {
+    const response = {
       tools: tools.map(tool => ({
         name: tool.name,
         description: tool.description,
@@ -258,16 +301,42 @@ async function startMcpServer() {
         },
       })),
     };
+    console.error(chalk.blue('[DEBUG]'), `Returning ${response.tools.length} tools`);
+    console.error(chalk.blue('[DEBUG]'), 'ListTools response:', JSON.stringify(response, null, 2));
+    return response;
   });
   
   console.error(chalk.blue('[INFO]'), `Registered ${tools.length} tools`);
+  
+  // Add handler for initialize request
+  server.setRequestHandler('initialize' as any, async (request: any) => {
+    console.error(chalk.blue('[DEBUG]'), 'Received initialize request');
+    console.error(chalk.blue('[DEBUG]'), 'Request:', JSON.stringify(request, null, 2));
+    const response = {
+      protocolVersion: '2024-11-05',
+      capabilities: {
+        tools: {},
+      },
+      serverInfo: {
+        name: 'code-auditor',
+        version: '1.0.0',
+      },
+    };
+    console.error(chalk.blue('[DEBUG]'), 'Initialize response:', JSON.stringify(response, null, 2));
+    return response;
+  });
 
   // Handle tool execution
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    console.error(chalk.blue('[DEBUG]'), 'Received CallTool request');
+    console.error(chalk.blue('[DEBUG]'), 'Request:', JSON.stringify(request, null, 2));
     const { name, arguments: args } = request.params;
+    console.error(chalk.blue('[DEBUG]'), `Tool name: ${name}`);
+    console.error(chalk.blue('[DEBUG]'), `Tool arguments:`, JSON.stringify(args, null, 2));
     console.error(chalk.blue('[DEBUG]'), `Handling CallTool request for: ${name}`);
 
     try {
+      console.error(chalk.blue('[DEBUG]'), `Starting tool execution for: ${name}`);
       let result: any;
 
       switch (name) {
@@ -594,7 +663,7 @@ async function startMcpServer() {
           throw new Error(`Unknown tool: ${name}`);
       }
 
-      return {
+      const response = {
         content: [
           {
             type: 'text' as const,
@@ -602,7 +671,12 @@ async function startMcpServer() {
           },
         ],
       };
+      console.error(chalk.blue('[DEBUG]'), `Tool ${name} executed successfully`);
+      console.error(chalk.blue('[DEBUG]'), 'CallTool response:', JSON.stringify(response, null, 2).substring(0, 500) + '...');
+      return response;
     } catch (error) {
+      console.error(chalk.red('[ERROR]'), `Tool ${name} execution failed:`, error);
+      console.error(chalk.red('[ERROR]'), 'Error stack:', error instanceof Error ? error.stack : 'No stack trace');
       return {
         content: [
           {
@@ -623,10 +697,31 @@ async function startMcpServer() {
   const transport = new StdioServerTransport();
   console.error(chalk.blue('[INFO]'), 'Creating stdio transport...');
   
+  // Add transport event handlers if available
+  if (transport.onclose) {
+    transport.onclose = () => {
+      console.error(chalk.yellow('[WARN]'), 'Transport closed');
+    };
+  }
+  
+  if (transport.onerror) {
+    transport.onerror = (error) => {
+      console.error(chalk.red('[ERROR]'), 'Transport error:', error);
+    };
+  }
+  
+  console.error(chalk.blue('[DEBUG]'), 'Connecting server to transport...');
   await server.connect(transport);
+  console.error(chalk.blue('[DEBUG]'), 'Server connected to transport');
 
   console.error(chalk.green('✓ Code Auditor MCP Server started'));
   console.error(chalk.gray('Listening on stdio...'));
+  console.error(chalk.blue('[DEBUG]'), 'Server state after initialization:', {
+    name: server.serverInfo?.name,
+    transport: 'stdio',
+    handlers: ['ListTools', 'CallTool', 'initialize'],
+    toolCount: tools.length,
+  });
 }
 
 function getAllViolations(result: AuditResult): Violation[] {
@@ -684,13 +779,35 @@ function getHealthRecommendation(score: number, result: AuditResult): string {
 process.on('uncaughtException', (error) => {
   console.error(chalk.red('[ERROR]'), 'Uncaught exception:', error);
   console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);
+  console.error(chalk.red('[ERROR]'), 'Error details:', JSON.stringify(error, null, 2));
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error(chalk.red('[ERROR]'), 'Unhandled rejection at:', promise);
   console.error(chalk.red('[ERROR]'), 'Reason:', reason);
+  console.error(chalk.red('[ERROR]'), 'Rejection details:', JSON.stringify(reason, null, 2));
   process.exit(1);
+});
+
+// Add SIGTERM and SIGINT handlers
+process.on('SIGTERM', () => {
+  console.error(chalk.yellow('[WARN]'), 'Received SIGTERM, shutting down gracefully...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.error(chalk.yellow('[WARN]'), 'Received SIGINT, shutting down gracefully...');
+  process.exit(0);
+});
+
+// Log when stdin/stdout events occur
+process.stdin.on('error', (error) => {
+  console.error(chalk.red('[ERROR]'), 'stdin error:', error);
+});
+
+process.stdout.on('error', (error) => {
+  console.error(chalk.red('[ERROR]'), 'stdout error:', error);
 });
 
 // Start server
