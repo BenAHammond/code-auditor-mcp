@@ -233,10 +233,11 @@ export class CodeIndexDB {
     this.ensureInitialized();
     
     try {
-      // Check if function already exists
+      // Check if function already exists (use composite key: name + filePath + lineNumber)
       const existing = this.functionsCollection!.findOne({
         name: func.name,
-        filePath: func.filePath
+        filePath: func.filePath,
+        lineNumber: func.lineNumber
       });
 
       if (existing) {
@@ -315,14 +316,19 @@ export class CodeIndexDB {
       // Get all currently indexed functions for this file
       const indexedFunctions = this.functionsCollection!.find({ filePath });
       
-      // Create a map of current functions by name for quick lookup
+      // Create a map of current functions by composite key for quick lookup
+      const createKey = (f: any) => `${f.name}:${f.filePath}:${f.lineNumber}`;
       const currentFunctionMap = new Map(
-        currentFunctions.map(f => [f.name, f])
+        currentFunctions.map(f => [createKey(f), f])
       );
 
       // Update or add functions
       for (const func of currentFunctions) {
-        const existing = indexedFunctions.find(f => f.name === func.name);
+        const existing = indexedFunctions.find(f => 
+          f.name === func.name && 
+          f.filePath === func.filePath && 
+          f.lineNumber === func.lineNumber
+        );
         
         if (existing) {
           // Update existing function
@@ -342,7 +348,8 @@ export class CodeIndexDB {
 
       // Remove functions that no longer exist in the file
       for (const indexed of indexedFunctions) {
-        if (!currentFunctionMap.has(indexed.name)) {
+        const indexedKey = createKey(indexed);
+        if (!currentFunctionMap.has(indexedKey)) {
           // Function no longer exists, remove it
           this.functionsCollection!.remove(indexed);
           this.searchIndex.remove(indexed.$loki);
