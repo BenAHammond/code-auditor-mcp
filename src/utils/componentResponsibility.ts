@@ -178,10 +178,12 @@ export function areResponsibilitiesRelated(
     [ResponsibilityType.DataFetching, ResponsibilityType.DataTransformation, ResponsibilityType.Subscriptions, ResponsibilityType.ErrorHandling],
     // Auth-related
     [ResponsibilityType.Authentication, ResponsibilityType.Routing, ResponsibilityType.ErrorHandling],
-    // UI-related
-    [ResponsibilityType.UIState, ResponsibilityType.Layout, ResponsibilityType.EventHandling],
+    // UI-related (including filter components that manage URL state)
+    [ResponsibilityType.UIState, ResponsibilityType.Layout, ResponsibilityType.EventHandling, ResponsibilityType.Routing],
     // Business logic often relates to data
     [ResponsibilityType.BusinessLogic, ResponsibilityType.DataTransformation, ResponsibilityType.UIState],
+    // Filter components: URL state + UI rendering is a common pattern
+    [ResponsibilityType.Routing, ResponsibilityType.FormHandling, ResponsibilityType.UIState],
   ];
   
   return relatedGroups.some(group => 
@@ -204,7 +206,7 @@ export function analyzeHookUsage(
   const stateHooks = hooks.filter(h => h.name === 'useState' || h.name === 'useReducer');
   const effectHooks = hooks.filter(h => h.name === 'useEffect' || h.name === 'useLayoutEffect');
   const contextHooks = hooks.filter(h => h.name === 'useContext');
-  const routerHooks = hooks.filter(h => h.name === 'useRouter' || h.name === 'useNavigate' || h.name === 'useParams');
+  const routerHooks = hooks.filter(h => h.name === 'useRouter' || h.name === 'useNavigate' || h.name === 'useParams' || h.name === 'useSearchParams');
   const customHooks = hooks.filter(h => h.customHook);
   
   // Analyze state management
@@ -264,12 +266,22 @@ export function analyzeHookUsage(
   
   // Analyze router hooks
   if (routerHooks.length > 0) {
+    // Check if it's filter-related URL state management
+    const hasSearchParams = routerHooks.some(h => h.name === 'useSearchParams');
+    const componentName = metadata?.name || '';
+    const isFilterComponent = componentName.toLowerCase().includes('filter') || 
+                            componentName.toLowerCase().includes('search');
+    
+    // For filter components using search params, this is a core responsibility
+    const severity = (hasSearchParams && isFilterComponent) ? 'related' : 'mixed';
+    const details = hasSearchParams ? 'URL state management for filters' : 'Navigation logic in component';
+    
     responsibilities.push({
       type: ResponsibilityType.Routing,
       indicators: routerHooks.map(h => h.name),
-      severity: 'mixed',
+      severity,
       line: routerHooks[0].line,
-      details: 'Navigation logic in component'
+      details
     });
   }
   

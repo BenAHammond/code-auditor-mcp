@@ -227,6 +227,103 @@ const tools: Tool[] = [
       },
     ],
   },
+  {
+    name: 'whitelist_get',
+    description: 'Get current whitelist entries for dependency and class instantiation checks',
+    parameters: [
+      {
+        name: 'type',
+        type: 'string',
+        required: false,
+        description: 'Filter by type: platform-api, framework-class, project-dep, shared-library, node-builtin',
+        enum: ['platform-api', 'framework-class', 'project-dep', 'shared-library', 'node-builtin'],
+      },
+      {
+        name: 'status',
+        type: 'string',
+        required: false,
+        description: 'Filter by status: active, pending, rejected, disabled',
+        enum: ['active', 'pending', 'rejected', 'disabled'],
+      },
+    ],
+  },
+  {
+    name: 'whitelist_add',
+    description: 'Add a new entry to the whitelist',
+    parameters: [
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description: 'Class name or import path to whitelist',
+      },
+      {
+        name: 'type',
+        type: 'string',
+        required: true,
+        description: 'Type of whitelist entry',
+        enum: ['platform-api', 'framework-class', 'project-dep', 'shared-library', 'node-builtin'],
+      },
+      {
+        name: 'description',
+        type: 'string',
+        required: false,
+        description: 'Explanation of why this is whitelisted',
+      },
+      {
+        name: 'patterns',
+        type: 'array',
+        required: false,
+        description: 'Additional patterns to match (e.g., ["fs/*", "node:fs"])',
+      },
+    ],
+  },
+  {
+    name: 'whitelist_update_status',
+    description: 'Update the status of a whitelist entry',
+    parameters: [
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description: 'Name of the whitelist entry to update',
+      },
+      {
+        name: 'status',
+        type: 'string',
+        required: true,
+        description: 'New status for the entry',
+        enum: ['active', 'pending', 'rejected', 'disabled'],
+      },
+    ],
+  },
+  {
+    name: 'whitelist_detect',
+    description: 'Detect potential whitelist candidates from package.json and usage patterns',
+    parameters: [
+      {
+        name: 'path',
+        type: 'string',
+        required: false,
+        description: 'Project path to analyze (defaults to current directory)',
+        default: process.cwd(),
+      },
+      {
+        name: 'includePackageJson',
+        type: 'boolean',
+        required: false,
+        description: 'Include dependencies from package.json',
+        default: true,
+      },
+      {
+        name: 'autoPopulate',
+        type: 'boolean',
+        required: false,
+        description: 'Automatically add high-confidence entries (>95% confidence)',
+        default: false,
+      },
+    ],
+  },
 ];
 
 function getAllViolations(result: AuditResult): Violation[] {
@@ -383,6 +480,20 @@ async function startMcpServer() {
               };
               
               console.error(chalk.blue('[INFO]'), `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`);
+              
+              // Auto-detect and populate whitelist entries after indexing
+              try {
+                const { WhitelistService } = await import('./services/whitelistService.js');
+                const whitelistService = WhitelistService.getInstance();
+                const whitelistResult = await whitelistService.whitelistAllDependencies(auditPath);
+                
+                if (whitelistResult.added > 0) {
+                  console.error(chalk.blue('[INFO]'), `Auto-added ${whitelistResult.added} whitelist entries`);
+                }
+              } catch (error) {
+                // Don't fail audit if whitelist detection fails
+                console.warn('Whitelist auto-detection failed:', error);
+              }
             } catch (error) {
               console.error(chalk.yellow('[WARN]'), 'Failed to sync functions:', error);
             }
@@ -516,9 +627,10 @@ async function startMcpServer() {
             }
             
             case 'sync': {
+              let syncResult;
               if (targetPath) {
                 const functions = await scanFunctionsInDirectory(targetPath);
-                const syncResult = await syncFileIndex(targetPath, functions);
+                syncResult = await syncFileIndex(targetPath, functions);
                 result = {
                   success: true,
                   mode: 'sync',
@@ -526,7 +638,7 @@ async function startMcpServer() {
                   ...syncResult
                 };
               } else {
-                const syncResult = await db.deepSync();
+                syncResult = await db.deepSync();
                 result = {
                   success: true,
                   mode: 'sync',
@@ -536,6 +648,24 @@ async function startMcpServer() {
                   functionsRemoved: syncResult.removedFunctions
                 };
               }
+              
+              // Auto-detect and populate whitelist entries
+              try {
+                const { WhitelistService } = await import('./services/whitelistService.js');
+                const whitelistService = WhitelistService.getInstance();
+                const whitelistResult = await whitelistService.whitelistAllDependencies(
+                  targetPath || process.cwd()
+                );
+                
+                if (whitelistResult.added > 0) {
+                  result.whitelistAdded = whitelistResult.added;
+                  result.whitelistMessage = `Auto-added ${whitelistResult.added} whitelist entries`;
+                }
+              } catch (error) {
+                // Don't fail sync if whitelist detection fails
+                console.warn('Whitelist auto-detection failed:', error);
+              }
+              
               break;
             }
             
@@ -625,6 +755,30 @@ async function startMcpServer() {
               availableScenarios: ['initial-setup', 'react-development', 'code-review', 'find-patterns', 'maintenance']
             };
           }
+          break;
+        }
+
+        case 'whitelist_get': {
+          const { handleWhitelistGet } = await import('./mcp-tools/whitelistTools.js');
+          result = await handleWhitelistGet(args);
+          break;
+        }
+
+        case 'whitelist_add': {
+          const { handleWhitelistAdd } = await import('./mcp-tools/whitelistTools.js');
+          result = await handleWhitelistAdd(args);
+          break;
+        }
+
+        case 'whitelist_update_status': {
+          const { handleWhitelistUpdateStatus } = await import('./mcp-tools/whitelistTools.js');
+          result = await handleWhitelistUpdateStatus(args);
+          break;
+        }
+
+        case 'whitelist_detect': {
+          const { handleWhitelistDetect } = await import('./mcp-tools/whitelistTools.js');
+          result = await handleWhitelistDetect(args);
           break;
         }
 

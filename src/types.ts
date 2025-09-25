@@ -647,3 +647,6 @@ export interface ImportUsageInfo {
   usageCount: number;
   lineNumbers: number[];
 }
+
+// Re-export whitelist types
+export * from './types/whitelist.js';

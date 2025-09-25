@@ -9,6 +9,12 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { EnhancedFunctionMetadata, FunctionMetadata, SearchResult, SearchOptions, ParsedQuery } from './types.js';
 import { QueryParser } from './search/QueryParser.js';
+import {
+  WhitelistEntry,
+  WhitelistType,
+  WhitelistStatus,
+  WhitelistSuggestion
+} from './types/whitelist.js';
 
 // Types
 interface FunctionDocument extends EnhancedFunctionMetadata {
@@ -22,6 +28,7 @@ export class CodeIndexDB {
   private static instance: CodeIndexDB;
   private db: Loki;
   private functionsCollection: Collection<FunctionDocument> | null = null;
+  private whitelistCollection: Collection<any> | null = null;
   private searchIndex: any; // FlexSearch Document instance
   private dbPath: string;
   private isInitialized = false;
@@ -155,6 +162,17 @@ export class CodeIndexDB {
       this.db.addCollection('functions', {
         indices: ['name', 'filePath', 'language']
       });
+
+    // Get or create whitelist collection
+    this.whitelistCollection = this.db.getCollection('whitelist') || 
+      this.db.addCollection('whitelist', {
+        indices: ['name', 'type', 'status']
+      });
+
+    // Initialize default whitelists if empty
+    if (this.whitelistCollection.count() === 0) {
+      await this.initializeDefaultWhitelists();
+    }
 
     // Rebuild search index from existing data
     const existingDocs = this.functionsCollection.find();
@@ -1584,5 +1602,118 @@ export class CodeIndexDB {
     }
     
     return Array.from(resultsMap.values());
+  }
+
+  /**
+   * Initialize default whitelist entries
+   */
+  private async initializeDefaultWhitelists(): Promise<void> {
+    const defaultEntries: WhitelistEntry[] = [
+      // JavaScript built-ins
+      { name: 'Date', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'javascript', addedBy: 'system', addedAt: new Date() },
+      { name: 'Error', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'javascript', addedBy: 'system', addedAt: new Date() },
+      { name: 'Array', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'javascript', addedBy: 'system', addedAt: new Date() },
+      { name: 'Map', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'javascript', addedBy: 'system', addedAt: new Date() },
+      { name: 'Set', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'javascript', addedBy: 'system', addedAt: new Date() },
+      { name: 'Promise', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'javascript', addedBy: 'system', addedAt: new Date() },
+      { name: 'RegExp', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'javascript', addedBy: 'system', addedAt: new Date() },
+      
+      // DOM/Browser APIs
+      { name: 'URL', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'dom', addedBy: 'system', addedAt: new Date() },
+      { name: 'URLSearchParams', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'dom', addedBy: 'system', addedAt: new Date() },
+      { name: 'FormData', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'dom', addedBy: 'system', addedAt: new Date() },
+      { name: 'Headers', type: WhitelistType.PlatformAPI, status: WhitelistStatus.Active, category: 'dom', addedBy: 'system', addedAt: new Date() },
+      
+      // Node.js built-ins
+      { name: 'fs', type: WhitelistType.NodeBuiltin, status: WhitelistStatus.Active, patterns: ['fs', 'node:fs', 'fs/promises'], addedBy: 'system', addedAt: new Date() },
+      { name: 'path', type: WhitelistType.NodeBuiltin, status: WhitelistStatus.Active, patterns: ['path', 'node:path'], addedBy: 'system', addedAt: new Date() },
+      { name: 'crypto', type: WhitelistType.NodeBuiltin, status: WhitelistStatus.Active, patterns: ['crypto', 'node:crypto'], addedBy: 'system', addedAt: new Date() },
+    ];
+
+    for (const entry of defaultEntries) {
+      this.whitelistCollection!.insert(entry);
+    }
+  }
+
+  /**
+   * Get all whitelist entries
+   */
+  async getWhitelist(type?: WhitelistType, status?: WhitelistStatus): Promise<WhitelistEntry[]> {
+    this.ensureInitialized();
+    
+    const query: any = {};
+    if (type) query.type = type;
+    if (status) query.status = status;
+    
+    return this.whitelistCollection!.find(query);
+  }
+
+  /**
+   * Add a whitelist entry
+   */
+  async addWhitelistEntry(entry: Omit<WhitelistEntry, 'id' | 'addedAt'>): Promise<WhitelistEntry> {
+    this.ensureInitialized();
+    
+    const newEntry: WhitelistEntry = {
+      ...entry,
+      addedAt: new Date()
+    };
+    
+    return this.whitelistCollection!.insert(newEntry);
+  }
+
+  /**
+   * Update whitelist entry status
+   */
+  async updateWhitelistStatus(name: string, status: WhitelistStatus): Promise<void> {
+    this.ensureInitialized();
+    
+    const entry = this.whitelistCollection!.findOne({ name });
+    if (entry) {
+      entry.status = status;
+      entry.updatedAt = new Date();
+      this.whitelistCollection!.update(entry);
+    }
+  }
+
+  /**
+   * Check if a class/import is whitelisted
+   */
+  isWhitelisted(name: string, type: WhitelistType): boolean {
+    if (!this.isInitialized) return false;
+    
+    const entries = this.whitelistCollection!.find({ 
+      type,
+      status: WhitelistStatus.Active 
+    });
+    
+    return entries.some(entry => {
+      // Direct name match
+      if (entry.name === name) return true;
+      
+      // Pattern match
+      if (entry.patterns) {
+        return entry.patterns.some(pattern => {
+          if (pattern.includes('*')) {
+            const regex = new RegExp(pattern.replace(/\*/g, '.*'));
+            return regex.test(name);
+          }
+          return pattern === name;
+        });
+      }
+      
+      return false;
+    });
+  }
+
+  /**
+   * Detect and suggest new whitelist entries based on usage patterns
+   */
+  async detectWhitelistCandidates(): Promise<WhitelistSuggestion[]> {
+    this.ensureInitialized();
+    
+    // This would analyze the codebase for patterns
+    // For now, returning empty array - to be implemented
+    return [];
   }
 }

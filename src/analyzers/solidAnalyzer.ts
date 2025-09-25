@@ -33,6 +33,8 @@ import {
 } from '../utils/reactDetection.js';
 import { detectComponentResponsibilities, areResponsibilitiesRelated } from '../utils/componentResponsibility.js';
 import { detectComponentPattern, getUnrelatedResponsibilities, DEFAULT_PATTERNS } from '../utils/componentPatterns.js';
+import { CodeIndexDB } from '../codeIndexDB.js';
+import { WhitelistType } from '../types/whitelist.js';
 
 /**
  * Configuration for SOLID analyzer
@@ -56,12 +58,23 @@ export interface SOLIDAnalyzerConfig {
 /**
  * Default configuration
  */
+// Database instance for whitelist checking
+let dbInstance: CodeIndexDB | null = null;
+
+async function getDB(): Promise<CodeIndexDB> {
+  if (!dbInstance) {
+    dbInstance = CodeIndexDB.getInstance();
+    await dbInstance.initialize();
+  }
+  return dbInstance;
+}
+
 const DEFAULT_CONFIG: SOLIDAnalyzerConfig = {
-  maxMethodsPerClass: 10,
+  maxMethodsPerClass: 15,      // Increased from 10 - reasonable for service classes
   maxLinesPerMethod: 50,
   maxParametersPerMethod: 4,
   maxClassComplexity: 50,
-  maxInterfaceMembers: 10,
+  maxInterfaceMembers: 20,     // Increased from 15 - configuration interfaces need more flexibility
   checkDependencyInversion: true,
   checkInterfaceSegregation: true,
   checkLiskovSubstitution: true,
@@ -72,15 +85,34 @@ const DEFAULT_CONFIG: SOLIDAnalyzerConfig = {
     customPatterns: undefined,
     enablePatternDetection: true
   },
-  maxUnrelatedResponsibilities: 2,
+  maxUnrelatedResponsibilities: 3,  // Increased from 2 - allow URL management + UI + state
   contextAwareThresholds: true
 };
 
 /**
+ * Helper: Check if file is a test file
+ */
+function isTestFile(filePath: string): boolean {
+  const testPatterns = [
+    /\.test\.[jt]sx?$/,
+    /\.spec\.[jt]sx?$/,
+    /\.test-d\.ts$/,
+    /__tests__\//,
+    /test\//,
+    /tests\//,
+    /spec\//,
+    /\.e2e\.[jt]s$/,
+  ];
+  
+  return testPatterns.some(pattern => pattern.test(filePath));
+}
+
+/**
  * Analyze a file for SOLID violations
  */
-const analyzeFile: FileAnalyzerFunction = (filePath, sourceFile, config: SOLIDAnalyzerConfig) => {
+const analyzeFile: FileAnalyzerFunction = async (filePath, sourceFile, config: SOLIDAnalyzerConfig) => {
   const violations: Violation[] = [];
+  const isTest = isTestFile(filePath);
   
   // Check Single Responsibility Principle for classes
   const classes = findNodesOfType(sourceFile, ts.isClassDeclaration);
@@ -136,9 +168,9 @@ const analyzeFile: FileAnalyzerFunction = (filePath, sourceFile, config: SOLIDAn
     });
   }
   
-  // Check Dependency Inversion Principle
-  if (config.checkDependencyInversion) {
-    violations.push(...checkDependencyInversion(sourceFile, filePath, config));
+  // Check Dependency Inversion Principle (skip for test files)
+  if (config.checkDependencyInversion && !isTest) {
+    violations.push(...await checkDependencyInversion(sourceFile, filePath, config));
   }
   
   return violations;
@@ -343,22 +375,22 @@ function checkInterfaceSegregation(
 /**
  * Check Dependency Inversion Principle
  */
-function checkDependencyInversion(
+async function checkDependencyInversion(
   sourceFile: ts.SourceFile,
   filePath: string,
   config: SOLIDAnalyzerConfig
-): Violation[] {
+): Promise<Violation[]> {
   const violations: Violation[] = [];
   
   // Check for direct imports of concrete implementations
   const imports = findNodesOfType(sourceFile, ts.isImportDeclaration);
-  imports.forEach(imp => {
+  for (const imp of imports) {
     const moduleSpecifier = imp.moduleSpecifier;
     if (ts.isStringLiteral(moduleSpecifier)) {
       const importPath = moduleSpecifier.text;
       
       // Check for concrete implementation imports
-      if (isConcreteDependency(importPath)) {
+      if (await isConcreteDependency(importPath)) {
         const { line, column } = getNodePosition(sourceFile, imp);
         violations.push(createViolation({
         analyzer: 'solid',
@@ -376,14 +408,30 @@ function checkDependencyInversion(
         }));
       }
     }
-  });
+  }
   
   // Check for 'new' expressions (direct instantiation)
   const newExpressions = findNodesOfType(sourceFile, ts.isNewExpression);
-  newExpressions.forEach(expr => {
+  for (const expr of newExpressions) {
     if (ts.isIdentifier(expr.expression)) {
       const className = expr.expression.text;
-      if (isConcreteClass(className)) {
+      
+      // Skip if this is inside a singleton pattern
+      if (isInsideSingletonPattern(expr)) {
+        continue;
+      }
+      
+      // Skip if this is inside a factory method
+      if (isInsideFactoryMethod(expr)) {
+        continue;
+      }
+      
+      // Skip Error classes - they need to be instantiated
+      if (isErrorClass(className)) {
+        continue;
+      }
+      
+      if (await isConcreteClass(className)) {
         const { line, column } = getNodePosition(sourceFile, expr);
         violations.push(createViolation({
         analyzer: 'solid',
@@ -401,7 +449,7 @@ function checkDependencyInversion(
         }));
       }
     }
-  });
+  }
   
   return violations;
 }
@@ -470,27 +518,143 @@ function countIfElseChain(node: ts.IfStatement): number {
 /**
  * Helper: Check if import is a concrete dependency
  */
-function isConcreteDependency(importPath: string): boolean {
-  // Common concrete dependencies
-  const concretePatterns = [
-    'mysql', 'postgres', 'mongodb', 'redis',
-    'express', 'axios', 'fs', 'path', 'crypto',
-    'aws-sdk', 'stripe', 'twilio'
-  ];
-  
-  return concretePatterns.some(pattern => importPath.includes(pattern));
+async function isConcreteDependency(importPath: string): Promise<boolean> {
+  try {
+    const db = await getDB();
+    
+    // Skip relative paths (they're project internal) - don't flag these
+    if (importPath.startsWith('.') || importPath.startsWith('/')) {
+      return false;  // Internal modules are fine
+    }
+    
+    // Check if it's whitelisted directly
+    if (db.isWhitelisted(importPath, WhitelistType.NodeBuiltin) ||
+        db.isWhitelisted(importPath, WhitelistType.SharedLibrary) ||
+        db.isWhitelisted(importPath, WhitelistType.ProjectDependency) ||
+        db.isWhitelisted(importPath, WhitelistType.FrameworkClass)) {
+      return false;
+    }
+    
+    // For Node.js built-ins, also check the base module name
+    // e.g., "fs/promises" -> check "fs", "node:fs/promises" -> check "fs"
+    const baseModule = importPath.replace(/^node:/, '').split('/')[0];
+    if (baseModule !== importPath) {
+      if (db.isWhitelisted(baseModule, WhitelistType.NodeBuiltin)) {
+        return false;
+      }
+    }
+    
+    // If not whitelisted, it's potentially a concrete dependency
+    return true;
+  } catch (error) {
+    // If database is not available, be conservative and don't flag
+    console.warn('Database not available for dependency check:', error);
+    return false;
+  }
+}
+
+/**
+ * Helper: Check if class name is an Error class
+ */
+function isErrorClass(className: string): boolean {
+  return className.endsWith('Error') || 
+         className.endsWith('Exception') ||
+         className === 'Error';
+}
+
+/**
+ * Helper: Check if node is inside a singleton pattern
+ */
+function isInsideSingletonPattern(node: ts.Node): boolean {
+  let parent = node.parent;
+  while (parent) {
+    // Check if we're inside a method named getInstance, instance, singleton, etc.
+    if (ts.isMethodDeclaration(parent) || ts.isFunctionDeclaration(parent)) {
+      const methodName = getNodeName(parent)?.toLowerCase();
+      if (methodName && (
+        methodName.includes('getinstance') ||
+        methodName === 'instance' ||
+        methodName === 'singleton' ||
+        methodName === 'create' && parent.parent && ts.isClassDeclaration(parent.parent)
+      )) {
+        return true;
+      }
+    }
+    
+    // Check if we're inside a static property initialization
+    if (ts.isPropertyDeclaration(parent) && 
+        parent.modifiers?.some(m => m.kind === ts.SyntaxKind.StaticKeyword)) {
+      const propName = getNodeName(parent)?.toLowerCase();
+      if (propName && (propName === 'instance' || propName === '_instance')) {
+        return true;
+      }
+    }
+    
+    parent = parent.parent;
+  }
+  return false;
+}
+
+/**
+ * Helper: Check if node is inside a factory method
+ */
+function isInsideFactoryMethod(node: ts.Node): boolean {
+  let parent = node.parent;
+  while (parent) {
+    // Check if we're inside a method with 'create' or 'factory' in its name
+    if (ts.isMethodDeclaration(parent) || ts.isFunctionDeclaration(parent)) {
+      const methodName = getNodeName(parent)?.toLowerCase();
+      if (methodName && (
+        methodName.includes('create') ||
+        methodName.includes('factory') ||
+        methodName.includes('make') ||
+        methodName.includes('build')
+      )) {
+        return true;
+      }
+    }
+    
+    // Check if we're inside a class with Factory in its name
+    if (ts.isClassDeclaration(parent)) {
+      const className = getNodeName(parent);
+      if (className && className.toLowerCase().includes('factory')) {
+        return true;
+      }
+    }
+    
+    parent = parent.parent;
+  }
+  return false;
 }
 
 /**
  * Helper: Check if class name represents concrete implementation
  */
-function isConcreteClass(className: string): boolean {
-  // Skip common allowed instantiations
-  const allowed = ['Date', 'Error', 'Array', 'Map', 'Set', 'Promise', 'RegExp'];
-  if (allowed.includes(className)) return false;
-  
-  // Concrete if it doesn't start with 'I' or end with 'Interface'
-  return !className.startsWith('I') && !className.endsWith('Interface');
+async function isConcreteClass(className: string): Promise<boolean> {
+  try {
+    const db = await getDB();
+    
+    // Check if it's whitelisted (platform API or framework class)
+    if (db.isWhitelisted(className, WhitelistType.PlatformAPI) ||
+        db.isWhitelisted(className, WhitelistType.FrameworkClass)) {
+      return false;
+    }
+    
+    // Skip if it looks like a type/interface name
+    if (className.startsWith('I') && className.length > 2 && className[1] === className[1].toUpperCase()) {
+      return false; // e.g., IUserService
+    }
+    
+    if (className.endsWith('Interface') || className.endsWith('Type') || className.endsWith('Schema')) {
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    // If database is not available, be conservative and don't flag
+    console.warn('Database not available for class check:', error);
+    return false;
+  }
 }
 
 /**
