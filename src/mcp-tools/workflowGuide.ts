@@ -184,6 +184,44 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
     ]
   },
   
+  'analyzer-configuration': {
+    name: 'Analyzer Configuration',
+    description: 'Managing analyzer rules and exceptions',
+    steps: [
+      {
+        order: 1,
+        tool: 'whitelist_detect',
+        parameters: { path: '.', autoPopulate: false },
+        description: 'Detect common patterns that might need whitelisting'
+      },
+      {
+        order: 2,
+        tool: 'whitelist_get',
+        parameters: { status: 'active' },
+        description: 'View current active whitelist entries'
+      },
+      {
+        order: 3,
+        tool: 'whitelist_add',
+        parameters: { name: 'MyFrameworkClass', type: 'framework-class' },
+        description: 'Add exceptions for legitimate patterns',
+        condition: 'When SOLID analyzer incorrectly flags framework usage'
+      },
+      {
+        order: 4,
+        tool: 'audit',
+        parameters: { path: '.', analyzers: ['solid'] },
+        description: 'Re-run audit to verify reduced false positives'
+      }
+    ],
+    tips: [
+      'Whitelist entries persist across audit runs',
+      'Auto-detection finds dependencies from package.json',
+      'Platform APIs and Node.js built-ins are pre-whitelisted',
+      'Use whitelist_update_status to disable entries without deleting'
+    ]
+  },
+  
   'dependency-analysis': {
     name: 'Dependency Analysis',
     description: 'Analyzing dependencies and refactoring impact',

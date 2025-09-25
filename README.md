@@ -414,6 +414,12 @@ If you prefer to configure Claude Desktop manually:
 - **bulk_cleanup** - Remove index entries for deleted files
 - **deep_sync** - Deep synchronize all indexed files
 
+#### Analyzer Configuration Tools
+- **whitelist_get** - View current whitelist entries (platform APIs, dependencies, etc.)
+- **whitelist_add** - Add exceptions for legitimate patterns (framework classes, etc.)
+- **whitelist_update_status** - Enable/disable whitelist entries
+- **whitelist_detect** - Auto-detect and suggest whitelist entries from package.json
+
 ### Advanced Search Functionality
 
 The `search_functions` tool (and `search_code` in MCP) supports powerful search operators that enable precise code discovery. You can use natural language queries combined with special operators to find exactly what you need.

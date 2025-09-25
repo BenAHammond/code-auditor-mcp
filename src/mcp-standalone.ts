@@ -752,7 +752,7 @@ async function startMcpServer() {
             result = {
               success: false,
               error: error instanceof Error ? error.message : 'Unknown error',
-              availableScenarios: ['initial-setup', 'react-development', 'code-review', 'find-patterns', 'maintenance']
+              availableScenarios: ['initial-setup', 'react-development', 'code-review', 'find-patterns', 'maintenance', 'analyzer-configuration']
             };
           }
           break;
