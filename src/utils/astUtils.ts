@@ -651,14 +651,26 @@ export function extractIdentifierUsage(
     }
     
     // Interface extension: interface X extends BaseType
-    if (ts.isInterfaceDeclaration(parent) && parent.heritageClauses) {
-      for (const clause of parent.heritageClauses) {
-        if (clause.token === ts.SyntaxKind.ExtendsKeyword) {
-          for (const type of clause.types) {
-            if (type.expression === node || 
-                (ts.isPropertyAccessExpression(type.expression) && type.expression.expression === node)) {
-              return true;
-            }
+    // Check if this identifier is used in an interface extends clause
+    if (ts.isExpressionWithTypeArguments(parent) && parent.expression === node) {
+      const heritageClause = parent.parent;
+      if (ts.isHeritageClause(heritageClause) && heritageClause.token === ts.SyntaxKind.ExtendsKeyword) {
+        const interfaceDecl = heritageClause.parent;
+        if (ts.isInterfaceDeclaration(interfaceDecl)) {
+          return true;
+        }
+      }
+    }
+    
+    // Also handle property access in interface extension: interface X extends Namespace.BaseType
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+      const grandParent = parent.parent;
+      if (ts.isExpressionWithTypeArguments(grandParent) && grandParent.expression === parent) {
+        const heritageClause = grandParent.parent;
+        if (ts.isHeritageClause(heritageClause) && heritageClause.token === ts.SyntaxKind.ExtendsKeyword) {
+          const interfaceDecl = heritageClause.parent;
+          if (ts.isInterfaceDeclaration(interfaceDecl)) {
+            return true;
           }
         }
       }
@@ -698,6 +710,11 @@ export function extractIdentifierUsage(
       return isNodeInTypePosition(node, parent.type);
     }
     if (ts.isTypeAssertionExpression(parent) && parent.type) {
+      return isNodeInTypePosition(node, parent.type);
+    }
+    
+    // Satisfies expressions: expression satisfies Type
+    if (ts.isSatisfiesExpression && ts.isSatisfiesExpression(parent) && parent.type) {
       return isNodeInTypePosition(node, parent.type);
     }
     
