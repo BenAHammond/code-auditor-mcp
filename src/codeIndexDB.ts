@@ -29,6 +29,7 @@ export class CodeIndexDB {
   private db: Loki;
   private functionsCollection: Collection<FunctionDocument> | null = null;
   private whitelistCollection: Collection<any> | null = null;
+  private auditResultsCollection: Collection<any> | null = null;
   private searchIndex: any; // FlexSearch Document instance
   private dbPath: string;
   private isInitialized = false;
@@ -167,6 +168,12 @@ export class CodeIndexDB {
     this.whitelistCollection = this.db.getCollection('whitelist') || 
       this.db.addCollection('whitelist', {
         indices: ['name', 'type', 'status']
+      });
+
+    // Get or create audit results collection
+    this.auditResultsCollection = this.db.getCollection('auditResults') || 
+      this.db.addCollection('auditResults', {
+        indices: ['auditId', 'timestamp', 'projectPath']
       });
 
     // Initialize default whitelists if empty
@@ -1759,5 +1766,67 @@ export class CodeIndexDB {
     // This would analyze the codebase for patterns
     // For now, returning empty array - to be implemented
     return [];
+  }
+
+  /**
+   * Store audit results in database
+   */
+  async storeAuditResults(auditResult: any, projectPath: string): Promise<string> {
+    this.ensureInitialized();
+    
+    // Generate unique audit ID
+    const auditId = `audit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    const auditRecord = {
+      auditId,
+      timestamp: new Date(),
+      projectPath,
+      violations: auditResult.violations || [],
+      summary: auditResult.summary,
+      recommendations: auditResult.recommendations || [],
+      metadata: auditResult.metadata,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // Expire after 24 hours
+    };
+    
+    this.auditResultsCollection!.insert(auditRecord);
+    
+    // Clean up expired results
+    this.cleanupExpiredAudits();
+    
+    return auditId;
+  }
+
+  /**
+   * Retrieve cached audit results
+   */
+  async getAuditResults(auditId: string): Promise<any | null> {
+    this.ensureInitialized();
+    
+    const result = this.auditResultsCollection!.findOne({ auditId });
+    
+    if (result && new Date(result.expiresAt) > new Date()) {
+      return result;
+    }
+    
+    // Remove expired result if found
+    if (result) {
+      this.auditResultsCollection!.remove(result);
+    }
+    
+    return null;
+  }
+
+  /**
+   * Clean up expired audit results
+   */
+  private cleanupExpiredAudits(): void {
+    const now = new Date();
+    const expired = this.auditResultsCollection!.find({
+      expiresAt: { $lt: now }
+    });
+    
+    expired.forEach(doc => {
+      this.auditResultsCollection!.remove(doc);
+    });
   }
 }

@@ -111,6 +111,19 @@ const tools: Tool[] = [
         description: 'Number of violations to skip for pagination (default: 0)',
         default: 0,
       },
+      {
+        name: 'auditId',
+        type: 'string',
+        required: false,
+        description: 'Existing audit ID to retrieve cached results',
+      },
+      {
+        name: 'useCache',
+        type: 'boolean',
+        required: false,
+        description: 'Store results in cache for pagination (default: true)',
+        default: true,
+      },
     ],
   },
   {
@@ -462,17 +475,47 @@ async function startMcpServer() {
           const minSeverity = (args.minSeverity as string) as Severity;
           const limit = Math.min((args.limit as number) || 50, 100); // Max 100
           const offset = (args.offset as number) || 0;
+          const useCache = (args.useCache as boolean) !== false; // Default true
+          const providedAuditId = args.auditId as string | undefined;
           
-          const options: AuditRunnerOptions = {
-            projectRoot: auditPath,
-            enabledAnalyzers: analyzers,
-            minSeverity,
-            verbose: false,
-            indexFunctions,
-          };
+          let auditResult: any;
+          let auditId: string | undefined = providedAuditId;
+          
+          // Check if we should use cached results
+          if (providedAuditId) {
+            const db = CodeIndexDB.getInstance();
+            const cachedResult = await db.getAuditResults(providedAuditId);
+            
+            if (cachedResult) {
+              auditResult = cachedResult;
+              console.error(chalk.blue('[INFO]'), `Using cached audit results: ${providedAuditId}`);
+            } else {
+              console.error(chalk.yellow('[WARN]'), `Cached audit not found: ${providedAuditId}, running new audit`);
+            }
+          }
+          
+          // Run new audit if no cached result
+          if (!auditResult) {
+            const options: AuditRunnerOptions = {
+              projectRoot: auditPath,
+              enabledAnalyzers: analyzers,
+              minSeverity,
+              verbose: false,
+              indexFunctions,
+            };
 
-          const runner = createAuditRunner(options);
-          const auditResult = await runner.run();
+            const runner = createAuditRunner(options);
+            const runResult = await runner.run();
+            
+            // Store in cache if requested
+            if (useCache) {
+              const db = CodeIndexDB.getInstance();
+              auditId = await db.storeAuditResults(runResult, auditPath);
+              console.error(chalk.blue('[INFO]'), `Stored audit results with ID: ${auditId}`);
+            }
+            
+            auditResult = runResult;
+          }
 
           // Handle function indexing if enabled and functions were collected
           let indexingResult = null;
@@ -482,7 +525,7 @@ async function startMcpServer() {
               
               // Sync each file's functions to handle additions, updates, and removals
               for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
-                const fileStats = await syncFileIndex(filePath, functions);
+                const fileStats = await syncFileIndex(filePath, functions as FunctionMetadata[]);
                 syncStats.added += fileStats.added;
                 syncStats.updated += fileStats.updated;
                 syncStats.removed += fileStats.removed;
@@ -516,7 +559,7 @@ async function startMcpServer() {
           }
 
           // Get all violations and apply pagination
-          const allViolations = getAllViolations(auditResult);
+          const allViolations = auditResult.violations || getAllViolations(auditResult);
           const paginatedViolations = allViolations.slice(offset, offset + limit);
           
           // Format for MCP
@@ -526,9 +569,9 @@ async function startMcpServer() {
               criticalIssues: auditResult.summary.criticalIssues,
               warnings: auditResult.summary.warnings,
               suggestions: auditResult.summary.suggestions,
-              filesAnalyzed: auditResult.metadata.filesAnalyzed,
-              executionTime: auditResult.metadata.auditDuration,
-              healthScore: calculateHealthScore(auditResult),
+              filesAnalyzed: auditResult.metadata?.filesAnalyzed || 0,
+              executionTime: auditResult.metadata?.auditDuration || 0,
+              healthScore: auditResult.summary.healthScore || calculateHealthScore(auditResult),
             },
             violations: paginatedViolations,
             pagination: {
@@ -537,8 +580,9 @@ async function startMcpServer() {
               offset,
               hasMore: offset + limit < allViolations.length,
               nextOffset: offset + limit < allViolations.length ? offset + limit : null,
+              auditId: auditId, // Include audit ID for subsequent requests
             },
-            recommendations: auditResult.recommendations,
+            recommendations: auditResult.recommendations || [],
             ...(indexingResult && { functionIndexing: indexingResult }),
           };
           break;
@@ -567,7 +611,7 @@ async function startMcpServer() {
               
               // Sync each file's functions to handle additions, updates, and removals
               for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
-                const fileStats = await syncFileIndex(filePath, functions);
+                const fileStats = await syncFileIndex(filePath, functions as FunctionMetadata[]);
                 syncStats.added += fileStats.added;
                 syncStats.updated += fileStats.updated;
                 syncStats.removed += fileStats.removed;
