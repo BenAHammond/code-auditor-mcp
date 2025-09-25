@@ -75,7 +75,7 @@ const DEFAULT_CONFIG: SOLIDAnalyzerConfig = {
   maxParametersPerMethod: 4,
   maxClassComplexity: 50,
   maxInterfaceMembers: 20,     // Increased from 15 - configuration interfaces need more flexibility
-  checkDependencyInversion: true,
+  checkDependencyInversion: false,  // Disabled by default - DI is not standard pattern
   checkInterfaceSegregation: true,
   checkLiskovSubstitution: true,
   // Component-specific defaults
