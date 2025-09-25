@@ -528,7 +528,8 @@ export enum ResponsibilityType {
   Layout = 'layout-styling',
   DataTransformation = 'data-transformation',
   Subscriptions = 'subscriptions',
-  ErrorHandling = 'error-handling'
+  ErrorHandling = 'error-handling',
+  StateManagement = 'state-management'
 }
 
 export interface ComponentResponsibility {

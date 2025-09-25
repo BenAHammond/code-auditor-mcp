@@ -90,6 +90,181 @@ const DEFAULT_CONFIG: SOLIDAnalyzerConfig = {
 };
 
 /**
+ * Helper: Check if import is from a framework/library
+ */
+function isFrameworkImport(importPath: string): boolean {
+  const frameworkPatterns = [
+    // React ecosystem
+    /^(react|react-dom|react-router|react-redux)/,
+    // Next.js
+    /^(next|@next)\//,
+    // Vue ecosystem
+    /^(vue|vue-router|vuex|@vue)/,
+    // Angular
+    /^(@angular|angular)/,
+    // UI frameworks
+    /^@(mui|mantine|chakra-ui|ant-design|arco-design)/,
+    // Node frameworks
+    /^(express|fastify|koa|hapi|@nestjs)/,
+    // Auth libraries
+    /^(@clerk|@auth0|@stackframe|next-auth)/,
+    // Database clients
+    /^(pg|mongodb|@prisma|redis|ioredis)/,
+    // HTTP clients
+    /^(axios|node-fetch|got|ky)/,
+    // Testing
+    /^(@testing-library|jest|vitest|mocha|chai)/,
+    // Build tools
+    /^(webpack|vite|rollup|parcel|esbuild)/,
+    // Common utilities that shouldn't trigger DI violations
+    /^(lodash|underscore|ramda|date-fns|moment|dayjs)/,
+    // Node modules indicator
+    /node_modules/,
+    // Anything from npm scope
+    /^@[\w-]+\//
+  ];
+  
+  return frameworkPatterns.some(pattern => pattern.test(importPath));
+}
+
+/**
+ * Helper: Find import declaration for an identifier
+ */
+function findImportForIdentifier(sourceFile: ts.SourceFile, identifier: string): string | undefined {
+  let importPath: string | undefined;
+  
+  ts.forEachChild(sourceFile, node => {
+    if (ts.isImportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      const moduleSpecifier = node.moduleSpecifier.text;
+      
+      // Check named imports
+      if (node.importClause && node.importClause.namedBindings) {
+        if (ts.isNamedImports(node.importClause.namedBindings)) {
+          for (const element of node.importClause.namedBindings.elements) {
+            if (element.name.text === identifier || 
+                (element.propertyName && element.propertyName.text === identifier)) {
+              importPath = moduleSpecifier;
+              return;
+            }
+          }
+        }
+      }
+      
+      // Check default import
+      if (node.importClause && node.importClause.name && node.importClause.name.text === identifier) {
+        importPath = moduleSpecifier;
+      }
+    }
+  });
+  
+  return importPath;
+}
+
+/**
+ * Architectural layer detection for context-aware analysis
+ */
+enum ArchitecturalLayer {
+  Route = 'route',
+  Middleware = 'middleware',
+  Component = 'component',
+  Library = 'library',
+  Repository = 'repository',
+  Service = 'service',
+  Hook = 'hook',
+  Utility = 'utility',
+  Config = 'config'
+}
+
+/**
+ * Helper: Detect architectural layer from file path
+ */
+function detectArchitecturalLayer(filePath: string): ArchitecturalLayer {
+  const patterns: [ArchitecturalLayer, RegExp][] = [
+    // Next.js App Router patterns
+    [ArchitecturalLayer.Route, /\/(app|pages)\/.*\/(route|page|layout|error|loading|not-found)\.(ts|tsx|js|jsx)$/],
+    [ArchitecturalLayer.Route, /\/api\/.*\/route\.(ts|js)$/],
+    
+    // Middleware patterns
+    [ArchitecturalLayer.Middleware, /middleware\.(ts|js)$/],
+    [ArchitecturalLayer.Middleware, /\/(middleware|middlewares)\/.*\.(ts|js)$/],
+    
+    // Component patterns
+    [ArchitecturalLayer.Component, /\/(components?|ui)\/.*\.(tsx|jsx)$/],
+    
+    // Repository patterns
+    [ArchitecturalLayer.Repository, /\/(repositories|repository|repos?|dal|data-access)\/.*\.(ts|js)$/],
+    
+    // Service patterns
+    [ArchitecturalLayer.Service, /\/(services?|use-cases|domain|business)\/.*\.(ts|js)$/],
+    
+    // Hook patterns
+    [ArchitecturalLayer.Hook, /\/(hooks?)\/.*\.(ts|tsx|js|jsx)$/],
+    [ArchitecturalLayer.Hook, /use[A-Z]\w+\.(ts|tsx|js|jsx)$/],
+    
+    // Utility patterns
+    [ArchitecturalLayer.Utility, /\/(utils?|utilities|helpers?|lib)\/.*\.(ts|js)$/],
+    
+    // Config patterns
+    [ArchitecturalLayer.Config, /\/(config|constants)\/.*\.(ts|js)$/],
+    [ArchitecturalLayer.Config, /\.(config|constants)\.(ts|js)$/]
+  ];
+  
+  for (const [layer, pattern] of patterns) {
+    if (pattern.test(filePath)) {
+      return layer;
+    }
+  }
+  
+  // Default to library for unmatched files
+  return ArchitecturalLayer.Library;
+}
+
+/**
+ * Helper: Get context-aware thresholds based on architectural layer
+ */
+function getLayerThresholds(layer: ArchitecturalLayer, config: SOLIDAnalyzerConfig): Partial<SOLIDAnalyzerConfig> {
+  const layerConfigs: Record<ArchitecturalLayer, Partial<SOLIDAnalyzerConfig>> = {
+    [ArchitecturalLayer.Route]: {
+      maxMethodsPerClass: 20, // Routes can have more methods
+      maxUnrelatedResponsibilities: 4 // Routes often coordinate multiple concerns
+    },
+    [ArchitecturalLayer.Component]: {
+      maxUnrelatedResponsibilities: 3, // Components can manage UI + state + events
+      maxMethodsPerClass: 12
+    },
+    [ArchitecturalLayer.Repository]: {
+      maxMethodsPerClass: 25, // Repositories can have many data access methods
+      maxUnrelatedResponsibilities: 1 // Should focus on data access only
+    },
+    [ArchitecturalLayer.Service]: {
+      maxMethodsPerClass: 15,
+      maxUnrelatedResponsibilities: 2
+    },
+    [ArchitecturalLayer.Hook]: {
+      maxMethodsPerClass: 5,
+      maxUnrelatedResponsibilities: 1 // Hooks should have single purpose
+    },
+    [ArchitecturalLayer.Middleware]: {
+      maxMethodsPerClass: 8,
+      maxUnrelatedResponsibilities: 1
+    },
+    [ArchitecturalLayer.Utility]: {
+      maxMethodsPerClass: 20, // Utility modules can have many functions
+      maxUnrelatedResponsibilities: 3 // Utilities may group related functions
+    },
+    [ArchitecturalLayer.Config]: {
+      maxMethodsPerClass: 50, // Config files may export many settings
+      maxInterfaceMembers: 30 // Config interfaces need flexibility
+    },
+    [ArchitecturalLayer.Library]: {
+      // Use defaults from config
+    }
+  };
+  
+  return config.contextAwareThresholds ? (layerConfigs[layer] || {}) : {};
+}
+
+/**
  * Helper: Check if file is a test file
  */
 function isTestFile(filePath: string): boolean {
@@ -114,10 +289,15 @@ const analyzeFile: FileAnalyzerFunction = async (filePath, sourceFile, config: S
   const violations: Violation[] = [];
   const isTest = isTestFile(filePath);
   
+  // Detect architectural layer for context-aware analysis
+  const layer = detectArchitecturalLayer(filePath);
+  const layerThresholds = getLayerThresholds(layer, config);
+  const effectiveConfig = { ...config, ...layerThresholds };
+  
   // Check Single Responsibility Principle for classes
   const classes = findNodesOfType(sourceFile, ts.isClassDeclaration);
   classes.forEach(cls => {
-    violations.push(...checkSingleResponsibility(cls, sourceFile, filePath, config));
+    violations.push(...checkSingleResponsibility(cls, sourceFile, filePath, effectiveConfig));
   });
   
   // Check Single Responsibility Principle for React components
@@ -140,11 +320,11 @@ const analyzeFile: FileAnalyzerFunction = async (filePath, sourceFile, config: S
             ts.isArrowFunction(node.initializer)) {
           if (!processedComponents.has(node)) {
             processedComponents.add(node);
-            violations.push(...checkComponentSRP(node, sourceFile, filePath, config));
+            violations.push(...checkComponentSRP(node, sourceFile, filePath, effectiveConfig));
           }
         } else if (!processedComponents.has(node)) {
           processedComponents.add(node);
-          violations.push(...checkComponentSRP(node, sourceFile, filePath, config));
+          violations.push(...checkComponentSRP(node, sourceFile, filePath, effectiveConfig));
         }
       }
     });
@@ -152,25 +332,25 @@ const analyzeFile: FileAnalyzerFunction = async (filePath, sourceFile, config: S
   
   // Check Open/Closed Principle
   traverseAST(sourceFile, node => {
-    violations.push(...checkOpenClosed(node, sourceFile, filePath, config));
+    violations.push(...checkOpenClosed(node, sourceFile, filePath, effectiveConfig));
   });
   
   // Check Liskov Substitution Principle
-  if (config.checkLiskovSubstitution) {
-    violations.push(...checkLiskovSubstitution(sourceFile, filePath, config));
+  if (effectiveConfig.checkLiskovSubstitution) {
+    violations.push(...checkLiskovSubstitution(sourceFile, filePath, effectiveConfig));
   }
   
   // Check Interface Segregation Principle
-  if (config.checkInterfaceSegregation) {
+  if (effectiveConfig.checkInterfaceSegregation) {
     const interfaces = findNodesOfType(sourceFile, ts.isInterfaceDeclaration);
     interfaces.forEach(iface => {
-      violations.push(...checkInterfaceSegregation(iface, sourceFile, filePath, config));
+      violations.push(...checkInterfaceSegregation(iface, sourceFile, filePath, effectiveConfig));
     });
   }
   
   // Check Dependency Inversion Principle (skip for test files)
-  if (config.checkDependencyInversion && !isTest) {
-    violations.push(...await checkDependencyInversion(sourceFile, filePath, config));
+  if (effectiveConfig.checkDependencyInversion && !isTest) {
+    violations.push(...await checkDependencyInversion(sourceFile, filePath, effectiveConfig));
   }
   
   return violations;
@@ -406,6 +586,12 @@ async function checkDependencyInversion(
         continue;
       }
       
+      // Check if this class is imported from a framework/library
+      const importPath = findImportForIdentifier(sourceFile, className);
+      if (importPath && isFrameworkImport(importPath)) {
+        continue; // Skip framework classes
+      }
+      
       if (await isConcreteClass(className)) {
         const { line, column } = getNodePosition(sourceFile, expr);
         violations.push(createViolation({
@@ -419,7 +605,8 @@ async function checkDependencyInversion(
           principle: 'dependency-inversion',
           recommendation: 'Consider using dependency injection or factory pattern',
           details: {
-            className
+            className,
+            importPath: importPath || 'local'
           }
         }));
       }

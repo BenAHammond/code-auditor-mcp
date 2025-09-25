@@ -202,88 +202,74 @@ export function analyzeHookUsage(
   const responsibilities: ComponentResponsibility[] = [];
   const hooks = metadata?.hooks || extractHooks(component, sourceFile);
   
-  // Group hooks by type
+  // Define hook groups that represent cohesive responsibilities
+  const hookGroups = {
+    state: {
+      hooks: ['useState', 'useReducer', 'useContext'],
+      type: ResponsibilityType.StateManagement,
+      description: 'Component state management'
+    },
+    routing: {
+      hooks: ['useRouter', 'useNavigate', 'useParams', 'useSearchParams', 'usePathname'],
+      type: ResponsibilityType.Routing,
+      description: 'Navigation and URL state'
+    },
+    form: {
+      hooks: ['useForm', 'useController', 'useFormState', 'useFieldArray', 'useWatch'],
+      type: ResponsibilityType.FormHandling,
+      description: 'Form state and validation'
+    },
+    query: {
+      hooks: ['useQuery', 'useMutation', 'useSWR', 'useFetch', 'useInfiniteQuery'],
+      type: ResponsibilityType.DataFetching,
+      description: 'Data fetching and caching'
+    }
+  };
+  
+  // Track which groups are used and their hooks
+  const usedGroups: Map<string, string[]> = new Map();
+  
+  // Categorize hooks into groups
+  hooks.forEach(hook => {
+    for (const [groupName, groupDef] of Object.entries(hookGroups)) {
+      if (groupDef.hooks.includes(hook.name)) {
+        if (!usedGroups.has(groupName)) {
+          usedGroups.set(groupName, []);
+        }
+        usedGroups.get(groupName)!.push(hook.name);
+        return;
+      }
+    }
+  });
+  
+  // Create responsibilities for each used group (hooks in same group count as one responsibility)
+  for (const [groupName, hookNames] of usedGroups.entries()) {
+    const group = hookGroups[groupName as keyof typeof hookGroups];
+    if (group) {
+      responsibilities.push({
+        type: group.type,
+        indicators: hookNames,
+        severity: 'related',
+        details: `${group.description} (${hookNames.length} hook${hookNames.length > 1 ? 's' : ''})`
+      });
+    }
+  }
+  
+  // Group hooks by type for backward compatibility
   const stateHooks = hooks.filter(h => h.name === 'useState' || h.name === 'useReducer');
   const effectHooks = hooks.filter(h => h.name === 'useEffect' || h.name === 'useLayoutEffect');
   const contextHooks = hooks.filter(h => h.name === 'useContext');
   const routerHooks = hooks.filter(h => h.name === 'useRouter' || h.name === 'useNavigate' || h.name === 'useParams' || h.name === 'useSearchParams');
   const customHooks = hooks.filter(h => h.customHook);
   
-  // Analyze state management
-  if (stateHooks.length > 0) {
-    const stateIndicators: string[] = [];
-    let hasFormState = false;
-    let hasUIState = false;
-    let hasBusinessState = false;
-    
-    // Analyze state variable names to categorize
-    stateHooks.forEach(hook => {
-      // Try to get the state variable name from the hook call
-      const parent = hook.line ? findNodeAtLine(component, hook.line) : null;
-      if (parent && ts.isVariableDeclaration(parent)) {
-        const name = parent.name.getText();
-        stateIndicators.push(name);
-        
-        // Categorize based on name patterns
-        if (name.match(/form|input|field|value|error|validation/i)) {
-          hasFormState = true;
-        } else if (name.match(/open|show|visible|selected|active|hover|focus/i)) {
-          hasUIState = true;
-        } else if (name.match(/data|result|user|account|product|cart/i)) {
-          hasBusinessState = true;
-        }
-      }
-    });
-    
-    // Add appropriate responsibilities
-    if (hasFormState && stateHooks.length > 3) {
-      responsibilities.push({
-        type: ResponsibilityType.FormHandling,
-        indicators: stateIndicators.filter(i => i.match(/form|input|field/i)),
-        severity: 'related',
-        details: `${stateHooks.length} state hooks for form management`
-      });
+  // Additional analysis for custom hooks only (standard hooks already handled by groups)
+  const uncategorizedHooks = hooks.filter(hook => {
+    // Skip if already in a group
+    for (const [_, hookNames] of usedGroups.entries()) {
+      if (hookNames.includes(hook.name)) return false;
     }
-    
-    if (hasUIState) {
-      responsibilities.push({
-        type: ResponsibilityType.UIState,
-        indicators: stateIndicators.filter(i => i.match(/open|show|visible|selected/i)),
-        severity: hasFormState ? 'related' : 'mixed',
-        details: `UI state management detected`
-      });
-    }
-    
-    if (hasBusinessState) {
-      responsibilities.push({
-        type: ResponsibilityType.BusinessLogic,
-        indicators: stateIndicators.filter(i => i.match(/data|result|user|account/i)),
-        severity: 'unrelated',
-        details: `Business state mixed with UI component`
-      });
-    }
-  }
-  
-  // Analyze router hooks
-  if (routerHooks.length > 0) {
-    // Check if it's filter-related URL state management
-    const hasSearchParams = routerHooks.some(h => h.name === 'useSearchParams');
-    const componentName = metadata?.name || '';
-    const isFilterComponent = componentName.toLowerCase().includes('filter') || 
-                            componentName.toLowerCase().includes('search');
-    
-    // For filter components using search params, this is a core responsibility
-    const severity = (hasSearchParams && isFilterComponent) ? 'related' : 'mixed';
-    const details = hasSearchParams ? 'URL state management for filters' : 'Navigation logic in component';
-    
-    responsibilities.push({
-      type: ResponsibilityType.Routing,
-      indicators: routerHooks.map(h => h.name),
-      severity,
-      line: routerHooks[0].line,
-      details
-    });
-  }
+    return true;
+  });
   
   // Analyze custom hooks for mixed responsibilities
   if (customHooks.length > 0) {

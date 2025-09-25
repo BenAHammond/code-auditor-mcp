@@ -1634,6 +1634,44 @@ export class CodeIndexDB {
       { name: 'NextRequest', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'nextjs', addedBy: 'system', addedAt: new Date() },
       { name: 'Response', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'web-api', addedBy: 'system', addedAt: new Date() },
       { name: 'Request', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'web-api', addedBy: 'system', addedAt: new Date() },
+      
+      // React core classes and functions
+      { name: 'Component', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'react', addedBy: 'system', addedAt: new Date() },
+      { name: 'PureComponent', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'react', addedBy: 'system', addedAt: new Date() },
+      { name: 'Fragment', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'react', addedBy: 'system', addedAt: new Date() },
+      { name: 'StrictMode', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'react', addedBy: 'system', addedAt: new Date() },
+      { name: 'Suspense', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'react', addedBy: 'system', addedAt: new Date() },
+      
+      // Database clients
+      { name: 'Pool', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'database', patterns: ['pg'], addedBy: 'system', addedAt: new Date() },
+      { name: 'Client', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'database', patterns: ['pg'], addedBy: 'system', addedAt: new Date() },
+      { name: 'MongoClient', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'database', patterns: ['mongodb'], addedBy: 'system', addedAt: new Date() },
+      { name: 'PrismaClient', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'database', patterns: ['@prisma/client'], addedBy: 'system', addedAt: new Date() },
+      
+      // Auth libraries
+      { name: 'StackServerApp', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'auth', patterns: ['@stackframe/stack'], addedBy: 'system', addedAt: new Date() },
+      { name: 'StackClient', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'auth', patterns: ['@stackframe/stack'], addedBy: 'system', addedAt: new Date() },
+      { name: 'ClerkProvider', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'auth', patterns: ['@clerk/nextjs'], addedBy: 'system', addedAt: new Date() },
+      { name: 'Auth0Provider', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'auth', patterns: ['@auth0/nextjs-auth0'], addedBy: 'system', addedAt: new Date() },
+      
+      // HTTP/API clients
+      { name: 'Axios', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'http', patterns: ['axios'], addedBy: 'system', addedAt: new Date() },
+      { name: 'HttpClient', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'http', addedBy: 'system', addedAt: new Date() },
+      
+      // Express/Node.js frameworks
+      { name: 'Router', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'express', patterns: ['express'], addedBy: 'system', addedAt: new Date() },
+      { name: 'Application', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'express', patterns: ['express'], addedBy: 'system', addedAt: new Date() },
+      
+      // Testing frameworks
+      { name: 'TestingModule', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'testing', patterns: ['@nestjs/testing'], addedBy: 'system', addedAt: new Date() },
+      { name: 'MockedProvider', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'testing', patterns: ['@apollo/client/testing'], addedBy: 'system', addedAt: new Date() },
+      
+      // Node.js core modules
+      { name: 'EventEmitter', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'nodejs', patterns: ['events', 'node:events'], addedBy: 'system', addedAt: new Date() },
+      { name: 'Readable', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'nodejs', patterns: ['stream', 'node:stream'], addedBy: 'system', addedAt: new Date() },
+      { name: 'Writable', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'nodejs', patterns: ['stream', 'node:stream'], addedBy: 'system', addedAt: new Date() },
+      { name: 'Transform', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'nodejs', patterns: ['stream', 'node:stream'], addedBy: 'system', addedAt: new Date() },
+      { name: 'Buffer', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'nodejs', addedBy: 'system', addedAt: new Date() },
     ];
 
     for (const entry of defaultEntries) {
