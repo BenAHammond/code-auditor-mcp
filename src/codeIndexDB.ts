@@ -1628,6 +1628,12 @@ export class CodeIndexDB {
       { name: 'fs', type: WhitelistType.NodeBuiltin, status: WhitelistStatus.Active, patterns: ['fs', 'node:fs', 'fs/promises'], addedBy: 'system', addedAt: new Date() },
       { name: 'path', type: WhitelistType.NodeBuiltin, status: WhitelistStatus.Active, patterns: ['path', 'node:path'], addedBy: 'system', addedAt: new Date() },
       { name: 'crypto', type: WhitelistType.NodeBuiltin, status: WhitelistStatus.Active, patterns: ['crypto', 'node:crypto'], addedBy: 'system', addedAt: new Date() },
+      
+      // Next.js framework classes
+      { name: 'NextResponse', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'nextjs', addedBy: 'system', addedAt: new Date() },
+      { name: 'NextRequest', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'nextjs', addedBy: 'system', addedAt: new Date() },
+      { name: 'Response', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'web-api', addedBy: 'system', addedAt: new Date() },
+      { name: 'Request', type: WhitelistType.FrameworkClass, status: WhitelistStatus.Active, category: 'web-api', addedBy: 'system', addedAt: new Date() },
     ];
 
     for (const entry of defaultEntries) {
