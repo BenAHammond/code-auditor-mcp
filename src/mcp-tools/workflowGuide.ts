@@ -218,7 +218,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
         order: 5,
         tool: 'search_code',
         parameters: { query: 'unused-imports' },
-        description: 'Find and clean up unused imports'
+        description: 'Find and clean up unused imports with improved accuracy'
       }
     ],
     tips: [
@@ -226,7 +226,8 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       'Use calls: to trace function call chains',
       'Use dependents-of: to see what will be affected by changes',
       'Combine with file: to limit scope (e.g., "dep:react file:components")',
-      'unused-imports helps reduce bundle size'
+      'unused-imports helps reduce bundle size',
+      'Improved type detection reduces false positives for type-only imports'
     ]
   }
 };
@@ -248,7 +249,8 @@ export function getWorkflowTips(): Record<string, string[]> {
       'Always run audit with indexFunctions:true to enable search',
       'Use audit_health for quick checks before detailed analysis',
       'Combine natural language with operators in search queries',
-      'React components are automatically detected in .tsx/.jsx files'
+      'React components are automatically detected in .tsx/.jsx files',
+      'Improved TypeScript support with better type-only import detection'
     ],
     'search-operators': [
       'entity:component - Find all React components',
