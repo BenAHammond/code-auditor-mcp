@@ -28,15 +28,7 @@ console.error(chalk.blue('[INFO]'), 'Code index service loaded');
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { CodeIndexDB } from './codeIndexDB.js';
-import { fileURLToPath } from 'node:url';
 console.error(chalk.blue('[INFO]'), 'All modules loaded successfully');
-
-// Read version from package.json
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const packageJsonPath = path.join(__dirname, '..', 'package.json');
-const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf-8'));
-const VERSION = packageJson.version || '0.1.0';
 
 interface ToolParameter {
   name: string;
@@ -232,7 +224,6 @@ async function startMcpServer() {
   const server = new Server(
     {
       name: 'code-auditor',
-      version: VERSION,
     },
     {
       capabilities: {

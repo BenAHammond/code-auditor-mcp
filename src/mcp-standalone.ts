@@ -18,17 +18,6 @@ import { DEFAULT_SERVER_URL } from './constants.js';
 import { scanFunctionsInDirectory } from './functionScanner.js';
 import path from 'node:path';
 import chalk from 'chalk';
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
-
-// Get the directory of the current module
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Read version from package.json
-const packageJsonPath = path.join(__dirname, '..', 'package.json');
-const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-const VERSION = packageJson.version;
 
 interface Tool {
   name: string;
@@ -239,7 +228,6 @@ async function startMcpServer() {
   const server = new Server(
     {
       name: 'code-auditor',
-      version: VERSION,
     },
     {
       capabilities: {
