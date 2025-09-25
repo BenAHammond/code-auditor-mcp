@@ -156,8 +156,8 @@ export async function extractFunctionsFromFile(
           // Skip side-effect imports - they're never "unused"
           if ((imp.importType as any) === 'side-effect') return false;
           
-          // Check if import is used
-          if (functionUsageMap.has(imp.localName)) return false;
+          // Check if import is used in this function OR at module level
+          if (functionUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
           
           // Apply type-only configuration
           if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
@@ -222,8 +222,8 @@ export async function extractFunctionsFromFile(
             // Skip side-effect imports - they're never "unused"
             if ((imp.importType as any) === 'side-effect') return false;
             
-            // Check if import is used
-            if (functionUsageMap.has(imp.localName)) return false;
+            // Check if import is used in this function OR at module level
+            if (functionUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
             
             // Apply type-only configuration
             if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
@@ -289,8 +289,8 @@ export async function extractFunctionsFromFile(
             // Skip side-effect imports - they're never "unused"
             if ((imp.importType as any) === 'side-effect') return false;
             
-            // Check if import is used
-            if (functionUsageMap.has(imp.localName)) return false;
+            // Check if import is used in this method OR at module level
+            if (functionUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
             
             // Apply type-only configuration
             if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
@@ -364,6 +364,31 @@ export async function extractFunctionsFromFile(
             body: getComponentBody(node, sourceFile)
           };
         } else {
+          // Track which imports this component uses
+          const componentUsageMap = extractIdentifierUsage(node, sourceFile, importNames);
+          const usedImports = Array.from(componentUsageMap.keys());
+          
+          // Apply unused imports configuration
+          const config = options?.unusedImportsConfig;
+          let unusedImports = detailedImports
+            .filter(imp => {
+              // Skip side-effect imports - they're never "unused"
+              if ((imp.importType as any) === 'side-effect') return false;
+              
+              // Check if import is used in this component OR at module level
+              if (componentUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
+              
+              // Apply type-only configuration
+              if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
+              
+              // Apply ignore patterns
+              if (config?.ignorePatterns?.some(pattern => 
+                imp.localName.match(new RegExp(pattern)))) return false;
+              
+              return true;
+            })
+            .map(imp => imp.localName);
+          
           // Add new component
           functions.push({
             name: componentName,
@@ -384,6 +409,8 @@ export async function extractFunctionsFromFile(
               isExported: isComponentExported(node),
               complexity: calculateComponentComplexity(node),
               body: getComponentBody(node, sourceFile),
+              usedImports,
+              unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
               calledBy: []
             }
           });
