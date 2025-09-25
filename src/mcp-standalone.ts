@@ -97,6 +97,20 @@ const tools: Tool[] = [
         description: 'Automatically index functions during audit',
         default: true,
       },
+      {
+        name: 'limit',
+        type: 'number',
+        required: false,
+        description: 'Maximum number of violations to return (default: 50, max: 100)',
+        default: 50,
+      },
+      {
+        name: 'offset',
+        type: 'number',
+        required: false,
+        description: 'Number of violations to skip for pagination (default: 0)',
+        default: 0,
+      },
     ],
   },
   {
@@ -446,6 +460,8 @@ async function startMcpServer() {
           const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
           const analyzers = (args.analyzers as string[]) || ['solid', 'dry'];
           const minSeverity = (args.minSeverity as string) as Severity;
+          const limit = Math.min((args.limit as number) || 50, 100); // Max 100
+          const offset = (args.offset as number) || 0;
           
           const options: AuditRunnerOptions = {
             projectRoot: auditPath,
@@ -499,6 +515,10 @@ async function startMcpServer() {
             }
           }
 
+          // Get all violations and apply pagination
+          const allViolations = getAllViolations(auditResult);
+          const paginatedViolations = allViolations.slice(offset, offset + limit);
+          
           // Format for MCP
           result = {
             summary: {
@@ -510,7 +530,14 @@ async function startMcpServer() {
               executionTime: auditResult.metadata.auditDuration,
               healthScore: calculateHealthScore(auditResult),
             },
-            violations: getAllViolations(auditResult).slice(0, 100), // Limit to first 100
+            violations: paginatedViolations,
+            pagination: {
+              total: allViolations.length,
+              limit,
+              offset,
+              hasMore: offset + limit < allViolations.length,
+              nextOffset: offset + limit < allViolations.length ? offset + limit : null,
+            },
             recommendations: auditResult.recommendations,
             ...(indexingResult && { functionIndexing: indexingResult }),
           };
