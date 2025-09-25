@@ -2,7 +2,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, InitializeRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createAuditRunner } from './auditRunner.js';
 import type { AuditRunnerOptions, AuditResult, Violation, Severity, FunctionMetadata } from './types.js';
 import { 
@@ -314,7 +314,7 @@ async function startMcpServer() {
   console.error(chalk.blue('[INFO]'), `Registered ${tools.length} tools`);
   
   // Add handler for initialize request
-  server.setRequestHandler('initialize' as any, async (request: any) => {
+  server.setRequestHandler(InitializeRequestSchema, async (request) => {
     console.error(chalk.blue('[DEBUG]'), 'Received initialize request');
     console.error(chalk.blue('[DEBUG]'), 'Request:', JSON.stringify(request, null, 2));
     const response = {
@@ -686,7 +686,7 @@ async function startMcpServer() {
   console.error(chalk.green('✓ Code Auditor MCP Server started (standalone mode)'));
   console.error(chalk.gray('Listening on stdio...'));
   console.error(chalk.blue('[DEBUG]'), 'Server state after initialization:', {
-    name: server.serverInfo?.name,
+    name: 'code-auditor',
     transport: 'stdio',
     handlers: ['ListTools', 'CallTool', 'initialize'],
     toolCount: tools.length,
