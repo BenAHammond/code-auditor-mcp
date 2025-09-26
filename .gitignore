@@ -123,3 +123,6 @@ bug-reports/
 
 .claude/
 claude.backup-*
+
+.mcpregistry_github_token
+.mcpregistry_registry_token

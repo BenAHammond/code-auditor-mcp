@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-16/server.schema.json",
+  "name": "io.github.BenAHammond/code-auditor-mcp",
+  "mcpName": "code-auditor",
+  "description": "Code Quality Auditor: Analyze code for SOLID principles, DRY violations, and more",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/BenAHammond/code-auditor-mcp",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "code-auditor-mcp",
+      "version": "1.17.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
