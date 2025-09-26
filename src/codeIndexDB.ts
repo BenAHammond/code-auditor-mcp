@@ -1777,14 +1777,13 @@ export class CodeIndexDB {
     // Generate unique audit ID
     const auditId = `audit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
+    // Store the full audit result structure to preserve all data
     const auditRecord = {
       auditId,
       timestamp: new Date(),
       projectPath,
-      violations: auditResult.violations || [],
-      summary: auditResult.summary,
-      recommendations: auditResult.recommendations || [],
-      metadata: auditResult.metadata,
+      // Store the entire result to preserve analyzer structure
+      ...auditResult,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // Expire after 24 hours
     };
     

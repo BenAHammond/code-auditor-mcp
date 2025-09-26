@@ -183,6 +183,39 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       'Search for common antipatterns like console.log'
     ]
   },
+
+  'large-audit-handling': {
+    name: 'Handling Large Audits',
+    description: 'Working with large codebases that generate many violations',
+    steps: [
+      {
+        order: 1,
+        tool: 'audit',
+        parameters: { path: '.', analyzers: ['solid'], minSeverity: 'warning', limit: 25 },
+        description: 'Run initial audit with small page size to check scope'
+      },
+      {
+        order: 2,
+        tool: 'audit',
+        parameters: { auditId: 'audit_xxx_xxx', offset: 25, limit: 25 },
+        description: 'Get next page using the auditId from first response',
+        condition: 'When pagination.hasMore is true'
+      },
+      {
+        order: 3,
+        tool: 'audit',
+        parameters: { path: './src/components', analyzers: ['solid'], limit: 50 },
+        description: 'Focus on specific directories to reduce result size',
+        condition: 'If you only need to review certain areas'
+      }
+    ],
+    tips: [
+      'Use minSeverity:"warning" to filter out info-level suggestions',
+      'auditId is included in the pagination response for easy reference',
+      'Cached results make paging through violations very fast',
+      'Consider auditing subdirectories separately for better focus'
+    ]
+  },
   
   'analyzer-configuration': {
     name: 'Analyzer Configuration',
@@ -288,7 +321,9 @@ export function getWorkflowTips(): Record<string, string[]> {
       'Use audit_health for quick checks before detailed analysis',
       'Combine natural language with operators in search queries',
       'React components are automatically detected in .tsx/.jsx files',
-      'Improved TypeScript support with better type-only import detection'
+      'Improved TypeScript support with better type-only import detection',
+      'Audit results are paginated - use limit and offset parameters',
+      'Cached audit results can be accessed with auditId for fast pagination'
     ],
     'search-operators': [
       'entity:component - Find all React components',
@@ -303,6 +338,15 @@ export function getWorkflowTips(): Record<string, string[]> {
       'Use specific paths in audit to analyze only changed code',
       'search_code is fast even on large codebases',
       'find_definition is optimized for exact name lookup'
+    ],
+    'pagination': [
+      'Default limit is 50 violations per request (max 100)',
+      'Use offset parameter to get subsequent pages',
+      'First request returns an auditId in pagination info',
+      'Use the auditId for fast access to cached results',
+      'Example: audit(limit: 25) → then audit(auditId: "...", offset: 25)',
+      'Cached results expire after 24 hours',
+      'Set useCache: false to disable result caching'
     ]
   };
 }
