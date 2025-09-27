@@ -13,7 +13,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "code-auditor-mcp",
-      "version": "1.17.1",
+      "version": "1.17.2",
       "transport": {
         "type": "stdio"
       }
