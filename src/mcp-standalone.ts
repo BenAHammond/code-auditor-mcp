@@ -369,14 +369,31 @@ function getAllViolations(result: AuditResult): Violation[] {
 }
 
 function calculateHealthScore(result: AuditResult): number {
-  let score = 100;
-  const critical = result.summary.criticalIssues;
-  const warning = result.summary.warnings;
+  const filesAnalyzed = result.metadata?.filesAnalyzed || 1;
+  const critical = result.summary.criticalIssues || 0;
+  const warnings = result.summary.warnings || 0;
+  const suggestions = result.summary.suggestions || 0;
   
-  score -= critical * 10;
-  score -= warning * 2;
+  // Weight factors for different severity levels
+  const weights = {
+    critical: 10,
+    warning: 3,
+    suggestion: 0.5
+  };
   
-  return Math.max(0, Math.min(100, score));
+  // Calculate weighted violations per file
+  const weightedViolations = (critical * weights.critical) + 
+                             (warnings * weights.warning) + 
+                             (suggestions * weights.suggestion);
+  
+  const violationsPerFile = weightedViolations / filesAnalyzed;
+  
+  // Score calculation: 100 points minus deductions
+  // Each weighted violation per file reduces score
+  // Critical-heavy codebases drop faster than suggestion-heavy ones
+  let score = 100 - (violationsPerFile * 2);
+  
+  return Math.max(0, Math.round(Math.min(100, score)));
 }
 
 async function startMcpServer() {
