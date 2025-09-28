@@ -1,598 +1,156 @@
-# Code Auditor
+# Code Auditor: AI-Powered Code Intelligence
 
-A comprehensive TypeScript/JavaScript code quality audit tool that analyzes your codebase for SOLID principles compliance, DRY violations, security patterns, and more.
+**Your AI understands your code.** Code Auditor indexes your entire codebase and provides real-time analysis that AI assistants like Claude can actually use to help you write better code.
 
-## Features
+## The Problem It Solves
 
-- **SOLID Principles Analysis** - Detect violations of Single Responsibility, Open/Closed, and other SOLID principles
-- **DRY (Don't Repeat Yourself)** - Find code duplication and suggest refactoring opportunities
-  - **Unused Imports Detection** - Identify unused imports at function or file level with configurable options
-- **Security Pattern Analysis** - Verify authentication, authorization, and rate limiting implementations
-- **Component Architecture Review** - Analyze component structure, complexity, and best practices
-- **Data Access Patterns** - Check for SQL injection risks, performance issues, and security patterns
-- **Code Function Indexing** - Index and search functions across your codebase with intelligent tokenization
-- **AI Tool Configuration** - Auto-generate configurations for 10+ AI coding assistants
-- **Advanced Search** - Natural language search with content search, match context, and query parsing
-- **Index Maintenance** - Bulk cleanup and deep synchronization tools for accurate indexing
-- **Multiple Output Formats** - Generate HTML, JSON, or CSV reports
-- **Highly Configurable** - Customize thresholds, patterns, and analysis rules
-- **Framework Support** - Built-in support for React, Vue, Angular, Svelte, and Node.js
-- **MCP Server Integration** - Use with AI assistants like Claude for interactive code analysis
+AI coding assistants are powerful, but they're flying blind. They can't search your codebase, don't know your patterns, and miss critical context. Code Auditor changes that by creating a searchable index of every function, component, and pattern in your code.
 
-## Installation
+## How It Works
 
-### Global Installation
-```bash
-npm install -g code-auditor
-```
+1. **Index** - Automatically catalogs functions, React components, and dependencies
+2. **Analyze** - Detects SOLID violations, code duplication, and security issues  
+3. **Connect** - AI assistants access your code index via MCP (Model Context Protocol)
+4. **Iterate** - Get intelligent suggestions based on your actual codebase
 
-### Local Installation
-```bash
-npm install --save-dev code-auditor
-```
-
-### From Source
-```bash
-git clone https://github.com/code-auditor/code-auditor.git
-cd code-auditor
-npm install
-npm run build
-npm link
-```
-
-## Quick Start
-
-### Basic Usage
-```bash
-# Run with default settings
-code-audit
-
-# Generate a sample configuration
-code-audit --init
-
-# Use a specific configuration
-code-audit -c .auditrc.json
-
-# Analyze a specific directory
-code-audit -p ./src
-```
-
-### Common Options
-```bash
-# Generate multiple report formats
-code-audit -f html -f json -f csv
-
-# Run specific analyzers only
-code-audit -a solid -a dry
-
-# Set minimum severity level
-code-audit -s warning
-
-# Show detailed progress
-code-audit -v
-```
-
-## Configuration
-
-The auditor looks for configuration in these locations (in order):
-1. Command line arguments
-2. `.auditrc.json` in the current directory
-3. `audit.config.json` in the current directory
-4. `audit.config.js` in the current directory
-5. Environment variables (with `AUDIT_` prefix)
-
-### Basic Configuration Example
-
-```json
-{
-  "includePaths": [
-    "src/**/*.{ts,tsx,js,jsx}"
-  ],
-  "excludePaths": [
-    "**/node_modules/**",
-    "**/*.test.ts"
-  ],
-  "enabledAnalyzers": [
-    "solid",
-    "dry",
-    "security",
-    "component",
-    "data-access"
-  ],
-  "outputFormats": ["html", "json"],
-  "outputDirectory": "./audit-reports",
-  "thresholds": {
-    "maxCritical": 0,
-    "maxWarnings": 50,
-    "minHealthScore": 80
-  },
-  "unusedImportsConfig": {
-    "checkLevel": "function",
-    "includeTypeOnlyImports": false,
-    "ignorePatterns": ["React", "^_"]
-  }
-}
-```
-
-### Unused Imports Configuration
-
-The DRY analyzer includes unused imports detection with configurable options:
-
-```json
-{
-  "unusedImportsConfig": {
-    "checkLevel": "function",      // "function" | "file" - analyze at function or file level
-    "includeTypeOnlyImports": false,  // whether to report type-only imports as unused
-    "ignorePatterns": [              // regex patterns for imports to ignore
-      "React",                       // ignore React (often used implicitly in JSX)
-      "^_",                         // ignore imports starting with underscore
-      "test.*"                      // ignore test-related imports
-    ]
-  }
-}
-```
-
-**Check Levels:**
-- `function` (default): Analyzes each function in isolation, reporting imports unused within that specific function
-- `file`: Analyzes the entire file, reporting imports not used anywhere in the file
-
-### Project-Specific Configurations
-
-See the `examples/` directory for pre-configured setups:
-- `nextjs.auditrc.json` - Next.js projects
-- `react.auditrc.json` - React applications
-- `node-api.auditrc.json` - Node.js APIs
-
-## Available Analyzers
-
-### SOLID Analyzer
-Checks for violations of SOLID principles:
-- Single Responsibility Principle
-- Open/Closed Principle
-- Liskov Substitution Principle
-- Interface Segregation Principle
-- Dependency Inversion Principle
-
-### DRY Analyzer
-Detects code duplication:
-- Duplicate code blocks
-- Similar function implementations
-- Repeated imports
-- String literal duplication
-- Unused imports (file-level detection)
-
-### Security Analyzer
-Verifies security patterns:
-- Authentication wrapper usage
-- Authorization checks
-- Rate limiting implementation
-- Public endpoint identification
-
-### Component Analyzer
-Analyzes UI components:
-- Component complexity
-- Error boundary usage
-- Prop validation
-- Nesting depth
-
-### Data Access Analyzer
-Reviews database interactions:
-- SQL injection vulnerabilities
-- Query performance issues
-- Missing security filters
-- Connection patterns
-
-## CLI Options
-
-```
-Options:
-  -c, --config <file>        Load configuration from file
-  -p, --project <dir>        Project root directory
-  -i, --include <pattern>    Include files matching pattern
-  -e, --exclude <pattern>    Exclude files matching pattern
-  -a, --analyzers <name>     Enable specific analyzers
-  -f, --format <format>      Output format: html, json, csv
-  -o, --output <dir>         Output directory for reports
-  -s, --severity <level>     Minimum severity: critical, warning, suggestion
-  --fail-on-critical         Exit with error code if critical issues found
-  --no-progress              Disable progress bar
-  -v, --verbose              Show detailed progress
-  --init                     Create a sample configuration file
-  -h, --help                 Show help
-```
-
-## Programmatic API
-
-### Basic Usage
-```typescript
-import { AuditRunner } from 'code-auditor';
-
-const runner = new AuditRunner({
-  includePaths: ['src/**/*.ts'],
-  enabledAnalyzers: ['solid', 'dry']
-});
-
-const result = await runner.run();
-console.log(`Found ${result.summary.totalViolations} issues`);
-```
-
-### Quick Audit Function
-```typescript
-import { runAudit } from 'code-auditor';
-
-const result = await runAudit({
-  projectRoot: './my-project',
-  outputFormats: ['html', 'json']
-});
-```
-
-### Project-Specific Runner
-```typescript
-import { createAuditRunner } from 'code-auditor';
-
-// Pre-configured for Next.js projects
-const runner = createAuditRunner('nextjs', {
-  thresholds: {
-    maxCritical: 0
-  }
-});
-
-const result = await runner.run();
-```
-
-### Custom Analyzer
-```typescript
-import { BaseAnalyzer, AuditRunner } from 'code-auditor';
-
-class MyCustomAnalyzer extends BaseAnalyzer {
-  async analyzeFile(filePath: string, content: string) {
-    // Your analysis logic here
-  }
-}
-
-const runner = new AuditRunner();
-runner.registerAnalyzer('custom', {
-  name: 'My Custom Analyzer',
-  instance: new MyCustomAnalyzer()
-});
-```
-
-## Understanding Reports
-
-### Health Score
-The health score (0-100) is calculated based on:
-- Number of violations per file
-- Severity of violations (critical issues have more impact)
-- Overall code coverage analyzed
-
-### Severity Levels
-- **Critical** 🔴 - Must be fixed immediately (security vulnerabilities, major bugs)
-- **Warning** 🟡 - Should be addressed soon (poor patterns, minor security issues)
-- **Suggestion** 🔵 - Nice to have improvements (optimizations, best practices)
-
-### Report Formats
-
-#### HTML Report
-Interactive web report with:
-- Summary dashboard
-- Sortable violation lists
-- Code snippets with line numbers
-- Recommendations with examples
-- Trend charts (when historical data available)
-
-#### JSON Report
-Machine-readable format containing:
-- Complete violation details
-- Metrics and statistics
-- Recommendations
-- MCP-compatible format option
-
-#### CSV Report
-Spreadsheet-friendly format with:
-- Summary metrics
-- Violation counts by category
-- Trend data for tracking
-
-## CI/CD Integration
-
-### GitHub Actions
-```yaml
-- name: Run Code Audit
-  run: |
-    npm install -g code-auditor
-    code-audit -c .auditrc.json --fail-on-critical
-```
-
-### GitLab CI
-```yaml
-code-audit:
-  script:
-    - npm install -g code-auditor
-    - code-audit -f json -o reports/
-  artifacts:
-    reports:
-      paths:
-        - reports/
-```
-
-### Jenkins
-```groovy
-stage('Code Audit') {
-  steps {
-    sh 'npm install -g code-auditor'
-    sh 'code-audit --fail-on-critical'
-  }
-}
-```
-
-## Environment Variables
-
-- `AUDIT_OUTPUT_DIR` - Override output directory
-- `AUDIT_VERBOSE` - Enable verbose output
-- `AUDIT_MIN_SEVERITY` - Set minimum severity level
-- `AUDIT_FAIL_ON_CRITICAL` - Exit with error on critical issues
-- `AUDIT_ENABLED_ANALYZERS` - Comma-separated list of analyzers
-
-## MCP Server Integration
-
-Code Auditor includes a built-in MCP (Model Context Protocol) server that enables AI assistants like Claude to analyze your code interactively.
-
-### Using with Claude Code CLI
-
-The easiest way to use Code Auditor with Claude is through the Claude Code CLI:
+## Quick Start (2 minutes)
 
 ```bash
-# Add the Code Auditor MCP server to your project
+# Add to your project with Claude Code CLI
 claude mcp add code-auditor -- npx code-auditor-mcp
 
-# The MCP server is now available in your Claude Code session
-# Just ask Claude to analyze your code!
+# That's it! Now ask Claude:
+# "What authentication functions exist in my codebase?"
+# "Find all API endpoints and check for rate limiting"
+# "Show me components similar to UserTable"
 ```
 
-Alternative installation methods:
+## Core Features That Matter
 
+### 🔍 Natural Language Code Search
+```
+"Find all functions that validate user input"
+"Show me where we're calling the payment API"
+"What components use the useState hook?"
+```
+
+### 🎯 Smart Code Analysis
+- **SOLID Principles** - Catch architecture issues before they spread
+- **DRY Violations** - Find duplicate code that should be refactored
+- **Security Patterns** - Verify auth, rate limiting, SQL injection protection
+- **Dead Code** - Identify unused imports and functions
+
+### 🤖 AI Tool Integration
+Auto-generates configurations for:
+- Claude (via MCP)
+- Cursor
+- Continue
+- GitHub Copilot
+- 10+ other AI assistants
+
+### ⚙️ Persistent Configuration
+Set your analyzer preferences once:
+```
+You: "Set SOLID analyzer to allow 3 responsibilities for components"
+Claude: Configuration saved! All future audits will use this setting.
+```
+
+## Real Examples
+
+### Example 1: Finding Authentication Patterns
+```
+You: "Show me all authentication-related functions"
+Claude: Found 23 functions across 8 files:
+- `validateToken()` in auth/tokens.ts:45
+- `requireAuth()` in middleware/auth.ts:12
+- `checkPermissions()` in auth/permissions.ts:78
+...
+```
+
+### Example 2: Analyzing Code Quality
+```
+You: "Audit the user service for issues"
+Claude: Found 3 critical issues:
+- Single Responsibility violation: UserService handles both auth and profile updates
+- SQL injection risk: Raw query in getUserByEmail() at line 234
+- Missing rate limiting on password reset endpoint
+```
+
+### Example 3: Discovering Patterns
+```
+You: "Find React components similar to DataTable"
+Claude: Found 4 similar components:
+- `UserTable` - extends DataTable with user-specific columns
+- `OrderGrid` - implements similar pagination pattern
+- `ProductList` - uses same filtering approach
+```
+
+## Installation Options
+
+### Global Install
 ```bash
-# Using npm start (if installed locally)
-claude mcp add code-auditor -- npm start
-
-# Using global installation
 npm install -g code-auditor-mcp
-claude mcp add code-auditor -- code-auditor-mcp
+code-audit  # Run analysis
 ```
 
-### Manual Setup with Claude Desktop
-
-If you prefer to configure Claude Desktop manually:
-
-1. Install code-auditor globally:
-   ```bash
-   npm install -g code-auditor-mcp
-   ```
-
-2. Add to your Claude Desktop configuration:
-   ```json
-   {
-     "mcpServers": {
-       "code-auditor": {
-         "command": "npx",
-         "args": ["code-auditor-mcp"]
-       }
-     }
-   }
-   ```
-
-   Configuration file locations:
-   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-   - Linux: `~/.config/Claude/claude_desktop_config.json`
-
-3. Restart Claude Desktop
-
-### Available MCP Tools
-
-#### Code Analysis Tools
-- **audit_run** - Run a comprehensive code audit
-- **audit_analyze_file** - Analyze a specific file for issues
-- **audit_check_health** - Get a quick health score for your codebase
-- **audit_list_analyzers** - List all available analyzers and their capabilities
-
-#### Code Index Tools
-- **index_functions** - Index functions from TypeScript/JavaScript files
-- **search_functions** - Search indexed functions with natural language queries
-- **find_definition** - Find the exact definition of a specific function
-- **register_functions** - Manually register functions with metadata
-- **get_index_stats** - Get statistics about the code index
-- **clear_index** - Clear all indexed functions
-
-#### AI Configuration Tools
-- **generate_ai_configs** - Generate configs for AI coding assistants (Cursor, Continue, Copilot, etc.)
-- **list_ai_tools** - List all supported AI tools
-- **get_ai_tool_info** - Get detailed info about a specific AI tool
-- **validate_ai_config** - Validate an AI tool configuration
-
-#### Maintenance Tools
-- **bulk_cleanup** - Remove index entries for deleted files
-- **deep_sync** - Deep synchronize all indexed files
-
-#### Analyzer Configuration Tools
-- **whitelist_get** - View current whitelist entries (platform APIs, dependencies, etc.)
-- **whitelist_add** - Add exceptions for legitimate patterns (framework classes, etc.)
-- **whitelist_update_status** - Enable/disable whitelist entries
-- **whitelist_detect** - Auto-detect and suggest whitelist entries from package.json
-
-### Advanced Search Functionality
-
-The `search_functions` tool (and `search_code` in MCP) supports powerful search operators that enable precise code discovery. You can use natural language queries combined with special operators to find exactly what you need.
-
-#### Search Modes
-
-The search tool now supports three distinct search modes:
-
-- **metadata** (default) - Searches in function names, signatures, and metadata
-- **content** - Searches within function bodies and implementations
-- **both** - Searches in both metadata and content
-
-Set the search mode in the MCP tool by adding it to filters:
-```json
-{
-  "query": "validateUser",
-  "filters": {
-    "searchMode": "content"
-  }
-}
+### Project Install
+```bash
+npm install --save-dev code-auditor
+npx code-audit
 ```
 
-#### Match Context
-
-When using content search mode, results include match context showing 2 lines before and after each match. This helps you understand the code context without needing to open the file.
-
-Example output:
-```typescript
-{
-  "contentMatches": [
-    {
-      "line": 45,
-      "column": 8,
-      "match": "validateUser(email)"
-    }
-  ],
-  "matchContexts": [
-    {
-      "matchIndex": 0,
-      "context": [
-        "    // Check if user exists",
-        "    const user = await getUserByEmail(email);",
-        "    if (!validateUser(email)) {",
-        "      throw new Error('Invalid user');",
-        "    }"
-      ]
-    }
-  ]
-}
+### CI/CD Integration
+```yaml
+# GitHub Actions
+- name: Code Audit
+  run: npx code-audit --fail-on-critical
 ```
 
-#### Search Operators Reference
-
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `file:` | Filter by file path | `file:utils` `file:src/components` |
-| `type:` | Filter by file type | `type:ts` `type:tsx` |
-| `lang:` `language:` | Filter by language | `lang:typescript` |
-| `entity:` | Filter by entity type | `entity:function` `entity:component` |
-| `async:` | Filter async functions | `async:true` `async:false` |
-| `exported:` | Filter by export status | `exported:true` |
-| `kind:` | Filter by function kind | `kind:arrow` `kind:method` |
-| `complexity:` | Filter by complexity | `complexity:>10` `complexity:5-10` |
-| `jsdoc:` `doc:` | Filter by documentation | `jsdoc:true` `doc:false` |
-| **Dependency Operators** | | |
-| `dep:` `dependency:` `uses:` | Find dependency usage | `dep:lodash` `uses:react` |
-| `calls:` | Functions calling a function | `calls:validateUser` |
-| `calledby:` `dependents-of:` | Functions called by | `calledby:handleRequest` |
-| `unused-imports` | Find unused imports | `unused-imports` |
-| **React Operators** | | |
-| `component:` | Filter component type | `component:functional` |
-| `hook:` `hooks:` | Find hook usage | `hook:useState` |
-| `prop:` `props:` | Find prop usage | `prop:onClick` |
-| **Search Modifiers** | | |
-| `-` | Exclude terms | `validate -test` |
-| `"..."` | Exact phrase | `"user authentication"` |
-| `~` `fuzzy` | Enable fuzzy search | `~ authenticaton` |
-| `stem` `stemming` | Enable stemming | `stem render` |
-
-#### Example Searches
+## Key Commands
 
 ```bash
-# Content search - find where a specific pattern appears in code
-search_code "validateUser" --filters '{"searchMode": "content"}'
-
-# Find complex functions that need refactoring
-search_code "complexity:>10 -test"
-
-# Find undocumented exported functions
-search_code "exported:true jsdoc:false"
-
-# Find React components using hooks
-search_code "component:functional hook:useState"
-
-# Find functions with unused imports
-search_code "unused-imports file:src"
-
-# Find what depends on a function
-search_code "dependents-of:authenticate"
-
-# Search for SQL queries in function bodies
-search_code "SELECT FROM" --filters '{"searchMode": "content"}'
-
-# Find where specific error messages are thrown
-search_code '"Invalid user"' --filters '{"searchMode": "content"}'
-
-# Complex query with nested quotes
-search_code '"column: \'country\'"' --filters '{"searchMode": "content"}'
-
-# Combine multiple operators
-search_code "Button component:functional prop:onClick file:components"
-
-# Search both metadata and content
-search_code "auth" --filters '{"searchMode": "both", "filePath": "src/services"}'
+code-audit                    # Full analysis with HTML report
+code-audit -f json           # JSON output for CI/CD
+code-audit -a solid,dry      # Run specific analyzers
+code-audit --health          # Quick health score (0-100)
 ```
 
-### Usage Examples with Claude
+## The Feedback Loop
 
-```
-# Code Analysis
-"Run a code audit on my project and show me the critical issues"
-"Check the health score of the src directory"
-"Analyze my code for SOLID principle violations"
-"Find security vulnerabilities in my authentication code"
-"Show me all code duplication in the components folder"
+1. **Write Code** → Code Auditor indexes it automatically
+2. **Ask AI** → "Is there a function to validate emails?"
+3. **Get Context** → AI finds `validateEmail()` and similar patterns
+4. **Improve** → AI suggests using existing validation instead of duplicating
+5. **Repeat** → Your AI gets smarter about YOUR codebase
 
-# Code Search & Discovery (Metadata Search)
-"Search for functions that validate email addresses"
-"Find all user authentication functions"
-"Show me any existing data table components"
-"Search for functions that send notifications"
-"Find all React components that use useState hook"
+## Advanced Search Operators
 
-# Content Search (Search within function bodies)
-"Search for where we're calling the validateUser function in the code"
-"Find all SQL queries that select from the users table"
-"Show me where we're throwing 'Invalid user' errors"
-"Find all console.log statements in production code"
-"Search for TODO comments in function implementations"
-"Find where we're using the column 'country' in our queries"
+| What You Want | Search Query |
+|--------------|--------------|
+| Complex functions | `complexity:>10` |
+| Undocumented exports | `exported:true jsdoc:false` |
+| React hooks usage | `component:functional hook:useState` |
+| Find dependencies | `calls:validateUser` |
+| Unused imports | `unused-imports file:src` |
 
-# Combined Search
-"Find authentication functions and show where they're called from"
-"Search for Button components and their onClick handlers"
-"Find all API endpoints and their rate limiting implementations"
+## Performance
 
-# AI Tool Configuration
-"Generate AI configurations for Cursor and Claude"
-"List all supported AI coding tools"
-"Set up my AI tools to use the code index"
-
-# Maintenance
-"Clean up stale entries in the code index"
-"Sync all indexed files to update function signatures"
-"Re-index the src directory to pick up recent changes"
-```
-
-See [TOOLS-DOCUMENTATION.md](TOOLS-DOCUMENTATION.md) for comprehensive documentation on all MCP tools.
+- Indexes 10,000+ functions in seconds
+- Incremental updates on file changes
+- LokiJS for fast in-memory search
+- FlexSearch for intelligent queries
 
 ## Contributing
 
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT - Use it anywhere, anytime.
 
-## Support
+---
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/code-auditor/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/code-auditor/discussions)
-- **Documentation**: [Full Documentation](https://yourusername.github.io/code-auditor)
-
-## Acknowledgments
-
-Originally extracted from the HHRA ORG-Tracker project, this tool has been generalized for use with any TypeScript/JavaScript codebase.
+**Ready to give your AI x-ray vision into your code?**
+```bash
+claude mcp add code-auditor -- npx code-auditor-mcp
+```

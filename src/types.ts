@@ -278,6 +278,24 @@ export interface AuditProgress {
   message?: string;
 }
 
+export interface AnalyzerConfigDocument {
+  $loki?: number;
+  meta?: any;
+  analyzerName: string;              // e.g., 'solid', 'dry', 'security'
+  projectPath?: string | null;       // Optional project-specific config
+  config: Record<string, any>;       // The actual configuration
+  isGlobal: boolean;                 // true for global, false for project-specific
+  version?: string;                  // Config version for migration
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: 'system' | 'user';
+  metadata?: {
+    description?: string;
+    category?: string;
+    dependencies?: string[];        // Other analyzers this depends on
+  };
+}
+
 export interface AuditRunnerOptions extends AuditOptions {
   progressCallback?: (progress: AuditProgress) => void;
   errorCallback?: (error: Error, context: string) => void;
