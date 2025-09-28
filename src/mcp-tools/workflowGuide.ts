@@ -219,39 +219,125 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
   
   'analyzer-configuration': {
     name: 'Analyzer Configuration',
-    description: 'Managing analyzer rules and exceptions',
+    description: 'Configuring analyzer tolerances and managing exceptions',
     steps: [
       {
         order: 1,
-        tool: 'whitelist_detect',
-        parameters: { path: '.', autoPopulate: false },
-        description: 'Detect common patterns that might need whitelisting'
+        tool: 'get_analyzer_config',
+        parameters: {},
+        description: 'Check current analyzer configurations'
       },
       {
         order: 2,
-        tool: 'whitelist_get',
-        parameters: { status: 'active' },
-        description: 'View current active whitelist entries'
+        tool: 'set_analyzer_config',
+        parameters: { 
+          analyzerName: 'solid', 
+          config: { 
+            maxUnrelatedResponsibilities: 3,
+            maxMethodsPerClass: 20,
+            contextAwareThresholds: true 
+          } 
+        },
+        description: 'Set custom tolerances for SOLID analyzer',
+        condition: 'When default thresholds are too strict for your architecture'
       },
       {
         order: 3,
-        tool: 'whitelist_add',
-        parameters: { name: 'MyFrameworkClass', type: 'framework-class' },
-        description: 'Add exceptions for legitimate patterns',
-        condition: 'When SOLID analyzer incorrectly flags framework usage'
+        tool: 'set_analyzer_config',
+        parameters: { 
+          analyzerName: 'dry', 
+          config: { 
+            minLineThreshold: 15,
+            similarityThreshold: 0.85 
+          } 
+        },
+        description: 'Adjust DRY analyzer for less strict duplication detection',
+        condition: 'When you have legitimate repeated patterns'
       },
       {
         order: 4,
+        tool: 'whitelist_detect',
+        parameters: { path: '.', autoPopulate: false },
+        description: 'Detect framework patterns for whitelisting'
+      },
+      {
+        order: 5,
+        tool: 'whitelist_add',
+        parameters: { name: 'MyContextProvider', type: 'framework-class' },
+        description: 'Add specific exceptions for framework patterns'
+      },
+      {
+        order: 6,
         tool: 'audit',
-        parameters: { path: '.', analyzers: ['solid'] },
-        description: 'Re-run audit to verify reduced false positives'
+        parameters: { path: '.', analyzers: ['solid', 'dry'] },
+        description: 'Re-run audit with new configurations'
       }
     ],
     tips: [
-      'Whitelist entries persist across audit runs',
-      'Auto-detection finds dependencies from package.json',
-      'Platform APIs and Node.js built-ins are pre-whitelisted',
-      'Use whitelist_update_status to disable entries without deleting'
+      'Analyzer configs persist across all audit runs',
+      'Use set_analyzer_config once, benefit everywhere',
+      'Project-specific configs override global configs',
+      'Context-aware thresholds auto-adjust for component patterns',
+      'Combine whitelist and config for fine-grained control',
+      'Use reset_analyzer_config to revert to defaults'
+    ]
+  },
+  
+  'tolerance-configuration': {
+    name: 'Tolerance Configuration',
+    description: 'Setting up custom tolerances for your project architecture',
+    steps: [
+      {
+        order: 1,
+        tool: 'audit',
+        parameters: { path: '.', analyzers: ['solid'] },
+        description: 'Run initial audit to see what violations you get with defaults'
+      },
+      {
+        order: 2,
+        tool: 'get_analyzer_config',
+        parameters: { analyzerName: 'solid' },
+        description: 'Check current SOLID configuration'
+      },
+      {
+        order: 3,
+        tool: 'set_analyzer_config',
+        parameters: { 
+          analyzerName: 'solid', 
+          config: { 
+            maxUnrelatedResponsibilities: 4,
+            maxMethodsPerClass: 25,
+            maxInterfaceMembers: 30,
+            contextAwareThresholds: true 
+          } 
+        },
+        description: 'Relax SOLID thresholds for complex components',
+        condition: 'If you have Context Providers or Dashboard components'
+      },
+      {
+        order: 4,
+        tool: 'set_analyzer_config',
+        parameters: { 
+          analyzerName: 'solid',
+          projectPath: '/path/to/project',
+          config: { maxUnrelatedResponsibilities: 5 } 
+        },
+        description: 'Set project-specific override for even more tolerance',
+        condition: 'For specific projects with unique architecture'
+      },
+      {
+        order: 5,
+        tool: 'audit',
+        parameters: { path: '.', analyzers: ['solid'] },
+        description: 'Re-run audit to see reduced violations'
+      }
+    ],
+    tips: [
+      'Start with small adjustments and increase if needed',
+      'Context-aware thresholds multiply base values for patterns',
+      'Dashboard components get 2x multiplier automatically',
+      'Project configs override global configs',
+      'Use get_analyzer_config without params to see all configs'
     ]
   },
   
@@ -323,7 +409,9 @@ export function getWorkflowTips(): Record<string, string[]> {
       'React components are automatically detected in .tsx/.jsx files',
       'Improved TypeScript support with better type-only import detection',
       'Audit results are paginated - use limit and offset parameters',
-      'Cached audit results can be accessed with auditId for fast pagination'
+      'Cached audit results can be accessed with auditId for fast pagination',
+      'Analyzer configs persist - set once, use everywhere',
+      'Use set_analyzer_config to adjust tolerances for your architecture'
     ],
     'search-operators': [
       'entity:component - Find all React components',
@@ -347,6 +435,15 @@ export function getWorkflowTips(): Record<string, string[]> {
       'Example: audit(limit: 25) → then audit(auditId: "...", offset: 25)',
       'Cached results expire after 24 hours',
       'Set useCache: false to disable result caching'
+    ],
+    'analyzer-config': [
+      'set_analyzer_config persists settings across all audits',
+      'Global configs apply to all projects by default',
+      'Project-specific configs override global ones',
+      'maxUnrelatedResponsibilities controls component complexity',
+      'contextAwareThresholds auto-adjusts for patterns (Dashboard, Form, etc)',
+      'Use get_analyzer_config to check current settings',
+      'reset_analyzer_config reverts to defaults'
     ]
   };
 }

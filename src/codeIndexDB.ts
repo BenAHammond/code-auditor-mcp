@@ -7,7 +7,7 @@ import Loki, { Collection } from 'lokijs';
 import * as FlexSearch from 'flexsearch';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { EnhancedFunctionMetadata, FunctionMetadata, SearchResult, SearchOptions, ParsedQuery } from './types.js';
+import { EnhancedFunctionMetadata, FunctionMetadata, SearchResult, SearchOptions, ParsedQuery, AnalyzerConfigDocument } from './types.js';
 import { QueryParser } from './search/QueryParser.js';
 import {
   WhitelistEntry,
@@ -30,6 +30,7 @@ export class CodeIndexDB {
   private functionsCollection: Collection<FunctionDocument> | null = null;
   private whitelistCollection: Collection<any> | null = null;
   private auditResultsCollection: Collection<any> | null = null;
+  private analyzerConfigCollection: Collection<any> | null = null;
   private searchIndex: any; // FlexSearch Document instance
   private dbPath: string;
   private isInitialized = false;
@@ -174,6 +175,12 @@ export class CodeIndexDB {
     this.auditResultsCollection = this.db.getCollection('auditResults') || 
       this.db.addCollection('auditResults', {
         indices: ['auditId', 'timestamp', 'projectPath']
+      });
+
+    // Get or create analyzer config collection
+    this.analyzerConfigCollection = this.db.getCollection('analyzerConfigs') || 
+      this.db.addCollection('analyzerConfigs', {
+        indices: ['analyzerName', 'projectPath', 'isGlobal']
       });
 
     // Initialize default whitelists if empty
@@ -1827,5 +1834,160 @@ export class CodeIndexDB {
     expired.forEach(doc => {
       this.auditResultsCollection!.remove(doc);
     });
+  }
+
+  // Analyzer Configuration Methods
+  
+  /**
+   * Store analyzer configuration
+   */
+  async storeAnalyzerConfig(
+    analyzerName: string,
+    config: Record<string, any>,
+    options?: {
+      projectPath?: string;
+      isGlobal?: boolean;
+      metadata?: any;
+    }
+  ): Promise<string> {
+    this.ensureInitialized();
+    
+    const configDoc: AnalyzerConfigDocument = {
+      analyzerName,
+      config,
+      isGlobal: options?.isGlobal ?? true,
+      projectPath: options?.projectPath || null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: 'user',
+      metadata: options?.metadata
+    };
+    
+    // Check if config already exists
+    const existing = this.analyzerConfigCollection!.findOne({
+      analyzerName,
+      projectPath: options?.projectPath || null,
+      isGlobal: options?.isGlobal ?? true
+    });
+    
+    if (existing) {
+      Object.assign(existing, {
+        config,
+        updatedAt: new Date(),
+        metadata: options?.metadata
+      });
+      this.analyzerConfigCollection!.update(existing);
+    } else {
+      this.analyzerConfigCollection!.insert(configDoc);
+    }
+    
+    this.db.saveDatabase();
+    return analyzerName;
+  }
+
+  /**
+   * Retrieve analyzer configuration
+   */
+  async getAnalyzerConfig(
+    analyzerName: string,
+    projectPath?: string
+  ): Promise<Record<string, any> | null> {
+    this.ensureInitialized();
+    
+    // First try project-specific config
+    if (projectPath) {
+      const projectConfig = this.analyzerConfigCollection!.findOne({
+        analyzerName,
+        projectPath,
+        isGlobal: false
+      });
+      if (projectConfig) return projectConfig.config;
+    }
+    
+    // Fall back to global config
+    const globalConfig = this.analyzerConfigCollection!.findOne({
+      analyzerName,
+      isGlobal: true
+    });
+    
+    return globalConfig?.config || null;
+  }
+
+  /**
+   * Get all analyzer configurations
+   */
+  async getAllAnalyzerConfigs(projectPath?: string): Promise<Record<string, any>> {
+    this.ensureInitialized();
+    
+    const configs: Record<string, any> = {};
+    
+    // Get global configs first
+    const globalConfigs = this.analyzerConfigCollection!.find({ isGlobal: true });
+    for (const config of globalConfigs) {
+      configs[config.analyzerName] = config.config;
+    }
+    
+    // Override with project-specific configs if available
+    if (projectPath) {
+      const projectConfigs = this.analyzerConfigCollection!.find({
+        projectPath,
+        isGlobal: false
+      });
+      for (const config of projectConfigs) {
+        configs[config.analyzerName] = config.config;
+      }
+    }
+    
+    return configs;
+  }
+
+  /**
+   * Delete analyzer configuration
+   */
+  async deleteAnalyzerConfig(
+    analyzerName: string,
+    options?: {
+      projectPath?: string;
+      isGlobal?: boolean;
+    }
+  ): Promise<boolean> {
+    this.ensureInitialized();
+    
+    const config = this.analyzerConfigCollection!.findOne({
+      analyzerName,
+      projectPath: options?.projectPath || null,
+      isGlobal: options?.isGlobal ?? !options?.projectPath
+    });
+    
+    if (config) {
+      this.analyzerConfigCollection!.remove(config);
+      this.db.saveDatabase();
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Reset all analyzer configurations to defaults
+   */
+  async resetAnalyzerConfigs(projectPath?: string): Promise<void> {
+    this.ensureInitialized();
+    
+    if (projectPath) {
+      // Remove only project-specific configs
+      const projectConfigs = this.analyzerConfigCollection!.find({
+        projectPath,
+        isGlobal: false
+      });
+      projectConfigs.forEach(config => {
+        this.analyzerConfigCollection!.remove(config);
+      });
+    } else {
+      // Remove all configs
+      this.analyzerConfigCollection!.clear();
+    }
+    
+    this.db.saveDatabase();
   }
 }

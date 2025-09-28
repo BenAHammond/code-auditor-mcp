@@ -111,6 +111,12 @@ const tools: Tool[] = [
         description: 'Automatically index functions during audit',
         default: true,
       },
+      {
+        name: 'analyzerConfigs',
+        type: 'object',
+        required: false,
+        description: 'Analyzer-specific configuration overrides (e.g., SOLID thresholds, DRY settings)',
+      },
     ],
   },
   {
@@ -137,6 +143,12 @@ const tools: Tool[] = [
         required: false,
         description: 'Automatically index functions during health check',
         default: true,
+      },
+      {
+        name: 'analyzerConfigs',
+        type: 'object',
+        required: false,
+        description: 'Analyzer-specific configuration overrides (e.g., SOLID thresholds, DRY settings)',
       },
     ],
   },
@@ -247,6 +259,68 @@ const tools: Tool[] = [
       },
     ],
   },
+  
+  // Analyzer Configuration Tools
+  {
+    name: 'set_analyzer_config',
+    description: 'Set or update analyzer configuration that persists across audit runs',
+    parameters: [
+      {
+        name: 'analyzerName',
+        type: 'string',
+        required: true,
+        description: 'The analyzer to configure (solid, dry, security, etc.)',
+      },
+      {
+        name: 'config',
+        type: 'object',
+        required: true,
+        description: 'Configuration object for the analyzer (e.g., thresholds, rules)',
+      },
+      {
+        name: 'projectPath',
+        type: 'string',
+        required: false,
+        description: 'Optional project path for project-specific config (defaults to global)',
+      },
+    ],
+  },
+  {
+    name: 'get_analyzer_config',
+    description: 'Get current configuration for an analyzer',
+    parameters: [
+      {
+        name: 'analyzerName',
+        type: 'string',
+        required: false,
+        description: 'Specific analyzer name, or omit to get all configs',
+      },
+      {
+        name: 'projectPath',
+        type: 'string',
+        required: false,
+        description: 'Optional project path to get project-specific config',
+      },
+    ],
+  },
+  {
+    name: 'reset_analyzer_config',
+    description: 'Reset analyzer configuration to defaults',
+    parameters: [
+      {
+        name: 'analyzerName',
+        type: 'string',
+        required: false,
+        description: 'Specific analyzer to reset, or omit to reset all',
+      },
+      {
+        name: 'projectPath',
+        type: 'string',
+        required: false,
+        description: 'Optional project path to reset only project-specific config',
+      },
+    ],
+  },
 ];
 
 async function startMcpServer() {
@@ -348,6 +422,17 @@ async function startMcpServer() {
           const stats = await fs.stat(auditPath).catch(() => null);
           const isFile = stats?.isFile() || false;
           
+          // Get stored analyzer configs from database
+          const db = CodeIndexDB.getInstance();
+          await db.initialize();
+          const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+          
+          // Merge stored configs with any provided configs
+          const analyzerConfigs = {
+            ...storedConfigs,
+            ...(args.analyzerConfigs as Record<string, any> || {})
+          };
+          
           const options: AuditRunnerOptions = {
             projectRoot: isFile ? path.dirname(auditPath) : auditPath,
             enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'security'],
@@ -355,6 +440,7 @@ async function startMcpServer() {
             verbose: false,
             indexFunctions,
             ...(isFile && { includePaths: [auditPath] }),
+            ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
           };
 
           const runner = createAuditRunner(options);
@@ -411,12 +497,24 @@ async function startMcpServer() {
           const threshold = (args.threshold as number) || 70;
           const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
 
+          // Get stored analyzer configs from database
+          const db = CodeIndexDB.getInstance();
+          await db.initialize();
+          const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+          
+          // Merge stored configs with any provided configs
+          const analyzerConfigs = {
+            ...storedConfigs,
+            ...(args.analyzerConfigs as Record<string, any> || {})
+          };
+
           const runner = createAuditRunner({
             projectRoot: auditPath,
             enabledAnalyzers: ['solid', 'dry', 'security'],
             minSeverity: 'warning',
             verbose: false,
             indexFunctions, // Pass the flag to the runner
+            ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
           });
 
           const auditResult = await runner.run();
@@ -659,6 +757,111 @@ async function startMcpServer() {
           break;
         }
 
+        case 'set_analyzer_config': {
+          const analyzerName = args.analyzerName as string;
+          const config = args.config as Record<string, any>;
+          const projectPath = args.projectPath as string | undefined;
+          
+          const db = CodeIndexDB.getInstance();
+          await db.initialize();
+          
+          try {
+            await db.storeAnalyzerConfig(analyzerName, config, {
+              projectPath,
+              isGlobal: !projectPath
+            });
+            
+            result = {
+              success: true,
+              message: `Configuration for ${analyzerName} analyzer has been saved${projectPath ? ` for project ${projectPath}` : ' globally'}`,
+              analyzer: analyzerName,
+              scope: projectPath ? 'project' : 'global',
+              config
+            };
+          } catch (error) {
+            result = {
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to save configuration'
+            };
+          }
+          break;
+        }
+        
+        case 'get_analyzer_config': {
+          const analyzerName = args.analyzerName as string | undefined;
+          const projectPath = args.projectPath as string | undefined;
+          
+          const db = CodeIndexDB.getInstance();
+          await db.initialize();
+          
+          try {
+            if (analyzerName) {
+              const config = await db.getAnalyzerConfig(analyzerName, projectPath);
+              result = {
+                success: true,
+                analyzer: analyzerName,
+                config: config || null,
+                scope: projectPath ? 'project' : 'global',
+                message: config ? 'Configuration found' : 'No custom configuration found, using defaults'
+              };
+            } else {
+              const configs = await db.getAllAnalyzerConfigs(projectPath);
+              result = {
+                success: true,
+                configs,
+                scope: projectPath ? 'project' : 'global',
+                message: `Found ${Object.keys(configs).length} analyzer configurations`
+              };
+            }
+          } catch (error) {
+            result = {
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to get configuration'
+            };
+          }
+          break;
+        }
+        
+        case 'reset_analyzer_config': {
+          const analyzerName = args.analyzerName as string | undefined;
+          const projectPath = args.projectPath as string | undefined;
+          
+          const db = CodeIndexDB.getInstance();
+          await db.initialize();
+          
+          try {
+            if (analyzerName) {
+              const deleted = await db.deleteAnalyzerConfig(analyzerName, {
+                projectPath,
+                isGlobal: !projectPath
+              });
+              result = {
+                success: deleted,
+                message: deleted 
+                  ? `Configuration for ${analyzerName} analyzer has been reset${projectPath ? ` for project ${projectPath}` : ' globally'}`
+                  : `No configuration found for ${analyzerName} analyzer`,
+                analyzer: analyzerName,
+                scope: projectPath ? 'project' : 'global'
+              };
+            } else {
+              await db.resetAnalyzerConfigs(projectPath);
+              result = {
+                success: true,
+                message: projectPath 
+                  ? `All project-specific configurations for ${projectPath} have been reset`
+                  : 'All analyzer configurations have been reset to defaults',
+                scope: projectPath ? 'project' : 'global'
+              };
+            }
+          } catch (error) {
+            result = {
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to reset configuration'
+            };
+          }
+          break;
+        }
+        
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
