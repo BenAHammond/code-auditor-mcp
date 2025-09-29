@@ -53,6 +53,12 @@ export interface SOLIDAnalyzerConfig {
   componentPatterns?: ComponentPatternConfig;
   maxUnrelatedResponsibilities?: number;
   contextAwareThresholds?: boolean;
+  checkUnrelatedResponsibilities?: boolean;  // New option to control unrelated group checking
+  patternThresholds?: {
+    [patternName: string]: {
+      maxResponsibilities: number;
+    };
+  };
 }
 
 /**
@@ -86,7 +92,8 @@ const DEFAULT_CONFIG: SOLIDAnalyzerConfig = {
     enablePatternDetection: true
   },
   maxUnrelatedResponsibilities: 3,  // Increased from 2 - allow URL management + UI + state
-  contextAwareThresholds: true
+  contextAwareThresholds: true,
+  checkUnrelatedResponsibilities: true  // Check for unrelated responsibilities by default
 };
 
 /**
@@ -292,7 +299,9 @@ const analyzeFile: FileAnalyzerFunction = async (filePath, sourceFile, config: S
   // Detect architectural layer for context-aware analysis
   const layer = detectArchitecturalLayer(filePath);
   const layerThresholds = getLayerThresholds(layer, config);
-  const effectiveConfig = { ...config, ...layerThresholds };
+  // Layer thresholds should not override explicit user configuration
+  // Only apply layer defaults if the user hasn't configured them
+  const effectiveConfig = { ...layerThresholds, ...config };
   
   // Check Single Responsibility Principle for classes
   const classes = findNodesOfType(sourceFile, ts.isClassDeclaration);
@@ -867,9 +876,17 @@ function checkComponentSRP(
   );
   
   // Apply context-aware thresholds
-  const effectiveMaxResponsibilities = config.contextAwareThresholds && pattern
-    ? Math.ceil(config.maxUnrelatedResponsibilities! * pattern.complexityMultiplier)
-    : config.maxUnrelatedResponsibilities!;
+  let effectiveMaxResponsibilities = config.maxUnrelatedResponsibilities!;
+  
+  if (config.contextAwareThresholds && pattern) {
+    // Check for pattern-specific override first
+    if (config.patternThresholds?.[pattern.name]?.maxResponsibilities) {
+      effectiveMaxResponsibilities = config.patternThresholds[pattern.name].maxResponsibilities;
+    } else {
+      // Fall back to multiplier-based calculation
+      effectiveMaxResponsibilities = Math.ceil(config.maxUnrelatedResponsibilities! * pattern.complexityMultiplier);
+    }
+  }
   
   // Get unrelated responsibilities
   const uniqueTypes = [...new Set(responsibilities.map(r => r.type))];
@@ -895,7 +912,8 @@ function checkComponentSRP(
   // Filter out single-element groups which aren't violations
   const realUnrelatedGroups = unrelatedGroups.filter(group => group.length >= 2);
   
-  if (realUnrelatedGroups.length > 0 && uniqueTypes.length > 1) {
+  // Only check for unrelated groups if enabled in config
+  if (config.checkUnrelatedResponsibilities && realUnrelatedGroups.length > 0 && uniqueTypes.length > 1) {
     const { line, column } = getNodePosition(sourceFile, node);
     
     // Main violation for mixed responsibilities

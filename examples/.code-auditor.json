@@ -1,0 +1,75 @@
+{
+  "projectRoot": ".",
+  "reportTitle": "Code Quality Audit",
+  
+  "includePaths": [
+    "src/**/*.{ts,tsx,js,jsx}",
+    "lib/**/*.{ts,tsx}"
+  ],
+  
+  "excludePaths": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/*.test.{ts,tsx}",
+    "**/*.spec.{ts,tsx}"
+  ],
+  
+  "enabledAnalyzers": ["solid", "dry", "security"],
+  
+  "analyzerConfigs": {
+    "solid": {
+      "// Component responsibility thresholds": "Adjust based on your architecture",
+      "componentResponsibilityThresholds": {
+        "default": 2,
+        "layout": 2,      
+        "dashboard": 3,   
+        "table": 2       
+      },
+      
+      "// Class responsibility thresholds": "Service layers might need more responsibilities",
+      "classResponsibilityThresholds": {
+        "default": 2,
+        "repository": 2,  
+        "service": 3     
+      },
+      
+      "// Control flow thresholds": "Adjust if you have complex business logic",
+      "ifElseChainThreshold": 4,
+      "switchCaseThreshold": 6,
+      
+      "// Size thresholds": "Larger values for utility classes",
+      "classMethodThreshold": 10,
+      "interfaceMemberThreshold": 15
+    },
+    
+    "dry": {
+      "minLineThreshold": 10,
+      "similarityThreshold": 0.90,
+      "checkImports": true,
+      "unusedImportsConfig": {
+        "checkLevel": "function",
+        "ignorePatterns": ["React", "^_"]
+      }
+    },
+    
+    "security": {
+      "checkAuthentication": true,
+      "checkAuthorization": true,
+      "checkRateLimiting": true,
+      "allowedUnprotectedRoutes": [
+        "/api/health",
+        "/api/version",
+        "/api/public/*"
+      ]
+    }
+  },
+  
+  "outputFormats": ["html"],
+  "outputDirectory": "./audit-reports",
+  
+  "thresholds": {
+    "maxCritical": 0,
+    "maxWarnings": 30,
+    "minHealthScore": 80
+  }
+}

@@ -308,10 +308,16 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
             maxUnrelatedResponsibilities: 4,
             maxMethodsPerClass: 25,
             maxInterfaceMembers: 30,
-            contextAwareThresholds: true 
+            contextAwareThresholds: true,
+            checkUnrelatedResponsibilities: false,
+            patternThresholds: {
+              Layout: { maxResponsibilities: 4 },
+              Dashboard: { maxResponsibilities: 6 },
+              SimpleUI: { maxResponsibilities: 2 }
+            }
           } 
         },
-        description: 'Relax SOLID thresholds for complex components',
+        description: 'Relax SOLID thresholds with pattern-specific overrides',
         condition: 'If you have Context Providers or Dashboard components'
       },
       {
@@ -334,8 +340,9 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
     ],
     tips: [
       'Start with small adjustments and increase if needed',
-      'Context-aware thresholds multiply base values for patterns',
-      'Dashboard components get 2x multiplier automatically',
+      'Use patternThresholds to override multipliers for specific patterns',
+      'Set checkUnrelatedResponsibilities: false to disable unrelated groups check',
+      'Dashboard components get 2x multiplier by default (unless overridden)',
       'Project configs override global configs',
       'Use get_analyzer_config without params to see all configs'
     ]
