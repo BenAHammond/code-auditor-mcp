@@ -53,6 +53,7 @@ export interface SOLIDAnalyzerConfig {
   componentPatterns?: ComponentPatternConfig;
   maxUnrelatedResponsibilities?: number;
   contextAwareThresholds?: boolean;
+  checkUnrelatedResponsibilities?: boolean;  // New option to control unrelated group checking
 }
 
 /**
@@ -86,7 +87,8 @@ const DEFAULT_CONFIG: SOLIDAnalyzerConfig = {
     enablePatternDetection: true
   },
   maxUnrelatedResponsibilities: 3,  // Increased from 2 - allow URL management + UI + state
-  contextAwareThresholds: true
+  contextAwareThresholds: true,
+  checkUnrelatedResponsibilities: true  // Check for unrelated responsibilities by default
 };
 
 /**
@@ -895,7 +897,8 @@ function checkComponentSRP(
   // Filter out single-element groups which aren't violations
   const realUnrelatedGroups = unrelatedGroups.filter(group => group.length >= 2);
   
-  if (realUnrelatedGroups.length > 0 && uniqueTypes.length > 1) {
+  // Only check for unrelated groups if enabled in config
+  if (config.checkUnrelatedResponsibilities && realUnrelatedGroups.length > 0 && uniqueTypes.length > 1) {
     const { line, column } = getNodePosition(sourceFile, node);
     
     // Main violation for mixed responsibilities
