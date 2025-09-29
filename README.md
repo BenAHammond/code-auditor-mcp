@@ -123,6 +123,22 @@ code-audit --health          # Quick health score (0-100)
 4. **Improve** → AI suggests using existing validation instead of duplicating
 5. **Repeat** → Your AI gets smarter about YOUR codebase
 
+## Configuration
+
+Set custom thresholds for your architecture:
+```javascript
+// Via MCP
+mcp.set_analyzer_config({
+  analyzerName: "solid",
+  config: {
+    maxUnrelatedResponsibilities: 4,
+    patternThresholds: {
+      "Dashboard": { maxResponsibilities: 6 }
+    }
+  }
+});
+```
+
 ## Advanced Search Operators
 
 | What You Want | Search Query |

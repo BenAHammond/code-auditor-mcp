@@ -1,0 +1,70 @@
+{
+  "projectRoot": ".",
+  "reportTitle": "Project Audit with Relaxed SOLID Tolerances",
+  
+  "includePaths": [
+    "src/**/*.{ts,tsx,js,jsx}"
+  ],
+  
+  "excludePaths": [
+    "**/node_modules/**",
+    "**/build/**",
+    "**/dist/**",
+    "**/*.test.{ts,tsx,js,jsx}",
+    "**/*.spec.{ts,tsx,js,jsx}"
+  ],
+  
+  "enabledAnalyzers": [
+    "solid",
+    "dry"
+  ],
+  
+  "analyzerConfigs": {
+    "solid": {
+      "componentResponsibilityThresholds": {
+        "default": 2,
+        "layout": 2,      
+        "dashboard": 4,   
+        "table": 3,      
+        "form": 3        
+      },
+      
+      "classResponsibilityThresholds": {
+        "default": 2,
+        "repository": 2,  
+        "service": 3,     
+        "controller": 3,  
+        "model": 3        
+      },
+      
+      "ifElseChainThreshold": 5,         
+      "switchCaseThreshold": 7,          
+      "classMethodThreshold": 12,        
+      "interfaceMemberThreshold": 20,    
+      "dependencyInjectionLimit": 6      
+    },
+    
+    "dry": {
+      "minLineThreshold": 15,            
+      "similarityThreshold": 0.85,       
+      "checkImports": true,
+      "unusedImportsConfig": {
+        "checkLevel": "function",
+        "includeTypeOnlyImports": false,
+        "ignorePatterns": ["React", "^_", "test.*"]
+      }
+    }
+  },
+  
+  "outputFormats": ["html", "json"],
+  "outputDirectory": "./audit-reports",
+  
+  "minSeverity": "warning",
+  "showProgress": true,
+  
+  "thresholds": {
+    "maxCritical": 5,
+    "maxWarnings": 50,
+    "minHealthScore": 70
+  }
+}
