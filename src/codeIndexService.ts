@@ -3,7 +3,7 @@
  * Main service functions for managing the function index using LokiJS + FlexSearch
  */
 
-import { FunctionMetadata, SearchOptions, RegisterResult, SearchResult, IndexStats } from './types.js';
+import { FunctionMetadata, EnhancedFunctionMetadata, SearchOptions, RegisterResult, SearchResult, IndexStats } from './types.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { loadConfig } from './config/configLoader.js';
 import path from 'path';
@@ -42,17 +42,16 @@ let dbInstance: CodeIndexDB | null = null;
  */
 export async function initializeCodeIndex(dbPath?: string): Promise<CodeIndexDB> {
   try {
-    // Load config if path not provided
+    // Use in-memory database by default
     if (!dbPath) {
-      const config = await loadConfig();
-      dbPath = (config as any).codeIndex?.databasePath || './.code-index/index.db';
+      dbPath = ':memory:';
     }
     
-    // Resolve absolute path
-    const absolutePath = path.resolve(dbPath);
+    // Use path as-is for in-memory, resolve for file paths
+    const finalPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
     
     // Create and initialize database
-    const db = new CodeIndexDB(absolutePath);
+    const db = new CodeIndexDB(finalPath);
     await db.initialize();
     
     // Store instance for reuse
@@ -306,5 +305,18 @@ export async function calculateDependencyDepths(): Promise<void> {
     await db.calculateDependencyDepths();
   } catch (error) {
     throw new DatabaseError(`Failed to calculate dependency depths: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * Get all functions from the index
+ */
+export async function getAllFunctions(): Promise<EnhancedFunctionMetadata[]> {
+  const db = await getDatabase();
+  
+  try {
+    return await db.getAllFunctions();
+  } catch (error) {
+    throw new DatabaseError(`Failed to get all functions: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }

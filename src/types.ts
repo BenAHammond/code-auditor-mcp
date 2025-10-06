@@ -98,7 +98,9 @@ export type AnalyzerFunction = (
 export interface AnalyzerDefinition {
   name: string;
   analyze: AnalyzerFunction;
-  defaultConfig: any;
+  defaultConfig?: any;
+  description?: string;
+  category?: string;
 }
 
 export interface AuditSummary {

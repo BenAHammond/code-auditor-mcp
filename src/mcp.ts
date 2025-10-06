@@ -21,6 +21,8 @@ import {
   findDefinition,
   syncFileIndex
 } from './codeIndexService.js';
+import { CodeMapGenerator } from './services/CodeMapGenerator.js';
+import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { DEFAULT_SERVER_URL } from './constants.js';
 console.error(chalk.blue('[INFO]'), 'Code index service loaded');
@@ -117,6 +119,13 @@ const tools: Tool[] = [
         required: false,
         description: 'Analyzer-specific configuration overrides (e.g., SOLID thresholds, DRY settings)',
       },
+      {
+        name: 'generateCodeMap',
+        type: 'boolean',
+        required: false,
+        description: 'Generate and return a human-readable code map as part of the audit results',
+        default: false,
+      },
     ],
   },
   {
@@ -149,6 +158,13 @@ const tools: Tool[] = [
         type: 'object',
         required: false,
         description: 'Analyzer-specific configuration overrides (e.g., SOLID thresholds, DRY settings)',
+      },
+      {
+        name: 'generateCodeMap',
+        type: 'boolean',
+        required: false,
+        description: 'Generate and return a human-readable code map as part of the health check results',
+        default: false,
       },
     ],
   },
@@ -259,6 +275,7 @@ const tools: Tool[] = [
       },
     ],
   },
+
   
   // Analyzer Configuration Tools
   {
@@ -417,6 +434,7 @@ async function startMcpServer() {
         case 'audit': {
           const auditPath = path.resolve((args.path as string) || process.cwd());
           const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
+          const generateCodeMap = (args.generateCodeMap as boolean) || false;
           
           // Check if path is a file or directory
           const stats = await fs.stat(auditPath).catch(() => null);
@@ -473,6 +491,60 @@ async function startMcpServer() {
             }
           }
 
+          // Generate code map if requested and functions were indexed
+          let codeMapResult = null;
+          if (generateCodeMap && indexingResult && indexingResult.success) {
+            try {
+              const mapGenerator = new CodeMapGenerator();
+              const mapOptions = {
+                includeComplexity: true,
+                includeDocumentation: true,
+                includeDependencies: true,
+                includeUsage: false,
+                groupByDirectory: true,
+                maxDepth: 10,
+                showUnusedImports: true,
+                minComplexity: 7,
+              };
+
+              const codeMap = await mapGenerator.generateCodeMap(auditPath, mapOptions);
+              
+              // Generate documentation metrics
+              let documentation = undefined;
+              try {
+                // Use existing file discovery from audit result
+                const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
+
+                if (files.length > 0) {
+                  const docResult = await analyzeDocumentation(files);
+                  documentation = docResult.metrics;
+                }
+              } catch (docError) {
+                console.error(chalk.yellow('[WARN]'), 'Failed to analyze documentation:', docError);
+              }
+
+              const completeCodeMap = { ...codeMap, documentation };
+              const textOutput = mapGenerator.formatAsText(completeCodeMap, mapOptions);
+
+              codeMapResult = {
+                success: true,
+                textMap: textOutput,
+                statistics: codeMap.stats,
+                fileGroupCount: codeMap.fileGroups.length,
+                dependencyCount: codeMap.dependencies.length,
+                documentationCoverage: documentation?.coverageScore
+              };
+              
+              console.error(chalk.blue('[INFO]'), `Generated code map: ${codeMap.stats.totalFiles} files, ${codeMap.stats.totalFunctions} functions`);
+            } catch (error) {
+              console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
+              codeMapResult = {
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to generate code map'
+              };
+            }
+          }
+
           // Format for MCP
           result = {
             summary: {
@@ -487,6 +559,7 @@ async function startMcpServer() {
             violations: getAllViolations(auditResult).slice(0, 100), // Limit to first 100
             recommendations: auditResult.recommendations,
             ...(indexingResult && { functionIndexing: indexingResult }),
+            ...(codeMapResult && { codeMap: codeMapResult }),
           };
           break;
         }
@@ -496,6 +569,7 @@ async function startMcpServer() {
           const auditPath = path.resolve((args.path as string) || process.cwd());
           const threshold = (args.threshold as number) || 70;
           const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
+          const generateCodeMap = (args.generateCodeMap as boolean) || false;
 
           // Get stored analyzer configs from database
           const db = CodeIndexDB.getInstance();
@@ -547,6 +621,60 @@ async function startMcpServer() {
             }
           }
 
+          // Generate code map if requested and functions were indexed
+          let codeMapResult = null;
+          if (generateCodeMap && indexingResult && indexingResult.success) {
+            try {
+              const mapGenerator = new CodeMapGenerator();
+              const mapOptions = {
+                includeComplexity: true,
+                includeDocumentation: true,
+                includeDependencies: true,
+                includeUsage: false,
+                groupByDirectory: true,
+                maxDepth: 8, // Slightly smaller for health check
+                showUnusedImports: true,
+                minComplexity: 7,
+              };
+
+              const codeMap = await mapGenerator.generateCodeMap(auditPath, mapOptions);
+              
+              // Generate documentation metrics
+              let documentation = undefined;
+              try {
+                // Use existing file discovery from audit result
+                const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
+
+                if (files.length > 0) {
+                  const docResult = await analyzeDocumentation(files);
+                  documentation = docResult.metrics;
+                }
+              } catch (docError) {
+                console.error(chalk.yellow('[WARN]'), 'Failed to analyze documentation:', docError);
+              }
+
+              const completeCodeMap = { ...codeMap, documentation };
+              const textOutput = mapGenerator.formatAsText(completeCodeMap, mapOptions);
+
+              codeMapResult = {
+                success: true,
+                textMap: textOutput,
+                statistics: codeMap.stats,
+                fileGroupCount: codeMap.fileGroups.length,
+                dependencyCount: codeMap.dependencies.length,
+                documentationCoverage: documentation?.coverageScore
+              };
+              
+              console.error(chalk.blue('[INFO]'), `Generated code map: ${codeMap.stats.totalFiles} files, ${codeMap.stats.totalFunctions} functions`);
+            } catch (error) {
+              console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
+              codeMapResult = {
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to generate code map'
+              };
+            }
+          }
+
           result = {
             healthScore,
             threshold,
@@ -560,6 +688,7 @@ async function startMcpServer() {
             },
             recommendation: getHealthRecommendation(healthScore, auditResult),
             ...(indexingResult && { functionIndexing: indexingResult }),
+            ...(codeMapResult && { codeMap: codeMapResult }),
           };
           break;
         }
@@ -694,6 +823,7 @@ async function startMcpServer() {
           }
           break;
         }
+
         
         case 'sync_index': {
           const mode = (args.mode as string) || 'sync';

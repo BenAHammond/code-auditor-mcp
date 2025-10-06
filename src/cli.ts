@@ -14,6 +14,8 @@ import { dirname, join, resolve } from 'path';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { InteractivePrompts } from './ui/InteractivePrompts.js';
 import { DEFAULT_SERVER_URL, DEFAULT_PORT } from './constants.js';
+import { CodeMapGenerator } from './services/CodeMapGenerator.js';
+import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 
 // Get package.json for version info
 const __filename = fileURLToPath(import.meta.url);
@@ -130,6 +132,33 @@ program
     console.log(chalk.yellow('Test command will be implemented in a future task'));
     console.log('Tool:', tool);
     // TODO: Implement connection testing
+  });
+
+// Code map command
+program
+  .command('map')
+  .alias('codemap')
+  .description('Generate a human-readable map of the codebase')
+  .option('-p, --path <path>', 'Project path to map', process.cwd())
+  .option('--no-complexity', 'Exclude complexity metrics')
+  .option('--no-documentation', 'Exclude documentation analysis') 
+  .option('--no-dependencies', 'Exclude dependency information')
+  .option('--include-usage', 'Include function usage and call information')
+  .option('--no-group-by-directory', 'Don\'t group files by directory')
+  .option('--max-depth <depth>', 'Maximum files to show per directory', '10')
+  .option('--no-unused-imports', 'Hide unused import warnings')
+  .option('--min-complexity <threshold>', 'Minimum complexity threshold for warnings', '7')
+  .option('-o, --output <file>', 'Save output to file instead of displaying')
+  .action(async (options) => {
+    console.log(chalk.blue('🗺️  Codebase Map Generator'));
+    console.log(chalk.gray('════════════════════════════════════════════════════'));
+    
+    try {
+      await generateCodeMap(options);
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
   });
 
 // Parse command line arguments
@@ -269,5 +298,101 @@ async function generateConfigurations(options: any): Promise<void> {
     errors.forEach(error => {
       console.log(chalk.red(`  • ${error}`));
     });
+  }
+}
+
+/**
+ * Generate code map for a project
+ */
+async function generateCodeMap(options: any): Promise<void> {
+  const projectPath = resolve(options.path);
+  
+  console.log(chalk.gray(`Project path: ${projectPath}`));
+  console.log(chalk.gray('Generating code map...'));
+  console.log('');
+
+  try {
+    // Create code map generator
+    const mapGenerator = new CodeMapGenerator();
+
+    // Parse CLI options into CodeMapOptions format
+    const mapOptions = {
+      includeComplexity: options.complexity,
+      includeDocumentation: options.documentation,
+      includeDependencies: options.dependencies,
+      includeUsage: options.includeUsage || false,
+      groupByDirectory: options.groupByDirectory,
+      maxDepth: parseInt(options.maxDepth) || 10,
+      showUnusedImports: options.unusedImports,
+      minComplexity: parseInt(options.minComplexity) || 7,
+    };
+
+    console.log(chalk.gray('Options:'));
+    console.log(chalk.gray(`  • Include complexity: ${mapOptions.includeComplexity}`));
+    console.log(chalk.gray(`  • Include documentation: ${mapOptions.includeDocumentation}`));
+    console.log(chalk.gray(`  • Include dependencies: ${mapOptions.includeDependencies}`));
+    console.log(chalk.gray(`  • Include usage info: ${mapOptions.includeUsage}`));
+    console.log(chalk.gray(`  • Group by directory: ${mapOptions.groupByDirectory}`));
+    console.log(chalk.gray(`  • Max files per directory: ${mapOptions.maxDepth}`));
+    console.log('');
+
+    // Generate the code map
+    console.log(chalk.gray('Reading indexed functions...'));
+    const codeMap = await mapGenerator.generateCodeMap(projectPath, mapOptions);
+
+    // Generate documentation metrics if requested
+    let documentation = undefined;
+    if (mapOptions.includeDocumentation) {
+      try {
+        console.log(chalk.gray('Analyzing documentation quality...'));
+        // For CLI usage, we'll skip documentation analysis since we don't have files from audit
+        // Documentation analysis works best when integrated with the audit process
+        console.log(chalk.gray('  (Documentation analysis skipped in standalone mode)'));
+      } catch (docError) {
+        console.log(chalk.yellow('Warning: Failed to analyze documentation:'), docError);
+      }
+    }
+
+    // Add documentation metrics to the code map
+    const completeCodeMap = {
+      ...codeMap,
+      documentation
+    };
+
+    // Format as terminal-friendly text
+    console.log(chalk.gray('Formatting output...'));
+    const textOutput = mapGenerator.formatAsText(completeCodeMap, mapOptions);
+
+    // Output results
+    if (options.output) {
+      // Save to file
+      await fs.writeFile(options.output, textOutput);
+      console.log(chalk.green(`✓ Code map saved to: ${options.output}`));
+      
+      // Show summary
+      console.log('');
+      console.log(chalk.blue('Summary:'));
+      console.log(chalk.gray(`  • Files analyzed: ${codeMap.stats.totalFiles}`));
+      console.log(chalk.gray(`  • Functions found: ${codeMap.stats.totalFunctions}`));
+      console.log(chalk.gray(`  • Components found: ${codeMap.stats.totalComponents}`));
+      if (documentation) {
+        console.log(chalk.gray(`  • Documentation coverage: ${documentation.coverageScore}%`));
+      }
+    } else {
+      // Display to console
+      console.log(textOutput);
+    }
+
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('No functions found')) {
+      console.log(chalk.yellow('No indexed functions found for this project.'));
+      console.log('');
+      console.log(chalk.gray('To index functions, run an audit first:'));
+      console.log(chalk.blue('  code-auditor audit --path ') + chalk.gray(projectPath));
+      console.log('');
+      console.log(chalk.gray('Or use the MCP server with the audit tool to automatically index functions.'));
+    } else {
+      throw error;
+    }
   }
 }

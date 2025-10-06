@@ -26,8 +26,8 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit',
-        parameters: { path: '.', analyzers: ['solid', 'dry'], indexFunctions: true },
-        description: 'Run comprehensive audit to analyze code and index all functions/components'
+        parameters: { path: '.', analyzers: ['solid', 'dry'], indexFunctions: true, generateCodeMap: true },
+        description: 'Run comprehensive audit to analyze code, index functions, and generate a code map overview'
       },
       {
         order: 2,
@@ -44,8 +44,9 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       }
     ],
     tips: [
-      'The initial audit indexes all functions automatically',
-      'You can re-run audit on specific directories later',
+      'Set generateCodeMap: true to get a human-readable overview of your codebase',
+      'The code map shows directory structure, function counts, and documentation quality',
+      'Functions are automatically indexed for future searches',
       'Search operators become available after indexing'
     ]
   },
@@ -93,8 +94,8 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit_health',
-        parameters: { path: './src', threshold: 80 },
-        description: 'Quick health check of the code to review'
+        parameters: { path: './src', threshold: 80, generateCodeMap: true },
+        description: 'Quick health check with code map to understand structure and identify issues'
       },
       {
         order: 2,
@@ -117,8 +118,9 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       }
     ],
     tips: [
-      'Start with health check for quick overview',
-      'Use complexity search to find code smells',
+      'Code maps provide a visual overview of the codebase structure',
+      'Use the map to understand architecture before diving into details',
+      'High complexity functions and poor documentation are flagged in the map',
       'Functions are indexed during audit for fast lookup'
     ]
   },
@@ -181,6 +183,43 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       'Regular audits help maintain code quality',
       'sync_index cleanup removes entries for deleted files',
       'Search for common antipatterns like console.log'
+    ]
+  },
+
+  'understand-codebase': {
+    name: 'Understanding Codebase Structure',
+    description: 'Getting oriented in a new or unfamiliar codebase',
+    steps: [
+      {
+        order: 1,
+        tool: 'audit_health',
+        parameters: { path: '.', generateCodeMap: true },
+        description: 'Generate a code map to understand overall structure and architecture'
+      },
+      {
+        order: 2,
+        tool: 'search_code',
+        parameters: { query: 'entity:component' },
+        description: 'List all React components to understand UI architecture'
+      },
+      {
+        order: 3,
+        tool: 'search_code',
+        parameters: { query: 'depends-on:database deps:prisma' },
+        description: 'Find data access patterns and database usage'
+      },
+      {
+        order: 4,
+        tool: 'search_code',
+        parameters: { query: 'file:route file:api' },
+        description: 'Locate API endpoints and routing logic'
+      }
+    ],
+    tips: [
+      'Code maps show directory structure, complexity, and documentation quality at a glance',
+      'Start with the map to understand architectural patterns',
+      'Use dependency searches to trace data flow',
+      'File path searches help locate specific functionality'
     ]
   },
 

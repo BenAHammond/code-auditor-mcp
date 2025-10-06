@@ -35,11 +35,11 @@ export class CodeIndexDB {
   private dbPath: string;
   private isInitialized = false;
 
-  constructor(dbPath: string = './.code-index/index.db') {
+  constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath;
     this.db = new Loki(dbPath, {
-      autosave: true,
-      autosaveInterval: 4000,
+      autosave: false,
+      autosaveInterval: 0,
       autoload: false
     });
 
@@ -625,6 +625,45 @@ export class CodeIndexDB {
     }
     
     this.db.saveDatabase();
+  }
+
+  /**
+   * Get all functions from the index
+   */
+  async getAllFunctions(): Promise<EnhancedFunctionMetadata[]> {
+    this.ensureInitialized();
+    
+    const allFunctions = this.functionsCollection!.find();
+    
+    // Return the full enhanced metadata
+    return allFunctions.map(func => ({
+      // Base metadata
+      name: func.name,
+      filePath: func.filePath,
+      lineNumber: func.lineNumber,
+      startLine: func.startLine,
+      endLine: func.endLine,
+      language: func.language,
+      dependencies: func.dependencies,
+      purpose: func.purpose,
+      context: func.context,
+      metadata: func.metadata,
+      
+      // Enhanced metadata
+      signature: func.signature || '',
+      parameters: func.parameters || [],
+      jsDoc: typeof func.jsDoc === 'string' ? { description: func.jsDoc } : (func.jsDoc || {}),
+      imports: (func as any).imports || [],
+      body: (func as any).body || '',
+      comments: (func as any).comments || [],
+      isAsync: (func as any).isAsync || false,
+      isGenerator: (func as any).isGenerator || false,
+      returnType: (func as any).returnType,
+      visibility: (func as any).visibility || 'public',
+      
+      // Additional fields from metadata if available
+      ...(func.metadata || {})
+    }));
   }
 
   async searchFunctions(options: SearchOptions): Promise<SearchResult> {
