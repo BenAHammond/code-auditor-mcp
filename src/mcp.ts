@@ -19,7 +19,8 @@ import {
   registerFunctions, 
   searchFunctions, 
   findDefinition,
-  syncFileIndex
+  syncFileIndex,
+  getDatabase
 } from './codeIndexService.js';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
@@ -124,7 +125,7 @@ const tools: Tool[] = [
         type: 'boolean',
         required: false,
         description: 'Generate and return a human-readable code map as part of the audit results',
-        default: false,
+        default: true,
       },
     ],
   },
@@ -164,7 +165,7 @@ const tools: Tool[] = [
         type: 'boolean',
         required: false,
         description: 'Generate and return a human-readable code map as part of the health check results',
-        default: false,
+        default: true,
       },
     ],
   },
@@ -338,6 +339,36 @@ const tools: Tool[] = [
       },
     ],
   },
+  {
+    name: 'get_code_map_section',
+    description: 'Retrieve a specific section of a previously generated code map',
+    parameters: [
+      {
+        name: 'mapId',
+        type: 'string',
+        required: true,
+        description: 'The map ID returned from a previous audit with code map generation',
+      },
+      {
+        name: 'sectionType',
+        type: 'string',
+        required: true,
+        description: 'The section type to retrieve (e.g., overview, files, dependencies, documentation)',
+      },
+    ],
+  },
+  {
+    name: 'list_code_map_sections',
+    description: 'List all available sections for a code map',
+    parameters: [
+      {
+        name: 'mapId',
+        type: 'string',
+        required: true,
+        description: 'The map ID returned from a previous audit',
+      },
+    ],
+  },
 ];
 
 async function startMcpServer() {
@@ -507,8 +538,6 @@ async function startMcpServer() {
                 minComplexity: 7,
               };
 
-              const codeMap = await mapGenerator.generateCodeMap(auditPath, mapOptions);
-              
               // Generate documentation metrics
               let documentation = undefined;
               try {
@@ -523,19 +552,22 @@ async function startMcpServer() {
                 console.error(chalk.yellow('[WARN]'), 'Failed to analyze documentation:', docError);
               }
 
-              const completeCodeMap = { ...codeMap, documentation };
-              const textOutput = mapGenerator.formatAsText(completeCodeMap, mapOptions);
+              // Use paginated code map generation
+              const paginatedResult = await mapGenerator.generatePaginatedCodeMap(auditPath, {
+                ...mapOptions,
+                includeDocumentation: !!documentation
+              });
 
               codeMapResult = {
                 success: true,
-                textMap: textOutput,
-                statistics: codeMap.stats,
-                fileGroupCount: codeMap.fileGroups.length,
-                dependencyCount: codeMap.dependencies.length,
+                mapId: paginatedResult.mapId,
+                summary: paginatedResult.summary,
+                quickPreview: paginatedResult.quickPreview,
+                sections: paginatedResult.summary.sectionsAvailable,
                 documentationCoverage: documentation?.coverageScore
               };
               
-              console.error(chalk.blue('[INFO]'), `Generated code map: ${codeMap.stats.totalFiles} files, ${codeMap.stats.totalFunctions} functions`);
+              console.error(chalk.blue('[INFO]'), `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`);
             } catch (error) {
               console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
               codeMapResult = {
@@ -569,7 +601,7 @@ async function startMcpServer() {
           const auditPath = path.resolve((args.path as string) || process.cwd());
           const threshold = (args.threshold as number) || 70;
           const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
-          const generateCodeMap = (args.generateCodeMap as boolean) || false;
+          const generateCodeMap = (args.generateCodeMap as boolean) !== false; // Default true
 
           // Get stored analyzer configs from database
           const db = CodeIndexDB.getInstance();
@@ -637,8 +669,6 @@ async function startMcpServer() {
                 minComplexity: 7,
               };
 
-              const codeMap = await mapGenerator.generateCodeMap(auditPath, mapOptions);
-              
               // Generate documentation metrics
               let documentation = undefined;
               try {
@@ -653,19 +683,22 @@ async function startMcpServer() {
                 console.error(chalk.yellow('[WARN]'), 'Failed to analyze documentation:', docError);
               }
 
-              const completeCodeMap = { ...codeMap, documentation };
-              const textOutput = mapGenerator.formatAsText(completeCodeMap, mapOptions);
+              // Use paginated code map generation for health check too
+              const paginatedResult = await mapGenerator.generatePaginatedCodeMap(auditPath, {
+                ...mapOptions,
+                includeDocumentation: !!documentation
+              });
 
               codeMapResult = {
                 success: true,
-                textMap: textOutput,
-                statistics: codeMap.stats,
-                fileGroupCount: codeMap.fileGroups.length,
-                dependencyCount: codeMap.dependencies.length,
+                mapId: paginatedResult.mapId,
+                summary: paginatedResult.summary,
+                quickPreview: paginatedResult.quickPreview,
+                sections: paginatedResult.summary.sectionsAvailable,
                 documentationCoverage: documentation?.coverageScore
               };
               
-              console.error(chalk.blue('[INFO]'), `Generated code map: ${codeMap.stats.totalFiles} files, ${codeMap.stats.totalFunctions} functions`);
+              console.error(chalk.blue('[INFO]'), `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`);
             } catch (error) {
               console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
               codeMapResult = {
@@ -987,6 +1020,75 @@ async function startMcpServer() {
             result = {
               success: false,
               error: error instanceof Error ? error.message : 'Failed to reset configuration'
+            };
+          }
+          break;
+        }
+
+        case 'get_code_map_section': {
+          const mapId = args.mapId as string;
+          const sectionType = args.sectionType as string;
+          
+          if (!mapId || !sectionType) {
+            result = {
+              success: false,
+              error: 'Both mapId and sectionType are required'
+            };
+            break;
+          }
+          
+          try {
+            const db = await getDatabase();
+            const section = await db.getCodeMapSection(mapId, sectionType);
+            
+            if (section) {
+              result = {
+                success: true,
+                mapId,
+                sectionType,
+                content: section.content,
+                metadata: section.metadata
+              };
+            } else {
+              result = {
+                success: false,
+                error: `Section '${sectionType}' not found for map '${mapId}'`
+              };
+            }
+          } catch (error) {
+            result = {
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to retrieve code map section'
+            };
+          }
+          break;
+        }
+
+        case 'list_code_map_sections': {
+          const mapId = args.mapId as string;
+          
+          if (!mapId) {
+            result = {
+              success: false,
+              error: 'mapId is required'
+            };
+            break;
+          }
+          
+          try {
+            const db = await getDatabase();
+            const sections = await db.listCodeMapSections(mapId);
+            
+            result = {
+              success: true,
+              mapId,
+              sections,
+              totalSections: sections.length
+            };
+          } catch (error) {
+            result = {
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to list code map sections'
             };
           }
           break;

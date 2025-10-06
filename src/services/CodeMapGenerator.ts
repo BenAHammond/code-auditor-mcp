@@ -3,10 +3,11 @@
  * Processes indexed code data into human-readable terminal-friendly maps
  */
 
-import { getAllFunctions } from '../codeIndexService.js';
+import { getAllFunctions, getDatabase } from '../codeIndexService.js';
 import { EnhancedFunctionMetadata } from '../types.js';
 import { DocumentationMetrics } from '../analyzers/documentationAnalyzer.js';
 import path from 'path';
+import { randomBytes } from 'crypto';
 
 export interface CodeMapOptions {
   includeComplexity?: boolean;
@@ -105,6 +106,58 @@ export class CodeMapGenerator {
       stats,
       fileGroups,
       dependencies
+    };
+  }
+
+  /**
+   * Generates a paginated code map and stores sections in database
+   * Returns summary with section references
+   */
+  async generatePaginatedCodeMap(
+    projectPath: string,
+    options: CodeMapOptions = {}
+  ): Promise<{
+    mapId: string;
+    summary: {
+      stats: CodeMapStats;
+      sectionsAvailable: Array<{type: string, description: string, size: number}>;
+      totalSections: number;
+    };
+    quickPreview: string;
+  }> {
+    // Generate the full code map data
+    const fullMap = await this.generateCodeMap(projectPath, options);
+    
+    // Generate unique map ID
+    const mapId = 'map_' + randomBytes(8).toString('hex');
+    
+    // Get database instance
+    const db = await getDatabase();
+    
+    // Break into sections and store each
+    const sections = await this.createCodeMapSections(fullMap, options);
+    const sectionInfo: Array<{type: string, description: string, size: number}> = [];
+    
+    for (const [sectionType, content] of Object.entries(sections)) {
+      await db.storeCodeMapSection(mapId, sectionType, content.text, content.metadata);
+      sectionInfo.push({
+        type: sectionType,
+        description: content.description,
+        size: content.text.length
+      });
+    }
+    
+    // Create quick preview (first ~1000 chars)
+    const quickPreview = this.createQuickPreview(fullMap, 1000);
+    
+    return {
+      mapId,
+      summary: {
+        stats: fullMap.stats,
+        sectionsAvailable: sectionInfo,
+        totalSections: sectionInfo.length
+      },
+      quickPreview
     };
   }
 
@@ -449,5 +502,170 @@ export class CodeMapGenerator {
     if (diffMins < 60) return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
     if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
     return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+  }
+
+  /**
+   * Break code map into sections for storage
+   */
+  private async createCodeMapSections(
+    fullMap: { stats: CodeMapStats; fileGroups: FileGroup[]; dependencies: DependencyInfo[]; documentation?: DocumentationMetrics },
+    options: CodeMapOptions
+  ): Promise<Record<string, {text: string, description: string, metadata: any}>> {
+    const sections: Record<string, {text: string, description: string, metadata: any}> = {};
+
+    // Overview section
+    sections.overview = {
+      text: this.formatOverviewSection(fullMap.stats, fullMap.documentation),
+      description: "Project overview and statistics",
+      metadata: { stats: fullMap.stats }
+    };
+
+    // Files section (chunked by directory if large)
+    if (fullMap.fileGroups.length <= 20) {
+      sections.files = {
+        text: this.formatFilesSection(fullMap.fileGroups, options),
+        description: "Complete file structure and functions",
+        metadata: { fileCount: fullMap.fileGroups.reduce((sum, g) => sum + g.files.length, 0) }
+      };
+    } else {
+      // Split into chunks
+      const chunkSize = 10;
+      for (let i = 0; i < fullMap.fileGroups.length; i += chunkSize) {
+        const chunk = fullMap.fileGroups.slice(i, i + chunkSize);
+        const chunkNum = Math.floor(i / chunkSize) + 1;
+        sections[`files_${chunkNum}`] = {
+          text: this.formatFilesSection(chunk, options),
+          description: `Files section ${chunkNum} (${chunk.length} directories)`,
+          metadata: { chunk: chunkNum, fileCount: chunk.reduce((sum, g) => sum + g.files.length, 0) }
+        };
+      }
+    }
+
+    // Dependencies section
+    sections.dependencies = {
+      text: this.formatDependenciesSection(fullMap.dependencies),
+      description: "Dependency analysis and usage",
+      metadata: { dependencyCount: fullMap.dependencies.length }
+    };
+
+    // Documentation section (if enabled)
+    if (options.includeDocumentation && fullMap.documentation) {
+      sections.documentation = {
+        text: this.formatDocumentationSection(fullMap.documentation),
+        description: "Documentation quality metrics",
+        metadata: { coverage: fullMap.documentation.coverageScore }
+      };
+    }
+
+    return sections;
+  }
+
+  /**
+   * Create a quick preview of the code map
+   */
+  private createQuickPreview(
+    fullMap: { stats: CodeMapStats; fileGroups: FileGroup[]; dependencies: DependencyInfo[]; documentation?: DocumentationMetrics },
+    maxLength: number = 1000
+  ): string {
+    const overview = this.formatOverviewSection(fullMap.stats, fullMap.documentation);
+    
+    if (overview.length <= maxLength) {
+      // Add a sample of files if we have room
+      const remainingSpace = maxLength - overview.length - 50; // Leave some buffer
+      const filesSample = this.formatFilesSection(fullMap.fileGroups.slice(0, 2), {});
+      const truncatedFiles = filesSample.length > remainingSpace 
+        ? filesSample.substring(0, remainingSpace) + '...\n\n[Use get_code_map_section to see complete file listing]'
+        : filesSample;
+      
+      return overview + '\n\n' + truncatedFiles;
+    }
+    
+    return overview.substring(0, maxLength - 50) + '...\n\n[Use get_code_map_section for complete overview]';
+  }
+
+  /**
+   * Format individual sections
+   */
+  private formatOverviewSection(stats: CodeMapStats, documentation?: DocumentationMetrics): string {
+    return `📖 CODEBASE OVERVIEW\n\n🎯 STRUCTURE\nFiles: ${stats.totalFiles} | Functions: ${stats.totalFunctions} | Components: ${stats.totalComponents}\nAvg Complexity: ${stats.averageComplexity.toFixed(1)} | High Complexity: ${stats.highComplexityCount} functions\n${documentation ? `Documentation Coverage: ${Math.round(documentation.coverageScore)}%` : ''}\nLast indexed: ${stats.lastIndexed ? this.formatTimeAgo(stats.lastIndexed) : 'never'}\n`;
+  }
+
+  private formatFilesSection(fileGroups: FileGroup[], options: CodeMapOptions): string {
+    // Use existing formatAsText logic but for files section only
+    const result = [];
+    result.push('📁 FILES & FUNCTIONS\n');
+    
+    for (const group of fileGroups) {
+      result.push(`📁 ${group.directory}/`);
+      result.push(`├── Functions: ${group.stats.functionCount} | Components: ${group.stats.componentCount}`);
+      result.push(`├── Avg Complexity: ${group.stats.averageComplexity.toFixed(1)} | Documentation: ${Math.round(group.stats.documentationScore)}%`);
+      result.push('│');
+      
+      // Show first few files in detail, then summarize
+      const filesToShow = group.files.slice(0, 5);
+      for (const file of filesToShow) {
+        result.push(`│   📄 ${file.relativePath} [Lines: ${file.lineCount}]`);
+        
+        // Show first few functions
+        const functionsToShow = file.functions.slice(0, 3);
+        for (const func of functionsToShow) {
+          result.push(`│   │   └── 🔧 ${func.name}()`);
+          if (func.purpose) {
+            result.push(`│   │       └── "${func.purpose}"`);
+          }
+        }
+        
+        if (file.functions.length > 3) {
+          result.push(`│   │   └── ... ${file.functions.length - 3} more functions`);
+        }
+        
+        if (file.unusedImports.length > 0) {
+          result.push(`│   │   ⚠️  Unused imports: ${file.unusedImports.slice(0, 3).join(', ')}${file.unusedImports.length > 3 ? `, +${file.unusedImports.length - 3} more` : ''}`);
+        }
+        result.push('│');
+      }
+      
+      if (group.files.length > 5) {
+        result.push(`│   └── ... ${group.files.length - 5} more files`);
+      }
+      result.push('');
+    }
+    
+    return result.join('\n');
+  }
+
+  private formatDependenciesSection(dependencies: DependencyInfo[]): string {
+    const result = [];
+    result.push('🔗 DEPENDENCIES\n');
+    
+    const topDeps = dependencies.slice(0, 10);
+    for (const dep of topDeps) {
+      result.push(`├── ${dep.name} → ${dep.usageCount} functions`);
+      if (dep.unusedInFiles.length > 0) {
+        const files = dep.unusedInFiles.slice(0, 3);
+        result.push(`│   └── ⚠️ Unused in: ${files.join(', ')}${dep.unusedInFiles.length > 3 ? `, +${dep.unusedInFiles.length - 3} more` : ''}`);
+      }
+    }
+    
+    if (dependencies.length > 10) {
+      result.push(`└── ... ${dependencies.length - 10} more dependencies`);
+    }
+    
+    return result.join('\n');
+  }
+
+  private formatDocumentationSection(documentation: DocumentationMetrics): string {
+    const result = [];
+    result.push('📝 DOCUMENTATION QUALITY\n');
+    
+    result.push(`├── Functions with JSDoc: ${documentation.documentedFunctions}/${documentation.totalFunctions} (${Math.round((documentation.documentedFunctions / documentation.totalFunctions) * 100)}%)`);
+    result.push(`├── Components documented: ${documentation.documentedComponents}/${documentation.totalComponents} (${Math.round((documentation.documentedComponents / documentation.totalComponents) * 100)}%)`);
+    result.push(`├── Files with purpose: ${documentation.filesWithPurpose}/${documentation.totalFiles} (${Math.round((documentation.filesWithPurpose / documentation.totalFiles) * 100)}%)`);
+    
+    if (documentation.wellDocumentedFiles.length > 0) {
+      result.push(`└── Well documented: ${documentation.wellDocumentedFiles.slice(0, 3).join(', ')}`);
+    }
+    
+    return result.join('\n');
   }
 }

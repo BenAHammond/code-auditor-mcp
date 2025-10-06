@@ -31,6 +31,7 @@ export class CodeIndexDB {
   private whitelistCollection: Collection<any> | null = null;
   private auditResultsCollection: Collection<any> | null = null;
   private analyzerConfigCollection: Collection<any> | null = null;
+  private codeMapCollection: Collection<any> | null = null;
   private searchIndex: any; // FlexSearch Document instance
   private dbPath: string;
   private isInitialized = false;
@@ -181,6 +182,12 @@ export class CodeIndexDB {
     this.analyzerConfigCollection = this.db.getCollection('analyzerConfigs') || 
       this.db.addCollection('analyzerConfigs', {
         indices: ['analyzerName', 'projectPath', 'isGlobal']
+      });
+
+    // Get or create code map collection
+    this.codeMapCollection = this.db.getCollection('codeMaps') || 
+      this.db.addCollection('codeMaps', {
+        indices: ['mapId', 'sectionType', 'timestamp']
       });
 
     // Initialize default whitelists if empty
@@ -2028,5 +2035,98 @@ export class CodeIndexDB {
     }
     
     this.db.saveDatabase();
+  }
+
+  /**
+   * Store a code map section in the database
+   */
+  async storeCodeMapSection(mapId: string, sectionType: string, content: string, metadata?: any): Promise<void> {
+    this.ensureInitialized();
+    
+    // Remove any existing section of this type for this mapId
+    this.codeMapCollection!.findAndRemove({
+      mapId,
+      sectionType
+    });
+    
+    this.codeMapCollection!.insert({
+      mapId,
+      sectionType,
+      content,
+      metadata: metadata || {},
+      timestamp: new Date(),
+      size: content.length
+    });
+    
+    this.db.saveDatabase();
+  }
+
+  /**
+   * Retrieve a code map section
+   */
+  async getCodeMapSection(mapId: string, sectionType: string): Promise<{content: string, metadata: any} | null> {
+    this.ensureInitialized();
+    
+    const section = this.codeMapCollection!.findOne({
+      mapId,
+      sectionType
+    });
+    
+    return section ? {
+      content: section.content,
+      metadata: section.metadata || {}
+    } : null;
+  }
+
+  /**
+   * List available code map sections for a mapId
+   */
+  async listCodeMapSections(mapId: string): Promise<Array<{sectionType: string, size: number, timestamp: Date}>> {
+    this.ensureInitialized();
+    
+    const sections = this.codeMapCollection!.find({ mapId });
+    
+    return sections.map(section => ({
+      sectionType: section.sectionType,
+      size: section.size || 0,
+      timestamp: section.timestamp
+    }));
+  }
+
+  /**
+   * Clear code map sections older than specified time
+   */
+  async clearOldCodeMaps(olderThanHours: number = 24): Promise<number> {
+    this.ensureInitialized();
+    
+    const cutoffTime = new Date();
+    cutoffTime.setHours(cutoffTime.getHours() - olderThanHours);
+    
+    const oldSections = this.codeMapCollection!.find({
+      timestamp: { '$lt': cutoffTime }
+    });
+    
+    const count = oldSections.length;
+    this.codeMapCollection!.findAndRemove({
+      timestamp: { '$lt': cutoffTime }
+    });
+    
+    this.db.saveDatabase();
+    return count;
+  }
+
+  /**
+   * Delete all sections for a specific mapId
+   */
+  async deleteCodeMap(mapId: string): Promise<number> {
+    this.ensureInitialized();
+    
+    const sections = this.codeMapCollection!.find({ mapId });
+    const count = sections.length;
+    
+    this.codeMapCollection!.findAndRemove({ mapId });
+    this.db.saveDatabase();
+    
+    return count;
   }
 }
