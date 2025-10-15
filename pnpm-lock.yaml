@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@mcp-ui/server':
+        specifier: ^5.11.0
+        version: 5.11.0
       '@modelcontextprotocol/sdk':
         specifier: ^1.17.1
         version: 1.17.3
@@ -379,6 +382,9 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+
+  '@mcp-ui/server@5.11.0':
+    resolution: {integrity: sha512-DLakzSNA17XsViC+YYQxy2ViVtdJu0SDxQeAIviguXFq58qACvDC5tMFTNn2c0vMB5qfXqz0HLZImE3hHd3C8g==}
 
   '@modelcontextprotocol/sdk@1.17.3':
     resolution: {integrity: sha512-JPwUKWSsbzx+DLFznf/QZ32Qa+ptfbUlHhRLrBQBAFu9iI1iYvizM4p+zhhRDceSsPutXp4z+R/HPVphlIiclg==}
@@ -1800,6 +1806,12 @@ snapshots:
       '@sinclair/typebox': 0.27.8
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
+
+  '@mcp-ui/server@5.11.0':
+    dependencies:
+      '@modelcontextprotocol/sdk': 1.17.3
+    transitivePeerDependencies:
+      - supports-color
 
   '@modelcontextprotocol/sdk@1.17.3':
     dependencies:
