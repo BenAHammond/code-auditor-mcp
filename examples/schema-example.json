@@ -1,0 +1,364 @@
+{
+  "version": "1.0.0",
+  "name": "example-app-schema",
+  "description": "Database schema for example application",
+  "databases": [
+    {
+      "name": "app_db",
+      "type": "postgresql",
+      "version": "15.0",
+      "database": "myapp",
+      "schemas": ["public", "audit"],
+      "description": "Main application database",
+      "metadata": {
+        "environment": "development",
+        "migrations": ["001_create_users.sql", "002_create_posts.sql"],
+        "seeds": ["seed_admin_user.sql"]
+      },
+      "tables": [
+        {
+          "name": "users",
+          "type": "table",
+          "schema": "public",
+          "description": "User account information",
+          "tags": ["user-data", "authentication"],
+          "estimatedRows": 10000,
+          "columns": [
+            {
+              "name": "id",
+              "type": "uuid",
+              "nullable": false,
+              "primaryKey": true,
+              "description": "Unique user identifier"
+            },
+            {
+              "name": "email",
+              "type": "varchar",
+              "length": 255,
+              "nullable": false,
+              "unique": true,
+              "indexed": true,
+              "description": "User email address"
+            },
+            {
+              "name": "username",
+              "type": "varchar",
+              "length": 50,
+              "nullable": false,
+              "unique": true,
+              "indexed": true,
+              "description": "Unique username"
+            },
+            {
+              "name": "password_hash",
+              "type": "varchar",
+              "length": 255,
+              "nullable": false,
+              "description": "Hashed password"
+            },
+            {
+              "name": "first_name",
+              "type": "varchar",
+              "length": 100,
+              "nullable": true,
+              "description": "User's first name"
+            },
+            {
+              "name": "last_name",
+              "type": "varchar",
+              "length": 100,
+              "nullable": true,
+              "description": "User's last name"
+            },
+            {
+              "name": "role",
+              "type": "enum",
+              "enum": ["admin", "user", "moderator"],
+              "defaultValue": "user",
+              "nullable": false,
+              "description": "User role"
+            },
+            {
+              "name": "created_at",
+              "type": "timestamp",
+              "nullable": false,
+              "defaultValue": "CURRENT_TIMESTAMP",
+              "description": "Account creation timestamp"
+            },
+            {
+              "name": "updated_at",
+              "type": "timestamp",
+              "nullable": false,
+              "defaultValue": "CURRENT_TIMESTAMP",
+              "description": "Last update timestamp"
+            },
+            {
+              "name": "last_login",
+              "type": "timestamp",
+              "nullable": true,
+              "description": "Last login timestamp"
+            }
+          ],
+          "references": [],
+          "indexes": [
+            {
+              "name": "idx_users_email",
+              "columns": ["email"],
+              "unique": true,
+              "type": "btree"
+            },
+            {
+              "name": "idx_users_username",
+              "columns": ["username"],
+              "unique": true,
+              "type": "btree"
+            },
+            {
+              "name": "idx_users_role",
+              "columns": ["role"],
+              "type": "btree"
+            }
+          ]
+        },
+        {
+          "name": "posts",
+          "type": "table",
+          "schema": "public",
+          "description": "User-generated posts",
+          "tags": ["content", "user-data"],
+          "estimatedRows": 50000,
+          "columns": [
+            {
+              "name": "id",
+              "type": "uuid",
+              "nullable": false,
+              "primaryKey": true,
+              "description": "Unique post identifier"
+            },
+            {
+              "name": "user_id",
+              "type": "uuid",
+              "nullable": false,
+              "indexed": true,
+              "description": "ID of the user who created the post"
+            },
+            {
+              "name": "title",
+              "type": "varchar",
+              "length": 200,
+              "nullable": false,
+              "description": "Post title"
+            },
+            {
+              "name": "content",
+              "type": "text",
+              "nullable": false,
+              "description": "Post content"
+            },
+            {
+              "name": "status",
+              "type": "enum",
+              "enum": ["draft", "published", "archived"],
+              "defaultValue": "draft",
+              "nullable": false,
+              "description": "Post publication status"
+            },
+            {
+              "name": "created_at",
+              "type": "timestamp",
+              "nullable": false,
+              "defaultValue": "CURRENT_TIMESTAMP",
+              "description": "Post creation timestamp"
+            },
+            {
+              "name": "updated_at",
+              "type": "timestamp",
+              "nullable": false,
+              "defaultValue": "CURRENT_TIMESTAMP",
+              "description": "Last update timestamp"
+            },
+            {
+              "name": "published_at",
+              "type": "timestamp",
+              "nullable": true,
+              "description": "Publication timestamp"
+            }
+          ],
+          "references": [
+            {
+              "foreignKey": "user_id",
+              "referencedTable": "users",
+              "referencedColumn": "id",
+              "onDelete": "CASCADE",
+              "onUpdate": "CASCADE",
+              "description": "Links post to its author"
+            }
+          ],
+          "indexes": [
+            {
+              "name": "idx_posts_user_id",
+              "columns": ["user_id"],
+              "type": "btree"
+            },
+            {
+              "name": "idx_posts_status",
+              "columns": ["status"],
+              "type": "btree"
+            },
+            {
+              "name": "idx_posts_created_at",
+              "columns": ["created_at"],
+              "type": "btree"
+            }
+          ]
+        },
+        {
+          "name": "comments",
+          "type": "table",
+          "schema": "public",
+          "description": "Comments on posts",
+          "tags": ["content", "user-data"],
+          "estimatedRows": 200000,
+          "columns": [
+            {
+              "name": "id",
+              "type": "uuid",
+              "nullable": false,
+              "primaryKey": true,
+              "description": "Unique comment identifier"
+            },
+            {
+              "name": "post_id",
+              "type": "uuid",
+              "nullable": false,
+              "indexed": true,
+              "description": "ID of the post being commented on"
+            },
+            {
+              "name": "user_id",
+              "type": "uuid",
+              "nullable": false,
+              "indexed": true,
+              "description": "ID of the user who made the comment"
+            },
+            {
+              "name": "parent_comment_id",
+              "type": "uuid",
+              "nullable": true,
+              "indexed": true,
+              "description": "ID of parent comment for nested comments"
+            },
+            {
+              "name": "content",
+              "type": "text",
+              "nullable": false,
+              "description": "Comment content"
+            },
+            {
+              "name": "created_at",
+              "type": "timestamp",
+              "nullable": false,
+              "defaultValue": "CURRENT_TIMESTAMP",
+              "description": "Comment creation timestamp"
+            },
+            {
+              "name": "updated_at",
+              "type": "timestamp",
+              "nullable": false,
+              "defaultValue": "CURRENT_TIMESTAMP",
+              "description": "Last update timestamp"
+            }
+          ],
+          "references": [
+            {
+              "foreignKey": "post_id",
+              "referencedTable": "posts",
+              "referencedColumn": "id",
+              "onDelete": "CASCADE",
+              "onUpdate": "CASCADE",
+              "description": "Links comment to its post"
+            },
+            {
+              "foreignKey": "user_id",
+              "referencedTable": "users",
+              "referencedColumn": "id",
+              "onDelete": "CASCADE",
+              "onUpdate": "CASCADE",
+              "description": "Links comment to its author"
+            },
+            {
+              "foreignKey": "parent_comment_id",
+              "referencedTable": "comments",
+              "referencedColumn": "id",
+              "onDelete": "CASCADE",
+              "onUpdate": "CASCADE",
+              "description": "Links nested comment to its parent"
+            }
+          ],
+          "indexes": [
+            {
+              "name": "idx_comments_post_id",
+              "columns": ["post_id"],
+              "type": "btree"
+            },
+            {
+              "name": "idx_comments_user_id",
+              "columns": ["user_id"],
+              "type": "btree"
+            },
+            {
+              "name": "idx_comments_parent",
+              "columns": ["parent_comment_id"],
+              "type": "btree"
+            }
+          ]
+        }
+      ],
+      "relationships": [
+        {
+          "id": "users_posts",
+          "type": "one-to-many",
+          "fromTable": "users",
+          "toTable": "posts",
+          "fromColumn": "id",
+          "toColumn": "user_id",
+          "description": "A user can have many posts"
+        },
+        {
+          "id": "posts_comments",
+          "type": "one-to-many",
+          "fromTable": "posts",
+          "toTable": "comments",
+          "fromColumn": "id",
+          "toColumn": "post_id",
+          "description": "A post can have many comments"
+        },
+        {
+          "id": "users_comments",
+          "type": "one-to-many",
+          "fromTable": "users",
+          "toTable": "comments",
+          "fromColumn": "id",
+          "toColumn": "user_id",
+          "description": "A user can make many comments"
+        },
+        {
+          "id": "comments_nested",
+          "type": "one-to-many",
+          "fromTable": "comments",
+          "toTable": "comments",
+          "fromColumn": "id",
+          "toColumn": "parent_comment_id",
+          "description": "Comments can have nested replies"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "author": "Development Team",
+    "createdAt": "2024-01-15T10:00:00Z",
+    "updatedAt": "2024-01-15T10:00:00Z",
+    "tags": ["web-app", "social-platform"],
+    "environment": "development"
+  }
+}

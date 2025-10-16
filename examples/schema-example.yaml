@@ -1,0 +1,137 @@
+version: "1.0.0"
+name: example-app-schema
+description: Database schema for example application
+
+databases:
+  - name: app_db
+    type: postgresql
+    version: "15.0"
+    database: myapp
+    schemas: [public, audit]
+    description: Main application database
+    metadata:
+      environment: development
+      migrations:
+        - 001_create_users.sql
+        - 002_create_posts.sql
+      seeds:
+        - seed_admin_user.sql
+
+    tables:
+      - name: users
+        type: table
+        schema: public
+        description: User account information
+        tags: [user-data, authentication]
+        estimatedRows: 10000
+        columns:
+          - name: id
+            type: uuid
+            nullable: false
+            primaryKey: true
+            description: Unique user identifier
+          - name: email
+            type: varchar
+            length: 255
+            nullable: false
+            unique: true
+            indexed: true
+            description: User email address
+          - name: username
+            type: varchar
+            length: 50
+            nullable: false
+            unique: true
+            indexed: true
+            description: Unique username
+          - name: password_hash
+            type: varchar
+            length: 255
+            nullable: false
+            description: Hashed password
+          - name: role
+            type: enum
+            enum: [admin, user, moderator]
+            defaultValue: user
+            nullable: false
+            description: User role
+          - name: created_at
+            type: timestamp
+            nullable: false
+            defaultValue: CURRENT_TIMESTAMP
+            description: Account creation timestamp
+
+        references: []
+        indexes:
+          - name: idx_users_email
+            columns: [email]
+            unique: true
+            type: btree
+          - name: idx_users_username
+            columns: [username]
+            unique: true
+            type: btree
+
+      - name: posts
+        type: table
+        schema: public
+        description: User-generated posts
+        tags: [content, user-data]
+        columns:
+          - name: id
+            type: uuid
+            nullable: false
+            primaryKey: true
+            description: Unique post identifier
+          - name: user_id
+            type: uuid
+            nullable: false
+            indexed: true
+            description: ID of the user who created the post
+          - name: title
+            type: varchar
+            length: 200
+            nullable: false
+            description: Post title
+          - name: content
+            type: text
+            nullable: false
+            description: Post content
+          - name: status
+            type: enum
+            enum: [draft, published, archived]
+            defaultValue: draft
+            nullable: false
+            description: Post publication status
+
+        references:
+          - foreignKey: user_id
+            referencedTable: users
+            referencedColumn: id
+            onDelete: CASCADE
+            onUpdate: CASCADE
+            description: Links post to its author
+
+        indexes:
+          - name: idx_posts_user_id
+            columns: [user_id]
+            type: btree
+          - name: idx_posts_status
+            columns: [status]
+            type: btree
+
+    relationships:
+      - id: users_posts
+        type: one-to-many
+        fromTable: users
+        toTable: posts
+        fromColumn: id
+        toColumn: user_id
+        description: A user can have many posts
+
+metadata:
+  author: Development Team
+  createdAt: "2024-01-15T10:00:00Z"
+  updatedAt: "2024-01-15T10:00:00Z"
+  tags: [web-app, social-platform]
+  environment: development

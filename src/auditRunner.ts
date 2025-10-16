@@ -26,6 +26,8 @@ import { dryAnalyzer } from './analyzers/dryAnalyzer.js';
 // import { componentAnalyzer } from './analyzers/componentAnalyzer.js';
 import { dataAccessAnalyzer } from './analyzers/dataAccessAnalyzer.js';
 import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
+import { documentationAnalyzer } from './analyzers/documentationAnalyzer.js';
+import { schemaAnalyzer } from './analyzers/schemaAnalyzer.js';
 
 /**
  * Default analyzer registry
@@ -36,7 +38,9 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
   // 'security': securityAnalyzer,
   // 'component': componentAnalyzer,
   'data-access': dataAccessAnalyzer,
-  'react': reactAnalyzer
+  'react': reactAnalyzer,
+  'documentation': documentationAnalyzer,
+  'schema': schemaAnalyzer
 };
 
 /**

@@ -96,8 +96,8 @@ const tools: Tool[] = [
         name: 'analyzers',
         type: 'array',
         required: false,
-        description: 'List of analyzers to run (solid, dry, security, react, data-access)',
-        default: ['solid', 'dry'],
+        description: 'List of analyzers to run (solid, dry, documentation, react, data-access)',
+        default: ['solid', 'dry', 'documentation', 'react', 'data-access'],
       },
       {
         name: 'minSeverity',
@@ -484,7 +484,7 @@ async function startMcpServer() {
           
           const options: AuditRunnerOptions = {
             projectRoot: isFile ? path.dirname(auditPath) : auditPath,
-            enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'security'],
+            enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'documentation', 'react', 'data-access'],
             minSeverity: ((args.minSeverity as string) || 'warning') as Severity,
             verbose: false,
             indexFunctions,
@@ -616,7 +616,7 @@ async function startMcpServer() {
 
           const runner = createAuditRunner({
             projectRoot: auditPath,
-            enabledAnalyzers: ['solid', 'dry', 'security'],
+            enabledAnalyzers: ['solid', 'dry', 'documentation', 'react', 'data-access'],
             minSeverity: 'warning',
             verbose: false,
             indexFunctions, // Pass the flag to the runner
