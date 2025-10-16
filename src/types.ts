@@ -669,5 +669,147 @@ export interface ImportUsageInfo {
   lineNumbers: number[];
 }
 
+// Database Schema Types
+export interface SchemaColumn {
+  name: string;
+  type: string;
+  nullable?: boolean;
+  primaryKey?: boolean;
+  defaultValue?: string | number | boolean | null;
+  unique?: boolean;
+  indexed?: boolean;
+  length?: number;
+  precision?: number;
+  scale?: number;
+  description?: string;
+  enum?: string[];
+}
+
+export interface SchemaReference {
+  foreignKey: string;           // Column name in this table
+  referencedTable: string;      // Target table name
+  referencedColumn: string;     // Target column name
+  onDelete?: 'CASCADE' | 'SET NULL' | 'RESTRICT' | 'NO ACTION';
+  onUpdate?: 'CASCADE' | 'SET NULL' | 'RESTRICT' | 'NO ACTION';
+  description?: string;
+}
+
+export interface SchemaIndex {
+  name: string;
+  columns: string[];
+  unique?: boolean;
+  type?: 'btree' | 'hash' | 'gin' | 'gist' | 'text' | 'compound';
+  description?: string;
+}
+
+export interface SchemaTable {
+  name: string;
+  type: 'table' | 'collection' | 'view';
+  database?: string;
+  schema?: string;              // For SQL databases (public, private, etc.)
+  columns: SchemaColumn[];
+  references: SchemaReference[];
+  indexes?: SchemaIndex[];
+  constraints?: string[];       // Additional constraints
+  description?: string;
+  tags?: string[];             // Categories like 'user-data', 'audit', 'cache'
+  estimatedRows?: number;
+  isTemporary?: boolean;
+  partitionKey?: string;       // For NoSQL/distributed databases
+}
+
+export interface DatabaseSchema {
+  name: string;
+  type: 'postgresql' | 'mysql' | 'mongodb' | 'sqlite' | 'redis' | 'dynamodb' | 'other';
+  version?: string;
+  host?: string;
+  port?: number;
+  database?: string;
+  schemas?: string[];          // Schema namespaces for SQL databases
+  tables: SchemaTable[];
+  relationships?: SchemaRelationship[];
+  description?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+  metadata?: {
+    environment?: 'development' | 'staging' | 'production';
+    migrations?: string[];
+    seeds?: string[];
+    backupFrequency?: string;
+  };
+}
+
+export interface SchemaRelationship {
+  id: string;
+  type: 'one-to-one' | 'one-to-many' | 'many-to-many';
+  fromTable: string;
+  toTable: string;
+  fromColumn: string;
+  toColumn: string;
+  description?: string;
+  bidirectional?: boolean;
+}
+
+export interface SchemaDefinition {
+  version: string;
+  name: string;
+  description?: string;
+  databases: DatabaseSchema[];
+  globalReferences?: SchemaReference[];
+  metadata?: {
+    author?: string;
+    createdAt?: Date;
+    updatedAt?: Date;
+    tags?: string[];
+    environment?: string;
+  };
+}
+
+// Schema Analysis Types
+export interface SchemaViolation extends Violation {
+  schemaType: 'missing-reference' | 'orphaned-table' | 'naming-convention' | 'missing-index' | 'circular-dependency';
+  tableName?: string;
+  columnName?: string;
+  expectedSchema?: string;
+  actualSchema?: string;
+}
+
+export interface SchemaPattern {
+  pattern: 'entity-table' | 'junction-table' | 'audit-table' | 'lookup-table' | 'temporal-table';
+  tableNames: string[];
+  confidence: number;
+  description: string;
+}
+
+export interface SchemaUsage {
+  tableName: string;
+  filePath: string;
+  functionName: string;
+  usageType: 'query' | 'insert' | 'update' | 'delete' | 'reference';
+  line: number;
+  column?: number;
+  rawQuery?: string;
+  parameters?: string[];
+}
+
+export interface SchemaIndexMetadata {
+  schemaId: string;
+  schemaName: string;
+  indexedAt: Date;
+  tableCount: number;
+  relationshipCount: number;
+  usagePatterns: SchemaUsage[];
+  discoveredPatterns: SchemaPattern[];
+  violations: SchemaViolation[];
+  lastAnalyzed?: Date;
+}
+
+// Enhanced function metadata to include schema usage
+export interface SchemaAwareFunctionMetadata extends EnhancedFunctionMetadata {
+  schemaUsage?: SchemaUsage[];
+  affectedTables?: string[];
+  schemaPatterns?: string[];
+}
+
 // Re-export whitelist types
 export * from './types/whitelist.js';

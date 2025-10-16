@@ -7,7 +7,17 @@ import Loki, { Collection } from 'lokijs';
 import * as FlexSearch from 'flexsearch';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { EnhancedFunctionMetadata, FunctionMetadata, SearchResult, SearchOptions, ParsedQuery, AnalyzerConfigDocument } from './types.js';
+import { 
+  EnhancedFunctionMetadata, 
+  FunctionMetadata, 
+  SearchResult, 
+  SearchOptions, 
+  ParsedQuery, 
+  AnalyzerConfigDocument,
+  SchemaDefinition,
+  SchemaIndexMetadata,
+  SchemaUsage
+} from './types.js';
 import { QueryParser } from './search/QueryParser.js';
 import {
   WhitelistEntry,
@@ -32,6 +42,8 @@ export class CodeIndexDB {
   private auditResultsCollection: Collection<any> | null = null;
   private analyzerConfigCollection: Collection<any> | null = null;
   private codeMapCollection: Collection<any> | null = null;
+  private schemaCollection: Collection<any> | null = null;
+  private schemaUsageCollection: Collection<any> | null = null;
   private searchIndex: any; // FlexSearch Document instance
   private dbPath: string;
   private isInitialized = false;
@@ -188,6 +200,18 @@ export class CodeIndexDB {
     this.codeMapCollection = this.db.getCollection('codeMaps') || 
       this.db.addCollection('codeMaps', {
         indices: ['mapId', 'sectionType', 'timestamp']
+      });
+
+    // Get or create schema collection
+    this.schemaCollection = this.db.getCollection('schemas') || 
+      this.db.addCollection('schemas', {
+        indices: ['schemaId', 'schemaName', 'indexedAt']
+      });
+
+    // Get or create schema usage collection
+    this.schemaUsageCollection = this.db.getCollection('schemaUsage') || 
+      this.db.addCollection('schemaUsage', {
+        indices: ['tableName', 'filePath', 'functionName', 'usageType']
       });
 
     // Initialize default whitelists if empty
@@ -2128,5 +2152,247 @@ export class CodeIndexDB {
     this.db.saveDatabase();
     
     return count;
+  }
+
+  // Schema Management Methods
+
+  /**
+   * Store a database schema definition
+   */
+  async storeSchema(schema: SchemaDefinition): Promise<string> {
+    this.ensureInitialized();
+    
+    const schemaId = `schema_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    const schemaMetadata: SchemaIndexMetadata = {
+      schemaId,
+      schemaName: schema.name,
+      indexedAt: new Date(),
+      tableCount: schema.databases.reduce((acc, db) => acc + db.tables.length, 0),
+      relationshipCount: schema.databases.reduce((acc, db) => acc + (db.relationships?.length || 0), 0),
+      usagePatterns: [],
+      discoveredPatterns: [],
+      violations: []
+    };
+
+    // Store the schema definition
+    this.schemaCollection!.insert({
+      schemaId,
+      schema,
+      metadata: schemaMetadata,
+      indexedAt: new Date()
+    });
+
+    this.db.saveDatabase();
+    return schemaId;
+  }
+
+  /**
+   * Retrieve a schema by ID
+   */
+  async getSchema(schemaId: string): Promise<SchemaDefinition | null> {
+    this.ensureInitialized();
+    
+    const result = this.schemaCollection!.findOne({ schemaId });
+    return result?.schema || null;
+  }
+
+  /**
+   * Get all schemas
+   */
+  async getAllSchemas(): Promise<Array<{ schemaId: string; metadata: SchemaIndexMetadata; schema: SchemaDefinition }>> {
+    this.ensureInitialized();
+    
+    const schemas = this.schemaCollection!.find();
+    return schemas.map(doc => ({
+      schemaId: doc.schemaId,
+      metadata: doc.metadata,
+      schema: doc.schema
+    }));
+  }
+
+  /**
+   * Delete a schema
+   */
+  async deleteSchema(schemaId: string): Promise<boolean> {
+    this.ensureInitialized();
+    
+    const schema = this.schemaCollection!.findOne({ schemaId });
+    if (schema) {
+      this.schemaCollection!.remove(schema);
+      
+      // Also remove associated usage patterns
+      this.schemaUsageCollection!.findAndRemove({ schemaId });
+      
+      this.db.saveDatabase();
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Record schema usage in code
+   */
+  async recordSchemaUsage(usage: SchemaUsage, schemaId?: string): Promise<void> {
+    this.ensureInitialized();
+    
+    const usageDoc = {
+      ...usage,
+      schemaId: schemaId || 'default',
+      recordedAt: new Date()
+    };
+
+    // Check if this usage already exists
+    const existing = this.schemaUsageCollection!.findOne({
+      tableName: usage.tableName,
+      filePath: usage.filePath,
+      functionName: usage.functionName,
+      line: usage.line
+    });
+
+    if (existing) {
+      Object.assign(existing, usageDoc);
+      this.schemaUsageCollection!.update(existing);
+    } else {
+      this.schemaUsageCollection!.insert(usageDoc);
+    }
+
+    this.db.saveDatabase();
+  }
+
+  /**
+   * Get schema usage patterns
+   */
+  async getSchemaUsage(options: {
+    schemaId?: string;
+    tableName?: string;
+    filePath?: string;
+    functionName?: string;
+    usageType?: string;
+  } = {}): Promise<SchemaUsage[]> {
+    this.ensureInitialized();
+    
+    const query: any = {};
+    if (options.schemaId) query.schemaId = options.schemaId;
+    if (options.tableName) query.tableName = options.tableName;
+    if (options.filePath) query.filePath = options.filePath;
+    if (options.functionName) query.functionName = options.functionName;
+    if (options.usageType) query.usageType = options.usageType;
+
+    const results = this.schemaUsageCollection!.find(query);
+    return results.map(doc => {
+      const { $loki, meta, schemaId, recordedAt, ...usage } = doc;
+      return usage as SchemaUsage;
+    });
+  }
+
+  /**
+   * Find functions that interact with specific tables
+   */
+  async findFunctionsUsingTable(tableName: string): Promise<Array<{
+    functionName: string;
+    filePath: string;
+    usageType: string;
+    line: number;
+  }>> {
+    this.ensureInitialized();
+    
+    const usages = this.schemaUsageCollection!.find({ tableName });
+    return usages.map(usage => ({
+      functionName: usage.functionName,
+      filePath: usage.filePath,
+      usageType: usage.usageType,
+      line: usage.line
+    }));
+  }
+
+  /**
+   * Get schema statistics
+   */
+  async getSchemaStats(): Promise<{
+    totalSchemas: number;
+    totalTables: number;
+    totalUsagePatterns: number;
+    mostUsedTables: Array<{ tableName: string; usageCount: number }>;
+    usageByType: Record<string, number>;
+  }> {
+    this.ensureInitialized();
+    
+    const schemas = this.schemaCollection!.find();
+    const usages = this.schemaUsageCollection!.find();
+
+    const totalTables = schemas.reduce((acc, schema) => 
+      acc + schema.schema.databases.reduce((dbAcc: number, db: any) => dbAcc + db.tables.length, 0), 0
+    );
+
+    // Count usage by table
+    const tableUsage: Record<string, number> = {};
+    const usageByType: Record<string, number> = {};
+
+    usages.forEach(usage => {
+      tableUsage[usage.tableName] = (tableUsage[usage.tableName] || 0) + 1;
+      usageByType[usage.usageType] = (usageByType[usage.usageType] || 0) + 1;
+    });
+
+    const mostUsedTables = Object.entries(tableUsage)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([tableName, usageCount]) => ({ tableName, usageCount }));
+
+    return {
+      totalSchemas: schemas.length,
+      totalTables,
+      totalUsagePatterns: usages.length,
+      mostUsedTables,
+      usageByType
+    };
+  }
+
+  /**
+   * Update search to include schema context
+   */
+  async searchWithSchemaContext(
+    query: string, 
+    options: SearchOptions & { includeSchemaUsage?: boolean } = {}
+  ): Promise<SearchResult & { schemaContext?: Array<{ tableName: string; usageType: string }> }> {
+    this.ensureInitialized();
+    
+    // First perform regular function search
+    const searchResult = await this.searchFunctions(options);
+    
+    if (!options.includeSchemaUsage) {
+      return searchResult;
+    }
+
+    // Add schema context to results
+    const enhancedFunctions = await Promise.all(
+      searchResult.functions.map(async (func) => {
+        const schemaUsage = await this.getSchemaUsage({
+          filePath: func.filePath,
+          functionName: func.name
+        });
+
+        return {
+          ...func,
+          schemaUsage,
+          affectedTables: [...new Set(schemaUsage.map(u => u.tableName))],
+          schemaPatterns: [...new Set(schemaUsage.map(u => u.usageType))]
+        };
+      })
+    );
+
+    // Extract schema context for summary
+    const allSchemaUsage = enhancedFunctions.flatMap(f => f.schemaUsage || []);
+    const schemaContext = [...new Set(allSchemaUsage.map(u => ({ 
+      tableName: u.tableName, 
+      usageType: u.usageType 
+    })))];
+
+    return {
+      ...searchResult,
+      functions: enhancedFunctions,
+      schemaContext
+    };
   }
 }
