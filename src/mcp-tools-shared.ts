@@ -7,6 +7,8 @@
 
 import { createAuditRunner } from './auditRunner.js';
 import type { Severity, AuditResult, AuditRunnerOptions, Violation } from './types.js';
+import { LanguageOrchestrator } from './languages/LanguageOrchestrator.js';
+import { RuntimeManager } from './languages/RuntimeManager.js';
 import { 
   registerFunctions, 
   searchFunctions, 
@@ -549,8 +551,38 @@ export class ToolHandlers {
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
     };
 
-    const runner = createAuditRunner(options);
-    const auditResult = await runner.run();
+    // Check if this is a multi-language project by detecting Go files
+    console.error(chalk.yellow('[DEBUG]'), `Checking for Go files in: ${auditPath}`);
+    const hasGoFiles = await ToolHandlers.hasFilesWithExtensions(auditPath, ['.go']);
+    console.error(chalk.yellow('[DEBUG]'), `Go files detected: ${hasGoFiles}`);
+    
+    let auditResult: AuditResult;
+    
+    if (hasGoFiles) {
+      // Use multi-language orchestrator for projects with Go files
+      console.error(chalk.blue('[INFO]'), 'Multi-language project detected, using LanguageOrchestrator');
+      
+      const runtimeManager = new RuntimeManager();
+      await runtimeManager.initialize();
+      const codeIndex = CodeIndexDB.getInstance();
+      await codeIndex.initialize();
+      const orchestrator = new LanguageOrchestrator(runtimeManager, codeIndex);
+      
+      const polyglotResult = await orchestrator.analyzePolyglotProject(auditPath, {
+        analyzers: options.enabledAnalyzers,
+        minSeverity: options.minSeverity as any,
+        updateIndex: indexFunctions,
+        enableCrossLanguageAnalysis: true,
+        buildCrossReferences: true,
+      });
+      
+      // Convert polyglot result to legacy audit result format
+      auditResult = ToolHandlers.convertPolyglotToAuditResult(polyglotResult, auditPath);
+    } else {
+      // Use legacy audit system for TypeScript-only projects
+      const runner = createAuditRunner(options);
+      auditResult = await runner.run();
+    }
 
     // Handle function indexing if enabled and functions were collected
     let indexingResult = null;
@@ -1296,5 +1328,105 @@ export class ToolHandlers {
       return `Fix ${result.summary.criticalIssues} critical violations first`;
     }
     return 'Code health needs attention - run detailed audit';
+  }
+
+  static async hasFilesWithExtensions(dirPath: string, extensions: string[]): Promise<boolean> {
+    try {
+      console.error(chalk.yellow('[DEBUG]'), `Checking path: ${dirPath} for extensions: ${extensions.join(', ')}`);
+      const stats = await fs.stat(dirPath);
+      if (stats.isFile()) {
+        const ext = path.extname(dirPath).toLowerCase();
+        console.error(chalk.yellow('[DEBUG]'), `File: ${dirPath}, ext: ${ext}, match: ${extensions.includes(ext)}`);
+        return extensions.includes(ext);
+      }
+      
+      // Use simple readdir and walk manually to avoid recursive option issues
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      console.error(chalk.yellow('[DEBUG]'), `Directory: ${dirPath}, entries: ${entries.length}`);
+      
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          console.error(chalk.yellow('[DEBUG]'), `File: ${entry.name}, ext: ${ext}, match: ${extensions.includes(ext)}`);
+          if (extensions.includes(ext)) {
+            console.error(chalk.green('[DEBUG]'), `Found matching file: ${entry.name}`);
+            return true;
+          }
+        } else if (entry.isDirectory()) {
+          // Recursively check subdirectories
+          const subDirPath = path.join(dirPath, entry.name);
+          console.error(chalk.yellow('[DEBUG]'), `Checking subdirectory: ${subDirPath}`);
+          const hasInSubdir = await ToolHandlers.hasFilesWithExtensions(subDirPath, extensions);
+          if (hasInSubdir) {
+            console.error(chalk.green('[DEBUG]'), `Found matching files in subdirectory: ${subDirPath}`);
+            return true;
+          }
+        }
+      }
+      
+      console.error(chalk.red('[DEBUG]'), `No matching files found in: ${dirPath}`);
+      return false;
+    } catch (error) {
+      console.error(chalk.red('[DEBUG]'), `Error checking path ${dirPath}:`, error);
+      return false;
+    }
+  }
+
+  static convertPolyglotToAuditResult(polyglotResult: any, auditPath: string): AuditResult {
+    // Convert polyglot result to legacy AuditResult format
+    const violations = polyglotResult.violations || [];
+    const criticalIssues = violations.filter((v: any) => v.severity === 'critical').length;
+    const warnings = violations.filter((v: any) => v.severity === 'warning').length;
+    const suggestions = violations.filter((v: any) => v.severity === 'suggestion').length;
+
+    return {
+      timestamp: new Date(),
+      summary: {
+        totalViolations: violations.length,
+        criticalIssues,
+        warnings,
+        suggestions,
+        totalFiles: polyglotResult.metrics?.totalFiles || 0,
+        violationsByCategory: {},
+        topIssues: violations.slice(0, 5)
+      },
+      analyzerResults: {
+        solid: { 
+          violations: violations.filter((v: any) => v.analyzer === 'solid'),
+          filesProcessed: polyglotResult.metrics?.totalFiles || 0,
+          executionTime: polyglotResult.metrics?.executionTime || 0
+        },
+        dry: { 
+          violations: violations.filter((v: any) => v.analyzer === 'dry'),
+          filesProcessed: polyglotResult.metrics?.totalFiles || 0,
+          executionTime: polyglotResult.metrics?.executionTime || 0
+        },
+        go: { 
+          violations: violations.filter((v: any) => v.analyzer === 'go'),
+          filesProcessed: polyglotResult.metrics?.totalFiles || 0,
+          executionTime: polyglotResult.metrics?.executionTime || 0
+        }
+      },
+      recommendations: [],
+      metadata: {
+        auditDuration: polyglotResult.metrics?.executionTime || 0,
+        filesAnalyzed: polyglotResult.metrics?.totalFiles || 0,
+        analyzersRun: polyglotResult.metrics?.analyzersRun || ['solid', 'dry'],
+        fileToFunctionsMap: polyglotResult.indexEntries ? ToolHandlers.createFileToFunctionsMap(polyglotResult.indexEntries) : {}
+      }
+    };
+  }
+
+  static createFileToFunctionsMap(indexEntries: any[]): Record<string, any[]> {
+    const fileMap: Record<string, any[]> = {};
+    
+    for (const entry of indexEntries) {
+      if (!fileMap[entry.file]) {
+        fileMap[entry.file] = [];
+      }
+      fileMap[entry.file].push(entry);
+    }
+    
+    return fileMap;
   }
 }

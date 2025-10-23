@@ -9,7 +9,7 @@ import { AuditConfig } from '../types.js';
  */
 export function getDefaultConfig(): AuditConfig {
   return {
-    includePaths: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'],
+    includePaths: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go'],
     excludePaths: [
       '**/node_modules/**',
       '**/.next/**',

@@ -29,7 +29,9 @@ export const DEFAULT_EXCLUDED_DIRS = [
 // Supported file extensions
 export const TYPESCRIPT_EXTENSIONS = ['.ts', '.tsx'];
 export const JAVASCRIPT_EXTENSIONS = ['.js', '.jsx'];
-export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS];
+export const JSON_EXTENSIONS = ['.json'];
+export const GO_EXTENSIONS = ['.go'];
+export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS];
 
 export interface FileDiscoveryOptions {
   extensions?: string[];
@@ -140,6 +142,19 @@ export async function findJavaScriptFiles(
   return findFiles(rootDir, {
     ...options,
     extensions: JAVASCRIPT_EXTENSIONS
+  });
+}
+
+/**
+ * Find JSON files
+ */
+export async function findJsonFiles(
+  rootDir: string = process.cwd(),
+  options: Omit<FileDiscoveryOptions, 'extensions'> = {}
+): Promise<string[]> {
+  return findFiles(rootDir, {
+    ...options,
+    extensions: JSON_EXTENSIONS
   });
 }
 

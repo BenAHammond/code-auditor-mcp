@@ -1,0 +1,13 @@
+{
+  "id": "not-a-valid-uuid",
+  "name": "John Doe",
+  "email": "invalid-email",
+  "age": 200,
+  "role": "superadmin",
+  "settings": {
+    "notifications": "yes",
+    "theme": "blue",
+    "darkMode": true
+  },
+  "unexpectedField": "should not be here"
+}
