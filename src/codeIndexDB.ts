@@ -1359,7 +1359,7 @@ export class CodeIndexDB {
   } | null> {
     this.ensureInitialized();
     
-    const fs = require('fs').promises;
+    // fs is already imported at the top of the file
     
     try {
       // Check if file exists
@@ -1439,7 +1439,7 @@ export class CodeIndexDB {
   }> {
     this.ensureInitialized();
     
-    const fs = require('fs').promises;
+    // fs is already imported at the top of the file
     const allFunctions = this.functionsCollection!.find();
     const fileMap = new Map<string, FunctionDocument[]>();
     

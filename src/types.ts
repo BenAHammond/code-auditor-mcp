@@ -55,6 +55,7 @@ export interface AnalyzerResult {
 export interface AuditOptions {
   includePaths?: string[];
   excludePaths?: string[];
+  fileExtensions?: string[]; // Override file extensions to analyze
   minSeverity?: Severity;
   enabledAnalyzers?: string[];
   outputFormats?: ReportFormat[];

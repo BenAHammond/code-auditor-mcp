@@ -1,12 +1,12 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-16/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.BenAHammond/code-auditor-mcp",
   "description": "Code Quality Auditor: Analyze code for SOLID principles, DRY violations, and more",
   "repository": {
     "url": "https://github.com/BenAHammond/code-auditor-mcp",
     "source": "github"
   },
-  "version": "1.2.0",
+  "version": "1.21.0",
   "packages": [
     {
       "registryType": "npm",

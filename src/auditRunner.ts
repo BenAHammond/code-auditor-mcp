@@ -20,25 +20,28 @@ import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 
 // Import analyzer definitions
-import { solidAnalyzer } from './analyzers/solidAnalyzer.js';
-import { dryAnalyzer } from './analyzers/dryAnalyzer.js';
+// Use compatibility layers for refactored analyzers
+import { createSOLIDAnalyzer } from './adapters/solidAnalyzerCompat.js';
+import { dryAnalyzer } from './analyzers/dryAnalyzerCompat.js';
 // import { securityAnalyzer } from './analyzers/securityAnalyzer.js';
 // import { componentAnalyzer } from './analyzers/componentAnalyzer.js';
-import { dataAccessAnalyzer } from './analyzers/dataAccessAnalyzer.js';
-import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
-import { documentationAnalyzer } from './analyzers/documentationAnalyzer.js';
+import { dataAccessAnalyzer } from './analyzers/dataAccessAnalyzerCompat.js';
+import { reactAnalyzer } from './analyzers/reactAnalyzer.js'; // Keep legacy React analyzer
+import { documentationAnalyzer } from './analyzers/documentationAnalyzerCompat.js';
+import { schemaAnalyzer } from './analyzers/schemaAnalyzerCompat.js';
 
 /**
  * Default analyzer registry
  */
 const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
-  'solid': solidAnalyzer,
+  'solid': createSOLIDAnalyzer(),
   'dry': dryAnalyzer,
   // 'security': securityAnalyzer,
   // 'component': componentAnalyzer,
   'data-access': dataAccessAnalyzer,
   'react': reactAnalyzer,
-  'documentation': documentationAnalyzer
+  'documentation': documentationAnalyzer,
+  'schema': schemaAnalyzer
 };
 
 /**
@@ -88,7 +91,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         message: 'Collecting functions from files...'
       });
       
-      // Only collect functions from TypeScript/JavaScript files
+      // Collect functions from TypeScript/JavaScript files
+      // Note: Go files will be indexed by the Universal SOLID analyzer directly
       const scriptFiles = files.filter(f => 
         f.endsWith('.ts') || f.endsWith('.tsx') || 
         f.endsWith('.js') || f.endsWith('.jsx')
@@ -118,9 +122,12 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Run analyzers
     const analyzerResults: Record<string, AnalyzerResult> = {};
     const enabledAnalyzers = getEnabledAnalyzers(mergedOptions, analyzerRegistry);
+    console.log('[DEBUG] Enabled analyzers:', enabledAnalyzers);
+    console.log('[DEBUG] Available analyzers in registry:', Object.keys(analyzerRegistry));
     
     for (const analyzerName of enabledAnalyzers) {
       const analyzer = analyzerRegistry[analyzerName];
+      console.log(`[DEBUG] Processing analyzer: ${analyzerName}, found: ${!!analyzer}`);
       if (!analyzer) {
         console.warn(`Unknown analyzer: ${analyzerName}`);
         continue;
@@ -132,6 +139,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         message: `Running ${analyzerName} analyzer...`
       });
       
+      console.log(`[DEBUG] About to call ${analyzerName}.analyze()`);
+      console.log(`[DEBUG] Analyzer object:`, analyzer);
+      console.log(`[DEBUG] Analyzer.analyze type:`, typeof analyzer.analyze);
+      console.log(`[DEBUG] Files to analyze:`, files);
+      console.log(`[DEBUG] Config for analyzer:`, mergedOptions.analyzerConfigs?.[analyzerName] || {});
       try {
         const result = await analyzer.analyze(
           files, 
@@ -147,6 +159,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             });
           }
         );
+        console.log(`[DEBUG] ${analyzerName}.analyze() returned:`, result);
         analyzerResults[analyzerName] = result;
       } catch (error) {
         reportError(mergedOptions, error as Error, `${analyzerName} analyzer`);
@@ -212,6 +225,7 @@ async function discoverProjectFiles(options: AuditRunnerOptions): Promise<string
   return discoverFiles(rootDir, {
     includePaths: options.includePaths,
     excludePaths: options.excludePaths,
+    extensions: options.fileExtensions, // Use override if provided
     excludeDirs: undefined // This will use DEFAULT_EXCLUDED_DIRS which includes node_modules
   });
 }

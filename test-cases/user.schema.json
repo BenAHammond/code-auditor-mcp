@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "User Schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "email": {
+      "type": "string",
+      "format": "email"
+    },
+    "age": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 150
+    },
+    "role": {
+      "type": "string",
+      "enum": ["admin", "user", "guest"]
+    },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "notifications": {
+          "type": "boolean"
+        },
+        "theme": {
+          "type": "string",
+          "pattern": "^(light|dark)$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["id", "name", "email"],
+  "additionalProperties": false
+}

@@ -492,8 +492,11 @@ async function startMcpServer() {
             ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
           };
 
+          console.error(chalk.blue('[DEBUG]'), 'Creating audit runner with options:', JSON.stringify(options, null, 2));
           const runner = createAuditRunner(options);
+          console.error(chalk.blue('[DEBUG]'), 'About to run audit...');
           const auditResult = await runner.run();
+          console.error(chalk.blue('[DEBUG]'), 'Audit completed, result summary:', auditResult.summary);
 
           // Handle function indexing if enabled and functions were collected
           let indexingResult = null;
