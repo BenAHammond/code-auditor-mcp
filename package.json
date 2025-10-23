@@ -1,7 +1,7 @@
 {
   "name": "code-auditor-mcp",
-  "version": "1.21.0",
-  "description": "TypeScript/JavaScript code quality auditor with MCP server - Analyze code for SOLID principles, DRY violations, security patterns, and more",
+  "version": "2.0.0",
+  "description": "Multi-language code quality auditor with MCP server - Analyze TypeScript, JavaScript, and Go code for SOLID principles, DRY violations, security patterns, and more",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
