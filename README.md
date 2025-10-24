@@ -1,6 +1,6 @@
-# Code Auditor: AI-Powered Code Intelligence
+# Code Auditor: AI-Powered Multi-Language Code Intelligence
 
-**Your AI understands your code.** Code Auditor indexes your entire codebase and provides real-time analysis that AI assistants like Claude can actually use to help you write better code.
+**Your AI understands your code across languages.** Code Auditor indexes your entire codebase (TypeScript, JavaScript, and Go) and provides real-time analysis that AI assistants like Claude can actually use to help you write better code.
 
 ## The Problem It Solves
 
@@ -8,10 +8,10 @@ AI coding assistants are powerful, but they're flying blind. They can't search y
 
 ## How It Works
 
-1. **Index** - Automatically catalogs functions, React components, and dependencies
-2. **Analyze** - Detects SOLID violations, code duplication, and security issues  
+1. **Index** - Automatically catalogs functions, React components, Go structs, and dependencies
+2. **Analyze** - Detects SOLID violations, code duplication, and security issues across multiple languages
 3. **Connect** - AI assistants access your code index via MCP (Model Context Protocol)
-4. **Iterate** - Get intelligent suggestions based on your actual codebase
+4. **Iterate** - Get intelligent suggestions based on your actual codebase patterns
 
 ## Quick Start (2 minutes)
 
@@ -22,16 +22,18 @@ claude mcp add code-auditor -- npx code-auditor-mcp
 # That's it! Now ask Claude:
 # "What authentication functions exist in my codebase?"
 # "Find all API endpoints and check for rate limiting"
-# "Show me components similar to UserTable"
+# "Show me Go structs that handle user data"
+# "Compare TypeScript and Go implementations of the same feature"
 ```
 
 ## Core Features That Matter
 
-### 🔍 Natural Language Code Search
+### 🔍 Multi-Language Code Search
 ```
 "Find all functions that validate user input"
 "Show me where we're calling the payment API"
-"What components use the useState hook?"
+"What Go structs implement the User interface?"
+"Compare error handling patterns between TypeScript and Go"
 ```
 
 ### 🎯 Smart Code Analysis
@@ -144,9 +146,13 @@ mcp.set_analyzer_config({
 | What You Want | Search Query |
 |--------------|--------------|
 | Complex functions | `complexity:>10` |
+| Go functions only | `lang:go` |
+| TypeScript components | `lang:typescript component:functional` |
 | Undocumented exports | `exported:true jsdoc:false` |
 | React hooks usage | `component:functional hook:useState` |
+| Go struct methods | `lang:go entity:struct` |
 | Find dependencies | `calls:validateUser` |
+| Cross-language patterns | `name:validateEmail` |
 | Unused imports | `unused-imports file:src` |
 
 ## Performance
