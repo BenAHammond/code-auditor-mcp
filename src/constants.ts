@@ -15,3 +15,9 @@ export const MCP_SERVER_NAME = 'code-index';
 
 // Default API key for authentication
 export const DEFAULT_API_KEY = 'mcp-code-index';
+
+// Development mode detection
+export const IS_DEV_MODE = process.env.NODE_ENV === 'development' || 
+                         process.env.DEBUG === '1' || 
+                         process.argv.includes('--dev') ||
+                         process.argv.includes('dev');

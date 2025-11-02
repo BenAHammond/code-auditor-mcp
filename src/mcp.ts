@@ -25,7 +25,7 @@ import {
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
-import { DEFAULT_SERVER_URL } from './constants.js';
+import { DEFAULT_SERVER_URL, IS_DEV_MODE } from './constants.js';
 console.error(chalk.blue('[INFO]'), 'Code index service loaded');
 
 import path from 'node:path';
@@ -34,35 +34,41 @@ import { createWriteStream, existsSync } from 'node:fs';
 import { CodeIndexDB } from './codeIndexDB.js';
 console.error(chalk.blue('[INFO]'), 'All modules loaded successfully');
 
-// Set up file logging
-const logFilePath = path.join(process.cwd(), 'mcp-server.log');
-const logStream = createWriteStream(logFilePath, { flags: 'a' });
+// Set up file logging (only in development mode)
+let logStream: any = null;
+if (IS_DEV_MODE) {
+  const logFilePath = path.join(process.cwd(), 'mcp-server.log');
+  logStream = createWriteStream(logFilePath, { flags: 'a' });
+  console.error(chalk.blue('[INFO]'), `Development mode: Logging to file: ${logFilePath}`);
+}
 
 // Save original console methods
 const originalConsoleLog = console.log;
 const originalConsoleError = console.error;
 
-// Override console.log
+// Override console.log (with conditional file logging)
 console.log = (...args: any[]) => {
-  const message = args.map(arg => 
-    typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
-  ).join(' ');
-  const timestamp = new Date().toISOString();
-  logStream.write(`[${timestamp}] [LOG] ${message}\n`);
+  if (logStream) {
+    const message = args.map(arg => 
+      typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+    ).join(' ');
+    const timestamp = new Date().toISOString();
+    logStream.write(`[${timestamp}] [LOG] ${message}\n`);
+  }
   originalConsoleLog.apply(console, args);
 };
 
-// Override console.error
+// Override console.error (with conditional file logging)
 console.error = (...args: any[]) => {
-  const message = args.map(arg => 
-    typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
-  ).join(' ');
-  const timestamp = new Date().toISOString();
-  logStream.write(`[${timestamp}] [ERROR] ${message}\n`);
+  if (logStream) {
+    const message = args.map(arg => 
+      typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+    ).join(' ');
+    const timestamp = new Date().toISOString();
+    logStream.write(`[${timestamp}] [ERROR] ${message}\n`);
+  }
   originalConsoleError.apply(console, args);
 };
-
-console.error(chalk.blue('[INFO]'), `Logging to file: ${logFilePath}`);
 
 interface ToolParameter {
   name: string;

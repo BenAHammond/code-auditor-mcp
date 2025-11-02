@@ -24,6 +24,7 @@ import {
   ParameterInfo,
   PropertyInfo
 } from './LanguageAdapter.js';
+import { IS_DEV_MODE } from '../constants.js';
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -112,23 +113,30 @@ export class GoAdapter implements LanguageAdapter {
   constructor(goExecutablePath: string = 'go') {
     this.goExecutablePath = goExecutablePath;
     
-    // Create log file for Go child process debugging
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    this.logFile = path.join(process.cwd(), `go-analyzer-${timestamp}.log`);
+    // Create log file for Go child process debugging (only in dev mode)
+    if (IS_DEV_MODE) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      this.logFile = path.join(process.cwd(), `go-analyzer-${timestamp}.log`);
+      console.error(`[DEBUG] Go: Development mode - logs will be written to: ${this.logFile}`);
+      
+      // Initialize log file
+      this.writeLog('=== Go Analyzer Process Log Started ===');
+      this.writeLog(`Go executable path: ${this.goExecutablePath}`);
+      this.writeLog(`Path is absolute: ${path.isAbsolute(this.goExecutablePath)}`);
+    } else {
+      this.logFile = ''; // No logging in production
+    }
     
     console.error(`[DEBUG] Go: Initialized with executable path: ${this.goExecutablePath}`);
-    console.error(`[DEBUG] Go: Child process logs will be written to: ${this.logFile}`);
-    
-    // Initialize log file
-    this.writeLog('=== Go Analyzer Process Log Started ===');
-    this.writeLog(`Go executable path: ${this.goExecutablePath}`);
-    this.writeLog(`Path is absolute: ${path.isAbsolute(this.goExecutablePath)}`);
     
     // Register cleanup on process exit
     this.registerProcessCleanup();
   }
   
   private writeLog(message: string): void {
+    // Only log to file in development mode
+    if (!IS_DEV_MODE || !this.logFile) return;
+    
     try {
       const timestamp = new Date().toISOString();
       const logEntry = `[${timestamp}] ${message}\n`;

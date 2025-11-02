@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Multi-language code quality auditor with MCP server - Analyze TypeScript, JavaScript, and Go code for SOLID principles, DRY violations, security patterns, and more",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -38,7 +38,14 @@
     "security",
     "linter",
     "code-review",
-    "static-analysis"
+    "static-analysis",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "claude",
+    "claude-ai",
+    "ai-agent",
+    "llm"
   ],
   "author": "benahammond",
   "license": "MIT",
