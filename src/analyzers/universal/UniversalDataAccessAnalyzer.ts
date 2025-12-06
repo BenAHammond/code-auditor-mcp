@@ -7,6 +7,7 @@
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
+import { IS_DEV_MODE } from '../../constants.js';
 
 /**
  * Configuration for Data Access analyzer
@@ -73,16 +74,16 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   ],
   tablePatterns: {
     orm: [
-      /from\s*\(\s*["'`]?(\w+)["'`]?\s*\)/i, 
-      /table\s*[:=]\s*["'`]?(\w+)["'`]?/i,
-      /\.from\s*\(\s*(\w+)\s*\)/i,  // Handle .from(users) where users is a variable
-      /join\s*\(\s*(\w+)\s*,/i,      // Handle joins
-      /leftJoin\s*\(\s*(\w+)\s*,/i,
-      /rightJoin\s*\(\s*(\w+)\s*,/i,
-      /innerJoin\s*\(\s*(\w+)\s*,/i
+      /from\s*\(\s*["'`]?(\w+)["'`]?\s*\)/gi, 
+      /table\s*[:=]\s*["'`]?(\w+)["'`]?/gi,
+      /\.from\s*\(\s*(\w+)\s*\)/gi,  // Handle .from(users) where users is a variable
+      /join\s*\(\s*(\w+)\s*,/gi,      // Handle joins
+      /leftJoin\s*\(\s*(\w+)\s*,/gi,
+      /rightJoin\s*\(\s*(\w+)\s*,/gi,
+      /innerJoin\s*\(\s*(\w+)\s*,/gi
     ],
-    sql: [/FROM\s+["'`]?(\w+)["'`]?/i, /JOIN\s+["'`]?(\w+)["'`]?/i, /UPDATE\s+["'`]?(\w+)["'`]?/i],
-    queryBuilder: [/\.from\s*\(\s*["'`]?(\w+)["'`]?\s*\)/i]
+    sql: [/FROM\s+["'`]?(\w+)["'`]?/gi, /JOIN\s+["'`]?(\w+)["'`]?/gi, /UPDATE\s+["'`]?(\w+)["'`]?/gi],
+    queryBuilder: [/\.from\s*\(\s*["'`]?(\w+)["'`]?\s*\)/gi]
   },
   performanceThresholds: {
     complexQueryCount: 3,
@@ -130,11 +131,13 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
     
-    console.log('[DEBUG] Data access config merge:', {
-      defaultPatterns: DEFAULT_DATA_ACCESS_CONFIG.organizationPatterns,
-      inputConfig: config,
-      finalPatterns: finalConfig.organizationPatterns
-    });
+    if (IS_DEV_MODE) {
+      console.log('[DEBUG] Data access config merge:', {
+        defaultPatterns: DEFAULT_DATA_ACCESS_CONFIG.organizationPatterns,
+        inputConfig: config,
+        finalPatterns: finalConfig.organizationPatterns
+      });
+    }
     
     // Check imports for database libraries
     const imports = adapter.extractImports(ast);
@@ -273,13 +276,15 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         const hasOrgFilter = this.hasOrganizationFilter(nodeText, config);
         
         // Debug: Log the analysis
-        console.log('[DEBUG] Database call analysis:', {
-          line: node.location.start.line,
-          nodeText: nodeText.substring(0, 100),
-          tables,
-          hasOrgFilter,
-          patterns: config.organizationPatterns || []
-        });
+        if (IS_DEV_MODE) {
+          console.log('[DEBUG] Database call analysis:', {
+            line: node.location.start.line,
+            nodeText: nodeText.substring(0, 100),
+            tables,
+            hasOrgFilter,
+            patterns: config.organizationPatterns || []
+          });
+        }
         const security = this.checkQuerySecurity(nodeText, config);
         
         // Debug: Log extracted tables
@@ -570,11 +575,13 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const patterns = config.organizationPatterns || [];
     const lowerText = text.toLowerCase();
     
-    console.log('[DEBUG] hasOrganizationFilter called with:', {
-      text: text.substring(0, 100),
-      patternsFromConfig: patterns,
-      patternsLength: patterns.length
-    });
+    if (IS_DEV_MODE) {
+      console.log('[DEBUG] hasOrganizationFilter called with:', {
+        text: text.substring(0, 100),
+        patternsFromConfig: patterns,
+        patternsLength: patterns.length
+      });
+    }
     
     // If no patterns provided, check for hardcoded common patterns as fallback
     const fallbackPatterns = patterns.length === 0 ? [
@@ -582,17 +589,23 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       'tenantid', 'tenant_id', 'companyid', 'company_id'
     ] : patterns;
     
-    console.log('[DEBUG] Using fallback patterns:', fallbackPatterns);
+    if (IS_DEV_MODE) {
+      console.log('[DEBUG] Using fallback patterns:', fallbackPatterns);
+    }
     
     // Check for simple pattern matches first
     const hasSimpleMatch = fallbackPatterns.some(pattern => {
       const match = lowerText.includes(pattern.toLowerCase());
-      console.log(`[DEBUG] Pattern "${pattern}" -> "${pattern.toLowerCase()}" in "${lowerText}": ${match}`);
+      if (IS_DEV_MODE) {
+        console.log(`[DEBUG] Pattern "${pattern}" -> "${pattern.toLowerCase()}" in "${lowerText}": ${match}`);
+      }
       return match;
     });
     
     if (hasSimpleMatch) {
-      console.log('[DEBUG] Found simple match, returning true');
+      if (IS_DEV_MODE) {
+        console.log('[DEBUG] Found simple match, returning true');
+      }
       return true;
     }
     
@@ -629,12 +642,14 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     }
     
     // Debug logging
-    console.log('[DEBUG] hasOrganizationFilter check:', {
-      text: text.substring(0, 150),
-      patterns,
-      fallbackPatterns,
-      hasFilter: false
-    });
+    if (IS_DEV_MODE) {
+      console.log('[DEBUG] hasOrganizationFilter check:', {
+        text: text.substring(0, 150),
+        patterns,
+        fallbackPatterns,
+        hasFilter: false
+      });
+    }
     
     return false;
   }

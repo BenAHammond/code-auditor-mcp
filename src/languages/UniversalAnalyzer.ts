@@ -6,6 +6,7 @@ import type { AnalyzerDefinition, AnalyzerResult, Violation } from '../types.js'
 import type { AST, LanguageAdapter } from './types.js';
 import { LanguageRegistry } from './LanguageRegistry.js';
 import { promises as fs } from 'fs';
+import { IS_DEV_MODE } from '../constants.js';
 
 export interface UniversalAnalyzerOptions {
   progressCallback?: (progress: number) => void;
@@ -39,18 +40,28 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     
     // Process each language group
     for (const [adapter, adapterFiles] of filesByAdapter) {
-      console.error(`[DEBUG] ${this.name}: Processing ${adapterFiles.length} files with adapter:`, adapter.constructor.name);
+      if (IS_DEV_MODE) {
+        console.error(`[DEBUG] ${this.name}: Processing ${adapterFiles.length} files with adapter:`, adapter.constructor.name);
+      }
       for (const file of adapterFiles) {
-        console.error(`[DEBUG] ${this.name}: Processing file:`, file);
+        if (IS_DEV_MODE) {
+          console.error(`[DEBUG] ${this.name}: Processing file:`, file);
+        }
         try {
           const content = await fs.readFile(file, 'utf8');
-          console.error(`[DEBUG] ${this.name}: Read file content, length:`, content.length);
+          if (IS_DEV_MODE) {
+            console.error(`[DEBUG] ${this.name}: Read file content, length:`, content.length);
+          }
           const ast = await adapter.parse(file, content);
-          console.error(`[DEBUG] ${this.name}: Parsed AST, errors:`, ast.errors.length);
+          if (IS_DEV_MODE) {
+            console.error(`[DEBUG] ${this.name}: Parsed AST, errors:`, ast.errors.length);
+          }
           
           if (ast.errors.length > 0) {
             // Record parse errors but continue
-            console.error(`[DEBUG] ${this.name}: Parse errors:`, ast.errors);
+            if (IS_DEV_MODE) {
+              console.error(`[DEBUG] ${this.name}: Parse errors:`, ast.errors);
+            }
             errors.push(...ast.errors.map(e => ({
               file,
               error: `Parse error: ${e.message}`
@@ -58,14 +69,18 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
           }
           
           // Run language-agnostic analysis
-          console.error(`[DEBUG] ${this.name}: About to call analyzeAST for:`, file);
+          if (IS_DEV_MODE) {
+            console.error(`[DEBUG] ${this.name}: About to call analyzeAST for:`, file);
+          }
           const fileViolations = await this.analyzeAST(
             ast,
             adapter,
             config,
             content
           );
-          console.error(`[DEBUG] ${this.name}: analyzeAST returned ${fileViolations.length} violations for:`, file);
+          if (IS_DEV_MODE) {
+            console.error(`[DEBUG] ${this.name}: analyzeAST returned ${fileViolations.length} violations for:`, file);
+          }
           
           violations.push(...fileViolations);
           
@@ -74,6 +89,7 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
             options.progressCallback(filesProcessed / totalFiles);
           }
         } catch (error) {
+          // Always log errors, not just in dev mode
           console.error(`[DEBUG] ${this.name}: ERROR processing file ${file}:`, error);
           errors.push({
             file,
