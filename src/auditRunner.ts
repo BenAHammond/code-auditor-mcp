@@ -12,7 +12,9 @@ import {
   AnalyzerResult,
   Violation,
   AuditProgress,
-  FunctionMetadata
+  FunctionMetadata,
+  AuditAbortedError,
+  AuditHandoffError,
 } from './types.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { loadConfig } from './config/configLoader.js';
@@ -80,7 +82,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     });
     
     // Discover files
-    const files = await discoverProjectFiles(mergedOptions);
+    let files = await discoverProjectFiles(mergedOptions);
+    throwIfAborted(mergedOptions.abortSignal);
+
+    const handoffRemaining: string[] = [];
+    const maxPerRun = mergedOptions.maxFilesPerRun;
+    if (typeof maxPerRun === 'number' && maxPerRun > 0 && files.length > maxPerRun) {
+      handoffRemaining.push(...files.slice(maxPerRun));
+      files = files.slice(0, maxPerRun);
+    }
+
     const root = mergedOptions.projectRoot || process.cwd();
     logMcpInfo('discovery', 'file discovery finished', {
       projectRoot: path.resolve(root),
@@ -111,6 +122,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
       for (let i = 0; i < scriptFiles.length; i++) {
         try {
+          if (i % 10 === 0) {
+            throwIfAborted(mergedOptions.abortSignal);
+          }
           if (i > 0 && i % 50 === 0) {
             logMcpInfo('function-indexing', 'progress', {
               current: i,
@@ -152,68 +166,96 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     });
     logMcpDebug('analysis', 'registry keys', { keys: Object.keys(analyzerRegistry) });
     
-    for (const analyzerName of enabledAnalyzers) {
-      const analyzer = analyzerRegistry[analyzerName];
-      logMcpDebug('analysis', `starting analyzer ${analyzerName}`, { found: !!analyzer });
-      if (!analyzer) {
-        logMcpInfo('analysis', `unknown analyzer skipped: ${analyzerName}`, {});
-        continue;
-      }
-      
-      reportProgress(mergedOptions, {
-        phase: 'analysis',
-        analyzer: analyzerName,
-        message: `Running ${analyzerName} analyzer...`
-      });
-      
-      logMcpInfo('analysis', `running ${analyzerName}`, { fileCount: files.length });
-      try {
-        const result = await analyzer.analyze(
-          files, 
-          mergedOptions.analyzerConfigs?.[analyzerName] || {},
-          mergedOptions,
-          (progress) => {
-            reportProgress(mergedOptions, {
-              phase: 'analysis',
-              analyzer: analyzerName,
-              current: progress.current,
-              total: progress.total,
-              message: `Analyzing ${progress.file}...`
-            });
-            if (isMcpDebugEnabled() && progress.current && progress.total) {
-              if (progress.current % 20 === 0 || progress.current === progress.total) {
-                logMcpDebug('analysis', `${analyzerName} file progress`, {
-                  current: progress.current,
-                  total: progress.total,
-                  file: progress.file
-                });
+    const requestedConcurrency = Number(mergedOptions.analyzerConcurrency);
+    const analyzerConcurrency =
+      Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+        ? Math.min(Math.floor(requestedConcurrency), enabledAnalyzers.length || 1)
+        : 1;
+    logMcpInfo('analysis', 'analyzer concurrency', { analyzerConcurrency });
+
+    let cursor = 0;
+    const runAnalyzer = async (): Promise<void> => {
+      while (true) {
+        throwIfAborted(mergedOptions.abortSignal);
+        const index = cursor++;
+        if (index >= enabledAnalyzers.length) return;
+        const analyzerName = enabledAnalyzers[index];
+        const analyzer = analyzerRegistry[analyzerName];
+        logMcpDebug('analysis', `starting analyzer ${analyzerName}`, { found: !!analyzer });
+        if (!analyzer) {
+          logMcpInfo('analysis', `unknown analyzer skipped: ${analyzerName}`, {});
+          continue;
+        }
+
+        reportProgress(mergedOptions, {
+          phase: 'analysis',
+          analyzer: analyzerName,
+          message: `Running ${analyzerName} analyzer...`
+        });
+
+        logMcpInfo('analysis', `running ${analyzerName}`, { fileCount: files.length });
+        try {
+          const result = await analyzer.analyze(
+            files,
+            mergedOptions.analyzerConfigs?.[analyzerName] || {},
+            mergedOptions,
+            (progress) => {
+              throwIfAborted(mergedOptions.abortSignal);
+              reportProgress(mergedOptions, {
+                phase: 'analysis',
+                analyzer: analyzerName,
+                current: progress.current,
+                total: progress.total,
+                message: `Analyzing ${progress.file}...`
+              });
+              if (isMcpDebugEnabled() && progress.current && progress.total) {
+                if (progress.current % 100 === 0 || progress.current === progress.total) {
+                  logMcpDebug('analysis', `${analyzerName} file progress`, {
+                    current: progress.current,
+                    total: progress.total,
+                    file: progress.file
+                  });
+                }
               }
             }
+          );
+          logMcpDebug('analysis', `${analyzerName} completed`, {
+            violations: result.violations?.length ?? 0
+          });
+          throwIfAborted(mergedOptions.abortSignal);
+          analyzerResults[analyzerName] = result;
+        } catch (error) {
+          if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
+            throw error;
           }
-        );
-        logMcpDebug('analysis', `${analyzerName} completed`, {
-          violations: result.violations?.length ?? 0
-        });
-        analyzerResults[analyzerName] = result;
-      } catch (error) {
-        reportError(mergedOptions, error as Error, `${analyzerName} analyzer`);
-        analyzerResults[analyzerName] = {
-          violations: [],
-          filesProcessed: 0,
-          executionTime: 0,
-          errors: [{ file: 'analyzer', error: (error as Error).message }]
-        };
+          reportError(mergedOptions, error as Error, `${analyzerName} analyzer`);
+          analyzerResults[analyzerName] = {
+            violations: [],
+            filesProcessed: 0,
+            executionTime: 0,
+            errors: [{ file: 'analyzer', error: (error as Error).message }]
+          };
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: analyzerConcurrency }, () => runAnalyzer()));
+    
+    const orderedAnalyzerResults: Record<string, AnalyzerResult> = {};
+    for (const analyzerName of enabledAnalyzers) {
+      if (analyzerResults[analyzerName]) {
+        orderedAnalyzerResults[analyzerName] = analyzerResults[analyzerName];
       }
     }
-    
+
     // Generate summary
-    const summary = generateSummary(analyzerResults);
+    const summary = generateSummary(orderedAnalyzerResults);
     
     // Create result
     const result: AuditResult = {
       timestamp: new Date(),
       summary,
-      analyzerResults,
+      analyzerResults: orderedAnalyzerResults,
       recommendations: [],
       metadata: {
         auditDuration: Date.now() - startTime,
@@ -232,7 +274,15 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       phase: 'reporting',
       message: 'Generating reports...'
     });
-    
+
+    if (handoffRemaining.length > 0) {
+      throw new AuditHandoffError(
+        `${handoffRemaining.length} file(s) deferred to the next worker chunk`,
+        result,
+        handoffRemaining
+      );
+    }
+
     return result;
   }
   
@@ -254,8 +304,20 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 /**
  * Discover files to analyze
  */
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const r = signal.reason;
+  if (r instanceof Error) {
+    throw r;
+  }
+  throw new AuditAbortedError(String(r ?? 'Audit aborted'));
+}
+
 async function discoverProjectFiles(options: AuditRunnerOptions): Promise<string[]> {
-  const rootDir = options.projectRoot || process.cwd();
+  const rootDir = path.resolve(options.projectRoot || process.cwd());
+  if (options.explicitFiles && options.explicitFiles.length > 0) {
+    return [...new Set(options.explicitFiles.map((f) => path.resolve(f)))].sort();
+  }
   return discoverFiles(rootDir, {
     includePaths: options.includePaths,
     excludePaths: options.excludePaths,
@@ -353,4 +415,4 @@ export async function runAudit(options?: AuditRunnerOptions): Promise<AuditResul
   return runner.run();
 }
 
-export { AuditProgress, AuditRunnerOptions } from './types.js';
+export type { AuditProgress, AuditRunnerOptions } from './types.js';

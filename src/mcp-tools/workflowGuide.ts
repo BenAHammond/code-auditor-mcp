@@ -25,19 +25,25 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
     steps: [
       {
         order: 1,
-        tool: 'audit',
+        tool: 'start_audit',
         parameters: { path: '.', analyzers: ['solid', 'dry', 'documentation'], indexFunctions: true, generateCodeMap: true },
-        description: 'Run comprehensive audit to analyze code, index functions, and generate a paginated code map overview'
+        description: 'Start comprehensive background audit and capture jobId'
       },
       {
         order: 2,
+        tool: 'audit_status',
+        parameters: { jobId: 'job_xxx_xxx' },
+        description: 'Poll until completed and capture resultId'
+      },
+      {
+        order: 3,
         tool: 'generate_ai_config',
         parameters: { tools: ['cursor', 'claude'] },
         description: 'Set up AI tool configurations for the project',
         condition: 'If you plan to use AI assistants with this project'
       },
       {
-        order: 3,
+        order: 4,
         tool: 'search_code',
         parameters: { query: 'TODO FIXME' },
         description: 'Find any outstanding tasks or issues marked in code'
@@ -59,24 +65,30 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
     steps: [
       {
         order: 1,
-        tool: 'audit',
+        tool: 'start_audit',
         parameters: { path: './src/components', analyzers: ['react', 'documentation'], indexFunctions: true },
-        description: 'Audit components directory with React and documentation analyzers'
+        description: 'Start background audit for components directory'
       },
       {
         order: 2,
+        tool: 'audit_status',
+        parameters: { jobId: 'job_xxx_xxx' },
+        description: 'Poll to completion before reading result pages'
+      },
+      {
+        order: 3,
         tool: 'search_code',
         parameters: { query: 'entity:component' },
         description: 'List all React components in the codebase'
       },
       {
-        order: 3,
+        order: 4,
         tool: 'search_code',
         parameters: { query: 'component:functional hook:useState' },
         description: 'Find functional components using state'
       },
       {
-        order: 4,
+        order: 5,
         tool: 'search_code',
         parameters: { query: 'prop:onClick' },
         description: 'Find components accepting onClick handlers'
@@ -101,19 +113,26 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       },
       {
         order: 2,
-        tool: 'audit',
+        tool: 'start_audit',
         parameters: { path: './src', analyzers: ['solid', 'dry', 'documentation'], minSeverity: 'warning' },
-        description: 'Run detailed audit if health check shows issues',
+        description: 'Start detailed background audit if health check shows issues',
         condition: 'If health score is below threshold'
       },
       {
         order: 3,
+        tool: 'audit_status',
+        parameters: { jobId: 'job_xxx_xxx' },
+        description: 'Poll until completed and capture resultId',
+        condition: 'After starting detailed audit'
+      },
+      {
+        order: 4,
         tool: 'search_code',
         parameters: { query: 'complexity:8-10' },
         description: 'Find high complexity functions that may need refactoring'
       },
       {
-        order: 4,
+        order: 5,
         tool: 'find_definition',
         parameters: { name: 'functionName' },
         description: 'Look up specific function definitions during review'
@@ -165,18 +184,24 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
     steps: [
       {
         order: 1,
-        tool: 'audit',
+        tool: 'start_audit',
         parameters: { path: '.', analyzers: ['solid', 'dry', 'documentation', 'security'] },
-        description: 'Run full audit to identify issues'
+        description: 'Start full background audit to identify issues'
       },
       {
         order: 2,
+        tool: 'audit_status',
+        parameters: { jobId: 'job_xxx_xxx' },
+        description: 'Poll until completed and use resultId for paged reads'
+      },
+      {
+        order: 3,
         tool: 'search_code',
         parameters: { query: 'console.log debug' },
         description: 'Find debug statements to remove'
       },
       {
-        order: 3,
+        order: 4,
         tool: 'sync_index',
         parameters: { mode: 'cleanup' },
         description: 'Clean up stale entries from deleted files'
@@ -229,34 +254,42 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
 
   'large-audit-handling': {
     name: 'Handling Large Audits',
-    description: 'Working with large codebases that generate many violations',
+    description: 'Working with large codebases using async audit jobs and paged result fetches',
     steps: [
       {
         order: 1,
-        tool: 'audit',
-        parameters: { path: '.', analyzers: ['solid'], minSeverity: 'warning', limit: 25 },
-        description: 'Run initial audit with small page size to check scope'
+        tool: 'start_audit',
+        parameters: { path: '.', analyzers: ['solid'], minSeverity: 'warning', analyzerConcurrency: 2 },
+        description: 'Start a background audit and get a jobId immediately'
       },
       {
         order: 2,
-        tool: 'audit',
-        parameters: { auditId: 'audit_xxx_xxx', offset: 25, limit: 25 },
-        description: 'Get next page using the auditId from first response',
-        condition: 'When pagination.hasMore is true'
+        tool: 'audit_status',
+        parameters: { jobId: 'job_xxx_xxx' },
+        description: 'Poll until status is completed and capture resultId',
+        condition: 'Repeat while status is queued or running'
       },
       {
         order: 3,
-        tool: 'audit',
-        parameters: { path: './src/components', analyzers: ['solid'], limit: 50 },
-        description: 'Focus on specific directories to reduce result size',
-        condition: 'If you only need to review certain areas'
+        tool: 'audit_results',
+        parameters: { resultId: 'audit_xxx_xxx', offset: 0, limit: 25 },
+        description: 'Fetch first page of violations with resultId'
+      },
+      {
+        order: 4,
+        tool: 'audit_results',
+        parameters: { resultId: 'audit_xxx_xxx', offset: 25, limit: 25 },
+        description: 'Fetch next pages using offset/limit only',
+        condition: 'When pagination.hasMore is true'
       }
     ],
     tips: [
       'Use minSeverity:"warning" to filter out info-level suggestions',
-      'auditId is included in the pagination response for easy reference',
-      'Cached results make paging through violations very fast',
-      'Consider auditing subdirectories separately for better focus'
+      'start_audit is non-blocking; heavy work runs in the background',
+      'audit_status returns resultId only when the run is completed',
+      'audit_results is read-only and never starts a new audit',
+      'Use analyzerConcurrency:2 or 3 for faster runs on large projects',
+      'Tune workerCount and maxRetries for large shard-heavy audits'
     ]
   },
 
@@ -355,9 +388,9 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       },
       {
         order: 6,
-        tool: 'audit',
+        tool: 'start_audit',
         parameters: { path: '.', analyzers: ['solid', 'dry'] },
-        description: 'Re-run audit with new configurations'
+        description: 'Start background audit with new configurations'
       }
     ],
     tips: [
@@ -376,9 +409,9 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
     steps: [
       {
         order: 1,
-        tool: 'audit',
+        tool: 'start_audit',
         parameters: { path: '.', analyzers: ['solid'] },
-        description: 'Run initial audit to see what violations you get with defaults'
+        description: 'Start initial background audit to see default violations'
       },
       {
         order: 2,
@@ -420,9 +453,9 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       },
       {
         order: 5,
-        tool: 'audit',
+        tool: 'start_audit',
         parameters: { path: '.', analyzers: ['solid'] },
-        description: 'Re-run audit to see reduced violations'
+        description: 'Start follow-up background audit to validate reduced violations'
       }
     ],
     tips: [
@@ -441,9 +474,9 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
     steps: [
       {
         order: 1,
-        tool: 'audit',
+        tool: 'start_audit',
         parameters: { path: '.', indexFunctions: true },
-        description: 'Ensure functions are indexed with dependency tracking'
+        description: 'Start background audit to ensure functions are indexed with dependency tracking'
       },
       {
         order: 2,
@@ -497,15 +530,15 @@ export function getWorkflowGuide(scenario?: string): WorkflowScenario | Record<s
 export function getWorkflowTips(): Record<string, string[]> {
   return {
     'general': [
-      'Always run audit with indexFunctions:true to enable search',
+      'Start audits explicitly with start_audit (no implicit long-running scans)',
       'Use audit_health for quick checks before detailed analysis',
       'Documentation analysis is now included by default in all audits',
       'Code maps are generated by default with paginated sections',
       'Combine natural language with operators in search queries',
       'React components are automatically detected in .tsx/.jsx files',
       'Improved TypeScript support with better type-only import detection',
-      'Audit results are paginated - use limit and offset parameters',
-      'Cached audit results can be accessed with auditId for fast pagination',
+      'Poll audit_status and use resultId once status is completed',
+      'Audit results are paginated - use audit_results with limit and offset',
       'Analyzer configs persist - set once, use everywhere',
       'Use set_analyzer_config to adjust tolerances for your architecture'
     ],
@@ -521,16 +554,17 @@ export function getWorkflowTips(): Record<string, string[]> {
       'Index is built during audit, no separate indexing needed',
       'Use specific paths in audit to analyze only changed code',
       'search_code is fast even on large codebases',
-      'find_definition is optimized for exact name lookup'
+      'find_definition is optimized for exact name lookup',
+      'For partitioned runs, workerCount scales shard execution across CPU cores',
+      'Use shardTimeoutMs and maxRetries to balance resilience vs. latency'
     ],
     'pagination': [
       'Default limit is 50 violations per request (max 100)',
       'Use offset parameter to get subsequent pages',
-      'First request returns an auditId in pagination info',
-      'Use the auditId for fast access to cached results',
-      'Example: audit(limit: 25) → then audit(auditId: "...", offset: 25)',
-      'Cached results expire after 24 hours',
-      'Set useCache: false to disable result caching'
+      'Run start_audit, then poll audit_status for completion',
+      'When completed, use audit_status.resultId with audit_results',
+      'Example: audit_results(resultId: "...", offset: 25, limit: 25)',
+      'Cached results expire after 24 hours'
     ],
     'analyzer-config': [
       'set_analyzer_config persists settings across all audits',

@@ -23,12 +23,13 @@ import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
+import { getAuditJobStatus, getAuditResultsPage, startAuditJob } from './mcpAuditJobs.js';
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createWriteStream, existsSync } from 'node:fs';
 import { CodeIndexDB } from './codeIndexDB.js';
-import { logMcpDebug, logMcpInfo, mcpDebugStderr } from './mcpDiagnostics.js';
+import { logMcpDebug, logMcpInfo, mcpDebugStderr, mcpTraceStderr } from './mcpDiagnostics.js';
 import { assertAuditPathExists, formatMcpToolErrorPayload } from './mcpToolErrors.js';
 
 // Set up file logging (only in development mode)
@@ -86,50 +87,8 @@ const tools: Tool[] = [
   {
     name: 'audit',
     description:
-      'Run a comprehensive code audit on files or directories, including React component analysis. Responses include pagination (total, hasMore, nextOffset, auditId). After a full run with useCache true, fetch more violations with the same auditId plus offset/limit only — no full re-audit.',
+      'Fetch paginated results for a completed audit by resultId (or auditId alias). This tool never starts a new audit.',
     parameters: [
-      {
-        name: 'path',
-        type: 'string',
-        required: false,
-        description: 'The file or directory path to audit (defaults to current directory)',
-        default: process.cwd(),
-      },
-      {
-        name: 'analyzers',
-        type: 'array',
-        required: false,
-        description: 'List of analyzers to run (solid, dry, documentation, react, data-access)',
-        default: ['solid', 'dry', 'documentation', 'react', 'data-access'],
-      },
-      {
-        name: 'minSeverity',
-        type: 'string',
-        required: false,
-        description: 'Minimum severity level to report',
-        default: 'warning',
-        enum: ['info', 'warning', 'critical'],
-      },
-      {
-        name: 'indexFunctions',
-        type: 'boolean',
-        required: false,
-        description: 'Automatically index functions during audit',
-        default: true,
-      },
-      {
-        name: 'analyzerConfigs',
-        type: 'object',
-        required: false,
-        description: 'Analyzer-specific configuration overrides (e.g., SOLID thresholds, DRY settings)',
-      },
-      {
-        name: 'generateCodeMap',
-        type: 'boolean',
-        required: false,
-        description: 'Generate and return a human-readable code map as part of the audit results',
-        default: true,
-      },
       {
         name: 'limit',
         type: 'number',
@@ -141,22 +100,185 @@ const tools: Tool[] = [
         name: 'offset',
         type: 'number',
         required: false,
-        description: 'Violation offset for pagination (default: 0). Use with auditId from a prior response to read cached pages only.',
+        description: 'Violation offset for pagination (default: 0).',
         default: 0,
+      },
+      {
+        name: 'resultId',
+        type: 'string',
+        required: false,
+        description: 'Result ID returned by audit_status when the background audit job completes.',
       },
       {
         name: 'auditId',
         type: 'string',
         required: false,
-        description:
-          'Return violations from a cached audit by ID (from pagination.auditId). When set and found, no full audit is run; use offset/limit for pages.',
+        description: 'Backward-compatible alias for resultId.',
+      },
+    ],
+  },
+  {
+    name: 'start_audit',
+    description:
+      'Start a background audit job. Returns immediately with a jobId. Poll audit_status until completed, then fetch pages with audit or audit_results.',
+    parameters: [
+      {
+        name: 'path',
+        type: 'string',
+        required: false,
+        description: 'File or directory path to audit (defaults to current directory).',
+        default: process.cwd(),
       },
       {
-        name: 'useCache',
+        name: 'analyzers',
+        type: 'array',
+        required: false,
+        description: 'Analyzers to run (default: solid, dry, documentation, react, data-access).',
+        default: ['solid', 'dry', 'documentation', 'react', 'data-access'],
+      },
+      {
+        name: 'minSeverity',
+        type: 'string',
+        required: false,
+        description: 'Minimum severity level to report.',
+        default: 'warning',
+        enum: ['info', 'warning', 'critical'],
+      },
+      {
+        name: 'indexFunctions',
         type: 'boolean',
         required: false,
-        description: 'Persist full results for pagination (default: true). If false, pagination.auditId may be null.',
+        description: 'Index functions during audit (default: true).',
         default: true,
+      },
+      {
+        name: 'analyzerConfigs',
+        type: 'object',
+        required: false,
+        description: 'Analyzer-specific configuration overrides.',
+      },
+      {
+        name: 'analyzerConcurrency',
+        type: 'number',
+        required: false,
+        description: 'Max analyzers to run in parallel (default: 1).',
+        default: 1,
+      },
+      {
+        name: 'partitionStrategy',
+        type: 'string',
+        required: false,
+        description: 'Partition mode: none | auto | top-level. auto shards when large source trees are detected.',
+        default: 'auto',
+        enum: ['none', 'auto', 'top-level'],
+      },
+      {
+        name: 'maxPartitions',
+        type: 'number',
+        required: false,
+        description: 'Maximum number of folder partitions for sharded audits (default: 4).',
+        default: 4,
+      },
+      {
+        name: 'partitionThresholdFiles',
+        type: 'number',
+        required: false,
+        description: 'Minimum discovered files before auto partitioning is enabled (default: 250).',
+        default: 250,
+      },
+      {
+        name: 'workerCount',
+        type: 'number',
+        required: false,
+        description: 'Number of worker processes for shard execution (default: min(4, CPU-1)).',
+      },
+      {
+        name: 'maxRetries',
+        type: 'number',
+        required: false,
+        description: 'Retry attempts per shard for retryable failures (default: 1).',
+        default: 1,
+      },
+      {
+        name: 'shardTimeoutMs',
+        type: 'number',
+        required: false,
+        description: 'Per-shard timeout in milliseconds (default: 180000).',
+        default: 180000,
+      },
+      {
+        name: 'retryBackoffMs',
+        type: 'number',
+        required: false,
+        description: 'Base retry backoff in milliseconds (default: 500).',
+        default: 500,
+      },
+      {
+        name: 'jobTimeoutMs',
+        type: 'number',
+        required: false,
+        description:
+          'Maximum wall time for the entire audit job (default 30m, env CODE_AUDITOR_JOB_TIMEOUT_MS, cap 4h). Aborts workers cooperatively then tears down.',
+      },
+      {
+        name: 'maxFilesPerRun',
+        type: 'number',
+        required: false,
+        description:
+          'Per worker chunk: if more files match than this, the worker finishes one chunk and the parent queues the rest on another worker (optional).',
+      },
+      {
+        name: 'shardSoftBudgetMs',
+        type: 'number',
+        required: false,
+        description:
+          'Per worker soft wall-clock budget; aborts in-process analysis cooperatively via AbortSignal so the parent can assign the next chunk to a fresh worker.',
+      },
+      {
+        name: 'generateCodeMap',
+        type: 'boolean',
+        required: false,
+        description: 'Generate code map artifacts during audit (default: false).',
+        default: false,
+      },
+    ],
+  },
+  {
+    name: 'audit_status',
+    description:
+      'Get current status for a previously started background audit job. Returns resultId when completed.',
+    parameters: [
+      {
+        name: 'jobId',
+        type: 'string',
+        required: true,
+        description: 'Job ID returned by start_audit.',
+      },
+    ],
+  },
+  {
+    name: 'audit_results',
+    description: 'Fetch paginated violations for a completed audit result by resultId.',
+    parameters: [
+      {
+        name: 'resultId',
+        type: 'string',
+        required: true,
+        description: 'Result ID returned by audit_status when status is completed.',
+      },
+      {
+        name: 'limit',
+        type: 'number',
+        required: false,
+        description: 'Maximum number of violations to return per page (default: 50, max: 100).',
+        default: 50,
+      },
+      {
+        name: 'offset',
+        type: 'number',
+        required: false,
+        description: 'Violation offset for pagination (default: 0).',
+        default: 0,
       },
     ],
   },
@@ -561,7 +683,7 @@ async function startMcpServer() {
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
-    mcpDebugStderr(chalk.blue('[DEBUG]'), 'ListTools', JSON.stringify(request, null, 2));
+    mcpTraceStderr(chalk.blue('[DEBUG]'), 'ListTools', JSON.stringify(request, null, 2));
     const response = {
       tools: tools.map(tool => ({
         name: tool.name,
@@ -581,12 +703,12 @@ async function startMcpServer() {
         },
       })),
     };
-    mcpDebugStderr(chalk.blue('[DEBUG]'), `ListTools → ${response.tools.length} tools`);
+    mcpTraceStderr(chalk.blue('[DEBUG]'), `ListTools → ${response.tools.length} tools`);
     return response;
   });
 
   server.setRequestHandler(InitializeRequestSchema, async (request) => {
-    mcpDebugStderr(chalk.blue('[DEBUG]'), 'initialize', JSON.stringify(request, null, 2));
+    mcpTraceStderr(chalk.blue('[DEBUG]'), 'initialize', JSON.stringify(request, null, 2));
     const response = {
       protocolVersion: '2024-11-05',
       capabilities: {
@@ -597,229 +719,52 @@ async function startMcpServer() {
         version: PACKAGE_VERSION,
       },
     };
-    mcpDebugStderr(chalk.blue('[DEBUG]'), 'initialize response', JSON.stringify(response, null, 2));
+    mcpTraceStderr(chalk.blue('[DEBUG]'), 'initialize response', JSON.stringify(response, null, 2));
     return response;
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    mcpDebugStderr(chalk.blue('[DEBUG]'), 'CallTool raw', JSON.stringify(request, null, 2));
+    mcpTraceStderr(chalk.blue('[DEBUG]'), 'CallTool raw', JSON.stringify(request, null, 2));
     const { name, arguments: args } = request.params;
-    mcpDebugStderr(chalk.blue('[DEBUG]'), `CallTool ${name}`, JSON.stringify(args, null, 2));
+    mcpTraceStderr(chalk.blue('[DEBUG]'), `CallTool ${name}`, JSON.stringify(args, null, 2));
 
     const toolStartedAt = Date.now();
     try {
-      logMcpDebug('tool', `call ${name}`, {
-        argKeys: args && typeof args === 'object' ? Object.keys(args as object) : [],
-        pathArg: (args as { path?: string })?.path,
-        cwd: process.cwd()
-      });
+      if (name !== 'audit_status') {
+        logMcpDebug('tool', `call ${name}`, {
+          argKeys: args && typeof args === 'object' ? Object.keys(args as object) : [],
+          pathArg: (args as { path?: string })?.path,
+          cwd: process.cwd()
+        });
+      }
       let result: any;
 
       switch (name) {
+        case 'start_audit': {
+          result = await startAuditJob(args, {
+            defaultAnalyzers: ['solid', 'dry', 'documentation', 'react', 'data-access'],
+            defaultMinSeverity: 'warning',
+            defaultGenerateCodeMap: false,
+          });
+          break;
+        }
+
+        case 'audit_status': {
+          const jobId = args.jobId as string | undefined;
+          if (!jobId) {
+            throw new Error('audit_status requires jobId');
+          }
+          result = getAuditJobStatus(jobId);
+          break;
+        }
+
+        case 'audit_results': {
+          result = await getAuditResultsPage(args);
+          break;
+        }
+
         case 'audit': {
-          const auditPath = path.resolve((args.path as string) || process.cwd());
-          const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
-          const generateCodeMap = (args.generateCodeMap as boolean) || false;
-          const limit = Math.min(Math.max(0, Number(args.limit)) || 50, 100);
-          const offset = Math.max(0, Number(args.offset) || 0);
-          const useCache = (args.useCache as boolean) !== false;
-          const providedAuditId = args.auditId as string | undefined;
-
-          let auditResult: any;
-          let auditId: string | undefined = providedAuditId;
-
-          const db = CodeIndexDB.getInstance();
-          await db.initialize();
-
-          if (providedAuditId) {
-            const cachedResult = await db.getAuditResults(providedAuditId);
-            if (cachedResult) {
-              auditResult = cachedResult;
-              mcpDebugStderr(chalk.blue('[INFO]'), `Using cached audit results: ${providedAuditId}`);
-            } else {
-              mcpDebugStderr(
-                chalk.yellow('[WARN]'),
-                `Cached audit not found: ${providedAuditId}, running new audit`
-              );
-            }
-          }
-
-          let isFile = false;
-          if (!auditResult) {
-            const pathCheck = await assertAuditPathExists(auditPath);
-            isFile = pathCheck.isFile;
-
-            const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
-
-            const analyzerConfigs = {
-              ...storedConfigs,
-              ...(args.analyzerConfigs as Record<string, any> || {})
-            };
-
-            const options: AuditRunnerOptions = {
-              projectRoot: isFile ? path.dirname(auditPath) : auditPath,
-              enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'documentation', 'react', 'data-access'],
-              minSeverity: ((args.minSeverity as string) || 'warning') as Severity,
-              verbose: false,
-              indexFunctions,
-              ...(isFile && { includePaths: [auditPath] }),
-              ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
-              progressCallback: (p) => {
-                if (
-                  p.phase === 'function-indexing' &&
-                  typeof p.current === 'number' &&
-                  typeof p.total === 'number' &&
-                  p.total > 0 &&
-                  p.current % 50 !== 0 &&
-                  p.current !== p.total
-                ) {
-                  return;
-                }
-                logMcpDebug('audit', p.message ?? p.phase ?? 'progress', {
-                  phase: p.phase,
-                  analyzer: p.analyzer,
-                  current: p.current,
-                  total: p.total
-                });
-              }
-            };
-
-            mcpDebugStderr(
-              chalk.blue('[DEBUG]'),
-              'audit runner options',
-              JSON.stringify(options, null, 2)
-            );
-            const runner = createAuditRunner(options);
-            auditResult = await runner.run();
-            mcpDebugStderr(chalk.blue('[DEBUG]'), 'audit summary', auditResult.summary);
-
-            const projectRootForStore = isFile ? path.dirname(auditPath) : auditPath;
-            if (useCache) {
-              auditId = await db.storeAuditResults(auditResult, projectRootForStore);
-              mcpDebugStderr(chalk.blue('[INFO]'), `Stored audit results with ID: ${auditId}`);
-            }
-          }
-
-          const mapBasePath =
-            auditResult.projectPath != null
-              ? path.resolve(String(auditResult.projectPath))
-              : auditPath;
-
-          // Handle function indexing if enabled and functions were collected
-          let indexingResult = null;
-          if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
-            try {
-              const syncStats = { added: 0, updated: 0, removed: 0 };
-              
-              // Sync each file's functions to handle additions, updates, and removals
-              for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
-                const fileStats = await syncFileIndex(filePath, functions as FunctionMetadata[]);
-                syncStats.added += fileStats.added;
-                syncStats.updated += fileStats.updated;
-                syncStats.removed += fileStats.removed;
-              }
-              
-              indexingResult = {
-                success: true,
-                registered: syncStats.added + syncStats.updated,
-                failed: 0,
-                syncStats
-              };
-              
-              mcpDebugStderr(
-                chalk.blue('[INFO]'),
-                `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`
-              );
-            } catch (error) {
-              console.error(chalk.yellow('[WARN]'), 'Failed to sync functions:', error);
-            }
-          }
-
-          // Generate code map if requested and functions were indexed
-          let codeMapResult = null;
-          if (generateCodeMap && indexingResult && indexingResult.success) {
-            try {
-              const mapGenerator = new CodeMapGenerator();
-              const mapOptions = {
-                includeComplexity: true,
-                includeDocumentation: true,
-                includeDependencies: true,
-                includeUsage: false,
-                groupByDirectory: true,
-                maxDepth: 10,
-                showUnusedImports: true,
-                minComplexity: 7,
-              };
-
-              // Generate documentation metrics
-              let documentation = undefined;
-              try {
-                // Use existing file discovery from audit result
-                const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
-
-                if (files.length > 0) {
-                  const docResult = await analyzeDocumentation(files);
-                  documentation = docResult.metrics;
-                }
-              } catch (docError) {
-                console.error(chalk.yellow('[WARN]'), 'Failed to analyze documentation:', docError);
-              }
-
-              // Use paginated code map generation
-              const paginatedResult = await mapGenerator.generatePaginatedCodeMap(mapBasePath, {
-                ...mapOptions,
-                includeDocumentation: !!documentation
-              });
-
-              codeMapResult = {
-                success: true,
-                mapId: paginatedResult.mapId,
-                summary: paginatedResult.summary,
-                quickPreview: paginatedResult.quickPreview,
-                sections: paginatedResult.summary.sectionsAvailable,
-                documentationCoverage: documentation?.coverageScore
-              };
-              
-              mcpDebugStderr(
-                chalk.blue('[INFO]'),
-                `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`
-              );
-            } catch (error) {
-              console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
-              codeMapResult = {
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to generate code map'
-              };
-            }
-          }
-
-          const allViolations = auditResult.violations || getAllViolations(auditResult);
-          const paginatedViolations = allViolations.slice(offset, offset + limit);
-
-          // Format for MCP
-          result = {
-            summary: {
-              totalViolations: auditResult.summary.totalViolations,
-              criticalIssues: auditResult.summary.criticalIssues,
-              warnings: auditResult.summary.warnings,
-              suggestions: auditResult.summary.suggestions,
-              filesAnalyzed: auditResult.metadata.filesAnalyzed,
-              executionTime: auditResult.metadata.auditDuration,
-              healthScore: calculateHealthScore(auditResult),
-            },
-            violations: paginatedViolations,
-            pagination: {
-              total: allViolations.length,
-              limit,
-              offset,
-              hasMore: offset + limit < allViolations.length,
-              nextOffset: offset + limit < allViolations.length ? offset + limit : null,
-              auditId: auditId ?? null,
-            },
-            recommendations: auditResult.recommendations,
-            ...(indexingResult && { functionIndexing: indexingResult }),
-            ...(codeMapResult && { codeMap: codeMapResult }),
-          };
+          result = await getAuditResultsPage(args);
           break;
         }
 
@@ -1365,7 +1310,7 @@ async function startMcpServer() {
           },
         ],
       };
-      mcpDebugStderr(
+      mcpTraceStderr(
         chalk.blue('[DEBUG]'),
         `Tool ${name} ok`,
         JSON.stringify(response, null, 2).substring(0, 500) + '...'
@@ -1374,10 +1319,12 @@ async function startMcpServer() {
     } catch (error) {
       console.error(chalk.red('[ERROR]'), `Tool ${name} execution failed:`, error);
       console.error(chalk.red('[ERROR]'), 'Error stack:', error instanceof Error ? error.stack : 'No stack trace');
-      logMcpDebug('tool', `call ${name} failed`, {
-        ms: Date.now() - toolStartedAt,
-        error: error instanceof Error ? error.message : String(error)
-      });
+      if (name !== 'audit_status') {
+        logMcpDebug('tool', `call ${name} failed`, {
+          ms: Date.now() - toolStartedAt,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
       return {
         content: [
           {
@@ -1388,7 +1335,9 @@ async function startMcpServer() {
         isError: true,
       };
     } finally {
-      logMcpDebug('tool', `call ${name} finished`, { ms: Date.now() - toolStartedAt });
+      if (name !== 'audit_status') {
+        logMcpDebug('tool', `call ${name} finished`, { ms: Date.now() - toolStartedAt });
+      }
     }
   });
 

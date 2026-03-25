@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-03-25
+
+### Added
+- **Whole-job time limit** — `start_audit` accepts `jobTimeoutMs` (default from env `CODE_AUDITOR_JOB_TIMEOUT_MS`, cap 4h). Aborts shard work via `AbortSignal`, sends cooperative `cancel-request` to workers, then tears down the pool.
+- **Cooperative worker cancel** — `cancel-request` aborts in-process analysis; runner checks `abortSignal` between analyzers, on analyzer progress, and during function indexing.
+- **File-chunk handoff** — Optional `maxFilesPerRun`: workers emit `worker-handoff` with `continuation` (`explicitFiles`); parent merges partial results and queues the next chunk (often on a fresh worker).
+- **Per-worker soft budget** — Optional `shardSoftBudgetMs` aborts a shard via `AbortSignal` so the parent can recycle the process (does not auto-split remaining files; use `maxFilesPerRun` for that).
+- **`explicitFiles` discovery** — Runner can analyze an explicit path list (used for handoff continuations).
+
+### Changed
+- **Worker IPC hygiene** — Forked workers use `stdio: ignore` for non-IPC fds (avoids MCP stdout corruption); shard timeout sends `cancel-request` before SIGTERM; pool completion uses empty queue + pending + running counts (supports dynamic handoff work).
+- **Process safety** — Background `runAuditJob` failures are caught so rejected promises cannot take down the MCP parent; worker pool replenishment on unexpected child exit.
+
+### Fixed
+- **Node ESM runtime** — `export type` re-exports for `AuditConfig` and `AuditProgress` / `AuditRunnerOptions` in config loader and audit runner (avoids “does not provide an export named …” when spawning workers or running benchmarks under `tsx`).
+
+## [2.5.0] - 2026-03-24
+
+### Added
+- **True worker-process shard execution** — Background audits now execute shard tasks in child processes using IPC (`run-audit-shard`, progress, result, error) instead of in-process deferred callbacks.
+- **Worker pool resilience controls** — `start_audit` accepts `workerCount`, `maxRetries`, `shardTimeoutMs`, and `retryBackoffMs` for parallelism/fault-tolerance tuning.
+- **Worker and merge coverage** — Added worker IPC tests (`auditWorker.spec.ts`) and merge/retry behavior tests in `mcpAuditJobs.spec.ts`.
+- **Benchmark harness** — Added `bench:workers` script (`src/scripts/benchmarkWorkers.ts`) for baseline single-worker vs partitioned worker comparisons.
+
+### Changed
+- **Deterministic shard merge semantics** — Analyzer result merging now de-duplicates duplicate violations by stable key while preserving analyzer ordering.
+- **Cross-platform process cleanup hardening** — Worker shutdown now uses safe termination with fallback kill behavior.
+
+## [2.4.0] - 2026-03-26
+
+### Added
+- **Top-level folder sharding for background audits** — `start_audit` now supports `partitionStrategy` (`none|auto|top-level`), `maxPartitions`, and `partitionThresholdFiles`. In `auto`, large codebases with source roots like `app`/`src` are split into partitions for parallel execution.
+- **Tests for new execution model** — Added partition planning tests (`mcpAuditJobs.spec.ts`) and job lifecycle state tests (`auditJobService.spec.ts`).
+
+### Changed
+- **Analyzer-aware partitioning** — Global analyzers (`dry`, `data-access`, `schema`) run once across full scope while partition-safe analyzers run concurrently per shard; results are merged deterministically.
+- **Parallel execution controls** — `analyzerConcurrency` now combines with partition sharding to speed up heavy runs while preserving stable analyzer ordering in output.
+- **MCP debug verbosity** — High-volume raw request/response dumps moved behind `CODE_AUDITOR_TRACE=1`; normal `CODE_AUDITOR_DEBUG=1` is quieter and suppresses repetitive `audit_status` call logs.
+
+## [2.3.0] - 2026-03-26
+
+### Added
+- **Background audit lifecycle tools** — New MCP tools: **`start_audit`** (enqueue and return `jobId`), **`audit_status`** (queued/running/completed/failed with `resultId`), and **`audit_results`** (paged reads by `resultId`).
+- **In-memory audit job service** — Tracks job timestamps, progress snapshots, terminal status, `resultId`, and errors for polling clients.
+- **Analyzer concurrency control** — `AuditRunnerOptions.analyzerConcurrency` enables bounded parallel analyzer execution.
+
+### Changed
+- **`audit` tool behavior** — Now fetch-only (paged result retrieval by `resultId` / `auditId` alias). It no longer starts new audits implicitly.
+
+## [2.2.3] - 2026-03-26
+
+### Fixed
+- **`audit` with `auditId`** — When loading a cached audit for pagination, the server no longer re-runs function indexing (`syncFileIndex` over the whole tree) or code-map generation on every page request. Violations were already read from the DB; those extra steps made “cache-only” paging slow. Responses include **`pagination.cachedPage: true`** when this fast path is used.
+
 ## [2.2.2] - 2026-03-25
 
 ### Fixed

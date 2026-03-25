@@ -1,6 +1,7 @@
 /**
  * MCP-safe diagnostics: always stderr (never stdout — stdio transport owns stdout).
- * - CODE_AUDITOR_DEBUG=1|true — verbose traces (logMcpDebug, mcpDebugStderr request/audit noise).
+ * - CODE_AUDITOR_DEBUG=1|true — normal debug diagnostics (milestones, lightweight detail).
+ * - CODE_AUDITOR_TRACE=1|true — very verbose request/response dumps (raw MCP payloads).
  * - CODE_AUDITOR_LOG_FILE=/path — append structured lines from logMcp/logMcpInfo.
  */
 import fs from 'node:fs';
@@ -8,6 +9,10 @@ import fs from 'node:fs';
 const debugEnabled =
   process.env.CODE_AUDITOR_DEBUG === '1' ||
   process.env.CODE_AUDITOR_DEBUG === 'true';
+
+const traceEnabled =
+  process.env.CODE_AUDITOR_TRACE === '1' ||
+  process.env.CODE_AUDITOR_TRACE === 'true';
 
 const logFilePath = process.env.CODE_AUDITOR_LOG_FILE?.trim();
 
@@ -58,5 +63,13 @@ export function isMcpDebugEnabled(): boolean {
  */
 export function mcpDebugStderr(...args: unknown[]): void {
   if (!debugEnabled) return;
+  console.error(...args);
+}
+
+/**
+ * Very noisy stderr diagnostics. Keep disabled unless actively debugging protocol payloads.
+ */
+export function mcpTraceStderr(...args: unknown[]): void {
+  if (!traceEnabled) return;
   console.error(...args);
 }

@@ -129,6 +129,29 @@ export interface AuditResult {
   };
 }
 
+/** Thrown when an in-process audit is stopped via AbortSignal (parent cancel or soft budget). */
+export class AuditAbortedError extends Error {
+  override readonly name = 'AuditAbortedError';
+  constructor(message = 'Audit aborted') {
+    super(message);
+  }
+}
+
+/**
+ * Thrown when a shard processed a file chunk and more files remain.
+ * Parent should queue a new worker task (e.g. with explicitFiles) to continue.
+ */
+export class AuditHandoffError extends Error {
+  override readonly name = 'AuditHandoffError';
+  readonly partialResult: AuditResult;
+  readonly remainingFiles: string[];
+  constructor(message: string, partialResult: AuditResult, remainingFiles: string[]) {
+    super(message);
+    this.partialResult = partialResult;
+    this.remainingFiles = remainingFiles;
+  }
+}
+
 export interface ComponentAnalysis {
   filePath: string;
   renderType: RenderType;
@@ -307,6 +330,18 @@ export interface AuditRunnerOptions extends AuditOptions {
   projectRoot?: string;
   analyzerConfigs?: Record<string, any>;
   indexFunctions?: boolean; // Whether to index functions during audit
+  analyzerConcurrency?: number; // Number of analyzers to run in parallel
+  /** Cooperative cancel (MCP parent or worker soft budget). Checked between analyzers and on progress. */
+  abortSignal?: AbortSignal;
+  /** Skip glob discovery; analyze exactly these absolute paths. */
+  explicitFiles?: string[];
+  /**
+   * If more files match than this limit, the runner completes one chunk and throws AuditHandoffError
+   * with partialResult and remainingFiles so another worker can continue.
+   */
+  maxFilesPerRun?: number;
+  /** Worker IPC only: soft wall-clock budget for a forked shard (not used by in-process runs). */
+  shardSoftBudgetMs?: number;
 }
 
 // Code Index Types

@@ -174,4 +174,4 @@ export function validateConfig(config: AuditConfig): string[] {
 }
 
 // Re-export for convenience
-export { AuditConfig } from '../types.js';
+export type { AuditConfig } from '../types.js';
