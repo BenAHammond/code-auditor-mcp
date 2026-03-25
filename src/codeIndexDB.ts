@@ -1978,10 +1978,13 @@ export class CodeIndexDB {
     };
     
     this.auditResultsCollection!.insert(auditRecord);
-    
+
     // Clean up expired results
     this.cleanupExpiredAudits();
-    
+
+    // Persist so resultId survives MCP restart (Loki autosave is off; many code paths never save otherwise).
+    this.db.saveDatabase();
+
     return auditId;
   }
 
