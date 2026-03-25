@@ -31,11 +31,10 @@ if (IS_DEV_MODE) {
   console.error(chalk.blue('[INFO]'), `Development mode: Logging to file: ${logFilePath}`);
 }
 
-// Save original console methods
-const originalConsoleLog = console.log;
+// Save original console.error (log is redirected to stderr; see below)
 const originalConsoleError = console.error;
 
-// Override console.log (with conditional file logging)
+// Override console.log — MCP uses stdout only for JSON-RPC; log() must never touch stdout.
 console.log = (...args: any[]) => {
   if (logStream) {
     const message = args.map(arg => 
@@ -44,7 +43,7 @@ console.log = (...args: any[]) => {
     const timestamp = new Date().toISOString();
     logStream.write(`[${timestamp}] [LOG] ${message}\n`);
   }
-  originalConsoleLog.apply(console, args);
+  originalConsoleError.apply(console, args);
 };
 
 // Override console.error (with conditional file logging)
