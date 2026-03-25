@@ -10,7 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema, InitializeRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { createAuditRunner } from './auditRunner.js';
-import type { Severity, AuditResult, AuditRunnerOptions, Violation } from './types.js';
+import type { Severity, AuditResult, AuditRunnerOptions, Violation, FunctionMetadata } from './types.js';
 
 import { 
   registerFunctions, 
@@ -85,7 +85,8 @@ const tools: Tool[] = [
   // Core Audit Tools
   {
     name: 'audit',
-    description: 'Run a comprehensive code audit on files or directories, including React component analysis',
+    description:
+      'Run a comprehensive code audit on files or directories, including React component analysis. Responses include pagination (total, hasMore, nextOffset, auditId). After a full run with useCache true, fetch more violations with the same auditId plus offset/limit only — no full re-audit.',
     parameters: [
       {
         name: 'path',
@@ -127,6 +128,34 @@ const tools: Tool[] = [
         type: 'boolean',
         required: false,
         description: 'Generate and return a human-readable code map as part of the audit results',
+        default: true,
+      },
+      {
+        name: 'limit',
+        type: 'number',
+        required: false,
+        description: 'Maximum number of violations to return per page (default: 50, max: 100)',
+        default: 50,
+      },
+      {
+        name: 'offset',
+        type: 'number',
+        required: false,
+        description: 'Violation offset for pagination (default: 0). Use with auditId from a prior response to read cached pages only.',
+        default: 0,
+      },
+      {
+        name: 'auditId',
+        type: 'string',
+        required: false,
+        description:
+          'Return violations from a cached audit by ID (from pagination.auditId). When set and found, no full audit is run; use offset/limit for pages.',
+      },
+      {
+        name: 'useCache',
+        type: 'boolean',
+        required: false,
+        description: 'Persist full results for pagination (default: true). If false, pagination.auditId may be null.',
         default: true,
       },
     ],
@@ -591,56 +620,90 @@ async function startMcpServer() {
           const auditPath = path.resolve((args.path as string) || process.cwd());
           const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
           const generateCodeMap = (args.generateCodeMap as boolean) || false;
-          
-          const { isFile } = await assertAuditPathExists(auditPath);
-          
-          // Get stored analyzer configs from database
+          const limit = Math.min(Math.max(0, Number(args.limit)) || 50, 100);
+          const offset = Math.max(0, Number(args.offset) || 0);
+          const useCache = (args.useCache as boolean) !== false;
+          const providedAuditId = args.auditId as string | undefined;
+
+          let auditResult: any;
+          let auditId: string | undefined = providedAuditId;
+
           const db = CodeIndexDB.getInstance();
           await db.initialize();
-          const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
-          
-          // Merge stored configs with any provided configs
-          const analyzerConfigs = {
-            ...storedConfigs,
-            ...(args.analyzerConfigs as Record<string, any> || {})
-          };
-          
-          const options: AuditRunnerOptions = {
-            projectRoot: isFile ? path.dirname(auditPath) : auditPath,
-            enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'documentation', 'react', 'data-access'],
-            minSeverity: ((args.minSeverity as string) || 'warning') as Severity,
-            verbose: false,
-            indexFunctions,
-            ...(isFile && { includePaths: [auditPath] }),
-            ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
-            progressCallback: (p) => {
-              if (
-                p.phase === 'function-indexing' &&
-                typeof p.current === 'number' &&
-                typeof p.total === 'number' &&
-                p.total > 0 &&
-                p.current % 50 !== 0 &&
-                p.current !== p.total
-              ) {
-                return;
-              }
-              logMcpDebug('audit', p.message ?? p.phase ?? 'progress', {
-                phase: p.phase,
-                analyzer: p.analyzer,
-                current: p.current,
-                total: p.total
-              });
-            }
-          };
 
-          mcpDebugStderr(
-            chalk.blue('[DEBUG]'),
-            'audit runner options',
-            JSON.stringify(options, null, 2)
-          );
-          const runner = createAuditRunner(options);
-          const auditResult = await runner.run();
-          mcpDebugStderr(chalk.blue('[DEBUG]'), 'audit summary', auditResult.summary);
+          if (providedAuditId) {
+            const cachedResult = await db.getAuditResults(providedAuditId);
+            if (cachedResult) {
+              auditResult = cachedResult;
+              mcpDebugStderr(chalk.blue('[INFO]'), `Using cached audit results: ${providedAuditId}`);
+            } else {
+              mcpDebugStderr(
+                chalk.yellow('[WARN]'),
+                `Cached audit not found: ${providedAuditId}, running new audit`
+              );
+            }
+          }
+
+          let isFile = false;
+          if (!auditResult) {
+            const pathCheck = await assertAuditPathExists(auditPath);
+            isFile = pathCheck.isFile;
+
+            const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+
+            const analyzerConfigs = {
+              ...storedConfigs,
+              ...(args.analyzerConfigs as Record<string, any> || {})
+            };
+
+            const options: AuditRunnerOptions = {
+              projectRoot: isFile ? path.dirname(auditPath) : auditPath,
+              enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'documentation', 'react', 'data-access'],
+              minSeverity: ((args.minSeverity as string) || 'warning') as Severity,
+              verbose: false,
+              indexFunctions,
+              ...(isFile && { includePaths: [auditPath] }),
+              ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
+              progressCallback: (p) => {
+                if (
+                  p.phase === 'function-indexing' &&
+                  typeof p.current === 'number' &&
+                  typeof p.total === 'number' &&
+                  p.total > 0 &&
+                  p.current % 50 !== 0 &&
+                  p.current !== p.total
+                ) {
+                  return;
+                }
+                logMcpDebug('audit', p.message ?? p.phase ?? 'progress', {
+                  phase: p.phase,
+                  analyzer: p.analyzer,
+                  current: p.current,
+                  total: p.total
+                });
+              }
+            };
+
+            mcpDebugStderr(
+              chalk.blue('[DEBUG]'),
+              'audit runner options',
+              JSON.stringify(options, null, 2)
+            );
+            const runner = createAuditRunner(options);
+            auditResult = await runner.run();
+            mcpDebugStderr(chalk.blue('[DEBUG]'), 'audit summary', auditResult.summary);
+
+            const projectRootForStore = isFile ? path.dirname(auditPath) : auditPath;
+            if (useCache) {
+              auditId = await db.storeAuditResults(auditResult, projectRootForStore);
+              mcpDebugStderr(chalk.blue('[INFO]'), `Stored audit results with ID: ${auditId}`);
+            }
+          }
+
+          const mapBasePath =
+            auditResult.projectPath != null
+              ? path.resolve(String(auditResult.projectPath))
+              : auditPath;
 
           // Handle function indexing if enabled and functions were collected
           let indexingResult = null;
@@ -650,7 +713,7 @@ async function startMcpServer() {
               
               // Sync each file's functions to handle additions, updates, and removals
               for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
-                const fileStats = await syncFileIndex(filePath, functions);
+                const fileStats = await syncFileIndex(filePath, functions as FunctionMetadata[]);
                 syncStats.added += fileStats.added;
                 syncStats.updated += fileStats.updated;
                 syncStats.removed += fileStats.removed;
@@ -703,7 +766,7 @@ async function startMcpServer() {
               }
 
               // Use paginated code map generation
-              const paginatedResult = await mapGenerator.generatePaginatedCodeMap(auditPath, {
+              const paginatedResult = await mapGenerator.generatePaginatedCodeMap(mapBasePath, {
                 ...mapOptions,
                 includeDocumentation: !!documentation
               });
@@ -730,6 +793,9 @@ async function startMcpServer() {
             }
           }
 
+          const allViolations = auditResult.violations || getAllViolations(auditResult);
+          const paginatedViolations = allViolations.slice(offset, offset + limit);
+
           // Format for MCP
           result = {
             summary: {
@@ -741,7 +807,15 @@ async function startMcpServer() {
               executionTime: auditResult.metadata.auditDuration,
               healthScore: calculateHealthScore(auditResult),
             },
-            violations: getAllViolations(auditResult).slice(0, 100), // Limit to first 100
+            violations: paginatedViolations,
+            pagination: {
+              total: allViolations.length,
+              limit,
+              offset,
+              hasMore: offset + limit < allViolations.length,
+              nextOffset: offset + limit < allViolations.length ? offset + limit : null,
+              auditId: auditId ?? null,
+            },
             recommendations: auditResult.recommendations,
             ...(indexingResult && { functionIndexing: indexingResult }),
             ...(codeMapResult && { codeMap: codeMapResult }),
@@ -806,7 +880,7 @@ async function startMcpServer() {
               
               // Sync each file's functions to handle additions, updates, and removals
               for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
-                const fileStats = await syncFileIndex(filePath, functions);
+                const fileStats = await syncFileIndex(filePath, functions as FunctionMetadata[]);
                 syncStats.added += fileStats.added;
                 syncStats.updated += fileStats.updated;
                 syncStats.removed += fileStats.removed;
