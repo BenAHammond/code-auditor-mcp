@@ -3,7 +3,7 @@
  * Extends the existing CodeIndexDB with multi-language capabilities
  */
 
-import Loki, { Collection } from 'lokijs';
+import { Collection } from 'lokijs';
 import * as FlexSearch from 'flexsearch';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -117,19 +117,30 @@ export class EnhancedCodeIndexDB extends CodeIndexDB {
   async initializeEnhanced(): Promise<void> {
     await this.initialize(); // Initialize base collections first
     
-    // Initialize cross-language collections
-    this.crossLanguageEntitiesCollection = this.getDatabase().addCollection('crossLanguageEntities', {
-      indices: ['id', 'name', 'language', 'type', 'file'],
-      unique: ['id']
-    });
+    this.crossLanguageEntitiesCollection =
+      this.db.getCollection('crossLanguageEntities') ||
+      this.db.addCollection('crossLanguageEntities', {
+        indices: ['id', 'name', 'language', 'type', 'file'],
+        unique: ['id']
+      });
 
-    this.crossReferencesCollection = this.getDatabase().addCollection('crossReferences', {
-      indices: ['sourceId', 'targetId', 'sourceLanguage', 'targetLanguage', 'type']
-    });
+    this.crossReferencesCollection =
+      this.db.getCollection('crossReferences') ||
+      this.db.addCollection('crossReferences', {
+        indices: [
+          'sourceId',
+          'targetId',
+          'sourceLanguage',
+          'targetLanguage',
+          'type'
+        ]
+      });
 
-    this.apiContractsCollection = this.getDatabase().addCollection('apiContracts', {
-      indices: ['entityId', 'version']
-    });
+    this.apiContractsCollection =
+      this.db.getCollection('apiContracts') ||
+      this.db.addCollection('apiContracts', {
+        indices: ['entityId', 'version']
+      });
 
     console.log('[EnhancedCodeIndexDB] Cross-language collections initialized');
   }
@@ -490,11 +501,26 @@ export class EnhancedCodeIndexDB extends CodeIndexDB {
   }
 
   /**
-   * Get access to the underlying database for advanced operations
+   * Also clears cross-language derived collections and their FlexSearch mirror when present.
    */
-  getDatabase(): Loki {
-    // Protected method to access the underlying database
-    return (this as any).db;
+  async clearIndex(): Promise<void> {
+    await super.clearIndex();
+    const ldb = this.db;
+    const names = [
+      'crossLanguageEntities',
+      'crossReferences',
+      'apiContracts'
+    ] as const;
+    for (const n of names) {
+      const c = ldb.getCollection(n);
+      if (c) {
+        c.clear();
+      }
+    }
+    if (this.crossLanguageSearchIndex) {
+      this.crossLanguageSearchIndex.clear();
+    }
+    ldb.saveDatabase();
   }
 }
 

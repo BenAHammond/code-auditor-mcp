@@ -2,22 +2,19 @@
 
 /**
  * MCP Server Entry Point - Switches between stdio and HTTP/UI modes
- * 
+ *
  * Usage:
  *   node mcp-index.js              # stdio mode (default)
  *   node mcp-index.js --ui         # HTTP/UI mode
  *   node mcp-index.js --stdio      # explicit stdio mode
+ *   node mcp-index.js --data-dir /abs/path   # persist index under that directory
+ *   node mcp-index.js --auto-index /project  # index-only harness (no MCP stdio); logs to stderr
  */
 
+import './applyDataDirEnv.js';
 import chalk from 'chalk';
 
-// Parse command line arguments
-const args = process.argv.slice(2);
-const uiMode = args.includes('--ui');
-const stdioMode = args.includes('--stdio');
-const helpMode = args.includes('--help') || args.includes('-h');
-
-if (helpMode) {
+function printHelp(): void {
   console.log(`
 ${chalk.blue('MCP Code Auditor Server')}
 
@@ -25,6 +22,8 @@ Usage:
   ${chalk.cyan('node mcp-index.js')}              # stdio mode (default)
   ${chalk.cyan('node mcp-index.js --ui')}         # HTTP/UI mode
   ${chalk.cyan('node mcp-index.js --stdio')}      # explicit stdio mode
+  ${chalk.cyan('node mcp-index.js --data-dir /path')}  # index DB at /path/index.db
+  ${chalk.cyan('node mcp-index.js --auto-index /project')}  # discover + index only (testing)
 
 Modes:
   ${chalk.yellow('stdio')}   - Standard MCP protocol over stdin/stdout (for Claude Desktop, VS Code)
@@ -34,15 +33,41 @@ Examples:
   ${chalk.gray('# For Claude Desktop')}
   node mcp-index.js
 
-  ${chalk.gray('# For interactive web dashboards')}
-  node mcp-index.js --ui
+  ${chalk.gray('# Index a repo without MCP (stderr logs; use CODE_AUDITOR_DEBUG=1 for verbose)')}
+  CODE_AUDITOR_DEBUG=1 node mcp-index.js --auto-index /path/to/repo
 
 Environment Variables:
   ${chalk.cyan('MCP_UI_PORT')}=3001              # Port for UI mode (default: 3001)
   ${chalk.cyan('MCP_MODE')}=stdio|ui             # Override mode detection
+  ${chalk.cyan('CODE_AUDITOR_DATA_DIR')}=/path   # Storage directory; index file is /path/index.db
+  ${chalk.cyan('CODE_AUDITOR_DEBUG')}=1          # Verbose mcpDiagnostics traces
+  ${chalk.cyan('CODE_AUDITOR_LOG_FILE')}=/path   # Append diagnostics lines to this file
 `);
+}
+
+// Parse command line arguments
+const args = process.argv.slice(2);
+const helpMode = args.includes('--help') || args.includes('-h');
+
+if (helpMode) {
+  printHelp();
   process.exit(0);
 }
+
+const autoIndexPos = args.findIndex((a) => a === '--auto-index');
+if (autoIndexPos >= 0) {
+  const projectPath = args[autoIndexPos + 1];
+  if (!projectPath || projectPath.startsWith('-')) {
+    console.error('Usage: node mcp-index.js --auto-index <project-root>');
+    process.exit(1);
+  }
+  const { runAutoIndex } = await import('./mcpAutoIndex.js');
+  await runAutoIndex(projectPath);
+  process.exit(0);
+}
+
+const uiMode = args.includes('--ui');
+const stdioMode = args.includes('--stdio');
 
 // Determine mode
 let mode: 'stdio' | 'ui';

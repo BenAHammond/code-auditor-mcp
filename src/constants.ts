@@ -2,6 +2,17 @@
  * Global constants for the code-auditor MCP server
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** Package version from package.json (works from src via tsx and from dist). */
+export const PACKAGE_VERSION = JSON.parse(
+  readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')
+).version as string;
+
 // Default port for the REST API server
 // Using 11437 to avoid conflicts with common development servers
 // Common ports to avoid: 3000 (React/Next.js), 8080 (Java), 5000 (Flask), 4200 (Angular), 8000 (Django)

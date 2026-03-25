@@ -26,6 +26,7 @@ import { SchemaParser } from './services/SchemaParser.js';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import chalk from 'chalk';
+import { assertAuditPathExists } from './mcpToolErrors.js';
 
 export interface ToolParameter {
   name: string;
@@ -526,9 +527,7 @@ export class ToolHandlers {
     const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
     const generateCodeMap = (args.generateCodeMap as boolean) !== false; // Default true
     
-    // Check if path is a file or directory
-    const stats = await fs.stat(auditPath).catch(() => null);
-    const isFile = stats?.isFile() || false;
+    const { isFile } = await assertAuditPathExists(auditPath);
     
     // Get stored analyzer configs from database
     const db = CodeIndexDB.getInstance();
@@ -684,6 +683,7 @@ export class ToolHandlers {
 
   static async handleAuditHealth(args: any): Promise<any> {
     const auditPath = path.resolve((args.path as string) || process.cwd());
+    await assertAuditPathExists(auditPath);
     const threshold = (args.threshold as number) || 70;
     const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
     const generateCodeMap = (args.generateCodeMap as boolean) !== false; // Default true

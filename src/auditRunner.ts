@@ -18,6 +18,7 @@ import { discoverFiles } from './utils/fileDiscovery.js';
 import { loadConfig } from './config/configLoader.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
+import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
 
 // Import analyzer definitions
 // Use compatibility layers for refactored analyzers
@@ -80,7 +81,13 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     
     // Discover files
     const files = await discoverProjectFiles(mergedOptions);
-    
+    const root = mergedOptions.projectRoot || process.cwd();
+    logMcpInfo('discovery', 'file discovery finished', {
+      projectRoot: path.resolve(root),
+      totalFiles: files.length,
+      indexFunctions: !!mergedOptions.indexFunctions
+    });
+
     // Collect functions if enabled
     let collectedFunctions: FunctionMetadata[] = [];
     const fileToFunctionsMap = new Map<string, FunctionMetadata[]>(); // Track functions per file for sync
@@ -98,8 +105,18 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         f.endsWith('.js') || f.endsWith('.jsx')
       );
       
+      logMcpInfo('function-indexing', 'extracting functions from script files', {
+        scriptFileCount: scriptFiles.length
+      });
+
       for (let i = 0; i < scriptFiles.length; i++) {
         try {
+          if (i > 0 && i % 50 === 0) {
+            logMcpInfo('function-indexing', 'progress', {
+              current: i,
+              total: scriptFiles.length
+            });
+          }
           const fileFunctions = await extractFunctionsFromFile(scriptFiles[i], {
             unusedImportsConfig: mergedOptions.unusedImportsConfig
           });
@@ -112,9 +129,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             total: scriptFiles.length,
             message: `Collected ${fileFunctions.length} items from ${scriptFiles[i]}`
           });
+          if (isMcpDebugEnabled()) {
+            logMcpDebug('function-indexing', scriptFiles[i], {
+              symbols: fileFunctions.length
+            });
+          }
         } catch (error) {
-          // Log error but continue with other files
-          console.warn(`Failed to extract functions from ${scriptFiles[i]}:`, error);
+          logMcpInfo('function-indexing', 'extract failed (continuing)', {
+            file: scriptFiles[i],
+            error: error instanceof Error ? error.message : String(error)
+          });
         }
       }
     }
@@ -122,14 +146,17 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Run analyzers
     const analyzerResults: Record<string, AnalyzerResult> = {};
     const enabledAnalyzers = getEnabledAnalyzers(mergedOptions, analyzerRegistry);
-    console.log('[DEBUG] Enabled analyzers:', enabledAnalyzers);
-    console.log('[DEBUG] Available analyzers in registry:', Object.keys(analyzerRegistry));
+    logMcpInfo('analysis', 'enabled analyzers', {
+      names: enabledAnalyzers,
+      fileCount: files.length
+    });
+    logMcpDebug('analysis', 'registry keys', { keys: Object.keys(analyzerRegistry) });
     
     for (const analyzerName of enabledAnalyzers) {
       const analyzer = analyzerRegistry[analyzerName];
-      console.log(`[DEBUG] Processing analyzer: ${analyzerName}, found: ${!!analyzer}`);
+      logMcpDebug('analysis', `starting analyzer ${analyzerName}`, { found: !!analyzer });
       if (!analyzer) {
-        console.warn(`Unknown analyzer: ${analyzerName}`);
+        logMcpInfo('analysis', `unknown analyzer skipped: ${analyzerName}`, {});
         continue;
       }
       
@@ -139,11 +166,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         message: `Running ${analyzerName} analyzer...`
       });
       
-      console.log(`[DEBUG] About to call ${analyzerName}.analyze()`);
-      console.log(`[DEBUG] Analyzer object:`, analyzer);
-      console.log(`[DEBUG] Analyzer.analyze type:`, typeof analyzer.analyze);
-      console.log(`[DEBUG] Files to analyze:`, files);
-      console.log(`[DEBUG] Config for analyzer:`, mergedOptions.analyzerConfigs?.[analyzerName] || {});
+      logMcpInfo('analysis', `running ${analyzerName}`, { fileCount: files.length });
       try {
         const result = await analyzer.analyze(
           files, 
@@ -157,9 +180,20 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               total: progress.total,
               message: `Analyzing ${progress.file}...`
             });
+            if (isMcpDebugEnabled() && progress.current && progress.total) {
+              if (progress.current % 20 === 0 || progress.current === progress.total) {
+                logMcpDebug('analysis', `${analyzerName} file progress`, {
+                  current: progress.current,
+                  total: progress.total,
+                  file: progress.file
+                });
+              }
+            }
           }
         );
-        console.log(`[DEBUG] ${analyzerName}.analyze() returned:`, result);
+        logMcpDebug('analysis', `${analyzerName} completed`, {
+          violations: result.violations?.length ?? 0
+        });
         analyzerResults[analyzerName] = result;
       } catch (error) {
         reportError(mergedOptions, error as Error, `${analyzerName} analyzer`);
@@ -237,7 +271,8 @@ function getEnabledAnalyzers(
   options: AuditRunnerOptions, 
   registry: Record<string, AnalyzerDefinition>
 ): string[] {
-  if (options.enabledAnalyzers && options.enabledAnalyzers.length > 0) {
+  // Explicit array (including empty = run no analyzers, e.g. index-only harness)
+  if (options.enabledAnalyzers !== undefined) {
     return options.enabledAnalyzers;
   }
   return Object.keys(registry);

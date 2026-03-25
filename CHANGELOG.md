@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-03-25
+
+### Added
+- **Documentation (docs site)** — Task management section on the marketing site (`How It Works`), expanded **`TOOLS-DOCUMENTATION.md`** with **`project_tasks`** (actions, `projectPath` default, persistence vs `sync_index` reset), workflow example, and best-practices notes.
+- **`project_tasks` default `projectPath`** — When omitted for `list` / `create`, defaults to `process.cwd()`; responses include `projectPathDefaulted` when applicable.
+
+### Changed
+- **MCP stderr logging** — High-volume debug traces (per-request dumps, audit progress, tool lifecycle) gated behind **`CODE_AUDITOR_DEBUG=1`** (`mcpDebugStderr`, `logMcpDebug`); quieter default startup line with tool count and version.
+- **Contextual tool errors** — `ContextualError` / `formatMcpToolErrorPayload` for storage and audit path failures with actionable `context` (errno, hints).
+- **Audit cache / pagination (standalone)** — `initialize()` before cached audit lookup; numeric `offset`/`limit`; `storeAuditResults` keeps canonical `auditId` after spread.
+
+### Fixed
+- **`applyDataDirEnv`** — Warns when `--data-dir` is missing a path (e.g. next token is another flag).
+
 ## [1.6.0] - 2024-12-21
 
 ### Added

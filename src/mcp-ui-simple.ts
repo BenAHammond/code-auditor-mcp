@@ -12,6 +12,7 @@ import cors from 'cors';
 import { randomUUID } from 'crypto';
 import { createUIResource } from '@mcp-ui/server';
 import { tools, uiTools, ToolHandlers } from './mcp-tools-shared.js';
+import { formatMcpToolErrorPayload } from './mcpToolErrors.js';
 import chalk from 'chalk';
 
 const app: express.Application = express();
@@ -66,7 +67,7 @@ app.post('/api/audit-dashboard', async (req, res) => {
     console.error(chalk.red('[API ERROR]'), 'Audit dashboard failed:', error);
     res.status(500).json({
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      ...formatMcpToolErrorPayload('audit_dashboard', error),
     });
   }
 });
@@ -113,7 +114,7 @@ app.post('/api/code-map-viewer', async (req, res) => {
     console.error(chalk.red('[API ERROR]'), 'Code map viewer failed:', error);
     res.status(500).json({
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      ...formatMcpToolErrorPayload('code_map_viewer', error),
     });
   }
 });

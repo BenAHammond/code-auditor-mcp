@@ -515,33 +515,32 @@ export class QueryParser {
    * @returns Array of tokens
    */
   private tokenize(text: string): string[] {
-    // Split on whitespace and common delimiters, but preserve hyphenated words
+    // Split on whitespace first; do not lowercase before camelCase detection or
+    // identifiers like getUserData become opaque to /(?=[A-Z])/ splitting.
     const tokens = text
-      .toLowerCase()
       .split(/\s+/)
-      .filter(token => token.length > 0);
-    
-    // Further split camelCase and snake_case
+      .filter((token) => token.length > 0);
+
     const expandedTokens: string[] = [];
-    
+
     for (const token of tokens) {
-      // Split camelCase
-      const camelCaseTokens = token.split(/(?=[A-Z])/).filter(t => t.length > 0);
+      const camelCaseTokens = token
+        .split(/(?=[A-Z])/)
+        .filter((t) => t.length > 0);
       if (camelCaseTokens.length > 1) {
-        expandedTokens.push(token); // Keep original
-        expandedTokens.push(...camelCaseTokens.map(t => t.toLowerCase()));
+        expandedTokens.push(token);
+        expandedTokens.push(...camelCaseTokens.map((t) => t.toLowerCase()));
       } else {
-        // Split snake_case
-        const snakeCaseTokens = token.split('_').filter(t => t.length > 0);
+        const snakeCaseTokens = token.split('_').filter((t) => t.length > 0);
         if (snakeCaseTokens.length > 1) {
-          expandedTokens.push(token); // Keep original
+          expandedTokens.push(token.toLowerCase());
           expandedTokens.push(...snakeCaseTokens);
         } else {
-          expandedTokens.push(token);
+          expandedTokens.push(token.toLowerCase());
         }
       }
     }
-    
+
     return [...new Set(expandedTokens)];
   }
 

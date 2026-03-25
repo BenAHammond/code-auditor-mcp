@@ -57,6 +57,9 @@ You: "Set SOLID analyzer to allow 3 responsibilities for components"
 Claude: Configuration saved! All future audits will use this setting.
 ```
 
+### 📋 Project task queue (MCP)
+Use the **`project_tasks`** tool to keep a per-project task list in the local database (titles, status, priorities, due dates, blockers, related files/symbols, and more). **Tasks survive `sync_index` reset**: clearing the analysis index removes indexed functions, cached audits, code maps, and schema overlays so you do not keep “ghost” references to deleted code—it does **not** delete your task list or analyzer configs.
+
 ## Real Examples
 
 ### Example 1: Finding Authentication Patterns
@@ -89,23 +92,58 @@ Claude: Found 4 similar components:
 
 ## Installation Options
 
-### Global Install
+### Published package (npm / pnpm / yarn)
 ```bash
 npm install -g code-auditor-mcp
+# or: pnpm add -g code-auditor-mcp
 code-audit  # Run analysis
 ```
 
-### Project Install
+### Project install
 ```bash
-npm install --save-dev code-auditor
+npm install --save-dev code-auditor-mcp
 npx code-audit
 ```
+
+### Developing from this repository
+Requires **Node.js 18+**. From the `app/` directory:
+
+```bash
+pnpm install
+pnpm run build
+pnpm test
+```
+
+The package manager in use is **pnpm** (see `packageManager` in `package.json`). Use `pnpm run test:parity` only if you need the legacy vs universal analyzer parity suite.
 
 ### CI/CD Integration
 ```yaml
 # GitHub Actions
 - name: Code Audit
   run: npx code-audit --fail-on-critical
+```
+
+### MCP server: where the index is stored
+
+The Loki index file defaults to **`<current working directory>/.code-index/index.db`**. If your MCP host runs with an unexpected or shared `cwd`, point at a dedicated folder:
+
+- **Environment variable** `CODE_AUDITOR_DATA_DIR` — directory to use as the storage root (absolute or relative to the process cwd when the server starts). The database file is **`<resolved>/index.db`** (no extra `.code-index` segment).
+- **CLI** — `node dist/mcp-index.js --data-dir /path/to/data` (equivalent to setting the env var). The published binary `code-auditor-mcp` also accepts `--data-dir` because it loads the same bootstrap.
+
+Example **Cursor** `.cursor/mcp.json` fragment:
+
+```json
+{
+  "mcpServers": {
+    "code-auditor": {
+      "command": "node",
+      "args": ["/absolute/path/to/code-auditor/app/dist/mcp-index.js", "--stdio"],
+      "env": {
+        "CODE_AUDITOR_DATA_DIR": "/Users/you/Library/Application Support/code-auditor"
+      }
+    }
+  }
+}
 ```
 
 ## Key Commands

@@ -4,16 +4,13 @@
 // All log messages must go to stderr to avoid interfering with MCP protocol
 
 import chalk from 'chalk';
-console.error(chalk.blue('[INFO]'), 'Loading modules...');
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, InitializeRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-console.error(chalk.blue('[INFO]'), 'MCP SDK loaded');
 
 import { createAuditRunner } from './auditRunner.js';
 import type { Severity, AuditResult, AuditRunnerOptions, Violation } from './types.js';
-console.error(chalk.blue('[INFO]'), 'Audit runner loaded');
 
 import { 
   registerFunctions, 
@@ -25,14 +22,14 @@ import {
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
-import { DEFAULT_SERVER_URL, IS_DEV_MODE } from './constants.js';
-console.error(chalk.blue('[INFO]'), 'Code index service loaded');
+import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
 
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createWriteStream, existsSync } from 'node:fs';
 import { CodeIndexDB } from './codeIndexDB.js';
-console.error(chalk.blue('[INFO]'), 'All modules loaded successfully');
+import { logMcpDebug, logMcpInfo, mcpDebugStderr } from './mcpDiagnostics.js';
+import { assertAuditPathExists, formatMcpToolErrorPayload } from './mcpToolErrors.js';
 
 // Set up file logging (only in development mode)
 let logStream: any = null;
@@ -229,13 +226,15 @@ const tools: Tool[] = [
   },
   {
     name: 'sync_index',
-    description: 'Synchronize, cleanup, or reset the code index',
+    description:
+      'Synchronize, cleanup, or reset analysis-derived data (indexed functions, FlexSearch, cached audits, code maps, schema overlays). Project tasks, analyzer configs, and whitelist entries are preserved on reset.',
     parameters: [
       {
         name: 'mode',
         type: 'string',
         required: false,
-        description: 'Operation mode: sync (update), cleanup (remove stale), or reset (clear all)',
+        description:
+          'sync: update index from files; cleanup: remove index rows for deleted files; reset: clear all analysis-derived data (not tasks/config/whitelist)',
         default: 'sync',
         enum: ['sync', 'cleanup', 'reset'],
       },
@@ -375,17 +374,150 @@ const tools: Tool[] = [
       },
     ],
   },
+  {
+    name: 'project_tasks',
+    description:
+      'Manage a persistent per-project task queue. Tasks and analyzer configs survive sync_index reset; reset clears function index, cached audits, code maps, and schema overlays (no ghost code references). Use delete to remove a task.',
+    parameters: [
+      {
+        name: 'action',
+        type: 'string',
+        required: true,
+        description:
+          'list | create | get | update | delete. list/create use projectPath or default to process.cwd(); create also needs title; get/update/delete need taskId; update needs patch object.',
+        enum: ['list', 'create', 'get', 'update', 'delete'],
+      },
+      {
+        name: 'projectPath',
+        type: 'string',
+        required: false,
+        description:
+          'Project root (resolved). Omit to use the MCP server working directory (same default idea as audit path); response includes projectPathDefaulted when omitted.',
+      },
+      {
+        name: 'taskId',
+        type: 'string',
+        required: false,
+        description: 'Stable task id (UUID). Required for get, update, delete.',
+      },
+      {
+        name: 'title',
+        type: 'string',
+        required: false,
+        description: 'Task title. Required for create.',
+      },
+      {
+        name: 'description',
+        type: 'string',
+        required: false,
+        description: 'Longer description / notes.',
+      },
+      {
+        name: 'status',
+        type: 'string',
+        required: false,
+        description:
+          'pending | in_progress | blocked | done | cancelled. Filter for list; initial status for create; can be set via update patch.',
+        enum: ['pending', 'in_progress', 'blocked', 'done', 'cancelled'],
+      },
+      {
+        name: 'priority',
+        type: 'string',
+        required: false,
+        description: 'Optional priority for create/update patch.',
+        enum: ['low', 'medium', 'high'],
+      },
+      {
+        name: 'labels',
+        type: 'array',
+        required: false,
+        description: 'String tags (e.g. ["audit","refactor"]).',
+      },
+      {
+        name: 'metadata',
+        type: 'object',
+        required: false,
+        description:
+          'Arbitrary JSON object: related file paths, links, audit IDs, etc.',
+      },
+      {
+        name: 'parentTaskId',
+        type: 'string',
+        required: false,
+        description: 'Optional parent task for subtasks.',
+      },
+      {
+        name: 'source',
+        type: 'string',
+        required: false,
+        description:
+          'manual | audit | mcp. Filter for list; provenance for create; can be set via update patch.',
+        enum: ['manual', 'audit', 'mcp'],
+      },
+      {
+        name: 'blockedBy',
+        type: 'array',
+        required: false,
+        description: 'Task IDs this item is blocked by (waiting-on).',
+      },
+      {
+        name: 'dueAt',
+        type: 'string',
+        required: false,
+        description: 'ISO 8601 due datetime for create; omit or null in patch to clear.',
+      },
+      {
+        name: 'sortOrder',
+        type: 'number',
+        required: false,
+        description: 'Lower numbers sort first within a project (default 0).',
+      },
+      {
+        name: 'relatedFiles',
+        type: 'array',
+        required: false,
+        description: 'Repo-relative or absolute file paths tied to the task.',
+      },
+      {
+        name: 'relatedSymbols',
+        type: 'array',
+        required: false,
+        description: 'Function, class, or component names for cross-linking.',
+      },
+      {
+        name: 'patch',
+        type: 'object',
+        required: false,
+        description:
+          'For update: partial fields (title, description, status, priority, labels, metadata, parentTaskId, source, blockedBy, dueAt, sortOrder, relatedFiles, relatedSymbols).',
+      },
+      {
+        name: 'limit',
+        type: 'number',
+        required: false,
+        description: 'Max tasks to return for list (default 500, max 1000).',
+      },
+    ],
+  },
 ];
 
 async function startMcpServer() {
-  console.error(chalk.blue('[INFO]'), 'Starting Code Auditor MCP Server...');
-  console.error(chalk.blue('[DEBUG]'), `Process PID: ${process.pid}`);
-  console.error(chalk.blue('[DEBUG]'), `Node version: ${process.version}`);
-  console.error(chalk.blue('[DEBUG]'), `Working directory: ${process.cwd()}`);
-  
+  logMcpInfo('startup', `code-auditor-mcp ${PACKAGE_VERSION} (stdio)`, {
+    pid: process.pid,
+    cwd: process.cwd(),
+    dataDir: process.env.CODE_AUDITOR_DATA_DIR ?? '(default)',
+    debug: process.env.CODE_AUDITOR_DEBUG ?? '0',
+    logFile: process.env.CODE_AUDITOR_LOG_FILE ?? '(none)'
+  });
+  mcpDebugStderr(
+    chalk.blue('[DEBUG]'),
+    `Node ${process.version} · cwd ${process.cwd()}`
+  );
+
   const server = new Server(
     {
       name: 'code-auditor',
+      version: PACKAGE_VERSION,
     },
     {
       capabilities: {
@@ -393,9 +525,6 @@ async function startMcpServer() {
       },
     }
   );
-  
-  console.error(chalk.blue('[INFO]'), 'Server instance created');
-  console.error(chalk.blue('[DEBUG]'), 'Server capabilities:', JSON.stringify({ tools: {} }));
 
   // Add error handler
   server.onerror = (error) => {
@@ -403,13 +532,8 @@ async function startMcpServer() {
     console.error(chalk.red('[ERROR]'), 'Error stack:', error.stack);
   };
 
-  // Handle tool listing
-  console.error(chalk.blue('[INFO]'), 'Setting up request handlers...');
-  
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
-    console.error(chalk.blue('[DEBUG]'), 'Received ListTools request');
-    console.error(chalk.blue('[DEBUG]'), 'Request:', JSON.stringify(request, null, 2));
-    console.error(chalk.blue('[DEBUG]'), 'Handling ListTools request');
+    mcpDebugStderr(chalk.blue('[DEBUG]'), 'ListTools', JSON.stringify(request, null, 2));
     const response = {
       tools: tools.map(tool => ({
         name: tool.name,
@@ -429,17 +553,12 @@ async function startMcpServer() {
         },
       })),
     };
-    console.error(chalk.blue('[DEBUG]'), `Returning ${response.tools.length} tools`);
-    console.error(chalk.blue('[DEBUG]'), 'ListTools response:', JSON.stringify(response, null, 2));
+    mcpDebugStderr(chalk.blue('[DEBUG]'), `ListTools → ${response.tools.length} tools`);
     return response;
   });
-  
-  console.error(chalk.blue('[INFO]'), `Registered ${tools.length} tools`);
-  
-  // Add handler for initialize request
+
   server.setRequestHandler(InitializeRequestSchema, async (request) => {
-    console.error(chalk.blue('[DEBUG]'), 'Received initialize request');
-    console.error(chalk.blue('[DEBUG]'), 'Request:', JSON.stringify(request, null, 2));
+    mcpDebugStderr(chalk.blue('[DEBUG]'), 'initialize', JSON.stringify(request, null, 2));
     const response = {
       protocolVersion: '2024-11-05',
       capabilities: {
@@ -447,24 +566,25 @@ async function startMcpServer() {
       },
       serverInfo: {
         name: 'code-auditor',
-        version: '1.0.0',
+        version: PACKAGE_VERSION,
       },
     };
-    console.error(chalk.blue('[DEBUG]'), 'Initialize response:', JSON.stringify(response, null, 2));
+    mcpDebugStderr(chalk.blue('[DEBUG]'), 'initialize response', JSON.stringify(response, null, 2));
     return response;
   });
 
-  // Handle tool execution
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    console.error(chalk.blue('[DEBUG]'), 'Received CallTool request');
-    console.error(chalk.blue('[DEBUG]'), 'Request:', JSON.stringify(request, null, 2));
+    mcpDebugStderr(chalk.blue('[DEBUG]'), 'CallTool raw', JSON.stringify(request, null, 2));
     const { name, arguments: args } = request.params;
-    console.error(chalk.blue('[DEBUG]'), `Tool name: ${name}`);
-    console.error(chalk.blue('[DEBUG]'), `Tool arguments:`, JSON.stringify(args, null, 2));
-    console.error(chalk.blue('[DEBUG]'), `Handling CallTool request for: ${name}`);
+    mcpDebugStderr(chalk.blue('[DEBUG]'), `CallTool ${name}`, JSON.stringify(args, null, 2));
 
+    const toolStartedAt = Date.now();
     try {
-      console.error(chalk.blue('[DEBUG]'), `Starting tool execution for: ${name}`);
+      logMcpDebug('tool', `call ${name}`, {
+        argKeys: args && typeof args === 'object' ? Object.keys(args as object) : [],
+        pathArg: (args as { path?: string })?.path,
+        cwd: process.cwd()
+      });
       let result: any;
 
       switch (name) {
@@ -473,9 +593,7 @@ async function startMcpServer() {
           const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
           const generateCodeMap = (args.generateCodeMap as boolean) || false;
           
-          // Check if path is a file or directory
-          const stats = await fs.stat(auditPath).catch(() => null);
-          const isFile = stats?.isFile() || false;
+          const { isFile } = await assertAuditPathExists(auditPath);
           
           // Get stored analyzer configs from database
           const db = CodeIndexDB.getInstance();
@@ -496,13 +614,34 @@ async function startMcpServer() {
             indexFunctions,
             ...(isFile && { includePaths: [auditPath] }),
             ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
+            progressCallback: (p) => {
+              if (
+                p.phase === 'function-indexing' &&
+                typeof p.current === 'number' &&
+                typeof p.total === 'number' &&
+                p.total > 0 &&
+                p.current % 50 !== 0 &&
+                p.current !== p.total
+              ) {
+                return;
+              }
+              logMcpDebug('audit', p.message ?? p.phase ?? 'progress', {
+                phase: p.phase,
+                analyzer: p.analyzer,
+                current: p.current,
+                total: p.total
+              });
+            }
           };
 
-          console.error(chalk.blue('[DEBUG]'), 'Creating audit runner with options:', JSON.stringify(options, null, 2));
+          mcpDebugStderr(
+            chalk.blue('[DEBUG]'),
+            'audit runner options',
+            JSON.stringify(options, null, 2)
+          );
           const runner = createAuditRunner(options);
-          console.error(chalk.blue('[DEBUG]'), 'About to run audit...');
           const auditResult = await runner.run();
-          console.error(chalk.blue('[DEBUG]'), 'Audit completed, result summary:', auditResult.summary);
+          mcpDebugStderr(chalk.blue('[DEBUG]'), 'audit summary', auditResult.summary);
 
           // Handle function indexing if enabled and functions were collected
           let indexingResult = null;
@@ -525,7 +664,10 @@ async function startMcpServer() {
                 syncStats
               };
               
-              console.error(chalk.blue('[INFO]'), `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`);
+              mcpDebugStderr(
+                chalk.blue('[INFO]'),
+                `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`
+              );
             } catch (error) {
               console.error(chalk.yellow('[WARN]'), 'Failed to sync functions:', error);
             }
@@ -576,7 +718,10 @@ async function startMcpServer() {
                 documentationCoverage: documentation?.coverageScore
               };
               
-              console.error(chalk.blue('[INFO]'), `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`);
+              mcpDebugStderr(
+                chalk.blue('[INFO]'),
+                `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`
+              );
             } catch (error) {
               console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
               codeMapResult = {
@@ -608,6 +753,7 @@ async function startMcpServer() {
 
         case 'audit_health': {
           const auditPath = path.resolve((args.path as string) || process.cwd());
+          await assertAuditPathExists(auditPath);
           const threshold = (args.threshold as number) || 70;
           const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
           const generateCodeMap = (args.generateCodeMap as boolean) !== false; // Default true
@@ -630,6 +776,24 @@ async function startMcpServer() {
             verbose: false,
             indexFunctions, // Pass the flag to the runner
             ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
+            progressCallback: (p) => {
+              if (
+                p.phase === 'function-indexing' &&
+                typeof p.current === 'number' &&
+                typeof p.total === 'number' &&
+                p.total > 0 &&
+                p.current % 50 !== 0 &&
+                p.current !== p.total
+              ) {
+                return;
+              }
+              logMcpDebug('audit_health', p.message ?? p.phase ?? 'progress', {
+                phase: p.phase,
+                analyzer: p.analyzer,
+                current: p.current,
+                total: p.total
+              });
+            }
           });
 
           const auditResult = await runner.run();
@@ -656,7 +820,10 @@ async function startMcpServer() {
                 syncStats
               };
               
-              console.error(chalk.blue('[INFO]'), `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`);
+              mcpDebugStderr(
+                chalk.blue('[INFO]'),
+                `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`
+              );
             } catch (error) {
               console.error(chalk.yellow('[WARN]'), 'Failed to sync functions:', error);
             }
@@ -707,7 +874,10 @@ async function startMcpServer() {
                 documentationCoverage: documentation?.coverageScore
               };
               
-              console.error(chalk.blue('[INFO]'), `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`);
+              mcpDebugStderr(
+                chalk.blue('[INFO]'),
+                `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`
+              );
             } catch (error) {
               console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
               codeMapResult = {
@@ -893,7 +1063,8 @@ async function startMcpServer() {
               result = {
                 mode: 'reset',
                 success: true,
-                message: 'Index cleared successfully'
+                message:
+                  'Analysis-derived data cleared (functions, search index, cached audits, code maps, schemas). Project tasks, whitelist, and analyzer configs were preserved.'
               };
               break;
             }
@@ -1102,6 +1273,12 @@ async function startMcpServer() {
           }
           break;
         }
+
+        case 'project_tasks': {
+          const { handleProjectTasks } = await import('./mcp-tools/projectTasks.js');
+          result = await handleProjectTasks((args || {}) as Record<string, unknown>);
+          break;
+        }
         
         default:
           throw new Error(`Unknown tool: ${name}`);
@@ -1115,31 +1292,34 @@ async function startMcpServer() {
           },
         ],
       };
-      console.error(chalk.blue('[DEBUG]'), `Tool ${name} executed successfully`);
-      console.error(chalk.blue('[DEBUG]'), 'CallTool response:', JSON.stringify(response, null, 2).substring(0, 500) + '...');
+      mcpDebugStderr(
+        chalk.blue('[DEBUG]'),
+        `Tool ${name} ok`,
+        JSON.stringify(response, null, 2).substring(0, 500) + '...'
+      );
       return response;
     } catch (error) {
       console.error(chalk.red('[ERROR]'), `Tool ${name} execution failed:`, error);
       console.error(chalk.red('[ERROR]'), 'Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+      logMcpDebug('tool', `call ${name} failed`, {
+        ms: Date.now() - toolStartedAt,
+        error: error instanceof Error ? error.message : String(error)
+      });
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({
-              error: error instanceof Error ? error.message : 'Unknown error',
-              tool: name,
-            }),
+            text: JSON.stringify(formatMcpToolErrorPayload(name, error), null, 2),
           },
         ],
         isError: true,
       };
+    } finally {
+      logMcpDebug('tool', `call ${name} finished`, { ms: Date.now() - toolStartedAt });
     }
   });
 
-  console.error(chalk.blue('[INFO]'), 'Request handlers configured');
-  
   const transport = new StdioServerTransport();
-  console.error(chalk.blue('[INFO]'), 'Creating stdio transport...');
   
   // Add transport event handlers if available
   if (transport.onclose) {
@@ -1154,17 +1334,14 @@ async function startMcpServer() {
     };
   }
   
-  console.error(chalk.blue('[DEBUG]'), 'Connecting server to transport...');
   await server.connect(transport);
-  console.error(chalk.blue('[DEBUG]'), 'Server connected to transport');
 
   console.error(chalk.green('✓ Code Auditor MCP Server started'));
-  console.error(chalk.gray('Listening on stdio...'));
-  console.error(chalk.blue('[DEBUG]'), 'Server state after initialization:', {
+  console.error(chalk.gray(`Listening on stdio · ${tools.length} tools · ${PACKAGE_VERSION}`));
+  mcpDebugStderr(chalk.blue('[DEBUG]'), 'Server ready', {
     name: 'code-auditor',
     transport: 'stdio',
-    handlers: ['ListTools', 'CallTool', 'initialize'],
-    toolCount: tools.length,
+    toolCount: tools.length
   });
 }
 
@@ -1271,8 +1448,6 @@ process.stdout.on('error', (error) => {
   console.error(chalk.red('[ERROR]'), 'stdout error:', error);
 });
 
-// Start server
-console.error(chalk.blue('[INFO]'), 'Initializing server...');
 startMcpServer().catch(error => {
   console.error(chalk.red('[ERROR]'), 'Failed to start MCP server:', error);
   console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);

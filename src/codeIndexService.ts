@@ -34,29 +34,20 @@ export class SearchError extends CodeIndexError {
   }
 }
 
-// Database instance storage
-let dbInstance: CodeIndexDB | null = null;
-
 /**
- * Initialize database with schema
+ * Initialize database with schema.
+ * Default (no path): same on-disk singleton as CodeIndexDB.getInstance() / MCP.
+ * Explicit file path: separate DB instance (tests or advanced use).
  */
 export async function initializeCodeIndex(dbPath?: string): Promise<CodeIndexDB> {
   try {
-    // Use in-memory database by default
-    if (!dbPath) {
-      dbPath = ':memory:';
+    if (dbPath && dbPath !== ':memory:') {
+      const db = new CodeIndexDB(path.resolve(dbPath));
+      await db.initialize();
+      return db;
     }
-    
-    // Use path as-is for in-memory, resolve for file paths
-    const finalPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
-    
-    // Create and initialize database
-    const db = new CodeIndexDB(finalPath);
+    const db = CodeIndexDB.getInstance();
     await db.initialize();
-    
-    // Store instance for reuse
-    dbInstance = db;
-    
     return db;
   } catch (error) {
     throw new DatabaseError(`Failed to initialize code index: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -64,13 +55,11 @@ export async function initializeCodeIndex(dbPath?: string): Promise<CodeIndexDB>
 }
 
 /**
- * Get or create database instance
+ * Primary entry: persisted singleton (or explicit path via initializeCodeIndex elsewhere).
+ * Aligns search/sync/register with MCP's CodeIndexDB.getInstance() — previously defaulted to :memory:.
  */
 export async function getDatabase(): Promise<CodeIndexDB> {
-  if (!dbInstance) {
-    dbInstance = await initializeCodeIndex();
-  }
-  return dbInstance;
+  return initializeCodeIndex();
 }
 
 /**
@@ -215,7 +204,8 @@ export async function getIndexStats(): Promise<IndexStats> {
 }
 
 /**
- * Clear the entire index
+ * Clear analysis-derived index data (functions, search, audits, code maps, schemas).
+ * Does not remove project tasks, analyzer configs, or whitelist entries.
  */
 export async function clearIndex(): Promise<void> {
   const db = await getDatabase();
@@ -231,10 +221,7 @@ export async function clearIndex(): Promise<void> {
  * Close the database connection
  */
 export async function closeDatabase(): Promise<void> {
-  if (dbInstance) {
-    await dbInstance.close();
-    dbInstance = null;
-  }
+  await CodeIndexDB.getInstance().close();
 }
 
 /**

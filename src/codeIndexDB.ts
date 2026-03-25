@@ -7,6 +7,14 @@ import Loki, { Collection } from 'lokijs';
 import * as FlexSearch from 'flexsearch';
 import { promises as fs } from 'fs';
 import path from 'path';
+import type {
+  CreateProjectTaskInput,
+  ProjectTask,
+  ProjectTaskDocument,
+  ProjectTaskSource,
+  ProjectTaskStatus
+} from './types/projectTask.js';
+import { ProjectTaskRepository } from './services/ProjectTaskRepository.js';
 import { 
   EnhancedFunctionMetadata, 
   FunctionMetadata, 
@@ -19,6 +27,8 @@ import {
   SchemaUsage
 } from './types.js';
 import { QueryParser } from './search/QueryParser.js';
+import { getPersistedStorageRoot, resolvePersistedIndexPath } from './dataPaths.js';
+import { ContextualError, getErrnoCode } from './mcpToolErrors.js';
 import {
   WhitelistEntry,
   WhitelistType,
@@ -36,7 +46,8 @@ interface FunctionDocument extends EnhancedFunctionMetadata {
 
 export class CodeIndexDB {
   private static instance: CodeIndexDB;
-  private db: Loki;
+  /** Subclasses (e.g. EnhancedCodeIndexDB) need access for extra collections without `as any`. */
+  protected db: Loki;
   private functionsCollection: Collection<FunctionDocument> | null = null;
   private whitelistCollection: Collection<any> | null = null;
   private auditResultsCollection: Collection<any> | null = null;
@@ -44,6 +55,9 @@ export class CodeIndexDB {
   private codeMapCollection: Collection<any> | null = null;
   private schemaCollection: Collection<any> | null = null;
   private schemaUsageCollection: Collection<any> | null = null;
+  /** User tasks: NOT cleared by clearIndex() — see clearIndex() */
+  private tasksCollection: Collection<ProjectTaskDocument> | null = null;
+  private taskRepository: ProjectTaskRepository | null = null;
   private searchIndex: any; // FlexSearch Document instance
   private dbPath: string;
   private isInitialized = false;
@@ -152,7 +166,11 @@ export class CodeIndexDB {
 
   static getInstance(dbPath?: string): CodeIndexDB {
     if (!CodeIndexDB.instance) {
-      CodeIndexDB.instance = new CodeIndexDB(dbPath || './.code-index/index.db');
+      const resolved =
+        dbPath !== undefined && dbPath !== ''
+          ? path.resolve(dbPath)
+          : resolvePersistedIndexPath();
+      CodeIndexDB.instance = new CodeIndexDB(resolved);
     }
     return CodeIndexDB.instance;
   }
@@ -160,17 +178,79 @@ export class CodeIndexDB {
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
 
-    // Ensure directory exists
     const dir = path.dirname(this.dbPath);
-    await fs.mkdir(dir, { recursive: true });
+    const storageRoot = getPersistedStorageRoot();
 
-    // Load database
-    await new Promise<void>((resolve, reject) => {
-      this.db.loadDatabase({}, (err) => {
-        if (err) reject(err);
-        else resolve();
+    try {
+      let st: Awaited<ReturnType<typeof fs.stat>> | undefined;
+      try {
+        st = await fs.stat(dir);
+      } catch (e: unknown) {
+        const code = getErrnoCode(e);
+        if (code && code !== 'ENOENT') {
+          throw new ContextualError(
+            `Cannot access code index storage directory (${code}): ${dir}`,
+            {
+              errnoCode: code,
+              storageRoot,
+              dbPath: this.dbPath,
+              hint:
+                'Fix permissions or set CODE_AUDITOR_DATA_DIR / --data-dir to a writable directory.',
+            },
+            e instanceof Error ? e : undefined
+          );
+        }
+      }
+      if (st && !st.isDirectory()) {
+        throw new ContextualError(
+          `Code index storage path exists but is not a directory: ${dir}`,
+          {
+            storageRoot,
+            dbPath: this.dbPath,
+            hint:
+              'Remove the conflicting file/path or choose a different CODE_AUDITOR_DATA_DIR / --data-dir.',
+          }
+        );
+      }
+
+      await fs.mkdir(dir, { recursive: true });
+    } catch (e: unknown) {
+      if (e instanceof ContextualError) throw e;
+      const code = getErrnoCode(e);
+      throw new ContextualError(
+        `Failed to prepare code index storage: ${e instanceof Error ? e.message : String(e)}`,
+        {
+          ...(code && { errnoCode: code }),
+          storageRoot,
+          dbPath: this.dbPath,
+          hint:
+            'Ensure the storage directory is writable (default: <cwd>/.code-index when CODE_AUDITOR_DATA_DIR is unset).',
+        },
+        e instanceof Error ? e : undefined
+      );
+    }
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.db.loadDatabase({}, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
       });
-    });
+    } catch (e: unknown) {
+      const code = getErrnoCode(e);
+      throw new ContextualError(
+        `Failed to load code index database: ${e instanceof Error ? e.message : String(e)}`,
+        {
+          ...(code && { errnoCode: code }),
+          storageRoot,
+          dbPath: this.dbPath,
+          hint:
+            'The index file may be corrupted, locked by another process, or on a read-only volume. Try a different CODE_AUDITOR_DATA_DIR or delete index.db if safe.',
+        },
+        e instanceof Error ? e : undefined
+      );
+    }
 
     // Get or create functions collection
     this.functionsCollection = this.db.getCollection('functions') || 
@@ -214,6 +294,11 @@ export class CodeIndexDB {
         indices: ['tableName', 'filePath', 'functionName', 'usageType']
       });
 
+    this.tasksCollection = this.db.getCollection('projectTasks') ||
+      this.db.addCollection('projectTasks', {
+        indices: ['taskId', 'projectPath', 'status', 'source', 'sortOrder']
+      });
+
     // Initialize default whitelists if empty
     if (this.whitelistCollection.count() === 0) {
       await this.initializeDefaultWhitelists();
@@ -230,7 +315,7 @@ export class CodeIndexDB {
   }
 
   private ensureInitialized(): void {
-    if (!this.isInitialized || !this.functionsCollection) {
+    if (!this.isInitialized || !this.functionsCollection || !this.tasksCollection) {
       throw new Error('Database not initialized. Call initialize() first.');
     }
   }
@@ -1333,19 +1418,47 @@ export class CodeIndexDB {
     };
   }
 
+  /**
+   * Drops analysis-derived data so search, cached audits, code maps, and schema overlays
+   * cannot reference removed or stale code ("ghost" analysis).
+   *
+   * Clears: indexed functions, FlexSearch, auditResults, codeMaps, schemas, schemaUsage.
+   * Preserves: projectTasks, analyzerConfigs, whitelist (user rules, not mirrored code).
+   *
+   * When adding collections that store derived code intelligence, clear them here unless
+   * they are durable user preferences (same category as analyzerConfigs).
+   */
   async clearIndex(): Promise<void> {
     this.ensureInitialized();
-    
+
     this.functionsCollection!.clear();
     this.searchIndex.clear();
+
+    this.auditResultsCollection!.clear();
+    this.codeMapCollection!.clear();
+    this.schemaCollection!.clear();
+    this.schemaUsageCollection!.clear();
+
     this.db.saveDatabase();
   }
 
   async close(): Promise<void> {
     if (this.isInitialized) {
+      this.taskRepository = null;
       this.db.close();
       this.isInitialized = false;
     }
+  }
+
+  private getTaskRepository(): ProjectTaskRepository {
+    this.ensureInitialized();
+    if (!this.taskRepository) {
+      this.taskRepository = new ProjectTaskRepository(
+        () => this.tasksCollection!,
+        () => this.db.saveDatabase()
+      );
+    }
+    return this.taskRepository;
   }
 
   /**
@@ -1854,13 +1967,13 @@ export class CodeIndexDB {
     // Generate unique audit ID
     const auditId = `audit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    // Store the full audit result structure to preserve all data
+    // Store the entire result to preserve analyzer structure; auditId must come last so
+    // a stray auditResult.auditId cannot break pagination lookups.
     const auditRecord = {
+      ...auditResult,
       auditId,
       timestamp: new Date(),
       projectPath,
-      // Store the entire result to preserve analyzer structure
-      ...auditResult,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // Expire after 24 hours
     };
     
@@ -2394,5 +2507,35 @@ export class CodeIndexDB {
       functions: enhancedFunctions,
       schemaContext
     };
+  }
+
+  async createProjectTask(input: CreateProjectTaskInput): Promise<ProjectTask> {
+    return this.getTaskRepository().create(input);
+  }
+
+  async getProjectTask(taskId: string): Promise<ProjectTask | null> {
+    return this.getTaskRepository().getById(taskId);
+  }
+
+  async listProjectTasks(
+    projectPath: string,
+    options?: {
+      status?: ProjectTaskStatus;
+      source?: ProjectTaskSource;
+      limit?: number;
+    }
+  ): Promise<ProjectTask[]> {
+    return this.getTaskRepository().list(projectPath, options);
+  }
+
+  /**
+   * @param patch Raw JSON-shaped update; unknown keys are ignored (see sanitizeUpdatePatch).
+   */
+  async updateProjectTask(taskId: string, patch: unknown): Promise<ProjectTask | null> {
+    return this.getTaskRepository().update(taskId, patch);
+  }
+
+  async deleteProjectTask(taskId: string): Promise<boolean> {
+    return this.getTaskRepository().delete(taskId);
   }
 }
