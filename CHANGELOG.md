@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.2] - 2026-03-26
+
+### Changed
+- **MCP request reliability hardening** — Call handlers now honor request abort signals, compact JSON serialization is used for tool payloads, and `project_tasks` read paths de-duplicate concurrent identical reads.
+- **Process resilience defaults** — Runtime `unhandledRejection` / `uncaughtException` handling is now non-fatal by default (fatal exit remains opt-in via `CODE_AUDITOR_EXIT_ON_FATAL=1|true`) to avoid tearing down the entire stdio session from one rejected request.
+
+### Fixed
+- **Concurrent initialization race** — `CodeIndexDB.initialize()` now uses single-flight guarding so overlapping first requests cannot race DB initialization.
+- **`project_tasks list_tree` load behavior** — `limit` is enforced correctly and descendant statistics are computed with memoized traversal, reducing response latency and oversized payload risk under parallel calls.
+- **Diagnostics I/O blocking** — `CODE_AUDITOR_LOG_FILE` appends are queued asynchronously instead of synchronous per-line writes, preventing event-loop stalls during high call volume.
+
 ## [2.6.1] - 2026-03-25
 
 ### Fixed
