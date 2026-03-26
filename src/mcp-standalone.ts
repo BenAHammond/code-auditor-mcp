@@ -570,8 +570,16 @@ const tools: Tool[] = [
         type: 'string',
         required: true,
         description:
-          'list | create | get | update | delete. list/create use projectPath or default to process.cwd(); create also needs title; get/update/delete need taskId; update needs patch object.',
-        enum: ['list', 'create', 'get', 'update', 'delete'],
+          'list | list_tree | create | get | update | complete_task | delete. list/list_tree/create use projectPath or default to process.cwd(); create needs title; get/update/complete_task/delete need taskId; update needs patch object.',
+        enum: [
+          'list',
+          'list_tree',
+          'create',
+          'get',
+          'update',
+          'complete_task',
+          'delete'
+        ],
       },
       {
         name: 'projectPath',
@@ -584,7 +592,8 @@ const tools: Tool[] = [
         name: 'taskId',
         type: 'string',
         required: false,
-        description: 'Stable task id (UUID). Required for get, update, delete.',
+        description:
+          'Stable task id (UUID). Required for get, update, complete_task, delete.',
       },
       {
         name: 'title',
@@ -647,6 +656,42 @@ const tools: Tool[] = [
         description: 'Task IDs this item is blocked by (waiting-on).',
       },
       {
+        name: 'label',
+        type: 'string',
+        required: false,
+        description: 'Filter/search by label value.',
+      },
+      {
+        name: 'blockedByTaskId',
+        type: 'string',
+        required: false,
+        description: 'Filter tasks blocked by this task ID.',
+      },
+      {
+        name: 'query',
+        type: 'string',
+        required: false,
+        description: 'Case-insensitive text search across title/description/labels/files/symbols.',
+      },
+      {
+        name: 'hasChildren',
+        type: 'boolean',
+        required: false,
+        description: 'Filter tasks that do/do not have direct subtasks.',
+      },
+      {
+        name: 'overdueOnly',
+        type: 'boolean',
+        required: false,
+        description: 'Filter tasks with dueAt in the past and not closed.',
+      },
+      {
+        name: 'actionableOnly',
+        type: 'boolean',
+        required: false,
+        description: 'Filter tasks that are open and unblocked by open dependencies.',
+      },
+      {
         name: 'dueAt',
         type: 'string',
         required: false,
@@ -682,6 +727,13 @@ const tools: Tool[] = [
         type: 'number',
         required: false,
         description: 'Max tasks to return for list (default 500, max 1000).',
+      },
+      {
+        name: 'mode',
+        type: 'string',
+        required: false,
+        description: 'Delete mode: reject (default), detach subtasks, or cascade descendants.',
+        enum: ['reject', 'detach', 'cascade'],
       },
     ],
   },
@@ -728,6 +780,97 @@ function calculateHealthScore(result: AuditResult): number {
   let score = 100 - (violationsPerFile * 2);
   
   return Math.max(0, Math.round(Math.min(100, score)));
+}
+
+class RequestAbortedError extends Error {
+  constructor(message = 'MCP request aborted') {
+    super(message);
+    this.name = 'RequestAbortedError';
+  }
+}
+
+function throwIfRequestAborted(signal: AbortSignal | undefined, phase: string): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  throw new RequestAbortedError(
+    `Request aborted${phase ? ` during ${phase}` : ''}`
+  );
+}
+
+async function withAbortSignal<T>(
+  signal: AbortSignal | undefined,
+  phase: string,
+  op: () => Promise<T>
+): Promise<T> {
+  throwIfRequestAborted(signal, phase);
+  if (!signal) {
+    return op();
+  }
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = (): void =>
+      reject(new RequestAbortedError(`Request aborted during ${phase}`));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void op()
+      .then(resolve)
+      .catch(reject)
+      .finally(() => {
+        signal.removeEventListener('abort', onAbort);
+      });
+  });
+}
+
+function serializeForMcp(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return JSON.stringify({
+      success: false,
+      error: `Failed to serialize MCP response: ${error instanceof Error ? error.message : String(error)}`
+    });
+  }
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return `[unserializable: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+
+function registerProcessReliabilityHandlers(): void {
+  const g = globalThis as {
+    __codeAuditorUncaughtExceptionHandlerInstalled?: boolean;
+    __codeAuditorUnhandledRejectionHandlerInstalled?: boolean;
+  };
+  const exitOnFatal =
+    process.env.CODE_AUDITOR_EXIT_ON_FATAL === '1' ||
+    process.env.CODE_AUDITOR_EXIT_ON_FATAL === 'true';
+
+  if (!g.__codeAuditorUncaughtExceptionHandlerInstalled) {
+    process.on('uncaughtException', (error) => {
+      console.error(chalk.red('[ERROR]'), 'Uncaught exception:', error);
+      console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);
+      console.error(chalk.red('[ERROR]'), 'Error details:', safeJson(error));
+      if (exitOnFatal) {
+        process.exit(1);
+      }
+    });
+    g.__codeAuditorUncaughtExceptionHandlerInstalled = true;
+  }
+
+  if (!g.__codeAuditorUnhandledRejectionHandlerInstalled) {
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error(chalk.red('[ERROR]'), 'Unhandled rejection at:', promise);
+      console.error(chalk.red('[ERROR]'), 'Reason:', reason);
+      console.error(chalk.red('[ERROR]'), 'Rejection details:', safeJson(reason));
+      if (exitOnFatal) {
+        process.exit(1);
+      }
+    });
+    g.__codeAuditorUnhandledRejectionHandlerInstalled = true;
+  }
 }
 
 async function startMcpServer() {
@@ -800,21 +943,31 @@ async function startMcpServer() {
     return response;
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    mcpTraceStderr(chalk.blue('[DEBUG]'), 'CallTool raw', JSON.stringify(request, null, 2));
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
-    mcpTraceStderr(chalk.blue('[DEBUG]'), `CallTool ${name}`, JSON.stringify(args, null, 2));
+    mcpTraceStderr(
+      chalk.blue('[DEBUG]'),
+      `CallTool ${name}`,
+      JSON.stringify({
+        argKeys: args && typeof args === 'object' ? Object.keys(args as object) : [],
+        hasArgs: !!args
+      })
+    );
+    const requestSignal = extra?.signal;
 
     try {
       let result: any;
+      throwIfRequestAborted(requestSignal, `start ${name}`);
 
       switch (name) {
         case 'start_audit': {
-          result = await startAuditJob(args, {
-            defaultAnalyzers: ['solid', 'dry'],
-            defaultMinSeverity: 'warning',
-            defaultGenerateCodeMap: false,
-          });
+          result = await withAbortSignal(requestSignal, 'start_audit', () =>
+            startAuditJob(args, {
+              defaultAnalyzers: ['solid', 'dry'],
+              defaultMinSeverity: 'warning',
+              defaultGenerateCodeMap: false,
+            })
+          );
           break;
         }
 
@@ -828,12 +981,16 @@ async function startMcpServer() {
         }
 
         case 'audit_results': {
-          result = await getAuditResultsPage(args);
+          result = await withAbortSignal(requestSignal, 'audit_results', () =>
+            getAuditResultsPage(args)
+          );
           break;
         }
 
         case 'audit': {
-          result = await getAuditResultsPage(args);
+          result = await withAbortSignal(requestSignal, 'audit', () =>
+            getAuditResultsPage(args)
+          );
           break;
         }
 
@@ -1226,7 +1383,11 @@ async function startMcpServer() {
 
         case 'project_tasks': {
           const { handleProjectTasks } = await import('./mcp-tools/projectTasks.js');
-          result = await handleProjectTasks((args || {}) as Record<string, unknown>);
+          result = await withAbortSignal(requestSignal, 'project_tasks', () =>
+            handleProjectTasks((args || {}) as Record<string, unknown>, {
+              signal: requestSignal
+            })
+          );
           break;
         }
 
@@ -1238,24 +1399,28 @@ async function startMcpServer() {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
+            text: serializeForMcp(result),
           },
         ],
       };
       mcpTraceStderr(
         chalk.blue('[DEBUG]'),
         `Tool ${name} ok`,
-        JSON.stringify(response, null, 2).substring(0, 500) + '...'
+        `responseBytes=${response.content[0].text.length}`
       );
+      throwIfRequestAborted(requestSignal, `before response ${name}`);
       return response;
     } catch (error) {
+      if (error instanceof RequestAbortedError) {
+        throw error;
+      }
       console.error(chalk.red('[ERROR]'), `Tool ${name} execution failed:`, error);
       console.error(chalk.red('[ERROR]'), 'Error stack:', error instanceof Error ? error.stack : 'No stack trace');
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(formatMcpToolErrorPayload(name, error), null, 2),
+            text: serializeForMcp(formatMcpToolErrorPayload(name, error)),
           },
         ],
         isError: true,
@@ -1289,30 +1454,17 @@ async function startMcpServer() {
   });
 }
 
-// Error handlers
-process.on('uncaughtException', (error) => {
-  console.error(chalk.red('[ERROR]'), 'Uncaught exception:', error);
-  console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);
-  console.error(chalk.red('[ERROR]'), 'Error details:', JSON.stringify(error, null, 2));
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error(chalk.red('[ERROR]'), 'Unhandled rejection at:', promise);
-  console.error(chalk.red('[ERROR]'), 'Reason:', reason);
-  console.error(chalk.red('[ERROR]'), 'Rejection details:', JSON.stringify(reason, null, 2));
-  process.exit(1);
-});
+registerProcessReliabilityHandlers();
 
 // Add SIGTERM and SIGINT handlers
 process.on('SIGTERM', () => {
   console.error(chalk.yellow('[WARN]'), 'Received SIGTERM, shutting down gracefully...');
-  process.exit(0);
+  process.exitCode = 0;
 });
 
 process.on('SIGINT', () => {
   console.error(chalk.yellow('[WARN]'), 'Received SIGINT, shutting down gracefully...');
-  process.exit(0);
+  process.exitCode = 0;
 });
 
 // Log when stdin/stdout events occur
@@ -1327,5 +1479,5 @@ process.stdout.on('error', (error) => {
 startMcpServer().catch(error => {
   console.error(chalk.red('[ERROR]'), 'Failed to start MCP server:', error);
   console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);
-  process.exit(1);
+  process.exitCode = 1;
 });

@@ -8,11 +8,13 @@ import * as FlexSearch from 'flexsearch';
 import { promises as fs } from 'fs';
 import path from 'path';
 import type {
+  CompleteProjectTaskResult,
   CreateProjectTaskInput,
+  ListProjectTasksOptions,
+  ListProjectTasksTreeNode,
   ProjectTask,
-  ProjectTaskDocument,
-  ProjectTaskSource,
-  ProjectTaskStatus
+  ProjectTaskDeleteMode,
+  ProjectTaskDocument
 } from './types/projectTask.js';
 import { ProjectTaskRepository } from './services/ProjectTaskRepository.js';
 import { 
@@ -61,6 +63,7 @@ export class CodeIndexDB {
   private searchIndex: any; // FlexSearch Document instance
   private dbPath: string;
   private isInitialized = false;
+  private initializePromise: Promise<void> | null = null;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath;
@@ -176,6 +179,20 @@ export class CodeIndexDB {
   }
 
   async initialize(): Promise<void> {
+    if (this.isInitialized) return;
+    if (this.initializePromise) {
+      await this.initializePromise;
+      return;
+    }
+    this.initializePromise = this.initializeInternal();
+    try {
+      await this.initializePromise;
+    } finally {
+      this.initializePromise = null;
+    }
+  }
+
+  private async initializeInternal(): Promise<void> {
     if (this.isInitialized) return;
 
     const dir = path.dirname(this.dbPath);
@@ -2522,13 +2539,27 @@ export class CodeIndexDB {
 
   async listProjectTasks(
     projectPath: string,
-    options?: {
-      status?: ProjectTaskStatus;
-      source?: ProjectTaskSource;
-      limit?: number;
-    }
+    options?: ListProjectTasksOptions
   ): Promise<ProjectTask[]> {
     return this.getTaskRepository().list(projectPath, options);
+  }
+
+  async listProjectTasksTree(
+    projectPath: string,
+    options?: Omit<ListProjectTasksOptions, 'parentTaskId' | 'hasChildren'>
+  ): Promise<ListProjectTasksTreeNode[]> {
+    return this.getTaskRepository().listTree(projectPath, options);
+  }
+
+  async listActionableProjectTasks(
+    projectPath: string,
+    options?: Omit<ListProjectTasksOptions, 'actionableOnly'>
+  ): Promise<ProjectTask[]> {
+    return this.getTaskRepository().listActionable(projectPath, options);
+  }
+
+  async completeProjectTask(taskId: string): Promise<CompleteProjectTaskResult | null> {
+    return this.getTaskRepository().complete(taskId);
   }
 
   /**
@@ -2538,7 +2569,10 @@ export class CodeIndexDB {
     return this.getTaskRepository().update(taskId, patch);
   }
 
-  async deleteProjectTask(taskId: string): Promise<boolean> {
-    return this.getTaskRepository().delete(taskId);
+  async deleteProjectTask(
+    taskId: string,
+    mode?: ProjectTaskDeleteMode
+  ): Promise<boolean> {
+    return this.getTaskRepository().delete(taskId, mode);
   }
 }

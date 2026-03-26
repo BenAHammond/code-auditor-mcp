@@ -15,14 +15,21 @@ const traceEnabled =
   process.env.CODE_AUDITOR_TRACE === 'true';
 
 const logFilePath = process.env.CODE_AUDITOR_LOG_FILE?.trim();
+let writeQueue: Promise<void> = Promise.resolve();
 
 function appendFileLine(line: string): void {
   if (!logFilePath) return;
-  try {
-    fs.appendFileSync(logFilePath, line + '\n');
-  } catch {
-    /* ignore */
-  }
+  // Queue async writes to avoid blocking the MCP event loop.
+  writeQueue = writeQueue
+    .then(
+      () =>
+        new Promise<void>((resolve) => {
+          fs.appendFile(logFilePath, line + '\n', () => resolve());
+        })
+    )
+    .catch(() => {
+      /* ignore */
+    });
 }
 
 export function logMcp(

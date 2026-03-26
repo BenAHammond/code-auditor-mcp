@@ -11,6 +11,7 @@ export type ProjectTaskStatus =
   | 'cancelled';
 
 export type ProjectTaskPriority = 'low' | 'medium' | 'high';
+export type ProjectTaskDeleteMode = 'reject' | 'detach' | 'cascade';
 
 /** Who created or last logically "owns" the task row */
 export type ProjectTaskSource = 'manual' | 'audit' | 'mcp';
@@ -70,6 +71,35 @@ export interface CreateProjectTaskInput {
   sortOrder?: number;
   relatedFiles?: string[];
   relatedSymbols?: string[];
+}
+
+export interface ListProjectTasksTreeNode {
+  task: ProjectTask;
+  depth: number;
+  parentTaskId: string | null;
+  childCount: number;
+  descendantCount: number;
+  openDescendantCount: number;
+}
+
+export interface CompleteProjectTaskResult {
+  task: ProjectTask;
+  blockedByOpenDependencyTaskIds: string[];
+  blockedByOpenSubtaskIds: string[];
+}
+
+export interface ListProjectTasksOptions {
+  status?: ProjectTaskStatus;
+  source?: ProjectTaskSource;
+  priority?: ProjectTaskPriority;
+  label?: string;
+  parentTaskId?: string | null;
+  hasChildren?: boolean;
+  blockedByTaskId?: string;
+  query?: string;
+  overdueOnly?: boolean;
+  actionableOnly?: boolean;
+  limit?: number;
 }
 
 export type UpdateProjectTaskPatch = Partial<

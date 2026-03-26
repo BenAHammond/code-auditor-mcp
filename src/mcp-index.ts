@@ -101,32 +101,50 @@ async function startServer() {
   } catch (error) {
     console.error(chalk.red('[MCP ERROR]'), 'Failed to start server:', error);
     console.error(chalk.red('[ERROR]'), 'Stack:', error instanceof Error ? error.stack : 'No stack');
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
 // Handle shutdown gracefully
 process.on('SIGINT', () => {
   console.error(chalk.yellow(`[MCP]`), `Shutting down ${mode} server...`);
-  process.exit(0);
+  process.exitCode = 0;
 });
 
 process.on('SIGTERM', () => {
   console.error(chalk.yellow(`[MCP]`), `Received SIGTERM, shutting down ${mode} server...`);
-  process.exit(0);
+  process.exitCode = 0;
 });
 
-process.on('uncaughtException', (error) => {
-  console.error(chalk.red('[MCP ERROR]'), 'Uncaught exception:', error);
-  console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);
-  process.exit(1);
-});
+const g = globalThis as {
+  __codeAuditorUncaughtExceptionHandlerInstalled?: boolean;
+  __codeAuditorUnhandledRejectionHandlerInstalled?: boolean;
+};
+const exitOnFatal =
+  process.env.CODE_AUDITOR_EXIT_ON_FATAL === '1' ||
+  process.env.CODE_AUDITOR_EXIT_ON_FATAL === 'true';
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error(chalk.red('[MCP ERROR]'), 'Unhandled rejection at:', promise);
-  console.error(chalk.red('[ERROR]'), 'Reason:', reason);
-  process.exit(1);
-});
+if (!g.__codeAuditorUncaughtExceptionHandlerInstalled) {
+  process.on('uncaughtException', (error) => {
+    console.error(chalk.red('[MCP ERROR]'), 'Uncaught exception:', error);
+    console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);
+    if (exitOnFatal) {
+      process.exit(1);
+    }
+  });
+  g.__codeAuditorUncaughtExceptionHandlerInstalled = true;
+}
+
+if (!g.__codeAuditorUnhandledRejectionHandlerInstalled) {
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error(chalk.red('[MCP ERROR]'), 'Unhandled rejection at:', promise);
+    console.error(chalk.red('[ERROR]'), 'Reason:', reason);
+    if (exitOnFatal) {
+      process.exit(1);
+    }
+  });
+  g.__codeAuditorUnhandledRejectionHandlerInstalled = true;
+}
 
 // Start the server
 startServer();
