@@ -186,8 +186,8 @@ export class WhitelistService {
           suggestion.reason
         );
         added++;
-      } catch (error) {
-        if (!error.message.includes('already exists')) {
+      } catch (error: unknown) {
+        if (!(error instanceof Error) || !error.message.includes('already exists')) {
           failed.push(suggestion.name);
           console.warn(`Failed to add ${suggestion.name} to whitelist:`, error);
         }

@@ -384,7 +384,7 @@ app.get('/codemap/:sessionKey', (req, res) => {
             
             ${codeMap?.summary?.sectionsAvailable ? `
             <h2>📑 Available Sections</h2>
-            ${codeMap.summary.sectionsAvailable.map(section => `
+            ${codeMap.summary.sectionsAvailable.map((section: { type: string; size: number; description: string }) => `
                 <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 4px;">
                     <strong>${section.type}</strong> (${section.size} characters)<br>
                     <em>${section.description}</em>

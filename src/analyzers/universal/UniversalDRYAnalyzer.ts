@@ -4,7 +4,7 @@
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
-import type { Violation } from '../../types.js';
+import type { Violation, FunctionMetadata } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
 import * as crypto from 'crypto';
 
@@ -19,6 +19,8 @@ export interface DRYAnalyzerConfig {
   checkStrings?: boolean;
   ignoreComments?: boolean;
   ignoreWhitespace?: boolean;
+  /** Full function index (all functions in codebase) for cross-file duplicate detection in scoped audits */
+  fullFunctionIndex?: FunctionMetadata[];
 }
 
 export const DEFAULT_DRY_CONFIG: DRYAnalyzerConfig = {
@@ -76,14 +78,14 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     // For now, we'll just detect duplicates within the same file
     const localIndex = this.buildLocalIndex(blocks);
     
-    // Find duplicates
+    // Find duplicates (local, within this file)
     for (const [hash, duplicateBlocks] of localIndex.hashMap) {
       if (duplicateBlocks.length > 1) {
         // Report all but the first occurrence
         for (let i = 1; i < duplicateBlocks.length; i++) {
           const block = duplicateBlocks[i];
           const original = duplicateBlocks[0];
-          
+
           violations.push(this.createViolation(
             block.file,
             block.start,
@@ -98,7 +100,56 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
         }
       }
     }
-    
+
+    // ── Cross-file duplicate detection (scoped audit) ──────────────────
+    // When fullFunctionIndex is provided, check each scoped block against
+    // the full codebase index to catch duplicates that span files (R2.2).
+    if (finalConfig.fullFunctionIndex && finalConfig.fullFunctionIndex.length > 0) {
+      const fullHashmap = new Map<string, { file: string; name: string; line: number }>();
+
+      for (const func of finalConfig.fullFunctionIndex) {
+        // Get body content from either top-level or metadata
+        const body = (func as any).body ?? (func as any).metadata?.body;
+        if (!body) continue;
+
+        try {
+          const normalized = this.normalizeCode(body, finalConfig);
+          const hash = this.hashCode(normalized);
+          // Only store the first occurrence (the "original")
+          if (!fullHashmap.has(hash)) {
+            fullHashmap.set(hash, {
+              file: func.filePath,
+              name: func.name,
+              line: func.startLine ?? func.lineNumber ?? 0
+            });
+          }
+        } catch {
+          // Skip functions whose body can't be normalized
+        }
+      }
+
+      // Check each block in this file against the full index
+      for (const block of blocks) {
+        if (!this.isBlockLargeEnough(block, finalConfig)) continue;
+
+        const fullMatch = fullHashmap.get(block.hash);
+        if (fullMatch && fullMatch.file !== block.file) {
+          violations.push(this.createViolation(
+            block.file,
+            block.start,
+            `Duplicate code block detected (${block.lineCount} lines). ` +
+            `First occurrence in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name})`,
+            'warning',
+            'cross-file-duplicate',
+            {
+              oldText: block.text,
+              newText: `// Consider extracting to a shared function`
+            }
+          ));
+        }
+      }
+    }
+
     // Check for duplicate string literals if enabled
     if (finalConfig.checkStrings) {
       const stringViolations = this.checkDuplicateStrings(ast, adapter, sourceCode);

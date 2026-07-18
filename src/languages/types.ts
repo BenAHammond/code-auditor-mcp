@@ -186,6 +186,18 @@ export interface LanguageAdapter {
   
   // Optional: Extract interfaces (for languages that support them)
   extractInterfaces?(ast: AST): InterfaceInfo[];
+
+  // Optional: Extract raw import info including dynamic/require forms
+  extractRawImports?(filePath: string, content: string): Array<{
+    moduleSpecifier: string;
+    isStatic: boolean;
+    isDynamic: boolean;
+    isRequire: boolean;
+    line: number;
+  }>;
+
+  // Optional: Extract exported symbol names from an AST
+  extractExportedSymbols?(ast: AST): Array<{ name: string; line: number }>;
 }
 
 /**

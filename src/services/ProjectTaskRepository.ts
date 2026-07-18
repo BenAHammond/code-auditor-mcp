@@ -1,8 +1,15 @@
 /**
- * Loki persistence for project tasks. Keeps CodeIndexDB from owning task CRUD logic.
+ * Persistence for project tasks. Keeps CodeIndexDB from owning task CRUD logic.
  */
 
-import type { Collection } from 'lokijs';
+/** Minimal collection interface supported by the SQLite adapter. */
+interface Collection<T> {
+  find(query?: Record<string, unknown>): T[];
+  findOne(query: Record<string, unknown>): T | null;
+  insert(doc: T): T;
+  update(doc: T): void;
+  remove(doc: T): void;
+}
 import path from 'path';
 import { randomUUID } from 'crypto';
 import type {
@@ -260,6 +267,9 @@ export class ProjectTaskRepository {
       ...(input.labels !== undefined && { labels: input.labels }),
       ...(input.metadata !== undefined && { metadata: input.metadata }),
       ...(input.parentTaskId !== undefined && { parentTaskId: input.parentTaskId }),
+      ...(input.fingerprint !== undefined && input.fingerprint !== null
+        ? { fingerprint: input.fingerprint }
+        : {}),
       createdAt: now,
       updatedAt: now,
       ...(status === 'done' && { completedAt: now })
@@ -272,6 +282,19 @@ export class ProjectTaskRepository {
   getById(taskId: string): ProjectTask | null {
     const found = this.getTasksCollection().findOne({ taskId });
     return found ? serializeProjectTask(found) : null;
+  }
+
+  /**
+   * Find non-closed tasks matching a violation fingerprint.
+   * Returns an empty array if fingerprint is null/undefined or no match is found.
+   */
+  findOpenByFingerprint(fingerprint: string | null | undefined): ProjectTaskDocument[] {
+    if (!fingerprint) {
+      return [];
+    }
+    return this.getTasksCollection()
+      .find({ fingerprint })
+      .filter((doc) => !ProjectTaskRepository.isClosed(doc.status));
   }
 
   list(projectPath: string, options?: ListProjectTasksOptions): ProjectTask[] {

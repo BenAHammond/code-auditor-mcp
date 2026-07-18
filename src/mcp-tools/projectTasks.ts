@@ -107,7 +107,7 @@ export async function handleProjectTasks(
   options?: { signal?: AbortSignal }
 ) {
   if (options?.signal?.aborted) {
-    throw new Error('project_tasks request aborted');
+    throw new Error('tasks request aborted');
   }
   const action = String(args.action ?? '')
     .toLowerCase()
@@ -119,7 +119,7 @@ export async function handleProjectTasks(
     switch (action) {
       case 'list': {
         if (options?.signal?.aborted) {
-          throw new Error('project_tasks request aborted');
+          throw new Error('tasks request aborted');
         }
         const { projectPath, projectPathDefaulted } = resolveProjectPathForTasks(args);
         const dedupKey = buildReadDedupKey(action, args, projectPath);
@@ -133,12 +133,12 @@ export async function handleProjectTasks(
           count: tasks.length,
           tasks,
           note:
-            'Tasks and analyzer configs persist across sync_index reset; cached audits, code maps, and schema overlays are cleared to avoid stale code references.'
+            'Tasks and analyzer configs persist across index.reset; cached audits, code maps, and schema overlays are cleared to avoid stale code references.'
         };
       }
       case 'list_tree': {
         if (options?.signal?.aborted) {
-          throw new Error('project_tasks request aborted');
+          throw new Error('tasks request aborted');
         }
         const { projectPath, projectPathDefaulted } = resolveProjectPathForTasks(args);
         const listOptions = parseListTaskOptions(args);
@@ -156,7 +156,7 @@ export async function handleProjectTasks(
       }
       case 'create': {
         if (options?.signal?.aborted) {
-          throw new Error('project_tasks request aborted');
+          throw new Error('tasks request aborted');
         }
         const { projectPath, projectPathDefaulted } = resolveProjectPathForTasks(args);
         const title =
@@ -201,7 +201,7 @@ export async function handleProjectTasks(
       }
       case 'get': {
         if (options?.signal?.aborted) {
-          throw new Error('project_tasks request aborted');
+          throw new Error('tasks request aborted');
         }
         const taskId = args.taskId as string | undefined;
         if (!taskId) {
@@ -216,7 +216,7 @@ export async function handleProjectTasks(
       }
       case 'update': {
         if (options?.signal?.aborted) {
-          throw new Error('project_tasks request aborted');
+          throw new Error('tasks request aborted');
         }
         const taskId = args.taskId as string | undefined;
         if (!taskId) {
@@ -230,7 +230,7 @@ export async function handleProjectTasks(
       }
       case 'complete_task': {
         if (options?.signal?.aborted) {
-          throw new Error('project_tasks request aborted');
+          throw new Error('tasks request aborted');
         }
         const taskId = args.taskId as string | undefined;
         if (!taskId) {
@@ -244,7 +244,7 @@ export async function handleProjectTasks(
       }
       case 'delete': {
         if (options?.signal?.aborted) {
-          throw new Error('project_tasks request aborted');
+          throw new Error('tasks request aborted');
         }
         const taskId = args.taskId as string | undefined;
         if (!taskId) {
@@ -258,11 +258,199 @@ export async function handleProjectTasks(
           message: deleted ? 'Task deleted' : 'Task not found'
         };
       }
+      case 'from_audit': {
+        if (options?.signal?.aborted) {
+          throw new Error('tasks request aborted');
+        }
+        const { fingerprint: computeFingerprint } = await import(
+          '../fingerprint.js'
+        );
+        const { projectPath, projectPathDefaulted } =
+          resolveProjectPathForTasks(args);
+
+        // 1. Retrieve audit results
+        const rawAuditJobId = args.auditJobId;
+        const auditJobId =
+          typeof rawAuditJobId === 'string' && rawAuditJobId.trim() !== ''
+            ? rawAuditJobId.trim()
+            : undefined;
+
+        let auditRecord: any;
+        if (auditJobId) {
+          auditRecord = await db.getAuditResults(auditJobId);
+          if (!auditRecord) {
+            return {
+              success: false,
+              error: `Audit result not found or expired: ${auditJobId}`
+            };
+          }
+        } else {
+          // Prefer the most recent full audit; fall back to scoped or
+          // legacy results without scope metadata.
+          auditRecord = await db.getMostRecentAuditResults(projectPath, 'full');
+          if (!auditRecord) {
+            auditRecord = await db.getMostRecentAuditResults(projectPath, 'scoped');
+          }
+          if (!auditRecord) {
+            // Legacy: results stored before scope metadata was added
+            auditRecord = await db.getMostRecentAuditResults(projectPath);
+          }
+          if (!auditRecord) {
+            return {
+              success: false,
+              error:
+                'No audit results found. Run an audit first, or provide an auditJobId.'
+            };
+          }
+        }
+
+        // 2. Filters
+        const severities: string[] = Array.isArray(args.severities)
+          ? (args.severities as string[]).map((s) => String(s).trim()).filter(Boolean)
+          : ['critical', 'warning'];
+        const analyzers: string[] | undefined = Array.isArray(args.analyzers)
+          ? (args.analyzers as string[]).map((s) => String(s).trim()).filter(Boolean)
+          : undefined;
+        const pathGlobs: string[] | undefined = Array.isArray(args.paths)
+          ? (args.paths as string[]).map((s) => String(s).trim()).filter(Boolean)
+          : undefined;
+
+        // 3. Walk violations from all analyzer results
+        const analyzerResults: Record<string, any> =
+          auditRecord.analyzerResults ?? {};
+        const severitySet = new Set(severities);
+        const analyzerSet = analyzers
+          ? new Set(analyzers)
+          : undefined;
+
+        const priorityMap: Record<string, 'high' | 'medium' | 'low'> = {
+          critical: 'high',
+          warning: 'medium',
+          suggestion: 'low'
+        };
+
+        let created = 0;
+        let skipped = 0;
+        const createdTasks: any[] = [];
+
+        for (const [analyzerName, analyzerResult] of Object.entries(
+          analyzerResults
+        )) {
+          if (analyzerSet && !analyzerSet.has(analyzerName)) {
+            continue;
+          }
+          const violations: any[] = Array.isArray(analyzerResult.violations)
+            ? analyzerResult.violations
+            : [];
+
+          for (const violation of violations) {
+            const severity = String(violation.severity ?? '').trim();
+            if (!severitySet.has(severity)) {
+              continue;
+            }
+
+            // Path filter (simple substring/glob match)
+            if (pathGlobs && pathGlobs.length > 0) {
+              const filePath = String(violation.file ?? '');
+              const matches = pathGlobs.some((g) => {
+                // Basic glob: ** matches any path segment
+                if (g.includes('**')) {
+                  const regex = new RegExp(
+                    g
+                      .replace(/\./g, '\\.')
+                      .replace(/\*\*/g, '___DOUBLESTAR___')
+                      .replace(/\*/g, '[^/]*')
+                      .replace(/___DOUBLESTAR___/g, '.*')
+                  );
+                  return regex.test(filePath);
+                }
+                // Simple contains
+                return filePath.includes(g);
+              });
+              if (!matches) {
+                continue;
+              }
+            }
+
+            // Extract fingerprint components
+            const analyzer = String(analyzerName ?? violation.analyzer ?? '');
+            const rule = String(
+              violation.principle ?? violation.type ?? ''
+            );
+            const file = String(violation.file ?? '');
+            const symbol = String(
+              violation.className ??
+                violation.functionName ??
+                violation.componentName ??
+                violation.hookName ??
+                violation.interfaceName ??
+                violation.symbol ??
+                violation.enclosingSymbol ??
+                ''
+            );
+            const fp = computeFingerprint({ analyzer, rule, file, symbol });
+
+            // Dedupe: skip if open task with same fingerprint exists
+            if (db.hasOpenTaskByFingerprint(fp)) {
+              skipped++;
+              continue;
+            }
+
+            // Create task
+            try {
+              const task = await db.createProjectTask({
+                projectPath,
+                title: String(violation.message ?? '').substring(0, 200),
+                description: [
+                  `**Analyzer:** ${analyzerName}`,
+                  rule ? `**Rule:** ${rule}` : '',
+                  violation.details
+                    ? `**Details:** ${typeof violation.details === 'string' ? violation.details : JSON.stringify(violation.details)}`
+                    : '',
+                  violation.recommendation
+                    ? `**Recommendation:** ${violation.recommendation}`
+                    : '',
+                  violation.suggestion
+                    ? `**Suggestion:** ${violation.suggestion}`
+                    : '',
+                  violation.line
+                    ? `**Line:** ${violation.line}`
+                    : ''
+                ]
+                  .filter(Boolean)
+                  .join('\n\n'),
+                priority:
+                  priorityMap[severity] ??
+                  priorityMap.warning,
+                source: 'audit',
+                relatedFiles: file ? [file] : [],
+                relatedSymbols: symbol ? [symbol] : [],
+                fingerprint: fp
+              });
+              createdTasks.push(task);
+              created++;
+            } catch {
+              // Skip task creation errors — don't let one bad violation
+              // block the whole batch.
+            }
+          }
+        }
+
+        return {
+          success: true,
+          projectPath,
+          projectPathDefaulted,
+          auditJobId: auditRecord.auditId ?? auditJobId,
+          created,
+          skipped,
+          tasks: createdTasks
+        };
+      }
       default:
         return {
           success: false,
           error:
-            `Unknown action "${action}". Use list, list_tree, create, get, update, complete_task, or delete.`
+            `Unknown action "${action}". Use list, list_tree, create, get, update, complete_task, delete, or from_audit.`
         };
     }
   } catch (error) {

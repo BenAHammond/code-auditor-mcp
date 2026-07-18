@@ -735,7 +735,7 @@ class TypeScriptAnalyzer implements LanguageAnalyzer {
     
     try {
       // Import the existing TypeScript adapter and audit infrastructure
-      const { TypeScriptAdapter } = await import('./typescript/TypeScriptAdapter.js');
+      const { TreeSitterTypeScriptAdapter } = await import('./typescript/TreeSitterTypeScriptAdapter.js');
       const { runAudit } = await import('../auditRunner.js');
       
       // Run the existing audit process

@@ -106,6 +106,7 @@ docs_example/
 
 # Code index database
 .code-index/
+.codeauditor/
 
 # Test directories
 test-configs/

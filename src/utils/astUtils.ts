@@ -1,908 +1,1177 @@
 /**
  * AST Utility Functions
- * Provides helper functions for working with TypeScript AST nodes
+ * Provides helper functions for working with tree-sitter AST nodes
+ *
+ * ## Migration: TypeScript Compiler API → tree-sitter
+ *
+ * All functions now use tree-sitter `ASTNode` via the `adapterBridge` facade.
+ * The `ts.SourceFile` parameter has been replaced with `ASTNode` (root node).
+ * For source-code-dependent operations, `sourceCode: string` is passed separately.
  */
 
-import * as ts from 'typescript';
+import type { ASTNode, AST } from '../languages/types.js';
+import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import { ImportInfo, ExportInfo, ImportMapping, UsageInfo } from '../types.js';
+import {
+  walkAST,
+  findNodes,
+  getNodeText as bridgeGetNodeText,
+  getLineAndColumn as bridgeGetLineAndColumn,
+  isExported as bridgeIsExported,
+  calculateComplexity as bridgeCalculateComplexity,
+  hasModifier,
+} from '../languages/adapterBridge.js';
 
-/**
- * Find all nodes of a specific kind in the AST
- */
-export function findNodesByKind<T extends ts.Node>(
-  node: ts.Node,
-  kind: ts.SyntaxKind
-): T[] {
-  const results: T[] = [];
-  
-  function visit(node: ts.Node) {
-    if (node.kind === kind) {
-      results.push(node as T);
-    }
-    ts.forEachChild(node, visit);
-  }
-  
-  visit(node);
-  return results;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
+function rawText(node: ASTNode): string {
+  return (node.raw as TreeSitterNode)?.text ?? '';
 }
 
-/**
- * Get the text content of a node
- */
-export function getNodeText(node: ts.Node, sourceFile: ts.SourceFile): string {
-  return node.getText(sourceFile);
+/** Find the first child of a given type. */
+function findChildOfType(node: ASTNode, type: string): ASTNode | undefined {
+  return node.children?.find(c => c.type === type);
 }
 
-/**
- * Get line and column number for a position
- */
-export function getLineAndColumn(
-  sourceFile: ts.SourceFile,
-  position: number
-): { line: number; column: number } {
-  const { line, character } = sourceFile.getLineAndCharacterOfPosition(position);
-  return { line: line + 1, column: character + 1 };
-}
+// ---------------------------------------------------------------------------
+// Node finding (re-exports from adapterBridge)
+// ---------------------------------------------------------------------------
 
 /**
- * Extract import statements from a source file
+ * Find all nodes matching a predicate in the AST subtree.
+ * Replacement for the old `findNodesByKind<T>(node, SyntaxKind)`.
  */
-export function getImports(sourceFile: ts.SourceFile): ImportInfo[] {
+export function findNodesByType(
+  root: ASTNode,
+  predicate: (node: ASTNode) => boolean
+): ASTNode[] {
+  return findNodes(root, predicate);
+}
+
+// ---------------------------------------------------------------------------
+// Text extraction (re-exports from adapterBridge)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the text content of a node.
+ * Uses sourceCode if provided; falls back to raw tree-sitter text.
+ */
+export { bridgeGetNodeText as getNodeText };
+
+// ---------------------------------------------------------------------------
+// Position helpers (re-exports from adapterBridge)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get line and column number for a tree-sitter ASTNode.
+ */
+export { bridgeGetLineAndColumn as getLineAndColumn };
+
+// ---------------------------------------------------------------------------
+// Export checks (re-exports from adapterBridge)
+// ---------------------------------------------------------------------------
+
+export { bridgeIsExported as isExported };
+
+// ---------------------------------------------------------------------------
+// Complexity (re-exports from adapterBridge)
+// ---------------------------------------------------------------------------
+
+export { bridgeCalculateComplexity as calculateComplexity };
+
+// ---------------------------------------------------------------------------
+// Import extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract import statements from an AST root node.
+ * Uses tree-sitter import_statement structure:
+ *   import_statement → import_clause? → (identifier | named_imports) → string
+ */
+export function getImports(root: ASTNode): ImportInfo[] {
   const imports: ImportInfo[] = [];
-  
-  ts.forEachChild(sourceFile, node => {
-    if (ts.isImportDeclaration(node)) {
-      const moduleSpecifier = (node.moduleSpecifier as ts.StringLiteral).text;
-      const importedNames: string[] = [];
-      const isTypeOnly = node.importClause?.isTypeOnly || false;
-      
-      if (node.importClause) {
-        // Default import
-        if (node.importClause.name) {
-          importedNames.push(node.importClause.name.text);
+  const importNodes = findNodes(root, n => n.type === 'import_statement');
+
+  for (const node of importNodes) {
+    // Module specifier (the string literal at the end)
+    const moduleNode = findChildOfType(node, 'string');
+    if (!moduleNode) continue;
+    const moduleSpecifier = rawText(moduleNode).replace(/^["']|["']$/g, '');
+    const importedNames: string[] = [];
+
+    const importClause = findChildOfType(node, 'import_clause');
+    let isTypeOnly = false;
+
+    if (importClause) {
+      // Check for `type` keyword in import clause
+      const raw = importClause.raw as TreeSitterNode;
+      isTypeOnly = raw?.children?.some(c => !c.isNamed && c.type === 'type') ?? false;
+
+      // Default import (identifier child of import_clause that's not 'type' modifier)
+      const defaultId = importClause.children?.find(
+        c => c.type === 'identifier'
+      );
+      if (defaultId) {
+        importedNames.push(rawText(defaultId));
+      }
+
+      // Named imports
+      const namedImports = findChildOfType(importClause, 'named_imports');
+      if (namedImports) {
+        for (const child of namedImports.children ?? []) {
+          if (child.type !== 'import_specifier') continue;
+          // The identifier children — last one is the local name
+          const ids = child.children?.filter(c => c.type === 'identifier') ?? [];
+          if (ids.length > 0) {
+            importedNames.push(rawText(ids[ids.length - 1]));
+          }
         }
-        
-        // Named imports
-        if (node.importClause.namedBindings) {
-          if (ts.isNamespaceImport(node.importClause.namedBindings)) {
-            importedNames.push(`* as ${node.importClause.namedBindings.name.text}`);
-          } else if (ts.isNamedImports(node.importClause.namedBindings)) {
-            node.importClause.namedBindings.elements.forEach(element => {
-              importedNames.push(element.name.text);
+      }
+
+      // Namespace import
+      const namespaceImport = findChildOfType(importClause, 'namespace_import');
+      if (namespaceImport) {
+        const nsId = findChildOfType(namespaceImport, 'identifier');
+        if (nsId) {
+          importedNames.push(`* as ${rawText(nsId)}`);
+        }
+      }
+    }
+
+    const { line } = bridgeGetLineAndColumn(node);
+    imports.push({ moduleSpecifier, importedNames, isTypeOnly, line });
+  }
+
+  return imports;
+}
+
+// ---------------------------------------------------------------------------
+// Export extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract export statements from an AST root node.
+ * Uses tree-sitter export_statement structure.
+ */
+export function getExports(root: ASTNode): ExportInfo[] {
+  const exports: ExportInfo[] = [];
+
+  // export declarations: export { name1, name2 }
+  const exportNodes = findNodes(root, n =>
+    n.type === 'export_statement' || n.type === 'export_declaration'
+  );
+
+  for (const node of exportNodes) {
+    const { line } = bridgeGetLineAndColumn(node);
+
+    // Check for type-only exports
+    const raw = node.raw as TreeSitterNode;
+    const isTypeOnly = raw?.children?.some(c => !c.isNamed && c.type === 'type') ?? false;
+
+    // export clause with named exports
+    const exportClause = findChildOfType(node, 'export_clause');
+    if (exportClause) {
+      const namedExports = findChildOfType(exportClause, 'named_exports');
+      if (namedExports) {
+        for (const child of namedExports.children ?? []) {
+          if (child.type !== 'export_specifier') continue;
+          const ids = child.children?.filter(c => c.type === 'identifier') ?? [];
+          if (ids.length > 0) {
+            exports.push({
+              name: rawText(ids[ids.length - 1]),
+              isDefault: false,
+              isTypeOnly,
+              line
             });
           }
         }
       }
-      
-      const { line } = getLineAndColumn(sourceFile, node.getStart());
-      imports.push({
-        moduleSpecifier,
-        importedNames,
-        isTypeOnly,
-        line
-      });
     }
-  });
-  
-  return imports;
-}
 
-/**
- * Extract export statements from a source file
- */
-export function getExports(sourceFile: ts.SourceFile): ExportInfo[] {
-  const exports: ExportInfo[] = [];
-  
-  ts.forEachChild(sourceFile, node => {
-    if (ts.isExportDeclaration(node)) {
-      const isTypeOnly = node.isTypeOnly || false;
-      const { line } = getLineAndColumn(sourceFile, node.getStart());
-      
-      if (node.exportClause && ts.isNamedExports(node.exportClause)) {
-        node.exportClause.elements.forEach(element => {
-          exports.push({
-            name: element.name.text,
-            isDefault: false,
-            isTypeOnly,
-            line
-          });
+    // Check for `default` keyword — export default X
+    const isDefault = raw?.children?.some(c => !c.isNamed && c.type === 'default') ?? false;
+    if (isDefault) {
+      const exported = node.children?.find(
+        c => c.type === 'identifier' || c.type === 'function_declaration' ||
+             c.type === 'class_declaration' || c.type === 'call_expression'
+      );
+      if (exported) {
+        const nameNode = findChildOfType(exported, 'identifier');
+        exports.push({
+          name: nameNode ? rawText(nameNode) : 'default',
+          isDefault: true,
+          isTypeOnly,
+          line
         });
       }
-    } else if (ts.isExportAssignment(node)) {
-      const { line } = getLineAndColumn(sourceFile, node.getStart());
-      exports.push({
-        name: 'default',
-        isDefault: true,
-        isTypeOnly: false,
-        line
-      });
     }
-  });
-  
+  }
+
   return exports;
 }
 
-/**
- * Check if a node is exported
- */
-export function isExported(node: ts.Node): boolean {
-  return (
-    (ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Export) !== 0
-  );
-}
+// ---------------------------------------------------------------------------
+// Function finding
+// ---------------------------------------------------------------------------
 
 /**
- * Find all function declarations
+ * Find all function declarations in the AST.
  */
-export function findFunctions(sourceFile: ts.SourceFile): ts.FunctionDeclaration[] {
-  return findNodesByKind<ts.FunctionDeclaration>(
-    sourceFile,
-    ts.SyntaxKind.FunctionDeclaration
-  );
+export function findFunctions(root: ASTNode): ASTNode[] {
+  return findNodes(root, n => n.type === 'function_declaration');
 }
 
-/**
- * Find all class declarations
- */
-export function findClasses(sourceFile: ts.SourceFile): ts.ClassDeclaration[] {
-  return findNodesByKind<ts.ClassDeclaration>(
-    sourceFile,
-    ts.SyntaxKind.ClassDeclaration
-  );
-}
+// ---------------------------------------------------------------------------
+// Class finding
+// ---------------------------------------------------------------------------
 
 /**
- * Get AST node for inspection
+ * Find all class declarations in the AST.
  */
-export function getASTNode(node: ts.Node): any {
+export function findClasses(root: ASTNode): ASTNode[] {
+  return findNodes(root, n => n.type === 'class_declaration');
+}
+
+// ---------------------------------------------------------------------------
+// AST node inspection
+// ---------------------------------------------------------------------------
+
+/**
+ * Get AST node for inspection/debugging.
+ */
+export function getASTNode(node: ASTNode): any {
   return {
-    kind: ts.SyntaxKind[node.kind],
-    text: node.getText?.() || '',
-    children: node.getChildren?.().map(child => getASTNode(child)) || []
+    type: node.type,
+    text: rawText(node),
+    children: (node.children ?? []).map(child => getASTNode(child))
   };
 }
 
-/**
- * Calculate cyclomatic complexity of a function/method
- */
-export function calculateComplexity(node: ts.FunctionLikeDeclaration): number {
-  let complexity = 1; // Base complexity
-  
-  function visit(node: ts.Node) {
-    switch (node.kind) {
-      case ts.SyntaxKind.IfStatement:
-      case ts.SyntaxKind.WhileStatement:
-      case ts.SyntaxKind.ForStatement:
-      case ts.SyntaxKind.ForInStatement:
-      case ts.SyntaxKind.ForOfStatement:
-      case ts.SyntaxKind.ConditionalExpression:
-      case ts.SyntaxKind.CatchClause:
-      case ts.SyntaxKind.CaseClause:
-        complexity++;
-        break;
-      case ts.SyntaxKind.BinaryExpression:
-        const binary = node as ts.BinaryExpression;
-        if (
-          binary.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
-          binary.operatorToken.kind === ts.SyntaxKind.BarBarToken
-        ) {
-          complexity++;
-        }
-        break;
-    }
-    ts.forEachChild(node, visit);
-  }
-  
-  if (node.body) {
-    visit(node.body);
-  }
-  
-  return complexity;
-}
+// ---------------------------------------------------------------------------
+// Decorator checks
+// ---------------------------------------------------------------------------
 
 /**
- * Check if a node has a specific decorator
+ * Check if a node has a specific decorator.
+ * Tree-sitter parses decorators as `decorator` nodes.
  */
-export function hasDecorator(node: ts.Node, decoratorName: string): boolean {
-  if (!ts.canHaveDecorators(node)) {
-    return false;
-  }
-  
-  const decorators = ts.getDecorators(node);
-  if (!decorators) {
-    return false;
-  }
-  
+export function hasDecorator(node: ASTNode, decoratorName: string): boolean {
+  const decorators = findNodes(node, n => n.type === 'decorator');
   return decorators.some(decorator => {
-    if (ts.isCallExpression(decorator.expression)) {
-      const expression = decorator.expression.expression;
-      return ts.isIdentifier(expression) && expression.text === decoratorName;
+    // decorator → call_expression → identifier (e.g., @Component())
+    const callExpr = findChildOfType(decorator, 'call_expression');
+    if (callExpr) {
+      const callee = callExpr.children?.[0];
+      if (callee?.type === 'identifier' && rawText(callee) === decoratorName) {
+        return true;
+      }
     }
-    return ts.isIdentifier(decorator.expression) && 
-           decorator.expression.text === decoratorName;
+    // decorator → identifier (e.g., @deprecated)
+    const id = findChildOfType(decorator, 'identifier');
+    if (id && rawText(id) === decoratorName) {
+      return true;
+    }
+    return false;
   });
 }
 
+// ---------------------------------------------------------------------------
+// Class method extraction
+// ---------------------------------------------------------------------------
+
 /**
- * Get method names from a class
+ * Get method names from a class declaration node.
+ * Tree-sitter: class_declaration → class_body → method_definition / public_field_definition
  */
-export function getClassMethods(classNode: ts.ClassDeclaration): string[] {
+export function getClassMethods(classNode: ASTNode): string[] {
   const methods: string[] = [];
-  
-  classNode.members.forEach(member => {
-    if (ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
-      methods.push(member.name.text);
+  const classBody = findChildOfType(classNode, 'class_body');
+  if (!classBody) return methods;
+
+  for (const member of classBody.children ?? []) {
+    if (member.type === 'method_definition' || member.type === 'public_field_definition') {
+      const nameNode = member.children?.find(
+        c => c.type === 'identifier' || c.type === 'property_identifier'
+      );
+      if (nameNode) {
+        methods.push(rawText(nameNode));
+      }
     }
-  });
-  
+  }
+
   return methods;
 }
 
+// ---------------------------------------------------------------------------
+// Line counting
+// ---------------------------------------------------------------------------
+
 /**
- * Count lines of code (excluding comments and empty lines)
+ * Count lines of code (excluding comments and empty lines).
+ * Takes source text directly instead of ts.SourceFile.
  */
-export function countLinesOfCode(sourceFile: ts.SourceFile): number {
-  const text = sourceFile.getFullText();
-  const lines = text.split('\n');
+export function countLinesOfCode(sourceCode: string): number {
+  const lines = sourceCode.split('\n');
   let count = 0;
-  
+
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed && !trimmed.startsWith('//') && !trimmed.startsWith('/*')) {
+    if (trimmed && !trimmed.startsWith('//') && !trimmed.startsWith('/*') && !trimmed.startsWith('*')) {
       count++;
     }
   }
-  
+
   return count;
 }
 
+// ---------------------------------------------------------------------------
+// Variable declaration finding
+// ---------------------------------------------------------------------------
+
 /**
- * Find all variable declarations
+ * Find all variable declarations in the AST.
+ * Tree-sitter: variable_declarator nodes.
  */
-export function findVariableDeclarations(
-  sourceFile: ts.SourceFile
-): ts.VariableDeclaration[] {
-  const declarations: ts.VariableDeclaration[] = [];
-  
-  function visit(node: ts.Node) {
-    if (ts.isVariableDeclaration(node)) {
-      declarations.push(node);
+export function findVariableDeclarations(root: ASTNode): ASTNode[] {
+  return findNodes(root, n => n.type === 'variable_declarator');
+}
+
+// ---------------------------------------------------------------------------
+// Async function check
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a function node is async.
+ */
+export function isAsyncFunction(node: ASTNode): boolean {
+  return hasModifier(node, 'async');
+}
+
+// ---------------------------------------------------------------------------
+// Parameter count
+// ---------------------------------------------------------------------------
+
+/**
+ * Get parameter count for a function/method node.
+ * Tree-sitter: formal_parameters → required_parameter / optional_parameter.
+ */
+export function getParameterCount(node: ASTNode): number {
+  const params = findChildOfType(node, 'formal_parameters');
+  if (!params) return 0;
+
+  let count = 0;
+  for (const child of params.children ?? []) {
+    if (child.type === 'required_parameter' || child.type === 'optional_parameter' ||
+        child.type === 'rest_parameter') {
+      count++;
     }
-    ts.forEachChild(node, visit);
   }
-  
-  visit(sourceFile);
-  return declarations;
+  return count;
 }
 
+// ---------------------------------------------------------------------------
+// Type alias finding
+// ---------------------------------------------------------------------------
+
 /**
- * Check if a function is async
+ * Find all type aliases in the AST.
+ * Tree-sitter: type_alias_declaration nodes.
  */
-export function isAsyncFunction(node: ts.FunctionLikeDeclaration): boolean {
-  return !!(node.modifiers?.some(
-    modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword
-  ));
+export function findTypeAliases(root: ASTNode): ASTNode[] {
+  return findNodes(root, n => n.type === 'type_alias_declaration');
 }
 
+// ---------------------------------------------------------------------------
+// Interface finding
+// ---------------------------------------------------------------------------
+
 /**
- * Get parameter count for a function
+ * Find all interface declarations in the AST.
+ * Tree-sitter: interface_declaration nodes.
  */
-export function getParameterCount(node: ts.FunctionLikeDeclaration): number {
-  return node.parameters.length;
+export function findInterfaces(root: ASTNode): ASTNode[] {
+  return findNodes(root, n => n.type === 'interface_declaration');
 }
 
-/**
- * Find all type aliases
- */
-export function findTypeAliases(sourceFile: ts.SourceFile): ts.TypeAliasDeclaration[] {
-  return findNodesByKind<ts.TypeAliasDeclaration>(
-    sourceFile,
-    ts.SyntaxKind.TypeAliasDeclaration
-  );
-}
+// ---------------------------------------------------------------------------
+// File parsing
+// ---------------------------------------------------------------------------
 
 /**
- * Find all interfaces
- */
-export function findInterfaces(sourceFile: ts.SourceFile): ts.InterfaceDeclaration[] {
-  return findNodesByKind<ts.InterfaceDeclaration>(
-    sourceFile,
-    ts.SyntaxKind.InterfaceDeclaration
-  );
-}
-
-/**
- * Parse a TypeScript file
+ * Parse a TypeScript file and return an AST.
+ * Uses the adapterBridge parseFile function.
  */
 export async function parseTypeScriptFile(
   filePath: string
-): Promise<{ sourceFile: ts.SourceFile; errors: ts.Diagnostic[] }> {
+): Promise<{ ast: AST; errors: { message: string; line?: number; column?: number }[] }> {
+  // Dynamic import to avoid circular dependency
+  const { parseFile } = await import('../languages/adapterBridge.js');
   const fs = await import('fs').then(m => m.promises);
   const content = await fs.readFile(filePath, 'utf-8');
-  
-  const compilerOptions: ts.CompilerOptions = {
-    target: ts.ScriptTarget.Latest,
-    module: ts.ModuleKind.ESNext,
-    jsx: ts.JsxEmit.React,
-    lib: ['es2020', 'dom'],
-    skipLibCheck: true,
-    skipDefaultLibCheck: true,
-    allowJs: true,
-    checkJs: false,
-    strict: false,
-    noResolve: true,
-    noLib: false,
-    moduleResolution: ts.ModuleResolutionKind.NodeJs
-  };
-  
-  const sourceFile = ts.createSourceFile(
-    filePath,
-    content,
-    ts.ScriptTarget.Latest,
-    true
-  );
-  
-  // For now, just return the source file without full type checking
-  // This avoids the need for a full TypeScript compiler host setup
-  const errors: ts.Diagnostic[] = [];
-  
-  // Check for basic syntax errors by walking the AST
-  function checkSyntax(node: ts.Node) {
-    if (node.kind === ts.SyntaxKind.Unknown) {
-      errors.push({
-        file: sourceFile,
-        start: node.getStart(),
-        length: node.getWidth(),
-        messageText: 'Syntax error',
-        category: ts.DiagnosticCategory.Error,
-        code: 1000
-      });
-    }
-    ts.forEachChild(node, checkSyntax);
+  const ast = parseFile(filePath, content);
+  if (!ast) {
+    const failLocation = { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } };
+    const failAst: AST = { root: { type: 'source_file', range: [0, 0], location: failLocation, raw: null }, language: 'unknown', filePath, errors: [{ message: 'Failed to parse file', location: failLocation, severity: 'error' }] };
+    return { ast: failAst, errors: [{ message: 'Failed to parse file', line: 0, column: 0 }] };
   }
-  
-  checkSyntax(sourceFile);
-  
-  return { sourceFile, errors };
+  return { ast, errors: ast.errors ?? [] };
 }
 
+// ---------------------------------------------------------------------------
+// Detailed imports
+// ---------------------------------------------------------------------------
+
 /**
- * Enhanced version of getImports that returns detailed ImportMapping[]
+ * Enhanced version of getImports that returns detailed ImportMapping[].
+ * Uses tree-sitter import_statement traversal.
  */
-export function getImportsDetailed(sourceFile: ts.SourceFile): ImportMapping[] {
+export function getImportsDetailed(root: ASTNode): ImportMapping[] {
   const imports: ImportMapping[] = [];
-  
-  ts.forEachChild(sourceFile, node => {
-    if (ts.isImportDeclaration(node)) {
-      const moduleSpecifier = (node.moduleSpecifier as ts.StringLiteral).text;
-      const importClause = node.importClause;
-      
-      if (importClause) {
-        // Default import
-        if (importClause.name) {
-          imports.push({
-            localName: importClause.name.text,
-            importedName: 'default',
-            modulePath: moduleSpecifier,
-            importType: 'default',
-            isTypeOnly: importClause.isTypeOnly || false
-          });
-        }
-        
-        // Named imports
-        if (importClause.namedBindings) {
-          if (ts.isNamespaceImport(importClause.namedBindings)) {
-            imports.push({
-              localName: importClause.namedBindings.name.text,
-              importedName: '*',
-              modulePath: moduleSpecifier,
-              importType: 'namespace',
-              isTypeOnly: importClause.isTypeOnly || false
-            });
-          } else if (ts.isNamedImports(importClause.namedBindings)) {
-            importClause.namedBindings.elements.forEach(element => {
-              imports.push({
-                localName: element.name.text,
-                importedName: element.propertyName?.text || element.name.text,
-                modulePath: moduleSpecifier,
-                importType: 'named',
-                isTypeOnly: importClause.isTypeOnly || element.isTypeOnly || false
-              });
-            });
-          }
-        }
-      } else {
-        // Side-effect import (no import clause) - e.g., import './polyfills'
+  const importNodes = findNodes(root, n => n.type === 'import_statement');
+
+  for (const node of importNodes) {
+    const moduleNode = findChildOfType(node, 'string');
+    if (!moduleNode) continue;
+
+    const moduleSpecifier = rawText(moduleNode).replace(/^["']|["']$/g, '');
+
+    const importClause = findChildOfType(node, 'import_clause');
+    if (!importClause) {
+      // Side-effect import (no import clause)
+      imports.push({
+        localName: `[side-effect]::${moduleSpecifier}`,
+        importedName: '[side-effect]',
+        modulePath: moduleSpecifier,
+        importType: 'namespace' as any, // side-effect imports treated as namespace
+        isTypeOnly: false
+      });
+      continue;
+    }
+
+    const raw = importClause.raw as TreeSitterNode;
+    const isTypeOnly = raw?.children?.some(c => !c.isNamed && c.type === 'type') ?? false;
+
+    // Default import
+    const defaultId = importClause.children?.find(c => c.type === 'identifier');
+    if (defaultId) {
+      imports.push({
+        localName: rawText(defaultId),
+        importedName: 'default',
+        modulePath: moduleSpecifier,
+        importType: 'default',
+        isTypeOnly: isTypeOnly || false
+      });
+    }
+
+    // Named imports
+    const namedImports = findChildOfType(importClause, 'named_imports');
+    if (namedImports) {
+      for (const child of namedImports.children ?? []) {
+        if (child.type !== 'import_specifier') continue;
+        const identifiers = child.children?.filter(c => c.type === 'identifier') ?? [];
+        if (identifiers.length === 0) continue;
+
+        const localName = rawText(identifiers[identifiers.length - 1]);
+        const importedName = identifiers.length > 1 ? rawText(identifiers[0]) : localName;
+
         imports.push({
-          localName: `[side-effect]::${moduleSpecifier}`,
-          importedName: '[side-effect]',
+          localName,
+          importedName,
           modulePath: moduleSpecifier,
-          importType: 'side-effect' as any,
-          isTypeOnly: false
+          importType: 'named',
+          isTypeOnly: isTypeOnly || false
         });
       }
     }
-  });
-  
+
+    // Namespace import
+    const nsImport = findChildOfType(importClause, 'namespace_import');
+    if (nsImport) {
+      const nsId = findChildOfType(nsImport, 'identifier');
+      if (nsId) {
+        imports.push({
+          localName: rawText(nsId),
+          importedName: '*',
+          modulePath: moduleSpecifier,
+          importType: 'namespace',
+          isTypeOnly: isTypeOnly || false
+        });
+      }
+    }
+  }
+
   return imports;
 }
 
+// ---------------------------------------------------------------------------
+// Re-exports
+// ---------------------------------------------------------------------------
+
 /**
- * Get re-exports from a source file
+ * Get re-exports from a source file.
+ * Tree-sitter: export_statement → string (module specifier).
  */
-export function getReExports(sourceFile: ts.SourceFile): Array<{name: string; module: string}> {
-  const reExports: Array<{name: string; module: string}> = [];
-  
-  ts.forEachChild(sourceFile, node => {
-    // Handle export declarations with module specifier - e.g., export { x } from './y'
-    if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
-      const moduleSpecifier = (node.moduleSpecifier as ts.StringLiteral).text;
-      
-      if (node.exportClause && ts.isNamedExports(node.exportClause)) {
-        node.exportClause.elements.forEach(element => {
-          reExports.push({
-            name: element.propertyName?.text || element.name.text,
-            module: moduleSpecifier
-          });
-        });
-      } else if (!node.exportClause) {
-        // export * from './module'
-        reExports.push({
-          name: '*',
-          module: moduleSpecifier
-        });
+export function getReExports(root: ASTNode): Array<{ name: string; module: string }> {
+  const reExports: Array<{ name: string; module: string }> = [];
+  const exportNodes = findNodes(root, n =>
+    n.type === 'export_statement' || n.type === 'export_declaration'
+  );
+
+  for (const node of exportNodes) {
+    // Check if there's a module specifier (export { x } from './y')
+    const moduleNode = findChildOfType(node, 'string');
+    if (!moduleNode) continue;
+    const moduleSpecifier = rawText(moduleNode).replace(/^["']|["']$/g, '');
+
+    const exportClause = findChildOfType(node, 'export_clause');
+    if (exportClause) {
+      const namedExports = findChildOfType(exportClause, 'named_exports');
+      if (namedExports) {
+        for (const child of namedExports.children ?? []) {
+          if (child.type !== 'export_specifier') continue;
+          const identifiers = child.children?.filter(c => c.type === 'identifier') ?? [];
+          if (identifiers.length > 0) {
+            const name = identifiers.length > 1
+              ? rawText(identifiers[0])
+              : rawText(identifiers[identifiers.length - 1]);
+            reExports.push({ name, module: moduleSpecifier });
+          }
+        }
       }
+    } else if (!exportClause) {
+      // export * from './module' — no export clause
+      reExports.push({ name: '*', module: moduleSpecifier });
     }
-  });
-  
+  }
+
   return reExports;
 }
 
-/**
- * Extract identifier usage to track which imports are used
- */
-export function extractIdentifierUsage(
-  node: ts.Node,
-  sourceFile: ts.SourceFile,
-  importNames: Set<string>
-): Map<string, UsageInfo> {
-  const usageMap = new Map<string, UsageInfo>();
-  
-  function visit(node: ts.Node): void {
-    // Handle identifiers (most common case)
-    if (ts.isIdentifier(node)) {
-      const name = node.text;
-      
-      if (importNames.has(name)) {
-        // Check if this identifier should be counted as usage
-        let shouldCount = true;
-        
-        // Skip if this is part of an import declaration
-        let parent = node.parent;
-        while (parent) {
-          if (ts.isImportDeclaration(parent) || ts.isImportSpecifier(parent) || 
-              ts.isImportClause(parent) || ts.isNamedImports(parent)) {
-            shouldCount = false;
-            break;
-          }
-          parent = parent.parent;
-        }
-        
-        // For property access expressions, only count the leftmost identifier
-        if (shouldCount && ts.isPropertyAccessExpression(node.parent)) {
-          // Only count if this identifier is the expression (left side), not the name (right side)
-          shouldCount = node.parent.expression === node;
-        }
-        
-        // Handle element access (dynamic property access) - e.g., config[key]
-        if (shouldCount && ts.isElementAccessExpression(node.parent)) {
-          shouldCount = node.parent.expression === node;
-        }
-        
-        if (shouldCount) {
-          const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-          const existing = usageMap.get(name) || {
-            usageType: 'direct',
-            usageCount: 0,
-            lineNumbers: []
-          };
-          
-          existing.usageCount++;
-          existing.lineNumbers.push(line + 1);
-          
-          // Determine usage type - comprehensive type usage detection
-          if (isTypeOnlyUsage(node)) {
-            existing.usageType = 'type';
-          } else if (ts.isExportSpecifier(node.parent)) {
-            existing.usageType = 'reexport';
-          }
-          
-          usageMap.set(name, existing);
-        }
-      }
-    }
-    
-    // Handle spread operators - e.g., {...defaults}
-    else if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) {
-      const expr = node.expression;
-      if (ts.isIdentifier(expr) && importNames.has(expr.text)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(expr.getStart());
-        const existing = usageMap.get(expr.text) || {
-          usageType: 'direct',
-          usageCount: 0,
-          lineNumbers: []
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line + 1);
-        usageMap.set(expr.text, existing);
-      }
-    }
-    
-    // Handle JSX elements - e.g., <Button /> or <Button.Primary />
-    else if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
-      const tagName = ts.isJsxElement(node) ? node.openingElement.tagName : node.tagName;
-      
-      if (ts.isIdentifier(tagName) && importNames.has(tagName.text)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(tagName.getStart());
-        const existing = usageMap.get(tagName.text) || {
-          usageType: 'direct',
-          usageCount: 0,
-          lineNumbers: []
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line + 1);
-        usageMap.set(tagName.text, existing);
-      } else if (ts.isPropertyAccessExpression(tagName)) {
-        // Handle compound components like <Button.Primary />
-        if (ts.isIdentifier(tagName.expression) && importNames.has(tagName.expression.text)) {
-          const { line } = sourceFile.getLineAndCharacterOfPosition(tagName.expression.getStart());
-          const existing = usageMap.get(tagName.expression.text) || {
-            usageType: 'direct',
-            usageCount: 0,
-            lineNumbers: []
-          };
-          existing.usageCount++;
-          existing.lineNumbers.push(line + 1);
-          usageMap.set(tagName.expression.text, existing);
-        }
-      }
-    }
-    
-    // Handle decorators - e.g., @withAuth
-    else if (ts.isDecorator(node)) {
-      const expr = node.expression;
-      if (ts.isIdentifier(expr) && importNames.has(expr.text)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(expr.getStart());
-        const existing = usageMap.get(expr.text) || {
-          usageType: 'direct',
-          usageCount: 0,
-          lineNumbers: []
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line + 1);
-        usageMap.set(expr.text, existing);
-      } else if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression) && 
-                 importNames.has(expr.expression.text)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(expr.expression.getStart());
-        const existing = usageMap.get(expr.expression.text) || {
-          usageType: 'direct',
-          usageCount: 0,
-          lineNumbers: []
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line + 1);
-        usageMap.set(expr.expression.text, existing);
-      }
-    }
-    
-    // Handle object literal property assignments for factory patterns
-    else if (ts.isPropertyAssignment(node)) {
-      // Check if the initializer is an imported identifier
-      if (ts.isIdentifier(node.initializer) && importNames.has(node.initializer.text)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.initializer.getStart());
-        const existing = usageMap.get(node.initializer.text) || {
-          usageType: 'direct',
-          usageCount: 0,
-          lineNumbers: []
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line + 1);
-        usageMap.set(node.initializer.text, existing);
-      }
-    }
-    
-    // Handle shorthand property assignments - e.g., { ComponentA, ComponentB }
-    else if (ts.isShorthandPropertyAssignment(node)) {
-      if (importNames.has(node.name.text)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.name.getStart());
-        const existing = usageMap.get(node.name.text) || {
-          usageType: 'direct',
-          usageCount: 0,
-          lineNumbers: []
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line + 1);
-        usageMap.set(node.name.text, existing);
-      }
-    }
-    
-    ts.forEachChild(node, visit);
-  }
-  
-  /**
-   * Comprehensive check for type-only usage patterns
-   */
-  function isTypeOnlyUsage(node: ts.Identifier): boolean {
-    let parent = node.parent;
-    
-    // Direct type node checks
-    if (ts.isTypeNode(parent) || ts.isTypeReferenceNode(parent)) {
-      return true;
-    }
-    
-    // Type query (typeof X)
-    if (ts.isTypeQueryNode(parent)) {
-      return true;
-    }
-    
-    // Qualified name in type position
-    if (ts.isQualifiedName(parent) && parent.left === node) {
-      return isTypeOnlyUsage(parent as any);
-    }
-    
-    // Interface extension: interface X extends BaseType
-    // Check if this identifier is used in an interface extends clause
-    if (ts.isExpressionWithTypeArguments(parent) && parent.expression === node) {
-      const heritageClause = parent.parent;
-      if (ts.isHeritageClause(heritageClause) && heritageClause.token === ts.SyntaxKind.ExtendsKeyword) {
-        const interfaceDecl = heritageClause.parent;
-        if (ts.isInterfaceDeclaration(interfaceDecl)) {
-          return true;
-        }
-      }
-    }
-    
-    // Also handle property access in interface extension: interface X extends Namespace.BaseType
-    if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
-      const grandParent = parent.parent;
-      if (ts.isExpressionWithTypeArguments(grandParent) && grandParent.expression === parent) {
-        const heritageClause = grandParent.parent;
-        if (ts.isHeritageClause(heritageClause) && heritageClause.token === ts.SyntaxKind.ExtendsKeyword) {
-          const interfaceDecl = heritageClause.parent;
-          if (ts.isInterfaceDeclaration(interfaceDecl)) {
-            return true;
-          }
-        }
-      }
-    }
-    
-    // Type alias: type X = BaseType | BaseType & Other
-    if (ts.isTypeAliasDeclaration(parent) && parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Class implements: class X implements BaseType
-    if (ts.isClassDeclaration(parent) && parent.heritageClauses) {
-      for (const clause of parent.heritageClauses) {
-        if (clause.token === ts.SyntaxKind.ImplementsKeyword) {
-          for (const type of clause.types) {
-            if (type.expression === node || 
-                (ts.isPropertyAccessExpression(type.expression) && type.expression.expression === node)) {
-              return true;
-            }
-          }
-        }
-      }
-    }
-    
-    // Generic constraints: function test<T extends BaseType>()
-    if (ts.isTypeParameterDeclaration(parent) && parent.constraint) {
-      return isNodeInTypePosition(node, parent.constraint);
-    }
-    
-    // Type annotations in variable declarations: const x: BaseType = ...
-    if (ts.isVariableDeclaration(parent) && parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Type assertions: value as BaseType or <BaseType>value
-    if (ts.isAsExpression(parent) && parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    if (ts.isTypeAssertionExpression(parent) && parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Satisfies expressions: expression satisfies Type
-    if (ts.isSatisfiesExpression && ts.isSatisfiesExpression(parent) && parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Type parameters/arguments: Array<BaseType>, Promise<BaseType>
-    if (ts.isTypeReferenceNode(parent) && parent.typeArguments) {
-      for (const arg of parent.typeArguments) {
-        if (isNodeInTypePosition(node, arg)) {
-          return true;
-        }
-      }
-    }
-    
-    // Return type annotations: function test(): BaseType
-    if ((ts.isFunctionDeclaration(parent) || 
-         ts.isMethodDeclaration(parent) || 
-         ts.isArrowFunction(parent) || 
-         ts.isFunctionExpression(parent) ||
-         ts.isGetAccessorDeclaration(parent) ||
-         ts.isMethodSignature(parent)) && 
-        parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Parameter type annotations: function test(x: BaseType)
-    if (ts.isParameter(parent) && parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Property type annotations: { prop: BaseType } or class { prop: BaseType }
-    if ((ts.isPropertyDeclaration(parent) || 
-         ts.isPropertySignature(parent)) && 
-        parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Index signature types: { [key: string]: BaseType }
-    if (ts.isIndexSignatureDeclaration(parent) && parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Mapped type constraint or type: { [K in keyof BaseType]: ... }
-    if (ts.isMappedTypeNode(parent)) {
-      if (parent.typeParameter && parent.typeParameter.constraint) {
-        return isNodeInTypePosition(node, parent.typeParameter.constraint);
-      }
-      if (parent.type) {
-        return isNodeInTypePosition(node, parent.type);
-      }
-    }
-    
-    // Conditional types: T extends BaseType ? X : Y
-    if (ts.isConditionalTypeNode(parent)) {
-      return isNodeInTypePosition(node, parent.checkType) || 
-             isNodeInTypePosition(node, parent.extendsType) ||
-             isNodeInTypePosition(node, parent.trueType) ||
-             isNodeInTypePosition(node, parent.falseType);
-    }
-    
-    // Union and intersection types: BaseType | Other, BaseType & Other
-    if (ts.isUnionTypeNode(parent) || ts.isIntersectionTypeNode(parent)) {
-      for (const type of parent.types) {
-        if (isNodeInTypePosition(node, type)) {
-          return true;
-        }
-      }
-    }
-    
-    // Type predicate: function isX(value: any): value is BaseType
-    if (ts.isTypePredicateNode(parent) && parent.type) {
-      return isNodeInTypePosition(node, parent.type);
-    }
-    
-    // Check if we need to traverse up the tree
-    if (parent.parent) {
-      // For nested type structures, check if parent is in type position
-      if (ts.isTypeNode(parent)) {
-        return true;
-      }
-      
-      // Check grandparent for certain patterns
-      const grandparent = parent.parent;
-      
-      // Heritage clauses (extends/implements) with property access
-      if (ts.isExpressionWithTypeArguments(parent) && 
-          ts.isHeritageClause(grandparent)) {
-        return true;
-      }
-      
-      // Type arguments in call expressions: func<BaseType>()
-      if (ts.isCallExpression(grandparent) && 
-          grandparent.typeArguments) {
-        for (const arg of grandparent.typeArguments) {
-          if (isNodeInTypePosition(node, arg)) {
-            return true;
-          }
-        }
-      }
-      
-      // Type arguments in new expressions: new Class<BaseType>()
-      if (ts.isNewExpression(grandparent) && 
-          grandparent.typeArguments) {
-        for (const arg of grandparent.typeArguments) {
-          if (isNodeInTypePosition(node, arg)) {
-            return true;
-          }
-        }
-      }
-      
-      // Tagged template type arguments: tag<BaseType>`...`
-      if (ts.isTaggedTemplateExpression(grandparent) && 
-          grandparent.typeArguments) {
-        for (const arg of grandparent.typeArguments) {
-          if (isNodeInTypePosition(node, arg)) {
-            return true;
-          }
-        }
-      }
-    }
-    
-    return false;
-  }
-  
-  /**
-   * Helper to check if a node is within a type node
-   */
-  function isNodeInTypePosition(identifier: ts.Identifier, typeNode: ts.Node): boolean {
-    let found = false;
-    
-    function checkNode(node: ts.Node): void {
-      if (found) return;
-      
-      if (node === identifier) {
-        found = true;
-        return;
-      }
-      
-      ts.forEachChild(node, checkNode);
-    }
-    
-    checkNode(typeNode);
-    return found;
-  }
-  
-  visit(node);
-  return usageMap;
-}
+// ---------------------------------------------------------------------------
+// Identifier usage extraction
+// ---------------------------------------------------------------------------
 
 /**
- * Check if a function name is defined locally in the file
+ * Check whether an identifier node is used in a type-only position.
+ *
+ * Tree-sitter equivalence mapping for the original TS API checks:
+ *
+ * | TS API check                       | Tree-sitter equivalent                 |
+ * |------------------------------------|----------------------------------------|
+ * | ts.isTypeNode(p)                   | p.type === 'type_annotation'           |
+ * | ts.isTypeReferenceNode(p)          | p.type === 'type_reference'            |
+ * | ts.isTypeQueryNode(p)              | p.type === 'typeof_expression'         |
+ * | ts.isQualifiedName(p)              | p.type === 'qualified_name'            |
+ * | ts.isExpressionWithTypeArguments(p)| p.type === 'generic_type'              |
+ * | ts.isPropertyAccessExpression(p)   | p.type === 'member_expression'         |
+ * | ts.isHeritageClause(p)             | p.type === 'heritage_clause'           |
+ * | ts.isInterfaceDeclaration(p)       | p.type === 'interface_declaration'     |
+ * | ts.isTypeAliasDeclaration(p)       | p.type === 'type_alias_declaration'    |
+ * | ts.isClassDeclaration(p)           | p.type === 'class_declaration'         |
+ * | ts.isTypeParameterDeclaration(p)   | p.type === 'type_parameter'            |
+ * | ts.isVariableDeclaration(p)        | p.type === 'variable_declarator'       |
+ * | ts.isAsExpression(p)               | p.type === 'as_expression'             |
+ * | ts.isTypeAssertionExpression(p)    | p.type === 'type_assertion'            |
+ * | ts.isSatisfiesExpression(p)        | (not directly; check parent)           |
+ * | ts.isTypeReferenceNode(p)          | p.type === 'type_identifier'           |
+ * | ts.isUnionTypeNode(p)              | p.type === 'union_type'                |
+ * | ts.isIntersectionTypeNode(p)       | p.type === 'intersection_type'         |
+ * | ts.isConditionalTypeNode(p)        | p.type === 'conditional_type'          |
+ * | ts.isMappedTypeNode(p)             | p.type === 'mapped_type_clause'        |
+ * | ts.isIndexSignatureDeclaration(p)  | p.type === 'index_signature'           |
+ * | ts.isTypePredicateNode(p)          | p.type === 'type_predicate'            |
+ * | ts.isMethodDeclaration(p)          | p.type === 'method_definition'         |
+ * | ts.isMethodSignature(p)            | p.type === 'method_signature'          |
+ * | ts.isPropertyDeclaration(p)        | p.type === 'class_property'            |
+ * | ts.isPropertySignature(p)          | p.type === 'property_signature'        |
+ * | ts.isGetAccessorDeclaration(p)     | p.type === 'get_accessor'              |
+ * | ts.isFunctionDeclaration(p)        | p.type === 'function_declaration'      |
+ * | ts.isArrowFunction(p)              | p.type === 'arrow_function'            |
+ * | ts.isFunctionExpression(p)         | p.type === 'function_expression'       |
+ * | ts.isParameter(p)                  | p.type === 'required_parameter'        |
+ * | ts.isCallExpression(p)             | p.type === 'call_expression'           |
+ * | ts.isNewExpression(p)              | p.type === 'new_expression'            |
+ * | ts.isTaggedTemplateExpression(p)   | p.type === 'tagged_template_literal'   |
+ * | ts.isImportDeclaration(p)          | p.type === 'import_statement'          |
+ * | ts.isImportSpecifier(p)            | p.type === 'import_specifier'          |
+ * | ts.isImportClause(p)               | p.type === 'import_clause'             |
+ * | ts.isNamedImports(p)               | p.type === 'named_imports'             |
+ * | ts.isExportSpecifier(p)            | p.type === 'export_specifier'          |
+ * | ts.isJsxElement(p)                 | p.type === 'jsx_element'               |
+ * | ts.isJsxSelfClosingElement(p)      | p.type === 'jsx_self_closing_element'  |
+ * | ts.isDecorator(p)                  | p.type === 'decorator'                 |
+ * | ts.isSpreadElement(p)              | p.type === 'spread_element'            |
+ * | ts.isSpreadAssignment(p)           | p.type === 'spread_element'            |
+ * | ts.isShorthandPropertyAssignment(p)| p.type === 'shorthand_property_identifier' |
+ * | ts.isPropertyAssignment(p)         | p.type === 'pair' with 'property_identifier' child |
+ * | ts.isIdentifier(p)                 | p.type === 'identifier'                |
+ * | ts.isElementAccessExpression(p)    | p.type === 'subscript_expression'      |
  */
-export function isLocalFunction(name: string, sourceFile: ts.SourceFile): boolean {
+
+/** Set of tree-sitter node types that represent type positions */
+const TYPE_NODE_TYPES = new Set([
+  'type_annotation',
+  'type_identifier',
+  'generic_type',
+  'qualified_name',
+  'union_type',
+  'intersection_type',
+  'conditional_type',
+  'mapped_type_clause',
+  'index_signature',
+  'type_predicate',
+  'predefined_type',
+  'string_type',
+  'number_type',
+  'boolean_type',
+  'object_type',
+  'array_type',
+  'tuple_type',
+  'function_type',
+  'constructor_type',
+  'typeof_expression',
+  'template_type',
+  'literal_type',
+  'lookup_type',
+  'this_type',
+  'optional_type',
+  'rest_type',
+]);
+
+/** Set of declaration node types that can have heritage clauses or type params */
+const DECLARATION_TYPES = new Set([
+  'function_declaration',
+  'method_definition',
+  'method_signature',
+  'arrow_function',
+  'function_expression',
+  'variable_declarator',
+  'class_declaration',
+  'interface_declaration',
+  'type_alias_declaration',
+]);
+
+/** Set of node types that represent spreads */
+const SPREAD_TYPES = new Set(['spread_element', 'rest_parameter']);
+
+/**
+ * Recursively check if the identifier node is contained within the given type node.
+ */
+function isNodeInTypePosition(identifier: ASTNode, typeNode: ASTNode): boolean {
   let found = false;
-  
-  function visit(node: ts.Node): void {
+
+  function checkNode(node: ASTNode): void {
     if (found) return;
-    
-    if (ts.isFunctionDeclaration(node) && node.name && node.name.text === name) {
+    if (node === identifier) {
       found = true;
-    } else if (ts.isVariableStatement(node)) {
-      node.declarationList.declarations.forEach(decl => {
-        if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && 
-            decl.name.text === name && decl.initializer &&
-            (ts.isFunctionExpression(decl.initializer) || ts.isArrowFunction(decl.initializer))) {
-          found = true;
-        }
-      });
-    } else if (ts.isClassDeclaration(node) && node.name && node.name.text === name) {
-      found = true;
+      return;
     }
-    
-    if (!found) {
-      ts.forEachChild(node, visit);
+    for (const child of node.children ?? []) {
+      checkNode(child);
     }
   }
-  
-  visit(sourceFile);
+
+  checkNode(typeNode);
   return found;
 }
 
 /**
- * Normalize a function call target for consistent naming
+ * Check if an identifier node is used only as a type.
+ * Uses tree-sitter node type checks instead of TS API's `isTypeNode` etc.
+ */
+function isTypeOnlyUsage(identifier: ASTNode): boolean {
+  const parent = identifier.parent;
+  if (!parent) return false;
+
+  // Direct type position — parent is a type_annotation, type_reference, etc.
+  if (TYPE_NODE_TYPES.has(parent.type)) {
+    return true;
+  }
+
+  // Type query: `typeof X`
+  if (parent.type === 'typeof_expression') {
+    return true;
+  }
+
+  // Qualified name in type position
+  if (parent.type === 'qualified_name' && parent.children?.[0] === identifier) {
+    return isTypeOnlyUsage(parent);
+  }
+
+  // Generic type arguments: `SomeType<X>` where X is the identifier
+  if (parent.type === 'generic_type' && parent.children?.[0] === identifier) {
+    const heritageClause = parent.parent;
+    if (heritageClause?.type === 'heritage_clause') {
+      const raw = (heritageClause.raw as TreeSitterNode);
+      const isExtends = raw?.children?.some(c => !c.isNamed && c.type === 'extends');
+      if (isExtends) {
+        const interfaceNode = heritageClause.parent;
+        if (interfaceNode?.type === 'interface_declaration') {
+          return true;
+        }
+      }
+    }
+  }
+
+  // `namespace.Type` in type position — check if left side is identifier
+  if (parent.type === 'member_expression' && parent.children?.[0] === identifier) {
+    const grandParent = parent.parent;
+    if (grandParent?.type === 'generic_type') {
+      const heritageClause = grandParent.parent;
+      if (heritageClause?.type === 'heritage_clause') {
+        const raw = (heritageClause.raw as TreeSitterNode);
+        const isExtends = raw?.children?.some(c => !c.isNamed && c.type === 'extends');
+        if (isExtends) {
+          const interfaceNode = heritageClause.parent;
+          if (interfaceNode?.type === 'interface_declaration') {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  // Type alias: `type X = SomeType`
+  if (parent.type === 'type_alias_declaration') {
+    const typeAnnotation = findChildOfType(parent, 'type_annotation');
+    if (typeAnnotation) {
+      return isNodeInTypePosition(identifier, typeAnnotation);
+    }
+  }
+
+  // Class implements: `class X implements SomeType`
+  if (parent.type === 'class_declaration') {
+    for (const child of parent.children ?? []) {
+      if (child.type !== 'heritage_clause') continue;
+      const raw = (child.raw as TreeSitterNode);
+      const isImplements = raw?.children?.some(c => !c.isNamed && c.type === 'implements');
+      if (!isImplements) continue;
+      for (const typeNode of child.children ?? []) {
+        if (typeNode === identifier) return true;
+        if (typeNode.type === 'member_expression' && typeNode.children?.[0] === identifier) return true;
+        if (typeNode.type === 'generic_type' && typeNode.children?.[0] === identifier) return true;
+      }
+    }
+  }
+
+  // Generic constraints: `function test<T extends SomeType>()`
+  if (parent.type === 'type_parameter') {
+    const constraint = findChildOfType(parent, 'type_annotation'); // or constraint
+    if (constraint) {
+      return isNodeInTypePosition(identifier, constraint);
+    }
+    // Also check for generic_type in constraint position
+    for (const child of parent.children ?? []) {
+      if (child.type !== 'identifier' && child.type !== 'type_parameter') {
+        if (isNodeInTypePosition(identifier, child)) return true;
+      }
+    }
+  }
+
+  // Type annotations in variable declarations: `const x: SomeType = ...`
+  if (parent.type === 'variable_declarator') {
+    const typeAnnot = findChildOfType(parent, 'type_annotation');
+    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
+  }
+
+  // Type assertions: `value as SomeType` or `<SomeType>value`
+  if (parent.type === 'as_expression') {
+    const typeNode = parent.children?.find(c => c.type !== 'identifier' && c.type !== 'as');
+    if (typeNode && isNodeInTypePosition(identifier, typeNode)) return true;
+  }
+  if (parent.type === 'type_assertion') {
+    const typeNode = findChildOfType(parent, 'type_annotation');
+    if (typeNode && isNodeInTypePosition(identifier, typeNode)) return true;
+  }
+
+  // Type parameters/arguments: `Array<SomeType>`, `Promise<SomeType>`
+  if (parent.type === 'type_identifier' || parent.type === 'generic_type') {
+    const typeArgs = findChildOfType(parent, 'type_arguments');
+    if (typeArgs) {
+      for (const arg of typeArgs.children ?? []) {
+        if (isNodeInTypePosition(identifier, arg)) return true;
+      }
+    }
+  }
+
+  // Return type annotations: `function test(): SomeType`
+  if (DECLARATION_TYPES.has(parent.type)) {
+    const typeAnnot = findChildOfType(parent, 'type_annotation');
+    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
+  }
+
+  // Parameter type annotations: `function test(x: SomeType)`
+  if (parent.type === 'required_parameter' || parent.type === 'optional_parameter') {
+    const typeAnnot = findChildOfType(parent, 'type_annotation');
+    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
+  }
+
+  // Property type annotations: `{ prop: SomeType }` or `class { prop: SomeType }`
+  if (parent.type === 'property_signature' || parent.type === 'class_property') {
+    const typeAnnot = findChildOfType(parent, 'type_annotation');
+    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
+  }
+
+  // Index signature: `{ [key: string]: SomeType }`
+  if (parent.type === 'index_signature') {
+    const typeAnnot = findChildOfType(parent, 'type_annotation');
+    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
+  }
+
+  // Mapped type constraint or type
+  if (parent.type === 'mapped_type_clause') {
+    const typeParam = findChildOfType(parent, 'type_parameter');
+    if (typeParam) {
+      const constraint = findChildOfType(typeParam, 'type_annotation');
+      if (constraint && isNodeInTypePosition(identifier, constraint)) return true;
+    }
+    const typeAnnot = findChildOfType(parent, 'type_annotation');
+    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
+  }
+
+  // Conditional types: `T extends SomeType ? X : Y`
+  if (parent.type === 'conditional_type') {
+    for (const child of parent.children ?? []) {
+      if (isNodeInTypePosition(identifier, child)) return true;
+    }
+  }
+
+  // Union and intersection types
+  if (parent.type === 'union_type' || parent.type === 'intersection_type') {
+    for (const child of parent.children ?? []) {
+      if (isNodeInTypePosition(identifier, child)) return true;
+    }
+  }
+
+  // Type predicate: `function isX(value: any): value is SomeType`
+  if (parent.type === 'type_predicate') {
+    const annot = findChildOfType(parent, 'type_annotation');
+    if (annot && isNodeInTypePosition(identifier, annot)) return true;
+  }
+
+  // Walk up: if parent is itself in a type position, check further up
+  if (parent.parent) {
+    // Heritage clauses
+    if (parent.type === 'generic_type' && parent.parent.type === 'heritage_clause') {
+      return true;
+    }
+
+    // Type arguments in call expressions: `func<SomeType>()`
+    if (parent.parent.type === 'call_expression') {
+      const typeArgs = findChildOfType(parent.parent, 'type_arguments');
+      if (typeArgs) {
+        for (const arg of typeArgs.children ?? []) {
+          if (isNodeInTypePosition(identifier, arg)) return true;
+        }
+      }
+    }
+
+    // Type arguments in new expressions: `new Class<SomeType>()`
+    if (parent.parent.type === 'new_expression') {
+      const typeArgs = findChildOfType(parent.parent, 'type_arguments');
+      if (typeArgs) {
+        for (const arg of typeArgs.children ?? []) {
+          if (isNodeInTypePosition(identifier, arg)) return true;
+        }
+      }
+    }
+
+    // Type arguments in tagged template expressions
+    if (parent.parent.type === 'tagged_template_literal') {
+      const typeArgs = findChildOfType(parent.parent, 'type_arguments');
+      if (typeArgs) {
+        for (const arg of typeArgs.children ?? []) {
+          if (isNodeInTypePosition(identifier, arg)) return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Extract identifier usage to track which imports are used.
+ * Uses tree-sitter AST traversal with walkAST.
+ */
+export function extractIdentifierUsage(
+  root: ASTNode,
+  sourceCode: string,
+  importNames: Set<string>
+): Map<string, UsageInfo> {
+  const usageMap = new Map<string, UsageInfo>();
+
+  walkAST(root, (node) => {
+    // --- identifiers ---
+    if (node.type === 'identifier') {
+      const name = rawText(node);
+
+      if (importNames.has(name)) {
+        let shouldCount = true;
+
+        // Skip if part of an import declaration
+        let p = node.parent;
+        while (p) {
+          if (p.type === 'import_statement' || p.type === 'import_specifier' ||
+              p.type === 'import_clause' || p.type === 'named_imports') {
+            shouldCount = false;
+            break;
+          }
+          p = p.parent;
+        }
+
+        // For member expressions, only count the leftmost (object) identifier
+        if (shouldCount && node.parent?.type === 'member_expression') {
+          shouldCount = node.parent.children?.[0] === node;
+        }
+
+        // For subscript expressions (element access), only count expression side
+        if (shouldCount && node.parent?.type === 'subscript_expression') {
+          shouldCount = node.parent.children?.[0] === node;
+        }
+
+        if (shouldCount) {
+          const { line } = bridgeGetLineAndColumn(node);
+          const existing = usageMap.get(name) || {
+            usageType: 'direct' as const,
+            usageCount: 0,
+            lineNumbers: [] as number[],
+          };
+
+          existing.usageCount++;
+          existing.lineNumbers.push(line);
+
+          if (isTypeOnlyUsage(node)) {
+            existing.usageType = 'type';
+          } else if (node.parent?.type === 'export_specifier') {
+            existing.usageType = 'reexport';
+          }
+
+          usageMap.set(name, existing);
+        }
+      }
+    }
+
+    // --- spread elements ---
+    else if (SPREAD_TYPES.has(node.type)) {
+      const expr = node.children?.find(c => c.type !== '...');
+      if (expr?.type === 'identifier' && importNames.has(rawText(expr))) {
+        const { line } = bridgeGetLineAndColumn(expr);
+        const existing = usageMap.get(rawText(expr)) || {
+          usageType: 'direct' as const,
+          usageCount: 0,
+          lineNumbers: [] as number[],
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line);
+        usageMap.set(rawText(expr), existing);
+      }
+    }
+
+    // --- JSX elements: <Button /> or <Button.Primary /> ---
+    else if (node.type === 'jsx_element' || node.type === 'jsx_self_closing_element') {
+      let tagNameNode: ASTNode | undefined;
+
+      if (node.type === 'jsx_element') {
+        const openTag = findChildOfType(node, 'open_tag');
+        if (openTag) {
+          tagNameNode = openTag.children?.find(c =>
+            c.type === 'identifier' || c.type === 'member_expression');
+        }
+      } else {
+        tagNameNode = node.children?.find(c =>
+          c.type === 'identifier' || c.type === 'member_expression');
+      }
+
+      if (tagNameNode) {
+        if (tagNameNode.type === 'identifier' && importNames.has(rawText(tagNameNode))) {
+          const { line } = bridgeGetLineAndColumn(tagNameNode);
+          const existing = usageMap.get(rawText(tagNameNode)) || {
+            usageType: 'direct' as const,
+            usageCount: 0,
+            lineNumbers: [] as number[],
+          };
+          existing.usageCount++;
+          existing.lineNumbers.push(line);
+          usageMap.set(rawText(tagNameNode), existing);
+        } else if (tagNameNode.type === 'member_expression') {
+          const leftmost = tagNameNode.children?.[0];
+          if (leftmost?.type === 'identifier' && importNames.has(rawText(leftmost))) {
+            const { line } = bridgeGetLineAndColumn(leftmost);
+            const existing = usageMap.get(rawText(leftmost)) || {
+              usageType: 'direct' as const,
+              usageCount: 0,
+              lineNumbers: [] as number[],
+            };
+            existing.usageCount++;
+            existing.lineNumbers.push(line);
+            usageMap.set(rawText(leftmost), existing);
+          }
+        }
+      }
+    }
+
+    // --- decorators: @withAuth ---
+    else if (node.type === 'decorator') {
+      // decorator → identifier (e.g., @deprecated)
+      const id = findChildOfType(node, 'identifier');
+      if (id && importNames.has(rawText(id))) {
+        const { line } = bridgeGetLineAndColumn(id);
+        const existing = usageMap.get(rawText(id)) || {
+          usageType: 'direct' as const,
+          usageCount: 0,
+          lineNumbers: [] as number[],
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line);
+        usageMap.set(rawText(id), existing);
+      }
+
+      // decorator → call_expression → identifier (e.g., @Component())
+      const callExpr = findChildOfType(node, 'call_expression');
+      if (callExpr) {
+        const callee = callExpr.children?.[0];
+        if (callee?.type === 'identifier' && importNames.has(rawText(callee))) {
+          const { line } = bridgeGetLineAndColumn(callee);
+          const existing = usageMap.get(rawText(callee)) || {
+            usageType: 'direct' as const,
+            usageCount: 0,
+            lineNumbers: [] as number[],
+          };
+          existing.usageCount++;
+          existing.lineNumbers.push(line);
+          usageMap.set(rawText(callee), existing);
+        }
+      }
+    }
+
+    // --- Object literal property assignments: { key: ImportedValue } ---
+    else if (node.type === 'pair') {
+      const key = node.children?.find(c => c.type === 'property_identifier');
+      const value = node.children?.find(c => c.type === 'identifier' && c !== key);
+      if (value && importNames.has(rawText(value))) {
+        const { line } = bridgeGetLineAndColumn(value);
+        const existing = usageMap.get(rawText(value)) || {
+          usageType: 'direct' as const,
+          usageCount: 0,
+          lineNumbers: [] as number[],
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line);
+        usageMap.set(rawText(value), existing);
+      }
+    }
+
+    // --- Shorthand property assignments: { ComponentA, ComponentB } ---
+    else if (node.type === 'shorthand_property_identifier') {
+      // The value node is a reference to an imported name
+      const ref = node.children?.find(c => c.type === 'identifier');
+      if (ref && importNames.has(rawText(ref))) {
+        const { line } = bridgeGetLineAndColumn(ref);
+        const existing = usageMap.get(rawText(ref)) || {
+          usageType: 'direct' as const,
+          usageCount: 0,
+          lineNumbers: [] as number[],
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line);
+        usageMap.set(rawText(ref), existing);
+      } else if (ref && importNames.has(rawText(ref))) {
+        // shorthand_property_identifier might itself be just text
+        const { line } = bridgeGetLineAndColumn(node);
+        const existing = usageMap.get(rawText(node)) || {
+          usageType: 'direct' as const,
+          usageCount: 0,
+          lineNumbers: [] as number[],
+        };
+        existing.usageCount++;
+        existing.lineNumbers.push(line);
+        usageMap.set(rawText(node), existing);
+      }
+    }
+  });
+
+  return usageMap;
+}
+
+// ---------------------------------------------------------------------------
+// Local function check
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a function name is defined locally in the file.
+ * Uses tree-sitter instead of TS API.
+ */
+export function isLocalFunction(name: string, root: ASTNode): boolean {
+  let found = false;
+
+  walkAST(root, (node) => {
+    if (found) return;
+
+    // function declarations
+    if (node.type === 'function_declaration') {
+      const nameNode = findChildOfType(node, 'identifier');
+      if (nameNode && rawText(nameNode) === name) {
+        found = true;
+      }
+    }
+
+    // variable declarations with arrow functions or function expressions
+    if (node.type === 'variable_declarator') {
+      const nameNode = findChildOfType(node, 'identifier');
+      const initializer = node.children?.find(
+        c => c.type === 'arrow_function' || c.type === 'function_expression'
+      );
+      if (nameNode && initializer && rawText(nameNode) === name) {
+        found = true;
+      }
+    }
+
+    // class declarations
+    if (node.type === 'class_declaration') {
+      const nameNode = findChildOfType(node, 'identifier');
+      if (nameNode && rawText(nameNode) === name) {
+        found = true;
+      }
+    }
+  });
+
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Call target normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a function call target for consistent naming.
+ * No TypeScript dependency — pure string manipulation.
  */
 export function normalizeCallTarget(callee: string, filePath: string): string {
-  // If it already has a module path separator, return as-is
   if (callee.includes('#') || callee.includes('.')) {
     return callee;
   }
-  
-  // Otherwise, prefix with file path
   return `${filePath}#${callee}`;
+}
+
+// ---------------------------------------------------------------------------
+// findNodesByKind — backwards compatible alias
+// ---------------------------------------------------------------------------
+
+/**
+ * Backward-compatible findNodesByKind.
+ * For code that used `findNodesByKind<ts.CallExpression>(sourceFile, ts.SyntaxKind.CallExpression)`,
+ * the equivalent is `findNodesByKind(root, 'call_expression')`.
+ *
+ * Note: the type parameter is retained only for backward compatibility with
+ * the generic-based call pattern; tree-sitter uses string types, not SyntaxKind enums.
+ */
+export function findNodesByKind<T extends ASTNode = ASTNode>(
+  root: ASTNode,
+  nodeType: string
+): T[] {
+  return findNodes(root, n => n.type === nodeType) as T[];
 }

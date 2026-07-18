@@ -3,13 +3,22 @@
  * These replace the BaseAnalyzer class with composable functions
  */
 
-import * as ts from 'typescript';
+import type { AST, ASTNode } from '../languages/types.js';
+import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import * as fs from 'fs/promises';
 import { Violation, AnalyzerResult, SeverityLevel, AuditOptions } from '../types.js';
+import {
+  walkAST,
+  isExported,
+  getNodeName as bridgeGetNodeName,
+  calculateComplexity as bridgeCalculateComplexity,
+  getLineAndColumn as bridgeGetLineAndColumn,
+} from '../languages/adapterBridge.js';
+
 // Re-export utilities from other modules
 export { parseTypeScriptFile } from '../utils/astParser.js';
-export { 
-  getLineAndColumn, 
+export {
+  getLineAndColumn,
   getNodeText,
   getImports,
   findNodesByKind
@@ -20,8 +29,9 @@ export {
  */
 export type FileAnalyzerFunction = (
   filePath: string,
-  sourceFile: ts.SourceFile,
-  config: any
+  ast: AST,
+  config: any,
+  sourceCode?: string
 ) => Promise<Violation[]> | Violation[];
 
 /**
@@ -44,26 +54,27 @@ export async function processFiles(
   const errors: Array<{ file: string; error: string }> = [];
   let processedFiles = 0;
   const startTime = Date.now();
-  
+
   for (const file of files) {
     try {
       // Report progress
       if (progressReporter) {
         progressReporter(processedFiles, files.length, file);
       }
-      
+
       // Read and parse file
       const { parseTypeScriptFile: parse } = await import('../utils/astParser.js');
-      const { sourceFile, errors: parseErrors } = await parse(file);
-      
+      const content = await fs.readFile(file, 'utf-8');
+      const { ast, errors: parseErrors } = await parse(file);
+
       if (parseErrors.length > 0) {
-        throw new Error(`Parse errors: ${parseErrors.map(e => e.messageText).join(', ')}`);
+        throw new Error(`Parse errors: ${parseErrors.map(e => e.message).join(', ')}`);
       }
-      
-      // Run analyzer-specific logic
-      const fileViolations = await analyzeFile(file, sourceFile, config);
+
+      // Run analyzer-specific logic (pass source code for text extraction)
+      const fileViolations = await analyzeFile(file, ast, config, content);
       violations.push(...fileViolations);
-      
+
       processedFiles++;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -71,18 +82,18 @@ export async function processFiles(
       console.error(`Error analyzing ${file}:`, error);
     }
   }
-  
+
   const result: AnalyzerResult = {
     violations,
     filesProcessed: processedFiles,
     executionTime: Date.now() - startTime,
     analyzerName
   };
-  
+
   if (errors.length > 0) {
     result.errors = errors;
   }
-  
+
   return result;
 }
 
@@ -96,77 +107,54 @@ export function createViolation(
 }
 
 /**
- * Get line and column from a TypeScript node
+ * Get line and column from an ASTNode
  */
 export function getNodePosition(
-  sourceFile: ts.SourceFile,
-  node: ts.Node
+  node: ASTNode
 ): { line: number; column: number } {
-  const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-  return { line: line + 1, column: character + 1 };
+  const loc = bridgeGetLineAndColumn(node);
+  return { line: loc.line, column: loc.column };
 }
 
 /**
  * Check if a node is exported
  */
-export function isNodeExported(node: ts.Node): boolean {
-  if (ts.canHaveModifiers(node)) {
-    const modifiers = ts.getModifiers(node);
-    return !!modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword);
-  }
-  return false;
+export function isNodeExported(node: ASTNode): boolean {
+  return isExported(node);
 }
 
 /**
  * Get the name of a node if it has one
  */
-export function getNodeName(node: ts.Node): string | undefined {
-  if ('name' in node && node.name) {
-    const name = node.name as ts.PropertyName;
-    if (ts.isIdentifier(name)) {
-      return name.text;
-    }
-  }
-  return undefined;
+export function getNodeName(node: ASTNode): string | undefined {
+  return bridgeGetNodeName(node) ?? undefined;
 }
 
 /**
  * Count specific node types in a subtree
  */
-export function countNodesOfType<T extends ts.Node>(
-  node: ts.Node,
-  predicate: (node: ts.Node) => node is T
+export function countNodesOfType(
+  node: ASTNode,
+  predicate: (node: ASTNode) => boolean
 ): number {
   let count = 0;
-  
-  const visit = (node: ts.Node) => {
-    if (predicate(node)) {
-      count++;
-    }
-    ts.forEachChild(node, visit);
-  };
-  
-  visit(node);
+  walkAST(node, (n) => {
+    if (predicate(n)) count++;
+  });
   return count;
 }
 
 /**
  * Find all nodes of a specific type
  */
-export function findNodesOfType<T extends ts.Node>(
-  node: ts.Node,
-  predicate: (node: ts.Node) => node is T
-): T[] {
-  const nodes: T[] = [];
-  
-  const visit = (node: ts.Node) => {
-    if (predicate(node)) {
-      nodes.push(node);
-    }
-    ts.forEachChild(node, visit);
-  };
-  
-  visit(node);
+export function findNodesOfType(
+  node: ASTNode,
+  predicate: (node: ASTNode) => boolean
+): ASTNode[] {
+  const nodes: ASTNode[] = [];
+  walkAST(node, (n) => {
+    if (predicate(n)) nodes.push(n);
+  });
   return nodes;
 }
 
@@ -174,11 +162,10 @@ export function findNodesOfType<T extends ts.Node>(
  * Traverse AST with a visitor function
  */
 export function traverseAST(
-  node: ts.Node,
-  visitor: (node: ts.Node) => void
+  node: ASTNode,
+  visitor: (node: ASTNode) => void
 ): void {
-  visitor(node);
-  ts.forEachChild(node, child => traverseAST(child, visitor));
+  walkAST(node, visitor);
 }
 
 /**
@@ -191,11 +178,11 @@ export function filterViolationsBySeverity(
   if (!minSeverity) {
     return violations;
   }
-  
+
   const severityOrder = { critical: 3, warning: 2, suggestion: 1 };
   const minLevel = severityOrder[minSeverity] || 0;
-  
-  return violations.filter(v => 
+
+  return violations.filter(v =>
     severityOrder[v.severity] >= minLevel
   );
 }
@@ -209,11 +196,11 @@ export function sortViolations(violations: Violation[]): Violation[] {
     const severityOrder = { critical: 3, warning: 2, suggestion: 1 };
     const severityDiff = severityOrder[b.severity] - severityOrder[a.severity];
     if (severityDiff !== 0) return severityDiff;
-    
+
     // Then by file
     const fileDiff = a.file.localeCompare(b.file);
     if (fileDiff !== 0) return fileDiff;
-    
+
     // Then by line
     return (a.line || 0) - (b.line || 0);
   });
@@ -222,34 +209,8 @@ export function sortViolations(violations: Violation[]): Violation[] {
 /**
  * Calculate cyclomatic complexity of a function
  */
-export function calculateComplexity(node: ts.FunctionLikeDeclaration): number {
-  let complexity = 1;
-  
-  traverseAST(node, (child) => {
-    if (
-      ts.isIfStatement(child) ||
-      ts.isConditionalExpression(child) ||
-      ts.isSwitchStatement(child) ||
-      ts.isForStatement(child) ||
-      ts.isWhileStatement(child) ||
-      ts.isDoStatement(child) ||
-      ts.isCaseClause(child)
-    ) {
-      complexity++;
-    }
-    
-    if (ts.isBinaryExpression(child)) {
-      const operator = child.operatorToken.kind;
-      if (
-        operator === ts.SyntaxKind.AmpersandAmpersandToken ||
-        operator === ts.SyntaxKind.BarBarToken
-      ) {
-        complexity++;
-      }
-    }
-  });
-  
-  return complexity;
+export function calculateComplexity(node: ASTNode): number {
+  return bridgeCalculateComplexity(node);
 }
 
 /**
@@ -260,15 +221,15 @@ export function createAnalyzer(
   fileAnalyzer: FileAnalyzerFunction,
   defaultConfig: any = {}
 ) {
-  return async (files, config, options) => {
+  return async (files: string[], config: Record<string, unknown>, options?: { minSeverity?: string }) => {
     const mergedConfig = { ...defaultConfig, ...config };
     const result = await processFiles(files, fileAnalyzer, name, mergedConfig);
-    
+
     // Apply filtering and sorting
     result.violations = sortViolations(
-      filterViolationsBySeverity(result.violations, options?.minSeverity)
+      filterViolationsBySeverity(result.violations, options?.minSeverity as SeverityLevel | undefined)
     );
-    
+
     return result;
   };
 }

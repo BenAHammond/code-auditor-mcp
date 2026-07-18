@@ -831,7 +831,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       const allowedTypes = Array.isArray(schema.type) ? schema.type : [schema.type];
       
       // Special handling for integer vs number
-      const isValidType = allowedTypes.some(type => {
+      const isValidType = allowedTypes.some((type: string) => {
         if (type === 'integer') {
           return typeof data === 'number' && Number.isInteger(data);
         }

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "code-auditor-mcp",
+          "version": "3.0.0",
+          "informationUri": "https://github.com/BenAHammond/code-auditor-mcp",
+          "rules": [
+            {
+              "id": "solid/single-responsibility",
+              "shortDescription": {
+                "text": "solid: single-responsibility"
+              },
+              "fullDescription": {
+                "text": "Function doEverything violates SRP"
+              },
+              "helpUri": "https://github.com/BenAHammond/code-auditor-mcp#solid-single-responsibility"
+            },
+            {
+              "id": "dry/pattern-duplication",
+              "shortDescription": {
+                "text": "dry: pattern-duplication"
+              },
+              "fullDescription": {
+                "text": "Pattern duplication detected"
+              },
+              "helpUri": "https://github.com/BenAHammond/code-auditor-mcp#dry-pattern-duplication"
+            },
+            {
+              "id": "invariants/no-lokijs",
+              "shortDescription": {
+                "text": "invariants: no-lokijs"
+              },
+              "fullDescription": {
+                "text": "Do not import lokijs"
+              },
+              "helpUri": "https://github.com/BenAHammond/code-auditor-mcp#invariants-no-lokijs"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "solid/single-responsibility",
+          "level": "error",
+          "message": {
+            "text": "Function doEverything violates SRP"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/example.ts"
+                },
+                "region": {
+                  "startLine": 42,
+                  "endLine": 42,
+                  "startColumn": 10
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primary": "c9c2d97460d9dc77ffe7622dbab997c3b1024f7fb80763021a25682cf4179591"
+          }
+        },
+        {
+          "ruleId": "dry/pattern-duplication",
+          "level": "warning",
+          "message": {
+            "text": "Pattern duplication detected"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/utils.ts"
+                },
+                "region": {
+                  "startLine": 15,
+                  "endLine": 15,
+                  "startColumn": 10
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primary": "fed5c160912cfa56ae86f8a4a1a808bc413fae77419e69344ddf308885a768dc"
+          }
+        },
+        {
+          "ruleId": "invariants/no-lokijs",
+          "level": "error",
+          "message": {
+            "text": "Do not import lokijs"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/app.ts"
+                },
+                "region": {
+                  "startLine": 5,
+                  "endLine": 5,
+                  "startColumn": 10
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primary": "4d2e78cfe546e83fe881e2018d6667c01b27c0d472b60d8e82f70e684e37020e"
+          }
+        }
+      ]
+    }
+  ]
+}

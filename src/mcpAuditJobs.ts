@@ -8,6 +8,7 @@ import type {
   AnalyzerResult,
   AuditResult,
   AuditRunnerOptions,
+  AuditScope,
   FunctionMetadata,
   Severity,
   Violation,
@@ -741,6 +742,7 @@ async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefault
       ...(shardSoftBudgetMs !== undefined && { shardSoftBudgetMs }),
       ...(isFile && { includePaths: [auditPath] }),
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
+      ...(args.scope && args.scope !== 'all' && { scope: args.scope as AuditScope }),
       progressCallback: (p) => {
         setAuditJobProgress(jobId, {
           phase: p.phase ?? 'analysis',
@@ -910,7 +912,7 @@ export function getAuditJobStatus(jobId: string): Record<string, unknown> {
   if (!job) {
     throw new ContextualError(`Audit job not found: ${jobId}`, {
       jobId,
-      hint: 'Use start_audit first, then poll audit_status with the returned jobId.',
+      hint: 'Use audit.start first, then poll audit.status with the returned jobId.',
     });
   }
   return {
@@ -926,11 +928,62 @@ export function getAuditJobStatus(jobId: string): Record<string, unknown> {
   };
 }
 
+/**
+ * Returns audit results as a SARIF 2.1.0 JSON string (Spec 06 R1.1 — MCP surface).
+ */
+export async function getAuditResultsAsSarif(args: any): Promise<string> {
+  const resultId = (args.resultId as string) || (args.auditId as string);
+  if (!resultId) {
+    throw new ContextualError('resultId is required to fetch audit results as SARIF.', {
+      hint: 'Call audit.start, poll audit.status until completed, then pass resultId to audit.results with format: "sarif".',
+    });
+  }
+
+  const db = CodeIndexDB.getInstance();
+  await db.initialize();
+  const stored = await db.getAuditResults(resultId);
+  if (!stored) {
+    throw new ContextualError(`Audit result not found or expired: ${resultId}`, {
+      resultId,
+      hint: 'Results expire after 24h. Start a new audit if the result is no longer available.',
+    });
+  }
+
+  const { generateSARIFReport } = await import('./reporting/sarifReportGenerator.js');
+
+  // Reconstruct an AuditResult shape from stored data
+  const auditResult = {
+    timestamp: new Date(stored.timestamp || Date.now()),
+    summary: {
+      totalFiles: stored.metadata?.filesAnalyzed ?? 0,
+      totalViolations: stored.summary?.totalViolations ?? 0,
+      criticalIssues: stored.summary?.criticalIssues ?? 0,
+      warnings: stored.summary?.warnings ?? 0,
+      suggestions: stored.summary?.suggestions ?? 0,
+      violationsByCategory: stored.summary?.violationsByCategory ?? {},
+      topIssues: [],
+    },
+    analyzerResults: stored.analyzerResults || stored.analyzer_results_json
+      ? (typeof stored.analyzerResults === 'string'
+        ? JSON.parse(stored.analyzerResults)
+        : stored.analyzerResults)
+      : {},
+    recommendations: stored.recommendations || [],
+    metadata: {
+      auditDuration: stored.metadata?.auditDuration ?? 0,
+      filesAnalyzed: stored.metadata?.filesAnalyzed ?? 0,
+      analyzersRun: stored.metadata?.analyzersRun ?? [],
+    },
+  };
+
+  return generateSARIFReport(auditResult as any);
+}
+
 export async function getAuditResultsPage(args: any): Promise<Record<string, unknown>> {
   const resultId = (args.resultId as string) || (args.auditId as string);
   if (!resultId) {
     throw new ContextualError('resultId is required to fetch audit results.', {
-      hint: 'Call start_audit, poll audit_status until completed, then pass resultId to audit_results.',
+      hint: 'Call audit.start, poll audit.status until completed, then pass resultId to audit.results.',
     });
   }
 

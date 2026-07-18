@@ -40,6 +40,8 @@ export interface ProjectTaskDocument {
   relatedFiles?: string[];
   /** Symbols (function/class/component names) for cross-linking with the index */
   relatedSymbols?: string[];
+  /** Stable violation fingerprint for deduplication (from audit→tasks bridge) */
+  fingerprint?: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt?: string | null;
@@ -71,6 +73,8 @@ export interface CreateProjectTaskInput {
   sortOrder?: number;
   relatedFiles?: string[];
   relatedSymbols?: string[];
+  /** Stable violation fingerprint for deduplication */
+  fingerprint?: string | null;
 }
 
 export interface ListProjectTasksTreeNode {

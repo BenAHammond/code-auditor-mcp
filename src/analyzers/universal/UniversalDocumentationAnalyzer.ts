@@ -51,18 +51,18 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
     config: DocumentationAnalyzerConfig,
     sourceCode: string
   ): Promise<Violation[]> {
-    console.log('[DEBUG] UniversalDocumentationAnalyzer.analyzeAST called for:', ast.filePath);
+    console.error('[DEBUG] UniversalDocumentationAnalyzer.analyzeAST called for:', ast.filePath);
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DOCUMENTATION_CONFIG, ...config };
-    console.log('[DEBUG] Documentation config:', finalConfig);
-    
+    console.error('[DEBUG] Documentation config:', finalConfig);
+
     // Check if file is exempt
     if (this.isExempt(ast.filePath, finalConfig.exemptPatterns)) {
-      console.log('[DEBUG] File is exempt from documentation analysis:', ast.filePath);
+      console.error('[DEBUG] File is exempt from documentation analysis:', ast.filePath);
       return violations;
     }
-    
-    console.log('[DEBUG] File is NOT exempt, proceeding with analysis:', ast.filePath);
+
+    console.error('[DEBUG] File is NOT exempt, proceeding with analysis:', ast.filePath);
     
     // Check file-level documentation
     if (finalConfig.requireFileDocs) {
@@ -81,7 +81,7 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
     // Check function documentation
     if (finalConfig.requireFunctionDocs) {
       const functions = adapter.extractFunctions(ast);
-      console.log('[DEBUG] Extracted functions count:', functions.length);
+      console.error('[DEBUG] Extracted functions count:', functions.length);
       
       for (const func of functions) {
         // Skip if checking exported only and function is not exported
@@ -97,7 +97,7 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
         const doc = func.jsDoc || '';
         
         // Debug logging
-        console.log('[DEBUG] Checking function:', {
+        console.error('[DEBUG] Checking function:', {
           name: func.name,
           jsDoc: func.jsDoc,
           docLength: doc.length,

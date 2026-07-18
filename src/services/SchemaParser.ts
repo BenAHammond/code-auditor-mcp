@@ -5,13 +5,6 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-// import yaml from 'js-yaml';
-// Temporary workaround for missing dependency
-const yaml = {
-  load: (content: string) => {
-    throw new Error('YAML parsing not available - js-yaml dependency not installed');
-  }
-};
 import {
   SchemaDefinition,
   DatabaseSchema,
@@ -87,7 +80,11 @@ export class SchemaParser {
       if (format === '.json') {
         parsed = JSON.parse(content);
       } else if (format === '.yaml' || format === '.yml') {
-        parsed = yaml.load(content);
+        return {
+          success: false,
+          violations,
+          errors: ['YAML schema parsing is not supported in this version']
+        };
       } else {
         return {
           success: false,

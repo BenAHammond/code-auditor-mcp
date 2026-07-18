@@ -1,5 +1,6 @@
 {
-  "enabledAnalyzers": ["dry"],
+  "$schema": "https://unpkg.com/code-auditor-mcp/dist/invariant-rules.schema.json",
+  "enabledAnalyzers": ["dry", "invariants"],
   "analyzerConfigs": {
     "dry": {
       "debug": true,
@@ -7,6 +8,36 @@
       "minLineThreshold": 3,
       "similarityThreshold": 0.75
     }
-  }
+  },
+  "rules": [
+    {
+      "id": "no-lokijs",
+      "kind": "import-ban",
+      "severity": "critical",
+      "message": "lokijs was replaced by better-sqlite3 in v3.1.0. Use the SQLite-backed CodeIndexDB instead.",
+      "module": "lokijs"
+    },
+    {
+      "id": "no-flexsearch",
+      "kind": "import-ban",
+      "severity": "critical",
+      "message": "flexsearch was removed in v3.1.0. Use SQLite FTS5 for full-text search instead.",
+      "module": "flexsearch"
+    },
+    {
+      "id": "languages-no-analyzers",
+      "kind": "module-boundary",
+      "severity": "critical",
+      "message": "The languages/ module is infrastructure. It must not depend on analyzers, which are higher-level consumers.",
+      "from": "src/languages/**",
+      "to": "src/analyzers/**"
+    },
+    {
+      "id": "no-new-function",
+      "kind": "ast-pattern",
+      "severity": "critical",
+      "pattern": "new Function($$$)",
+      "message": "new Function() is eval-by-another-name — forbidden in this codebase"
+    }
+  ]
 }
-EOF < /dev/null

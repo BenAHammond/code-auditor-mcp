@@ -3,8 +3,7 @@
  * Analyzes React components for best practices, performance issues, and common violations
  */
 
-import * as ts from 'typescript';
-import { 
+import {
   AnalyzerDefinition, 
   AnalyzerResult, 
   ReactViolation,
@@ -325,8 +324,8 @@ function hasPropsValidation(component: ComponentMetadata): boolean {
  */
 function shouldHaveErrorBoundary(component: ComponentMetadata): boolean {
   // Complex components or components with async operations should have error boundaries
-  return (component.complexity && component.complexity > 7) ||
-         (component.hooks && component.hooks.some(h => h.name === 'useEffect'));
+  return (component.complexity != null && component.complexity > 7) ||
+         (component.hooks != null && component.hooks.some(h => h.name === 'useEffect'));
 }
 
 /**

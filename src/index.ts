@@ -89,13 +89,18 @@ export {
   JSONReportGenerator, 
   JSONReportConfig 
 } from './reporting/jsonReportGenerator.js';
-export { 
+export {
   generateCSVReport,
   generateSummaryCSVReport,
   generatePivotCSVReport,
-  CSVReportGenerator, 
-  CSVReportConfig 
+  CSVReportGenerator,
+  CSVReportConfig
 } from './reporting/csvReportGenerator.js';
+export {
+  generateSARIFReport,
+  SARIFReportGenerator,
+  SARIFReportConfig
+} from './reporting/sarifReportGenerator.js';
 
 // Utilities
 export { 
@@ -148,7 +153,7 @@ export function getAvailableAnalyzers(): string[] {
  * List available report formats
  */
 export function getAvailableFormats(): string[] {
-  return ['html', 'json', 'csv'];
+  return ['html', 'json', 'csv', 'sarif'];
 }
 
 // Default export for convenience

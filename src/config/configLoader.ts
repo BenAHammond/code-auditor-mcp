@@ -77,8 +77,9 @@ function loadFromEnvironment(baseConfig: AuditConfig, prefix: string): AuditConf
     envConfig.failOnCritical = env[`${prefix}_FAIL_ON_CRITICAL`] === 'true';
   }
   
-  if (env[`${prefix}_ANALYZERS`]) {
-    envConfig.enabledAnalyzers = env[`${prefix}_ANALYZERS`].split(',');
+  const enabledAnalyzersVar = env[`${prefix}_ANALYZERS`];
+  if (enabledAnalyzersVar) {
+    envConfig.enabledAnalyzers = enabledAnalyzersVar.split(',');
   }
   
   // Code index environment variables
@@ -86,11 +87,13 @@ function loadFromEnvironment(baseConfig: AuditConfig, prefix: string): AuditConf
   if (env[`${prefix}_CODE_INDEX_DB_PATH`]) {
     codeIndexConfig.databasePath = env[`${prefix}_CODE_INDEX_DB_PATH`];
   }
-  if (env[`${prefix}_CODE_INDEX_BATCH_SIZE`]) {
-    codeIndexConfig.maxBatchSize = parseInt(env[`${prefix}_CODE_INDEX_BATCH_SIZE`], 10);
+  const batchSizeVar = env[`${prefix}_CODE_INDEX_BATCH_SIZE`];
+  if (batchSizeVar) {
+    codeIndexConfig.maxBatchSize = parseInt(batchSizeVar, 10);
   }
-  if (env[`${prefix}_CODE_INDEX_SEARCH_LIMIT`]) {
-    codeIndexConfig.searchResultLimit = parseInt(env[`${prefix}_CODE_INDEX_SEARCH_LIMIT`], 10);
+  const searchLimitVar = env[`${prefix}_CODE_INDEX_SEARCH_LIMIT`];
+  if (searchLimitVar) {
+    codeIndexConfig.searchResultLimit = parseInt(searchLimitVar, 10);
   }
   if (Object.keys(codeIndexConfig).length > 0) {
     (envConfig as any).codeIndex = codeIndexConfig;
@@ -162,7 +165,7 @@ export function validateConfig(config: AuditConfig): string[] {
   }
   
   // Validate analyzers
-  const validAnalyzers = ['solid', 'dry', 'security', 'component', 'data-access'];
+  const validAnalyzers = ['solid', 'dry', 'react', 'documentation', 'data-access', 'schema', 'invariants'];
   if (config.enabledAnalyzers) {
     const invalid = config.enabledAnalyzers.filter(a => !validAnalyzers.includes(a));
     if (invalid.length > 0) {

@@ -1,0 +1,13 @@
+{
+  "name": "code-auditor",
+  "description": "Diff-scoped code quality auditing on every edit. Indexes your codebase, enforces invariants, and feeds violations back to the agent so fixes happen inline.",
+  "version": "3.0.0",
+  "author": {
+    "name": "Ben Hammond",
+    "email": "ben@benhammond.tech"
+  },
+  "homepage": "https://github.com/BenAHammond/code-auditor-mcp",
+  "repository": "https://github.com/BenAHammond/code-auditor-mcp",
+  "license": "MIT",
+  "keywords": ["code-quality", "audit", "solid", "linting", "invariants"]
+}

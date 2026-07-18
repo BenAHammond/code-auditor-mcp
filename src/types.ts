@@ -5,7 +5,7 @@
 
 export type Severity = 'critical' | 'warning' | 'suggestion';
 
-export type ReportFormat = 'html' | 'json' | 'csv';
+export type ReportFormat = 'html' | 'json' | 'csv' | 'sarif';
 
 export type RenderType = 'client' | 'server' | 'unknown';
 
@@ -29,6 +29,14 @@ export interface ArchitectureViolation extends Violation {
   type: 'architecture';
   category: string;
 }
+
+/**
+ * Audit scope applied to a result.
+ * - `full` – a complete audit (scope was `all`)
+ * - `scoped` – audit was scoped to a subset of files; the result does NOT
+ *   replace the most recent full-audit result in storage.
+ */
+export type AuditResultScope = 'full' | 'scoped';
 
 export interface Violation {
   file: string;
@@ -126,6 +134,7 @@ export interface AuditResult {
     configUsed?: AuditOptions;
     collectedFunctions?: FunctionMetadata[]; // Functions collected during audit
     fileToFunctionsMap?: Record<string, FunctionMetadata[]>; // Functions per file for sync
+    scope?: AuditResultScope; // Whether this was a full or scoped audit
   };
 }
 
@@ -322,6 +331,18 @@ export interface AnalyzerConfigDocument {
   };
 }
 
+/**
+ * Audit scope — controls which files are analyzed.
+ *
+ * - `all`       – default; discover and analyze everything
+ * - `changed`   – re-parse indexed files and only analyze functions whose
+ *                 content_hash differs from stored, plus new/deleted functions
+ * - `git:<ref>` – git diff --name-only <ref> (plus untracked), then
+ *                 function-level narrowing as in `changed`
+ * - `string[]`  – explicit list of file paths/globs (the `files` scope)
+ */
+export type AuditScope = 'all' | 'changed' | `git:${string}` | string[];
+
 export interface AuditRunnerOptions extends AuditOptions {
   progressCallback?: (progress: AuditProgress) => void;
   errorCallback?: (error: Error, context: string) => void;
@@ -342,6 +363,8 @@ export interface AuditRunnerOptions extends AuditOptions {
   maxFilesPerRun?: number;
   /** Worker IPC only: soft wall-clock budget for a forked shard (not used by in-process runs). */
   shardSoftBudgetMs?: number;
+  /** Audit scope: controls which files are analyzed. Default: 'all'. */
+  scope?: AuditScope;
 }
 
 // Code Index Types
@@ -384,6 +407,7 @@ export interface EnhancedFunctionMetadata extends FunctionMetadata {
   tokenizedName?: string;
   lastModified?: Date;
   body?: string;  // Actual function body content for content search
+  content_hash?: string;  // SHA-256 of normalized body + signature for incremental re-audit
   metadata?: {
     // Existing metadata fields
     entityType?: 'function' | 'component';
@@ -420,6 +444,7 @@ export interface ParsedQuery {
     fileType?: string;
     language?: string;
     hasJsDoc?: boolean;
+    isExported?: boolean;
     complexity?: {
       min?: number;
       max?: number;
@@ -441,9 +466,9 @@ export interface ParsedQuery {
       hasUnusedImports?: boolean;
     };
   };
-  searchFields?: Array<'name' | 'signature' | 'jsDoc' | 'parameters' | 'returnType' | 'purpose' | 'context'>;
   fuzzy?: boolean;
   stemming?: boolean;
+  searchFields?: string[];
 }
 
 export interface SearchOptions {
@@ -455,6 +480,7 @@ export interface SearchOptions {
     hasAnyDependency?: string[];
     fileType?: string;
     hasJsDoc?: boolean;
+    isExported?: boolean;
     complexity?: {
       min?: number;
       max?: number;

@@ -1,29 +1,48 @@
-import * as ts from 'typescript';
-import { 
-  ComponentResponsibility, 
-  ResponsibilityType, 
+/**
+ * Component Responsibility Detection Utilities
+ * Detects and categorizes responsibilities within React components
+ */
+
+import type { ASTNode } from '../languages/types.js';
+import type { Node as TreeSitterNode } from 'web-tree-sitter';
+import { walkAST, getLineAndColumn } from '../languages/adapterBridge.js';
+import {
+  ComponentResponsibility,
+  ResponsibilityType,
   ComponentMetadata,
-  HookUsage 
+  HookUsage
 } from '../types.js';
 import { extractHooks } from './reactDetection.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
+function rawText(node: ASTNode): string {
+  return (node.raw as TreeSitterNode)?.text ?? '';
+}
+
+// ---------------------------------------------------------------------------
+// Main detection entry point
+// ---------------------------------------------------------------------------
 
 /**
  * Detects and categorizes responsibilities within a React component
  */
 export function detectComponentResponsibilities(
-  sourceFile: ts.SourceFile,
-  component: ts.Node,
+  component: ASTNode,
   metadata?: ComponentMetadata
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
   const seenTypes = new Set<ResponsibilityType>();
-  
+
   // Analyze different aspects of the component
-  const hookResponsibilities = analyzeHookUsage(sourceFile, component, metadata);
-  const eventResponsibilities = analyzeEventHandlers(sourceFile, component);
-  const effectResponsibilities = analyzeEffects(sourceFile, component);
-  const renderingResponsibilities = analyzeRenderingLogic(sourceFile, component);
-  
+  const hookResponsibilities = analyzeHookUsage(component, metadata);
+  const eventResponsibilities = analyzeEventHandlers(component);
+  const effectResponsibilities = analyzeEffects(component);
+  const renderingResponsibilities = analyzeRenderingLogic(component);
+
   // Combine and deduplicate responsibilities
   [...hookResponsibilities, ...eventResponsibilities, ...effectResponsibilities, ...renderingResponsibilities]
     .forEach(resp => {
@@ -43,120 +62,126 @@ export function detectComponentResponsibilities(
         responsibilities.push(resp);
       }
     });
-  
+
   return responsibilities;
 }
+
+// ---------------------------------------------------------------------------
+// Pattern detection helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Identifies data fetching patterns in code
  */
-export function containsDataFetching(node: ts.Node): boolean {
+export function containsDataFetching(node: ASTNode): boolean {
   let hasDataFetching = false;
-  
-  const checkNode = (n: ts.Node) => {
+
+  walkAST(node, (n) => {
     // Check for fetch, axios, API calls
-    if (ts.isCallExpression(n)) {
-      const callText = n.expression.getText();
-      if (callText.includes('fetch') || 
-          callText.includes('axios') || 
-          callText.includes('api') ||
-          callText.includes('http') ||
-          callText.includes('request')) {
-        hasDataFetching = true;
+    if (n.type === 'call_expression') {
+      const exprNode = n.children?.[0]; // identifier or member_expression
+      if (exprNode) {
+        const callText = rawText(exprNode);
+        if (callText.includes('fetch') ||
+            callText.includes('axios') ||
+            callText.includes('api') ||
+            callText.includes('http') ||
+            callText.includes('request')) {
+          hasDataFetching = true;
+        }
       }
     }
-    
+
     // Check for async/await patterns
-    if (ts.isAwaitExpression(n)) {
+    if (n.type === 'await_expression') {
       hasDataFetching = true;
     }
-    
-    ts.forEachChild(n, checkNode);
-  };
-  
-  checkNode(node);
+  });
+
   return hasDataFetching;
 }
 
 /**
  * Identifies form handling patterns
  */
-export function containsFormHandling(node: ts.Node, sourceFile: ts.SourceFile): boolean {
+export function containsFormHandling(node: ASTNode): boolean {
   let hasFormHandling = false;
-  
-  const checkNode = (n: ts.Node) => {
+
+  walkAST(node, (n) => {
     // Check for form-related method calls
-    if (ts.isCallExpression(n)) {
-      const callText = n.expression.getText();
-      if (callText.includes('preventDefault') || 
-          callText.includes('handleSubmit') ||
-          callText.includes('validate') ||
-          callText.includes('setFieldValue')) {
-        hasFormHandling = true;
+    if (n.type === 'call_expression') {
+      const exprNode = n.children?.[0];
+      if (exprNode) {
+        const callText = rawText(exprNode);
+        if (callText.includes('preventDefault') ||
+            callText.includes('handleSubmit') ||
+            callText.includes('validate') ||
+            callText.includes('setFieldValue')) {
+          hasFormHandling = true;
+        }
       }
     }
-    
-    // Check for form state patterns
-    if (ts.isIdentifier(n)) {
-      const text = n.getText();
+
+    // Check for form state patterns in identifiers
+    if (n.type === 'identifier') {
+      const text = rawText(n);
       if (text.includes('form') || text.includes('Field') || text.includes('input')) {
         hasFormHandling = true;
       }
     }
-    
-    ts.forEachChild(n, checkNode);
-  };
-  
-  checkNode(node);
+  });
+
   return hasFormHandling;
 }
 
 /**
  * Identifies business logic patterns
  */
-export function containsBusinessLogic(node: ts.Node): boolean {
+export function containsBusinessLogic(node: ASTNode): boolean {
   let hasBusinessLogic = false;
   let statementCount = 0;
   let hasComplexConditions = false;
-  
-  const checkNode = (n: ts.Node) => {
-    // Count statements in functions
-    if (ts.isBlock(n)) {
-      statementCount += n.statements.length;
+
+  walkAST(node, (n) => {
+    // Count statements in blocks
+    if (n.type === 'statement_block') {
+      statementCount += (n.children ?? []).length;
     }
-    
+
     // Check for complex conditions
-    if (ts.isIfStatement(n) || ts.isConditionalExpression(n)) {
-      // Check if condition is complex
-      const conditionText = n.getFullText();
+    if (n.type === 'if_statement' || n.type === 'ternary_expression') {
+      const conditionText = rawText(n);
       if (conditionText.includes('&&') && conditionText.includes('||')) {
         hasComplexConditions = true;
       }
     }
-    
-    // Check for calculations or transformations
-    if (ts.isBinaryExpression(n)) {
-      const operator = n.operatorToken.kind;
-      if (operator === ts.SyntaxKind.AsteriskToken || 
-          operator === ts.SyntaxKind.SlashToken ||
-          operator === ts.SyntaxKind.PercentToken) {
+
+    // Check for calculations or transformations (binary expressions)
+    if (n.type === 'binary_expression') {
+      // Check operator token in raw tree-sitter children
+      const raw = n.raw as TreeSitterNode;
+      const opChild = raw?.children?.find(c => !c.isNamed);
+      if (opChild && (opChild.type === '*' || opChild.type === '/' || opChild.type === '%')) {
         hasBusinessLogic = true;
       }
     }
-    
+
     // Check for array operations suggesting data transformation
-    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
-      const methodName = n.expression.name.getText();
-      if (['map', 'filter', 'reduce', 'sort', 'groupBy'].includes(methodName)) {
-        hasBusinessLogic = true;
+    if (n.type === 'call_expression') {
+      const exprNode = n.children?.[0];
+      if (exprNode && exprNode.type === 'member_expression') {
+        // Property of member expression is the last child
+        const propNode = exprNode.children?.[exprNode.children.length - 1];
+        if (propNode) {
+          const methodName = rawText(propNode);
+          if (['map', 'filter', 'reduce', 'sort', 'groupBy'].includes(methodName)) {
+            hasBusinessLogic = true;
+          }
+        }
       }
     }
-    
-    ts.forEachChild(n, checkNode);
-  };
-  
-  checkNode(node);
-  
+  });
+
   // Consider it business logic if there are complex conditions or many statements
   return hasBusinessLogic || (statementCount > 10 && hasComplexConditions);
 }
@@ -170,7 +195,7 @@ export function areResponsibilitiesRelated(
 ): boolean {
   // Same responsibility is always related
   if (resp1 === resp2) return true;
-  
+
   const relatedGroups: ResponsibilityType[][] = [
     // Form-related
     [ResponsibilityType.FormHandling, ResponsibilityType.UIState, ResponsibilityType.EventHandling, ResponsibilityType.ErrorHandling],
@@ -185,23 +210,26 @@ export function areResponsibilitiesRelated(
     // Filter components: URL state + UI rendering is a common pattern
     [ResponsibilityType.Routing, ResponsibilityType.FormHandling, ResponsibilityType.UIState],
   ];
-  
-  return relatedGroups.some(group => 
+
+  return relatedGroups.some(group =>
     group.includes(resp1) && group.includes(resp2)
   );
 }
+
+// ---------------------------------------------------------------------------
+// Sub-analyzers
+// ---------------------------------------------------------------------------
 
 /**
  * Analyzes hook usage to identify responsibilities
  */
 export function analyzeHookUsage(
-  sourceFile: ts.SourceFile,
-  component: ts.Node,
+  component: ASTNode,
   metadata?: ComponentMetadata
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
-  const hooks = metadata?.hooks || extractHooks(component, sourceFile);
-  
+  const hooks = metadata?.hooks || extractHooks(component);
+
   // Define hook groups that represent cohesive responsibilities
   const hookGroups = {
     state: {
@@ -225,10 +253,10 @@ export function analyzeHookUsage(
       description: 'Data fetching and caching'
     }
   };
-  
+
   // Track which groups are used and their hooks
   const usedGroups: Map<string, string[]> = new Map();
-  
+
   // Categorize hooks into groups
   hooks.forEach(hook => {
     for (const [groupName, groupDef] of Object.entries(hookGroups)) {
@@ -241,7 +269,7 @@ export function analyzeHookUsage(
       }
     }
   });
-  
+
   // Create responsibilities for each used group (hooks in same group count as one responsibility)
   for (const [groupName, hookNames] of usedGroups.entries()) {
     const group = hookGroups[groupName as keyof typeof hookGroups];
@@ -254,23 +282,9 @@ export function analyzeHookUsage(
       });
     }
   }
-  
-  // Group hooks by type for backward compatibility
-  const stateHooks = hooks.filter(h => h.name === 'useState' || h.name === 'useReducer');
-  const effectHooks = hooks.filter(h => h.name === 'useEffect' || h.name === 'useLayoutEffect');
-  const contextHooks = hooks.filter(h => h.name === 'useContext');
-  const routerHooks = hooks.filter(h => h.name === 'useRouter' || h.name === 'useNavigate' || h.name === 'useParams' || h.name === 'useSearchParams');
+
   const customHooks = hooks.filter(h => h.customHook);
-  
-  // Additional analysis for custom hooks only (standard hooks already handled by groups)
-  const uncategorizedHooks = hooks.filter(hook => {
-    // Skip if already in a group
-    for (const [_, hookNames] of usedGroups.entries()) {
-      if (hookNames.includes(hook.name)) return false;
-    }
-    return true;
-  });
-  
+
   // Analyze custom hooks for mixed responsibilities
   if (customHooks.length > 0) {
     customHooks.forEach(hook => {
@@ -292,7 +306,7 @@ export function analyzeHookUsage(
       }
     });
   }
-  
+
   return responsibilities;
 }
 
@@ -300,139 +314,125 @@ export function analyzeHookUsage(
  * Analyzes useEffect hooks for side effects and data fetching
  */
 export function analyzeEffects(
-  sourceFile: ts.SourceFile,
-  component: ts.Node
+  component: ASTNode
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
-  
-  ts.forEachChild(component, function visit(node) {
-    if (ts.isCallExpression(node) && 
-        ts.isIdentifier(node.expression) && 
-        (node.expression.text === 'useEffect' || node.expression.text === 'useLayoutEffect')) {
-      
-      const effectBody = node.arguments[0];
-      if (effectBody) {
-        // Check for data fetching
-        if (containsDataFetching(effectBody)) {
-          const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-          responsibilities.push({
-            type: ResponsibilityType.DataFetching,
-            indicators: ['fetch in useEffect', 'async data loading'],
-            severity: 'mixed',
-            line: line + 1,
-            details: 'Data fetching in effect hook'
-          });
-        }
-        
-        // Check for subscriptions
-        if (effectBody.getText().match(/addEventListener|subscribe|on\(/)) {
-          const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-          responsibilities.push({
-            type: ResponsibilityType.Subscriptions,
-            indicators: ['event subscription', 'listener setup'],
-            severity: 'mixed',
-            line: line + 1
-          });
-        }
-        
-        // Check for side effects (analytics, logging)
-        if (effectBody.getText().match(/track|analytics|log|console|gtag|ga\(/i)) {
-          const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-          responsibilities.push({
-            type: ResponsibilityType.SideEffects,
-            indicators: ['analytics', 'tracking', 'logging'],
-            severity: 'unrelated',
-            line: line + 1,
-            details: 'Analytics/logging side effects'
-          });
-        }
-      }
-    }
-    
-    ts.forEachChild(node, visit);
-  });
-  
-  return responsibilities;
-}
 
-/**
- * Helper to find a node at a specific line number
- */
-function findNodeAtLine(root: ts.Node, targetLine: number): ts.Node | null {
-  let result: ts.Node | null = null;
-  
-  function visit(node: ts.Node) {
-    if (result) return;
-    
-    const sourceFile = node.getSourceFile();
-    if (sourceFile) {
-      const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-      if (line + 1 === targetLine) {
-        result = node;
-        return;
+  // Walk children only, not the component node itself (matches old ts.forEachChild behavior)
+  for (const child of component.children ?? []) {
+    walkAST(child, (node) => {
+      if (node.type === 'call_expression') {
+        const callee = node.children?.[0];
+        if (callee && callee.type === 'identifier') {
+          const calleeText = rawText(callee);
+          if (calleeText === 'useEffect' || calleeText === 'useLayoutEffect') {
+            const argsNode = node.children?.find(c => c.type === 'arguments');
+            const argList = argsNode?.children ?? [];
+            // First argument is the effect callback
+            const effectBody = argList.find(c => c.type !== '(' && c.type !== ')');
+            if (effectBody) {
+              const effectText = rawText(effectBody);
+              const { line } = getLineAndColumn(node);
+
+              // Check for data fetching
+              if (containsDataFetching(effectBody)) {
+                responsibilities.push({
+                  type: ResponsibilityType.DataFetching,
+                  indicators: ['fetch in useEffect', 'async data loading'],
+                  severity: 'mixed',
+                  line,
+                  details: 'Data fetching in effect hook'
+                });
+              }
+
+              // Check for subscriptions
+              if (effectText.match(/addEventListener|subscribe|on\(/)) {
+                responsibilities.push({
+                  type: ResponsibilityType.Subscriptions,
+                  indicators: ['event subscription', 'listener setup'],
+                  severity: 'mixed',
+                  line
+                });
+              }
+
+              // Check for side effects (analytics, logging)
+              if (effectText.match(/track|analytics|log|console|gtag|ga\(/i)) {
+                responsibilities.push({
+                  type: ResponsibilityType.SideEffects,
+                  indicators: ['analytics', 'tracking', 'logging'],
+                  severity: 'unrelated',
+                  line,
+                  details: 'Analytics/logging side effects'
+                });
+              }
+            }
+          }
+        }
       }
-    }
-    
-    ts.forEachChild(node, visit);
+    });
   }
-  
-  visit(root);
-  return result;
+
+  return responsibilities;
 }
 
 /**
  * Analyzes event handlers in a component
  */
 export function analyzeEventHandlers(
-  sourceFile: ts.SourceFile,
-  component: ts.Node
+  component: ASTNode
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
   const eventHandlers: { name: string; complexity: number; line: number }[] = [];
-  
-  ts.forEachChild(component, function visit(node) {
-    // Check JSX attributes for event handlers
-    if (ts.isJsxAttribute(node) && ts.isIdentifier(node.name)) {
-      const attrName = node.name.text;
-      if (attrName.startsWith('on')) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-        
-        // Calculate complexity of the handler
-        let complexity = 0;
-        if (node.initializer && ts.isJsxExpression(node.initializer)) {
-          const expr = node.initializer.expression;
-          if (expr) {
-            // Inline function or arrow function
-            if (ts.isFunctionExpression(expr) || ts.isArrowFunction(expr)) {
-              complexity = calculateHandlerComplexity(expr);
+
+  // Walk children only, not the component node itself
+  for (const child of component.children ?? []) {
+    walkAST(child, (node) => {
+      // Check JSX attributes for event handlers
+      if (node.type === 'jsx_attribute') {
+        const nameNode = node.children?.find(c => c.type === 'property_identifier');
+        if (nameNode) {
+          const attrName = rawText(nameNode);
+          if (attrName.startsWith('on')) {
+            const { line } = getLineAndColumn(node);
+
+            // Calculate complexity of the handler
+            let complexity = 0;
+            const initializer = node.children?.find(c => c.type === 'jsx_expression');
+            if (initializer) {
+              // The expression inside jsx_expression (skip `{` and `}`)
+              const expr = initializer.children?.find(c => c.type !== '{' && c.type !== '}');
+              if (expr && (expr.type === 'arrow_function' || expr.type === 'function_expression')) {
+                complexity = calculateHandlerComplexity(expr);
+              }
             }
+
+            eventHandlers.push({
+              name: attrName,
+              complexity,
+              line
+            });
           }
         }
-        
-        eventHandlers.push({
-          name: attrName,
-          complexity,
-          line: line + 1
-        });
       }
-    }
-    
-    // Check for method definitions that look like event handlers
-    if ((ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node)) && node.name) {
-      const name = node.name.getText();
-      if (name.match(/^(handle|on)[A-Z]/)) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-        const complexity = ts.isMethodDeclaration(node) && node.body 
-          ? calculateHandlerComplexity(node) 
-          : 0;
-        
-        eventHandlers.push({ name, complexity, line: line + 1 });
+
+      // Check for method definitions that look like event handlers
+      if (node.type === 'method_definition' || node.type === 'public_field_definition') {
+        const nameNode = node.children?.find(c => c.type === 'identifier' || c.type === 'property_identifier');
+        if (nameNode) {
+          const name = rawText(nameNode);
+          if (name.match(/^(handle|on)[A-Z]/)) {
+            const { line } = getLineAndColumn(node);
+            const complexity = node.type === 'method_definition'
+              ? calculateHandlerComplexity(node)
+              : 0;
+
+            eventHandlers.push({ name, complexity, line });
+          }
+        }
       }
-    }
-    
-    ts.forEachChild(node, visit);
-  });
-  
+    });
+  }
+
   // Analyze the collected event handlers
   if (eventHandlers.length > 0) {
     // Check for complex business logic in handlers
@@ -446,7 +446,7 @@ export function analyzeEventHandlers(
         details: 'Complex business logic in event handlers'
       });
     }
-    
+
     // Check for mixed event handling concerns
     const handlerTypes = new Set<string>();
     eventHandlers.forEach(h => {
@@ -455,7 +455,7 @@ export function analyzeEventHandlers(
       if (h.name.match(/scroll|resize|load/i)) handlerTypes.add('browser');
       if (h.name.match(/key|input|change/i)) handlerTypes.add('input');
     });
-    
+
     if (handlerTypes.size > 2 || eventHandlers.length > 7) {
       responsibilities.push({
         type: ResponsibilityType.EventHandling,
@@ -465,26 +465,24 @@ export function analyzeEventHandlers(
       });
     }
   }
-  
+
   return responsibilities;
 }
 
 /**
  * Calculates the complexity of an event handler
  */
-function calculateHandlerComplexity(node: ts.Node): number {
+function calculateHandlerComplexity(node: ASTNode): number {
   let lineCount = 0;
-  const sourceFile = node.getSourceFile();
-  
-  if (sourceFile && node.getStart() && node.getEnd()) {
-    const start = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-    const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd());
-    lineCount = end.line - start.line + 1;
+
+  // Use location for line span calculation
+  if (node.location?.start && node.location?.end) {
+    lineCount = node.location.end.line - node.location.start.line + 1;
   }
-  
+
   // Also check for complexity indicators
-  let hasBusinessLogic = containsBusinessLogic(node);
-  
+  const hasBusinessLogic = containsBusinessLogic(node);
+
   return hasBusinessLogic ? lineCount * 1.5 : lineCount;
 }
 
@@ -492,61 +490,89 @@ function calculateHandlerComplexity(node: ts.Node): number {
  * Analyzes rendering logic and JSX complexity
  */
 export function analyzeRenderingLogic(
-  sourceFile: ts.SourceFile,
-  component: ts.Node
+  component: ASTNode
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
   let jsxElementCount = 0;
   let conditionalRenderCount = 0;
   let hasComplexStyling = false;
   let hasLayoutLogic = false;
-  
-  ts.forEachChild(component, function visit(node) {
-    // Count JSX elements
-    if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
-      jsxElementCount++;
-      
-      // Check for layout components
-      const tagName = ts.isJsxElement(node) 
-        ? node.openingElement.tagName.getText() 
-        : node.tagName.getText();
-      
-      if (tagName.match(/Grid|Flex|Layout|Container|Row|Col/i)) {
-        hasLayoutLogic = true;
-      }
-    }
-    
-    // Check for conditional rendering
-    if (ts.isConditionalExpression(node) && node.parent && 
-        (ts.isJsxExpression(node.parent) || ts.isReturnStatement(node.parent))) {
-      conditionalRenderCount++;
-    }
-    
-    // Check for complex styling logic
-    if (ts.isJsxAttribute(node) && node.name && node.name.getText() === 'style') {
-      if (node.initializer && ts.isJsxExpression(node.initializer)) {
-        const styleExpr = node.initializer.expression;
-        if (styleExpr && !ts.isObjectLiteralExpression(styleExpr)) {
-          // Dynamic style calculation
-          hasComplexStyling = true;
+
+  // Walk children only, not the component node itself
+  for (const child of component.children ?? []) {
+    walkAST(child, (node) => {
+      // Count JSX elements
+      if (node.type === 'jsx_element') {
+        jsxElementCount++;
+
+        // Check for layout components — find tag name from open_tag child
+        const openTag = node.children?.find(c => c.type === 'open_tag');
+        if (openTag) {
+          const tagNode = openTag.children?.find(c =>
+            c.type === 'identifier' || c.type === 'member_expression');
+          if (tagNode) {
+            const tagName = rawText(tagNode);
+            if (tagName.match(/Grid|Flex|Layout|Container|Row|Col/i)) {
+              hasLayoutLogic = true;
+            }
+          }
         }
       }
-    }
-    
-    // Check for className with complex logic
-    if (ts.isJsxAttribute(node) && node.name && node.name.getText() === 'className') {
-      if (node.initializer && ts.isJsxExpression(node.initializer)) {
-        const classExpr = node.initializer.expression;
-        if (classExpr && !ts.isStringLiteral(classExpr)) {
-          // Dynamic className
-          hasComplexStyling = true;
+
+      if (node.type === 'jsx_self_closing_element') {
+        jsxElementCount++;
+
+        // Check tag name (first named child that's not `<`)
+        const tagNode = node.children?.find(c =>
+          c.type === 'identifier' || c.type === 'member_expression');
+        if (tagNode) {
+          const tagName = rawText(tagNode);
+          if (tagName.match(/Grid|Flex|Layout|Container|Row|Col/i)) {
+            hasLayoutLogic = true;
+          }
         }
       }
-    }
-    
-    ts.forEachChild(node, visit);
-  });
-  
+
+      // Check for conditional rendering (ternary in JSX expression or return statement)
+      if (node.type === 'ternary_expression' && node.parent) {
+        const parentType = node.parent.type;
+        if (parentType === 'jsx_expression' || parentType === 'return_statement') {
+          conditionalRenderCount++;
+        }
+      }
+
+      // Check for complex styling logic
+      if (node.type === 'jsx_attribute') {
+        const nameNode = node.children?.find(c => c.type === 'property_identifier');
+        if (nameNode) {
+          const attrName = rawText(nameNode);
+
+          if (attrName === 'style') {
+            const jsxExpr = node.children?.find(c => c.type === 'jsx_expression');
+            if (jsxExpr) {
+              const styleExpr = jsxExpr.children?.find(c => c.type !== '{' && c.type !== '}');
+              if (styleExpr && styleExpr.type !== 'object') {
+                // Dynamic style calculation
+                hasComplexStyling = true;
+              }
+            }
+          }
+
+          if (attrName === 'className') {
+            const jsxExpr = node.children?.find(c => c.type === 'jsx_expression');
+            if (jsxExpr) {
+              const classExpr = jsxExpr.children?.find(c => c.type !== '{' && c.type !== '}');
+              if (classExpr && classExpr.type !== 'string') {
+                // Dynamic className
+                hasComplexStyling = true;
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
   // Add layout responsibility only if it's significant
   // Don't flag basic styling in forms or simple components
   if ((hasLayoutLogic && jsxElementCount > 20) || (hasComplexStyling && !hasLayoutLogic)) {
@@ -560,7 +586,7 @@ export function analyzeRenderingLogic(
       details: 'Layout and styling logic'
     });
   }
-  
+
   // Check for overly complex rendering
   if (jsxElementCount > 50 || conditionalRenderCount > 5) {
     responsibilities.push({
@@ -570,6 +596,6 @@ export function analyzeRenderingLogic(
       details: 'Complex rendering logic'
     });
   }
-  
+
   return responsibilities;
 }

@@ -1,13 +1,17 @@
 /**
  * Schema Analyzer
  * Analyzes code against loaded database schemas to find violations and patterns
+ *
+ * Uses tree-sitter AST patterns instead of the TypeScript compiler API.
  */
 
-import type { AnalyzerFunction, AnalyzerDefinition, SchemaViolation, AnalyzerResult } from '../types.js';
+import type { AnalyzerFunction, AnalyzerDefinition, SchemaViolation } from '../types.js';
+import type { ASTNode } from '../languages/types.js';
+import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import { CodeIndexDB } from '../codeIndexDB.js';
+import { parseFile, getLineAndColumn, getNodeName } from '../languages/adapterBridge.js';
 import { promises as fs } from 'fs';
 import path from 'path';
-import ts from 'typescript';
 
 export interface SchemaAnalyzerConfig {
   enableTableUsageTracking: boolean;
@@ -31,6 +35,38 @@ const DEFAULT_CONFIG: SchemaAnalyzerConfig = {
   requiredSchemas: []
 };
 
+const SQL_KEYWORDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP'];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Get the raw source text from an ASTNode's underlying tree-sitter node. */
+function rawText(node: ASTNode): string {
+  return (node.raw as TreeSitterNode)?.text ?? '';
+}
+
+/** Strip surrounding single or double quotes from a string. */
+function stripQuotes(text: string): string {
+  if (
+    (text.startsWith("'") && text.endsWith("'")) ||
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith('`') && text.endsWith('`'))
+  ) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+/** Find the first direct child with a given type. */
+function findChild(node: ASTNode, type: string): ASTNode | undefined {
+  return node.children?.find(c => c.type === type);
+}
+
+// ---------------------------------------------------------------------------
+// Main analyzer
+// ---------------------------------------------------------------------------
+
 export const analyzeSchema: AnalyzerFunction = async (
   files: string[],
   config: Partial<SchemaAnalyzerConfig> = {},
@@ -49,7 +85,7 @@ export const analyzeSchema: AnalyzerFunction = async (
 
   // Get all loaded schemas
   const loadedSchemas = await db.getAllSchemas();
-  
+
   if (loadedSchemas.length === 0 && finalConfig.requiredSchemas.length > 0) {
     violations.push({
       file: 'project',
@@ -63,7 +99,7 @@ export const analyzeSchema: AnalyzerFunction = async (
   // Build table name lookup for fast access
   const allTables = new Set<string>();
   const tableToSchema = new Map<string, string>();
-  
+
   for (const { schema } of loadedSchemas) {
     for (const database of schema.databases) {
       for (const table of database.tables) {
@@ -91,14 +127,14 @@ export const analyzeSchema: AnalyzerFunction = async (
 
       const content = await fs.readFile(file, 'utf-8');
       const fileViolations = await analyzeFile(
-        file, 
-        content, 
-        allTables, 
-        tableToSchema, 
+        file,
+        content,
+        allTables,
+        tableToSchema,
         finalConfig,
         db
       );
-      
+
       violations.push(...fileViolations);
       filesProcessed++;
 
@@ -124,6 +160,19 @@ export const analyzeSchema: AnalyzerFunction = async (
   };
 };
 
+// ---------------------------------------------------------------------------
+// File-level analysis
+// ---------------------------------------------------------------------------
+
+interface SchemaUsageEntry {
+  tableName: string;
+  functionName: string;
+  usageType: 'query' | 'insert' | 'update' | 'delete' | 'reference';
+  line: number;
+  column: number;
+  rawQuery?: string;
+}
+
 async function analyzeFile(
   filePath: string,
   content: string,
@@ -134,140 +183,152 @@ async function analyzeFile(
 ): Promise<SchemaViolation[]> {
   const violations: SchemaViolation[] = [];
 
-  // Parse TypeScript/JavaScript
-  const sourceFile = ts.createSourceFile(
-    filePath,
-    content,
-    ts.ScriptTarget.Latest,
-    true
-  );
+  // Parse with tree-sitter
+  const ast = parseFile(filePath, content);
+  if (!ast) {
+    return violations;
+  }
 
   // Track schema usage for this file
-  const schemaUsages: Array<{
-    tableName: string;
-    functionName: string;
-    usageType: 'query' | 'insert' | 'update' | 'delete' | 'reference';
-    line: number;
-    column: number;
-    rawQuery?: string;
-  }> = [];
+  const schemaUsages: SchemaUsageEntry[] = [];
 
-  // Analyze the AST
-  function visit(node: ts.Node, currentFunction?: string) {
-    // Detect ORM-specific patterns
-    
-    // 1. Drizzle ORM - Functional table definitions
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const funcName = node.expression.text;
-      if (['pgTable', 'mysqlTable', 'sqliteTable'].includes(funcName)) {
-        const tableName = extractTableNameFromDrizzle(node);
-        if (tableName) {
-          const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-          schemaUsages.push({
-            tableName,
-            functionName: currentFunction || 'schema-definition',
-            usageType: 'reference' as const,
-            line: pos.line + 1,
-            column: pos.character + 1
-          });
+  /**
+   * Walk the AST while tracking the enclosing function name.
+   * Matches the original pattern: the visitor fires for the current node
+   * using the *parent* function context, then computes a new context for
+   * the node's children.
+   */
+  walkWithContext(ast.root, (node, currentFunction) => {
+    // ---------------------------------------------------------------
+    // 1. Drizzle ORM – Functional table definitions
+    //    pgTable('table_name', { ... }), mysqlTable, sqliteTable
+    // ---------------------------------------------------------------
+    if (node.type === 'call_expression') {
+      const identNode = findChild(node, 'identifier');
+      if (identNode) {
+        const funcName = rawText(identNode);
+        if (['pgTable', 'mysqlTable', 'sqliteTable'].includes(funcName)) {
+          const tableName = extractTableNameFromDrizzle(node);
+          if (tableName) {
+            const { line, column } = getLineAndColumn(node);
+            schemaUsages.push({
+              tableName,
+              functionName: currentFunction || 'schema-definition',
+              usageType: 'reference',
+              line,
+              column,
+            });
+          }
         }
       }
     }
 
-    // 2. TypeORM - Entity decorators
-    if (ts.isDecorator(node) && ts.isCallExpression(node.expression)) {
-      const decoratorName = getDecoratorName(node.expression);
-      if (decoratorName === 'Entity') {
-        // Extract table name from Entity decorator
-        const tableName = extractTableNameFromTypeORM(node.expression);
-        if (tableName) {
-          const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-          schemaUsages.push({
-            tableName,
-            functionName: currentFunction || 'entity-definition',
-            usageType: 'reference' as const,
-            line: pos.line + 1,
-            column: pos.character + 1
-          });
+    // ---------------------------------------------------------------
+    // 2. TypeORM – Entity decorators
+    //    @Entity('table_name') or @Entity({ name: 'table_name' })
+    // ---------------------------------------------------------------
+    if (node.type === 'decorator') {
+      const callExpr = findChild(node, 'call_expression');
+      if (callExpr) {
+        const decoratorName = getDecoratorName(callExpr);
+        if (decoratorName === 'Entity') {
+          const tableName = extractTableNameFromTypeORM(callExpr);
+          if (tableName) {
+            const { line, column } = getLineAndColumn(node);
+            schemaUsages.push({
+              tableName,
+              functionName: currentFunction || 'entity-definition',
+              usageType: 'reference',
+              line,
+              column,
+            });
+          }
         }
       }
     }
 
-    // 3. Mongoose - Schema constructors
-    if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
-      if (node.expression.text === 'Schema') {
-        // Analyze schema object literal for field references
+    // ---------------------------------------------------------------
+    // 3. Mongoose – Schema constructors
+    //    new Schema({ field: { type: String, ref: 'OtherModel' } })
+    // ---------------------------------------------------------------
+    if (node.type === 'new_expression') {
+      const exprIdent = findChild(node, 'identifier');
+      if (exprIdent && rawText(exprIdent) === 'Schema') {
         analyzeMongooseSchema(node, currentFunction);
       }
     }
 
-    // 4. Prisma Client - Table access patterns
-    if (ts.isPropertyAccessExpression(node)) {
-      const propertyName = node.name.text;
-      // Check if this looks like Prisma client table access (prisma.user.findMany)
-      if (isPrismaBoundProperty(node)) {
-        const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-        schemaUsages.push({
-          tableName: propertyName,
-          functionName: currentFunction || 'unknown',
-          usageType: 'query' as const,
-          line: pos.line + 1,
-          column: pos.character + 1
-        });
-      }
-    }
+    // ---------------------------------------------------------------
+    // 4. Prisma Client – Table access patterns
+    //    prisma.user.findMany()
+    // ---------------------------------------------------------------
+    if (node.type === 'member_expression') {
+      const propIdent = findChild(node, 'property_identifier');
+      if (propIdent) {
+        const propertyName = rawText(propIdent);
 
-    // 5. Detect SQL queries and table references (existing logic)
-    if (ts.isStringLiteral(node) || ts.isTemplateExpression(node)) {
-      const queryText = getQueryText(node);
-      if (queryText) {
-        const queryAnalysis = analyzeQuery(queryText, allTables, filePath);
-        violations.push(...queryAnalysis.violations);
-        
-        // Record schema usage
-        for (const table of queryAnalysis.tables) {
-          const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+        // Prisma-specific check (prisma.user, db.user, client.user)
+        if (isPrismaBoundProperty(node)) {
+          const { line, column } = getLineAndColumn(node);
           schemaUsages.push({
-            tableName: table,
+            tableName: propertyName,
             functionName: currentFunction || 'unknown',
-            usageType: queryAnalysis.type as 'query' | 'insert' | 'update' | 'delete' | 'reference',
-            line: pos.line + 1,
-            column: pos.character + 1,
-            rawQuery: queryText
+            usageType: 'query',
+            line,
+            column,
           });
         }
       }
     }
 
-    // Detect ORM/model references
-    if (ts.isPropertyAccessExpression(node)) {
-      const propertyName = node.name.text;
-      if (allTables.has(propertyName)) {
-        const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-        schemaUsages.push({
-          tableName: propertyName,
-          functionName: currentFunction || 'unknown',
-          usageType: 'reference' as const,
-          line: pos.line + 1,
-          column: pos.character + 1
-        });
+    // ---------------------------------------------------------------
+    // 5. Detect SQL queries and table references in string/template literals
+    // ---------------------------------------------------------------
+    if (
+      node.type === 'string' ||
+      node.type === 'template_string' ||
+      node.type === 'template_literal'
+    ) {
+      const queryText = getQueryText(node);
+      if (queryText) {
+        const queryAnalysis = analyzeQuery(queryText, allTables, filePath);
+        violations.push(...queryAnalysis.violations);
+
+        for (const table of queryAnalysis.tables) {
+          const { line, column } = getLineAndColumn(node);
+          schemaUsages.push({
+            tableName: table,
+            functionName: currentFunction || 'unknown',
+            usageType: queryAnalysis.type as 'query' | 'insert' | 'update' | 'delete' | 'reference',
+            line,
+            column,
+            rawQuery: queryText,
+          });
+        }
       }
     }
 
-    // Track current function context
-    let funcName = currentFunction;
-    if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isArrowFunction(node)) {
-      if (ts.isFunctionDeclaration(node) && node.name) {
-        funcName = node.name.text;
-      } else if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
-        funcName = node.name.text;
+    // ---------------------------------------------------------------
+    // 6. General ORM / model references
+    //    Any member expression whose property matches a known table name
+    // ---------------------------------------------------------------
+    if (node.type === 'member_expression') {
+      const propIdent = findChild(node, 'property_identifier');
+      if (propIdent) {
+        const propertyName = rawText(propIdent);
+        if (allTables.has(propertyName)) {
+          const { line, column } = getLineAndColumn(node);
+          schemaUsages.push({
+            tableName: propertyName,
+            functionName: currentFunction || 'unknown',
+            usageType: 'reference',
+            line,
+            column,
+          });
+        }
       }
     }
-
-    ts.forEachChild(node, child => visit(child, funcName));
-  }
-
-  visit(sourceFile);
+  });
 
   // Record schema usages in database
   if (config.enableTableUsageTracking) {
@@ -279,7 +340,7 @@ async function analyzeFile(
         usageType: usage.usageType,
         line: usage.line,
         column: usage.column,
-        rawQuery: usage.rawQuery
+        rawQuery: usage.rawQuery,
       });
     }
   }
@@ -296,31 +357,81 @@ async function analyzeFile(
   return violations;
 }
 
-function getQueryText(node: ts.StringLiteral | ts.TemplateExpression): string | null {
-  if (ts.isStringLiteral(node)) {
-    const text = node.text.toUpperCase();
-    // Check if it looks like SQL
-    if (text.includes('SELECT') || text.includes('INSERT') || 
-        text.includes('UPDATE') || text.includes('DELETE') ||
-        text.includes('CREATE') || text.includes('DROP')) {
-      return node.text;
+// ---------------------------------------------------------------------------
+// AST walker with function-context tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Walk an AST depth-first while tracking the name of the enclosing function.
+ * The visitor receives the current node and the *parent's* function name,
+ * then computes an updated name for the node's children.
+ */
+function walkWithContext(
+  node: ASTNode,
+  visitor: (node: ASTNode, functionName?: string) => void,
+  currentFunction?: string
+): void {
+  // Invoke visitor with the parent's context
+  visitor(node, currentFunction);
+
+  // Determine the function context for children
+  let funcName = currentFunction;
+  if (
+    node.type === 'function_declaration' ||
+    node.type === 'method_definition' ||
+    node.type === 'arrow_function'
+  ) {
+    const name = getNodeName(node);
+    if (name) {
+      funcName = name;
     }
   }
-  
-  if (ts.isTemplateExpression(node)) {
-    // For template literals, check the head
-    const headText = node.head.text.toUpperCase();
-    if (headText.includes('SELECT') || headText.includes('INSERT') || 
-        headText.includes('UPDATE') || headText.includes('DELETE')) {
-      // Return a simplified version for analysis
-      return node.head.text + ' ...';
+
+  // Recurse into children
+  if (node.children) {
+    for (const child of node.children) {
+      walkWithContext(child, visitor, funcName);
     }
   }
-  
+}
+
+// ---------------------------------------------------------------------------
+// Query text detection
+// ---------------------------------------------------------------------------
+
+function getQueryText(node: ASTNode): string | null {
+  if (node.type === 'string') {
+    const text = rawText(node);
+    const unquoted = stripQuotes(text);
+    const upper = unquoted.toUpperCase();
+    if (SQL_KEYWORDS.some(kw => upper.includes(kw))) {
+      return unquoted;
+    }
+  }
+
+  if (node.type === 'template_string' || node.type === 'template_literal') {
+    // The first string_fragment contains the text before the first substitution
+    const headNode = node.children?.find(c => c.type === 'string_fragment');
+    if (headNode) {
+      const headText = rawText(headNode).toUpperCase();
+      if (SQL_KEYWORDS.some(kw => headText.includes(kw))) {
+        return rawText(headNode) + ' ...';
+      }
+    }
+  }
+
   return null;
 }
 
-function analyzeQuery(query: string, allTables: Set<string>, filePath: string): {
+// ---------------------------------------------------------------------------
+// SQL query analysis
+// ---------------------------------------------------------------------------
+
+function analyzeQuery(
+  query: string,
+  allTables: Set<string>,
+  filePath: string
+): {
   violations: SchemaViolation[];
   tables: string[];
   type: string;
@@ -328,16 +439,16 @@ function analyzeQuery(query: string, allTables: Set<string>, filePath: string): 
   const violations: SchemaViolation[] = [];
   const tables: string[] = [];
   const queryUpper = query.toUpperCase();
-  
+
   let type = 'query';
   if (queryUpper.includes('SELECT')) type = 'query';
   else if (queryUpper.includes('INSERT')) type = 'insert';
   else if (queryUpper.includes('UPDATE')) type = 'update';
   else if (queryUpper.includes('DELETE')) type = 'delete';
 
-  // Extract table names (basic regex - could be enhanced)
+  // Extract table names (basic regex — could be enhanced)
   const tableMatches = query.match(/(?:FROM|JOIN|INTO|UPDATE)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gi);
-  
+
   if (tableMatches) {
     for (const match of tableMatches) {
       const tableName = match.split(/\s+/).pop();
@@ -349,7 +460,7 @@ function analyzeQuery(query: string, allTables: Set<string>, filePath: string): 
           schemaType: 'missing-reference',
           tableName,
           snippet: query.substring(0, 100),
-          suggestion: 'Load the appropriate database schema or check table name spelling'
+          suggestion: 'Load the appropriate database schema or check table name spelling',
         });
       } else if (tableName) {
         tables.push(tableName);
@@ -360,13 +471,17 @@ function analyzeQuery(query: string, allTables: Set<string>, filePath: string): 
   return { violations, tables, type };
 }
 
+// ---------------------------------------------------------------------------
+// Validation checks
+// ---------------------------------------------------------------------------
+
 function checkMissingTableReferences(
   usages: Array<{ tableName: string; line: number }>,
   allTables: Set<string>,
   filePath: string
 ): SchemaViolation[] {
   const violations: SchemaViolation[] = [];
-  
+
   for (const usage of usages) {
     if (!allTables.has(usage.tableName)) {
       violations.push({
@@ -376,11 +491,11 @@ function checkMissingTableReferences(
         message: `Reference to unknown table '${usage.tableName}'`,
         schemaType: 'missing-reference',
         tableName: usage.tableName,
-        suggestion: 'Load the database schema that contains this table'
+        suggestion: 'Load the database schema that contains this table',
       });
     }
   }
-  
+
   return violations;
 }
 
@@ -390,7 +505,7 @@ function validateQueryPatterns(
   filePath: string
 ): SchemaViolation[] {
   const violations: SchemaViolation[] = [];
-  
+
   // Count queries per function
   const queriesPerFunction = usages.reduce((acc, usage) => {
     if (usage.usageType !== 'reference') {
@@ -407,7 +522,7 @@ function validateQueryPatterns(
         severity: 'suggestion',
         message: `Function '${funcName}' has ${count} database queries (max recommended: ${config.maxQueriesPerFunction})`,
         schemaType: 'missing-reference',
-        suggestion: 'Consider consolidating queries or extracting to a data access layer'
+        suggestion: 'Consider consolidating queries or extracting to a data access layer',
       });
     }
   }
@@ -415,84 +530,168 @@ function validateQueryPatterns(
   return violations;
 }
 
+// ---------------------------------------------------------------------------
 // ORM-specific helper functions
-function extractTableNameFromDrizzle(node: ts.CallExpression): string | null {
-  // Drizzle: pgTable('table_name', { ... })
-  if (node.arguments.length > 0 && ts.isStringLiteral(node.arguments[0])) {
-    return node.arguments[0].text;
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the table name from a Drizzle ORM call.
+ * Drizzle: pgTable('table_name', { ... })
+ */
+function extractTableNameFromDrizzle(node: ASTNode): string | null {
+  // call_expression children: [expression, arguments]
+  const argsNode = findChild(node, 'arguments');
+  if (!argsNode) return null;
+
+  // The first child of arguments that is a string literal
+  const stringChild = argsNode.children?.find(c => c.type === 'string');
+  if (stringChild) {
+    return stripQuotes(rawText(stringChild));
   }
   return null;
 }
 
-function getDecoratorName(node: ts.CallExpression): string | null {
-  if (ts.isIdentifier(node.expression)) {
-    return node.expression.text;
+/**
+ * Get the decorator name from a call_expression inside a decorator.
+ * e.g. @Entity(...) → 'Entity'
+ */
+function getDecoratorName(node: ASTNode): string | null {
+  // node is a call_expression inside a decorator
+  const identNode = findChild(node, 'identifier');
+  if (identNode) {
+    return rawText(identNode);
   }
   return null;
 }
 
-function extractTableNameFromTypeORM(node: ts.CallExpression): string | null {
-  // TypeORM: @Entity('table_name') or @Entity({ name: 'table_name' })
-  if (node.arguments.length > 0) {
-    const firstArg = node.arguments[0];
-    if (ts.isStringLiteral(firstArg)) {
-      return firstArg.text;
-    }
-    if (ts.isObjectLiteralExpression(firstArg)) {
-      // Look for name property
-      for (const prop of firstArg.properties) {
-        if (ts.isPropertyAssignment(prop) && 
-            ts.isIdentifier(prop.name) && 
-            prop.name.text === 'name' &&
-            ts.isStringLiteral(prop.initializer)) {
-          return prop.initializer.text;
+/**
+ * Extract the table name from a TypeORM Entity decorator call.
+ * @Entity('table_name') or @Entity({ name: 'table_name' })
+ */
+function extractTableNameFromTypeORM(node: ASTNode): string | null {
+  // node is a call_expression
+  const argsNode = findChild(node, 'arguments');
+  if (!argsNode) return null;
+
+  // First non-bracket argument
+  const firstArg = argsNode.children?.find(c => c.type !== '(' && c.type !== ')');
+  if (!firstArg) return null;
+
+  // @Entity('table_name')
+  if (firstArg.type === 'string') {
+    return stripQuotes(rawText(firstArg));
+  }
+
+  // @Entity({ name: 'table_name' })
+  if (firstArg.type === 'object') {
+    for (const prop of firstArg.children ?? []) {
+      if (prop.type === 'pair') {
+        // pair children: [key, :, value]
+        const keyNode = prop.children?.[0];
+        if (
+          keyNode &&
+          (keyNode.type === 'identifier' || keyNode.type === 'string' || keyNode.type === 'property_identifier')
+        ) {
+          const keyText = stripQuotes(rawText(keyNode));
+          if (keyText === 'name') {
+            const valueNode = prop.children?.find(c => c.type === 'string');
+            if (valueNode) {
+              return stripQuotes(rawText(valueNode));
+            }
+          }
         }
       }
     }
   }
+
   return null;
 }
 
-function analyzeMongooseSchema(node: ts.NewExpression, currentFunction?: string): void {
-  // Mongoose: new Schema({ field: { type: String, ref: 'OtherModel' } })
-  if (node.arguments && node.arguments.length > 0) {
-    const schemaArg = node.arguments[0];
-    if (ts.isObjectLiteralExpression(schemaArg)) {
-      // Look for ref properties that indicate relationships
-      analyzeObjectForReferences(schemaArg, currentFunction);
-    }
+/**
+ * Analyze a Mongoose Schema constructor for field-level references.
+ * Mongoose: new Schema({ field: { type: String, ref: 'OtherModel' } })
+ */
+function analyzeMongooseSchema(node: ASTNode, currentFunction?: string): void {
+  // node is a new_expression: children [new, expression, arguments]
+  const argsNode = findChild(node, 'arguments');
+  if (!argsNode) return;
+
+  const schemaArg = argsNode.children?.find(c => c.type === 'object');
+  if (schemaArg) {
+    analyzeObjectForReferences(schemaArg, currentFunction);
   }
 }
 
-function analyzeObjectForReferences(obj: ts.ObjectLiteralExpression, currentFunction?: string): void {
-  for (const prop of obj.properties) {
-    if (ts.isPropertyAssignment(prop) && ts.isObjectLiteralExpression(prop.initializer)) {
-      // Look for ref property
-      for (const nestedProp of prop.initializer.properties) {
-        if (ts.isPropertyAssignment(nestedProp) &&
-            ts.isIdentifier(nestedProp.name) &&
-            nestedProp.name.text === 'ref' &&
-            ts.isStringLiteral(nestedProp.initializer)) {
-          // Found a reference to another model
-          const referencedModel = nestedProp.initializer.text;
-          // Add to schema usage tracking
-          // This would need access to the parent scope's schemaUsages array
+/**
+ * Recurse into an object literal looking for { ref: 'ModelName' } patterns.
+ */
+function analyzeObjectForReferences(obj: ASTNode, currentFunction?: string): void {
+  // obj is an 'object' literal
+  for (const prop of obj.children ?? []) {
+    if (prop.type !== 'pair') continue;
+
+    // pair children: [key, :, value]
+    const valueNode = prop.children?.find(c => c.type === 'object');
+    if (!valueNode) continue;
+
+    // Look for a nested 'ref' property
+    for (const nestedProp of valueNode.children ?? []) {
+      if (nestedProp.type !== 'pair') continue;
+
+      const keyNode = nestedProp.children?.[0];
+      if (!keyNode) continue;
+
+      const keyText = stripQuotes(rawText(keyNode));
+      if (keyText === 'ref') {
+        const refValueNode = nestedProp.children?.find(c => c.type === 'string');
+        if (refValueNode) {
+          const referencedModel = stripQuotes(rawText(refValueNode));
+          // NOTE: referencedModel is currently not added to schemaUsages
+          // because this helper does not have access to the parent scope's array.
+          // Future enhancement: track Mongoose ref relationships.
+          void referencedModel;
         }
       }
     }
   }
 }
 
-function isPrismaBoundProperty(node: ts.PropertyAccessExpression): boolean {
-  // Check if this looks like prisma.tableName.operation
-  if (ts.isPropertyAccessExpression(node.expression) && 
-      ts.isIdentifier(node.expression.expression)) {
-    const baseName = node.expression.expression.text;
-    // Common Prisma client variable names
-    return ['prisma', 'db', 'client'].includes(baseName.toLowerCase());
+/**
+ * Check if a member_expression looks like a Prisma client table access.
+ * prisma.user.findMany() — the top-level object is 'prisma'/'db'/'client'.
+ */
+function isPrismaBoundProperty(node: ASTNode): boolean {
+  // node is a member_expression: children [object, ., property_identifier]
+  // For prisma.user.findMany(), the outer member_expression's object is another
+  // member_expression (prisma.user), whose object is the identifier 'prisma'.
+
+  // Find the nested member_expression that is the object of this one
+  const nestedME = node.children?.find(
+    c => c.type === 'member_expression'
+  );
+
+  if (nestedME) {
+    // The object of the nested member_expression is the base identifier
+    const baseId = findChild(nestedME, 'identifier');
+    if (baseId) {
+      const baseName = rawText(baseId).toLowerCase();
+      return ['prisma', 'db', 'client'].includes(baseName);
+    }
   }
+
+  // Also handle direct access like prisma.$queryRaw
+  const directId = findChild(node, 'identifier');
+  if (directId) {
+    const baseName = rawText(directId).toLowerCase();
+    return ['prisma', 'db', 'client'].includes(baseName);
+  }
+
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// Analyzer Definition
+// ---------------------------------------------------------------------------
 
 /**
  * Schema Analyzer Definition

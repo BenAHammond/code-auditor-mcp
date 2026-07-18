@@ -369,7 +369,7 @@ export class CodeMapGenerator {
       const file = fileMap[func.filePath];
       const funcInfo: FunctionMapInfo = {
         name: func.name,
-        line: func.lineNumber,
+        line: func.lineNumber || 0,
         complexity: func.complexity || (func.metadata as any)?.complexity,
         purpose: func.purpose,
         parameters: func.parameters?.map(p => p.name),
@@ -389,7 +389,7 @@ export class CodeMapGenerator {
       }
       
       // Update file stats
-      file.lineCount = Math.max(file.lineCount, func.endLine || func.lineNumber);
+      file.lineCount = Math.max(file.lineCount, func.endLine || func.lineNumber || 0);
       file.complexity = Math.max(file.complexity, func.complexity || (func.metadata as any)?.complexity || 0);
     }
     
@@ -574,13 +574,13 @@ export class CodeMapGenerator {
       const remainingSpace = maxLength - overview.length - 50; // Leave some buffer
       const filesSample = this.formatFilesSection(fullMap.fileGroups.slice(0, 2), {});
       const truncatedFiles = filesSample.length > remainingSpace 
-        ? filesSample.substring(0, remainingSpace) + '...\n\n[Use get_code_map_section to see complete file listing]'
+        ? filesSample.substring(0, remainingSpace) + '...\n\n[Use code_map.get to see complete file listing]'
         : filesSample;
       
       return overview + '\n\n' + truncatedFiles;
     }
     
-    return overview.substring(0, maxLength - 50) + '...\n\n[Use get_code_map_section for complete overview]';
+    return overview.substring(0, maxLength - 50) + '...\n\n[Use code_map.get for complete overview]';
   }
 
   /**

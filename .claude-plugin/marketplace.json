@@ -1,0 +1,20 @@
+{
+  "name": "code-auditor-mcp",
+  "description": "Code quality auditing tools — semantic search, SOLID analysis, invariant enforcement, and SARIF output for GitHub code scanning.",
+  "owner": {
+    "name": "Ben Hammond",
+    "email": "ben@benhammond.tech"
+  },
+  "plugins": [
+    {
+      "name": "code-auditor",
+      "source": "./plugin",
+      "description": "Diff-scoped code quality auditing on every edit. Indexes your codebase, enforces invariants, and feeds violations back to the agent so fixes happen inline.",
+      "version": "3.0.0",
+      "author": {
+        "name": "Ben Hammond"
+      },
+      "keywords": ["code-quality", "audit", "solid", "linting", "invariants"]
+    }
+  ]
+}

@@ -54,10 +54,21 @@ The codebase follows a plugin-based architecture:
 ### Key Components
 
 - **AuditRunner**: Orchestrates the analysis process
-- **BaseAnalyzer**: Abstract base class for all analyzers
-- **Analyzers**: Specific implementations (SOLID, DRY, Security, etc.)
-- **AST Utils**: TypeScript AST parsing and traversal utilities
-- **Report Generators**: Output formatters (HTML, JSON, CSV)
+- **Analyzers**: Functional analyzer definitions registered in `DEFAULT_ANALYZERS` — each implements the `AnalyzerDefinition` interface (SOLID, DRY, Documentation, etc.)
+- **Language Adapters**: tree-sitter-based multi-language AST parsing (TypeScript, JavaScript, Go) behind the `LanguageAdapter` interface
+- **adapterBridge**: Synchronous facade over tree-sitter for AST parsing, traversal, and complexity calculation
+- **Invariant Rules**: Project-specific rule enforcement (`import-ban`, `call-constraint`, `module-boundary`, `naming`, `ast-pattern`) via `.codeauditor.json`
+- **Report Generators**: Output formatters (HTML, JSON, CSV, SARIF)
+
+### Adding a New Language
+
+The project uses tree-sitter with WASM grammars behind a `LanguageAdapter` interface to support multiple languages. Adding support for a new language involves exactly three steps:
+
+1. **Get the tree-sitter grammar** for your language. Add the grammar npm package as a `devDependency` (e.g., `tree-sitter-python`). If the package ships a WASM binary, the existing `build:grammars` script will copy it to `dist/grammars/`. If not, compile it once with the tree-sitter CLI and vendor the `.wasm` file at `grammars/<name>.wasm` with an entry in `grammars/manifest.json`.
+
+2. **Create the adapter**: `src/languages/<name>/TreeSitter<Name>Adapter.ts`. Implement the `LanguageAdapter` interface (23 methods). Use tree-sitter queries and tree traversal for all operations. Follow `src/languages/typescript/TreeSitterTypeScriptAdapter.ts` as the reference implementation.
+
+3. **Register in LanguageRegistry**: Add extension mappings (e.g., `.py` → `python`) and register your adapter in `src/languages/LanguageRegistry.ts`. **That's it** — all analyzers, scanners, and invariant rules consume through the adapter interface. No analyzer code needs to change.
 
 ## Creating a New Analyzer
 
@@ -68,14 +79,18 @@ We support both functional and class-based analyzers. The functional approach is
 Create a new file in `src/analyzers/yourAnalyzer.ts`:
 
 ```typescript
-import * as ts from 'typescript';
-import { Violation } from '../types.js';
+import type { Violation, AST, AnalyzerFunction } from '../types.js';
 import {
-  AnalyzerFunction,
   createAnalyzer,
   createViolation,
+  processFiles,
   getNodePosition,
-  traverseAST
+  getNodeName,
+  walkAST,
+  findNodes,
+  calculateComplexity,
+  getNodeText,
+  isExported
 } from './analyzerUtils.js';
 
 // Define your configuration
@@ -93,19 +108,19 @@ const DEFAULT_CONFIG: YourAnalyzerConfig = {
 // File analyzer function
 const analyzeFile = async (
   filePath: string,
-  sourceFile: ts.SourceFile,
+  ast: AST,
   config: YourAnalyzerConfig
 ): Promise<Violation[]> => {
   const violations: Violation[] = [];
   
-  traverseAST(sourceFile, (node) => {
-    if (isViolation(node, config)) {
-      const { line, column } = getNodePosition(sourceFile, node);
+  walkAST(ast.root, (node) => {
+    if (isViolation(node, ast, config)) {
+      const location = getNodePosition(node);
       
       violations.push(createViolation('your-analyzer', {
         file: filePath,
-        line,
-        column,
+        line: location.line,
+        column: location.column,
         severity: 'warning',
         message: 'Your violation message',
         type: 'your-type',
@@ -121,13 +136,13 @@ const analyzeFile = async (
 };
 
 // Helper functions
-function isViolation(node: ts.Node, config: YourAnalyzerConfig): boolean {
-  // Your detection logic
+function isViolation(node: ASTNode, ast: AST, config: YourAnalyzerConfig): boolean {
+  // Your detection logic using node.type, node.name, etc.
   return false;
 }
 
-function calculateMetric(node: ts.Node): number {
-  // Your metric calculation
+function calculateMetric(node: ASTNode): number {
+  // Your metric calculation using calculateComplexity(node)
   return 0;
 }
 
@@ -141,20 +156,32 @@ export const yourAnalyzer: AnalyzerFunction = createAnalyzer(
 
 ### Step 2: Register the Analyzer
 
-For functional analyzers, add to `src/AuditRunner.ts`:
+Add your analyzer to the `DEFAULT_ANALYZERS` registry in `src/auditRunner.ts`:
 
 ```typescript
-import { yourAnalyzer } from './analyzers/yourAnalyzer.js';
-import { FunctionalAnalyzerAdapter } from './analyzers/FunctionalAnalyzerAdapter.js';
+import { myAnalyzer } from './analyzers/myAnalyzer.js';
 
-// In registerDefaultAnalyzers() method:
-this.registerAnalyzer(
-  new FunctionalAnalyzerAdapter(
-    'your-analyzer',
-    yourAnalyzer,
-    this.options.yourAnalyzer
-  )
-);
+// In the DEFAULT_ANALYZERS record, add an entry:
+'my-analyzer': myAnalyzer,
+```
+
+If your analyzer needs configuration bridging (mapping from `AuditRunnerOptions` to analyzer-specific config), wrap it similar to the existing analyzers:
+
+```typescript
+'my-analyzer': {
+  name: 'my-analyzer',
+  description: 'Analyzes code for custom issues',
+  category: 'quality',
+  analyze: async (files, config, options, progressCallback) => {
+    const analyzer = new MyUniversalAnalyzer();
+    const universalConfig = {
+      threshold: config.myThreshold ?? 10,
+    };
+    return analyzer.analyze(files, universalConfig, {
+      progressCallback: createProgressAdapter('my-analyzer', progressCallback),
+    });
+  },
+},
 ```
 
 ### Step 3: Update Types
@@ -192,7 +219,7 @@ To ensure consistency and make it easier to contribute new analyzers, we follow 
 ### Core Data Flow
 
 ```
-Files → BaseAnalyzer → YourAnalyzer → Violations → AnalyzerResult → AuditRunner → Reports
+Files → adapterBridge → YourAnalyzer → Violations → AnalyzerResult → AuditRunner → Reports
 ```
 
 ### Standard Interfaces
@@ -319,23 +346,29 @@ npm run dev -- --analyzers your-analyzer --path test-examples
 ### Writing Unit Tests (Future)
 
 ```typescript
-// test/analyzers/YourAnalyzer.test.ts
-import { YourAnalyzer } from '../../src/analyzers/YourAnalyzer';
-import { parseTypeScriptFile } from '../../src/utils/astUtils';
+// test/analyzers/YourAnalyzer.test.ts (Vitest)
+import { describe, it, expect, beforeAll } from 'vitest';
+import { getASTForFile, walkAST } from '../../src/languages/adapterBridge.js';
+import { initializeLanguages } from '../../src/languages/index.js';
+import { initParsers } from '../../src/languages/tree-sitter/parser.js';
 
-describe('YourAnalyzer', () => {
-  const analyzer = new YourAnalyzer();
-  
+describe('myAnalyzer', () => {
+  // Two-phase init required: sync adapter registration + async WASM loading
+  beforeAll(async () => {
+    initializeLanguages();
+    await initParsers();
+  });
+
   it('should detect violations', async () => {
     const code = `
       // Your test code
     `;
-    
-    const sourceFile = parseTypeScriptFile('test.ts', code);
-    const violations = await analyzer.analyzeFile('test.ts', sourceFile);
-    
-    expect(violations).toHaveLength(1);
-    expect(violations[0].message).toContain('expected message');
+
+    const ast = getASTForFile('test.ts', code);
+    const violations = myAnalyzer.analyze(['test.ts'], { threshold: 10 });
+
+    expect(violations).toBeDefined();
+    // expect(violations).toHaveLength(1);
   });
 });
 ```
@@ -362,33 +395,45 @@ describe('YourAnalyzer', () => {
 
 ```typescript
 // 1. Imports (sorted: node, external, internal)
-import * as fs from 'fs';
-import * as ts from 'typescript';
-import { BaseAnalyzer } from './BaseAnalyzer.js';
+import { promises as fs } from 'fs';
+import type { Violation, AnalyzerDefinition } from '../types.js';
+import { getASTForFile, walkAST, calculateComplexity } from '../languages/adapterBridge.js';
+import { initializeLanguages } from '../languages/index.js';
 
 // 2. Types and Interfaces
-interface MyConfig { }
+interface MyAnalyzerConfig {
+  threshold: number;
+}
 
 // 3. Constants
 const DEFAULT_THRESHOLD = 10;
 
-// 4. Class Definition
-export class MyAnalyzer extends BaseAnalyzer {
-  // 4a. Properties
-  private config: MyConfig;
-  
-  // 4b. Constructor
-  constructor() { }
-  
-  // 4c. Public methods
-  async analyze() { }
-  
-  // 4d. Protected methods
-  protected helper() { }
-  
-  // 4e. Private methods
-  private implementation() { }
+// 4. Analyzer function (functional pattern — no classes needed)
+async function analyzeFile(
+  filePath: string,
+  sourceCode: string,
+  config: MyAnalyzerConfig
+): Promise<Violation[]> {
+  const ast = getASTForFile(filePath, sourceCode);
+  const violations: Violation[] = [];
+
+  walkAST(ast.root, (node) => {
+    // Detection logic using node.type, node.name, etc.
+  });
+
+  return violations;
 }
+
+// 5. Export as AnalyzerDefinition
+export const myAnalyzer: AnalyzerDefinition = {
+  name: 'my-analyzer',
+  description: 'Analyzes code for custom issues',
+  category: 'quality',
+  analyze: async (files, config, options?) => {
+    // Use processFiles pattern from existing analyzers
+    return { violations: [], filesProcessed: 0, executionTime: 0 };
+  },
+};
 ```
 
 ## Submitting Changes

@@ -7,6 +7,7 @@ import { AuditResult, ReportFormat } from '../types.js';
 import { generateHTMLReport } from './htmlReportGenerator.js';
 import { generateJSONReport } from './jsonReportGenerator.js';
 import { generateCSVReport } from './csvReportGenerator.js';
+import { generateSARIFReport } from './sarifReportGenerator.js';
 
 /**
  * Generate a report in the specified format
@@ -19,6 +20,8 @@ export function generateReport(result: AuditResult, format: ReportFormat): strin
       return generateJSONReport(result);
     case 'csv':
       return generateCSVReport(result);
+    case 'sarif':
+      return generateSARIFReport(result);
     default:
       throw new Error(`Unknown report format: ${format}`);
   }
@@ -28,10 +31,11 @@ export function generateReport(result: AuditResult, format: ReportFormat): strin
  * Create a report generator with custom formatters
  */
 export function createReportGenerator(customFormatters?: Record<string, (result: AuditResult) => string>) {
-  const formatters = {
+  const formatters: Record<string, (result: AuditResult) => string> = {
     html: generateHTMLReport,
     json: generateJSONReport,
     csv: generateCSVReport,
+    sarif: generateSARIFReport,
     ...customFormatters
   };
   

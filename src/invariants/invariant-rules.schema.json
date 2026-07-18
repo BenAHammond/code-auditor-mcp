@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/BenAHammond/code-auditor-mcp/invariant-rules.schema.json",
+  "title": "Code Auditor — Invariant Rules",
+  "description": "Schema for the `rules` array inside .codeauditor.json. Declare your codebase's laws and the auditor enforces them.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference — enables editor autocomplete."
+    },
+    "rules": {
+      "type": "array",
+      "description": "User-declared invariant rules enforced by the auditor.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for this rule."
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["import-ban", "call-constraint", "module-boundary", "naming", "ast-pattern"],
+            "description": "The kind of invariant rule."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "warning", "suggestion"],
+            "description": "Violation severity."
+          },
+          "message": {
+            "type": "string",
+            "description": "Optional user-facing message shown when the rule is violated."
+          }
+        },
+        "required": ["id", "kind", "severity"],
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "import-ban" } } },
+            "then": {
+              "required": ["module"],
+              "properties": {
+                "module": {
+                  "type": "string",
+                  "description": "Module specifier or glob (e.g. @ai-sdk/*). No file may import this."
+                },
+                "except": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Files matching these path globs are exempt from the ban."
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "call-constraint" } } },
+            "then": {
+              "required": ["callee"],
+              "properties": {
+                "callee": {
+                  "type": "string",
+                  "description": "Function name, optionally path-qualified as path/glob#name."
+                },
+                "allowFrom": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Only callers matching these path globs are allowed. Mutually exclusive with denyFrom."
+                },
+                "denyFrom": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Callers matching these path globs are denied. Mutually exclusive with allowFrom."
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "module-boundary" } } },
+            "then": {
+              "required": ["from", "to"],
+              "properties": {
+                "from": {
+                  "type": "string",
+                  "description": "Path glob. Files matching this pattern may NOT import from files matching `to`."
+                },
+                "to": {
+                  "type": "string",
+                  "description": "Path glob. Files matching this pattern may not be imported by files matching `from`."
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "naming" } } },
+            "then": {
+              "required": ["path", "exports"],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Path glob. Files matching this must have exports matching the regex."
+                },
+                "exports": {
+                  "type": "string",
+                  "description": "RegExp pattern. Exported symbols in matching files must match this."
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "ast-pattern" } } },
+            "then": {
+              "required": ["pattern"],
+              "properties": {
+                "pattern": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "ast-grep pattern to match AST nodes (e.g. 'new Function($$$)')."
+                },
+                "language": {
+                  "type": "string",
+                  "enum": ["typescript", "javascript", "go"],
+                  "description": "Language to parse files in. Defaults to 'typescript'."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Path glob. Only files matching this pattern are checked."
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

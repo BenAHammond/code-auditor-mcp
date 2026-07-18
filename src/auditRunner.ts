@@ -4,15 +4,18 @@
  */
 
 import { promises as fs } from 'fs';
+import { statSync, readFileSync } from 'fs';
 import path from 'path';
-import { 
-  AuditResult, 
-  AuditRunnerOptions, 
+import { execSync } from 'child_process';
+import {
+  AuditResult,
+  AuditRunnerOptions,
   AnalyzerDefinition,
   AnalyzerResult,
   Violation,
   AuditProgress,
   FunctionMetadata,
+  AuditResultScope,
   AuditAbortedError,
   AuditHandoffError,
 } from './types.js';
@@ -22,29 +25,178 @@ import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
 
-// Import analyzer definitions
-// Use compatibility layers for refactored analyzers
-import { createSOLIDAnalyzer } from './adapters/solidAnalyzerCompat.js';
-import { dryAnalyzer } from './analyzers/dryAnalyzerCompat.js';
-// import { securityAnalyzer } from './analyzers/securityAnalyzer.js';
-// import { componentAnalyzer } from './analyzers/componentAnalyzer.js';
-import { dataAccessAnalyzer } from './analyzers/dataAccessAnalyzerCompat.js';
-import { reactAnalyzer } from './analyzers/reactAnalyzer.js'; // Keep legacy React analyzer
-import { documentationAnalyzer } from './analyzers/documentationAnalyzerCompat.js';
-import { schemaAnalyzer } from './analyzers/schemaAnalyzerCompat.js';
+// Import universal analyzers
+import { initializeLanguages } from './languages/index.js';
+import { UniversalSOLIDAnalyzer } from './analyzers/universal/UniversalSOLIDAnalyzer.js';
+import { UniversalDRYAnalyzer } from './analyzers/universal/UniversalDRYAnalyzer.js';
+import { UniversalDataAccessAnalyzer } from './analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { UniversalDocumentationAnalyzer } from './analyzers/universal/UniversalDocumentationAnalyzer.js';
+import { UniversalSchemaAnalyzer } from './analyzers/universal/UniversalSchemaAnalyzer.js';
+import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
+import { invariantsAnalyzer } from './analyzers/invariantsAnalyzer.js';
+import { hasRules } from './invariants/ruleEngine.js';
+import { CodeIndexDB } from './codeIndexDB.js';
+
+// Initialize the canonical language system once
+initializeLanguages();
+
+/**
+ * Shared progress callback adapter: translates universal analyzer's (number) into
+ * the object-based callback that auditRunner passes downstream.
+ */
+function createProgressAdapter(
+  analyzerName: string,
+  progressCallback?: import('./types.js').ProgressCallback
+): ((progress: number) => void) | undefined {
+  if (!progressCallback) return undefined;
+  return (progress: number) => {
+    progressCallback({
+      current: Math.floor(progress * 100),
+      total: 100,
+      analyzer: analyzerName,
+      phase: 'analyzing',
+    });
+  };
+}
 
 /**
  * Default analyzer registry
  */
 const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
-  'solid': createSOLIDAnalyzer(),
-  'dry': dryAnalyzer,
-  // 'security': securityAnalyzer,
-  // 'component': componentAnalyzer,
-  'data-access': dataAccessAnalyzer,
+  'solid': {
+    name: 'solid',
+    description: 'Detects violations of SOLID principles',
+    category: 'architecture',
+    analyze: async (files, config, options, progressCallback) => {
+      const analyzer = new UniversalSOLIDAnalyzer();
+      const universalConfig: Record<string, unknown> = { skipTestFiles: true };
+      if (config.maxMethodsPerClass !== undefined) universalConfig.maxMethodsPerClass = config.maxMethodsPerClass;
+      if (config.maxLinesPerMethod !== undefined) universalConfig.maxLinesPerMethod = config.maxLinesPerMethod;
+      if (config.maxParametersPerMethod !== undefined) universalConfig.maxParametersPerMethod = config.maxParametersPerMethod;
+      if (config.maxClassComplexity !== undefined) universalConfig.maxClassComplexity = config.maxClassComplexity;
+      if (config.maxInterfaceMembers !== undefined) universalConfig.maxInterfaceMembers = config.maxInterfaceMembers;
+      if (config.checkDependencyInversion !== undefined) universalConfig.checkDependencyInversion = config.checkDependencyInversion;
+      if (config.checkInterfaceSegregation !== undefined) universalConfig.checkInterfaceSegregation = config.checkInterfaceSegregation;
+      if (config.checkLiskovSubstitution !== undefined) universalConfig.checkLiskovSubstitution = config.checkLiskovSubstitution;
+      const result = await analyzer.analyze(files, universalConfig, {
+        progressCallback: createProgressAdapter('solid', progressCallback),
+        ...options as Record<string, unknown>,
+      });
+      return {
+        ...result,
+        violations: result.violations.map(v => ({
+          ...v,
+          principle: v.rule,
+          analyzer: 'solid',
+        })),
+      };
+    },
+  },
+  'dry': {
+    name: 'dry',
+    description: 'Detects code duplication across the codebase',
+    category: 'maintainability',
+    analyze: async (files, config, options, progressCallback) => {
+      const analyzer = new UniversalDRYAnalyzer();
+      return analyzer.analyze(files, config, {
+        progressCallback: createProgressAdapter('dry', progressCallback),
+        ...options as Record<string, unknown>,
+      });
+    },
+  },
+  'data-access': {
+    name: 'data-access',
+    description: 'Analyzes database access patterns and data layer interactions',
+    category: 'security',
+    analyze: async (files, config, options, progressCallback) => {
+      const analyzer = new UniversalDataAccessAnalyzer();
+      const universalConfig: Record<string, unknown> = {};
+      if (config.databases !== undefined) universalConfig.databases = config.databases;
+      if (config.organizationPatterns !== undefined) universalConfig.organizationPatterns = config.organizationPatterns;
+      if (config.tablePatterns !== undefined) universalConfig.tablePatterns = config.tablePatterns;
+      if (config.performanceThresholds !== undefined) universalConfig.performanceThresholds = config.performanceThresholds;
+      if (config.securityPatterns !== undefined) universalConfig.securityPatterns = config.securityPatterns;
+      if (config.checkOrgFilters !== undefined) universalConfig.checkOrgFilters = config.checkOrgFilters;
+      if (config.checkSQLInjection !== undefined) universalConfig.checkSQLInjection = config.checkSQLInjection;
+      if (config.checkPerformance !== undefined) universalConfig.checkPerformance = config.checkPerformance;
+      return analyzer.analyze(files, universalConfig, {
+        progressCallback: createProgressAdapter('data-access', progressCallback),
+        ...options as Record<string, unknown>,
+      });
+    },
+  },
   'react': reactAnalyzer,
-  'documentation': documentationAnalyzer,
-  'schema': schemaAnalyzer
+  'documentation': {
+    name: 'documentation',
+    description: 'Analyzes documentation quality across the codebase',
+    category: 'documentation',
+    analyze: async (files, config, options, progressCallback) => {
+      const analyzer = new UniversalDocumentationAnalyzer();
+      const universalConfig = {
+        requireFunctionDocs: config.requireFunctionDocs ?? true,
+        requireClassDocs: config.requireComponentDocs ?? true,
+        requireFileDocs: config.requireFileDocs ?? true,
+        requireParamDocs: config.requireParamDocs ?? true,
+        requireReturnDocs: config.requireReturnDocs ?? true,
+        minDescriptionLength: config.minDescriptionLength ?? 10,
+        checkExportedOnly: config.checkExportedOnly ?? false,
+        exemptPatterns: config.exemptPatterns ?? ['test', 'spec', '\\.d\\.ts$', 'mock', 'fixture'],
+      };
+      return analyzer.analyze(files, universalConfig, {
+        progressCallback: createProgressAdapter('documentation', progressCallback),
+        ...options as Record<string, unknown>,
+      });
+    },
+  },
+  'invariants': invariantsAnalyzer,
+  'schema': {
+    name: 'schema',
+    description: 'Analyzes code against database schemas',
+    category: 'database',
+    analyze: async (files, config, options, progressCallback) => {
+      const analyzer = new UniversalSchemaAnalyzer();
+      let schemas: unknown[] = [];
+      try {
+        const db = CodeIndexDB.getInstance();
+        await db.initialize();
+        const loadedSchemas = await db.getAllSchemas();
+        schemas = loadedSchemas.map((loaded) => {
+          const schema = loaded.schema as { name: string; databases: Array<{ tables: Array<{ name: string; columns?: unknown[] }> }> };
+          return {
+            name: schema.name,
+            tables: schema.databases.flatMap((database) =>
+              database.tables.map((table) => ({
+                name: table.name,
+                columns: table.columns || [],
+              }))
+            ),
+          };
+        });
+      } catch {
+        // If database isn't available, continue without schemas
+      }
+      const universalConfig = {
+        enableTableUsageTracking: config.enableTableUsageTracking ?? true,
+        checkMissingReferences: config.checkMissingReferences ?? true,
+        checkNamingConventions: config.checkNamingConventions ?? true,
+        detectUnusedTables: config.detectUnusedTables ?? false,
+        validateQueryPatterns: config.validateQueryPatterns ?? true,
+        maxQueriesPerFunction: config.maxQueriesPerFunction ?? 5,
+        requiredSchemas: config.requiredSchemas ?? [],
+        schemas,
+      };
+      const result = await analyzer.analyze(files, universalConfig);
+      return {
+        ...result,
+        violations: result.violations.map(v => ({
+          ...v,
+          schemaType: v.rule,
+          details: v.message,
+          analyzer: 'schema',
+        })),
+      };
+    },
+  },
 };
 
 /**
@@ -74,16 +226,73 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
   async function run(runOptions?: AuditRunnerOptions): Promise<AuditResult> {
     const mergedOptions = { ...options, ...runOptions };
     const startTime = Date.now();
-    
-    // Report progress
+
+    // ── Scope resolution ─────────────────────────────────────────────
+    const scope = mergedOptions.scope ?? 'all';
+    const isScoped = scope !== 'all';
+    const scopeResultType: AuditResultScope = isScoped ? 'scoped' : 'full';
+
     reportProgress(mergedOptions, {
       phase: 'discovery',
-      message: 'Discovering files...'
+      message: `Discovering files... (scope: ${scopeResultType})`
     });
-    
-    // Discover files
-    let files = await discoverProjectFiles(mergedOptions);
+
+    // Discover files based on scope
+    let files: string[];
+    let changedFunctions: FunctionMetadata[] | undefined;
+
+    if (typeof scope === 'string' && scope.startsWith('git:')) {
+      // git:<ref> scope
+      const gitRef = scope.slice(4);
+      files = resolveGitScopeFiles(mergedOptions, gitRef);
+      logMcpInfo('discovery', 'git scope resolved', {
+        ref: gitRef,
+        fileCount: files.length
+      });
+    } else if (scope === 'changed') {
+      // Changed scope: detect modified files
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const modifiedFiles = mergedOptions.explicitFiles?.length
+        ? mergedOptions.explicitFiles
+        : await db.detectModifiedFiles(
+            path.resolve(mergedOptions.projectRoot || process.cwd())
+          );
+      files = [...new Set(modifiedFiles.map((f) => path.resolve(f)))].sort();
+      logMcpInfo('discovery', 'changed scope resolved', {
+        fileCount: files.length
+      });
+    } else if (Array.isArray(scope)) {
+      // files scope: explicit file paths/globs
+      files = await resolveFilesScope(mergedOptions, scope);
+      logMcpInfo('discovery', 'files scope resolved', {
+        fileCount: files.length
+      });
+    } else {
+      // all scope: current behavior
+      files = await discoverProjectFiles(mergedOptions);
+    }
+
     throwIfAborted(mergedOptions.abortSignal);
+
+    // Detect changed functions for non-all scopes
+    if (isScoped && files.length > 0) {
+      try {
+        const db = CodeIndexDB.getInstance();
+        await db.initialize();
+        const detection = await db.detectChangedFunctions(files);
+        changedFunctions = detection.changedFunctions;
+        logMcpInfo('discovery', 'changed function detection', {
+          changedFunctionCount: changedFunctions.length,
+          deletedCount: detection.deletedFunctions.length,
+          errors: detection.errors.length
+        });
+      } catch (err) {
+        logMcpInfo('discovery', 'changed function detection failed (continuing)', {
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
 
     const handoffRemaining: string[] = [];
     const maxPerRun = mergedOptions.maxFilesPerRun;
@@ -96,26 +305,27 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     logMcpInfo('discovery', 'file discovery finished', {
       projectRoot: path.resolve(root),
       totalFiles: files.length,
+      scope: scopeResultType,
       indexFunctions: !!mergedOptions.indexFunctions
     });
 
     // Collect functions if enabled
     let collectedFunctions: FunctionMetadata[] = [];
     const fileToFunctionsMap = new Map<string, FunctionMetadata[]>(); // Track functions per file for sync
-    
+
     if (mergedOptions.indexFunctions) {
       reportProgress(mergedOptions, {
         phase: 'function-indexing',
         message: 'Collecting functions from files...'
       });
-      
+
       // Collect functions from TypeScript/JavaScript files
       // Note: Go files will be indexed by the Universal SOLID analyzer directly
-      const scriptFiles = files.filter(f => 
-        f.endsWith('.ts') || f.endsWith('.tsx') || 
+      const scriptFiles = files.filter(f =>
+        f.endsWith('.ts') || f.endsWith('.tsx') ||
         f.endsWith('.js') || f.endsWith('.jsx')
       );
-      
+
       logMcpInfo('function-indexing', 'extracting functions from script files', {
         scriptFileCount: scriptFiles.length
       });
@@ -136,7 +346,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           });
           collectedFunctions.push(...fileFunctions);
           fileToFunctionsMap.set(scriptFiles[i], fileFunctions); // Store for sync
-          
+
           reportProgress(mergedOptions, {
             phase: 'function-indexing',
             current: i + 1,
@@ -156,16 +366,36 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         }
       }
     }
-    
+
+    // ── Build full function index for scoped DRY ─────────────────────
+    // When scope is not 'all', DRY must compare scoped functions against
+    // the full index so new duplicates are caught (R2.2).
+    let fullFunctionIndex: FunctionMetadata[] | undefined;
+    if (isScoped) {
+      try {
+        const db = CodeIndexDB.getInstance();
+        fullFunctionIndex = await db.getAllFunctions();
+        logMcpInfo('analysis', 'loaded full function index for scoped DRY', {
+          functionCount: fullFunctionIndex.length
+        });
+      } catch (err) {
+        // Non-fatal: DRY will just run within scope
+        logMcpInfo('analysis', 'failed to load full index for DRY (continuing)', {
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+
     // Run analyzers
     const analyzerResults: Record<string, AnalyzerResult> = {};
     const enabledAnalyzers = getEnabledAnalyzers(mergedOptions, analyzerRegistry);
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
-      fileCount: files.length
+      fileCount: files.length,
+      scope: scopeResultType
     });
     logMcpDebug('analysis', 'registry keys', { keys: Object.keys(analyzerRegistry) });
-    
+
     const requestedConcurrency = Number(mergedOptions.analyzerConcurrency);
     const analyzerConcurrency =
       Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
@@ -193,11 +423,17 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           message: `Running ${analyzerName} analyzer...`
         });
 
+        // Build analyzer config; inject full index for DRY on scoped runs
+        const analyzerConfig = { ...(mergedOptions.analyzerConfigs?.[analyzerName] || {}) };
+        if (analyzerName === 'dry' && isScoped && fullFunctionIndex) {
+          analyzerConfig.fullFunctionIndex = fullFunctionIndex;
+        }
+
         logMcpInfo('analysis', `running ${analyzerName}`, { fileCount: files.length });
         try {
           const result = await analyzer.analyze(
             files,
-            mergedOptions.analyzerConfigs?.[analyzerName] || {},
+            analyzerConfig,
             mergedOptions,
             (progress) => {
               throwIfAborted(mergedOptions.abortSignal);
@@ -240,7 +476,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     };
 
     await Promise.all(Array.from({ length: analyzerConcurrency }, () => runAnalyzer()));
-    
+
     const orderedAnalyzerResults: Record<string, AnalyzerResult> = {};
     for (const analyzerName of enabledAnalyzers) {
       if (analyzerResults[analyzerName]) {
@@ -250,7 +486,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
     // Generate summary
     const summary = generateSummary(orderedAnalyzerResults);
-    
+
     // Create result
     const result: AuditResult = {
       timestamp: new Date(),
@@ -262,9 +498,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         filesAnalyzed: files.length,
         analyzersRun: enabledAnalyzers,
         configUsed: mergedOptions,
-        ...(collectedFunctions.length > 0 && { 
+        scope: scopeResultType,
+        ...(collectedFunctions.length > 0 && {
           collectedFunctions,
-          fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap) 
+          fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)
         })
       }
     };
@@ -327,17 +564,127 @@ async function discoverProjectFiles(options: AuditRunnerOptions): Promise<string
 }
 
 /**
+ * Resolve git:<ref> scope: get files from `git diff --name-only <ref>`
+ * plus untracked files. Requires a git worktree.
+ */
+function resolveGitScopeFiles(options: AuditRunnerOptions, ref: string): string[] {
+  const rootDir = path.resolve(options.projectRoot || process.cwd());
+
+  // Verify git worktree
+  try {
+    execSync('git rev-parse --git-dir', { cwd: rootDir, stdio: 'pipe' });
+  } catch {
+    throw new Error(
+      `git:<ref> scope requires a git worktree. "${rootDir}" is not a git repository.`
+    );
+  }
+
+  const files = new Set<string>();
+
+  // git diff --name-only <ref>
+  try {
+    const diffOutput = execSync(`git diff --name-only ${ref}`, {
+      cwd: rootDir,
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024
+    });
+    for (const line of diffOutput.trim().split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) files.add(path.resolve(rootDir, trimmed));
+    }
+  } catch (err) {
+    throw new Error(
+      `Failed to run git diff --name-only ${ref}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  // Untracked files
+  try {
+    const untrackedOutput = execSync('git ls-files --others --exclude-standard', {
+      cwd: rootDir,
+      stdio: 'pipe',
+      encoding: 'utf-8'
+    });
+    for (const line of untrackedOutput.trim().split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) files.add(path.resolve(rootDir, trimmed));
+    }
+  } catch {
+    // No untracked files or git error — non-fatal
+  }
+
+  return [...files].sort();
+}
+
+/**
+ * Resolve files scope: paths can be file paths or globs.
+ * Absolute paths are used directly; relative paths are resolved
+ * against the project root; globs use discoverFiles.
+ */
+async function resolveFilesScope(
+  options: AuditRunnerOptions,
+  scopeFiles: string[]
+): Promise<string[]> {
+  const rootDir = path.resolve(options.projectRoot || process.cwd());
+  const result = new Set<string>();
+
+  for (const item of scopeFiles) {
+    if (item.includes('*') || item.includes('?') || item.includes('[')) {
+      // Glob pattern
+      const matches = await discoverFiles(rootDir, {
+        includePaths: [item],
+        excludePaths: options.excludePaths,
+        extensions: options.fileExtensions,
+        excludeDirs: undefined
+      });
+      for (const m of matches) result.add(m);
+    } else {
+      // Direct file path
+      const resolved = path.isAbsolute(item) ? item : path.resolve(rootDir, item);
+      result.add(resolved);
+    }
+  }
+
+  return [...result].sort();
+}
+
+/**
+ * Check whether a .codeauditor.json at the given directory has invariant rules.
+ */
+function hasInvariantRules(projectDir: string): boolean {
+  try {
+    const rulesPath = path.join(projectDir, '.codeauditor.json');
+    if (!statSync(rulesPath).isFile()) return false;
+    const raw = readFileSync(rulesPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.rules) && parsed.rules.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Get list of enabled analyzers
  */
 function getEnabledAnalyzers(
-  options: AuditRunnerOptions, 
+  options: AuditRunnerOptions,
   registry: Record<string, AnalyzerDefinition>
 ): string[] {
   // Explicit array (including empty = run no analyzers, e.g. index-only harness)
   if (options.enabledAnalyzers !== undefined) {
     return options.enabledAnalyzers;
   }
-  return Object.keys(registry);
+
+  const allAnalyzers = Object.keys(registry);
+
+  // Auto-disable invariants when no rules are configured (Spec 05 R3.1)
+  const projectDir = options.projectRoot || process.cwd();
+  if (!hasRules(options) && !hasInvariantRules(projectDir)) {
+    return allAnalyzers.filter(a => a !== 'invariants');
+  }
+
+  return allAnalyzers;
 }
 
 /**

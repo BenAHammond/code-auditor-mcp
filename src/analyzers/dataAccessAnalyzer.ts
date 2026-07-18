@@ -1,28 +1,42 @@
 /**
  * Data Access Analyzer (Functional)
  * Analyzes database access patterns and data layer interactions
- * 
+ *
  * Detects database usage, query patterns, performance risks,
  * and security concerns in data access code
  */
 
-import { 
-  DataAccessPattern, 
+import {
+  DataAccessPattern,
   QueryInfo,
   DatabaseType,
   AnalyzerDefinition,
   Violation
 } from '../types.js';
-import { 
+import {
   processFiles,
-  createViolation,
-  parseTypeScriptFile, 
+  createViolation
+} from './analyzerUtils.js';
+import {
   getImports,
   findNodesByKind,
-  getLineAndColumn,
-  getNodeText
-} from './analyzerUtils.js';
-import * as ts from 'typescript';
+  getLineAndColumn
+} from '../utils/astUtils.js';
+import type { AST, ASTNode } from '../languages/types.js';
+import type { Node as TreeSitterNode } from 'web-tree-sitter';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Get raw text from a tree-sitter node stored on ASTNode.raw. */
+function rawText(node: ASTNode): string {
+  return (node.raw as TreeSitterNode)?.text ?? '';
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
 
 /**
  * Configuration for Data Access analyzer
@@ -37,30 +51,30 @@ export interface DataAccessAnalyzerConfig {
       ormPatterns?: string[];
     };
   };
-  
+
   // Organization/tenant filtering patterns
   organizationPatterns?: string[];
-  
+
   // Table extraction patterns for different ORMs/query builders
   tablePatterns?: {
     orm?: RegExp[];
     sql?: RegExp[];
     queryBuilder?: RegExp[];
   };
-  
+
   // Performance thresholds
   performanceThresholds?: {
     complexQueryCount?: number;
     unfilteredQueryCount?: number;
     joinedTableCount?: number;
   };
-  
+
   // Security patterns
   securityPatterns?: {
     sqlInjectionRisks?: string[];
     parameterizedQueries?: string[];
   };
-  
+
   // Source type detection (e.g., API routes vs pages)
   sourcePatterns?: {
     api?: string[];
@@ -162,26 +176,27 @@ interface DatabaseCall {
   hasSqlInjectionRisk: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Main analysis
+// ---------------------------------------------------------------------------
+
 /**
- * Analyze a single file for data access patterns
+ * Analyze a single file for data access patterns.
+ * Now accepts a pre-parsed AST (from processFiles) instead of parsing internally.
  */
 async function analyzeFile(
-  filePath: string, 
-  config: DataAccessAnalyzerConfig
+  filePath: string,
+  ast: AST,
+  config: DataAccessAnalyzerConfig,
+  sourceCode?: string
 ): Promise<{ patterns: DataAccessPattern[]; violations: Violation[] }> {
-  const { sourceFile, errors } = await parseTypeScriptFile(filePath);
-  
-  if (errors.length > 0) {
-    throw new Error(`Parse errors: ${errors.map(e => e.messageText).join(', ')}`);
-  }
-  
-  const imports = getImports(sourceFile);
+  const imports = getImports(ast.root);
   const patterns: DataAccessPattern[] = [];
   const violations: Violation[] = [];
-  
+
   // Extract database calls
-  const dbCalls = extractDatabaseCalls(sourceFile, imports, filePath, config);
-  
+  const dbCalls = extractDatabaseCalls(ast.root, imports, filePath, config, sourceCode);
+
   // Group calls by database type
   const callsByDb = new Map<string, DatabaseCall[]>();
   dbCalls.forEach(call => {
@@ -190,24 +205,24 @@ async function analyzeFile(
     }
     callsByDb.get(call.type)!.push(call);
   });
-  
+
   // Create patterns for each database type used
   callsByDb.forEach((calls, dbType) => {
     const allTables = new Set<string>();
     const queries: QueryInfo[] = [];
     let hasOrgFilter = false;
     let hasSqlInjectionRisk = false;
-    
+
     calls.forEach(call => {
       call.tables.forEach(table => allTables.add(table));
       hasOrgFilter = hasOrgFilter || call.hasOrganizationFilter;
       hasSqlInjectionRisk = hasSqlInjectionRisk || call.hasSqlInjectionRisk;
-      
+
       // Create query info with enhanced analysis
       const queryInfo = extractQueryInfo(call, config);
       queries.push(queryInfo);
     });
-    
+
     const pattern: DataAccessPattern = {
       source: detectSourceType(filePath, config),
       filePath,
@@ -218,13 +233,13 @@ async function analyzeFile(
       performanceRisk: assessPerformanceRisk(queries, config),
       hasSqlInjectionRisk
     };
-    
+
     patterns.push(pattern);
-    
+
     // Check for violations
     violations.push(...checkDataAccessViolations(pattern));
   });
-  
+
   return { patterns, violations };
 }
 
@@ -243,36 +258,35 @@ function detectSourceType(filePath: string, config: DataAccessAnalyzerConfig): D
 }
 
 /**
- * Extract database calls from the AST
+ * Extract database calls from the AST.
+ * Uses tree-sitter call_expression nodes instead of TS API.
  */
 function extractDatabaseCalls(
-  sourceFile: ts.SourceFile,
+  ast: ASTNode,
   imports: ReturnType<typeof getImports>,
   filePath: string,
-  config: DataAccessAnalyzerConfig
+  config: DataAccessAnalyzerConfig,
+  sourceCode?: string
 ): DatabaseCall[] {
   const calls: DatabaseCall[] = [];
-  
+
   // Map imports to database types
   const dbImports = mapDatabaseImports(imports, config);
-  
-  // Find all call expressions
-  const callExpressions = findNodesByKind<ts.CallExpression>(
-    sourceFile,
-    ts.SyntaxKind.CallExpression
-  );
-  
+
+  // Find all call expressions using tree-sitter node type
+  const callExpressions = findNodesByKind(ast, 'call_expression');
+
   callExpressions.forEach(callExpr => {
-    const callText = getNodeText(callExpr, sourceFile);
-    const { line, column } = getLineAndColumn(sourceFile, callExpr.getStart());
-    
+    const callText = rawText(callExpr);
+    const { line, column } = getLineAndColumn(callExpr);
+
     // Check each configured database
     Object.entries(dbImports).forEach(([dbType, importInfo]) => {
       if (importInfo.hasImports && isDatabaseCall(callText, importInfo)) {
         const tables = extractTablesFromCall(callText, config);
         const hasOrgFilter = checkOrganizationFilter(callText, config);
         const securityCheck = checkQuerySecurity(callText, config);
-        
+
         calls.push({
           type: dbType,
           method: extractMethodName(callExpr),
@@ -287,7 +301,7 @@ function extractDatabaseCalls(
       }
     });
   });
-  
+
   return calls;
 }
 
@@ -295,7 +309,7 @@ function extractDatabaseCalls(
  * Map imports to database types
  */
 function mapDatabaseImports(
-  imports: ReturnType<typeof getImports>, 
+  imports: ReturnType<typeof getImports>,
   config: DataAccessAnalyzerConfig
 ): {
   [dbType: string]: {
@@ -305,25 +319,25 @@ function mapDatabaseImports(
   };
 } {
   const result: any = {};
-  
+
   Object.entries(config.databases!).forEach(([key, dbConfig]) => {
     const importNames: string[] = [];
     let hasImports = false;
-    
+
     imports.forEach(imp => {
       if ((dbConfig as any).importPatterns.some((pattern: string) => imp.moduleSpecifier.includes(pattern))) {
         hasImports = true;
         importNames.push(...imp.importedNames);
       }
     });
-    
+
     result[key] = {
       hasImports,
       importNames,
       patterns: [...(dbConfig as any).queryPatterns, ...importNames]
     };
   });
-  
+
   return result;
 }
 
@@ -339,17 +353,33 @@ function isDatabaseCall(
 }
 
 /**
- * Extract method name from call expression
+ * Extract method name from a tree-sitter call_expression node.
+ *
+ * call_expression node structure:
+ *   children[0] = identifier           (e.g., "query()")
+ *   OR
+ *   children[0] = member_expression    (e.g., "db.query()")
+ *     children[0] = identifier         (e.g., "db")
+ *     children[1] = "."
+ *     children[2] = property_identifier (e.g., "query")
  */
-function extractMethodName(callExpr: ts.CallExpression): string {
-  const expression = callExpr.expression;
-  
-  if (ts.isPropertyAccessExpression(expression)) {
-    return expression.name.text;
-  } else if (ts.isIdentifier(expression)) {
-    return expression.text;
+function extractMethodName(callExpr: ASTNode): string {
+  const expression = callExpr.children?.[0];
+  if (!expression) return 'unknown';
+
+  if (expression.type === 'member_expression') {
+    // e.g., db.query() — the property_identifier child holds the method name
+    const propId = expression.children?.find(
+      c => c.type === 'property_identifier'
+    );
+    if (propId) {
+      return rawText(propId);
+    }
+  } else if (expression.type === 'identifier') {
+    // e.g., query()
+    return rawText(expression);
   }
-  
+
   return 'unknown';
 }
 
@@ -358,7 +388,7 @@ function extractMethodName(callExpr: ts.CallExpression): string {
  */
 function extractTablesFromCall(callText: string, config: DataAccessAnalyzerConfig): string[] {
   const tables = new Set<string>();
-  
+
   // Try all table extraction patterns
   Object.values(config.tablePatterns!).forEach(patterns => {
     (patterns as RegExp[]).forEach(pattern => {
@@ -370,7 +400,7 @@ function extractTablesFromCall(callText: string, config: DataAccessAnalyzerConfi
       });
     });
   });
-  
+
   return Array.from(tables);
 }
 
@@ -378,7 +408,7 @@ function extractTablesFromCall(callText: string, config: DataAccessAnalyzerConfi
  * Check for organization filtering
  */
 function checkOrganizationFilter(callText: string, config: DataAccessAnalyzerConfig): boolean {
-  return config.organizationPatterns!.some(pattern => 
+  return config.organizationPatterns!.some(pattern =>
     callText.toLowerCase().includes(pattern.toLowerCase())
   );
 }
@@ -387,7 +417,7 @@ function checkOrganizationFilter(callText: string, config: DataAccessAnalyzerCon
  * Check query security
  */
 function checkQuerySecurity(
-  callText: string, 
+  callText: string,
   config: DataAccessAnalyzerConfig
 ): {
   parameterized: boolean;
@@ -396,11 +426,11 @@ function checkQuerySecurity(
   const hasParameterized = config.securityPatterns!.parameterizedQueries!.some(pattern =>
     callText.includes(pattern)
   );
-  
+
   const hasInjectionRisk = config.securityPatterns!.sqlInjectionRisks!.some(pattern =>
     callText.includes(pattern)
   );
-  
+
   return {
     parameterized: hasParameterized,
     injectionRisk: hasInjectionRisk && !hasParameterized
@@ -426,7 +456,7 @@ function extractQueryInfo(call: DatabaseCall, config: DataAccessAnalyzerConfig):
  */
 function inferQueryType(method: string): QueryInfo['type'] {
   const methodLower = method.toLowerCase();
-  
+
   if (methodLower.includes('select') || methodLower.includes('find') || methodLower.includes('get')) {
     return 'select';
   } else if (methodLower.includes('insert') || methodLower.includes('create')) {
@@ -436,7 +466,7 @@ function inferQueryType(method: string): QueryInfo['type'] {
   } else if (methodLower.includes('delete') || methodLower.includes('remove')) {
     return 'delete';
   }
-  
+
   return 'other';
 }
 
@@ -452,8 +482,8 @@ function detectJoins(method: string): boolean {
     'outerJoin',
     'fullJoin'
   ];
-  
-  return joinPatterns.some(pattern => 
+
+  return joinPatterns.some(pattern =>
     method.toLowerCase().includes(pattern.toLowerCase())
   );
 }
@@ -463,29 +493,29 @@ function detectJoins(method: string): boolean {
  */
 function analyzeQueryComplexity(call: DatabaseCall, config: DataAccessAnalyzerConfig): QueryInfo['complexity'] {
   let complexityScore = 0;
-  
+
   // Table count factor
   if (call.tables.length > config.performanceThresholds!.joinedTableCount!) {
     complexityScore += 2;
   } else if (call.tables.length > 1) {
     complexityScore += 1;
   }
-  
+
   // Method complexity
   if (detectJoins(call.method)) {
     complexityScore += 2;
   }
-  
+
   // Security risk adds complexity
   if (call.hasSqlInjectionRisk) {
     complexityScore += 3;
   }
-  
+
   // Missing org filter in multi-tenant context
   if (!call.hasOrganizationFilter && call.tables.length > 0) {
     complexityScore += 1;
   }
-  
+
   // Determine complexity level
   if (complexityScore >= 5) return 'complex';
   if (complexityScore >= 2) return 'moderate';
@@ -496,26 +526,26 @@ function analyzeQueryComplexity(call: DatabaseCall, config: DataAccessAnalyzerCo
  * Assess performance risk based on queries
  */
 function assessPerformanceRisk(
-  queries: QueryInfo[], 
+  queries: QueryInfo[],
   config: DataAccessAnalyzerConfig
 ): DataAccessPattern['performanceRisk'] {
   // Count complex queries
-  const complexQueries = queries.filter(q => 
-    q.hasJoins || 
+  const complexQueries = queries.filter(q =>
+    q.hasJoins ||
     q.tables.length > config.performanceThresholds!.joinedTableCount! ||
     q.complexity === 'complex'
   ).length;
-  
+
   // Count queries without org filter
   const unfiltered = queries.filter(q => !q.hasOrganizationFilter).length;
-  
-  if (complexQueries > config.performanceThresholds!.complexQueryCount! || 
+
+  if (complexQueries > config.performanceThresholds!.complexQueryCount! ||
       unfiltered > config.performanceThresholds!.unfilteredQueryCount!) {
     return 'high';
   } else if (complexQueries > 1 || unfiltered > 2) {
     return 'medium';
   }
-  
+
   return 'low';
 }
 
@@ -524,7 +554,7 @@ function assessPerformanceRisk(
  */
 function checkDataAccessViolations(pattern: DataAccessPattern): Violation[] {
   const violations: Violation[] = [];
-  
+
   // Check for missing organization filter in multi-tenant scenarios
   if (!pattern.hasOrganizationFilter && pattern.tables.length > 0) {
     violations.push(createViolation({
@@ -539,7 +569,7 @@ function checkDataAccessViolations(pattern: DataAccessPattern): Violation[] {
       estimatedEffort: 'small'
     }));
   }
-  
+
   // Check for SQL injection risks
   if (pattern.hasSqlInjectionRisk) {
     violations.push(createViolation({
@@ -554,7 +584,7 @@ function checkDataAccessViolations(pattern: DataAccessPattern): Violation[] {
       estimatedEffort: 'medium'
     }));
   }
-  
+
   // Check for performance risks
   if (pattern.performanceRisk === 'high') {
     violations.push(createViolation({
@@ -569,7 +599,7 @@ function checkDataAccessViolations(pattern: DataAccessPattern): Violation[] {
       estimatedEffort: 'medium'
     }));
   }
-  
+
   // Check for direct database access in presentation layer
   if (pattern.source === 'component') {
     violations.push(createViolation({
@@ -584,9 +614,13 @@ function checkDataAccessViolations(pattern: DataAccessPattern): Violation[] {
       estimatedEffort: 'medium'
     }));
   }
-  
+
   return violations;
 }
+
+// ---------------------------------------------------------------------------
+// Analyzer definition
+// ---------------------------------------------------------------------------
 
 /**
  * Data Access Analyzer definition
@@ -596,29 +630,29 @@ export const dataAccessAnalyzer: AnalyzerDefinition = {
   defaultConfig: DEFAULT_CONFIG,
   analyze: async (files, config, options, progressCallback) => {
     const mergedConfig = { ...DEFAULT_CONFIG, ...config };
-    
+
     // Custom processor to handle patterns collection
     const patterns: DataAccessPattern[] = [];
     const allViolations: Violation[] = [];
-    
+
     const result = await processFiles(
-      files, 
-      async (filePath, sourceFile) => {
-        const fileResult = await analyzeFile(filePath, mergedConfig);
+      files,
+      async (filePath, ast, procConfig, sourceCode) => {
+        const fileResult = await analyzeFile(filePath, ast, mergedConfig, sourceCode);
         patterns.push(...fileResult.patterns);
         allViolations.push(...fileResult.violations);
         return fileResult.violations;
       },
       'data-access',
       mergedConfig,
-      progressCallback ? 
+      progressCallback ?
         (current, total, file) => progressCallback({ current, total, analyzer: 'data-access', file }) :
         undefined
     );
-    
+
     // Override violations with our collected ones
     result.violations = allViolations;
-    
+
     return result;
   }
 };

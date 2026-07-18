@@ -132,7 +132,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
     
     if (IS_DEV_MODE) {
-      console.log('[DEBUG] Data access config merge:', {
+      console.error('[DEBUG] Data access config merge:', {
         defaultPatterns: DEFAULT_DATA_ACCESS_CONFIG.organizationPatterns,
         inputConfig: config,
         finalPatterns: finalConfig.organizationPatterns
@@ -277,7 +277,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         
         // Debug: Log the analysis
         if (IS_DEV_MODE) {
-          console.log('[DEBUG] Database call analysis:', {
+          console.error('[DEBUG] Database call analysis:', {
             line: node.location.start.line,
             nodeText: nodeText.substring(0, 100),
             tables,
@@ -484,8 +484,8 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   private isVariableAssignment(node: ASTNode, adapter: LanguageAdapter): boolean {
     // Only get the actual variable declaration, not the statement
     return node.type === 'VariableDeclaration' ||
-           node.type === 'BinaryExpression' && node.children?.some(child => 
-             adapter.getNodeText(child, '').includes('='));
+           node.type === 'BinaryExpression' && (node.children?.some(child =>
+             adapter.getNodeText(child, '').includes('=')) ?? false);
   }
   
   private containsSQLKeywords(text: string): boolean {
@@ -576,7 +576,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const lowerText = text.toLowerCase();
     
     if (IS_DEV_MODE) {
-      console.log('[DEBUG] hasOrganizationFilter called with:', {
+      console.error('[DEBUG] hasOrganizationFilter called with:', {
         text: text.substring(0, 100),
         patternsFromConfig: patterns,
         patternsLength: patterns.length
@@ -590,21 +590,21 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     ] : patterns;
     
     if (IS_DEV_MODE) {
-      console.log('[DEBUG] Using fallback patterns:', fallbackPatterns);
+      console.error('[DEBUG] Using fallback patterns:', fallbackPatterns);
     }
     
     // Check for simple pattern matches first
     const hasSimpleMatch = fallbackPatterns.some(pattern => {
       const match = lowerText.includes(pattern.toLowerCase());
       if (IS_DEV_MODE) {
-        console.log(`[DEBUG] Pattern "${pattern}" -> "${pattern.toLowerCase()}" in "${lowerText}": ${match}`);
+        console.error(`[DEBUG] Pattern "${pattern}" -> "${pattern.toLowerCase()}" in "${lowerText}": ${match}`);
       }
       return match;
     });
     
     if (hasSimpleMatch) {
       if (IS_DEV_MODE) {
-        console.log('[DEBUG] Found simple match, returning true');
+        console.error('[DEBUG] Found simple match, returning true');
       }
       return true;
     }
@@ -643,7 +643,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     
     // Debug logging
     if (IS_DEV_MODE) {
-      console.log('[DEBUG] hasOrganizationFilter check:', {
+      console.error('[DEBUG] hasOrganizationFilter check:', {
         text: text.substring(0, 150),
         patterns,
         fallbackPatterns,

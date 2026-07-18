@@ -14,7 +14,7 @@ export interface AuditJobProgress {
 export interface AuditJobRecord {
   jobId: string;
   status: AuditJobStatus;
-  /** Resolved project path passed to start_audit */
+  /** Resolved project path passed to audit.start */
   path: string;
   createdAt: string;
   startedAt?: string;

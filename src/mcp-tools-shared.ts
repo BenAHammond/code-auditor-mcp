@@ -903,9 +903,9 @@ export class ToolHandlers {
         schemaName: schema.name,
         stats: {
           databaseCount: schema.databases.length,
-          tableCount: schema.databases.reduce((acc, db) => acc + db.tables.length, 0),
-          columnCount: schema.databases.reduce((acc, db) => 
-            acc + db.tables.reduce((tAcc, table) => tAcc + table.columns.length, 0), 0
+          tableCount: schema.databases.reduce((acc: number, db: any) => acc + db.tables.length, 0),
+          columnCount: schema.databases.reduce((acc: number, db: any) =>
+            acc + db.tables.reduce((tAcc: number, table: any) => tAcc + table.columns.length, 0), 0
           )
         },
         message: `Schema '${schema.name}' created from SQL results`

@@ -1,5 +1,6 @@
 import { createAuditRunner } from '../auditRunner.js';
 import { AuditAbortedError, AuditHandoffError } from '../types.js';
+import { initParsers } from '../languages/index.js';
 import {
   ParentToWorkerMessage,
   WorkerToParentMessage,
@@ -127,7 +128,23 @@ process.on('message', (raw) => {
   }
 });
 
-send({
-  kind: 'worker-ready',
-  pid: process.pid,
+// ── Initialize parsers then signal readiness ──────────────────────────────
+
+async function main(): Promise<void> {
+  await initParsers();
+
+  send({
+    kind: 'worker-ready',
+    pid: process.pid,
+  });
+}
+
+main().catch((err) => {
+  send({
+    kind: 'worker-error',
+    requestId: 'init',
+    shardId: 'init',
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
 });

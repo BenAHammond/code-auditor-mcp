@@ -1,13 +1,16 @@
 /**
  * Documentation Quality Analyzer
  * Assesses JSDoc coverage and documentation quality across the codebase
+ *
+ * Migrated from TypeScript Compiler API to tree-sitter AST patterns.
  */
 
-import * as ts from 'typescript';
-import { promises as fs } from 'fs';
-import { 
-  Violation, 
-  AnalyzerDefinition, 
+import type { ASTNode, AST } from '../languages/types.js';
+import type { Node as TreeSitterNode } from 'web-tree-sitter';
+import { walkAST, getLineAndColumn, isExported as adapterIsExported } from '../languages/adapterBridge.js';
+import {
+  Violation,
+  AnalyzerDefinition,
   AnalyzerResult,
   AuditOptions,
   ProgressCallback
@@ -18,11 +21,108 @@ import {
   getNodeName,
   processFiles
 } from './analyzerUtils.js';
-import { 
-  isReactComponent, 
-  getComponentName, 
-  detectComponentType 
+import {
+  isReactComponent,
+  getComponentName,
+  detectComponentType
 } from '../utils/reactDetection.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Get raw text from a tree-sitter node stored on ASTNode.raw. */
+const rawText = (node: ASTNode): string => (node.raw as TreeSitterNode)?.text ?? '';
+
+/** Find the first child of a given type. */
+const findChild = (node: ASTNode, type: string): ASTNode | undefined =>
+  node.children?.find(c => c.type === type);
+
+/**
+ * Get preceding comment nodes that are JSDoc-style (/** ... *​/).
+ * Looks at siblings in the raw tree-sitter parent, walking backwards from
+ * the given node until a non-comment sibling is found.
+ */
+function getPrecedingJSDocComments(node: ASTNode): ASTNode[] {
+  const raw = node.raw as TreeSitterNode;
+  if (!raw?.parent) return [];
+
+  const parentRaw = raw.parent;
+  const parentAST = node.parent;
+  if (!parentAST?.children) return [];
+
+  // Find our position in the parent AST children
+  const ourIndex = parentAST.children.findIndex(
+    c => c.range[0] === node.range[0] && c.range[1] === node.range[1]
+  );
+  if (ourIndex < 0) return [];
+
+  // Walk backwards collecting adjacent comment nodes
+  const comments: ASTNode[] = [];
+  for (let i = ourIndex - 1; i >= 0; i--) {
+    const sibling = parentAST.children[i];
+    if (sibling.type === 'comment') {
+      const text = rawText(sibling);
+      if (text.includes('/**')) {
+        comments.unshift(sibling);
+      } else {
+        // Non-JSDoc comment — stop looking
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+
+  return comments;
+}
+
+/**
+ * Extract the cleaned JSDoc comment text from preceding comment nodes.
+ * Strips leading /**, trailing *​/, and leading * on each line.
+ */
+function getJSDocText(node: ASTNode): string | null {
+  const comments = getPrecedingJSDocComments(node);
+  if (comments.length === 0) return null;
+
+  const combined = comments.map(c => rawText(c)).join('\n');
+
+  return combined
+    .replace(/\/\*\*|\*\/|\s*\*\s?/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Parse @param tag details from JSDoc comment text.
+ * Returns array of documented parameter names.
+ */
+function parseParamTags(jsDocText: string): string[] {
+  const params: string[] = [];
+  const regex = /@param\s+\{?\w+\}?\s*(?:\[\s*)?(\w+)/g;
+  let match;
+  while ((match = regex.exec(jsDocText)) !== null) {
+    params.push(match[1]);
+  }
+  return params;
+}
+
+/**
+ * Count formal parameters on a function-like node.
+ */
+function countParameters(node: ASTNode): number {
+  const params = findChild(node, 'formal_parameters');
+  if (!params?.children) return 0;
+  return params.children.filter(
+    c => c.type === 'required_parameter' ||
+      c.type === 'optional_parameter' ||
+      c.type === 'rest_parameter'
+  ).length;
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
 
 /**
  * Configuration for documentation analyzer
@@ -47,7 +147,7 @@ export const DEFAULT_DOCUMENTATION_CONFIG: DocumentationAnalyzerConfig = {
   minDescriptionLength: 10,
   checkExportedOnly: false,
   exemptPatterns: [
-    'test', 'spec', '\.d\.ts$', 'mock', 'fixture'
+    'test', 'spec', '\\.d\\.ts$', 'mock', 'fixture'
   ]
 };
 
@@ -70,107 +170,93 @@ export interface DocumentationMetrics {
   poorlyDocumentedFiles: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Analysis helpers
+// ---------------------------------------------------------------------------
+
 /**
- * Extracts JSDoc comment for a node
+ * Extracts file-level purpose comment.
+ * Looks for comment nodes at the top of the file containing
+ * @fileoverview or @purpose.
  */
-function getJSDoc(node: ts.Node, sourceFile: ts.SourceFile): string | null {
-  const jsDocTags = ts.getJSDocTags(node);
-  const jsDocComments = ts.getJSDocCommentsAndTags(node);
-  
-  if (jsDocComments.length > 0) {
-    const comment = jsDocComments[0];
-    if (ts.isJSDoc(comment)) {
-      return comment.comment ? ts.getTextOfJSDocComment(comment.comment) || '' : '';
-    }
-  }
-  
-  // Fallback: look for leading comments
-  const fullText = sourceFile.getFullText();
-  const leadingComments = ts.getLeadingCommentRanges(fullText, node.getFullStart());
-  
-  if (leadingComments) {
-    for (const comment of leadingComments) {
-      const commentText = fullText.substring(comment.pos, comment.end);
-      if (commentText.includes('/**')) {
-        return commentText.replace(/\/\*\*|\*\/|\s*\*/g, '').trim();
+function getFilePurpose(rootNode: ASTNode): string | null {
+  if (!rootNode.children) return null;
+
+  for (const child of rootNode.children) {
+    if (child.type === 'comment') {
+      const text = rawText(child);
+      if (text.includes('@fileoverview') || text.includes('@purpose')) {
+        return text.replace(/\/\*\*|\*\/|\s*\*\s?/g, ' ').replace(/\s+/g, ' ').trim();
       }
     }
+    // Only check comments at the very top — stop at first non-comment node
+    // unless it's an import/export statement (which may precede the file doc)
+    if (child.type !== 'comment' &&
+        child.type !== 'import_statement' &&
+        child.type !== 'export_statement') {
+      break;
+    }
   }
-  
+
   return null;
 }
 
 /**
- * Checks if a node is exported
+ * Analyzes JSDoc parameter documentation for a function-like node.
  */
-function isExported(node: ts.Node): boolean {
-  if ('modifiers' in node && node.modifiers) {
-    return (node.modifiers as ts.NodeArray<ts.ModifierLike>).some(modifier => 
-      modifier.kind === ts.SyntaxKind.ExportKeyword
-    );
+function analyzeParamDocumentation(
+  node: ASTNode
+): { totalParams: number; documentedParams: number } {
+  const totalParams = countParameters(node);
+  if (totalParams === 0) {
+    return { totalParams: 0, documentedParams: 0 };
   }
-  return false;
-}
 
-/**
- * Extracts file-level purpose comment
- */
-function getFilePurpose(sourceFile: ts.SourceFile): string | null {
-  const fullText = sourceFile.getFullText();
-  const leadingComments = ts.getLeadingCommentRanges(fullText, 0);
-  
-  if (leadingComments) {
-    for (const comment of leadingComments) {
-      const commentText = fullText.substring(comment.pos, comment.end);
-      if (commentText.includes('@fileoverview') || commentText.includes('@purpose')) {
-        return commentText.replace(/\/\*\*|\*\/|\s*\*/g, '').trim();
-      }
-    }
+  const jsDocText = getJSDocText(node);
+  if (!jsDocText) {
+    return { totalParams, documentedParams: 0 };
   }
-  
-  return null;
-}
 
-/**
- * Analyzes JSDoc parameters documentation
- */
-function analyzeParamDocumentation(node: ts.FunctionLikeDeclaration): {
-  totalParams: number;
-  documentedParams: number;
-} {
-  const parameters = node.parameters || [];
-  const jsDocTags = ts.getJSDocTags(node);
-  const paramTags = jsDocTags.filter(tag => tag.tagName.text === 'param');
-  
+  const documentedParamNames = parseParamTags(jsDocText);
   return {
-    totalParams: parameters.length,
-    documentedParams: paramTags.length
+    totalParams,
+    documentedParams: documentedParamNames.length
   };
 }
 
 /**
- * Checks if function has return documentation
+ * Checks if function has @returns or @return documentation in its JSDoc.
  */
-function hasReturnDocumentation(node: ts.FunctionLikeDeclaration): boolean {
-  const jsDocTags = ts.getJSDocTags(node);
-  return jsDocTags.some(tag => 
-    tag.tagName.text === 'returns' || tag.tagName.text === 'return'
-  );
+function hasReturnDocumentation(node: ASTNode): boolean {
+  const jsDocText = getJSDocText(node);
+  if (!jsDocText) return false;
+  return /@returns?\b/i.test(jsDocText);
 }
 
+// ---------------------------------------------------------------------------
+// File-level analysis
+// ---------------------------------------------------------------------------
+
 /**
- * Analyzes a single file for documentation quality
+ * Analyzes a single file for documentation quality.
+ *
+ * @param ast - The root ASTNode for the file
+ * @param filePath - Path to the source file
+ * @param sourceCode - Full source text of the file
+ * @param config - Documentation analyzer configuration
  */
 function analyzeFileDocumentation(
-  sourceFile: ts.SourceFile,
+  ast: ASTNode,
+  filePath: string,
+  sourceCode: string,
   config: DocumentationAnalyzerConfig
 ): {
   violations: Violation[];
   metrics: Partial<DocumentationMetrics>;
 } {
   const violations: Violation[] = [];
-  const fileName = sourceFile.fileName;
-  
+  const fileName = filePath;
+
   let totalFunctions = 0;
   let documentedFunctions = 0;
   let totalComponents = 0;
@@ -181,9 +267,9 @@ function analyzeFileDocumentation(
   let returnsDocumented = 0;
 
   // Check file-level documentation
-  const filePurpose = getFilePurpose(sourceFile);
+  const filePurpose = getFilePurpose(ast);
   const hasFileDocs = !!filePurpose;
-  
+
   if (config.requireFileDocs && !hasFileDocs) {
     violations.push({
       file: fileName,
@@ -192,32 +278,33 @@ function analyzeFileDocumentation(
       severity: 'suggestion',
       message: 'File missing purpose documentation',
       details: 'Consider adding @fileoverview or @purpose comment at the top of the file',
-      suggestion: 'Add file-level documentation explaining the module\'s purpose'
+      suggestion: "Add file-level documentation explaining the module's purpose"
     });
   }
 
-  // Analyze functions and components
-  ts.forEachChild(sourceFile, function visit(node: ts.Node) {
-    if (ts.isFunctionDeclaration(node) || 
-        ts.isFunctionExpression(node) || 
-        ts.isArrowFunction(node) ||
-        ts.isMethodDeclaration(node)) {
-      
+  // Walk the AST to find function-like nodes and React components
+  walkAST(ast, (node: ASTNode) => {
+    // --- Function-like nodes ---
+    if (node.type === 'function_declaration' ||
+        node.type === 'function_expression' ||
+        node.type === 'arrow_function' ||
+        node.type === 'method_definition') {
+
       totalFunctions++;
-      
-      const isExportedNode = isExported(node);
-      const shouldCheck = !config.checkExportedOnly || isExportedNode;
-      
+
+      const nodeExported = adapterIsExported(node);
+      const shouldCheck = !config.checkExportedOnly || nodeExported;
+
       if (shouldCheck) {
-        const jsDoc = getJSDoc(node, sourceFile);
-        const hasGoodDoc = jsDoc && jsDoc.length >= config.minDescriptionLength;
-        
+        const jsDoc = getJSDocText(node);
+        const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
+
         if (hasGoodDoc) {
           documentedFunctions++;
         } else if (config.requireFunctionDocs) {
           const functionName = getNodeName(node) || 'anonymous function';
-          const position = getNodePosition(sourceFile, node);
-          
+          const position = getNodePosition(node);
+
           violations.push({
             file: fileName,
             line: position.line,
@@ -228,9 +315,9 @@ function analyzeFileDocumentation(
             suggestion: 'Add JSDoc comment with function description and parameter/return documentation'
           });
         }
-        
+
         // Check parameter documentation
-        if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) {
+        if (node.type === 'function_declaration' || node.type === 'function_expression') {
           const paramAnalysis = analyzeParamDocumentation(node);
           if (paramAnalysis.totalParams > 0) {
             functionsWithParams++;
@@ -238,8 +325,8 @@ function analyzeFileDocumentation(
               paramsDocumented++;
             } else if (config.requireParamDocs && hasGoodDoc) {
               const functionName = getNodeName(node) || 'function';
-              const position = getNodePosition(sourceFile, node);
-              
+              const position = getNodePosition(node);
+
               violations.push({
                 file: fileName,
                 line: position.line,
@@ -251,20 +338,23 @@ function analyzeFileDocumentation(
               });
             }
           }
-          
+
           // Check return documentation
-          const hasReturn = node.type || 
-            (ts.isFunctionDeclaration(node) && node.body && 
-             findNodesOfType(node.body, ts.isReturnStatement).length > 0);
-          
+          const hasReturnType = !!findChild(node, 'type_annotation');
+          const body = findChild(node, 'statement_block');
+          const hasReturnStatements = body
+            ? findNodesOfType(body, (n: ASTNode) => n.type === 'return_statement').length > 0
+            : false;
+          const hasReturn = hasReturnType || hasReturnStatements;
+
           if (hasReturn) {
             functionsWithReturns++;
             if (hasReturnDocumentation(node)) {
               returnsDocumented++;
             } else if (config.requireReturnDocs && hasGoodDoc) {
               const functionName = getNodeName(node) || 'function';
-              const position = getNodePosition(sourceFile, node);
-              
+              const position = getNodePosition(node);
+
               violations.push({
                 file: fileName,
                 line: position.line,
@@ -279,24 +369,24 @@ function analyzeFileDocumentation(
         }
       }
     }
-    
-    // Check React components
+
+    // --- React components ---
     if (isReactComponent(node)) {
       totalComponents++;
-      
-      const isExportedComponent = isExported(node);
-      const shouldCheck = !config.checkExportedOnly || isExportedComponent;
-      
+
+      const componentExported = adapterIsExported(node);
+      const shouldCheck = !config.checkExportedOnly || componentExported;
+
       if (shouldCheck) {
-        const jsDoc = getJSDoc(node, sourceFile);
-        const hasGoodDoc = jsDoc && jsDoc.length >= config.minDescriptionLength;
-        
+        const jsDoc = getJSDocText(node);
+        const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
+
         if (hasGoodDoc) {
           documentedComponents++;
         } else if (config.requireComponentDocs) {
           const componentName = getComponentName(node) || 'Component';
-          const position = getNodePosition(sourceFile, node);
-          
+          const position = getNodePosition(node);
+
           violations.push({
             file: fileName,
             line: position.line,
@@ -309,8 +399,6 @@ function analyzeFileDocumentation(
         }
       }
     }
-    
-    ts.forEachChild(node, visit);
   });
 
   return {
@@ -330,8 +418,13 @@ function analyzeFileDocumentation(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Main analyzer function
+// ---------------------------------------------------------------------------
+
 /**
- * Main documentation analyzer function
+ * Main documentation analyzer function.
+ * Runs across all provided files and aggregates results.
  */
 export async function analyzeDocumentation(
   files: string[],
@@ -341,10 +434,10 @@ export async function analyzeDocumentation(
 ): Promise<AnalyzerResult> {
   const finalConfig = { ...DEFAULT_DOCUMENTATION_CONFIG, ...config };
   const startTime = Date.now();
-  
+
   // Filter out exempt files
   const filteredFiles = files.filter(file => {
-    return !finalConfig.exemptPatterns.some(pattern => 
+    return !finalConfig.exemptPatterns.some(pattern =>
       new RegExp(pattern, 'i').test(file)
     );
   });
@@ -353,28 +446,34 @@ export async function analyzeDocumentation(
     progressCallback({ current, total, analyzer: 'documentation', file });
   } : undefined;
 
+  // Collect per-file metrics in a closure so we only parse each file once
+  const allMetrics: Partial<DocumentationMetrics>[] = [];
+
+  const perFileAnalyzer = (
+    filePath: string,
+    ast: AST,
+    _config: any,
+    sourceCode?: string
+  ): Violation[] => {
+    const analysis = analyzeFileDocumentation(
+      ast.root,
+      filePath,
+      sourceCode ?? '',
+      finalConfig
+    );
+    allMetrics.push(analysis.metrics);
+    return analysis.violations;
+  };
+
   const result = await processFiles(
     filteredFiles,
-    (filePath, sourceFile, config) => analyzeFileDocumentation(sourceFile, finalConfig).violations,
+    perFileAnalyzer,
     'documentation',
     finalConfig,
     progressReporter
   );
 
-  // Get metrics separately by re-running the analysis (not ideal but works for now)
-  const metricsResults = await Promise.all(
-    filteredFiles.map(async (file) => {
-      const sourceFile = ts.createSourceFile(
-        file,
-        await fs.readFile(file, 'utf-8'),
-        ts.ScriptTarget.Latest,
-        true
-      );
-      return analyzeFileDocumentation(sourceFile, finalConfig).metrics;
-    })
-  );
-
-  // Aggregate metrics
+  // Aggregate metrics from all files (single pass — no re-parsing)
   const aggregatedMetrics: DocumentationMetrics = {
     totalFunctions: 0,
     documentedFunctions: 0,
@@ -392,37 +491,50 @@ export async function analyzeDocumentation(
   };
 
   // Combine metrics from all files
-  metricsResults.forEach((fileMetrics) => {
+  allMetrics.forEach((fileMetrics, index) => {
     if (fileMetrics) {
-      Object.keys(fileMetrics).forEach(key => {
-        if (typeof aggregatedMetrics[key as keyof DocumentationMetrics] === 'number' && 
-            typeof fileMetrics[key] === 'number') {
-          (aggregatedMetrics as any)[key] += fileMetrics[key];
+      // Sum numeric metrics
+      const numericKeys: (keyof DocumentationMetrics)[] = [
+        'totalFunctions', 'documentedFunctions',
+        'totalComponents', 'documentedComponents',
+        'functionsWithParams', 'paramsDocumented',
+        'functionsWithReturns', 'returnsDocumented',
+        'totalFiles', 'filesWithPurpose'
+      ];
+      for (const key of numericKeys) {
+        const val = fileMetrics[key];
+        if (typeof val === 'number') {
+          (aggregatedMetrics as any)[key] += val;
         }
-      });
+      }
+
+      // Identify well/poorly documented files
+      const fileTotal = (fileMetrics.totalFunctions || 0) +
+        (fileMetrics.totalComponents || 0) + 1;
+      const fileDocumented = (fileMetrics.documentedFunctions || 0) +
+        (fileMetrics.documentedComponents || 0) +
+        (fileMetrics.filesWithPurpose || 0);
+      const fileCoverage = fileTotal > 0 ? (fileDocumented / fileTotal) : 0;
+
+      const filePath = filteredFiles[index];
+      if (fileCoverage >= 0.8) {
+        aggregatedMetrics.wellDocumentedFiles.push(filePath);
+      } else if (fileCoverage < 0.3) {
+        aggregatedMetrics.poorlyDocumentedFiles.push(filePath);
+      }
     }
   });
 
   // Calculate coverage score
-  const totalItems = aggregatedMetrics.totalFunctions + aggregatedMetrics.totalComponents + aggregatedMetrics.totalFiles;
-  const documentedItems = aggregatedMetrics.documentedFunctions + aggregatedMetrics.documentedComponents + aggregatedMetrics.filesWithPurpose;
-  aggregatedMetrics.coverageScore = totalItems > 0 ? Math.round((documentedItems / totalItems) * 100) : 100;
-
-  // Identify well/poorly documented files
-  filteredFiles.forEach((file, index) => {
-    const fileMetrics = metricsResults[index];
-    if (fileMetrics) {
-      const fileTotal = (fileMetrics.totalFunctions || 0) + (fileMetrics.totalComponents || 0) + 1;
-      const fileDocumented = (fileMetrics.documentedFunctions || 0) + (fileMetrics.documentedComponents || 0) + (fileMetrics.filesWithPurpose || 0);
-      const fileCoverage = fileTotal > 0 ? (fileDocumented / fileTotal) : 0;
-      
-      if (fileCoverage >= 0.8) {
-        aggregatedMetrics.wellDocumentedFiles.push(file);
-      } else if (fileCoverage < 0.3) {
-        aggregatedMetrics.poorlyDocumentedFiles.push(file);
-      }
-    }
-  });
+  const totalItems = aggregatedMetrics.totalFunctions +
+    aggregatedMetrics.totalComponents +
+    aggregatedMetrics.totalFiles;
+  const documentedItems = aggregatedMetrics.documentedFunctions +
+    aggregatedMetrics.documentedComponents +
+    aggregatedMetrics.filesWithPurpose;
+  aggregatedMetrics.coverageScore = totalItems > 0
+    ? Math.round((documentedItems / totalItems) * 100)
+    : 100;
 
   return {
     violations: result.violations,

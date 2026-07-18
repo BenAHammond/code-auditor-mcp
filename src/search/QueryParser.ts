@@ -90,6 +90,7 @@ export class QueryParser {
     'complexity:': 'complexity',
     'jsdoc:': 'hasJsDoc',
     'doc:': 'hasJsDoc',
+    'exported:': 'isExported',
     'since:': 'dateRange',
     'before:': 'dateRange',
     'after:': 'dateRange',
@@ -337,12 +338,10 @@ export class QueryParser {
             }
           }
           
-          if (value) {
-            operators.set(operator, value);
-            // Replace the operator:value with spaces to clean the query
-            const toReplace = query.substring(i, valueEndIndex);
-            cleanedQuery = cleanedQuery.replace(toReplace, ' '.repeat(toReplace.length));
-          }
+          operators.set(operator, value);
+          // Replace the operator:value with spaces to clean the query
+          const toReplace = query.substring(i, valueEndIndex);
+          cleanedQuery = cleanedQuery.replace(toReplace, ' '.repeat(toReplace.length));
           
           i = valueEndIndex;
         } else {
@@ -382,22 +381,49 @@ export class QueryParser {
           break;
           
         case 'hasJsDoc':
-          parsedQuery.filters.hasJsDoc = value.toLowerCase() === 'true' || value === '1';
+          // Bare keyword (no value) means "enabled" — jsdoc: or exported:
+          if (value === '' || value === 'true' || value === '1' || value === 'yes') {
+            parsedQuery.filters.hasJsDoc = true;
+          } else if (value === 'false' || value === '0' || value === 'no') {
+            parsedQuery.filters.hasJsDoc = false;
+          }
           break;
-          
+
+        case 'isExported':
+          // Bare keyword (no value) means "enabled"
+          if (value === '' || value === 'true' || value === '1' || value === 'yes') {
+            parsedQuery.filters.isExported = true;
+          } else if (value === 'false' || value === '0' || value === 'no') {
+            parsedQuery.filters.isExported = false;
+          }
+          break;
+
         case 'complexity':
-          if (value.includes('-')) {
-            const [min, max] = value.split('-').map(v => parseInt(v.trim(), 10));
-            if (!isNaN(min) && !isNaN(max)) {
-              parsedQuery.filters.complexity = { min, max };
-            }
-          } else {
-            const complexityValue = parseInt(value, 10);
-            if (!isNaN(complexityValue)) {
-              parsedQuery.filters.complexity = {
-                min: complexityValue,
-                max: complexityValue
-              };
+          // complexity:N (exact), complexity:N-M or N..M (range), complexity:>N, complexity:<N
+          if (typeof value === 'string' && value.length > 0) {
+            const first = value[0];
+            if (first === '>' && /^>\d+$/.test(value)) {
+              parsedQuery.filters.complexity = { min: parseInt(value.slice(1), 10) };
+            } else if (first === '<' && /^<\d+$/.test(value)) {
+              parsedQuery.filters.complexity = { max: parseInt(value.slice(1), 10) };
+            } else if (value.includes('..')) {
+              const [a, b] = value.split('..').map(v => parseInt(v.trim(), 10));
+              if (!isNaN(a) && !isNaN(b)) {
+                parsedQuery.filters.complexity = { min: a, max: b };
+              }
+            } else if (value.includes('-')) {
+              const [min, max] = value.split('-').map(v => parseInt(v.trim(), 10));
+              if (!isNaN(min) && !isNaN(max)) {
+                parsedQuery.filters.complexity = { min, max };
+              }
+            } else {
+              const complexityValue = parseInt(value, 10);
+              if (!isNaN(complexityValue)) {
+                parsedQuery.filters.complexity = {
+                  min: complexityValue,
+                  max: complexityValue,
+                };
+              }
             }
           }
           break;
@@ -584,3 +610,214 @@ export class QueryParser {
 
 // Export a singleton instance for convenience
 export const queryParser = new QueryParser();
+
+// ─── SQL Compilation ──────────────────────────────────────────────────────────
+
+/** Compiled SQL query fragments for use with the SQLite-backed CodeIndexDB. */
+export interface SqlQuery {
+  /** FTS5 MATCH expression, or null if no free-text terms */
+  ftsMatch: string | null;
+  /** WHERE clause fragments (ANDed together) */
+  whereClauses: string[];
+  /** JOIN clauses for call/dependency graph traversal */
+  joinClauses: string[];
+  /** Named parameters for the prepared statement */
+  params: Record<string, any>;
+  /** ORDER BY clause */
+  orderBy: string;
+  /** LIMIT value */
+  limit: number;
+  /** OFFSET value */
+  offset: number;
+}
+
+/** Escape a string for safe use inside double-quotes in an FTS5 MATCH expression. */
+function escapeFTS5(value: string): string {
+  return value.replace(/"/g, '""');
+}
+
+/**
+ * Compile a parsed query into SQL fragments for the SQLite-backed CodeIndexDB.
+ *
+ * The caller assembles the final SQL from the returned fragments:
+ * ```sql
+ * SELECT f.* [, bm25(functions_fts) as score]
+ * FROM functions f
+ *   [JOIN functions_fts ON functions_fts.rowid = f.id]  -- when ftsMatch is set
+ *   {joinClauses...}
+ * WHERE 1=1
+ *   [AND functions_fts MATCH @ftsMatch]                -- when ftsMatch is set
+ *   {whereClauses...}
+ * ORDER BY {orderBy}
+ * LIMIT {limit} OFFSET {offset}
+ * ```
+ *
+ * @param parsedQuery  The parsed query from {@link QueryParser.parse}.
+ * @param options      Optional overrides for limit/offset.
+ * @returns Compiled SQL fragments.
+ */
+export function compileToSQL(
+  parsedQuery: ParsedQuery,
+  options?: { defaultLimit?: number; offset?: number },
+): SqlQuery {
+  const whereClauses: string[] = [];
+  const joinClauses: string[] = [];
+  const params: Record<string, any> = {};
+
+  // ── FTS5 MATCH expression ───────────────────────────────────────────────
+
+  let ftsMatch: string | null = null;
+  const matchParts: string[] = [];
+
+  // Free-text terms — OR'd together with prefix matching (FTS5 "*" suffix
+  // enables matching camelCased tokens like "validateEmail" from "validate")
+  if (parsedQuery.terms.length > 0) {
+    const termExpr = parsedQuery.terms
+      .map((t) => `"${escapeFTS5(t)}"*`)
+      .join(' OR ');
+    matchParts.push(parsedQuery.terms.length > 1 ? `(${termExpr})` : termExpr);
+  }
+
+  // Exact phrases — no prefix; user requested exact match
+  for (const phrase of parsedQuery.phrases) {
+    matchParts.push(`"${escapeFTS5(phrase)}"`);
+  }
+
+  // Excluded terms — prefix matching to match tokenizer behaviour
+  for (const term of parsedQuery.excludedTerms) {
+    matchParts.push(`NOT "${escapeFTS5(term)}"*`);
+  }
+
+  if (matchParts.length > 0) {
+    ftsMatch = matchParts.join(' ');
+    params.ftsMatch = ftsMatch;
+  }
+
+  // ── Operator filters → WHERE clauses ────────────────────────────────────
+
+  const f = parsedQuery.filters;
+
+  // entity: function | component
+  if (f.metadata?.entityType) {
+    whereClauses.push('entity_type = @entityType');
+    params.entityType = f.metadata.entityType;
+  }
+
+  // component: functional | class | memo | forwardRef
+  if (f.metadata?.componentType) {
+    whereClauses.push('component_type = @componentType');
+    params.componentType = f.metadata.componentType;
+  }
+
+  // hook: useState / hooks: useEffect
+  if (f.metadata?.hasHook) {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM json_each(hooks) WHERE LOWER(json_extract(value, \'$.name\')) = LOWER(@hookName))',
+    );
+    params.hookName = f.metadata.hasHook;
+  }
+
+  // prop: / props: <name>
+  if (f.metadata?.hasProp) {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM json_each(props) WHERE LOWER(json_extract(value, \'$.name\')) = LOWER(@propName))',
+    );
+    params.propName = f.metadata.hasProp;
+  }
+
+  // dep: / dependency: / uses: <name>
+  if (f.metadata?.usesDependency) {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM function_dependencies fd WHERE fd.function_id = f.id AND fd.dependency = @depName)',
+    );
+    params.depName = f.metadata.usesDependency;
+  }
+
+  // calls: <name>
+  if (f.metadata?.callsFunction) {
+    joinClauses.push('JOIN function_calls fc ON fc.caller_id = f.id');
+    whereClauses.push('fc.callee_name = @calleeName');
+    params.calleeName = f.metadata.callsFunction;
+  }
+
+  // calledby: / dependents-of: / used-by: <name>
+  if (f.metadata?.calledByFunction) {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM function_calls fc2 WHERE fc2.callee_name = f.name AND fc2.caller_id IN (SELECT id FROM functions WHERE name = @calledByName))',
+    );
+    params.calledByName = f.metadata.calledByFunction;
+  }
+
+  // depends-on: / imports-from: <module>
+  if (f.metadata?.dependsOnModule) {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM function_dependencies fd2 WHERE fd2.function_id = f.id AND fd2.dependency LIKE @modulePattern)',
+    );
+    params.modulePattern = `%${f.metadata.dependsOnModule}%`;
+  }
+
+  // unused-imports / dead-imports
+  if (f.metadata?.hasUnusedImports) {
+    whereClauses.push('has_unused_imports = 1');
+  }
+
+  // lang: / language:
+  if (f.language) {
+    whereClauses.push('LOWER(language) = LOWER(@language)');
+    params.language = f.language;
+  }
+
+  // file: / path: (glob)
+  if (f.filePath) {
+    whereClauses.push('file_path GLOB @fileGlob');
+    params.fileGlob = f.filePath;
+  }
+
+  // jsdoc: / doc:
+  if (f.hasJsDoc) {
+    whereClauses.push('has_jsdoc = 1');
+  }
+
+  // exported:
+  if (f.isExported) {
+    whereClauses.push('is_exported = 1');
+  }
+
+  // complexity: N, complexity: N..M, complexity: >N, complexity: <N
+  if (f.complexity) {
+    if (f.complexity.min !== undefined && f.complexity.max !== undefined) {
+      if (f.complexity.min === f.complexity.max) {
+        whereClauses.push('complexity = @complexityExact');
+        params.complexityExact = f.complexity.min;
+      } else {
+        whereClauses.push('complexity BETWEEN @cMin AND @cMax');
+        params.cMin = f.complexity.min;
+        params.cMax = f.complexity.max;
+      }
+    } else if (f.complexity.min !== undefined) {
+      whereClauses.push('complexity > @cMin');
+      params.cMin = f.complexity.min;
+    } else if (f.complexity.max !== undefined) {
+      whereClauses.push('complexity < @cMax');
+      params.cMax = f.complexity.max;
+    }
+  }
+
+  // fileType — filter by file extension (not a column, so use LIKE on file_path)
+  if (f.fileType) {
+    const ext = f.fileType.startsWith('.') ? f.fileType : `.${f.fileType}`;
+    whereClauses.push('file_path LIKE @fileExt');
+    params.fileExt = `%${ext}`;
+  }
+
+  // ── Ordering ────────────────────────────────────────────────────────────
+
+  const orderBy = ftsMatch ? 'score' : 'name';
+
+  // ── Limit / offset ──────────────────────────────────────────────────────
+
+  const limit = options?.defaultLimit ?? 200;
+  const offset = options?.offset ?? 0;
+
+  return { ftsMatch, whereClauses, joinClauses, params, orderBy, limit, offset };
+}
