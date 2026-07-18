@@ -6,9 +6,11 @@ Architectural invariants enforced inside your AI agent's edit loop. When the age
 
 ```bash
 npm install code-auditor-mcp
+claude plugin marketplace add BenAHammond/code-auditor-mcp
+claude plugin install code-auditor
 ```
 
-Then tell your agent to set it up:
+That gives you the hook, MCP server, and `/code-auditor` skill. Then tell your agent to set it up:
 
 ## Prompt examples
 
