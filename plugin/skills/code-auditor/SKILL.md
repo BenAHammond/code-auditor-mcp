@@ -97,7 +97,7 @@ When the PostToolUse hook blocks your edit with a violation message:
 3. **Do NOT retry the same edit** — the hook will block it again
 4. The hook runs `code-audit changed --fail-on critical`, so only critical-severity invariant violations block edits. Warnings and suggestions pass through as non-blocking output — still worth fixing.
 
-If the hook says `[code-auditor] code-audit not installed`, the package isn't available in this environment. Install it with `npm install -g code-auditor-mcp` or use `npx code-auditor-mcp`.
+The hook auto-installs the package via npx on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the npx auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
 
 ## Quick reference
 

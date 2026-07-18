@@ -5,16 +5,15 @@ Architectural invariants enforced inside your AI agent's edit loop. When the age
 ## Install
 
 ```bash
-npm install code-auditor-mcp
 claude plugin marketplace add BenAHammond/code-auditor-mcp
 claude plugin install code-auditor
 ```
 
-That gives you the hook, MCP server, and `/code-auditor` skill. Then tell your agent to set it up:
+The hook auto-installs the auditor on first use via npx — no npm commands needed. That gives you the hook, MCP server, and `/code-auditor` skill. Then tell your agent to set it up:
 
 ## Prompt examples
 
-**"Add a Claude Code hook that runs `code-audit changed --stdin --json --fail-on critical` on Write and Edit."**
+**"Index the codebase and run a full audit. Create tasks from any violations."**
 
 **"Create a `.codeauditor.json` that bans lodash imports and prevents `src/languages/` from importing anything in `src/analyzers/`."**
 

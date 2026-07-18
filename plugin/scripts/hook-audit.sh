@@ -5,7 +5,7 @@
 # and runs `code-audit changed --stdin --json --fail-on critical` against it.
 #
 # Exit codes:
-#   0 — all clear or degraded (no audit tool, no index, non-critical findings)
+#   0 — all clear or degraded (binary not found, no index, non-critical findings)
 #   2 — critical violations found (Claude Code feeds stdout back to the agent)
 set -euo pipefail
 
@@ -25,16 +25,29 @@ if [ -z "${file}" ]; then
   exit 0
 fi
 
-# Degrade cleanly if code-audit is not installed
-if ! command -v code-audit &>/dev/null; then
-  echo "[code-auditor] code-audit not installed — skipping audit hook. Install with: npm install -g code-auditor-mcp" >&2
-  exit 0
-fi
+# Resolve the code-audit binary: project-local → PATH → npx auto-install
+resolve_code_audit() {
+  # 1. Project-local install (plugin project's own node_modules)
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -x "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit" ]; then
+    echo "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit"
+    return
+  fi
+
+  # 2. Global install or PATH
+  if command -v code-audit &>/dev/null; then
+    echo "code-audit"
+    return
+  fi
+
+  # 3. npx auto-install (first use downloads the package; subsequent runs use the npx cache)
+  echo "npx -y -p code-auditor-mcp@^3.0.0 code-audit"
+}
+CODE_AUDIT_BIN="$(resolve_code_audit)"
 
 # Run diff-scoped audit on the changed file
 # stdout/stderr are fed back to the agent by Claude Code
 set +e
-echo "${file}" | code-audit changed --stdin --json --fail-on critical 2>&1
+echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json --fail-on critical 2>&1
 exit_code=$?
 set -e
 
@@ -44,6 +57,10 @@ if [ ${exit_code} -eq 2 ]; then
   exit 2
 fi
 
-# All other non-zero exits: degrade gracefully
-# (no index, no violations, package error, etc.)
+# Non-zero exit: npx auto-install failed, network issue, unsupported platform, etc.
+# Degrade gracefully — never wedge the agent loop.
+if [ ${exit_code} -ne 0 ]; then
+  echo "[code-auditor] code-audit could not run (exit ${exit_code}). If npx auto-install failed, check your network or install manually: npm install code-auditor-mcp" >&2
+fi
+
 exit 0
