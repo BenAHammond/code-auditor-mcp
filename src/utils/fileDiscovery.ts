@@ -42,10 +42,16 @@ export interface FileDiscoveryOptions {
 }
 
 /**
- * Check if a path should be excluded based on directory names
+ * Check if a path should be excluded based on directory names.
+ * Only checks directory components *below* the scan root to avoid
+ * false matches against filesystem roots like /tmp or /temp.
  */
-function shouldExcludeDir(filePath: string, excludeDirs: string[]): boolean {
-  const parts = filePath.split(path.sep);
+function shouldExcludeDir(filePath: string, excludeDirs: string[], scanRoot: string): boolean {
+  // Get the relative path below scanRoot
+  const relPath = path.relative(scanRoot, filePath);
+  // If the path is outside scanRoot (shouldn't happen), don't exclude
+  if (relPath.startsWith('..')) return false;
+  const parts = relPath.split(path.sep);
   return parts.some(part => excludeDirs.includes(part));
 }
 
@@ -58,17 +64,18 @@ async function findFilesRecursive(
     extensions: string[];
     excludeDirs: string[];
     pattern?: RegExp;
+    scanRoot: string;
   }
 ): Promise<string[]> {
   const results: string[] = [];
-  
+
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    
+
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
-      
-      if (shouldExcludeDir(fullPath, options.excludeDirs)) {
+
+      if (shouldExcludeDir(fullPath, options.excludeDirs, options.scanRoot)) {
         continue;
       }
       
@@ -106,15 +113,16 @@ export async function findFiles(
   
   const files = await findFilesRecursive(rootDir, {
     extensions,
-    excludeDirs
+    excludeDirs,
+    scanRoot: rootDir
   });
-  
+
   // Apply additional filtering
   let filtered = filterFiles(files, {
     includePaths: options.includePaths,
     excludePaths: options.excludePaths
   });
-  
+
   // Sort for consistent output
   return filtered.sort();
 }
@@ -177,7 +185,8 @@ export async function findFilesByPattern(
   const files = await findFilesRecursive(rootDir, {
     extensions,
     excludeDirs,
-    pattern: regex
+    pattern: regex,
+    scanRoot: rootDir
   });
   
   // Apply additional filtering
