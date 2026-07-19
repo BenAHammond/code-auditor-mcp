@@ -2,6 +2,13 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.0.6] — 2026-07-19
+
+### Fixed
+
+- **#85 — `audit --fail-on` missing**: The `audit` command (default command) now supports `--fail-on <severity>` for severity-gated exit codes. Exit code 2 when violations at or above the specified severity exist. Mirrors the existing behavior on `code-audit changed`.
+- **#86 — `generate-config` output**: The `generate-config` command now generates `.codeauditor.json` (invariant rules config) instead of MCP tool host configurations. Non-interactive mode writes a scaffold template with example rules for all five rule kinds. Interactive mode (`--interactive`) walks through building rules one at a time via inquirer prompts.
+
 ## [3.0.5] — 2026-07-19
 
 ### Fixed

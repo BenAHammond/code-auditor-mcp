@@ -15,9 +15,8 @@ import { promises as fs } from 'fs';
 import { createInterface } from 'readline';
 import { fileURLToPath } from 'url';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
-import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
-import { InteractivePrompts } from './ui/InteractivePrompts.js';
-import { DEFAULT_SERVER_URL, DEFAULT_PORT } from './constants.js';
+import { DEFAULT_PORT } from './constants.js';
+import inquirer from 'inquirer';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { initParsers } from './languages/index.js';
@@ -48,12 +47,23 @@ program
   .option('-c, --config <config>', 'Configuration name')
   .option('-o, --output <dir>', 'Output directory for reports')
   .option('-f, --format <format>', 'Report format: html, json, csv, or sarif')
+  .option('--fail-on <severity>', 'Exit code 2 when violations at or above this severity exist')
   .action(async (options) => {
     console.log(chalk.blue('🔍 Code Quality Audit Tool'));
     console.log(chalk.gray('══════════════════════════════════════════════════'));
 
     try {
       await initParsers();
+
+      // Validate --fail-on severity
+      const validSeverities: Severity[] = ['critical', 'warning', 'suggestion'];
+      const failOnSeverity = options.failOn as Severity | undefined;
+      if (failOnSeverity && !validSeverities.includes(failOnSeverity as Severity)) {
+        console.error(
+          chalk.red(`Invalid --fail-on severity: "${failOnSeverity}". Must be one of: ${validSeverities.join(', ')}`)
+        );
+        process.exit(1);
+      }
 
       const runner = createAuditRunner({
         projectRoot: options.path,
@@ -83,6 +93,23 @@ program
         const reportPath = join(outputDir, `audit-report.${ext}`);
         await fs.writeFile(reportPath, report, 'utf-8');
         console.log(chalk.green(`\nReport written to ${reportPath}`));
+      }
+
+      // Exit code based on --fail-on
+      if (failOnSeverity) {
+        const violations = Object.values(result.analyzerResults).flatMap(
+          (r: any) => r.violations || []
+        );
+        const severityOrder: Severity[] = ['critical', 'warning', 'suggestion'];
+        const failIndex = severityOrder.indexOf(failOnSeverity);
+        const hasAtOrAbove = violations.some((v: any) => {
+          const vIndex = severityOrder.indexOf(v.severity);
+          return vIndex >= 0 && vIndex <= failIndex;
+        });
+
+        if (hasAtOrAbove) {
+          process.exit(2);
+        }
       }
 
     } catch (error) {
@@ -240,15 +267,13 @@ program
 program
   .command('generate-config')
   .alias('gen')
-  .description('Generate configuration for AI coding assistants')
-  .option('-t, --tool <tool>', 'Specific tool (cursor, continue, copilot, awsq, codeium, claude, all)')
+  .description('Generate a .codeauditor.json scaffold with invariant rules')
   .option('-o, --output <dir>', 'Output directory', '.')
-  .option('-s, --server-url <url>', 'MCP server URL', DEFAULT_SERVER_URL)
-  .option('-i, --interactive', 'Interactive mode for tool selection')
-  .option('-f, --force', 'Force overwrite existing files without confirmation')
-  .option('-y, --yes', 'Skip all confirmation prompts (same as --force)')
+  .option('-i, --interactive', 'Interactive rule builder')
+  .option('-f, --force', 'Force overwrite existing file without confirmation')
+  .option('-y, --yes', 'Skip confirmation prompts (same as --force)')
   .action(async (options) => {
-    console.log(chalk.blue('🛠️  AI Tool Configuration Generator'));
+    console.log(chalk.blue('🛠️  Code Auditor Config Generator'));
     console.log(chalk.gray('════════════════════════════════════════════════════'));
     
     try {
@@ -789,133 +814,381 @@ if (!process.argv.slice(2).length) {
 /**
  * Generate configurations for AI tools
  */
+/**
+ * Rule kind metadata for interactive mode.
+ */
+interface RuleKindInfo {
+  kind: string;
+  label: string;
+  description: string;
+  requiredFields: string[];
+}
+
+const RULE_KINDS: RuleKindInfo[] = [
+  {
+    kind: 'import-ban',
+    label: 'Import Ban — forbid importing a specific module',
+    description: 'No file may import the banned module (e.g. deprecated packages, legacy libraries).',
+    requiredFields: ['module'],
+  },
+  {
+    kind: 'call-constraint',
+    label: 'Call Constraint — restrict who can call a function',
+    description: 'Only allow or deny specific callers from invoking a function.',
+    requiredFields: ['callee'],
+  },
+  {
+    kind: 'module-boundary',
+    label: 'Module Boundary — enforce layer isolation',
+    description: 'Files matching a "from" glob may not import from files matching a "to" glob.',
+    requiredFields: ['from', 'to'],
+  },
+  {
+    kind: 'naming',
+    label: 'Naming — enforce export naming conventions',
+    description: 'Exported symbols in matching files must match a regex pattern.',
+    requiredFields: ['path', 'exports'],
+  },
+  {
+    kind: 'ast-pattern',
+    label: 'AST Pattern — ban syntactic patterns',
+    description: 'Match AST nodes using ast-grep patterns (e.g. "new Function($$$)").',
+    requiredFields: ['pattern'],
+  },
+];
+
+const SCAFFOLD_CONFIG: Record<string, unknown> = {
+  $schema: 'https://unpkg.com/code-auditor-mcp/dist/invariant-rules.schema.json',
+  rules: [
+    {
+      id: 'ban-deprecated-lib',
+      kind: 'import-ban',
+      severity: 'critical',
+      message: 'This module is deprecated — prefer the replacement instead.',
+      module: 'deprecated-lib',
+    },
+    {
+      id: 'data-layer-no-browser',
+      kind: 'module-boundary',
+      severity: 'critical',
+      message: 'Data access layer must not import from browser-only modules.',
+      from: 'src/data/**',
+      to: 'src/browser/**',
+    },
+    {
+      id: 'api-routes-naming',
+      kind: 'naming',
+      severity: 'warning',
+      message: 'API route files must export a handler matching the HTTP method.',
+      path: 'src/api/**',
+      exports: '^(get|post|put|delete|patch)\\b',
+    },
+    {
+      id: 'no-eval',
+      kind: 'ast-pattern',
+      severity: 'critical',
+      pattern: 'eval($$$)',
+      message: 'eval() is forbidden in this codebase.',
+    },
+  ],
+};
+
 async function generateConfigurations(options: any): Promise<void> {
-  const prompts = new InteractivePrompts();
-  let tools: string[] = [];
-  let serverUrl = options.serverUrl;
-  let outputDir = options.output;
+  const outputDir = resolve(options.output || '.');
+  const outputPath = join(outputDir, '.codeauditor.json');
 
-  // Determine which tools to configure
-  if (options.interactive && !options.tool) {
-    // Interactive mode
-    tools = await prompts.selectTools();
-    if (!options.force && !options.yes) {
-      serverUrl = await prompts.confirmServerUrl(serverUrl);
-      outputDir = await prompts.selectOutputDirectory(outputDir);
-    }
-  } else if (!options.tool) {
-    // No tool specified and not interactive - show available tools
-    const factory = new ConfigGeneratorFactory(serverUrl);
-    const availableTools = factory.getToolInfo();
-    
-    console.log(chalk.yellow('No tool specified. Available tools:'));
-    availableTools.forEach(tool => {
-      console.log(chalk.gray(`  • ${tool.name} - ${tool.displayName}`));
-    });
-    console.log(chalk.blue('\nUsage examples:'));
-    console.log(chalk.gray('  code-auditor gen --tool cursor'));
-    console.log(chalk.gray('  code-auditor gen --tool cursor,claude,continue'));
-    console.log(chalk.gray('  code-auditor gen --tool all'));
-    console.log(chalk.gray('  code-auditor gen --interactive'));
-    return;
-  } else {
-    // Command line mode
-    if (options.tool === 'all') {
-      const factory = new ConfigGeneratorFactory(serverUrl);
-      tools = factory.getAvailableTools();
+  let config: Record<string, unknown>;
+
+  if (options.interactive) {
+    // --- Interactive rule builder ---
+    console.log(chalk.cyan('\nBuild your .codeauditor.json interactively.\n'));
+
+    const { addRules } = await inquirer.prompt({
+      addRules: {
+        type: 'confirm',
+        message: 'Would you like to add invariant rules?',
+        default: true,
+      },
+    } as any);
+
+    if (!addRules) {
+      console.log(chalk.yellow('No rules selected. Writing empty config.'));
+      config = { $schema: SCAFFOLD_CONFIG.$schema, rules: [] };
     } else {
-      tools = options.tool.split(',').map((t: string) => t.trim());
+      config = await buildRulesInteractively();
     }
-  }
 
-  console.log(chalk.blue(`\nGenerating configurations for: ${tools.join(', ')}`));
-  console.log(chalk.gray(`Server URL: ${serverUrl}`));
-  console.log(chalk.gray(`Output directory: ${outputDir}\n`));
+    // Confirm output directory
+    if (!options.force && !options.yes) {
+      const { dir } = await inquirer.prompt({
+        dir: {
+          type: 'input',
+          message: 'Output directory:',
+          default: outputDir,
+        },
+      } as any);
+      // Re-resolve with the user's choice (they might just hit enter)
+      const chosenDir = resolve(dir || outputDir);
+      const chosenPath = join(chosenDir, '.codeauditor.json');
 
-  // Create factory
-  const factory = new ConfigGeneratorFactory(serverUrl);
-  const generatedFiles: string[] = [];
-  const errors: string[] = [];
-
-  // Check for existing files
-  const existingFiles: string[] = [];
-  for (const tool of tools) {
-    const generator = factory.createGenerator(tool);
-    if (generator) {
-      const config = generator.generateConfig();
-      const outputPath = resolve(outputDir, config.filename);
-      
-      try {
-        await fs.access(outputPath);
-        existingFiles.push(config.filename);
-      } catch {
-        // File doesn't exist, which is fine
-      }
-    }
-  }
-
-  // Confirm overwrite if needed
-  if (existingFiles.length > 0 && !options.force && !options.yes) {
-    const shouldOverwrite = await prompts.confirmOverwrite(existingFiles);
-    if (!shouldOverwrite) {
-      console.log(chalk.yellow('Operation cancelled.'));
-      return;
-    }
-  } else if (existingFiles.length > 0 && (options.force || options.yes)) {
-    console.log(chalk.yellow(`Overwriting ${existingFiles.length} existing file(s)...`));
-  }
-
-  // Generate configurations
-  for (const tool of tools) {
-    try {
-      const generator = factory.createGenerator(tool);
-      if (!generator) {
-        errors.push(`Unknown tool: ${tool}`);
-        continue;
-      }
-
-      const config = generator.generateConfig();
-      const outputPath = resolve(outputDir, config.filename);
-
-      // Ensure directory exists
-      await fs.mkdir(dirname(outputPath), { recursive: true });
-
-      // Write main config file
-      await fs.writeFile(outputPath, config.content);
-      generatedFiles.push(config.filename);
-
-      // Write additional files if any
-      if (config.additionalFiles) {
-        for (const additionalFile of config.additionalFiles) {
-          const additionalPath = resolve(outputDir, additionalFile.filename);
-          await fs.mkdir(dirname(additionalPath), { recursive: true });
-          await fs.writeFile(additionalPath, additionalFile.content);
-          generatedFiles.push(additionalFile.filename);
+      // Check for existing file
+      let exists = false;
+      try { await fs.access(chosenPath); exists = true; } catch { /* ok */ }
+      if (exists) {
+        const { overwrite } = await inquirer.prompt({
+          overwrite: {
+            type: 'confirm',
+            message: chalk.yellow(`.codeauditor.json already exists at ${chosenPath}. Overwrite?`),
+            default: false,
+          },
+        } as any);
+        if (!overwrite) {
+          console.log(chalk.yellow('Operation cancelled.'));
+          return;
         }
       }
 
-      // Show success and instructions
-      console.log(chalk.green(`✓ Generated ${generator.getToolName()} configuration: ${config.filename}`));
-      console.log(chalk.dim('Instructions:'));
-      console.log(chalk.gray(config.instructions.trim()));
-      console.log('');
-
-    } catch (error) {
-      errors.push(`Failed to generate config for ${tool}: ${error}`);
+      await writeConfigFile(chosenPath, config);
+    } else {
+      await writeConfigFile(outputPath, config);
     }
+  } else {
+    // --- Non-interactive: scaffold template ---
+    let exists = false;
+    try { await fs.access(outputPath); exists = true; } catch { /* ok */ }
+
+    if (exists && !options.force && !options.yes) {
+      console.log(chalk.yellow(`.codeauditor.json already exists at ${outputPath}`));
+      console.log(chalk.gray('Use --force or --yes to overwrite, or --interactive to build a custom config.'));
+      return;
+    }
+
+    if (exists && (options.force || options.yes)) {
+      console.log(chalk.yellow('Overwriting existing .codeauditor.json...'));
+    }
+
+    config = SCAFFOLD_CONFIG;
+    await writeConfigFile(outputPath, config);
   }
 
-  // Show summary
-  if (generatedFiles.length > 0) {
-    prompts.displaySuccess(generatedFiles);
+  console.log(chalk.blue('\nNext steps:'));
+  console.log(chalk.gray('  1. Edit .codeauditor.json to match your codebase conventions'));
+  console.log(chalk.gray('  2. Run ') + chalk.cyan('code-audit') + chalk.gray(' to enforce your rules'));
+  console.log(chalk.gray('  3. Use ') + chalk.cyan('code-audit changed --fail-on critical') + chalk.gray(' in your agent hook'));
+}
+
+/**
+ * Interactive rule builder — walks the user through adding rules one at a time.
+ */
+async function buildRulesInteractively(): Promise<Record<string, unknown>> {
+  const rules: Record<string, unknown>[] = [];
+  let addMore = true;
+
+  while (addMore) {
+    console.log(chalk.gray(`\n── Rule ${rules.length + 1} ──`));
+
+    // Select rule kind
+    const { kind } = await inquirer.prompt({
+      kind: {
+        type: 'list',
+        message: 'Select rule kind:',
+        choices: RULE_KINDS.map((k) => ({
+          name: k.label,
+          value: k.kind,
+        })),
+        pageSize: 10,
+      },
+    } as any);
+
+    const kindInfo = RULE_KINDS.find((k) => k.kind === kind)!;
+    console.log(chalk.dim(kindInfo.description));
+
+    // Common fields
+    const common = await inquirer.prompt({
+      id: {
+        type: 'input',
+        message: 'Rule ID (unique kebab-case identifier):',
+        validate: (input: string) => {
+          if (!input.trim()) return 'Rule ID is required';
+          if (!/^[a-z][a-z0-9-]*$/.test(input)) return 'Use kebab-case (lowercase, digits, hyphens)';
+          return true;
+        },
+      },
+      severity: {
+        type: 'list',
+        message: 'Severity:',
+        choices: [
+          { name: chalk.red('Critical — exit code 2, blocks the agent loop'), value: 'critical' },
+          { name: chalk.yellow('Warning — visible, non-blocking'), value: 'warning' },
+          { name: chalk.blue('Suggestion — informational'), value: 'suggestion' },
+        ],
+        default: 'warning',
+      },
+      message: {
+        type: 'input',
+        message: 'Violation message (shown when rule is broken):',
+        validate: (input: string) => input.trim() ? true : 'Message is required',
+      },
+    } as any);
+
+    const rule: Record<string, unknown> = {
+      id: common.id,
+      kind,
+      severity: common.severity,
+      message: common.message,
+    };
+
+    // Kind-specific fields
+    switch (kind) {
+      case 'import-ban': {
+        const { module } = await inquirer.prompt({
+          module: {
+            type: 'input',
+            message: 'Banned module specifier (e.g. "lodash" or "@old-lib/*"):',
+            validate: (input: string) => input.trim() ? true : 'Module specifier is required',
+          },
+        } as any);
+        rule.module = module;
+        const { addExcept } = await inquirer.prompt({
+          addExcept: {
+            type: 'confirm',
+            message: 'Add exception paths (files allowed to import it)?',
+            default: false,
+          },
+        } as any);
+        if (addExcept) {
+          const { except } = await inquirer.prompt({
+            except: {
+              type: 'input',
+              message: 'Exception globs (comma-separated, e.g. "src/migration/**"):',
+            },
+          } as any);
+          const exceptList = except.split(',').map((s: string) => s.trim()).filter(Boolean);
+          if (exceptList.length > 0) rule.except = exceptList;
+        }
+        break;
+      }
+      case 'call-constraint': {
+        const { callee } = await inquirer.prompt({
+          callee: {
+            type: 'input',
+            message: 'Callee (function name, optionally path-qualified as "path/glob#name"):',
+            validate: (input: string) => input.trim() ? true : 'Callee is required',
+          },
+        } as any);
+        rule.callee = callee;
+        const { mode } = await inquirer.prompt({
+          mode: {
+            type: 'list',
+            message: 'Restriction mode:',
+            choices: [
+              { name: 'Allow only specific callers (allowFrom)', value: 'allow' },
+              { name: 'Deny specific callers (denyFrom)', value: 'deny' },
+            ],
+          },
+        } as any);
+        const { paths } = await inquirer.prompt({
+          paths: {
+            type: 'input',
+            message: `Path globs (comma-separated) for ${mode === 'allow' ? 'allowFrom' : 'denyFrom'}:`,
+            validate: (input: string) => input.trim() ? true : 'At least one path glob is required',
+          },
+        } as any);
+        const pathList = paths.split(',').map((s: string) => s.trim()).filter(Boolean);
+        if (mode === 'allow') {
+          rule.allowFrom = pathList;
+        } else {
+          rule.denyFrom = pathList;
+        }
+        break;
+      }
+      case 'module-boundary': {
+        const { from, to } = await inquirer.prompt({
+          from: {
+            type: 'input',
+            message: 'From (path glob for files that must not import):',
+            validate: (input: string) => input.trim() ? true : '"from" path glob is required',
+          },
+          to: {
+            type: 'input',
+            message: 'To (path glob for files that must not be imported):',
+            validate: (input: string) => input.trim() ? true : '"to" path glob is required',
+          },
+        } as any);
+        rule.from = from;
+        rule.to = to;
+        break;
+      }
+      case 'naming': {
+        const { path, exports: exportPattern } = await inquirer.prompt({
+          path: {
+            type: 'input',
+            message: 'Path (glob for files this rule applies to):',
+            validate: (input: string) => input.trim() ? true : 'Path glob is required',
+          },
+          exports: {
+            type: 'input',
+            message: 'Exports regex (exported symbols must match, e.g. "^use[A-Z]"):',
+            validate: (input: string) => input.trim() ? true : 'Exports regex is required',
+          },
+        } as any);
+        rule.path = path;
+        rule.exports = exportPattern;
+        break;
+      }
+      case 'ast-pattern': {
+        const { pattern } = await inquirer.prompt({
+          pattern: {
+            type: 'input',
+            message: 'AST pattern (ast-grep syntax, e.g. "new Function($$$)"):',
+            validate: (input: string) => input.trim() ? true : 'Pattern is required',
+          },
+        } as any);
+        rule.pattern = pattern;
+        const { addLanguage } = await inquirer.prompt({
+          addLanguage: {
+            type: 'confirm',
+            message: 'Restrict to a specific language? (default: typescript)',
+            default: false,
+          },
+        } as any);
+        if (addLanguage) {
+          const { language } = await inquirer.prompt({
+            language: {
+              type: 'list',
+              message: 'Language:',
+              choices: ['typescript', 'javascript', 'go'],
+            },
+          } as any);
+          rule.language = language;
+        }
+        break;
+      }
+    }
+
+    rules.push(rule);
+    console.log(chalk.green(`  ✓ Added rule "${rule.id}" [${rule.kind}]`));
+
+    const { cont } = await inquirer.prompt({
+      cont: {
+        type: 'confirm',
+        message: 'Add another rule?',
+        default: true,
+      },
+    } as any);
+    addMore = cont;
   }
 
-  if (errors.length > 0) {
-    console.log(chalk.red('\nErrors:'));
-    errors.forEach(error => {
-      console.log(chalk.red(`  • ${error}`));
-    });
-  }
+  return {
+    $schema: 'https://unpkg.com/code-auditor-mcp/dist/invariant-rules.schema.json',
+    rules,
+  };
+}
+
+async function writeConfigFile(outputPath: string, config: Record<string, unknown>): Promise<void> {
+  await fs.mkdir(dirname(outputPath), { recursive: true });
+  await fs.writeFile(outputPath, JSON.stringify(config, null, 2) + '\n');
+  console.log(chalk.green(`\n✓ Written .codeauditor.json to ${outputPath}`));
 }
 
 /**
