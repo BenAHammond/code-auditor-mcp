@@ -144,7 +144,7 @@ describe('CodeIndexDB SQLite — CRUD', () => {
     expect(row.content_hash.length).toBe(64); // SHA-256 hex
   });
 
-  it('registerFunction upserts by (name, file_path)', async () => {
+  it('registerFunction upserts by (name, file_path, line_number)', async () => {
     await db.registerFunction(makeFunc({ name: 'upsertMe', filePath: 'src/upsert.ts', body: 'v1', complexity: 1 }));
     await db.registerFunction(makeFunc({ name: 'upsertMe', filePath: 'src/upsert.ts', body: 'v2', complexity: 5 }));
 
@@ -186,6 +186,40 @@ describe('CodeIndexDB SQLite — CRUD', () => {
 
     const rows = (db as any).db.prepare('SELECT name FROM functions WHERE file_path = ? ORDER BY name').all('src/sync.ts') as any[];
     expect(rows.map((r: any) => r.name)).toEqual(['keep', 'newOne']);
+  });
+
+  it('registerFunction creates separate rows for same name at different lines', async () => {
+    // Same name, same file, different lines → two distinct rows (no upsert collision)
+    await db.registerFunction(makeFunc({ name: 'dup', filePath: 'src/dups.ts', lineNumber: 5, body: 'v1' }));
+    await db.registerFunction(makeFunc({ name: 'dup', filePath: 'src/dups.ts', lineNumber: 20, body: 'v2' }));
+
+    const rows = (db as any).db.prepare(
+      'SELECT name, line_number, body FROM functions WHERE file_path = ? ORDER BY line_number'
+    ).all('src/dups.ts') as any[];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].body).toBe('v1');
+    expect(rows[1].body).toBe('v2');
+  });
+
+  it('syncFileIndex handles same-named functions at different lines (nested functions)', async () => {
+    // Two functions with the same name at different lines in the same file
+    // should coexist as distinct entries (fix for nested/inner functions)
+    const result = await db.syncFileIndex('src/nested.ts', [
+      makeFunc({ name: 'handler', filePath: 'src/nested.ts', lineNumber: 10, body: 'outer' }),
+      makeFunc({ name: 'handler', filePath: 'src/nested.ts', lineNumber: 42, body: 'inner' }),
+    ]);
+
+    expect(result.added).toBe(2);
+    expect(result.updated).toBe(0);
+
+    const rows = (db as any).db.prepare(
+      'SELECT name, line_number, body FROM functions WHERE file_path = ? ORDER BY line_number'
+    ).all('src/nested.ts') as any[];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].body).toBe('outer');
+    expect(rows[0].line_number).toBe(10);
+    expect(rows[1].body).toBe('inner');
+    expect(rows[1].line_number).toBe(42);
   });
 
   it('getAllFunctions returns all rows with correct unpacking', async () => {
@@ -372,10 +406,12 @@ describe('QueryParser compileToSQL', () => {
     expect(sql.whereClauses).toContain('has_jsdoc = 1');
   });
 
-  it('file:src/** adds GLOB clause', () => {
+  it('file:src/** adds GLOB clause with wildcard wrapping', () => {
     const sql = compile('file:src/**');
     expect(sql.whereClauses).toContain('file_path GLOB @fileGlob');
-    expect(sql.params.fileGlob).toBe('src/**');
+    // Patterns are wrapped with * wildcards so relative paths match
+    // against absolute paths stored in the DB
+    expect(sql.params.fileGlob).toBe('*src/***');
   });
 
   it('name:render adds LIKE clause', () => {

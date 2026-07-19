@@ -265,7 +265,7 @@ export class CodeIndexDB {
   private stmts: Map<string, Database.Statement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 1;
+  private static readonly SCHEMA_VERSION = 2;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -394,6 +394,27 @@ export class CodeIndexDB {
     this.isInitialized = true;
   }
 
+  // ── Schema migrations ────────────────────────────────────────────────
+
+  private runMigrations(): void {
+    // Read the currently stored schema version (if any)
+    const row = this.db.prepare(
+      "SELECT value FROM meta WHERE key = 'schema_version'"
+    ).get() as { value: string } | undefined;
+
+    const currentVersion = row ? parseInt(row.value, 10) : 0;
+
+    // Migration 1 → 2: Unique index on (name, file_path, line_number)
+    // Previously the unique index was on (name, file_path) only, which caused
+    // same-named functions at different lines in the same file to collide.
+    if (currentVersion < 2) {
+      this.db.exec(`
+        DROP INDEX IF EXISTS idx_functions_name_file;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
+      `);
+    }
+  }
+
   // ── SQLite schema ───────────────────────────────────────────────────
 
   private createSchema(): void {
@@ -445,7 +466,7 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_functions_entity_type ON functions(entity_type);
       CREATE INDEX IF NOT EXISTS idx_functions_complexity ON functions(complexity);
       CREATE INDEX IF NOT EXISTS idx_functions_content_hash ON functions(content_hash);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file ON functions(name, file_path);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS functions_fts USING fts5(
         name, signature, jsdoc_description, purpose, context, body,
@@ -591,6 +612,9 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_project_tasks_fingerprint ON project_tasks(fingerprint);
       CREATE INDEX IF NOT EXISTS idx_project_tasks_sort ON project_tasks(sortOrder);
     `);
+
+    // Run schema migrations
+    this.runMigrations();
 
     // Record schema version
     this.db.prepare(
@@ -849,7 +873,7 @@ export class CodeIndexDB {
     return {
       name: func.name,
       file_path: func.filePath,
-      line_number: func.lineNumber ?? null,
+      line_number: func.lineNumber ?? 0,
       start_line: (func as any).startLine ?? null,
       end_line: (func as any).endLine ?? null,
       language: func.language ?? 'typescript',
@@ -898,7 +922,7 @@ export class CodeIndexDB {
           @jsdoc_description, @jsdoc_tags, @parameters, @type_info, @hooks, @props,
           @used_imports, @unused_imports, @import_usage, @has_unused_imports, @dependency_depth,
           @purpose, @context, @body, @content_hash, @last_modified, @metadata_json)
-        ON CONFLICT(name, file_path) DO UPDATE SET
+        ON CONFLICT(name, file_path, line_number) DO UPDATE SET
           line_number=excluded.line_number, start_line=excluded.start_line, end_line=excluded.end_line,
           language=excluded.language, entity_type=excluded.entity_type, component_type=excluded.component_type,
           signature=excluded.signature, return_type=excluded.return_type, complexity=excluded.complexity,
@@ -971,7 +995,7 @@ export class CodeIndexDB {
 
       // Insert/update current functions
       for (const func of currentFunctions) {
-        const exists = existing.find(e => e.name === func.name);
+        const exists = existing.find(e => e.name === func.name && e.line_number === func.lineNumber);
         if (exists) {
           const row = this.functionToRow(func);
           const keys = Object.keys(row);
@@ -1050,8 +1074,6 @@ export class CodeIndexDB {
             insertCall.run(fn.id, callee);
           }
         }
-        // Also add deps from the function's own file-level dependencies if we can extract them
-        // (dependencies are file-level, stored in function row context)
       }
 
       // Also rebuild dependency edges from the functions' import data
@@ -1060,9 +1082,18 @@ export class CodeIndexDB {
       );
       for (const fn of allFns) {
         const meta = tryParseJson(fn.metadata_json) ?? {};
+
+        // Add specifier-level dependencies (e.g., useState, useEffect)
         const usedImports: string[] = meta.usedImports ?? [];
         for (const imp of usedImports) {
           insertFnDep.run(fn.id, imp);
+        }
+
+        // Add module-level dependencies (e.g., react, express) — stored in
+        // metadata.dependencies since v3.0.4 to power the dep: operator
+        const moduleDeps: string[] = meta.dependencies ?? [];
+        for (const dep of moduleDeps) {
+          insertFnDep.run(fn.id, dep);
         }
       }
     });
@@ -1330,8 +1361,11 @@ export class CodeIndexDB {
     };
     // Populate dependencies from metadata
     const meta = tryParseJson(row.metadata_json);
-    if (meta?.usedImports) {
-      doc.dependencies = meta.usedImports;
+    if (meta) {
+      // Include both specifier-level (usedImports) and module-level (dependencies)
+      const usedImports: string[] = meta.usedImports ?? [];
+      const moduleDeps: string[] = meta.dependencies ?? [];
+      doc.dependencies = [...new Set([...usedImports, ...moduleDeps])];
     }
     return doc;
   }

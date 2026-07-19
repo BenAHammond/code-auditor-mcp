@@ -10,7 +10,7 @@
       "name": "code-auditor",
       "source": "./plugin",
       "description": "Diff-scoped code quality auditing on every edit. Indexes your codebase, enforces invariants, and feeds violations back to the agent so fixes happen inline.",
-      "version": "3.0.3",
+      "version": "3.0.5",
       "author": {
         "name": "Ben Hammond"
       },

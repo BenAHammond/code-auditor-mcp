@@ -767,10 +767,11 @@ export function compileToSQL(
     params.language = f.language;
   }
 
-  // file: / path: (glob)
+  // file: / path: (glob) — wrap with wildcards so relative paths match
+  // against absolute paths stored in the DB
   if (f.filePath) {
     whereClauses.push('file_path GLOB @fileGlob');
-    params.fileGlob = f.filePath;
+    params.fileGlob = `*${f.filePath}*`;
   }
 
   // jsdoc: / doc:

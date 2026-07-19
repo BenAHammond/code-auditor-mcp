@@ -21,7 +21,7 @@ import {
   isLocalFunction,
   getReExports
 } from './utils/astUtils.js';
-import { parseFile, walkAST, hasModifier, isExported } from './languages/adapterBridge.js';
+import { parseFile, walkAST, hasModifier, isExported, calculateComplexity } from './languages/adapterBridge.js';
 import type { AST, ASTNode } from './languages/types.js';
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import {
@@ -109,16 +109,28 @@ export async function scanDirectoryForFunctions(
 }
 
 /**
- * Extract functions from a single file
+ * Extract functions from a single file (convenience wrapper that reads the file).
  */
 export async function extractFunctionsFromFile(
   filePath: string,
   options?: { unusedImportsConfig?: AuditOptions['unusedImportsConfig'] }
 ): Promise<FunctionMetadata[]> {
+  const content = await readFile(filePath, 'utf-8');
+  return extractFunctionsFromSource(content, filePath, options);
+}
+
+/**
+ * Extract functions from source content (no file I/O — usable by both the
+ * audit runner and the index sync path).
+ */
+export function extractFunctionsFromSource(
+  content: string,
+  filePath: string,
+  options?: { unusedImportsConfig?: AuditOptions['unusedImportsConfig'] }
+): FunctionMetadata[] {
   const functions: FunctionMetadata[] = [];
 
-  // Read content and parse
-  const content = await readFile(filePath, 'utf-8');
+  // Parse content
   const ast = parseFile(filePath, content);
   if (!ast) return functions;
 
@@ -226,7 +238,9 @@ export async function extractFunctionsFromFile(
         functionCalls: normalizedCalls,
         usedImports,
         unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
-        body: body ? rawText(body) : undefined
+        complexity: calculateComplexity(func),
+        body: body ? rawText(body) : undefined,
+        dependencies
       }
     });
   }
@@ -291,7 +305,9 @@ export async function extractFunctionsFromFile(
           functionCalls: normalizedCalls,
           usedImports,
           unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
-          body: body ? rawText(body) : undefined
+          complexity: calculateComplexity(arrowFunc),
+          body: body ? rawText(body) : undefined,
+          dependencies
         }
       });
     }
@@ -358,7 +374,9 @@ export async function extractFunctionsFromFile(
           functionCalls: normalizedCalls,
           usedImports,
           unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
-          body: body ? rawText(body) : undefined
+          complexity: calculateComplexity(method),
+          body: body ? rawText(body) : undefined,
+          dependencies
         }
       });
     }
@@ -419,7 +437,7 @@ export async function extractFunctionsFromFile(
           hooks: extractHooks(node),
           jsxElements: extractJSXElements(node),
           isExported: isComponentExported(node),
-          complexity: calculateComponentComplexity(node),
+          complexity: calculateComplexity(node),
           body: getComponentBody(node)
         };
       } else {
@@ -441,11 +459,12 @@ export async function extractFunctionsFromFile(
             hooks: extractHooks(node),
             jsxElements: extractJSXElements(node),
             isExported: isComponentExported(node),
-            complexity: calculateComponentComplexity(node),
+            complexity: calculateComplexity(node),
             body: getComponentBody(node),
             usedImports,
             unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
-            calledBy: []
+            calledBy: [],
+            dependencies
           }
         });
       }
@@ -490,7 +509,8 @@ export async function extractFunctionsFromFile(
           kind: 'file-analysis',
           unusedImports: fileUnusedImports,
           totalImports: detailedImports.length,
-          usedImportsCount: allUsedImports.size
+          usedImportsCount: allUsedImports.size,
+          dependencies
         }
       });
     }
@@ -554,41 +574,6 @@ function isComponentExported(node: ASTNode): boolean {
   return false;
 }
 
-function calculateComponentComplexity(node: ASTNode): number {
-  let complexity = 1; // Base complexity
-
-  walkAST(node, (child) => {
-    // Control flow statements
-    if (child.type === 'if_statement' || child.type === 'ternary_expression') {
-      complexity++;
-    } else if (child.type === 'for_statement' || child.type === 'for_in_statement' ||
-               child.type === 'while_statement') {
-      complexity += 2;
-    } else if (child.type === 'switch_statement') {
-      // Count switch_case children in switch body
-      const body = findChildOfType(child, 'switch_body');
-      if (body) {
-        const cases = body.children?.filter(c =>
-          c.type === 'switch_case' || c.type === 'switch_default') ?? [];
-        complexity += cases.length;
-      }
-    }
-
-    // Callbacks and event handlers
-    if (child.type === 'call_expression') {
-      const expr = child.children?.[0];
-      if (expr?.type === 'member_expression') {
-        const propNode = expr.children?.[expr.children.length - 1];
-        if (propNode && rawText(propNode) === 'map') {
-          complexity++;
-        }
-      }
-    }
-  });
-
-  return complexity;
-}
-
 /**
  * Get language from file path
  */
@@ -628,148 +613,10 @@ export class FunctionScanner {
     filePath: string,
     language: string
   ): Promise<FunctionMetadata[]> {
-    const functions: FunctionMetadata[] = [];
-
-    // Parse content directly via tree-sitter
-    const ast = parseFile(filePath, content);
-    if (!ast) return functions;
-    const root = ast.root;
-
-    // Get file dependencies
-    const imports = getImports(root);
-    const dependencies = imports
-      .map(imp => imp.moduleSpecifier)
-      .filter(spec => !spec.startsWith('.') && !spec.startsWith('/'))
-      .filter((v, i, a) => a.indexOf(v) === i); // Unique only
-
-    // Build import map for dependency tracking
-    const importMap = buildImportMap(root);
-
-    // Find all function declarations
-    for (const func of findNodesByKind(root, 'function_declaration')) {
-      const nameNode = findChildOfType(func, 'identifier');
-      if (!nameNode) continue;
-
-      const { line } = getLineAndColumn(func);
-
-      const params = findChildOfType(func, 'formal_parameters');
-      const paramCount = params?.children?.filter(c =>
-        c.type === 'required_parameter' || c.type === 'optional_parameter' || c.type === 'rest_parameter'
-      ).length ?? 0;
-
-      // Build signature: text up to the statement block (before first '{' of body)
-      const bodyNode = findChildOfType(func, 'statement_block');
-      const fullText = rawText(func);
-      const signature = fullText.split('{')[0]?.trim() ?? undefined;
-
-      functions.push({
-        name: rawText(nameNode),
-        filePath,
-        lineNumber: line,
-        language,
-        dependencies,
-        purpose: `Function ${rawText(nameNode)} implementation`,
-        context: `Located in ${path.basename(filePath)}`,
-        metadata: {
-          kind: 'function',
-          isAsync: hasModifier(func, 'async'),
-          isExported: isExported(func),
-          parameterCount: paramCount,
-          signature,
-          body: bodyNode ? rawText(bodyNode) : undefined,
-        }
-      });
-    }
-
-    // Find arrow functions and variable declarations
-    for (const varStmt of [
-      ...findNodesByKind(root, 'lexical_declaration'),
-      ...findNodesByKind(root, 'variable_declaration')
-    ]) {
-      for (const declaration of varStmt.children ?? []) {
-        if (declaration.type !== 'variable_declarator') continue;
-        const nameNode = findChildOfType(declaration, 'identifier');
-        const init = declaration.children?.find(c => c.type === 'arrow_function');
-        if (!nameNode || !init) continue;
-
-        const { line } = getLineAndColumn(declaration);
-
-        const arrowParams = findChildOfType(init, 'formal_parameters');
-        const arrowParamCount = arrowParams?.children?.filter(c =>
-          c.type === 'required_parameter' || c.type === 'optional_parameter' || c.type === 'rest_parameter'
-        ).length ?? 0;
-
-        const fullText = rawText(init);
-        const signature = fullText.split('{')[0]?.trim() ?? undefined;
-        const bodyNode = findChildOfType(init, 'statement_block');
-
-        functions.push({
-          name: rawText(nameNode),
-          filePath,
-          lineNumber: line,
-          language,
-          dependencies,
-          purpose: `Arrow function ${rawText(nameNode)}`,
-          context: `Defined in ${path.basename(filePath)}`,
-          metadata: {
-            kind: 'arrow',
-            isAsync: hasModifier(init, 'async'),
-            isExported: isExported(varStmt),
-            parameterCount: arrowParamCount,
-            signature,
-            body: bodyNode ? rawText(bodyNode) : undefined,
-          }
-        });
-      }
-    }
-
-    // Find class methods
-    for (const classDecl of findNodesByKind(root, 'class_declaration')) {
-      const nameNode = findChildOfType(classDecl, 'identifier');
-      if (!nameNode) continue;
-
-      const className = rawText(nameNode);
-      const classBody = findChildOfType(classDecl, 'class_body');
-
-      for (const member of classBody?.children ?? []) {
-        if (member.type !== 'method_definition') continue;
-        const mNameNode = findChildOfType(member, 'identifier');
-        if (!mNameNode) continue;
-
-        const { line } = getLineAndColumn(member);
-
-        const methodParams = findChildOfType(member, 'formal_parameters');
-        const methodParamCount = methodParams?.children?.filter(c =>
-          c.type === 'required_parameter' || c.type === 'optional_parameter' || c.type === 'rest_parameter'
-        ).length ?? 0;
-
-        const fullText = rawText(member);
-        const signature = fullText.split('{')[0]?.trim() ?? undefined;
-        const bodyNode = findChildOfType(member, 'statement_block');
-
-        functions.push({
-          name: `${className}.${rawText(mNameNode)}`,
-          filePath,
-          lineNumber: line,
-          language,
-          dependencies,
-          purpose: `Method ${rawText(mNameNode)} of class ${className}`,
-          context: `Class method in ${path.basename(filePath)}`,
-          metadata: {
-            kind: 'method',
-            className,
-            isAsync: hasModifier(member, 'async'),
-            isStatic: hasModifier(member, 'static'),
-            isPrivate: hasModifier(member, 'private'),
-            parameterCount: methodParamCount,
-            signature,
-            body: bodyNode ? rawText(bodyNode) : undefined,
-          }
-        });
-      }
-    }
-
-    return functions;
+    // Delegate to the shared extraction logic — this ensures the index sync
+    // path produces the same relational data (functionCalls, usedImports,
+    // complexity, etc.) as the audit runner path.
+    return extractFunctionsFromSource(content, filePath);
   }
 }
 
