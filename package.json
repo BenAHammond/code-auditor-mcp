@@ -93,8 +93,11 @@
     "dist/**/*",
     "dist/grammars/",
     "dist/native/",
+    "plugin/**/*",
+    ".claude-plugin/**/*",
     "examples/**/*",
     "configs/**/*",
+    "server.json",
     "README.md",
     "LICENSE"
   ],
