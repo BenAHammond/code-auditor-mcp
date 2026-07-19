@@ -14,8 +14,8 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PLUGIN_DIR = resolve(__dirname, '..', '..', 'plugin');
-const MARKETPLACE_DIR = resolve(__dirname, '..', '..', '.claude-plugin');
+const PLUGIN_DIR = resolve(__dirname, '..', 'plugin');
+const MARKETPLACE_DIR = resolve(__dirname, '..', '.claude-plugin');
 
 function loadJson(path: string): any {
   return JSON.parse(readFileSync(path, 'utf-8'));
@@ -183,7 +183,7 @@ describe('Hook script (hook-audit.sh)', () => {
       resolve(PLUGIN_DIR, 'scripts', 'hook-audit.sh'),
       'utf-8',
     );
-    expect(content).toContain('not installed');
+    expect(content).toContain('could not run');
     expect(content).toContain('exit 0');
   });
 });
