@@ -793,16 +793,35 @@ function registerAllTools(registry: ToolRegistry): void {
           await db.initialize();
 
           if (targetPath) {
-            const syncResult = await db.synchronizeFile(path.resolve(targetPath));
-            return {
+            const resolved = path.resolve(targetPath);
+            const stat = await fs.stat(resolved).catch(() => null);
+            if (stat?.isFile()) {
+              const syncResult = await db.synchronizeFile(resolved);
+              return {
+                mode: 'sync',
+                success: true,
+                path: resolved,
+                ...(syncResult || { message: 'File not found' }),
+              };
+            }
+            // Directory — deep sync from the specified path
+            const syncResult = await db.deepSync(resolved);
+            const dirResult: any = {
               mode: 'sync',
               success: true,
-              path: targetPath,
-              ...(syncResult || { message: 'File not found' }),
+              path: resolved,
+              syncedFiles: syncResult.syncedFiles,
+              addedFunctions: syncResult.addedFunctions,
+              updatedFunctions: syncResult.updatedFunctions,
+              removedFunctions: syncResult.removedFunctions,
+              errors: syncResult.errors,
+              message: `Synced ${syncResult.syncedFiles} files: ${syncResult.addedFunctions} added, ${syncResult.updatedFunctions} updated, ${syncResult.removedFunctions} removed`,
             };
+            return dirResult;
           }
 
-          const syncResult = await db.deepSync();
+          // No path provided — deep sync from cwd
+          const syncResult = await db.deepSync(process.cwd());
           const result: any = {
             mode: 'sync',
             success: true,
@@ -819,7 +838,7 @@ function registerAllTools(registry: ToolRegistry): void {
             const { WhitelistService } = await import('./services/whitelistService.js');
             const whitelistService = WhitelistService.getInstance();
             const whitelistResult = await whitelistService.whitelistAllDependencies(
-              targetPath || process.cwd(),
+              process.cwd(),
             );
             if (whitelistResult.added > 0) {
               result.whitelistAdded = whitelistResult.added;

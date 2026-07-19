@@ -23,7 +23,12 @@ export const DEFAULT_EXCLUDED_DIRS = [
   'tmp',
   'temp',
   '.vscode',
-  '.idea'
+  '.idea',
+  // Documentation, specs, and backups — rarely contain production source code
+  'docs',
+  'specs',
+  'backup',
+  'backups',
 ];
 
 // Supported file extensions

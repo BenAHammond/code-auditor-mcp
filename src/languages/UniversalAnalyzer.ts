@@ -26,14 +26,12 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     config: any = {},
     options: UniversalAnalyzerOptions = {}
   ): Promise<AnalyzerResult> {
-    console.error(`[DEBUG] ${this.name}: UniversalAnalyzer.analyze() called with files:`, files);
     const violations: Violation[] = [];
     const errors: Array<{ file: string; error: string }> = [];
     const startTime = Date.now();
-    
+
     // Group files by language
     const filesByAdapter = this.groupFilesByAdapter(files);
-    console.error(`[DEBUG] ${this.name}: Grouped files by adapter:`, [...filesByAdapter.keys()].map(a => a.constructor.name));
     
     let filesProcessed = 0;
     const totalFiles = files.length;
@@ -89,8 +87,7 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
             options.progressCallback(filesProcessed / totalFiles);
           }
         } catch (error) {
-          // Always log errors, not just in dev mode
-          console.error(`[DEBUG] ${this.name}: ERROR processing file ${file}:`, error);
+          console.error(`[${this.name}] Error processing file ${file}:`, error);
           errors.push({
             file,
             error: error instanceof Error ? error.message : String(error)

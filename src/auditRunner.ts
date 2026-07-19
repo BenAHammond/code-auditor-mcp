@@ -485,7 +485,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     }
 
     // Generate summary
-    const summary = generateSummary(orderedAnalyzerResults);
+    const summary = generateSummary(orderedAnalyzerResults, files.length);
 
     // Create result
     const result: AuditResult = {
@@ -690,17 +690,17 @@ function getEnabledAnalyzers(
 /**
  * Generate audit summary
  */
-function generateSummary(analyzerResults: Record<string, AnalyzerResult>) {
+function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesAnalyzed: number) {
   let totalViolations = 0;
   let criticalIssues = 0;
   let warnings = 0;
   let suggestions = 0;
   const violationsByCategory: Record<string, number> = {};
-  
+
   for (const [analyzer, result] of Object.entries(analyzerResults)) {
     for (const violation of result.violations) {
       totalViolations++;
-      
+
       switch (violation.severity) {
         case 'critical':
           criticalIssues++;
@@ -712,20 +712,26 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>) {
           suggestions++;
           break;
       }
-      
+
       const category = violation.type || analyzer;
       violationsByCategory[category] = (violationsByCategory[category] || 0) + 1;
     }
   }
-  
+
+  // Compute top issues from violationsByCategory
+  const topIssues = Object.entries(violationsByCategory)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5)
+    .map(([type, count]) => ({ type, count }));
+
   return {
-    totalFiles: 0,
+    totalFiles: filesAnalyzed,
     totalViolations,
     criticalIssues,
     warnings,
     suggestions,
     violationsByCategory,
-    topIssues: []
+    topIssues
   };
 }
 

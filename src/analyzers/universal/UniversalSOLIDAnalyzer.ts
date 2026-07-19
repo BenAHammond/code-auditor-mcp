@@ -45,26 +45,20 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     config: SOLIDAnalyzerConfig,
     sourceCode: string
   ): Promise<Violation[]> {
-    console.error('[DEBUG] SOLID: analyzeAST called for:', ast.filePath);
-    console.error('[DEBUG] SOLID: Input config:', config);
-    console.error('[DEBUG] SOLID: DEFAULT_SOLID_CONFIG:', DEFAULT_SOLID_CONFIG);
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_SOLID_CONFIG, ...config };
-    console.error('[DEBUG] SOLID: Final config:', finalConfig);
-    
+
     // Skip test files if configured
     if (finalConfig.skipTestFiles && this.isTestFile(ast.filePath)) {
       return violations;
     }
-    
+
     // Analyze classes
     const classes = adapter.extractClasses(ast);
-    console.error(`[DEBUG] SOLID: Extracted ${classes.length} classes:`, classes.map(c => c.name));
     for (const cls of classes) {
-      console.error(`[DEBUG] SOLID: Analyzing class: ${cls.name}`);
       violations.push(...this.analyzeClass(cls, ast, adapter, sourceCode, finalConfig));
     }
-    
+
     // Analyze standalone functions
     const functions = adapter.extractFunctions(ast);
     for (const func of functions) {
@@ -72,20 +66,15 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         violations.push(...this.analyzeFunction(func, ast, adapter, sourceCode, finalConfig));
       }
     }
-    
+
     // Analyze interfaces if supported
     if (adapter.extractInterfaces) {
-      console.error('[DEBUG] SOLID: extractInterfaces method exists, calling it...');
       const interfaces = adapter.extractInterfaces(ast);
-      console.error('[DEBUG] SOLID: Extracted interfaces count:', interfaces.length);
       for (const iface of interfaces) {
-        console.error('[DEBUG] SOLID: Analyzing interface:', iface.name, 'with', iface.members.length, 'members');
         violations.push(...this.analyzeInterface(iface, ast, adapter, sourceCode, finalConfig));
       }
-    } else {
-      console.error('[DEBUG] SOLID: extractInterfaces method not available on adapter');
     }
-    
+
     return violations;
   }
   
@@ -204,22 +193,15 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     config: SOLIDAnalyzerConfig
   ): Violation[] {
     const violations: Violation[] = [];
-    
-    console.error(`[DEBUG] SOLID: analyzeInterface called for ${iface.name}`);
-    console.error(`[DEBUG] SOLID: checkInterfaceSegregation = ${config.checkInterfaceSegregation}`);
-    console.error(`[DEBUG] SOLID: maxInterfaceMembers = ${config.maxInterfaceMembers}`);
-    
+
     if (!config.checkInterfaceSegregation) {
-      console.error(`[DEBUG] SOLID: Skipping interface segregation check for ${iface.name}`);
       return violations;
     }
-    
+
     const memberCount = iface.members?.length || 0;
     const maxMembers = config.maxInterfaceMembers || 20;
-    console.error(`[DEBUG] SOLID: Interface ${iface.name} has ${memberCount} members, max allowed: ${maxMembers}`);
-    
+
     if (memberCount > maxMembers) {
-      console.error(`[DEBUG] SOLID: Creating violation for ${iface.name}`);
       violations.push(this.createViolation(
         ast.filePath,
         iface.location.start,
@@ -227,10 +209,8 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         'warning',
         'interface-segregation'
       ));
-    } else {
-      console.error(`[DEBUG] SOLID: No violation for ${iface.name} (${memberCount} <= ${maxMembers})`);
     }
-    
+
     return violations;
   }
   
@@ -351,12 +331,10 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     sourceCode: string
   ): Violation[] {
     const violations: Violation[] = [];
-    console.error(`[DEBUG] SOLID: checkDependencyInversion called for class: ${cls.name}`);
-    
+
     // Check for direct instantiation of dependencies
     const classNode = this.findNodeByLocation(ast.root, cls.location.start);
     if (!classNode) {
-      console.error(`[DEBUG] SOLID: Could not find class node for ${cls.name}`);
       return violations;
     }
     

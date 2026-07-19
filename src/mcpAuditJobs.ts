@@ -474,7 +474,7 @@ function calculateHealthScore(result: {
   return Math.max(0, Math.round(Math.min(100, score)));
 }
 
-function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult>) {
+function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult>, filesAnalyzed: number) {
   let totalViolations = 0;
   let criticalIssues = 0;
   let warnings = 0;
@@ -492,14 +492,20 @@ function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult
     }
   }
 
+  // Compute top issues from violationsByCategory
+  const topIssues = Object.entries(violationsByCategory)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5)
+    .map(([type, count]) => ({ type, count }));
+
   return {
-    totalFiles: 0,
+    totalFiles: filesAnalyzed,
     totalViolations,
     criticalIssues,
     warnings,
     suggestions,
     violationsByCategory,
-    topIssues: [],
+    topIssues,
   };
 }
 
@@ -555,7 +561,7 @@ function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): 
 
   return {
     timestamp: new Date(),
-    summary: summarizeAnalyzerResults(ordered),
+    summary: summarizeAnalyzerResults(ordered, filesAnalyzed),
     analyzerResults: ordered,
     recommendations,
     metadata: {
@@ -961,7 +967,7 @@ export async function getAuditResultsAsSarif(args: any): Promise<string> {
       warnings: stored.summary?.warnings ?? 0,
       suggestions: stored.summary?.suggestions ?? 0,
       violationsByCategory: stored.summary?.violationsByCategory ?? {},
-      topIssues: [],
+      topIssues: stored.summary?.topIssues ?? [],
     },
     analyzerResults: stored.analyzerResults || stored.analyzer_results_json
       ? (typeof stored.analyzerResults === 'string'

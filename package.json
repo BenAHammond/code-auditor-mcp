@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Architectural invariants and code quality analysis, enforced inside your AI agent's edit loop. MCP server + CLI + Claude Code plugin. TypeScript, JavaScript, Go.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

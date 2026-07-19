@@ -51,19 +51,14 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
     config: DocumentationAnalyzerConfig,
     sourceCode: string
   ): Promise<Violation[]> {
-    console.error('[DEBUG] UniversalDocumentationAnalyzer.analyzeAST called for:', ast.filePath);
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DOCUMENTATION_CONFIG, ...config };
-    console.error('[DEBUG] Documentation config:', finalConfig);
 
     // Check if file is exempt
     if (this.isExempt(ast.filePath, finalConfig.exemptPatterns)) {
-      console.error('[DEBUG] File is exempt from documentation analysis:', ast.filePath);
       return violations;
     }
 
-    console.error('[DEBUG] File is NOT exempt, proceeding with analysis:', ast.filePath);
-    
     // Check file-level documentation
     if (finalConfig.requireFileDocs) {
       const fileDoc = this.getFileDocumentation(ast, adapter);
@@ -81,8 +76,7 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
     // Check function documentation
     if (finalConfig.requireFunctionDocs) {
       const functions = adapter.extractFunctions(ast);
-      console.error('[DEBUG] Extracted functions count:', functions.length);
-      
+
       for (const func of functions) {
         // Skip if checking exported only and function is not exported
         if (finalConfig.checkExportedOnly && !func.isExported) {
@@ -95,15 +89,7 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
         }
         
         const doc = func.jsDoc || '';
-        
-        // Debug logging
-        console.error('[DEBUG] Checking function:', {
-          name: func.name,
-          jsDoc: func.jsDoc,
-          docLength: doc.length,
-          minLength: finalConfig.minDescriptionLength
-        });
-        
+
         // Check if documentation exists and is adequate
         if (!doc || doc.length < finalConfig.minDescriptionLength) {
           violations.push(this.createViolation(

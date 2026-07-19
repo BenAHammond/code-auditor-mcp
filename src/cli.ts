@@ -303,7 +303,7 @@ indexCmd
         result = await db.synchronizeFile(targetPath);
         result = { mode: 'sync', success: true, path: targetPath, ...(result || { message: 'File not found' }) };
       } else {
-        const syncResult = await db.deepSync();
+        const syncResult = await db.deepSync(targetPath);
         result = {
           mode: 'sync',
           success: true,

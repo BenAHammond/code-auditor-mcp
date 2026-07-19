@@ -92,22 +92,22 @@ describe('CLI integration — index sync', () => {
     expect(parsed.added).toBe(2);
   });
 
-  // ── P2: directory sync (empty DB — deepSync is re-sync, not initial scan) ──
+  // ── P2: directory sync (cold DB — discovers files from filesystem) ──
 
-  it('deepSync on an empty index exits 0 with syncedFiles=0', async () => {
+  it('deepSync on a cold index discovers files from the filesystem', async () => {
     await mkdir(join(testDir, 'src'), { recursive: true });
     await writeFile(join(testDir, 'src', 'file.ts'), 'export const X = 1;');
 
-    // deepSync only re-syncs files already in the functions table.
-    // On a cold DB this means zero files — exit 0 is the success path.
+    // deepSync discovers files from the filesystem when projectRoot is provided.
+    // The file has no functions (only a const), so added=0 but syncedFiles=1.
     const result = runCli(`index sync --path "${testDir}" --json`, testDir);
 
     expect(result.exitCode).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.success).toBe(true);
     expect(parsed.mode).toBe('sync');
-    // Correct deepSync behavior: no indexed files → nothing to sync
-    expect(parsed.syncedFiles).toBe(0);
+    expect(parsed.syncedFiles).toBe(1);
+    expect(parsed.addedFunctions).toBe(0);
   });
 
   // ── P3: does not crash with empty directory ────────────────────────────────

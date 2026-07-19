@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { discoverFiles, ALL_EXTENSIONS } from './utils/fileDiscovery.js';
 import type {
   CompleteProjectTaskResult,
   CreateProjectTaskInput,
@@ -1472,6 +1473,7 @@ export class CodeIndexDB {
   }
 
   async deepSync(
+    projectRoot?: string,
     progressCallback?: (progress: { current: number; total: number; file: string }) => void
   ): Promise<{
     syncedFiles: number;
@@ -1482,18 +1484,31 @@ export class CodeIndexDB {
   }> {
     this.ensureInitialized();
 
-    const files = this.db.prepare('SELECT DISTINCT file_path FROM functions').all() as Array<{ file_path: string }>;
     let syncedFiles = 0;
     let totalAdded = 0;
     let totalUpdated = 0;
     let totalRemoved = 0;
     const errors: Array<{ file: string; error: string }> = [];
-    let current = 0;
 
-    for (const { file_path: fp } of files) {
-      current++;
+    // Discover files from the filesystem when projectRoot is provided
+    let files: string[];
+    if (projectRoot) {
+      const discovered = await discoverFiles(projectRoot, {
+        extensions: ALL_EXTENSIONS,
+      });
+      files = discovered.sort();
+    } else {
+      // Fallback: sync files already in the index
+      const rows = this.db.prepare('SELECT DISTINCT file_path FROM functions').all() as Array<{ file_path: string }>;
+      files = rows.map(r => r.file_path);
+    }
+
+    const total = files.length;
+
+    for (let i = 0; i < files.length; i++) {
+      const fp = files[i];
       if (progressCallback) {
-        progressCallback({ current, total: files.length, file: fp });
+        progressCallback({ current: i + 1, total, file: fp });
       }
       try {
         const result = await this.synchronizeFile(fp);
@@ -1508,6 +1523,20 @@ export class CodeIndexDB {
           file: fp,
           error: error instanceof Error ? error.message : String(error)
         });
+      }
+    }
+
+    // Clean up stale entries for files that no longer exist on disk
+    const allIndexed = this.db.prepare('SELECT DISTINCT file_path FROM functions').all() as Array<{ file_path: string }>;
+    for (const { file_path: fp } of allIndexed) {
+      try {
+        await fs.access(fp);
+      } catch {
+        // File deleted — remove its functions
+        const result = this.db.prepare('DELETE FROM functions WHERE file_path = ?').run(fp);
+        if (result.changes > 0) {
+          totalRemoved += result.changes;
+        }
       }
     }
 

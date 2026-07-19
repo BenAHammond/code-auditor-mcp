@@ -551,15 +551,12 @@ export class ToolHandlers {
     };
 
     // Check if this is a multi-language project by detecting Go files
-    console.error(chalk.yellow('[DEBUG]'), `Checking for Go files in: ${auditPath}`);
     const hasGoFiles = await ToolHandlers.hasFilesWithExtensions(auditPath, ['.go']);
-    console.error(chalk.yellow('[DEBUG]'), `Go files detected: ${hasGoFiles}`);
-    
+
     let auditResult: AuditResult;
-    
+
     if (hasGoFiles) {
       // Use multi-language orchestrator for projects with Go files
-      console.error(chalk.blue('[INFO]'), 'Multi-language project detected, using LanguageOrchestrator');
       
       const runtimeManager = new RuntimeManager();
       await runtimeManager.initialize();
@@ -1332,42 +1329,33 @@ export class ToolHandlers {
 
   static async hasFilesWithExtensions(dirPath: string, extensions: string[]): Promise<boolean> {
     try {
-      console.error(chalk.yellow('[DEBUG]'), `Checking path: ${dirPath} for extensions: ${extensions.join(', ')}`);
       const stats = await fs.stat(dirPath);
       if (stats.isFile()) {
         const ext = path.extname(dirPath).toLowerCase();
-        console.error(chalk.yellow('[DEBUG]'), `File: ${dirPath}, ext: ${ext}, match: ${extensions.includes(ext)}`);
         return extensions.includes(ext);
       }
-      
+
       // Use simple readdir and walk manually to avoid recursive option issues
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
-      console.error(chalk.yellow('[DEBUG]'), `Directory: ${dirPath}, entries: ${entries.length}`);
-      
+
       for (const entry of entries) {
         if (entry.isFile()) {
           const ext = path.extname(entry.name).toLowerCase();
-          console.error(chalk.yellow('[DEBUG]'), `File: ${entry.name}, ext: ${ext}, match: ${extensions.includes(ext)}`);
           if (extensions.includes(ext)) {
-            console.error(chalk.green('[DEBUG]'), `Found matching file: ${entry.name}`);
             return true;
           }
         } else if (entry.isDirectory()) {
           // Recursively check subdirectories
           const subDirPath = path.join(dirPath, entry.name);
-          console.error(chalk.yellow('[DEBUG]'), `Checking subdirectory: ${subDirPath}`);
           const hasInSubdir = await ToolHandlers.hasFilesWithExtensions(subDirPath, extensions);
           if (hasInSubdir) {
-            console.error(chalk.green('[DEBUG]'), `Found matching files in subdirectory: ${subDirPath}`);
             return true;
           }
         }
       }
-      
-      console.error(chalk.red('[DEBUG]'), `No matching files found in: ${dirPath}`);
+
       return false;
     } catch (error) {
-      console.error(chalk.red('[DEBUG]'), `Error checking path ${dirPath}:`, error);
       return false;
     }
   }

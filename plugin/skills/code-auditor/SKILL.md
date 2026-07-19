@@ -82,11 +82,14 @@ code-audit map -p .                                  # Generate a codebase map
 
 Use this for a high-level architecture overview. Useful when orienting in an unfamiliar codebase.
 
-### `code-audit generate-config` — create a default config
+### `code-audit generate-config` — generate AI tool integration configs
 
 ```bash
-code-audit generate-config                           # Create .codeauditor.json from defaults
+code-audit generate-config                           # Generate MCP configs for AI coding tools
+code-audit generate-config --tool claude             # Claude-specific MCP config
 ```
+
+Creates MCP server configuration files for AI coding assistants (Claude, Cursor, Continue, Copilot, etc.) so they can connect to code-auditor as an MCP server.
 
 ## Interpreting hook feedback
 
