@@ -11,9 +11,10 @@
     "code-auditor-mcp": "dist/mcp.js"
   },
   "scripts": {
-    "build": "tsc && pnpm run build:grammars && pnpm run download:natives",
+    "build": "tsc && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
     "download:natives": "bash scripts/download-natives.sh",
     "build:grammars": "cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm dist/grammars/",
+    "build:skills": "cp -r plugin/skills/* ../skills/",
     "watch": "tsc --watch",
     "dev": "tsx src/cli.ts",
     "dev:server": "tsx --watch src/cli.ts start --rest-api",

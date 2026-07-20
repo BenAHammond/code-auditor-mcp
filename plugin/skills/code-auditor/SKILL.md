@@ -1,4 +1,5 @@
 ---
+name: code-auditor
 description: Audit code quality, search the codebase semantically, enforce invariants, and fix violations inline.
 ---
 
@@ -82,18 +83,17 @@ code-audit map -p .                                  # Generate a codebase map
 
 Use this for a high-level architecture overview. Useful when orienting in an unfamiliar codebase.
 
-### `code-audit generate-config` — generate AI tool integration configs
+### `code-audit generate-config` — create a default config
 
 ```bash
-code-audit generate-config                           # Generate MCP configs for AI coding tools
-code-audit generate-config --tool claude             # Claude-specific MCP config
+code-audit generate-config                           # Create .codeauditor.json from defaults
 ```
 
-Creates MCP server configuration files for AI coding assistants (Claude, Cursor, Continue, Copilot, etc.) so they can connect to code-auditor as an MCP server.
+Creates a `.codeauditor.json` configuration file with invariant rules for your project. Use the interactive mode (`--interactive`) to build rules step-by-step, or generate a scaffold with sensible defaults.
 
 ## Interpreting hook feedback
 
-When the PostToolUse hook blocks your edit with a violation message:
+When an edit hook blocks your edit with a violation message:
 
 1. **Read the violation** — it includes the invariant rule's `message` field explaining *why* the edit was blocked
 2. **Fix the violation** — change your approach to comply with the invariant
@@ -101,6 +101,14 @@ When the PostToolUse hook blocks your edit with a violation message:
 4. The hook runs `code-audit changed --fail-on critical`, so only critical-severity invariant violations block edits. Warnings and suggestions pass through as non-blocking output — still worth fixing.
 
 The hook auto-installs the package via npx on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the npx auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
+
+## Host-specific notes
+
+- **Claude Code**: This skill is bundled in the `code-auditor` plugin (`claude plugin install code-auditor`). The plugin also ships a `PostToolUse` hook on `Write|Edit` that runs `code-audit changed --fail-on critical` automatically — the hook feedback section above describes that behavior. The MCP server is available as `mcp__code-auditor__*` tools for shell-less use.
+- **Cursor**: Skill install via `code-audit install --agent cursor`. Cursor's `afterFileEdit` hook is advisory (fires after the edit; cannot block retroactively) — violations are reported through the strongest available feedback channel.
+- **Codex**: Skill install via `code-audit install --agent codex`. Codex's `PostToolUse` hook provides blocking feedback via exit code 2, replacing the tool result with violation messages.
+- **Gemini CLI**: Skill install only (`code-audit install --agent gemini`). No hook system exists; MCP covers shell-less use.
+- **Other SKILL.md-compliant tools**: Install via `code-audit install --agent agents`. The skill teaches the `code-audit` CLI, which is identical everywhere. The MCP server is the shell-less side door.
 
 ## Quick reference
 

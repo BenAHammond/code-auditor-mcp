@@ -803,6 +803,57 @@ tasksCmd
     }
   });
 
+// Install command — copy skill folder to agent-specific paths
+program
+  .command('install')
+  .description('Install the code-auditor skill for AI coding tools')
+  .option('--agent <agent>', 'Target agent: claude, cursor, codex, gemini, agents, or all', 'all')
+  .option('--scope <scope>', 'Install scope: user (~) or project (.)', 'user')
+  .option('--hooks', 'Offer hook wiring (default)', true)
+  .option('--no-hooks', 'Skip hook wiring prompt')
+  .option('--list', 'Print the support matrix and exit')
+  .action(async (options) => {
+    try {
+      const { runInstall } = await import('./installer.js');
+      await runInstall({
+        agent: options.agent,
+        scope: options.scope as 'user' | 'project',
+        hooks: options.hooks,
+        list: options.list,
+      });
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Cursor hook adapter — postToolUse (Write matcher) → scoped audit → additional_context + exit 2
+// Verified 2026-07-20: cursor.com/docs/hooks + cursor.com/docs/reference/third-party-hooks
+program
+  .command('cursor-hook')
+  .description('Internal: Cursor postToolUse hook adapter (blocks edits with critical violations via additional_context)')
+  .action(async () => {
+    try {
+      await import('./hooks/cursor.js');
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Codex hook adapter — stdin JSON → diff-scoped audit → stdout JSON (blocking)
+program
+  .command('codex-hook')
+  .description('Internal: Codex PostToolUse hook adapter (reads stdin JSON, runs audit, exits 2 on critical violations)')
+  .action(async () => {
+    try {
+      await import('./hooks/codex.js');
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
 // Parse command line arguments
 program.parse(process.argv);
 

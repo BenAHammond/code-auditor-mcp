@@ -1,84 +1,63 @@
 /**
- * GitHub Copilot Configuration Generator
- * Generates configuration for GitHub Copilot
+ * GitHub Copilot / VS Code Configuration Generator
+ * Generates MCP configuration for GitHub Copilot in VS Code.
+ *
+ * Updated 2026-07-19 (Spec-16 R5.3):
+ *   Copilot now supports native MCP via VS Code. Replaced fictional
+ *   /api/copilot/* endpoints with standard stdio MCP transport.
+ *   Skills: agents-standard (.agents/skills/), installed via code-audit install.
+ *   Hooks: none.
+ *
+ * ✅ VERIFIED (2026-07-20):
+ *   .vscode/mcp.json confirmed against code.visualstudio.com/docs/agents/reference/mcp-configuration.
+ *   Both workspace (.vscode/mcp.json) and user profile mcp.json are supported.
  */
 
-import { BaseConfigGenerator, ConfigOutput, AdditionalFile } from './BaseConfigGenerator.js';
+import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
 
 export class CopilotConfigGenerator extends BaseConfigGenerator {
   getToolName(): string {
-    return 'GitHub Copilot';
+    return 'GitHub Copilot / VS Code';
   }
 
   getFilename(): string {
-    return '.vscode/settings.json';
+    return '.vscode/mcp.json';
   }
 
   generateConfig(): ConfigOutput {
     const config = {
-      'github.copilot.advanced': {
-        customModels: [
-          {
-            name: 'code-index',
-            baseUrl: `${this.serverUrl}/api/copilot`,
-            apiKey: this.getDefaultApiKey(),
-            model: 'code-index-v1',
-            provider: 'custom'
-          }
-        ]
+      mcpServers: {
+        'code-auditor': {
+          command: 'npx',
+          args: ['-y', 'code-auditor-mcp', '--mcp-mode'],
+        },
       },
-      'github.copilot.chat.customProviders': [
-        {
-          id: 'code-index-provider',
-          name: 'Code Index',
-          description: 'Local code index search',
-          endpoint: `${this.serverUrl}/api/copilot/chat`,
-          features: ['search', 'explain', 'fix']
-        }
-      ]
     };
-
-    const proxyConfig = {
-      start_command: `npx copilot-api@latest start --backend ${this.serverUrl}/api/copilot --port 8181`,
-      api_endpoint: 'http://localhost:8181',
-      models: ['code-index']
-    };
-
-    const additionalFiles: AdditionalFile[] = [
-      {
-        filename: 'copilot-proxy.json',
-        content: this.formatJson(proxyConfig)
-      }
-    ];
 
     return {
       filename: this.getFilename(),
       content: this.formatJson(config),
-      additionalFiles,
-      instructions: this.getInstructions()
+      instructions: this.getInstructions(),
     };
   }
 
   getInstructions(): string {
     return `
-GitHub Copilot Configuration Instructions:
+GitHub Copilot / VS Code MCP Configuration Instructions:
 
-Method 1 - VS Code with BYOK (Bring Your Own Key):
-1. Open VS Code settings (Cmd/Ctrl + ,)
-2. Search for "GitHub Copilot"
-3. Click "Manage Models" 
-4. Add custom provider with URL: ${this.serverUrl}/api/copilot
-5. Use API key: ${this.getDefaultApiKey()}
+1. Place this file at .vscode/mcp.json in your project root (or merge into existing)
+2. Install the "MCP" extension for VS Code if not already installed
+3. Reload VS Code window
 
-Method 2 - Copilot API Proxy:
-1. Run: npx copilot-api@latest start --backend ${this.serverUrl}/api/copilot
-2. Configure your IDE to use http://localhost:8181
-3. The proxy will handle API translation
+Skill install (separate step):
+  code-audit install --agent agents --scope project
 
-Features:
-- Custom completions from your code index
-- Chat integration with @code-index
-- Explain and fix suggestions based on your codebase
+Note: Copilot/VS Code has no edit hooks. Use MCP tools interactively for
+auditing. For blocking hooks, use Claude Code or Codex.
 `;
+  }
+
+  requiresAuth(): boolean {
+    return false;
   }
 }

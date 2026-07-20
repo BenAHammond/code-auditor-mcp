@@ -1,78 +1,64 @@
 /**
- * Claude Desktop Configuration Generator
- * Generates configuration for Claude Desktop app
+ * Claude Code Configuration Generator
+ * Generates MCP configuration for Claude Code.
+ *
+ * Updated 2026-07-19 (Spec-16 R5.3):
+ *   Updated for Claude Code (not Claude Desktop). Uses standard stdio MCP
+ *   transport with npx. Claude Code supports MCP via .mcp.json in the project
+ *   root or ~/.claude/.mcp.json globally.
+ *   Skills: .claude/skills/ (installed via code-audit install --agent claude).
+ *   Hooks: blocking (PostToolUse, exit 2 replaces tool result with feedback).
  */
 
 import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
-import { resolve } from 'path';
-import { platform } from 'os';
 
 export class ClaudeConfigGenerator extends BaseConfigGenerator {
   getToolName(): string {
-    return 'Claude Desktop';
+    return 'Claude Code';
   }
 
   getFilename(): string {
-    return 'claude_desktop_config.json';
+    return '.mcp.json';
   }
 
   generateConfig(): ConfigOutput {
     const config = {
       mcpServers: {
-        'code-index': {
-          command: 'node',
-          args: [
-            resolve(process.cwd(), 'dist/mcp.js'),
-            '--mcp-mode'
-          ],
-          env: {
-            MCP_SERVER_URL: this.serverUrl
-          }
-        }
-      }
+        'code-auditor': {
+          command: 'npx',
+          args: ['-y', 'code-auditor-mcp', '--mcp-mode'],
+        },
+      },
     };
 
     return {
       filename: this.getFilename(),
       content: this.formatJson(config),
-      instructions: this.getInstructions()
+      instructions: this.getInstructions(),
     };
   }
 
   getInstructions(): string {
-    const configPath = this.getConfigPath();
-    
     return `
-Claude Desktop Configuration Instructions:
+Claude Code MCP Configuration Instructions:
 
-1. Place this file at: ${configPath}
-2. Restart Claude Desktop
-3. Look for the "hammer" icon (🔨) to access MCP tools
-4. Your code index tools will be available
+1. Place this file at .mcp.json in your project root
+   (or merge into ~/.claude/.mcp.json for global access)
+2. Restart Claude Code or run /mcp to reload
+3. The code-auditor MCP tools will be available in Claude Code sessions
 
-Available MCP Tools:
-- search_functions: Search your codebase
-- find_definition: Find function definitions
-- index_functions: Index new files
-- get_index_stats: View indexing statistics
-- register_functions: Manually register functions
+Skill install (separate step):
+  code-audit install --agent claude --scope project
 
-Note: Claude Desktop has excellent MCP support built-in!
+Hook wiring (separate step):
+  code-audit install --agent claude --hooks
+
+Note: Claude Code has full blocking hooks via PostToolUse (exit 2 replaces
+tool result with violation feedback). This is the most complete integration.
 `;
   }
 
-  private getConfigPath(): string {
-    switch (platform()) {
-      case 'darwin':
-        return '~/Library/Application Support/Claude/claude_desktop_config.json';
-      case 'win32':
-        return '%APPDATA%\\Claude\\claude_desktop_config.json';
-      default:
-        return '~/.config/Claude/claude_desktop_config.json';
-    }
-  }
-
   requiresAuth(): boolean {
-    return false; // Claude Desktop uses local MCP connection
+    return false;
   }
 }

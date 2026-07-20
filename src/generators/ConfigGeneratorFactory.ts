@@ -1,6 +1,15 @@
 /**
  * Configuration Generator Factory
- * Creates appropriate config generators for each AI tool
+ * Creates appropriate config generators for each AI tool.
+ *
+ * Updated 2026-07-19 (Spec-16 R5.3):
+ *   Added Codex and Gemini generators. All generators now use standard
+ *   npx-based stdio MCP transport. Removed fictional /api/* endpoints.
+ *
+ * Updated 2026-07-20 (Task #18 — generator path audit):
+ *   Retired AiderConfigGenerator (zero MCP docs). Updated Continue generator
+ *   from .continue/mcp.json to .continue/config.yaml (verified against
+ *   docs.continue.dev). Confirmed AWS Q .amazonq/mcp.json as valid legacy path.
  */
 
 import { DEFAULT_SERVER_URL } from '../constants.js';
@@ -12,9 +21,12 @@ import { ClaudeConfigGenerator } from './ClaudeConfigGenerator.js';
 import { AWSQConfigGenerator } from './AWSQConfigGenerator.js';
 import { CodeiumConfigGenerator } from './CodeiumConfigGenerator.js';
 import { VSCodeConfigGenerator } from './VSCodeConfigGenerator.js';
-import { JetBrainsConfigGenerator } from './JetBrainsConfigGenerator.js';
+// JetBrainsConfigGenerator retired 2026-07-20: JetBrains MCP is configured
+// through the IDE's settings UI, not a file-based path. No generator to write.
 import { ClineConfigGenerator } from './ClineConfigGenerator.js';
-import { AiderConfigGenerator } from './AiderConfigGenerator.js';
+// AiderConfigGenerator retired 2026-07-20: no MCP support documented
+import { CodexConfigGenerator } from './CodexConfigGenerator.js';
+import { GeminiConfigGenerator } from './GeminiConfigGenerator.js';
 
 export class ConfigGeneratorFactory {
   private generators: Map<string, () => BaseConfigGenerator>;
@@ -23,16 +35,18 @@ export class ConfigGeneratorFactory {
   constructor(serverUrl: string = DEFAULT_SERVER_URL) {
     this.serverUrl = serverUrl;
     this.generators = new Map([
-      ['cursor', () => new CursorConfigGenerator(this.serverUrl)],
-      ['continue', () => new ContinueConfigGenerator(this.serverUrl)],
-      ['copilot', () => new CopilotConfigGenerator(this.serverUrl)],
       ['claude', () => new ClaudeConfigGenerator(this.serverUrl)],
+      ['codex', () => new CodexConfigGenerator(this.serverUrl)],
+      ['cursor', () => new CursorConfigGenerator(this.serverUrl)],
+      ['gemini', () => new GeminiConfigGenerator(this.serverUrl)],
+      ['copilot', () => new CopilotConfigGenerator(this.serverUrl)],
+      ['continue', () => new ContinueConfigGenerator(this.serverUrl)],
       ['awsq', () => new AWSQConfigGenerator(this.serverUrl)],
       ['codeium', () => new CodeiumConfigGenerator(this.serverUrl)],
       ['vscode', () => new VSCodeConfigGenerator(this.serverUrl)],
-      ['jetbrains', () => new JetBrainsConfigGenerator(this.serverUrl)],
+      // JetBrains retired 2026-07-20: no file-based MCP config path
       ['cline', () => new ClineConfigGenerator(this.serverUrl)],
-      ['aider', () => new AiderConfigGenerator(this.serverUrl)],
+      // Aider retired 2026-07-20: no MCP support documented in aider.chat/docs/
     ]);
   }
 
@@ -78,7 +92,7 @@ export class ConfigGeneratorFactory {
       return {
         name: tool,
         displayName: generator.getToolName(),
-        requiresAuth: generator.requiresAuth()
+        requiresAuth: generator.requiresAuth(),
       };
     });
   }

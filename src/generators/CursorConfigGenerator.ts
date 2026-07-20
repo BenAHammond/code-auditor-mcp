@@ -1,9 +1,16 @@
 /**
  * Cursor Configuration Generator
- * Generates configuration for Cursor AI editor
+ * Generates MCP configuration for Cursor AI editor.
+ *
+ * Updated 2026-07-19 (Spec-16 R5.3):
+ *   Cursor now supports native MCP. Replaced fictional /api/cursor/* endpoints
+ *   with standard stdio + HTTP MCP transports.
+ *   Skills: project-only (.cursor/skills/), installed via code-audit install.
+ *   Hooks: advisory (afterFileEdit is fire-and-forget).
  */
 
 import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
+import { resolve } from 'path';
 
 export class CursorConfigGenerator extends BaseConfigGenerator {
   getToolName(): string {
@@ -11,75 +18,46 @@ export class CursorConfigGenerator extends BaseConfigGenerator {
   }
 
   getFilename(): string {
-    return 'cursor-config.json';
+    return '.cursor/mcp.json';
   }
 
   generateConfig(): ConfigOutput {
     const config = {
-      models: [
-        {
-          title: 'Code Index Search',
-          provider: 'openai',
-          model: 'code-index-search',
-          apiBase: `${this.serverUrl}/api/cursor`,
-          apiKey: this.getDefaultApiKey(),
-          contextWindow: 128000,
-          capabilities: {
-            codeCompletion: true,
-            chat: true,
-            search: true
-          }
-        }
-      ],
-      features: {
-        codebaseIndexing: {
-          enabled: true,
-          endpoint: `${this.serverUrl}/api/cursor/index`
+      mcpServers: {
+        'code-auditor': {
+          command: 'npx',
+          args: ['-y', 'code-auditor-mcp', '--mcp-mode'],
         },
-        semanticSearch: {
-          enabled: true,
-          endpoint: `${this.serverUrl}/api/cursor/search`
-        }
       },
-      customCommands: [
-        {
-          name: 'search-symbol',
-          description: 'Search for a symbol in the codebase',
-          endpoint: `${this.serverUrl}/api/cursor/symbol`
-        },
-        {
-          name: 'find-definition',
-          description: 'Find symbol definition',
-          endpoint: `${this.serverUrl}/api/cursor/definition`
-        }
-      ]
     };
 
     return {
       filename: this.getFilename(),
       content: this.formatJson(config),
-      instructions: this.getInstructions()
+      instructions: this.getInstructions(),
     };
   }
 
   getInstructions(): string {
     return `
-Cursor Configuration Instructions:
+Cursor MCP Configuration Instructions:
 
-1. Open Cursor Settings (Cmd/Ctrl + ,)
-2. Navigate to Models > Manage Models
-3. Add a new model with "Override OpenAI Base URL"
-4. Set base URL to: ${this.serverUrl}/api/cursor
-5. Use API key: ${this.getDefaultApiKey()}
+1. Place this file at .cursor/mcp.json in your project root
+2. Restart Cursor
+3. The code-auditor MCP tools will be available
 
-Alternative method:
-- Place this file in ~/.cursor/config.json
-- Restart Cursor
+Skill install (separate step):
+  code-audit install --agent cursor --scope project
 
-The Code Index Search model will now be available in:
-- Chat interface (@codebase)
-- Command palette (search-symbol, find-definition)
-- Inline completions
+Note: Cursor skills are project-only. The afterFileEdit hook is advisory
+(fire-and-forget, cannot block edits retroactively). Use Cursor's MCP
+integration for interactive auditing.
+
+For blocking hooks, use Claude Code or Codex.
 `;
+  }
+
+  requiresAuth(): boolean {
+    return false;
   }
 }

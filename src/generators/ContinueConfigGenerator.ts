@@ -1,10 +1,23 @@
 /**
  * Continue Configuration Generator
- * Generates configuration for Continue AI assistant
+ * Generates MCP configuration for Continue AI assistant.
+ *
+ * Updated 2026-07-19 (Spec-16 R5.3):
+ *   Removed fictional /api/continue endpoint. Retained proper MCP stdio
+ *   transport. Continue has native MCP support via modelContextProtocolServers.
+ *   Skills: agents-standard, installed via code-audit install --agent agents.
+ *
+ * ✅ VERIFIED (2026-07-20):
+ *   Source: docs.continue.dev/customize/mcp-tools + docs.continue.dev/reference
+ *   Continue uses config.yaml (NOT a standalone mcp.json). MCP servers are
+ *   configured at the top-level mcpServers key in config.yaml — the old
+ *   experimental.modelContextProtocolServers key in JSON is deprecated.
+ *   Continue has migrated from .continue/config.json to .continue/config.yaml
+ *   (YAML is now the only format). This generator emits a YAML snippet for
+ *   .continue/config.yaml — users merge it into their existing config.yaml.
  */
 
 import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
-import { resolve } from 'path';
 
 export class ContinueConfigGenerator extends BaseConfigGenerator {
   getToolName(): string {
@@ -16,89 +29,45 @@ export class ContinueConfigGenerator extends BaseConfigGenerator {
   }
 
   generateConfig(): ConfigOutput {
-    const config = {
-      name: 'Continue Config with MCP Code Index',
-      version: '0.0.1',
-      models: [
-        {
-          name: 'Code Index Model',
-          provider: 'openai',
-          model: 'gpt-4',
-          apiBase: `${this.serverUrl}/api/continue`,
-          apiKey: this.getDefaultApiKey(),
-          roles: ['chat', 'apply', 'edit'],
-          capabilities: ['tool_use']
-        }
-      ],
-      experimental: {
-        modelContextProtocolServers: {
-          codeIndex: {
-            transport: {
-              type: 'stdio',
-              command: 'node',
-              args: [resolve(process.cwd(), 'dist/mcp.js'), '--mcp-mode']
-            }
-          },
-          codeIndexRemote: {
-            transport: {
-              type: 'http',
-              url: `${this.serverUrl}/mcp`,
-              headers: {
-                Authorization: `Bearer ${this.getDefaultApiKey()}`
-              }
-            }
-          }
-        }
-      },
-      contextProviders: [
-        {
-          name: 'codebase',
-          type: 'mcp',
-          server: 'codeIndex'
-        }
-      ],
-      slashCommands: [
-        {
-          name: 'search',
-          description: 'Search codebase',
-          handler: 'mcp:codeIndex:search_functions'
-        },
-        {
-          name: 'definition',
-          description: 'Find definition',
-          handler: 'mcp:codeIndex:find_definition'
-        },
-        {
-          name: 'index',
-          description: 'Index files',
-          handler: 'mcp:codeIndex:index_functions'
-        }
-      ]
-    };
+    const content = `# Add this to your .continue/config.yaml under the mcpServers key.
+# If you already have an mcpServers section, merge the code-auditor entry.
+mcpServers:
+  code-auditor:
+    command: npx
+    args:
+      - "-y"
+      - "code-auditor-mcp"
+      - "--mcp-mode"
+`;
 
     return {
       filename: this.getFilename(),
-      content: this.formatYaml(config),
-      instructions: this.getInstructions()
+      content,
+      instructions: this.getInstructions(),
     };
   }
 
   getInstructions(): string {
     return `
-Continue Configuration Instructions:
+Continue MCP Configuration Instructions:
 
 1. Install Continue extension in VS Code or JetBrains
-2. Place this file in ~/.continue/config.yaml
-3. Restart your IDE
-4. The MCP server will be automatically connected
+2. Merge the code-auditor entry into your .continue/config.yaml file
+   under the mcpServers key (project-level) or ~/.continue/config.yaml
+   (global). Do NOT add an experimental wrapper — mcpServers is a
+   top-level key.
+3. Restart your IDE (or reload the Continue extension)
+4. The code-auditor MCP tools will be available
 
-Usage:
-- Use @codebase to reference your indexed code
-- Use /search to search functions
-- Use /definition to find definitions
-- Use /index to index new files
+Skill install (separate step):
+  code-audit install --agent agents --scope project
 
-Continue has native MCP support, providing the best integration experience!
+Note: Continue has native MCP support since config.yaml migration.
+For blocking hooks, use Claude Code or Codex.
 `;
+  }
+
+  requiresAuth(): boolean {
+    return false;
   }
 }
