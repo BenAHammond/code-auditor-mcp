@@ -58,8 +58,6 @@ export class APIContractAnalyzer {
 
     const violations: ContractViolation[] = [];
 
-    console.log(`[APIContractAnalyzer] Analyzing ${endpoints.length} endpoints and ${calls.length} API calls`);
-
     // Find unmatched API calls
     violations.push(...await this.findUnmatchedCalls());
 
@@ -72,7 +70,6 @@ export class APIContractAnalyzer {
     // Validate authentication requirements
     violations.push(...await this.validateAuthentication());
 
-    console.log(`[APIContractAnalyzer] Found ${violations.length} contract violations`);
     return violations;
   }
 

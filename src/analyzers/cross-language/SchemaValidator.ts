@@ -71,26 +71,21 @@ export class SchemaValidator {
    * Validate schema consistency across multiple languages
    */
   async validateSchemas(schemas: SchemaDefinition[]): Promise<SchemaViolation[]> {
-    console.log(`[SchemaValidator] Validating ${schemas.length} schemas`);
-    
     const violations: SchemaViolation[] = [];
-    
+
     // Group schemas by name (different language implementations of same schema)
     const schemaGroups = this.groupSchemasByName(schemas);
-    
+
     for (const [schemaName, groupSchemas] of schemaGroups) {
       if (groupSchemas.length > 1) {
-        console.log(`[SchemaValidator] Validating ${groupSchemas.length} implementations of ${schemaName}`);
         violations.push(...await this.validateSchemaGroup(schemaName, groupSchemas));
       }
     }
-    
+
     // Validate individual schema consistency
     for (const schema of schemas) {
       violations.push(...await this.validateIndividualSchema(schema));
     }
-    
-    console.log(`[SchemaValidator] Found ${violations.length} schema violations`);
     return violations;
   }
 

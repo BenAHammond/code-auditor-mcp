@@ -7,7 +7,6 @@
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
-import { IS_DEV_MODE } from '../../constants.js';
 
 /**
  * Configuration for Data Access analyzer
@@ -135,15 +134,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   ): Promise<Violation[]> {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
-    
-    if (IS_DEV_MODE) {
-      console.error('[DEBUG] Data access config merge:', {
-        defaultPatterns: DEFAULT_DATA_ACCESS_CONFIG.organizationPatterns,
-        inputConfig: config,
-        finalPatterns: finalConfig.organizationPatterns
-      });
-    }
-    
     // Check imports for database libraries
     const imports = adapter.extractImports(ast);
     const dbImports = this.mapDatabaseImports(imports, finalConfig);
@@ -282,26 +272,8 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       if (isSqlQuery || isOrmCall) {
         const tables = this.extractTables(nodeText, config);
         const hasOrgFilter = this.hasOrganizationFilter(nodeText, config);
-        
-        // Debug: Log the analysis
-        if (IS_DEV_MODE) {
-          console.error('[DEBUG] Database call analysis:', {
-            line: node.location.start.line,
-            nodeText: nodeText.substring(0, 100),
-            tables,
-            hasOrgFilter,
-            patterns: config.organizationPatterns || []
-          });
-        }
+
         const security = this.checkQuerySecurity(nodeText, config);
-        
-        // Debug: Log extracted tables
-        if (tables.length === 0 && isOrmCall) {
-          console.error('[DataAccess Debug] No tables extracted from ORM call:', {
-            line: node.location.start.line,
-            nodeText: nodeText.substring(0, 100)
-          });
-        }
         
         // Determine the type based on imports or patterns
         let callType = 'unknown';
@@ -591,38 +563,20 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   private hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): boolean {
     const patterns = config.organizationPatterns || [];
     const lowerText = text.toLowerCase();
-    
-    if (IS_DEV_MODE) {
-      console.error('[DEBUG] hasOrganizationFilter called with:', {
-        text: text.substring(0, 100),
-        patternsFromConfig: patterns,
-        patternsLength: patterns.length
-      });
-    }
-    
+
     // If no patterns provided, check for hardcoded common patterns as fallback
     const fallbackPatterns = patterns.length === 0 ? [
-      'organizationid', 'organization_id', 'orgid', 'org_id', 
+      'organizationid', 'organization_id', 'orgid', 'org_id',
       'tenantid', 'tenant_id', 'companyid', 'company_id'
     ] : patterns;
-    
-    if (IS_DEV_MODE) {
-      console.error('[DEBUG] Using fallback patterns:', fallbackPatterns);
-    }
-    
+
     // Check for simple pattern matches first
     const hasSimpleMatch = fallbackPatterns.some(pattern => {
       const match = lowerText.includes(pattern.toLowerCase());
-      if (IS_DEV_MODE) {
-        console.error(`[DEBUG] Pattern "${pattern}" -> "${pattern.toLowerCase()}" in "${lowerText}": ${match}`);
-      }
       return match;
     });
-    
+
     if (hasSimpleMatch) {
-      if (IS_DEV_MODE) {
-        console.error('[DEBUG] Found simple match, returning true');
-      }
       return true;
     }
     
@@ -656,16 +610,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
           lowerText.includes(`and ${lowerPattern}=`)) {
         return true;
       }
-    }
-    
-    // Debug logging
-    if (IS_DEV_MODE) {
-      console.error('[DEBUG] hasOrganizationFilter check:', {
-        text: text.substring(0, 150),
-        patterns,
-        fallbackPatterns,
-        hasFilter: false
-      });
     }
     
     return false;

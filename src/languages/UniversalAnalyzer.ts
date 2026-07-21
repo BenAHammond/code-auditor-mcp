@@ -6,7 +6,6 @@ import type { AnalyzerDefinition, AnalyzerResult, Violation } from '../types.js'
 import type { AST, LanguageAdapter } from './types.js';
 import { LanguageRegistry } from './LanguageRegistry.js';
 import { promises as fs } from 'fs';
-import { IS_DEV_MODE } from '../constants.js';
 
 export interface UniversalAnalyzerOptions {
   progressCallback?: (progress: number) => void;
@@ -53,28 +52,13 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     
     // Process each language group
     for (const [adapter, adapterFiles] of filesByAdapter) {
-      if (IS_DEV_MODE) {
-        console.error(`[DEBUG] ${this.name}: Processing ${adapterFiles.length} files with adapter:`, adapter.constructor.name);
-      }
       for (const file of adapterFiles) {
-        if (IS_DEV_MODE) {
-          console.error(`[DEBUG] ${this.name}: Processing file:`, file);
-        }
         try {
           const content = await fs.readFile(file, 'utf8');
-          if (IS_DEV_MODE) {
-            console.error(`[DEBUG] ${this.name}: Read file content, length:`, content.length);
-          }
           const ast = await adapter.parse(file, content);
-          if (IS_DEV_MODE) {
-            console.error(`[DEBUG] ${this.name}: Parsed AST, errors:`, ast.errors.length);
-          }
           
           if (ast.errors.length > 0) {
             // Record parse errors but continue
-            if (IS_DEV_MODE) {
-              console.error(`[DEBUG] ${this.name}: Parse errors:`, ast.errors);
-            }
             errors.push(...ast.errors.map(e => ({
               file,
               error: `Parse error: ${e.message}`
@@ -82,18 +66,12 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
           }
           
           // Run language-agnostic analysis
-          if (IS_DEV_MODE) {
-            console.error(`[DEBUG] ${this.name}: About to call analyzeAST for:`, file);
-          }
           const fileViolations = await this.analyzeAST(
             ast,
             adapter,
             configWithoutOverrides,
             content
           );
-          if (IS_DEV_MODE) {
-            console.error(`[DEBUG] ${this.name}: analyzeAST returned ${fileViolations.length} violations for:`, file);
-          }
           
           violations.push(...fileViolations);
           

@@ -48,8 +48,6 @@ export class DependencyGraphBuilder {
     this.entities = entities;
     this.references = references;
 
-    console.log(`[DependencyGraphBuilder] Building graph from ${entities.length} entities and ${references.length} references`);
-
     // Filter entities based on options
     const filteredEntities = this.filterEntities(entities);
     
@@ -77,7 +75,6 @@ export class DependencyGraphBuilder {
       metrics
     };
 
-    console.log(`[DependencyGraphBuilder] Generated graph with ${nodes.length} nodes, ${edges.length} edges, ${cycles.length} cycles`);
     return graph;
   }
 
@@ -90,8 +87,6 @@ export class DependencyGraphBuilder {
     references: CrossReference[],
     depth: number = 2
   ): Promise<DependencyGraph> {
-    console.log(`[DependencyGraphBuilder] Building subgraph for ${targetEntityIds.length} target entities with depth ${depth}`);
-    
     // Find all entities within the specified depth
     const reachableEntities = this.findReachableEntities(targetEntityIds, entities, references, depth);
     

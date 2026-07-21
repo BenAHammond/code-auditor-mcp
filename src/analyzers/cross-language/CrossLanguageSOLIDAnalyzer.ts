@@ -63,8 +63,6 @@ export class CrossLanguageSOLIDAnalyzer {
     entities: CrossLanguageEntity[], 
     references: CrossReference[]
   ): Promise<CrossLanguageSOLIDViolation[]> {
-    console.log(`[CrossLanguageSOLIDAnalyzer] Analyzing ${entities.length} entities across languages`);
-
     const violations: CrossLanguageSOLIDViolation[] = [];
 
     // Standard SOLID analysis per entity
@@ -79,7 +77,6 @@ export class CrossLanguageSOLIDAnalyzer {
       violations.push(...await this.analyzeCrossLanguageSOLID(entities, references));
     }
 
-    console.log(`[CrossLanguageSOLIDAnalyzer] Found ${violations.length} SOLID violations`);
     return violations;
   }
 
