@@ -117,7 +117,7 @@ export class DependencyGraphBuilder {
     if (graph.cycles.length > 0) {
       issues.push({
         type: 'circular-dependency',
-        severity: 'critical',
+        severity: 'warning',
         description: `Found ${graph.cycles.length} circular dependencies`,
         affectedNodes: graph.cycles.flatMap(cycle => cycle.nodes),
         impact: 'high'
@@ -278,7 +278,7 @@ export class DependencyGraphBuilder {
           
           cycles.push({
             nodes: cycleNodes,
-            severity: cycleNodes.length > 5 ? 'critical' : 'warning',
+            severity: cycleNodes.length > 5 ? 'warning' : 'warning',
             suggestion: this.generateCycleSuggestion(cycleNodes)
           });
         }

@@ -2,7 +2,93 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [3.0.7] — 2026-07-19
+## [3.1.0] — 2026-07-20
+
+### Spec-17: Signal Hotfix — Noise Reduction Across All Analyzers
+
+Large-scale noise reduction targeting all 6 analyzers based on a real-corpus diagnostic report (3,871 files, 6,159 functions, 26,119 findings — ~96% noise). Every noise class in the diagnostic is addressed at the defect level.
+
+#### R1: Documentation Analyzer
+
+- **R1.1 — Anonymous callbacks skipped**: Arrow functions and function expressions used as arguments (`.map()`, `.forEach()`, event handlers) are no longer flagged. Uses AST parent-walking, not name whitelists.
+- **R1.2 — Default scope is public API surface only**: Only exported functions and public class methods are flagged at default scope. Private/protected/`#`-prefixed/`_`-prefixed methods are skipped.
+- **R1.3 — Minimum-size gate**: Functions with body length < `docsMinLines` (default 5) are skipped.
+- **R1.4 — `scope: "all"`**: Restores broader coverage minus callbacks. Named internal functions are flagged but anonymous callbacks are still skipped.
+- **R1.5 — File-header checks default OFF**: `fileHeaders` (default `false`) replaces `requireFileDocs`. When enabled, barrel/index/test/migration/config files are excluded by `headerSkipGlobs`.
+- **R1.6 — Audience-reason messages**: Messages state *why* a function is in scope (e.g., "exported function without JSDoc").
+- **Deprecation**: `requireFileDocs` is deprecated in favor of `fileHeaders`. It maps to `fileHeaders` for back-compat but the combined default is `false` (off). `checkExportedOnly` is replaced by `scope`.
+
+#### R2: Schema Analyzer
+
+- **R2.1 — SQL-context-only extraction**: Table references are now extracted only from SQL-tagged templates (`` sql`...` ``), DB-call patterns (`db.exec(...)`, `db.query(...)`), and `.sql`/migration files. The 11 raw-regex scan-all-strings approach that caused ~4,500 false positives (including "the", "node:child_process" imports) has been replaced with AST-based detection.
+- **R2.2 — File gate**: `.tsx` and `.ts` files without DB imports or DB-call patterns are never scanned for schema violations.
+- **R2.3 — Template expression handling**: Dynamic prefixes (`` `${prefix}_builds` ``) resolve to wildcards for known-table matching. Fully-dynamic table names produce no false findings.
+- **R2.4 — Unknown-table findings**: Report extracted name, SQL statement kind, call-site line (from AST location), and nearest known-table suggestions (Levenshtein ≤ 2).
+
+#### R3: DRY Analyzer
+
+- **R3.1 — Self-reference fix**: A code block can no longer match itself. Span-overlap check ensures `fileA !== fileB || (endA < startB || endB < startA)`.
+- **R3.2 — Minimum block size 5 → 15**: `minLineThreshold` increased from 5 to 15. Short repeated blocks no longer produce false findings.
+- **R3.3 — Rule-id split**: `dry/duplicate` (warning) for exact token-identical blocks (SHA-256 hash). `dry/structural-similarity` (suggestion) for identical token-type sequences with differing identifiers/literals.
+- **Fingerprint warning**: The rule-id split changes fingerprints for previously-reported structural matches. `tasks.from_audit` treats them as new findings.
+
+#### R4: Data Access Analyzer
+
+- **R4.1 — Loop-query (N+1) detection**: Database queries inside `for`/`while`/`do` loops and iterator callbacks (`.forEach`/`.map`/`.filter` with `await`) are now detected via AST ancestor traversal. Each finding cites the innermost loop span + query call line (never line 1).
+- **R4.2 — Nested-loop attribution**: Deeply nested loops note nesting depth in the finding message.
+- **R4.3 — `directAccess` config**: When set to `"allow"`, `direct-sql` and `hardcoded-connection` violations are skipped. Supports Cloudflare Workers/D1 and similar platforms where direct connections are the documented pattern. Default is `"flag"`.
+- **Fixed**: Node type checks corrected from PascalCase (`CallExpression`, `NewExpression`) to tree-sitter snake_case (`call_expression`, `new_expression`). Previously prevented `isFunctionCall` from ever matching.
+- **`sql-injection-risk` demoted from `critical` to `warning`**: SQL injection detection uses AST-level heuristics (string concatenation in query construction, dynamic SQL patterns) without type information. These are high-signal but not proof of exploitable injection — flagged at `warning` rather than `critical` to keep `--fail-on critical` reserved for user invariants. See "Severity Overrides" below for restoring `critical`.
+
+#### R5: SOLID Analyzer
+
+- **R5.1 — Method-level cyclomatic complexity → `solid/method-complexity`**: Replaced the heuristic `calculateClassComplexity()` (`1 + 2×methods + 5×extends + Σ(lines/10)`) with true cyclomatic complexity per method via `adapter.getComplexity()`. Standalone functions are also checked. Severity: `warning`.
+- **R5.2 — Class-level aggregation → `solid/class-size`**: Separate rule id for class-level metrics (`classMethodsThreshold`, default 15; `classAggregateComplexity`, default 100). Severity: `suggestion`.
+- **Metric-semantics change**: Complexity numbers are fundamentally non-comparable across this release. The old heuristic produced inflated values unrelated to actual branching. All prior threshold configs and reports are non-comparable across this release. This is a larger user-facing change than the rule renames.
+- **Deprecation**: `maxClassComplexity` is deprecated. Use `maxMethodComplexity` and `classAggregateComplexity` instead.
+- **Fingerprint warning**: The rule-id split (`single-responsibility` → `solid/method-complexity` + `solid/class-size`) changes fingerprints. `tasks.from_audit` treats them as new findings.
+
+#### R7: Severity Defaults
+
+All severity values normalized. No class at `critical` — the `--fail-on critical` hook path is reserved for user invariants.
+
+| Rule | Severity |
+|------|----------|
+| documentation/* (all) | suggestion |
+| schema/unknown-table | suggestion |
+| dry/duplicate | warning |
+| dry/structural-similarity | suggestion |
+| data-access/loop-query | warning |
+| data-access/direct-access | suggestion |
+| sql-injection-risk | warning |
+| solid/method-complexity | warning |
+| solid/class-size | suggestion |
+
+#### R8: Regression Fixtures
+
+19 synthetic test fixtures in `src/analyzers/__tests__/fixtures/spec-17/` with corresponding test file `spec-17.test.ts`. Each fixture cites its report section and exercises a specific noise-reduction rule.
+
+#### Severity Overrides
+
+A `severityOverrides` map in analyzer config allows restoring or adjusting any rule's severity without modifying code. This is the user path back for rules whose default severity changed in this release:
+
+```json
+{
+  "analyzerConfigs": {
+    "data-access": {
+      "severityOverrides": {
+        "sql-injection-risk": "critical"
+      }
+    }
+  }
+}
+```
+
+Keys are rule IDs, values are `critical | warning | suggestion`. Overrides apply to all violations after the analyzer runs — individual analyzers don't need to know about them. The mechanism lives in the `UniversalAnalyzer` base class, so all Universal analyzers inherit it.
+
+#### Spec 11 Triage Flag
+
+`sql-injection-risk` is flagged first-in-line for Spec 11 measurement. The heuristic AST-level detection (string concatenation in query construction) produces findings that are high-signal but unverified without type information. Spec 11 will measure true-positive rate on the ExcAlDraw and Gin corpora to calibrate whether the detection heuristics should be tightened or the severity should be re-escalated.
 
 ### Changed — Spec-16 R5.3: Config generator re-verification
 

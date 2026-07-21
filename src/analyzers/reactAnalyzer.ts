@@ -259,28 +259,12 @@ function checkHooksRules(component: ComponentMetadata): ReactViolation[] {
   
   if (!component.hooks) return violations;
   
-  // Check for hooks called conditionally
-  const conditionalHooks = component.hooks.filter(hook => {
-    // This is a simplified check - real implementation would need AST analysis
-    return hook.line && component.context?.includes('if') && 
-           component.context?.includes(hook.name);
-  });
-  
-  for (const hook of conditionalHooks) {
-    violations.push({
-      file: component.filePath,
-      line: hook.line,
-      severity: 'critical',
-      message: `Hook '${hook.name}' may be called conditionally`,
-      componentName: component.name,
-      violationType: 'hooks-violation',
-      details: {
-        hookName: hook.name,
-        rule: 'hooks-conditional'
-      },
-      suggestion: 'Hooks must be called at the top level of the component, not inside conditions or loops'
-    });
-  }
+  // Spec-17 R6: Removed string-context-based "hooks called conditionally" check.
+  // The old heuristic (component.context?.includes('if') + hook.name) had a
+  // near-100% false-positive rate — any `if` anywhere in the component text
+  // triggered a critical violation for every hook. AST-level conditional
+  // detection is deferred to Spec 11 (calibration).
+  // (old block deleted — see git history)
   
   // Check for custom hooks not starting with 'use'
   const invalidCustomHooks = component.hooks.filter(hook => 
@@ -482,7 +466,7 @@ function checkCircularDependencies(
     if (cycle) {
       violations.push({
         file: 'component-dependencies',
-        severity: 'critical',
+        severity: 'warning',
         message: `Circular dependency detected: ${cycle.join(' → ')}`,
         violationType: 'complexity',
         suggestion: 'Refactor components to remove circular dependencies'

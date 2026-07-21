@@ -174,7 +174,7 @@ export class APIContractAnalyzer {
         violations.push({
           file: call.file,
           line: call.line,
-          severity: 'critical',
+          severity: 'warning',
           message: `HTTP method mismatch: call uses ${call.method}, endpoint expects ${endpoint.method}`,
           contractType: 'method-mismatch',
           endpoint,
@@ -249,7 +249,7 @@ export class APIContractAnalyzer {
         violations.push({
           file: call.file,
           line: call.line,
-          severity: 'critical',
+          severity: 'warning',
           message: `API call missing required authentication for endpoint ${endpoint.method} ${endpoint.path}`,
           contractType: 'auth-mismatch',
           endpoint,
@@ -329,7 +329,7 @@ export class APIContractAnalyzer {
       violations.push({
         file: call.file,
         line: call.line,
-        severity: 'critical',
+        severity: 'warning',
         message: `Type mismatch: endpoint returns object, call expects array`,
         contractType: 'type-mismatch',
         endpoint,

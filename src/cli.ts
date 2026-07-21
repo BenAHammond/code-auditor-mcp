@@ -18,7 +18,6 @@ import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { DEFAULT_PORT } from './constants.js';
 import inquirer from 'inquirer';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
-import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { initParsers } from './languages/index.js';
 import { queryParser } from './search/QueryParser.js';
 import { CodeIndexDB } from './codeIndexDB.js';

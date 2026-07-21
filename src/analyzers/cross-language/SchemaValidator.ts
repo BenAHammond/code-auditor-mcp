@@ -180,7 +180,7 @@ export class SchemaValidator {
         violations.push({
           file: current.file,
           line: current.line,
-          severity: 'critical',
+          severity: 'warning',
           message: `Missing required field '${fieldName}' in ${current.type} ${current.name}`,
           violationType: 'missing-field',
           schemas: [reference, current],
@@ -307,7 +307,7 @@ export class SchemaValidator {
         return {
           file: curSchema.file,
           line: curSchema.line,
-          severity: 'critical',
+          severity: 'warning',
           message: `Type mismatch for field '${fieldName}': expected ${normalizedRefType}, got ${normalizedCurType}`,
           violationType: 'type-mismatch',
           schemas: [refSchema, curSchema],

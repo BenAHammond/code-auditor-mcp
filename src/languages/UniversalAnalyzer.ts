@@ -13,6 +13,14 @@ export interface UniversalAnalyzerOptions {
   [key: string]: any;
 }
 
+/**
+ * Map of rule-id → severity for overriding built-in severity defaults.
+ *
+ * Example: `{ "sql-injection-risk": "critical" }` restores the original
+ * critical severity for SQL injection findings.
+ */
+export type SeverityOverrides = Record<string, 'critical' | 'warning' | 'suggestion'>;
+
 export abstract class UniversalAnalyzer implements AnalyzerDefinition {
   abstract readonly name: string;
   abstract readonly description: string;
@@ -29,6 +37,13 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     const violations: Violation[] = [];
     const errors: Array<{ file: string; error: string }> = [];
     const startTime = Date.now();
+
+    // Extract severityOverrides from config before passing to analyzers.
+    // This is a base-class feature — individual analyzers don't need to
+    // know about it. Overrides are applied after analyzeAST returns.
+    const severityOverrides: SeverityOverrides = config.severityOverrides ?? {};
+    const configWithoutOverrides = { ...config };
+    delete configWithoutOverrides.severityOverrides;
 
     // Group files by language
     const filesByAdapter = this.groupFilesByAdapter(files);
@@ -73,7 +88,7 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
           const fileViolations = await this.analyzeAST(
             ast,
             adapter,
-            config,
+            configWithoutOverrides,
             content
           );
           if (IS_DEV_MODE) {
@@ -96,6 +111,16 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
       }
     }
     
+    // Apply severity overrides to all violations
+    if (Object.keys(severityOverrides).length > 0) {
+      for (const v of violations) {
+        const override = severityOverrides[v.rule];
+        if (override) {
+          v.severity = override;
+        }
+      }
+    }
+
     return {
       violations,
       errors,

@@ -32,6 +32,7 @@
     "**/*.test.ts",
     "**/*.spec.ts",
     "src/test_violation.ts",
-    "src/broken.ts"
+    "src/broken.ts",
+    "src/analyzers/__tests__/fixtures/**"
   ]
 }

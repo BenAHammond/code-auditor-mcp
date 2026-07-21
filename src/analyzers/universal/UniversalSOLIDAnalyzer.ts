@@ -9,13 +9,23 @@ import type { AST, LanguageAdapter, ASTNode, ClassInfo, FunctionInfo, InterfaceI
 
 /**
  * Configuration for SOLID analyzer
+ *
+ * Spec-17 R5: maxClassComplexity (heuristic) is DEPRECATED — replaced by
+ * maxMethodComplexity (per-method cyclomatic complexity, solid/method-complexity)
+ * and classAggregateComplexity (class-size aggregation, solid/class-size).
  */
 export interface SOLIDAnalyzerConfig {
   maxMethodsPerClass?: number;
   maxLinesPerMethod?: number;
   maxParametersPerMethod?: number;
+  /** @deprecated Use maxMethodComplexity instead — this was a heuristic (1 + 2×methods + 5×extends + Σ(lines/10)) */
   maxClassComplexity?: number;
   maxInterfaceMembers?: number;
+  // R5.1: Per-method cyclomatic complexity threshold (true McCC via adapter.getComplexity())
+  maxMethodComplexity?: number;
+  // R5.2: Class-level aggregation thresholds
+  classMethodsThreshold?: number;
+  classAggregateComplexity?: number;
   checkDependencyInversion?: boolean;
   checkInterfaceSegregation?: boolean;
   checkLiskovSubstitution?: boolean;
@@ -26,8 +36,13 @@ export const DEFAULT_SOLID_CONFIG: SOLIDAnalyzerConfig = {
   maxMethodsPerClass: 15,
   maxLinesPerMethod: 50,
   maxParametersPerMethod: 4,
-  maxClassComplexity: 50,
+  maxClassComplexity: 50,              // DEPRECATED — kept for back-compat
   maxInterfaceMembers: 20,
+  // R5.1: Per-method cyclomatic complexity (true McCC)
+  maxMethodComplexity: 50,
+  // R5.2: Class-level aggregation
+  classMethodsThreshold: 15,
+  classAggregateComplexity: 100,
   checkDependencyInversion: true,
   checkInterfaceSegregation: true,
   checkLiskovSubstitution: true,
@@ -89,35 +104,60 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     config: SOLIDAnalyzerConfig
   ): Violation[] {
     const violations: Violation[] = [];
-    
-    // Single Responsibility Principle - too many methods
-    if (cls.methods.length > (config.maxMethodsPerClass || 15)) {
+
+    // ── R5.2: Class size (suggestion) ──────────────────────────────────
+
+    const methodsThreshold = config.classMethodsThreshold ?? config.maxMethodsPerClass ?? 15;
+    if (cls.methods.length > methodsThreshold) {
       violations.push(this.createViolation(
         ast.filePath,
         cls.location.start,
-        `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${config.maxMethodsPerClass || 15}. Consider splitting responsibilities.`,
-        'warning',
-        'single-responsibility'
+        `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting responsibilities.`,
+        'suggestion',                                          // R7: class-size → suggestion
+        'solid/class-size'
       ));
     }
-    
-    // Calculate class complexity
-    const complexity = this.calculateClassComplexity(cls, ast, adapter, sourceCode);
-    if (complexity > (config.maxClassComplexity || 50)) {
-      violations.push(this.createViolation(
-        ast.filePath,
-        cls.location.start,
-        `Class "${cls.name}" has a complexity of ${complexity}, exceeding the maximum of ${config.maxClassComplexity || 50}. Consider refactoring.`,
-        'critical',
-        'single-responsibility'
-      ));
-    }
-    
-    // Analyze each method
+
+    // Analyze each method for complexity + standard size checks
+    let aggregateComplexity = 0;
+
     for (const method of cls.methods) {
+      // R5.1: Per-method cyclomatic complexity (warning)
+      const methodNode = this.findNodeByLocation(ast.root, method.location.start);
+      if (methodNode) {
+        const methodComplexity = adapter.getComplexity(methodNode);
+        aggregateComplexity += methodComplexity;
+
+        const maxMethod = config.maxMethodComplexity ?? 50;
+        if (methodComplexity > maxMethod) {
+          violations.push(this.createViolation(
+            ast.filePath,
+            method.location.start,
+            `Method "${cls.name}.${method.name}" has cyclomatic complexity ${methodComplexity}, ` +
+            `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller methods.`,
+            'warning',                                         // R7: method-complexity → warning
+            'solid/method-complexity'
+          ));
+        }
+      }
+
+      // Standard function checks (params, line count)
       violations.push(...this.analyzeFunction(method, ast, adapter, sourceCode, config));
     }
-    
+
+    // R5.2: Class aggregate complexity (suggestion)
+    const maxAggregate = config.classAggregateComplexity ?? 100;
+    if (aggregateComplexity > maxAggregate) {
+      violations.push(this.createViolation(
+        ast.filePath,
+        cls.location.start,
+        `Class "${cls.name}" has aggregate cyclomatic complexity ${aggregateComplexity}, ` +
+        `exceeding the maximum of ${maxAggregate}. Consider splitting the class.`,
+        'suggestion',                                          // R7: class-size → suggestion
+        'solid/class-size'
+      ));
+    }
+
     // Open/Closed Principle - check for modification patterns
     if (this.hasModificationPatterns(cls, ast, adapter, sourceCode)) {
       violations.push(this.createViolation(
@@ -128,19 +168,19 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         'open-closed'
       ));
     }
-    
+
     // Liskov Substitution Principle
     if (config.checkLiskovSubstitution && cls.extends) {
       const lspViolations = this.checkLiskovSubstitution(cls, ast, adapter);
       violations.push(...lspViolations);
     }
-    
+
     // Dependency Inversion Principle
     if (config.checkDependencyInversion) {
       const dipViolations = this.checkDependencyInversion(cls, ast, adapter, sourceCode);
       violations.push(...dipViolations);
     }
-    
+
     return violations;
   }
   
@@ -155,7 +195,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     config: SOLIDAnalyzerConfig
   ): Violation[] {
     const violations: Violation[] = [];
-    
+
     // Too many parameters
     if (func.parameters.length > (config.maxParametersPerMethod || 4)) {
       violations.push(this.createViolation(
@@ -166,7 +206,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         'single-responsibility'
       ));
     }
-    
+
     // Function too long
     const lineCount = func.location.end.line - func.location.start.line + 1;
     if (lineCount > (config.maxLinesPerMethod || 50)) {
@@ -178,7 +218,27 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         'single-responsibility'
       ));
     }
-    
+
+    // R5.1: Cyclomatic complexity for standalone functions (not methods — those are
+    // already checked in analyzeClass). Skip methods to avoid double-reporting.
+    if (!func.isMethod) {
+      const funcNode = this.findNodeByLocation(ast.root, func.location.start);
+      if (funcNode) {
+        const cyclomaticComplexity = adapter.getComplexity(funcNode);
+        const maxMethod = config.maxMethodComplexity ?? 50;
+        if (cyclomaticComplexity > maxMethod) {
+          violations.push(this.createViolation(
+            ast.filePath,
+            func.location.start,
+            `Function "${func.name}" has cyclomatic complexity ${cyclomaticComplexity}, ` +
+            `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller functions.`,
+            'warning',                                          // R7: method-complexity → warning
+            'solid/method-complexity'
+          ));
+        }
+      }
+    }
+
     return violations;
   }
   
@@ -215,41 +275,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   }
   
   /**
-   * Calculate class complexity
-   */
-  private calculateClassComplexity(
-    cls: ClassInfo,
-    ast: AST,
-    adapter: LanguageAdapter,
-    sourceCode: string
-  ): number {
-    let complexity = 0;
-    
-    // Base complexity for the class itself
-    complexity += 1;
-    
-    // Add complexity for each method
-    complexity += cls.methods.length * 2;
-    
-    // Add complexity for properties
-    complexity += cls.properties.length;
-    
-    // Add complexity for inheritance
-    if (cls.extends) complexity += 5;
-    if (cls.implements && cls.implements.length > 0) {
-      complexity += cls.implements.length * 2;
-    }
-    
-    // Add complexity based on method sizes
-    for (const method of cls.methods) {
-      const lineCount = method.location.end.line - method.location.start.line + 1;
-      complexity += Math.floor(lineCount / 10);
-    }
-    
-    return complexity;
-  }
-  
-  /**
    * Check for modification patterns (Open/Closed Principle)
    */
   private hasModificationPatterns(
@@ -266,12 +291,12 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     
     this.walkAST(classNode, node => {
       // Check for switch statements
-      if (node.type.includes('Switch')) {
+      if (node.type === 'switch_statement') {
         hasTypeChecking = true;
       }
       
       // Check for instanceof chains
-      if (node.type.includes('Binary') && adapter.getNodeText(node, sourceCode).includes('instanceof')) {
+      if (node.type === 'binary_expression' && adapter.getNodeText(node, sourceCode).includes('instanceof')) {
         hasTypeChecking = true;
       }
     });
@@ -301,7 +326,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
       if (methodNode) {
         let hasThrow = false;
         this.walkAST(methodNode, node => {
-          if (node.type.includes('Throw')) {
+          if (node.type === 'throw_statement') {
             hasThrow = true;
           }
         });
@@ -351,7 +376,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     
     this.walkAST(classNode, node => {
       // Check for 'new' expressions
-      if (node.type.includes('New')) {
+      if (node.type === 'new_expression') {
         const text = adapter.getNodeText(node, sourceCode);
         // Ignore primitive constructors like Date, Array, etc.
         if (!this.isPrimitiveConstructor(text)) {

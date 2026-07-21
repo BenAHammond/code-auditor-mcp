@@ -62,12 +62,10 @@ export {
   ExportInfo
 } from './types.js';
 
-// Analyzers
-export { solidAnalyzer } from './analyzers/solidAnalyzer.js';
-export { dryAnalyzer } from './analyzers/dryAnalyzer.js';
+// Analyzers (legacy functional analyzers removed in spec-17;
+// use Universal class-based analyzers via auditRunner instead)
 // export { securityAnalyzer } from './analyzers/securityAnalyzer.js';
 // export { componentAnalyzer } from './analyzers/componentAnalyzer.js';
-export { dataAccessAnalyzer } from './analyzers/dataAccessAnalyzer.js';
 
 // Analyzer utilities
 export * from './analyzers/analyzerUtils.js';

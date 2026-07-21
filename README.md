@@ -69,6 +69,30 @@ One skill, one CLI, one MCP server. Every agent gets the same audit engine — t
 
 Hook behavior: **Blocking** means violations at or above `--fail-on` severity prevent the edit from landing (the agent sees the violation and fixes inline). **Advisory** means violations are reported through the strongest available feedback channel but the edit has already occurred. Cursor's `afterFileEdit` hook is fire-and-forget with no output consumption. MCP is available everywhere for shell-less use.
 
+## Security
+
+### SQL Injection Detection
+
+The `sql-injection-risk` rule uses AST-level heuristics — it detects string concatenation and dynamic patterns in query construction (e.g., `"SELECT * FROM " + table`) without type information. These findings are **high-signal, not proof of exploitable injection**.
+
+By default, `sql-injection-risk` is `warning` severity. The `--fail-on critical` hook path is reserved for user invariant rules — Code Auditor never ships rules at `critical`, so your `.codeauditor.json` invariants have a clean escalation path.
+
+**To block on SQL injection findings** in your hook, restore `critical` via `severityOverrides` in your analyzer config:
+
+```json
+{
+  "analyzerConfigs": {
+    "data-access": {
+      "severityOverrides": {
+        "sql-injection-risk": "critical"
+      }
+    }
+  }
+}
+```
+
+With this config, `code-audit changed --fail-on critical` will exit 2 on SQL injection findings, and your agent's hook will block the edit.
+
 ## License
 
 MIT

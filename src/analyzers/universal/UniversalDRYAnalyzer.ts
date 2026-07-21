@@ -1,6 +1,11 @@
 /**
- * Universal DRY (Don't Repeat Yourself) Analyzer
- * Works across multiple programming languages using the adapter pattern
+ * Universal DRY (Don't Repeat Yourself) Analyzer — Spec 17 R3
+ *
+ * R3.1: Self-reference fix — span-overlap check prevents a block from citing itself.
+ * R3.2: Minimum block size 5 → 15.
+ * R3.3: Rule-id split — dry/duplicate (exact token match) + dry/structural-similarity
+ *       (identical token-kind sequence with different identifiers/literals).
+ * R7:   dry/duplicate → warning, dry/structural-similarity → suggestion.
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
@@ -24,7 +29,8 @@ export interface DRYAnalyzerConfig {
 }
 
 export const DEFAULT_DRY_CONFIG: DRYAnalyzerConfig = {
-  minLineThreshold: 5,
+  // R3.2: floor raised from 5 → 15
+  minLineThreshold: 15,
   similarityThreshold: 0.85,
   excludePatterns: ['**/*.test.ts', '**/*.spec.ts'],
   checkImports: true,
@@ -40,6 +46,8 @@ interface CodeBlock {
   text: string;
   normalizedText: string;
   hash: string;
+  /** R3.3 — token-kind structural hash (identifiers→ID, literals→LIT) */
+  structuralHash: string;
   nodeType: string;
   lineCount: number;
 }
@@ -64,58 +72,93 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   ): Promise<Violation[]> {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DRY_CONFIG, ...config };
-    
+
     // Skip if file matches exclude patterns
     if (this.isExcluded(ast.filePath, finalConfig.excludePatterns || [])) {
       return violations;
     }
-    
+
     // Extract code blocks from this file
     const blocks = this.extractCodeBlocks(ast, adapter, sourceCode, finalConfig);
-    
-    // Store blocks for cross-file comparison
-    // Note: In a real implementation, we'd need to aggregate blocks across all files
-    // For now, we'll just detect duplicates within the same file
-    const localIndex = this.buildLocalIndex(blocks);
-    
-    // Find duplicates (local, within this file)
-    for (const [hash, duplicateBlocks] of localIndex.hashMap) {
-      if (duplicateBlocks.length > 1) {
-        // Report all but the first occurrence
-        for (let i = 1; i < duplicateBlocks.length; i++) {
-          const block = duplicateBlocks[i];
-          const original = duplicateBlocks[0];
 
-          violations.push(this.createViolation(
-            block.file,
-            block.start,
-            `Duplicate code block detected (${block.lineCount} lines). First occurrence at line ${original.start.line}`,
-            'warning',
-            'exact-duplicate',
-            {
-              oldText: block.text,
-              newText: `// Consider extracting to a shared function`
-            }
-          ));
-        }
+    // R3.1: Deduplicate blocks — sort by (file, startLine) and merge overlapping spans
+    const deduped = this.deduplicateBlocks(blocks);
+
+    // ── R3.3: dry/duplicate — exact token-identical match (warning) ─────
+    const exactHashmap = this.groupByHash(deduped, 'hash');
+
+    for (const [, group] of exactHashmap) {
+      if (group.length < 2) continue;
+
+      // R3.1: Find earliest occurrence as "original" — sort by (file, startLine)
+      const sorted = [...group].sort(this.byFileAndLine);
+      const original = sorted[0];
+
+      for (let i = 1; i < sorted.length; i++) {
+        const block = sorted[i];
+
+        // R3.1: Span-overlap check — skip if block overlaps with original
+        if (this.spansOverlap(original, block)) continue;
+
+        violations.push(this.createViolation(
+          block.file,
+          block.start,
+          `Duplicate code block detected (${block.lineCount} lines). ` +
+          `First occurrence at ${original.file}:${original.start.line}`,
+          'warning',                                         // R7
+          'dry/duplicate',
+          {
+            oldText: block.text,
+            newText: `// Consider extracting to a shared function`
+          }
+        ));
+      }
+    }
+
+    // ── R3.3: dry/structural-similarity — token-kind match (suggestion) ─
+    const structuralHashmap = this.groupByHash(deduped, 'structuralHash');
+
+    for (const [, group] of structuralHashmap) {
+      if (group.length < 2) continue;
+
+      const sorted = [...group].sort(this.byFileAndLine);
+      const original = sorted[0];
+
+      for (let i = 1; i < sorted.length; i++) {
+        const block = sorted[i];
+
+        // Skip if these are already exact duplicates (reported above)
+        if (original.hash === block.hash) continue;
+
+        // R3.1: Span-overlap check
+        if (this.spansOverlap(original, block)) continue;
+
+        violations.push(this.createViolation(
+          block.file,
+          block.start,
+          `Structurally similar code block detected (${block.lineCount} lines). ` +
+          `First occurrence at ${original.file}:${original.start.line}`,
+          'suggestion',                                      // R7
+          'dry/structural-similarity',
+          {
+            oldText: block.text,
+            newText: `// Consider extracting to a shared function`
+          }
+        ));
       }
     }
 
     // ── Cross-file duplicate detection (scoped audit) ──────────────────
-    // When fullFunctionIndex is provided, check each scoped block against
-    // the full codebase index to catch duplicates that span files (R2.2).
     if (finalConfig.fullFunctionIndex && finalConfig.fullFunctionIndex.length > 0) {
       const fullHashmap = new Map<string, { file: string; name: string; line: number }>();
 
       for (const func of finalConfig.fullFunctionIndex) {
-        // Get body content from either top-level or metadata
         const body = (func as any).body ?? (func as any).metadata?.body;
         if (!body) continue;
 
         try {
           const normalized = this.normalizeCode(body, finalConfig);
           const hash = this.hashCode(normalized);
-          // Only store the first occurrence (the "original")
           if (!fullHashmap.has(hash)) {
             fullHashmap.set(hash, {
               file: func.filePath,
@@ -128,7 +171,6 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
         }
       }
 
-      // Check each block in this file against the full index
       for (const block of blocks) {
         if (!this.isBlockLargeEnough(block, finalConfig)) continue;
 
@@ -140,7 +182,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
             `Duplicate code block detected (${block.lineCount} lines). ` +
             `First occurrence in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name})`,
             'warning',
-            'cross-file-duplicate',
+            'dry/duplicate',
             {
               oldText: block.text,
               newText: `// Consider extracting to a shared function`
@@ -155,14 +197,144 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
       const stringViolations = this.checkDuplicateStrings(ast, adapter, sourceCode);
       violations.push(...stringViolations);
     }
-    
+
     // Check for duplicate imports if enabled
     if (finalConfig.checkImports) {
       const importViolations = this.checkDuplicateImports(ast, adapter);
       violations.push(...importViolations);
     }
-    
+
     return violations;
+  }
+
+  // ── R3.1: Span-overlap helpers ──────────────────────────────────────
+
+  /**
+   * Returns true if the two blocks share code spans (same file + overlapping lines).
+   */
+  private spansOverlap(a: CodeBlock, b: CodeBlock): boolean {
+    if (a.file !== b.file) return false;
+    return !(a.end.line < b.start.line || b.end.line < a.start.line);
+  }
+
+  /**
+   * Sort comparator: earliest file+line first.
+   */
+  private byFileAndLine(a: CodeBlock, b: CodeBlock): number {
+    if (a.file !== b.file) return a.file.localeCompare(b.file);
+    return a.start.line - b.start.line;
+  }
+
+  /**
+   * R3.1: Deduplicate overlapping blocks. Prefers the innermost block when
+   * one block fully contains another (nesting), and the earliest block when
+   * blocks only partially overlap.
+   *
+   * This ensures that blocks nested inside functions/classes (e.g. for-loops
+   * inside a function body) surface for duplicate detection instead of being
+   * silently deduplicated by their outer container.
+   */
+  private deduplicateBlocks(blocks: CodeBlock[]): CodeBlock[] {
+    if (blocks.length <= 1) return blocks;
+
+    // Sort by (file, startLine)
+    const sorted = [...blocks].sort(this.byFileAndLine);
+    const result: CodeBlock[] = [];
+    let last: CodeBlock | null = null;
+
+    for (const block of sorted) {
+      if (last && last.file === block.file) {
+        // Same file — check for overlap
+
+        // Case 1: `last` fully contains `block` (nesting: last is outer, block is inner)
+        // Replace outer with inner — the inner block is more specific.
+        if (last.start.line <= block.start.line && last.end.line >= block.end.line) {
+          result.pop();
+          result.push(block);
+          last = block;
+          continue;
+        }
+
+        // Case 2: `block` fully contains `last` (nesting: block is outer, last is inner)
+        // Keep `last` (already inner in result), skip the outer block.
+        if (block.start.line <= last.start.line && block.end.line >= last.end.line) {
+          continue;
+        }
+
+        // Case 3: Partial overlap (neither fully contains the other)
+        // Keep the earlier block.
+        if (!(last.end.line < block.start.line)) {
+          continue;
+        }
+      }
+      result.push(block);
+      last = block;
+    }
+    return result;
+  }
+
+  // ── R3.3: Structural similarity helpers ──────────────────────────────
+
+  /**
+   * Group blocks by a key field into a map of key→blocks[].
+   */
+  private groupByHash(
+    blocks: CodeBlock[],
+    key: 'hash' | 'structuralHash'
+  ): Map<string, CodeBlock[]> {
+    const map = new Map<string, CodeBlock[]>();
+    for (const block of blocks) {
+      const hash = block[key];
+      const existing = map.get(hash) || [];
+      existing.push(block);
+      map.set(hash, existing);
+    }
+    return map;
+  }
+
+  /**
+   * R3.3: Normalize code to its token-kind sequence.
+   * Identifiers → ID, string/number/regex literals → LIT.
+   */
+  private normalizeStructure(code: string): string {
+    let normalized = code;
+
+    // Template expressions: strip dynamic parts for structural matching
+    normalized = normalized.replace(/\$\{[^}]*\}/g, 'ID');
+
+    // String literals (single, double, backtick) → LIT
+    normalized = normalized.replace(/(['"`])\1/g, 'LIT'); // empty strings
+    normalized = normalized.replace(/`[^`]*`/g, 'LIT');
+    normalized = normalized.replace(/'[^']*'/g, 'LIT');
+    normalized = normalized.replace(/"[^"]*"/g, 'LIT');
+
+    // Numeric literals → LIT
+    normalized = normalized.replace(/\b\d+\.?\d*\b/g, 'LIT');
+
+    // Regex literals → LIT (approximate — /pattern/flags)
+    normalized = normalized.replace(/\/[^/*][^/]*\/[gimsuy]*/g, 'LIT');
+
+    // Boolean/null literals
+    normalized = normalized.replace(/\b(true|false|null|undefined)\b/g, 'LIT');
+
+    // Identifiers → ID (after literals so we don't replace inside strings)
+    // Match camelCase, PascalCase, snake_case, dollar-prefixed, underscore-prefixed
+    normalized = normalized.replace(/\b[a-zA-Z_$][a-zA-Z0-9_$]*\b/g, (match) => {
+      // Keep keywords intact
+      const keywords = new Set([
+        'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
+        'return', 'throw', 'try', 'catch', 'finally', 'new', 'delete', 'typeof',
+        'instanceof', 'in', 'of', 'class', 'extends', 'super', 'this', 'function',
+        'const', 'let', 'var', 'async', 'await', 'yield', 'import', 'export',
+        'default', 'from', 'as', 'static', 'get', 'set', 'enum', 'type', 'interface',
+        'implements', 'abstract', 'public', 'private', 'protected', 'readonly',
+        'ID', 'LIT',
+      ]);
+      if (keywords.has(match)) return match;
+      return 'ID';
+    });
+
+    return normalized;
   }
   
   /**
@@ -261,10 +433,14 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   ): CodeBlock | null {
     const text = adapter.getNodeText(node, sourceCode);
     if (!text) return null;
-    
+
     const normalizedText = this.normalizeCode(text, config);
     const lineCount = this.countLines(text);
-    
+
+    // R3.3: Compute structural hash from token-kind sequence
+    const structuralNormalized = this.normalizeCodeForStructure(text, config);
+    const structuralHash = this.hashCode(structuralNormalized);
+
     return {
       file: filePath,
       start: node.location.start,
@@ -272,9 +448,20 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
       text,
       normalizedText,
       hash: this.hashCode(normalizedText),
+      structuralHash,
       nodeType: node.type,
       lineCount
     };
+  }
+
+  /**
+   * R3.3: Normalize code for structural comparison.
+   * First applies standard normalization (whitespace/comments), then
+   * replaces identifiers and literals with placeholders.
+   */
+  private normalizeCodeForStructure(code: string, config: DRYAnalyzerConfig): string {
+    const normalized = this.normalizeCode(code, config);
+    return this.normalizeStructure(normalized);
   }
   
   /**
@@ -463,12 +650,15 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   
   private isSignificantBlock(node: ASTNode, adapter: LanguageAdapter): boolean {
     // Check if this is a block-like structure (if, for, while, etc.)
-    const blockTypes = ['Block', 'IfStatement', 'ForStatement', 'WhileStatement', 
-                       'DoWhileStatement', 'SwitchStatement', 'TryStatement'];
-    return blockTypes.some(type => node.type.includes(type));
+    // Uses exact snake_case matches against tree-sitter node types.
+    const blockTypes = new Set([
+      'if_statement', 'for_statement', 'for_in_statement',
+      'while_statement', 'do_statement', 'switch_statement', 'try_statement',
+    ]);
+    return blockTypes.has(node.type);
   }
-  
+
   private isStringLiteral(node: ASTNode, adapter: LanguageAdapter): boolean {
-    return node.type.includes('StringLiteral') || node.type.includes('TemplateLiteral');
+    return node.type === 'string' || node.type === 'template_string';
   }
 }

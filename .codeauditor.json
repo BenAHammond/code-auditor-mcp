@@ -37,7 +37,8 @@
       "kind": "ast-pattern",
       "severity": "critical",
       "pattern": "new Function($$$)",
-      "message": "new Function() is eval-by-another-name — forbidden in this codebase"
+      "message": "new Function() is eval-by-another-name — forbidden in this codebase",
+      "path": "src/**"
     }
   ]
 }

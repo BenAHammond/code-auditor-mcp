@@ -16,7 +16,10 @@ export interface DataAccessAnalyzerConfig {
   // Enable/disable checks
   checkOrgFilters?: boolean;
   checkSQLInjection?: boolean;
-  
+
+  // R4.3: direct access detection mode — "flag" (default) or "allow"
+  directAccess?: 'flag' | 'allow';
+
   // Database configurations
   databases?: {
     [key: string]: {
@@ -54,6 +57,8 @@ export interface DataAccessAnalyzerConfig {
 export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   checkOrgFilters: true,
   checkSQLInjection: true,
+  // R4.3: default "flag" — report direct-access violations
+  directAccess: 'flag',
   databases: {
     'primary': {
       name: 'Primary Database',
@@ -149,11 +154,14 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     // Analyze each call
     for (const call of calls) {
       const analysis = this.analyzeQuery(call, sourceCode, finalConfig);
-      
+
       // Check for violations
       violations.push(...this.checkViolations(call, analysis, ast.filePath, finalConfig));
     }
-    
+
+    // R4.1: Check for database queries inside loops (N+1 detection)
+    violations.push(...this.checkLoopQueries(ast, adapter, sourceCode, finalConfig));
+
     // Check for general data access patterns
     violations.push(...this.checkGeneralPatterns(ast, adapter, sourceCode, finalConfig));
     
@@ -374,12 +382,18 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
     
     // Security: SQL Injection Risk
+    // Spec 11 (calibration): Detection uses AST-level heuristics (string
+    // concatenation in query construction) without type information. Findings
+    // are high-signal but not proof of exploitable injection. Severity demoted
+    // from critical → warning in Spec 17. Spec 11 will measure true-positive
+    // rate on ExcAlDraw and Gin corpora to decide whether heuristics should be
+    // tightened or severity re-escalated.
     if (config.checkSQLInjection && call.hasSqlInjectionRisk) {
       violations.push(this.createViolation(
         filePath,
         { line: call.line, column: call.column },
         `Potential SQL injection risk in ${call.method}. Use parameterized queries.`,
-        'critical',
+        'warning',
         'sql-injection-risk'
       ));
     }
@@ -430,25 +444,30 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     config: DataAccessAnalyzerConfig
   ): Violation[] {
     const violations: Violation[] = [];
-    
+
+    // R4.3: Skip direct-access violations when directAccess is "allow"
+    if (config.directAccess === 'allow') {
+      return violations;
+    }
+
     // Check for hardcoded connection strings
     const stringNodes = adapter.findNodes(ast, {
       custom: (node) => this.isStringLiteral(node, adapter)
     });
-    
+
     for (const node of stringNodes) {
       const text = adapter.getNodeText(node, sourceCode);
       if (this.isConnectionString(text)) {
         violations.push(this.createViolation(
           ast.filePath,
           node.location.start,
-          'Hardcoded database connection string detected. Use environment variables.',
-          'critical',
+          'Hardcoded database connection string detected. Use environment variables. (On Cloudflare Workers/D1, connection strings are injected via bindings.)',
+          'suggestion',                                         // R7: direct-access → suggestion
           'hardcoded-connection'
         ));
       }
     }
-    
+
     // Check for direct SQL execution without ORM
     const sqlPatterns = [/execute\s*\(\s*['"`]SELECT/i, /query\s*\(\s*['"`]SELECT/i];
     for (const pattern of sqlPatterns) {
@@ -457,13 +476,13 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           { line: 1, column: 1 },
           'Direct SQL execution detected. Consider using an ORM or query builder.',
-          'suggestion',
+          'suggestion',                                         // R7: direct-access → suggestion
           'direct-sql'
         ));
         break;
       }
     }
-    
+
     return violations;
   }
   
@@ -471,20 +490,18 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
    * Helper methods
    */
   private isFunctionCall(node: ASTNode, adapter: LanguageAdapter): boolean {
-    return node.type === 'CallExpression' || 
-           node.type === 'MethodCallExpression' ||
-           node.type === 'NewExpression';
+    return node.type === 'call_expression' ||
+           node.type === 'new_expression';
   }
-  
+
   private isTemplateLiteral(node: ASTNode, adapter: LanguageAdapter): boolean {
-    return node.type === 'TemplateExpression' ||
-           node.type === 'NoSubstitutionTemplateLiteral';
+    return node.type === 'template_string';
   }
-  
+
   private isVariableAssignment(node: ASTNode, adapter: LanguageAdapter): boolean {
     // Only get the actual variable declaration, not the statement
-    return node.type === 'VariableDeclaration' ||
-           node.type === 'BinaryExpression' && (node.children?.some(child =>
+    return node.type === 'variable_declaration' ||
+           node.type === 'binary_expression' && (node.children?.some(child =>
              adapter.getNodeText(child, '').includes('=')) ?? false);
   }
   
@@ -701,7 +718,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   }
   
   private isStringLiteral(node: ASTNode, adapter: LanguageAdapter): boolean {
-    return node.type.includes('StringLiteral') || node.type.includes('TemplateLiteral');
+    return node.type === 'string' || node.type === 'template_string';
   }
   
   private isConnectionString(text: string): boolean {
@@ -712,7 +729,180 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       /Server=.*;Database=/i,
       /Data Source=.*;Initial Catalog=/i
     ];
-    
+
     return patterns.some(pattern => pattern.test(text));
+  }
+
+  // ── R4.1: Loop-query detection ──────────────────────────────────────
+
+  /**
+   * R4.1: Find database queries inside loops and flag them as N+1 risks.
+   * Each finding carries the query call location (never line 1).
+   */
+  private checkLoopQueries(
+    ast: AST,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    config: DataAccessAnalyzerConfig
+  ): Violation[] {
+    const violations: Violation[] = [];
+
+    // Find all nodes that look like database calls
+    const dbNodes = adapter.findNodes(ast, {
+      custom: (node) => this.isDbCallNode(node, adapter, sourceCode),
+    });
+
+    // Track reported line+loop combos to avoid duplicates
+    const reported = new Set<string>();
+
+    for (const node of dbNodes) {
+      const nodeText = adapter.getNodeText(node, sourceCode);
+      if (!nodeText || nodeText.trim().length < 10) continue;
+
+      const loopInfo = this.findEnclosingLoop(node, adapter);
+      if (!loopInfo) continue;
+
+      // R4.1: Use query node's actual location (never line 1)
+      const queryLine = node.location.start.line;
+
+      // Deduplicate: same line + same loop line = already reported
+      const dedupKey = `${queryLine}:${loopInfo.loopNode.location.start.line}`;
+      if (reported.has(dedupKey)) continue;
+      reported.add(dedupKey);
+
+      // R4.2: Nested-loop attribution
+      const depthMsg = loopInfo.depth > 1
+        ? ` (nested ${loopInfo.depth} levels deep)`
+        : '';
+
+      violations.push(this.createViolation(
+        ast.filePath,
+        node.location.start,                                   // query-call line, never line 1
+        `Database query inside loop${depthMsg} ` +
+        `(loop at line ${loopInfo.loopNode.location.start.line}). ` +
+        `This may cause N+1 performance issues. Consider batching queries or using a join.`,
+        'warning',                                             // R7: loop-query → warning
+        'loop-query'
+      ));
+    }
+
+    return violations;
+  }
+
+  /**
+   * R4.1: Determine if a node is a database call expression.
+   * Lightweight check — reused from extractDatabaseCalls logic.
+   */
+  private isDbCallNode(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+    const nodeText = adapter.getNodeText(node, sourceCode);
+
+    // Call-expression with DB patterns
+    if (this.isFunctionCall(node, adapter)) {
+      const dbPatterns = ['select', 'insert', 'update', 'delete', 'from', 'where', 'execute', 'query', 'find', 'aggregate', 'count', 'distinct'];
+      if (dbPatterns.some(pattern => nodeText.toLowerCase().includes(pattern))) {
+        return true;
+      }
+    }
+
+    // Template literal with SQL keywords
+    if (this.isTemplateLiteral(node, adapter)) {
+      return this.containsSQLKeywords(nodeText);
+    }
+
+    return false;
+  }
+
+  /**
+   * R4.1/R4.2: Walk the parent chain to find the innermost enclosing loop.
+   * Returns the loop node and nesting depth.
+   *
+   * Detects:
+   *   - for / while / do loops via adapter.isLoop()
+   *   - .forEach / .map / .filter callbacks via AST pattern matching
+   */
+  private findEnclosingLoop(
+    node: ASTNode,
+    adapter: LanguageAdapter
+  ): { loopNode: ASTNode; depth: number } | null {
+    let current: ASTNode | null = node;
+    let depth = 0;
+    const foundLoops: ASTNode[] = [];
+
+    while (current) {
+      const parent = adapter.getParent(current);
+      if (!parent) break;
+
+      // Check for language-level loops (for, while, do)
+      if (adapter.isLoop(parent)) {
+        foundLoops.push(parent);
+      }
+
+      // Check for iterator callbacks (.forEach, .map, .filter, etc.)
+      if (this.isIteratorCallback(parent, adapter)) {
+        foundLoops.push(parent);
+      }
+
+      current = parent;
+    }
+
+    if (foundLoops.length === 0) return null;
+
+    // R4.1: Innermost is the first one we found (closest to node)
+    // R4.2: Total count is the nesting depth
+    return {
+      loopNode: foundLoops[0],
+      depth: foundLoops.length,
+    };
+  }
+
+  /**
+   * R4.1: Check if a node is a call_expression invoking an iterator method
+   * (.forEach, .map, .filter, .reduce, .some, .every) — these create
+   * implicit loops where a DB query inside the callback is an N+1 risk.
+   */
+  private isIteratorCallback(node: ASTNode, adapter: LanguageAdapter): boolean {
+    // Must be a call_expression
+    if (node.type !== 'call_expression') return false;
+
+    // Callee must be a member_expression whose property matches iterator method names
+    const children = adapter.getChildren(node);
+    const callee = children.find(c => c.type === 'member_expression');
+    if (!callee) return false;
+
+    const calleeChildren = adapter.getChildren(callee);
+    const propertyNode = calleeChildren.find(c =>
+      c.type === 'property_identifier' || c.type === 'string'
+    );
+    if (!propertyNode) return false;
+
+    const methodName = adapter.getNodeType(propertyNode) === 'property_identifier'
+      ? (propertyNode as any).text ?? adapter.getNodeText(propertyNode, '')
+      : '';
+
+    // Normalize: the method name might come from the node type or need text extraction
+    const iteratorMethods = ['forEach', 'map', 'filter', 'reduce', 'some', 'every', 'find', 'findIndex', 'flatMap'];
+
+    // Try multiple ways to get the method name
+    const propText = methodName || this.getPropertyName(propertyNode, adapter);
+
+    return iteratorMethods.includes(propText);
+  }
+
+  /**
+   * Extract the property name from a property_identifier node.
+   */
+  private getPropertyName(node: ASTNode, adapter: LanguageAdapter): string {
+    // Try named children
+    if ((node as any).name) return (node as any).name;
+    if ((node as any).text) return (node as any).text;
+
+    // Try to get it from children
+    const children = adapter.getChildren(node);
+    for (const child of children) {
+      if ((child as any).name) return (child as any).name;
+      if ((child as any).text) return (child as any).text;
+    }
+
+    return '';
   }
 }

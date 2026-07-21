@@ -73,7 +73,12 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       if (config.maxMethodsPerClass !== undefined) universalConfig.maxMethodsPerClass = config.maxMethodsPerClass;
       if (config.maxLinesPerMethod !== undefined) universalConfig.maxLinesPerMethod = config.maxLinesPerMethod;
       if (config.maxParametersPerMethod !== undefined) universalConfig.maxParametersPerMethod = config.maxParametersPerMethod;
-      if (config.maxClassComplexity !== undefined) universalConfig.maxClassComplexity = config.maxClassComplexity;
+      if (config.maxClassComplexity !== undefined) universalConfig.maxClassComplexity = config.maxClassComplexity; // deprecated — use maxMethodComplexity
+      // R5.1: Per-method cyclomatic complexity (true McCC)
+      if (config.maxMethodComplexity !== undefined) universalConfig.maxMethodComplexity = config.maxMethodComplexity;
+      // R5.2: Class-level aggregation thresholds
+      if (config.classMethodsThreshold !== undefined) universalConfig.classMethodsThreshold = config.classMethodsThreshold;
+      if (config.classAggregateComplexity !== undefined) universalConfig.classAggregateComplexity = config.classAggregateComplexity;
       if (config.maxInterfaceMembers !== undefined) universalConfig.maxInterfaceMembers = config.maxInterfaceMembers;
       if (config.checkDependencyInversion !== undefined) universalConfig.checkDependencyInversion = config.checkDependencyInversion;
       if (config.checkInterfaceSegregation !== undefined) universalConfig.checkInterfaceSegregation = config.checkInterfaceSegregation;
@@ -119,6 +124,8 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       if (config.checkOrgFilters !== undefined) universalConfig.checkOrgFilters = config.checkOrgFilters;
       if (config.checkSQLInjection !== undefined) universalConfig.checkSQLInjection = config.checkSQLInjection;
       if (config.checkPerformance !== undefined) universalConfig.checkPerformance = config.checkPerformance;
+      // R4.3: directAccess — "flag" (default) or "allow"
+      if (config.directAccess !== undefined) universalConfig.directAccess = config.directAccess;
       return analyzer.analyze(files, universalConfig, {
         progressCallback: createProgressAdapter('data-access', progressCallback),
         ...options as Record<string, unknown>,
@@ -135,12 +142,19 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       const universalConfig = {
         requireFunctionDocs: config.requireFunctionDocs ?? true,
         requireClassDocs: config.requireComponentDocs ?? true,
-        requireFileDocs: config.requireFileDocs ?? true,
+        // requireFileDocs is DEPRECATED — use fileHeaders instead (default false per R1.5)
+        requireFileDocs: config.requireFileDocs ?? true, // kept for back-compat
         requireParamDocs: config.requireParamDocs ?? true,
         requireReturnDocs: config.requireReturnDocs ?? true,
         minDescriptionLength: config.minDescriptionLength ?? 10,
+        // checkExportedOnly is DEPRECATED — use scope instead
         checkExportedOnly: config.checkExportedOnly ?? false,
         exemptPatterns: config.exemptPatterns ?? ['test', 'spec', '\\.d\\.ts$', 'mock', 'fixture'],
+        // Spec-17 additions
+        scope: config.scope ?? 'public',                                    // R1.2, R1.4
+        docsMinLines: config.docsMinLines ?? 5,                             // R1.3
+        fileHeaders: config.fileHeaders ?? config.requireFileDocs ?? false,  // R1.5
+        headerSkipGlobs: config.headerSkipGlobs,                            // R1.5 (undefined → analyzer default)
       };
       return analyzer.analyze(files, universalConfig, {
         progressCallback: createProgressAdapter('documentation', progressCallback),
@@ -184,6 +198,12 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
         maxQueriesPerFunction: config.maxQueriesPerFunction ?? 5,
         requiredSchemas: config.requiredSchemas ?? [],
         schemas,
+        // Spec-17 R2 additions — AST-based SQL context detection
+        sqlTagNames: config.sqlTagNames ?? ['sql', 'db'],                 // R2.1
+        dbReceiverNames: config.dbReceiverNames,                           // R2.2 (let analyzer use defaults)
+        dbCallMethods: config.dbCallMethods,                               // R2.2
+        dbBindingNames: config.dbBindingNames ?? ['env.DB'],               // R2.2
+        fileGateGlobs: config.fileGateGlobs,                               // R2.2 (let analyzer use defaults)
       };
       const result = await analyzer.analyze(files, universalConfig);
       return {

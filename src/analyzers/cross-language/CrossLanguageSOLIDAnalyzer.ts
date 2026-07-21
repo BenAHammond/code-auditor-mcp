@@ -99,7 +99,7 @@ export class CrossLanguageSOLIDAnalyzer {
         violations.push({
           file: entity.file,
           line: entity.startLine || 0,
-          severity: responsibilities.count > this.config.maxResponsibilities * 2 ? 'critical' : 'warning',
+          severity: responsibilities.count > this.config.maxResponsibilities * 2 ? 'warning' : 'warning',
           message: `${entity.type} '${entity.name}' has too many responsibilities (${responsibilities.count}) across ${responsibilities.languages.size} languages`,
           principle: 'SRP',
           entityId: entity.id,
