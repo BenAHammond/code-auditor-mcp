@@ -56,6 +56,11 @@ function createReportObject(
   if (options.includeMetadata && result.metadata) {
     report.metadata = result.metadata;
   }
+
+  // Include baseline block when present (Spec 18 R2)
+  if (result.metadata?.baseline) {
+    report.baseline = result.metadata.baseline;
+  }
   
   if (options.customFields) {
     Object.assign(report, options.customFields);
@@ -85,9 +90,11 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
         severity: violation.severity,
         message: violation.message,
         type: violation.type,
+        ...(violation.profile && { profile: violation.profile }),
         ...(violation.recommendation && { recommendation: violation.recommendation }),
         ...(violation.estimatedEffort && { estimatedEffort: violation.estimatedEffort }),
-        ...(violation.snippet && { snippet: violation.snippet })
+        ...(violation.snippet && { snippet: violation.snippet }),
+        ...(violation.new !== undefined && { new: violation.new })
       })),
       ...(result.errors && { errors: result.errors })
     };
@@ -124,7 +131,8 @@ export function generateCompactJSONReport(result: AuditResult): string {
         f: v.file,
         l: v.line,
         s: v.severity.charAt(0), // c, w, s
-        m: v.message
+        m: v.message,
+        ...(v.profile ? { p: v.profile } : {})
       }))
     )
   };

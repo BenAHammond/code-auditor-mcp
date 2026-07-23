@@ -1,0 +1,60 @@
+{
+  "analyzer": "non-english",
+  "config": {
+    "schemas": [
+      {
+        "name": "non-english",
+        "tables": [
+          {
+            "name": "注文",
+            "columns": [
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "ユーザーID", "type": "integer" }
+            ]
+          },
+          {
+            "name": "商品",
+            "columns": [
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "name", "type": "text" },
+              { "name": "価格", "type": "integer" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "expectedViolations": [
+    { "file": "src/abfragen.ts", "rule": "loop-query", "severity": "warning" },
+    { "file": "src/abfragen.ts", "rule": "missing-org-filter", "severity": "warning" },
+    { "file": "src/abfragen.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/abfragen.ts", "rule": "missing-org-filter", "severity": "warning" },
+    { "file": "src/abfragen.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/abfragen.ts", "rule": "direct-sql", "severity": "suggestion" },
+    { "file": "src/consultas.ts", "rule": "missing-org-filter", "severity": "warning" },
+    { "file": "src/consultas.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/consultas.ts", "rule": "missing-org-filter", "severity": "warning" },
+    { "file": "src/consultas.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/consultas.ts", "rule": "direct-sql", "severity": "suggestion" },
+    { "file": "src/kuesutori.ts", "rule": "missing-org-filter", "severity": "warning" },
+    { "file": "src/kuesutori.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/kuesutori.ts", "rule": "missing-org-filter", "severity": "warning" },
+    { "file": "src/kuesutori.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/kuesutori.ts", "rule": "direct-sql", "severity": "suggestion" },
+    { "file": "src/verarbeiten.ts", "rule": "missing-org-filter", "severity": "warning" },
+    { "file": "src/verarbeiten.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/verarbeiten.ts", "rule": "missing-org-filter", "severity": "warning" },
+    { "file": "src/verarbeiten.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/verarbeiten.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/verarbeiten.ts", "rule": "direct-sql", "severity": "suggestion" }
+  ],
+  "knownMisses": [
+    { "file": "src/autoriser.ts", "rule": "missing-auth", "severity": "warning" },
+    { "file": "src/nettoyer.ts", "rule": "missing-sanitization", "severity": "warning" },
+    { "file": "src/verarbeiten.ts", "rule": "open-closed", "severity": "suggestion" }
+  ],
+  "nearMissFiles": [],
+  "description": "Non-English identifiers — mixed Portuguese, German, Japanese, French. DB access via provenance only. 22 ground-truth violations (16 original + 6 from verarbeiten.ts). 3 known-misses: missing-auth (French autoriser), missing-sanitization (French nettoyer), open-closed (German verarbeiten). Gaps seeded per Spec 21 send-back; fixes deferred to Spec 15 neighborhood. R5 Unicode regex fix recovered 2 unfiltered-query detections. Spec 21 R6.2 three-tier requiresOrgFilter() fix recovered 2 missing-org-filter detections. True recall without known-miss debt: 22/22 = 1.0."
+}

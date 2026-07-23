@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 2,
+  "timestamp": "2026-07-20T00:00:00.000Z",
+  "analyzers": {
+    "data-access": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "direct-sql": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "loop-query": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "missing-org-filter": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "unfiltered-query": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
+    "documentation": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "function-documentation": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
+    "dry": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "dry/duplicate": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
+    "invariants": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "no-legacy-imports": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
+    "non-english": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "direct-sql": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "loop-query": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "missing-auth": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "missing-org-filter": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "missing-sanitization": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "open-closed": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "unfiltered-query": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
+    "react": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "complexity": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
+    "schema": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "unknown-table": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
+    "solid": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "solid/method-complexity": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    }
+  }
+}

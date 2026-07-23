@@ -2,7 +2,7 @@
  * Default configurations for the code auditor
  */
 
-import { AuditConfig } from '../types.js';
+import { AuditConfig, PathProfile } from '../types.js';
 
 /**
  * Get default configuration
@@ -164,7 +164,11 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     performanceThresholds: {
       maxJoins: 5,
       warnOnSelectStar: true
-    }
+    },
+    // Spec 21 R3: shared detection mode — provenance-primary with name-fallback
+    detection: {
+      mode: 'hybrid' as const,
+    },
   },
 
   // Spec-17: documentation analyzer defaults
@@ -213,8 +217,80 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     dbCallMethods: ['exec', 'prepare', 'batch', 'run', 'all', 'first', 'query', 'get', 'each'],
     dbBindingNames: ['env.DB'],
     fileGateGlobs: ['**/*.sql', '**/migrations/**'],
+    // Spec 21 R3: shared detection mode — provenance-primary with name-fallback
+    detection: {
+      mode: 'hybrid' as const,
+    },
+    // Spec 21 R4: validator package list for provenanced validator detection
+    validatorPackageList: [
+      'zod', 'joi', 'ajv', 'valibot', 'yup', 'superstruct', 'arktype',
+      '@sinclair/typebox', 'class-validator',
+    ],
   },
 };
+
+/**
+ * Built-in path profiles shipped with the tool.
+ *
+ * "scripts-and-tests" caps scripts, tests, and test fixtures to
+ * "suggestion" severity — grounded in the Spec 11 triage numbers
+ * showing these directories produce noise, not signal.
+ *
+ * Disable entirely via `"builtin": false` in .codeauditor.json.
+ * Replace a specific built-in via a user profile with the same name
+ * and `"builtin": false`.
+ */
+export const BUILTIN_PATH_PROFILES: PathProfile[] = [
+  {
+    name: 'scripts-and-tests',
+    paths: [
+      'scripts/**',
+      'tests/**',
+      'test/**',
+      '__tests__/**',
+      'fixtures/**',
+      '*.test.*',
+      '*.spec.*',
+    ],
+    overrides: { severityCap: 'suggestion' },
+  },
+];
+
+/**
+ * Merge built-in path profiles with user-configured profiles.
+ *
+ * - `builtin: false` at top level → no built-ins
+ * - User profile with `builtin: false` → replaces built-in of same name
+ * - Otherwise: built-ins come first, user profiles appended after
+ *   (later wins on conflict)
+ *
+ * @returns The merged profile array, or undefined if no profiles active
+ */
+export function mergePathProfiles(
+  userProfiles: PathProfile[] | undefined,
+  builtinEnabled: boolean | undefined
+): PathProfile[] | undefined {
+  // builtin: false disables all built-in profiles
+  if (builtinEnabled === false) {
+    return userProfiles && userProfiles.length > 0 ? userProfiles : undefined;
+  }
+
+  if (!userProfiles || userProfiles.length === 0) {
+    // No user profiles — use built-ins only
+    return BUILTIN_PATH_PROFILES.length > 0 ? [...BUILTIN_PATH_PROFILES] : undefined;
+  }
+
+  // Merge: built-ins first, user profiles appended (later wins)
+  const userReplaced = new Set(
+    userProfiles.filter((p) => p.builtin === false).map((p) => p.name)
+  );
+
+  const activeBuiltins = BUILTIN_PATH_PROFILES.filter(
+    (b) => !userReplaced.has(b.name)
+  );
+
+  return [...activeBuiltins, ...userProfiles];
+}
 
 /**
  * Default code index configuration

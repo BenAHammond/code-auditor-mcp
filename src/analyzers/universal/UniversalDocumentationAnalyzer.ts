@@ -165,11 +165,6 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
           continue;
         }
 
-        // Skip if function name matches exempt pattern
-        if (this.isExempt(func.name, finalConfig.exemptPatterns)) {
-          continue;
-        }
-
         const doc = func.jsDoc || '';
 
         // R1.6 — Audience-reason message
@@ -185,7 +180,9 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
             func.location.start,
             reason,
             'suggestion',
-            'function-documentation'
+            'function-documentation',
+            undefined,
+            func.name
           ));
         } else {
           // Param docs
@@ -200,7 +197,9 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
                 func.location.start,
                 `Function '${func.name}' missing documentation for parameter '${param}'`,
                 'suggestion',
-                'parameter-documentation'
+                'parameter-documentation',
+                undefined,
+                func.name
               ));
             }
           }
@@ -215,7 +214,9 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
               func.location.start,
               `Function '${func.name}' missing return value documentation`,
               'suggestion',
-              'return-documentation'
+              'return-documentation',
+              undefined,
+              func.name
             ));
           }
         }
@@ -232,10 +233,6 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
           continue;
         }
 
-        if (this.isExempt(cls.name, finalConfig.exemptPatterns)) {
-          continue;
-        }
-
         const doc = cls.jsDoc || '';
 
         if (!doc || doc.length < finalConfig.minDescriptionLength) {
@@ -244,7 +241,9 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
             cls.location.start,
             `Class '${cls.name}' lacks proper documentation`,
             'suggestion',
-            'class-documentation'
+            'class-documentation',
+            undefined,
+            cls.name
           ));
         }
 
@@ -259,10 +258,6 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
               }
             }
 
-            if (this.isExempt(method.name, finalConfig.exemptPatterns)) {
-              continue;
-            }
-
             const methodDoc = method.jsDoc || '';
 
             if (!methodDoc || methodDoc.length < finalConfig.minDescriptionLength) {
@@ -271,7 +266,9 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
                 method.location.start,
                 `public method '${cls.name}.${method.name}' lacks proper documentation`,
                 'suggestion',
-                'method-documentation'
+                'method-documentation',
+                undefined,
+                `${cls.name}.${method.name}`
               ));
             }
           }

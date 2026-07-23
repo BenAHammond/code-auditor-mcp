@@ -37,7 +37,7 @@ export interface FieldConstraints {
 }
 
 export interface SchemaViolation extends Violation {
-  violationType: 'field-mismatch' | 'type-mismatch' | 'missing-field' | 'extra-field' | 'constraint-mismatch' | 'version-mismatch';
+  violationType: 'field-mismatch' | 'schema-field-mismatch' | 'missing-field' | 'extra-field' | 'constraint-mismatch' | 'version-mismatch';
   schemas: SchemaDefinition[];
   fieldName?: string;
   expectedType?: string;
@@ -304,7 +304,7 @@ export class SchemaValidator {
           line: curSchema.line,
           severity: 'warning',
           message: `Type mismatch for field '${fieldName}': expected ${normalizedRefType}, got ${normalizedCurType}`,
-          violationType: 'type-mismatch',
+          violationType: 'schema-field-mismatch',
           schemas: [refSchema, curSchema],
           fieldName,
           expectedType: normalizedRefType,
@@ -322,7 +322,7 @@ export class SchemaValidator {
           line: curSchema.line,
           severity: 'warning',
           message: `Potentially incompatible types for field '${fieldName}': ${normalizedRefType} vs ${normalizedCurType}`,
-          violationType: 'type-mismatch',
+          violationType: 'schema-field-mismatch',
           schemas: [refSchema, curSchema],
           fieldName,
           expectedType: normalizedRefType,

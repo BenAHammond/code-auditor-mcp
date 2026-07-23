@@ -580,7 +580,7 @@ export class EnhancedCodeIndexDB extends CodeIndexDB {
     tokens.add(entity.name.toLowerCase());
 
     // Add camelCase breakdown
-    const camelCaseTokens = entity.name.replace(/([A-Z])/g, ' $1').trim().split(' ');
+    const camelCaseTokens = entity.name.replace(/(\p{Lu})/gu, ' $1').trim().split(' ');
     camelCaseTokens.forEach(token => tokens.add(token.toLowerCase()));
 
     // Add snake_case breakdown

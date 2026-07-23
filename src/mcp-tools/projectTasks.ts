@@ -262,7 +262,7 @@ export async function handleProjectTasks(
         if (options?.signal?.aborted) {
           throw new Error('tasks request aborted');
         }
-        const { fingerprint: computeFingerprint } = await import(
+        const { fingerprint: computeFingerprint, buildFingerprintInput } = await import(
           '../fingerprint.js'
         );
         const { projectPath, projectPathDefaulted } =
@@ -372,23 +372,14 @@ export async function handleProjectTasks(
               }
             }
 
-            // Extract fingerprint components
-            const analyzer = String(analyzerName ?? violation.analyzer ?? '');
-            const rule = String(
-              violation.principle ?? violation.type ?? ''
-            );
-            const file = String(violation.file ?? '');
-            const symbol = String(
-              violation.className ??
-                violation.functionName ??
-                violation.componentName ??
-                violation.hookName ??
-                violation.interfaceName ??
-                violation.symbol ??
-                violation.enclosingSymbol ??
-                ''
-            );
-            const fp = computeFingerprint({ analyzer, rule, file, symbol });
+            // Build canonical fingerprint via the shared input resolver.
+            // Destructure so the display fields (file, symbol, rule) are
+            // available for task creation below.
+            const fpInput = buildFingerprintInput(violation);
+            const fp = computeFingerprint(fpInput);
+            const file = fpInput.file;
+            const symbol = fpInput.symbol;
+            const rule = fpInput.rule;
 
             // Dedupe: skip if open task with same fingerprint exists
             if (db.hasOpenTaskByFingerprint(fp)) {

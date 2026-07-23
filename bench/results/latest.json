@@ -1,0 +1,1164 @@
+{
+  "timestamp": "2026-07-23T19:49:00.226Z",
+  "summary": {
+    "totalAnalyzers": 8,
+    "passed": 8,
+    "failed": 0,
+    "totalKnownMisses": 3,
+    "microAvgPrecision": 1,
+    "microAvgRecall": 1,
+    "microAvgF1": 1,
+    "microAvgTrueRecall": 0.9286,
+    "microAvgTrueF1": 0.963
+  },
+  "analyzers": {
+    "data-access": {
+      "truePositives": 9,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "direct-sql",
+          "truePositives": 2,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "loop-query",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "missing-org-filter",
+          "truePositives": 3,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "unfiltered-query",
+          "truePositives": 3,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [],
+      "details": [
+        {
+          "expected": {
+            "file": "src/n-plus-one.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/n-plus-one.ts",
+            "line": 14,
+            "column": 25,
+            "severity": "warning",
+            "message": "Query on orders missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/n-plus-one.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/n-plus-one.ts",
+            "line": 14,
+            "column": 25,
+            "severity": "suggestion",
+            "message": "Unfiltered query on orders may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/n-plus-one.ts",
+            "rule": "loop-query",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/n-plus-one.ts",
+            "line": 14,
+            "column": 25,
+            "severity": "warning",
+            "message": "Database query inside loop (loop at line 12). This may cause N+1 performance issues. Consider batching queries or using a join.",
+            "rule": "loop-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:loop-query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/n-plus-one.ts",
+            "rule": "direct-sql",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/n-plus-one.ts",
+            "line": 1,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
+            "rule": "direct-sql",
+            "analyzer": "data-access",
+            "functionName": "direct-sql"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/clean-queries.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
+            "line": 6,
+            "column": 23,
+            "severity": "warning",
+            "message": "Query on orders missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/clean-queries.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
+            "line": 6,
+            "column": 23,
+            "severity": "suggestion",
+            "message": "Unfiltered query on orders may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/clean-queries.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
+            "line": 14,
+            "column": 23,
+            "severity": "warning",
+            "message": "Query on users missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/clean-queries.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
+            "line": 14,
+            "column": 23,
+            "severity": "suggestion",
+            "message": "Unfiltered query on users may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/clean-queries.ts",
+            "rule": "direct-sql",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
+            "line": 1,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
+            "rule": "direct-sql",
+            "analyzer": "data-access",
+            "functionName": "direct-sql"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    },
+    "documentation": {
+      "truePositives": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "function-documentation",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [
+        {
+          "file": "src/short-enough.ts",
+          "violations": 0,
+          "passed": true
+        }
+      ],
+      "details": [
+        {
+          "expected": {
+            "file": "src/undocumented.ts",
+            "rule": "function-documentation",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/documentation/src/undocumented.ts",
+            "line": 4,
+            "column": 7,
+            "severity": "suggestion",
+            "message": "exported function 'publicAPI' lacks proper documentation",
+            "rule": "function-documentation",
+            "analyzer": "documentation",
+            "functionName": "publicAPI"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    },
+    "dry": {
+      "truePositives": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "dry/duplicate",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [
+        {
+          "file": "src/unique.ts",
+          "violations": 0,
+          "passed": true
+        }
+      ],
+      "details": [
+        {
+          "expected": {
+            "file": "src/duplicates.ts",
+            "rule": "dry/duplicate",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/dry/src/duplicates.ts",
+            "line": 51,
+            "column": 2,
+            "severity": "warning",
+            "message": "Duplicate code block detected (19 lines). First occurrence at /Users/ben/playground/code-auditor/app/bench/corpus/dry/src/duplicates.ts:19",
+            "rule": "dry/duplicate",
+            "analyzer": "dry",
+            "fix": {
+              "oldText": "if (trimmed.length > 0 && parts[0].length > 0) {\n    const step1 = parts[0].replace(/\\./g, '');\n    const step2 = step1.replace(/\\+/g, '');\n    const step3 = step2.toLowerCase();\n    const step4 = parts[1].split('.');\n    const step5 = step4.length > 1;\n    const step6 = step4.map(s => s.length);\n    const step7 = step6.filter(n => n > 0);\n    const step8 = step7.length >= 2;\n    const step9 = step4[step4.length - 1];\n    const step10 = step9.length >= 2;\n    const step11 = step3.length <= 64;\n    const step12 = parts[1].length <= 255;\n    const step13 = step5 && step8;\n    const step14 = step10 && step11;\n    const step15 = step12 && step14;\n    const step16 = step13 && step15;\n    return step16;\n  }",
+              "newText": "// Consider extracting to a shared function"
+            },
+            "functionName": "522b7a99845b1ab44ea56a82eb98a4ece89460bf1afbed8e45108d789cffaf2d"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    },
+    "invariants": {
+      "truePositives": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "no-legacy-imports",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [
+        {
+          "file": "src/compliant.ts",
+          "violations": 0,
+          "passed": true
+        }
+      ],
+      "details": [
+        {
+          "expected": {
+            "file": "src/ban-violation.ts",
+            "rule": "no-legacy-imports",
+            "symbol": "",
+            "severity": "critical"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "src/ban-violation.ts",
+            "line": 6,
+            "severity": "critical",
+            "message": "Do not import from legacy-utils. Use the new utils module instead.",
+            "rule": "no-legacy-imports",
+            "analyzer": "invariants",
+            "details": "import-ban",
+            "importSpecifier": "./legacy-utils"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    },
+    "non-english": {
+      "truePositives": 22,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 0.88,
+      "trueF1": 0.9362,
+      "knownMisses": 3,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "direct-sql",
+          "truePositives": 4,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "loop-query",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "missing-auth",
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 1,
+          "recoveredMisses": 0,
+          "trueRecall": 0,
+          "trueF1": 0
+        },
+        {
+          "rule": "missing-org-filter",
+          "truePositives": 8,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "missing-sanitization",
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 1,
+          "recoveredMisses": 0,
+          "trueRecall": 0,
+          "trueF1": 0
+        },
+        {
+          "rule": "open-closed",
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 1,
+          "recoveredMisses": 0,
+          "trueRecall": 0,
+          "trueF1": 0
+        },
+        {
+          "rule": "unfiltered-query",
+          "truePositives": 9,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [],
+      "details": [
+        {
+          "expected": {
+            "file": "src/abfragen.ts",
+            "rule": "loop-query",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
+            "line": 28,
+            "column": 29,
+            "severity": "warning",
+            "message": "Database query inside loop (loop at line 24). This may cause N+1 performance issues. Consider batching queries or using a join.",
+            "rule": "loop-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:loop-query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/abfragen.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
+            "line": 28,
+            "column": 29,
+            "severity": "warning",
+            "message": "Query on orders missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/abfragen.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
+            "line": 28,
+            "column": 29,
+            "severity": "suggestion",
+            "message": "Unfiltered query on orders may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/abfragen.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
+            "line": 40,
+            "column": 25,
+            "severity": "warning",
+            "message": "Query on users missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/abfragen.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
+            "line": 40,
+            "column": 25,
+            "severity": "suggestion",
+            "message": "Unfiltered query on users may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/abfragen.ts",
+            "rule": "direct-sql",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
+            "line": 1,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
+            "rule": "direct-sql",
+            "analyzer": "data-access",
+            "functionName": "direct-sql"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/consultas.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
+            "line": 17,
+            "column": 26,
+            "severity": "warning",
+            "message": "Query on users missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/consultas.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
+            "line": 17,
+            "column": 26,
+            "severity": "suggestion",
+            "message": "Unfiltered query on users may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/consultas.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
+            "line": 25,
+            "column": 24,
+            "severity": "warning",
+            "message": "Query on orders missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/consultas.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
+            "line": 25,
+            "column": 24,
+            "severity": "suggestion",
+            "message": "Unfiltered query on orders may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/consultas.ts",
+            "rule": "direct-sql",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
+            "line": 1,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
+            "rule": "direct-sql",
+            "analyzer": "data-access",
+            "functionName": "direct-sql"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/kuesutori.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
+            "line": 21,
+            "column": 19,
+            "severity": "warning",
+            "message": "Query on 注文 missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/kuesutori.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
+            "line": 21,
+            "column": 19,
+            "severity": "suggestion",
+            "message": "Unfiltered query on 注文 may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/kuesutori.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
+            "line": 30,
+            "column": 19,
+            "severity": "warning",
+            "message": "Query on 商品 missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/kuesutori.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
+            "line": 30,
+            "column": 19,
+            "severity": "suggestion",
+            "message": "Unfiltered query on 商品 may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/kuesutori.ts",
+            "rule": "direct-sql",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
+            "line": 1,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
+            "rule": "direct-sql",
+            "analyzer": "data-access",
+            "functionName": "direct-sql"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/verarbeiten.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
+            "line": 22,
+            "column": 11,
+            "severity": "warning",
+            "message": "Query on orders missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/verarbeiten.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
+            "line": 22,
+            "column": 11,
+            "severity": "suggestion",
+            "message": "Unfiltered query on orders may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/verarbeiten.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
+            "line": 24,
+            "column": 11,
+            "severity": "warning",
+            "message": "Query on users missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/verarbeiten.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
+            "line": 24,
+            "column": 11,
+            "severity": "suggestion",
+            "message": "Unfiltered query on users may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/verarbeiten.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
+            "line": 26,
+            "column": 11,
+            "severity": "suggestion",
+            "message": "Unfiltered query on products may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "top-level:query:3"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/verarbeiten.ts",
+            "rule": "direct-sql",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
+            "line": 1,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
+            "rule": "direct-sql",
+            "analyzer": "data-access",
+            "functionName": "direct-sql"
+          }
+        }
+      ],
+      "knownMissDetails": [
+        {
+          "expected": {
+            "file": "src/autoriser.ts",
+            "rule": "missing-auth",
+            "severity": "warning"
+          },
+          "matched": false
+        },
+        {
+          "expected": {
+            "file": "src/nettoyer.ts",
+            "rule": "missing-sanitization",
+            "severity": "warning"
+          },
+          "matched": false
+        },
+        {
+          "expected": {
+            "file": "src/verarbeiten.ts",
+            "rule": "open-closed",
+            "severity": "suggestion"
+          },
+          "matched": false
+        }
+      ],
+      "warnings": []
+    },
+    "react": {
+      "truePositives": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "complexity",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [
+        {
+          "file": "src/good-hook.tsx",
+          "violations": 0,
+          "passed": true
+        }
+      ],
+      "details": [
+        {
+          "expected": {
+            "file": "src/bad-hook.tsx",
+            "rule": "complexity",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/bad-hook.tsx",
+            "line": 17,
+            "severity": "warning",
+            "message": "Component 'UserProfile' has high complexity (12)",
+            "componentName": "UserProfile",
+            "violationType": "complexity",
+            "details": {
+              "currentComplexity": 12,
+              "maxComplexity": 10
+            },
+            "suggestion": "Consider breaking this component into smaller, more focused components"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    },
+    "schema": {
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "unknown-table",
+          "truePositives": 3,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [
+        {
+          "file": "src/known-tables.ts",
+          "violations": 0,
+          "passed": true
+        }
+      ],
+      "details": [
+        {
+          "expected": {
+            "file": "src/unknown-table.ts",
+            "rule": "unknown-table",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
+            "line": 12,
+            "column": 27,
+            "severity": "suggestion",
+            "message": "Reference to unknown table 'inventory' (select)",
+            "rule": "unknown-table",
+            "analyzer": "schema",
+            "functionName": "inventory"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/unknown-table.ts",
+            "rule": "unknown-table",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
+            "line": 20,
+            "column": 25,
+            "severity": "suggestion",
+            "message": "Reference to unknown table 'widgets' (select)",
+            "rule": "unknown-table",
+            "analyzer": "schema",
+            "functionName": "widgets"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/unknown-table.ts",
+            "rule": "unknown-table",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
+            "line": 20,
+            "column": 18,
+            "severity": "suggestion",
+            "message": "Reference to unknown table 'widgets' (delete)",
+            "rule": "unknown-table",
+            "analyzer": "schema",
+            "functionName": "widgets"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    },
+    "solid": {
+      "truePositives": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "solid/method-complexity",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [
+        {
+          "file": "src/simple-method.ts",
+          "violations": 0,
+          "passed": true
+        }
+      ],
+      "details": [
+        {
+          "expected": {
+            "file": "src/complex-method.ts",
+            "rule": "solid/method-complexity",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/solid/src/complex-method.ts",
+            "line": 5,
+            "column": 2,
+            "severity": "warning",
+            "message": "Method \"OrderService.processOrder\" has cyclomatic complexity 10, exceeding the maximum of 5. Consider breaking it into smaller methods.",
+            "rule": "solid/method-complexity",
+            "analyzer": "solid",
+            "functionName": "OrderService.processOrder"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    }
+  },
+  "baselineComparison": {
+    "regressions": [],
+    "improvements": []
+  }
+}

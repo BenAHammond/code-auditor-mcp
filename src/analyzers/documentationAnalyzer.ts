@@ -312,7 +312,8 @@ function analyzeFileDocumentation(
             severity: 'suggestion',
             message: `Function '${functionName}' lacks documentation`,
             details: 'Functions should have JSDoc comments describing their purpose',
-            suggestion: 'Add JSDoc comment with function description and parameter/return documentation'
+            suggestion: 'Add JSDoc comment with function description and parameter/return documentation',
+            functionName
           });
         }
 
@@ -334,7 +335,8 @@ function analyzeFileDocumentation(
                 severity: 'suggestion',
                 message: `Function '${functionName}' has undocumented parameters`,
                 details: `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
-                suggestion: 'Add @param tags for all function parameters'
+                suggestion: 'Add @param tags for all function parameters',
+                functionName
               });
             }
           }
@@ -362,7 +364,8 @@ function analyzeFileDocumentation(
                 severity: 'suggestion',
                 message: `Function '${functionName}' missing return documentation`,
                 details: 'Functions with return values should document what they return',
-                suggestion: 'Add @returns tag describing the return value'
+                suggestion: 'Add @returns tag describing the return value',
+                functionName
               });
             }
           }
@@ -394,7 +397,8 @@ function analyzeFileDocumentation(
             severity: 'suggestion',
             message: `Component '${componentName}' lacks documentation`,
             details: 'React components should have JSDoc comments describing their purpose and props',
-            suggestion: 'Add JSDoc comment with component description and @param tags for props'
+            suggestion: 'Add JSDoc comment with component description and @param tags for props',
+            componentName
           });
         }
       }

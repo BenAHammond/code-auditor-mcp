@@ -628,12 +628,16 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
     const parent = node.parent;
     if (!parent) return null;
 
-    // Find the node's position among its parent's children and look for
-    // a preceding comment node.
+    // Find the node's position among its parent's children by using
+    // treeSitter's .equals() — reference equality (===) doesn't hold
+    // across different access paths (e.g. node.parent gives a different
+    // JS wrapper than accessing through the parent's .children array).
+    // We hold the parent's children array in `siblings` to get stable
+    // wrappers; look backwards from the node's index for comment nodes.
     const siblings = parent.children;
     let myIndex = -1;
     for (let i = 0; i < siblings.length; i++) {
-      if (siblings[i] === node) {
+      if (siblings[i].equals(node)) {
         myIndex = i;
         break;
       }
@@ -641,11 +645,12 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
 
     if (myIndex === -1) return null;
 
-    // Look backwards through siblings for comment nodes
+    // Look backwards through siblings for /** JSDoc comment nodes.
+    // Only /**-prefixed comments are JSDoc — // and /* are not.
     const comments: string[] = [];
     for (let i = myIndex - 1; i >= 0; i--) {
       const sibling = siblings[i];
-      if (sibling.type === 'comment') {
+      if (sibling.type === 'comment' && sibling.text.trimStart().startsWith('/**')) {
         comments.unshift(sibling.text);
       } else if (sibling.isNamed) {
         // Stop at the first non-comment, named sibling
@@ -654,10 +659,46 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
       // Continue past non-named tokens (whitespace, semicolons, etc.)
     }
 
-    if (comments.length === 0) return null;
+    if (comments.length > 0) {
+      const text = comments.join('\n').trim();
+      return this.cleanCommentText(text);
+    }
 
-    const text = comments.join('\n').trim();
-    return this.cleanCommentText(text);
+    // When the immediate parent is a wrapper like `export_statement`, it won't
+    // contain comment nodes — the JSDoc lives at the grandparent (program) level
+    // as a sibling of the wrapper. Ascend and check for an adjacent comment.
+    // Adjacency guard prevents misattributing file-level comments: only a
+    // comment whose end row is immediately before the wrapper's start row
+    // (no blank line gap) is treated as JSDoc for the function inside.
+    if (parent.type === 'export_statement' && parent.parent) {
+      const gpSiblings = parent.parent.children;
+      let parentIndex = -1;
+      for (let i = 0; i < gpSiblings.length; i++) {
+        if (gpSiblings[i].equals(parent)) {
+          parentIndex = i;
+          break;
+        }
+      }
+
+      if (parentIndex > 0) {
+        // Look backwards from the export_statement in the grandparent's children
+        for (let i = parentIndex - 1; i >= 0; i--) {
+          const sibling = gpSiblings[i];
+          if (sibling.type === 'comment' && sibling.text.trimStart().startsWith('/**')) {
+            // Only attribute if comment is adjacent — no blank line gap.
+            // Adjacent: comment ends on line L, export_statement starts on L+1.
+            if (sibling.endPosition.row + 1 === parent.startPosition.row) {
+              return this.cleanCommentText(sibling.text);
+            }
+            break; // Found a comment but not adjacent — stop looking
+          } else if (sibling.isNamed) {
+            break; // Stop at named siblings
+          }
+        }
+      }
+    }
+
+    return null;
   }
 
   /** Strip comment syntax markers. */
@@ -861,7 +902,10 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
     // import defaultExport from 'module'
     // import * as namespace from 'module'
     // import { named } from 'module'
-    for (const child of node.namedChildren) {
+    //
+    // Tree-sitter nests named imports inside import_clause -> named_imports,
+    // so we walk into import_clause children recursively.
+    const collectSpecifiers = (child: TreeSitterNode): void => {
       if (child.type === 'import_specifier') {
         const nameNode = child.childForFieldName?.('name');
         const aliasNode = child.childForFieldName?.('alias');
@@ -892,7 +936,15 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
             isNamespace: false,
           });
         }
+      } else {
+        // Recurse into containers: import_clause, named_imports
+        for (const grandchild of child.namedChildren) {
+          collectSpecifiers(grandchild);
+        }
       }
+    };
+    for (const child of node.namedChildren) {
+      collectSpecifiers(child);
     }
 
     return {

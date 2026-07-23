@@ -47,7 +47,11 @@ CODE_AUDIT_BIN="$(resolve_code_audit)"
 # Run diff-scoped audit on the changed file
 # stdout/stderr are fed back to the agent by Claude Code
 set +e
-echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json --fail-on critical 2>&1
+if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+	  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json --fail-on critical -p "${CLAUDE_PROJECT_DIR}" 2>&1
+	else
+	  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json --fail-on critical 2>&1
+	fi
 exit_code=$?
 set -e
 

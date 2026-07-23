@@ -30,7 +30,9 @@
     "test": "vitest run",
     "test:watch": "vitest watch",
     "verify:dist": "bash scripts/verify-dist.sh",
-    "bench:workers": "tsx src/scripts/benchmarkWorkers.ts"
+    "verify:close": "npm run test && npm run verify:dist",
+    "bench:workers": "tsx src/scripts/benchmarkWorkers.ts",
+    "bench": "node dist/scripts/runBench.js"
   },
   "keywords": [
     "mcp",

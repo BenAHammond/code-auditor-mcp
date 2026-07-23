@@ -10,6 +10,7 @@
 
 import picomatch from 'picomatch';
 import { readFileSync } from 'fs';
+import path from 'path';
 import sg from '@ast-grep/napi';
 import type { CodeIndexDB } from '../codeIndexDB.js';
 import type {
@@ -389,6 +390,10 @@ function checkNaming(
   }
 
   for (const sym of exportedSymbols) {
+    // Non-Latin identifiers are unclassifiable by Latin casing conventions — skip
+    if (/[^\p{Script=Latin}\p{N}_$]/u.test(sym.name)) {
+      continue;
+    }
     if (!regex.test(sym.name)) {
       violations.push({
         ruleId: rule.id,
@@ -485,7 +490,7 @@ function extractExportedSymbols(filePath: string): Array<{ name: string; line: n
 
   // ── export function|class|const|let|var|type|interface|enum name ────────
   // Covers: export function foo(), export class Bar {}, export const baz = ...
-  const declRe = /^export\s+(?:(?:default\s+)?(?:function|class)\s+(\w+)|(?:const|let|var)\s+(\w+))/gm;
+  const declRe = /^export\s+(?:(?:default\s+)?(?:function|class)\s+([\p{L}\p{N}_]+)|(?:const|let|var)\s+([\p{L}\p{N}_]+))/gmu;
   let m: RegExpExecArray | null;
   while ((m = declRe.exec(source)) !== null) {
     const name = m[1] || m[2]; // m[1] = function/class name, m[2] = const/let/var name
@@ -501,7 +506,7 @@ function extractExportedSymbols(filePath: string): Array<{ name: string; line: n
     const body = m[1];
     // Split on comma, then extract the first identifier (skip "as alias" forms)
     for (const part of body.split(',')) {
-      const nameMatch = part.match(/^\s*(\w+)/);
+      const nameMatch = part.match(/^\s*([\p{L}\p{N}_]+)/u);
       if (nameMatch) {
         symbols.push({ name: nameMatch[1], line: lineNumberAt(source, m.index) });
       }
@@ -510,7 +515,7 @@ function extractExportedSymbols(filePath: string): Array<{ name: string; line: n
 
   // ── export default <identifier> ─────────────────────────────────────────
   // e.g. export default MyComponent
-  const defaultIdRe = /^export\s+default\s+(\w+)\s*[;,\n]/gm;
+  const defaultIdRe = /^export\s+default\s+([\p{L}\p{N}_]+)\s*[;,\n]/gmu;
   while ((m = defaultIdRe.exec(source)) !== null) {
     symbols.push({ name: m[1], line: lineNumberAt(source, m.index) });
   }
@@ -563,8 +568,14 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   // Adjust file paths to be relative to project dir for reading
   for (const file of files) {
     // Strip any leading './' for consistency
-    const normalized = file.replace(/^\.\//, '');
+    let normalized = file.replace(/^\.\//, '');
     const fullPath = file.startsWith('/') ? file : `${projectDir}/${normalized}`;
+
+    // Make absolute paths relative to projectDir so glob patterns match
+    if (path.isAbsolute(normalized)) {
+      normalized = path.relative(projectDir, normalized);
+    }
+
     try {
       fileDataMap.set(normalized, {
         imports: extractImports(fullPath),

@@ -5,8 +5,8 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-import { AuditConfig } from '../types.js';
-import { getDefaultConfig, DEFAULT_CODE_INDEX_CONFIG } from './defaults.js';
+import { AuditConfig, PathProfile } from '../types.js';
+import { getDefaultConfig, DEFAULT_CODE_INDEX_CONFIG, mergePathProfiles } from './defaults.js';
 
 /**
  * Load configuration from multiple sources
@@ -39,7 +39,13 @@ export async function loadConfig(options?: {
   
   // Normalize paths
   config = normalizePaths(config);
-  
+
+  // Merge built-in path profiles with user-configured profiles (Spec-20)
+  config.pathProfiles = mergePathProfiles(
+    config.pathProfiles,
+    (config as any).builtin
+  );
+
   return config;
 }
 
@@ -173,6 +179,116 @@ export function validateConfig(config: AuditConfig): string[] {
     }
   }
   
+  // Validate path profiles (Spec-20)
+  errors.push(...validatePathProfiles(config.pathProfiles));
+
+  // Validate detection mode (Spec-21 R3: shared provenance/fallback mode key)
+  errors.push(...validateDetectionConfig(config.analyzerOptions));
+
+  return errors;
+}
+
+/**
+ * Validate Spec-21 R3 detection mode config.
+ * The `detection.mode` key is shared across analyzers that use provenance.
+ */
+function validateDetectionConfig(
+  analyzerConfigs: Record<string, any> | undefined,
+): string[] {
+  const errors: string[] = [];
+  if (!analyzerConfigs) return errors;
+
+  const VALID_MODES = new Set(['hybrid', 'provenance', 'names']);
+  const CONSUMERS = ['data-access', 'schema'];
+
+  for (const name of CONSUMERS) {
+    const cfg = analyzerConfigs[name];
+    if (!cfg) continue;
+    const detection = cfg.detection;
+    if (detection == null) continue;
+    if (typeof detection !== 'object' || Array.isArray(detection)) {
+      errors.push(`analyzerConfigs.${name}.detection must be an object`);
+      continue;
+    }
+    const mode = (detection as Record<string, unknown>).mode;
+    if (mode !== undefined && (typeof mode !== 'string' || !VALID_MODES.has(mode))) {
+      errors.push(
+        `analyzerConfigs.${name}.detection.mode must be one of "hybrid", "provenance", "names" — got "${String(mode)}"`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+/**
+ * Validate path profiles structure and values.
+ */
+function validatePathProfiles(profiles: PathProfile[] | undefined): string[] {
+  const errors: string[] = [];
+
+  if (!profiles || profiles.length === 0) return errors;
+
+  if (!Array.isArray(profiles)) {
+    errors.push('pathProfiles must be an array');
+    return errors;
+  }
+
+  const seenNames = new Set<string>();
+  const VALID_PROFILE_KEYS = new Set(['name', 'paths', 'overrides', 'builtin']);
+  const VALID_SEVERITIES = new Set(['suggestion', 'warning', 'critical']);
+
+  for (const profile of profiles) {
+    // Check for unknown keys
+    for (const key of Object.keys(profile)) {
+      if (!VALID_PROFILE_KEYS.has(key)) {
+        errors.push(`Unknown key in path profile "${profile.name || '(unnamed)'}" : "${key}"`);
+      }
+    }
+
+    // name must be a non-empty string
+    if (typeof profile.name !== 'string' || profile.name.trim().length === 0) {
+      errors.push('Path profile "name" must be a non-empty string');
+    }
+
+    // paths must be a non-empty array of strings
+    if (!Array.isArray(profile.paths) || profile.paths.length === 0) {
+      errors.push(`Path profile "${profile.name || '(unnamed)'}" : "paths" must be a non-empty array of glob patterns`);
+    } else {
+      for (const p of profile.paths) {
+        if (typeof p !== 'string') {
+          errors.push(`Path profile "${profile.name}" : "paths" entries must be strings`);
+          break;
+        }
+      }
+    }
+
+    // overrides must be an object
+    if (typeof profile.overrides !== 'object' || profile.overrides === null || Array.isArray(profile.overrides)) {
+      errors.push(`Path profile "${profile.name}" : "overrides" must be an object`);
+    }
+
+    // Validate severityCap value if present
+    if (profile.overrides && typeof profile.overrides === 'object' && !Array.isArray(profile.overrides)) {
+      const cap = (profile.overrides as Record<string, unknown>).severityCap;
+      if (cap !== undefined) {
+        if (typeof cap !== 'string' || !VALID_SEVERITIES.has(cap)) {
+          errors.push(
+            `Path profile "${profile.name}" : severityCap must be one of "suggestion", "warning", "critical" — got "${String(cap)}"`
+          );
+        }
+      }
+    }
+
+    // Check for duplicate names
+    if (profile.name && seenNames.has(profile.name)) {
+      errors.push(`Duplicate path profile name: "${profile.name}"`);
+    }
+    if (profile.name) {
+      seenNames.add(profile.name);
+    }
+  }
+
   return errors;
 }
 

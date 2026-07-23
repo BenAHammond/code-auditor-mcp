@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {
+      "id": "no-legacy-imports",
+      "kind": "import-ban",
+      "severity": "critical",
+      "message": "Do not import from legacy-utils. Use the new utils module instead.",
+      "module": "./legacy-utils"
+    }
+  ]
+}

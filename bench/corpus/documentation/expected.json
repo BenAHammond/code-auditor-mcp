@@ -1,0 +1,9 @@
+{
+  "analyzer": "documentation",
+  "config": { "scope": "public", "docsMinLines": 5 },
+  "expectedViolations": [
+    { "file": "src/undocumented.ts", "rule": "function-documentation", "severity": "suggestion" }
+  ],
+  "nearMissFiles": ["src/short-enough.ts"],
+  "description": "Tests for the documentation analyzer — public API surface without JSDoc"
+}

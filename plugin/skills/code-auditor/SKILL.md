@@ -49,9 +49,30 @@ At session start, check for invariant rules:
 ```bash
 code-audit config rules-list                         # List active rules
 code-audit config rules-check                        # Validate .codeauditor.json
+code-audit config profiles                           # Show active path profiles
+code-audit config profiles --file src/utils/helper.ts  # See which profiles match a file
 ```
 
 These are the codebase's declared constraints — "no importing X from Y," "module A must not import module B," "exported names must match this pattern," "ban specific AST patterns." You can't comply with rules you don't know about. The full rule-kind reference is in `SKILL-RULE-KINDS.md`.
+
+### Path Profiles — "my scripts directory is noisy"
+
+When an audit produces too many findings in scripts, tests, or fixtures, use **path profiles** in `.codeauditor.json` to cap severity per directory:
+
+```json
+{
+  "pathProfiles": [
+    { "name": "source-strict", "paths": ["src/**"], "overrides": { "requireFunctionDocs": true } },
+    { "name": "scripts-lenient", "paths": ["scripts/**"], "overrides": { "severityCap": "suggestion" } }
+  ]
+}
+```
+
+Path profiles are an ordered array — files matching multiple profiles merge overrides (later wins). The `severityCap` key caps all violations in matching files at that severity. Caps are applied **after** global `severityOverrides`, so a path-level "this zone is lenient" always beats a global per-rule promotion.
+
+A **built-in** `scripts-and-tests` profile ships with every install — it caps `scripts/**`, `tests/**`, `__tests__/**`, `fixtures/**`, and `*.test.*`/`*.spec.*` files at `suggestion`. Disable it with `"builtin": false` in `.codeauditor.json`.
+
+Invariant violations are **immune** to path profile caps — invariants enforce declared laws and their severity is absolute.
 
 ### `code-audit tasks` — queue remediation work
 
@@ -120,6 +141,8 @@ The hook auto-installs the package via npx on first use — no manual npm step n
 | Look up symbol | `code-audit search --definition "<name>"` |
 | Diff-scoped audit | `code-audit changed --json --fail-on critical` |
 | List invariant rules | `code-audit config rules-list` |
+| Inspect path profiles | `code-audit config profiles` |
+| Resolve file profiles | `code-audit config profiles --file <path>` |
 | Triage violations | `code-audit tasks from-audit` |
 | Sync index | `code-audit index sync --path .` |
 | Codebase map | `code-audit map -p .` |

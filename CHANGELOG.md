@@ -2,11 +2,90 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.2.0] — 2026-07-23
+
+### Spec-21: Language-Neutral Detection — Provenance-Based DB Detection
+
+Provenance-based detection replaces English name-list matching (`dbReceiverNames`) as the primary mechanism for identifying database handles. Instead of asking "is this variable named `db`?", the system asks "where did this variable's value come from?" An identifier is DB-provenanced if it came from: a known DB package import (`better-sqlite3`, `drizzle-orm`, `@prisma/client`, `pg`, `mysql2`, etc.), a `.prepare()`/`.exec()` chain on a provenanced receiver, a `D1Database`-annotated type, or an `env.DB` binding. Provenance propagates through assignment, destructuring, and cross-file export/import.
+
+This makes detection work for any language — a Portuguese `banco`, Russian `база`, or German `datenbank` identifier is detected as long as it traces back to a known DB package import. The English name lists remain as fallbacks for codebases whose provenance is invisible (dynamic requires, injected globals).
+
+#### R1: Provenance Resolver
+
+- **New module `src/analyzers/provenance.ts`**: Shared detection utility consumed by both the schema and data-access analyzers.
+- **`isDBProvenanced()`**: Given a call-expression AST node, determines if its callee is DB-provenanced via import tracing, binding detection, type annotation, or propagation.
+- **`extractDBProvenancedImports()`**: Extracts all DB-provenanced identifiers from a file's imports by matching import specifiers against `DB_PACKAGES`.
+- **`propagateProvenance()`**: Propagates provenance through assignment (`const x = drizzle(env.DB)`), destructuring, class field initialization, default parameters, and type annotations.
+- **`ProvenanceContext`**: Built once per file, cached for all analyzer calls on that file. Holds the resolved set of DB-provenanced and validator-provenanced identifiers with evidence chains.
+- **`ProvenanceEvidence`**: Records the reason (`package`, `binding`, `type`, `propagation`, `fallback`), source (e.g., "named import from drizzle-orm"), and chain of propagation for each provenanced identifier.
+
+#### R2: Conjunctive Inference
+
+- **Conjunctive guard**: A variable is DB-provenanced ONLY through provenance-linked evidence. Rules that do NOT qualify: name alone (a variable named `database` without provenance → NO), method alone (`.first()` without DB-provenanced receiver → NO), Map named `database` with `.first()` calls → zero violations.
+- **`inferReceivers()`**: During full sync, finds call expressions where the method name matches `DB_CALL_METHODS` AND the receiver traces to a provenanced source through assignment chains. Adds intermediate identifiers to the inferred set.
+- **`config detection`**: New CLI command showing the resolved provenance set with per-entry evidence, including `reason` and `chain` fields. Visible fallback entries (`reason: 'fallback'`) signal "caught by name, not provenance."
+- **Cross-file provenance**: Stored in `metadata_json` column of the `functions` table during sync. Scoped runs (hook path) consume stored provenance; full-sync runs may use on-demand reads. Hook-latency measurement (`provenanceResolutionMs`) tracked on every scoped run per Spec 14 R6.2 precedent.
+
+#### R3: Detection Modes
+
+A single shared `detection.mode` config key replaces the planned per-analyzer mode configs:
+
+| Mode | Behavior |
+|------|----------|
+| `hybrid` (default) | Provenance-primary + conjunctive name-fallback. Provenance resolves first; unresolved identifiers matching `dbReceiverNames` or `dbBindingNames` get `reason: 'fallback'`. |
+| `provenance` | Strict provenance only. Never consults name lists. For codebases with fully visible provenance chains. |
+| `names` | Legacy English-only name matching. Opt-in escape hatch for users who need the old behavior unchanged. |
+
+#### R4: Validator Provenance
+
+- **`VALIDATOR_PACKAGES`**: `zod`, `joi`, `ajv`, `valibot`, `yup`, `superstruct`, `arktype`, `@sinclair/typebox`, `class-validator`.
+- **`extractValidatorProvenancedImports()`**: Same pattern as DB provenance extraction but for validator packages.
+- **Infrastructure ready for Spec 15**: Validator provenance is computed and stored; the `validate*`/`assert*` name heuristic is defined for the validator-bypass detector in Spec 15.
+- **Config**: `validatorPackageList` in `defaults.ts` (shipped list, user-extensible). Detection mode is the shared `detection.mode` key.
+
+#### R5: Unicode Identifier Correctness
+
+- **QueryParser camelCase splitting** (line 554): `/(?=[A-Z])/` → `/(?=\p{Lu})/u` — handles all Unicode uppercase.
+- **QueryParser token matching** (line 286): `\w+` → `[\p{L}\p{N}_]+` — matches non-Latin characters.
+- **codeIndexDB-enhanced camelCase breakdown** (line 583): `/([A-Z])/g` → `/(\p{Lu})/gu`.
+- **ruleEngine exported symbol extraction** (lines 489-514): `\w` → `[\p{L}\p{N}_]` with `u` flag in all three regex patterns.
+- **Non-Latin unclassifiable guard**: The naming analyzer treats identifiers containing characters outside `[\p{Script=Latin}\p{N}_$]` as unclassifiable — returns zero violations instead of flagging what it cannot parse.
+
+#### R6: Fixtures and Spec 11 Amendment
+
+- **7 new fixtures** in `src/__tests__/fixtures/spec-21/`:
+  - `banco-provenance.ts` — Portuguese identifier, provenance-only detection
+  - `cyrillic-ids.ts` — Cyrillic identifier "база", Unicode correctness end-to-end
+  - `map-named-database.ts` — conjunctive guard (Map named `database` → zero violations)
+  - `fallback-global.ts` — injected global caught under hybrid mode via name fallback
+  - `validator-zod-portuguese.ts` — validator recognized via provenance
+  - `cyrillic-naming.ts` — Cyrillic exports → unclassifiable → zero naming violations
+  - `cross-file-provenance/provider.ts` + `consumer.ts` — export/import provenance chain
+- **Spec 11 amendment**: Bench corpus gains a non-English-identifier fixture project (mixed Portuguese/German/Japanese identifiers, DB access via provenance only). Per-rule precision/recall is reported on it alongside the English corpora. Detection gap between the two is a release-blocking finding.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/analyzers/provenance.ts` | **New** — core provenance module (package lists, extraction, propagation, inference) |
+| `src/analyzers/universal/UniversalDataAccessAnalyzer.ts` | Replace `isDBCallee()`, `isDbCallNode()`, `isOrmPattern()` with provenance-based detection |
+| `src/analyzers/universal/UniversalSchemaAnalyzer.ts` | Replace `passesFileGate()`, `isDbMemberCall()` with provenance calls |
+| `src/config/defaults.ts` | Add `detection: { mode: 'hybrid' }` default; add `validatorPackageList` default |
+| `src/auditRunner.ts` | Wire provenance context and detection config into analyzer config |
+| `src/types.ts` | `ProvenanceEvidence`, `DetectionConfig` interfaces |
+| `src/cli.ts` | `config detection` command |
+| `src/codeIndexDB.ts` | Add `provenance` field to metadata_json |
+| `src/search/QueryParser.ts` | Unicode-aware regexes (R5) |
+| `src/codeIndexDB-enhanced.ts` | Unicode-aware camelCase breakdown (R5) |
+| `src/invariants/ruleEngine.ts` | Unicode-aware regex + non-Latin unclassifiable guard (R5) |
+| `src/__tests__/fixtures/spec-21/` | **New** — 7 fixture files |
+| `src/__tests__/provenance.test.ts` | **New** — unit + integration tests |
+
 ## [3.1.0] — 2026-07-20
 
 ### Spec-17: Signal Hotfix — Noise Reduction Across All Analyzers
 
-Large-scale noise reduction targeting all 6 analyzers based on a real-corpus diagnostic report (3,871 files, 6,159 functions, 26,119 findings — ~96% noise). Every noise class in the diagnostic is addressed at the defect level.
+Large-scale noise reduction targeting all 6 analyzers based on a real-corpus diagnostic report (3,871 files, 6,159 functions, 26,119 findings — ~96% noise). Every noise class in the diagnostic is addressed at the defect level. **R1 diagnosis**: The `sql-injection` rule in the schema analyzer used regex-based string-pattern matching across all source files, producing ~15,000 findings in the self-audit. Only a handful of those involved actual SQL-context string concatenation; the vast majority flagged template-literal interpolations inside non-SQL string expressions (logging, URLs, error messages). This was the single largest noise source in the corpus.
 
 #### R1: Documentation Analyzer
 
@@ -243,3 +322,77 @@ Complete re-architecture. The entire Spec 01–09 arc ships as a single breaking
 ### Mid-series note
 
 The internal version increments spec-architected for individual specs (2.7.0, 3.0.0–4.0.1) were never published to npm. The last published version before this release was 2.6.2. This 3.0.0 release absorbs the entire nine-spec arc into a single breaking release per Amendment A1.
+
+## [3.1.1] — 2026-07-20
+
+### Spec-18 R1/R6 follow-up: Baseline Fingerprint Scheme & Per-Analyzer Symbol Fixes
+
+#### Baseline schemaVersion bump (v1 → v2)
+
+- **schemaVersion 2**: Baseline fingerprint scheme revised for collision-resistant per-analyzer symbols.
+- **Forward-compatibility**: v1 baselines are rejected with a clear message directing users to re-snapshot (`code-audit baseline`).
+- **`missing-schemas`**: Single-fire config gate → `top-level:missing-schemas`.
+
+#### Schema analyzer symbol overhaul
+
+All three schema rules now use enclosing-function + ordinal symbols, matching the data-access analyzer scheme:
+
+- **`sql-injection`**: Per-call-site regex detection with global matching; each match gets `{enclosingFn}:sql-injection` symbol (with ordinal for multiple matches in the same function).
+- **`n-plus-one`**: `.map()`, `.forEach()`, and `for(...)` loop context detection around `.query()`/`.execute()` call sites; each gets `{enclosingFn}:n-plus-one` symbol with ordinal disambiguation.
+- **`missing-schemas`**: Gate violation uses `top-level:missing-schemas` symbol.
+
+Helpers added to `UniversalSchemaAnalyzer`:
+- `findClosestNodeAt(root, location, adapter)` — finds deepest AST node containing a source position
+- `findEnclosingFunctionName(node, adapter)` — walks parent chain to find enclosing function/method name
+- `getNodeName(node, adapter)` — extracts human-readable name from AST node
+
+#### Cross-surface fingerprint consistency
+
+- **`projectTasks.ts`** (`from_audit`): Replaced divergent inline symbol extraction with canonical `extractSymbol()` from `symbols.ts`. The previous inline chain used a different priority order (`className` before `functionName`) and was missing `methodName` and `name` fields.
+- **Cross-surface test** (`baseline.test.ts`): Replaced tautology test (comparing `fingerprint()` with itself) with proper cross-surface verification — creates Violation objects with diverse symbol-field configurations and verifies `extractSymbol()` + `fingerprint()` produce identical, stable hashes through all three pathways (baseline matching, from_audit task creation, SARIF output).
+
+#### Spec 20 stray files removed
+
+Stray Spec 20 files (`profileResolver.ts`, `profile.test.ts`, spec doc) removed — they imported nonexistent types from `types.ts` and had no git history. Spec 20 will be implemented under its own proper plan review.
+
+### Spec-19 Corrective Batch — July Close-Out
+
+#### Item 1: Real Oracle Fixtures
+
+Replaced the generic `oracle-rerun.test.ts` suite with 27 standalone fixture files, each structurally equivalent to the cited recall-corpus code. The 30-test suite (27 item tests + 3 extras) passes with the documented split: 13 fire, 17 silent (including 2 retired rules).
+
+#### Item 2: method-complexity R1 Diagnosis
+
+The per-node-shape complexity measurement (Spec-19 R1) fixed the class of false positives where complexity-1 functions containing `.map()` callbacks and SQL-query patterns were miscomputed as high complexity, including the "hero-repo.ts:83" repository-method shape — a single `db.query()` + `.map()` normalizer that the old walker over-counted by descending into callback AST subtrees. The Σ(lines/10) heuristic theory floated in the first close-out summary was wrong: that heuristic had already been replaced by Spec-17 R5 before the 3.1.1 triage that caught these findings — it cannot have caused complexity-1 findings observed on 3.1.1. Spec-19 R1's callback-descending walker fix is the correct diagnosis.
+
+#### Item 3: n-plus-one / loop-query Rule Consolidation
+
+The schema analyzer's regex-based `n-plus-one` rule and the data-access analyzer's AST-based `loop-query` rule both detected the same defect (N+1 database queries inside loops/map callbacks). Consolidated to a single emitter: the data-access analyzer's `loop-query` rule, which uses tree-sitter AST traversal for accurate loop-detection rather than 500-character text-window heuristics. The schema analyzer's `checkNPlusOne()` method and the `n-plus-one` rule ID have been retired. `data-access/loop-query` is now the canonical rule for N+1 query detection.
+
+**Migration note**: Previously-baselined `n-plus-one` findings will churn to "fixed" / "new: `loop-query`" on the next audit run after upgrading — one-time noise. Users with `severityOverrides['n-plus-one']` must rename the key to `loop-query`:
+
+```json
+// Before (schema analyzer, retired):
+{ "analyzerConfigs": { "schema": { "severityOverrides": { "n-plus-one": "critical" } } } }
+
+// After (data-access analyzer, canonical):
+{ "analyzerConfigs": { "data-access": { "severityOverrides": { "loop-query": "critical" } } } }
+```
+
+#### Item 4: Structural Similarity Contract
+
+Structural similarity detection (`dry/structural-similarity`) remains **default-off** (`checkStructuralSimilarity: false`). The oracle suite confirms this contract: item 26 (CRUD handlers) produces 0 violations with defaults; item 27 (API version routers) fires at `suggestion` severity when enabled — confirming the strategist-manager shape is correctly detected when the user opts in. Both pass at HEAD.
+
+#### Item 5: Hook-Script Transcripts from Foreign cwd
+
+All three hook adapters verified as correctly forwarding the project root when invoked from a foreign cwd (a directory different from the project being audited):
+
+- **`hook-audit.sh`** (Claude Code PostToolUse): Passes `-p "${CLAUDE_PROJECT_DIR}"` — the Claude Code runtime forwards `CLAUDE_PROJECT_DIR` on every hook invocation. Transcript confirms `projectRoot` resolves to the project, not the hook launch cwd.
+- **`cursor.ts`** (`code-audit cursor-hook`): Priority chain `event.cwd` → `CLAUDE_PROJECT_DIR` → `process.cwd()`. Native Cursor supplies the correct `cwd` in the stdin event; Claude Code compat mode supplies `CLAUDE_PROJECT_DIR`. `workspace_roots` from the Cursor common schema is available but `event.cwd` (the hook-specific working directory) is the correct primary source — it points to the project root in single-root workspaces. Covered by 3 test cases in `cursor.spec.ts`.
+- **`codex.ts`** (`code-audit codex-hook`): **Defect fixed** — was using `CLAUDE_PROJECT_DIR → process.cwd()` fallback, which is wrong for Codex-native invocations because Codex hooks don't set `CLAUDE_PROJECT_DIR`. Codex's common payload carries `cwd` (learn.chatgpt.com/docs/hooks). Resolution order is now `event.cwd → CLAUDE_PROJECT_DIR → process.cwd()` — matching the cursor.ts payload-first pattern. Refactored to export `processCodexEvent()` and `formatCodexFeedback()` for testability. New `codex.spec.ts` with 17 tests covering empty stdin, invalid JSON, no file path, critical → exit 2, warning → advisory, audit-throw → never-wedge, foreign cwd (`CLAUDE_PROJECT_DIR`), cwd fallback, `tool_input.path` fallback, payload-first resolution (`event.cwd`), env fallback when no `event.cwd`, and process.cwd() last resort. All 42 hook tests pass (25 cursor + 17 codex).
+
+Real-payload transcripts with `event.cwd` in the Codex payload (no `CLAUDE_PROJECT_DIR` set) confirm all three hooks load the correct project root, code index, and config.
+
+#### Item 6: Version Reconciliation
+
+All corrective batch items (1–6) were developed on version 3.1.1 (the post-Spec-17 release baseline) on the `main` branch. No version discrepancy exists between `package.json` (3.1.1) and the CHANGELOG. Spec files reference planned ship versions (spec-04: v3.2.0, spec-05: v3.3.0, spec-11: v3.2.0) that were planning projections written ahead of implementation — the actual release cadence bundled multiple specs into fewer releases. Specs never touch version fields per the goal doc; the canonical version lives in `package.json` alone. The accumulated close-out changes are staged for the next release which should bump to at least 3.2.0 given the rule-ID consolidation (`n-plus-one` → `loop-query`), fingerprint-scheme changes, and hook-adapter refactoring included in this batch.

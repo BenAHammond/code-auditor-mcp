@@ -18,10 +18,14 @@
  */
 
 import { readStdin, runHookAudit } from './core.js';
+import type { HookAuditOutput } from './core.js';
 import chalk from 'chalk';
 
-interface CodexPostToolUse {
+export interface CodexPostToolUse {
   session_id?: string;
+  transcript_path?: string;
+  cwd?: string;
+  hook_event_name?: string;
   tool_name?: string;
   tool_use_id?: string;
   tool_input?: {
@@ -32,81 +36,138 @@ interface CodexPostToolUse {
   tool_response?: unknown;
 }
 
-async function main(): Promise<void> {
-  const raw = await readStdin();
+export interface CodexHookResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
 
-  if (!raw) {
-    // No stdin data — nothing to audit
-    process.exit(0);
+/**
+ * Build the Codex feedback payload from audit output.
+ */
+export function formatCodexFeedback(output: HookAuditOutput): {
+  feedback: Record<string, unknown> | null;
+  isBlocking: boolean;
+} {
+  if (output.violations.length === 0) {
+    return { feedback: null, isBlocking: false };
+  }
+
+  const criticals = output.violations.filter((v) => v.severity === 'critical');
+
+  if (criticals.length > 0) {
+    return {
+      feedback: {
+        decision: 'block',
+        reason: `code-auditor found ${criticals.length} critical violation(s)`,
+        violations: output.violations.map((v) => ({
+          severity: v.severity,
+          message: v.message,
+          file: v.file,
+          line: v.line,
+          rule: v.rule,
+          suggestion: v.suggestion || null,
+        })),
+      },
+      isBlocking: true,
+    };
+  }
+
+  // Non-critical only
+  const warnings = output.violations.filter((v) => v.severity === 'warning');
+  if (warnings.length > 0) {
+    return {
+      feedback: {
+        decision: 'allow',
+        warnings: warnings.map((v) => ({
+          message: v.message,
+          file: v.file,
+          line: v.line,
+          suggestion: v.suggestion || null,
+        })),
+      },
+      isBlocking: false,
+    };
+  }
+
+  return { feedback: null, isBlocking: false };
+}
+
+/**
+ * Process a Codex PostToolUse event and return the hook result.
+ * Extracted from main() for testability — tests inject a mock audit function.
+ */
+export async function processCodexEvent(
+  rawStdin: string,
+  auditFn: (filePaths: string[], projectRoot: string) => Promise<HookAuditOutput> = async (filePaths, projectRoot) =>
+    runHookAudit({ filePaths, projectRoot, failOn: 'critical' }),
+  resolveRoot: (event: CodexPostToolUse) => string = (event) =>
+    event.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+): Promise<CodexHookResult> {
+  const result: CodexHookResult = { exitCode: 0, stdout: '', stderr: '' };
+
+  if (!rawStdin) {
+    return result;
   }
 
   let event: CodexPostToolUse;
   try {
-    event = JSON.parse(raw);
+    event = JSON.parse(rawStdin);
   } catch {
-    console.error(chalk.red('[code-auditor codex-hook] Failed to parse stdin JSON'));
-    process.exit(0); // Degrade gracefully
+    result.stderr = chalk.red('[code-auditor codex-hook] Failed to parse stdin JSON');
+    return result;
   }
 
-  const filePath = event!.tool_input?.file_path || event!.tool_input?.path;
+  const filePath = event.tool_input?.file_path || event.tool_input?.path;
   if (!filePath) {
-    // No file path — nothing to audit
-    process.exit(0);
+    return result;
   }
 
-  const projectRoot = process.cwd();
+  // Determine project root:
+  // 1. cwd from the event (native Codex — learn.chatgpt.com/docs/hooks)
+  // 2. CLAUDE_PROJECT_DIR env var (Claude Code compat mode)
+  // 3. process.cwd() fallback
+  const projectRoot = resolveRoot(event);
 
   try {
-    const output = await runHookAudit({
-      filePaths: [filePath],
-      projectRoot,
-      failOn: 'critical',
-    });
+    const output = await auditFn([filePath], projectRoot);
 
-    if (output.violations.length > 0) {
-      // Codex PostToolUse: exit 2 replaces tool result with feedback
-      // Write violations as JSON to stdout — Codex feeds this back to the agent
-      const criticals = output.violations.filter((v) => v.severity === 'critical');
+    const { feedback, isBlocking } = formatCodexFeedback(output);
 
-      if (criticals.length > 0) {
-        const feedback = {
-          decision: 'block',
-          reason: `code-auditor found ${criticals.length} critical violation(s)`,
-          violations: output.violations.map((v) => ({
-            severity: v.severity,
-            message: v.message,
-            file: v.file,
-            line: v.line,
-            rule: v.rule,
-            suggestion: v.suggestion || null,
-          })),
-        };
-        process.stdout.write(JSON.stringify(feedback, null, 2) + '\n');
-        process.exit(2);
-      }
-
-      // Non-critical violations: report but don't block
-      const warnings = output.violations.filter((v) => v.severity === 'warning');
-      if (warnings.length > 0) {
-        const advisory = {
-          decision: 'allow',
-          warnings: warnings.map((v) => ({
-            message: v.message,
-            file: v.file,
-            line: v.line,
-            suggestion: v.suggestion || null,
-          })),
-        };
-        process.stdout.write(JSON.stringify(advisory, null, 2) + '\n');
+    if (feedback) {
+      result.stdout = JSON.stringify(feedback, null, 2) + '\n';
+      if (isBlocking) {
+        result.exitCode = 2;
       }
     }
-
-    process.exit(0);
   } catch (error) {
-    // Internal error — report and exit 0 (never wedge the agent loop on errors)
-    console.error(chalk.red(`[code-auditor codex-hook] Error: ${error instanceof Error ? error.message : String(error)}`));
-    process.exit(0);
+    result.stderr = chalk.red(
+      `[code-auditor codex-hook] Error: ${error instanceof Error ? error.message : String(error)}`
+    );
+    // Internal error — never wedge the agent loop
   }
+
+  return result;
 }
 
-main();
+/**
+ * CLI entry point — reads stdin, processes, writes result, exits.
+ */
+export async function main(): Promise<void> {
+  const raw = await readStdin();
+  const result = await processCodexEvent(raw);
+
+  if (result.stderr) {
+    console.error(result.stderr);
+  }
+  if (result.stdout) {
+    process.stdout.write(result.stdout);
+  }
+  process.exit(result.exitCode);
+}
+
+// Auto-run when executed as an entry point (not imported by tests)
+// vitest sets process.env.VITEST; when set, tests call processCodexEvent directly
+if (!process.env.VITEST) {
+  main();
+}

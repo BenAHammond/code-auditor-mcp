@@ -9,7 +9,7 @@
 
 import type { AuditResult, Violation } from '../types.js';
 import { PACKAGE_VERSION } from '../constants.js';
-import { fingerprint } from '../fingerprint.js';
+import { fingerprint, buildFingerprintInput } from '../fingerprint.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -187,6 +187,14 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
         ];
       }
 
+      // Add baseline status as a property (Spec 18 R5)
+      if (violation.new !== undefined) {
+        sarifResult.properties = {
+          ...sarifResult.properties,
+          baseline: violation.new ? 'new' : 'known',
+        };
+      }
+
       results.push(sarifResult);
     }
   }
@@ -239,6 +247,7 @@ interface SARIFResult {
     };
   }>;
   partialFingerprints: Record<string, string>;
+  properties?: Record<string, string>;
   fixes?: Array<{ description: { text: string } }>;
 }
 
@@ -267,25 +276,8 @@ function buildHelpUri(fullRuleId: string): string {
   return `${INFORMATION_URI}#${fullRuleId.replace(/\//g, '-')}`;
 }
 
-function buildPartialFingerprints(analyzerName: string, violation: Violation): Record<string, string> {
-  const normName = normalizeAnalyzerName(analyzerName);
-  const localRule = resolveRuleId(violation);
-  const symbol =
-    violation.className ??
-    violation.functionName ??
-    violation.componentName ??
-    violation.symbol ??
-    violation.methodName ??
-    violation.name ??
-    'unknown';
-
-  const fp = fingerprint({
-    analyzer: normName,
-    rule: localRule,
-    file: violation.file,
-    symbol,
-  });
-
+function buildPartialFingerprints(_analyzerName: string, violation: Violation): Record<string, string> {
+  const fp = fingerprint(buildFingerprintInput(violation));
   return {
     'primary': fp,
   };

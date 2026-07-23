@@ -247,6 +247,11 @@ export class CodeIndexDB {
   private static instance: CodeIndexDB;
   /** Subclasses (e.g. EnhancedCodeIndexDB) need access for extra tables without `as any`. */
   protected db!: Database.Database;
+
+  /** Public access to raw SQLite handle — used by ledger writes from external surfaces. */
+  get rawDb(): Database.Database {
+    return this.db;
+  }
   private dbPath: string;
   private isInitialized = false;
   private initializePromise: Promise<void> | null = null;
@@ -611,6 +616,39 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_project_tasks_source ON project_tasks(source);
       CREATE INDEX IF NOT EXISTS idx_project_tasks_fingerprint ON project_tasks(fingerprint);
       CREATE INDEX IF NOT EXISTS idx_project_tasks_sort ON project_tasks(sortOrder);
+
+      -- Spec 11 R1 — Findings Ledger: append-only audit history
+      CREATE TABLE IF NOT EXISTS findings_ledger_runs (
+        run_id       TEXT PRIMARY KEY,
+        timestamp    TEXT NOT NULL,
+        git_sha      TEXT,
+        git_dirty    INTEGER NOT NULL DEFAULT 0,
+        tool_version TEXT NOT NULL,
+        command      TEXT NOT NULL,
+        surface      TEXT NOT NULL,
+        scope        TEXT NOT NULL,
+        target       TEXT NOT NULL,
+        duration_ms  INTEGER NOT NULL DEFAULT 0,
+        exit_status  INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT DEFAULT '{}'
+      );
+      CREATE TABLE IF NOT EXISTS findings_ledger_findings (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id       TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
+        analyzer     TEXT NOT NULL,
+        rule         TEXT NOT NULL,
+        severity     TEXT NOT NULL,
+        message      TEXT NOT NULL,
+        file         TEXT NOT NULL,
+        line         INTEGER,
+        symbol       TEXT DEFAULT '',
+        fingerprint  TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_ledger_runs_surface    ON findings_ledger_runs(surface);
+      CREATE INDEX IF NOT EXISTS idx_ledger_runs_timestamp   ON findings_ledger_runs(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_ledger_findings_run     ON findings_ledger_findings(run_id);
+      CREATE INDEX IF NOT EXISTS idx_ledger_findings_fp      ON findings_ledger_findings(fingerprint);
+      CREATE INDEX IF NOT EXISTS idx_ledger_findings_rule    ON findings_ledger_findings(analyzer, rule);
     `);
 
     // Run schema migrations
@@ -1436,7 +1474,7 @@ export class CodeIndexDB {
       this.db.prepare('DELETE FROM code_maps').run();
       this.db.prepare('DELETE FROM schema_definitions').run();
       this.db.prepare('DELETE FROM schema_usage').run();
-      // Preserve: project_tasks, analyzer_configs, whitelist
+      // Preserve: project_tasks, analyzer_configs, whitelist, findings_ledger_runs, findings_ledger_findings
     })();
   }
 
@@ -2460,6 +2498,75 @@ export class CodeIndexDB {
 
   async deleteProjectTask(taskId: string, mode?: ProjectTaskDeleteMode): Promise<boolean> {
     return this.getTaskRepository().delete(taskId, mode);
+  }
+
+  // ── Meta key-value store ─────────────────────────────────────────────
+
+  /** Upsert a key-value pair in the meta table. */
+  setMeta(key: string, value: string): void {
+    this.ensureInitialized();
+    this.db.prepare(
+      `INSERT INTO meta (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    ).run(key, value);
+  }
+
+  /** Retrieve a value from the meta table, or null if absent. */
+  getMeta(key: string): string | null {
+    this.ensureInitialized();
+    const row = this.db.prepare(
+      'SELECT value FROM meta WHERE key = ?'
+    ).get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  // ── Provenance storage (Spec-21 R2 cross-file) ─────────────────────
+
+  /** Store per-file provenance context in the meta table. */
+  storeFileProvenance(filePath: string, provenanceData: {
+    dbProvenanced: Array<{ identifier: string; reason: string; source: string; chain?: string[] }>;
+    validatorProvenanced: Array<{ identifier: string; reason: string; source: string; chain?: string[] }>;
+  }): void {
+    const key = `provenance:${filePath}`;
+    this.setMeta(key, JSON.stringify(provenanceData));
+  }
+
+  /** Retrieve per-file provenance context, or null if not stored. */
+  getFileProvenance(filePath: string): {
+    dbProvenanced: Array<{ identifier: string; reason: string; source: string; chain?: string[] }>;
+    validatorProvenanced: Array<{ identifier: string; reason: string; source: string; chain?: string[] }>;
+  } | null {
+    const raw = this.getMeta(`provenance:${filePath}`);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Store the inferred receiver set as a meta record. */
+  storeInferredReceivers(inferred: Array<{
+    identifier: string;
+    file: string;
+    reason: string;
+  }>): void {
+    this.setMeta('inferred_receivers', JSON.stringify(inferred));
+  }
+
+  /** Retrieve the inferred receiver set, or null if not stored. */
+  getInferredReceivers(): Array<{
+    identifier: string;
+    file: string;
+    reason: string;
+  }> | null {
+    const raw = this.getMeta('inferred_receivers');
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
   }
 }
 

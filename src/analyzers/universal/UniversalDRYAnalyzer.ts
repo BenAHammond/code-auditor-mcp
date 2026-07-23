@@ -22,6 +22,8 @@ export interface DRYAnalyzerConfig {
   excludePatterns?: string[];
   checkImports?: boolean;
   checkStrings?: boolean;
+  /** R4.2: Enables dry/structural-similarity analysis. Default false. */
+  checkStructuralSimilarity?: boolean;
   ignoreComments?: boolean;
   ignoreWhitespace?: boolean;
   /** Full function index (all functions in codebase) for cross-file duplicate detection in scoped audits */
@@ -33,10 +35,13 @@ export const DEFAULT_DRY_CONFIG: DRYAnalyzerConfig = {
   minLineThreshold: 15,
   similarityThreshold: 0.85,
   excludePatterns: ['**/*.test.ts', '**/*.spec.ts'],
-  checkImports: true,
-  checkStrings: true,
+  // R4.1: sub-rules disabled by default
+  checkImports: false,
+  checkStrings: false,
   ignoreComments: true,
-  ignoreWhitespace: true
+  ignoreWhitespace: true,
+  // R4.2: structural similarity off by default
+  checkStructuralSimilarity: false,
 };
 
 interface CodeBlock {
@@ -110,41 +115,46 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           {
             oldText: block.text,
             newText: `// Consider extracting to a shared function`
-          }
+          },
+          block.hash
         ));
       }
     }
 
     // ── R3.3: dry/structural-similarity — token-kind match (suggestion) ─
-    const structuralHashmap = this.groupByHash(deduped, 'structuralHash');
+    // R4.2: gated behind checkStructuralSimilarity (default off)
+    if (finalConfig.checkStructuralSimilarity) {
+      const structuralHashmap = this.groupByHash(deduped, 'structuralHash');
 
-    for (const [, group] of structuralHashmap) {
-      if (group.length < 2) continue;
+      for (const [, group] of structuralHashmap) {
+        if (group.length < 2) continue;
 
-      const sorted = [...group].sort(this.byFileAndLine);
-      const original = sorted[0];
+        const sorted = [...group].sort(this.byFileAndLine);
+        const original = sorted[0];
 
-      for (let i = 1; i < sorted.length; i++) {
-        const block = sorted[i];
+        for (let i = 1; i < sorted.length; i++) {
+          const block = sorted[i];
 
-        // Skip if these are already exact duplicates (reported above)
-        if (original.hash === block.hash) continue;
+          // Skip if these are already exact duplicates (reported above)
+          if (original.hash === block.hash) continue;
 
-        // R3.1: Span-overlap check
-        if (this.spansOverlap(original, block)) continue;
+          // R3.1: Span-overlap check
+          if (this.spansOverlap(original, block)) continue;
 
-        violations.push(this.createViolation(
-          block.file,
-          block.start,
-          `Structurally similar code block detected (${block.lineCount} lines). ` +
-          `First occurrence at ${original.file}:${original.start.line}`,
-          'suggestion',                                      // R7
-          'dry/structural-similarity',
-          {
-            oldText: block.text,
-            newText: `// Consider extracting to a shared function`
-          }
-        ));
+          violations.push(this.createViolation(
+            block.file,
+            block.start,
+            `Structurally similar code block detected (${block.lineCount} lines). ` +
+            `First occurrence at ${original.file}:${original.start.line}`,
+            'suggestion',                                      // R7
+            'dry/structural-similarity',
+            {
+              oldText: block.text,
+              newText: `// Consider extracting to a shared function`
+            },
+            block.hash
+          ));
+        }
       }
     }
 
@@ -186,7 +196,8 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
             {
               oldText: block.text,
               newText: `// Consider extracting to a shared function`
-            }
+            },
+            block.hash
           ));
         }
       }
@@ -568,7 +579,8 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           {
             oldText: value,
             newText: '// Consider extracting to a constant'
-          }
+          },
+          value.substring(0, 50)
         ));
       }
     }
@@ -602,7 +614,9 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           { line: 1, column: 1 }, // Import section is typically at the top
           `Module "${source}" is imported ${count} times`,
           'warning',
-          'duplicate-import'
+          'duplicate-import',
+          undefined,
+          source
         ));
       }
     }

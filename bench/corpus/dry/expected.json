@@ -1,0 +1,9 @@
+{
+  "analyzer": "dry",
+  "config": { "minLineThreshold": 15, "similarityThreshold": 0.85 },
+  "expectedViolations": [
+    { "file": "src/duplicates.ts", "rule": "dry/duplicate", "severity": "warning" }
+  ],
+  "nearMissFiles": ["src/unique.ts"],
+  "description": "Tests for the DRY analyzer — near-duplicate code blocks"
+}

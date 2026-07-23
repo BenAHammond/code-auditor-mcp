@@ -17,6 +17,9 @@ export interface CrossLanguageSOLIDConfig {
   checkPolymorphism: boolean;
   enableCrossLanguageAnalysis: boolean;
   minCrossLanguageViolationConfidence: number;
+  /** Function name substrings that suggest switch-like dispatch patterns (open-closed principle).
+   *  English defaults — non-English codebases should override. */
+  switchLikeNames: string[];
 }
 
 export interface CrossLanguageSOLIDViolation extends Violation {
@@ -52,6 +55,7 @@ export class CrossLanguageSOLIDAnalyzer {
       checkPolymorphism: true,
       enableCrossLanguageAnalysis: true,
       minCrossLanguageViolationConfidence: 0.7,
+      switchLikeNames: ['handle', 'process', 'convert', 'transform', 'dispatch', 'route'],
       ...config
     };
   }
@@ -423,9 +427,8 @@ export class CrossLanguageSOLIDAnalyzer {
       complexityScore += targetsByLanguage.size * 5;
     }
 
-    // Function name patterns
-    const switchLikeNames = ['handle', 'process', 'convert', 'transform', 'dispatch', 'route'];
-    if (switchLikeNames.some(pattern => entity.name.toLowerCase().includes(pattern))) {
+    // Function name patterns — configurable for non-English codebases
+    if (this.config.switchLikeNames.some(pattern => entity.name.toLowerCase().includes(pattern))) {
       patterns.push('switch-like-naming');
       complexityScore += 10;
     }

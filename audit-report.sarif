@@ -1,0 +1,120 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "code-auditor-mcp",
+          "version": "3.3.0",
+          "informationUri": "https://github.com/BenAHammond/code-auditor-mcp",
+          "rules": [
+            {
+              "id": "documentation/function-documentation",
+              "shortDescription": {
+                "text": "documentation: function-documentation"
+              },
+              "fullDescription": {
+                "text": "exported function 'calculateTotal' lacks proper documentation"
+              },
+              "helpUri": "https://github.com/BenAHammond/code-auditor-mcp#documentation-function-documentation"
+            },
+            {
+              "id": "schema/invalid-json",
+              "shortDescription": {
+                "text": "schema: invalid-json"
+              },
+              "fullDescription": {
+                "text": "Invalid JSON: Unexpected token '\ud83d', \"🔍 Code Qu\"... is not valid JSON"
+              },
+              "helpUri": "https://github.com/BenAHammond/code-auditor-mcp#schema-invalid-json"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "documentation/function-documentation",
+          "level": "note",
+          "message": {
+            "text": "exported function 'calculateTotal' lacks proper documentation"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/folders/27/dr3v_yn97jx3rc91mb850n0r0000gn/T/tmp.Mi3yCMVoZD/src/lib.ts"
+                },
+                "region": {
+                  "startLine": 0,
+                  "endLine": 0,
+                  "startColumn": 7
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primary": "8835bee988142a4d85b45d69a0058a599118ef1d4582d78fcad142dbdd180c43"
+          },
+          "properties": {
+            "baseline": "known"
+          }
+        },
+        {
+          "ruleId": "schema/invalid-json",
+          "level": "warning",
+          "message": {
+            "text": "Invalid JSON: Unexpected token '\ud83d', \"🔍 Code Qu\"... is not valid JSON"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/folders/27/dr3v_yn97jx3rc91mb850n0r0000gn/T/tmp.Mi3yCMVoZD/audit.json"
+                },
+                "region": {
+                  "startLine": 1,
+                  "endLine": 1,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primary": "5d2b32edb31fed9814f3875d8d4a5d4928c33406dbb7b2a4294d515adff076db"
+          },
+          "properties": {
+            "baseline": "known"
+          }
+        },
+        {
+          "ruleId": "schema/invalid-json",
+          "level": "warning",
+          "message": {
+            "text": "Invalid JSON: Unexpected token '\ud83d', \"🔍 Code Qu\"... is not valid JSON"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/var/folders/27/dr3v_yn97jx3rc91mb850n0r0000gn/T/tmp.Mi3yCMVoZD/audit2.json"
+                },
+                "region": {
+                  "startLine": 1,
+                  "endLine": 1,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primary": "5c2d04ea659cdc958d2803378f61a57427bf15b2fe9dec100d0dd84877bce677"
+          },
+          "properties": {
+            "baseline": "new"
+          }
+        }
+      ]
+    }
+  ]
+}

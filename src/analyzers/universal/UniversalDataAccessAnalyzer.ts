@@ -7,6 +7,13 @@
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
+import {
+  buildProvenanceContext,
+  isDBProvenanced,
+  DB_CALL_METHODS,
+  type ProvenanceContext,
+  type DetectionMode,
+} from '../provenance.js';
 
 /**
  * Configuration for Data Access analyzer
@@ -31,7 +38,21 @@ export interface DataAccessAnalyzerConfig {
   
   // Organization/tenant filtering patterns
   organizationPatterns?: string[];
-  
+
+  // Spec 21 R6.2: three-tier org-filter detection
+  // Tier 1: config-primary — user declares multi-tenant tables
+  orgFilterTables?: string[];
+  // Tier 2: usage-inference — column names indicating org/tenant scope
+  orgFilterColumns?: string[];
+  // Tier 2: schema definitions for column-based inference
+  schemas?: Array<{
+    name: string;
+    tables: Array<{
+      name: string;
+      columns: Array<{ name: string; type: string; }>;
+    }>;
+  }>;
+
   // Table extraction patterns
   tablePatterns?: {
     orm?: RegExp[];
@@ -76,18 +97,22 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
     'companyId',
     'company_id'
   ],
+  // Spec 21 R6.2: three-tier org-filter detection
+  orgFilterTables: [],  // Tier 1: empty — user must declare
+  orgFilterColumns: ['org_id', 'tenant_id', 'organization_id', 'workspace_id'],  // Tier 2
+  schemas: [],           // Tier 2: schema definitions for column-based inference
   tablePatterns: {
     orm: [
-      /from\s*\(\s*["'`]?(\w+)["'`]?\s*\)/gi, 
-      /table\s*[:=]\s*["'`]?(\w+)["'`]?/gi,
-      /\.from\s*\(\s*(\w+)\s*\)/gi,  // Handle .from(users) where users is a variable
-      /join\s*\(\s*(\w+)\s*,/gi,      // Handle joins
-      /leftJoin\s*\(\s*(\w+)\s*,/gi,
-      /rightJoin\s*\(\s*(\w+)\s*,/gi,
-      /innerJoin\s*\(\s*(\w+)\s*,/gi
+      /from\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu,
+      /table\s*[:=]\s*["'`]?([\p{L}\p{N}_]+)["'`]?/giu,
+      /\.from\s*\(\s*([\p{L}\p{N}_]+)\s*\)/giu,  // Handle .from(users) where users is a variable
+      /join\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,      // Handle joins
+      /leftJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,
+      /rightJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,
+      /innerJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu
     ],
-    sql: [/FROM\s+["'`]?(\w+)["'`]?/gi, /JOIN\s+["'`]?(\w+)["'`]?/gi, /UPDATE\s+["'`]?(\w+)["'`]?/gi],
-    queryBuilder: [/\.from\s*\(\s*["'`]?(\w+)["'`]?\s*\)/gi]
+    sql: [/FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /JOIN\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /UPDATE\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu],
+    queryBuilder: [/\.from\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu]
   },
   performanceThresholds: {
     complexQueryCount: 3,
@@ -110,6 +135,8 @@ interface DatabaseCall {
   hasOrganizationFilter: boolean;
   hasParameterizedQuery: boolean;
   hasSqlInjectionRisk: boolean;
+  /** Enclosing function name for stable fingerprinting (Spec 18 Gap 2). */
+  enclosingFunction?: string;
 }
 
 interface QueryAnalysis {
@@ -134,27 +161,43 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   ): Promise<Violation[]> {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
+
+    // Spec 21: Build provenance context for this file (R1 — provenance-primary detection)
+    const detectionMode: DetectionMode =
+      (config as any).detection?.mode ?? 'hybrid';
+    const schemaConfig = (config as any);
+    const p0 = performance.now();
+    const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
+      mode: detectionMode,
+      dbReceiverNames: schemaConfig.dbReceiverNames ?? ['db', 'database', 'sql', 'stmt', 'connection', 'pool', 'client'],
+      dbBindingNames: schemaConfig.dbBindingNames ?? ['env.DB'],
+      dbCallMethods: schemaConfig.dbCallMethods ?? [...DB_CALL_METHODS],
+    });
+    const timingAcc: { totalMs: number } | undefined = schemaConfig._provenanceTiming;
+    if (timingAcc) timingAcc.totalMs += performance.now() - p0;
+
     // Check imports for database libraries
     const imports = adapter.extractImports(ast);
     const dbImports = this.mapDatabaseImports(imports, finalConfig);
-    
-    // Find database calls
-    const calls = this.extractDatabaseCalls(ast, adapter, sourceCode, dbImports, finalConfig);
-    
-    // Analyze each call
+
+    // Find database calls (Spec 21: uses provenance context)
+    const calls = this.extractDatabaseCalls(ast, adapter, sourceCode, dbImports, finalConfig, provenanceContext);
+
+    // Analyze each call — track symbol ordinals for fingerprint stability
+    const symbolOrdinals = new Map<string, number>();
     for (const call of calls) {
       const analysis = this.analyzeQuery(call, sourceCode, finalConfig);
 
       // Check for violations
-      violations.push(...this.checkViolations(call, analysis, ast.filePath, finalConfig));
+      violations.push(...this.checkViolations(call, analysis, ast.filePath, finalConfig, symbolOrdinals));
     }
 
-    // R4.1: Check for database queries inside loops (N+1 detection)
-    violations.push(...this.checkLoopQueries(ast, adapter, sourceCode, finalConfig));
+    // R4.1: Check for database queries inside loops (N+1 detection, Spec 21: provenance-gated)
+    violations.push(...this.checkLoopQueries(ast, adapter, sourceCode, finalConfig, provenanceContext));
 
     // Check for general data access patterns
     violations.push(...this.checkGeneralPatterns(ast, adapter, sourceCode, finalConfig));
-    
+
     return violations;
   }
   
@@ -189,48 +232,50 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     adapter: LanguageAdapter,
     sourceCode: string,
     dbImports: Map<string, { hasImports: boolean; patterns: string[] }>,
-    config: DataAccessAnalyzerConfig
+    config: DataAccessAnalyzerConfig,
+    provenanceContext?: ProvenanceContext,
   ): DatabaseCall[] {
     const calls: DatabaseCall[] = [];
     
-    // Find all relevant nodes
-    const allNodes = adapter.findNodes(ast, {
-      custom: (node) => {
-        const nodeText = adapter.getNodeText(node, sourceCode);
-        
-        // Check if it's a function call that might be database-related
-        if (this.isFunctionCall(node, adapter)) {
-          // Check for ORM patterns or database method calls
-          const dbPatterns = ['select', 'insert', 'update', 'delete', 'from', 'where', 'execute', 'query', 'find', 'aggregate', 'count', 'distinct'];
-          const hasDbPattern = dbPatterns.some(pattern => nodeText.toLowerCase().includes(pattern));
-          if (hasDbPattern) {
-            // Ensure we get the full method call including arguments
-            // For method calls like db.users.find(...), we want the entire expression
-            return true;
-          }
-        }
-        
-        // Check if it's a template literal with SQL
-        if (this.isTemplateLiteral(node, adapter)) {
-          return this.containsSQLKeywords(nodeText);
-        }
-        
-        // Check if it's a variable declaration with SQL (but not if it contains a template literal)
-        if (this.isVariableAssignment(node, adapter)) {
-          if (!this.containsSQLKeywords(nodeText)) return false;
-          
-          // Skip parent nodes if they contain template literals we'll analyze separately
-          const children = adapter.getChildren(node);
-          const hasRelevantChild = children.some(child => 
-            this.isTemplateLiteral(child, adapter) &&
-            this.containsSQLKeywords(adapter.getNodeText(child, sourceCode))
-          );
-          return !hasRelevantChild;
-        }
-        
-        return false;
-      }
-    });
+	    // Find all relevant nodes
+	    const allNodes = adapter.findNodes(ast, {
+	      custom: (node) => {
+	        const nodeText = adapter.getNodeText(node, sourceCode);
+
+	        // Check if it's a function call whose callee is DB-related
+	        if (this.isFunctionCall(node, adapter)) {
+	          // Spec 21: Use provenance when available, fall back to name-based check
+	          if (provenanceContext) {
+	            if (isDBProvenanced(node, adapter, sourceCode, provenanceContext, DB_CALL_METHODS)) {
+	              return true;
+	            }
+	          } else if (this.isDBCallee(node, adapter, sourceCode)) {
+	            return true;
+	          }
+	        }
+
+	        // Check if it's a template literal with SQL in a DB-call context
+	        if (this.isTemplateLiteral(node, adapter)) {
+	          return this.containsSQLKeywords(nodeText) &&
+	            this.isTemplateInDBCallOrVariableContext(node, adapter, sourceCode, provenanceContext);
+	        }
+
+	        // Check if it's a variable declaration with SQL (but not if it contains a template literal)
+	        if (this.isVariableAssignment(node, adapter)) {
+	          if (!this.containsSQLKeywords(nodeText)) return false;
+
+	          // Skip parent nodes if they contain template literals we'll analyze separately
+	          const children = adapter.getChildren(node);
+	          const hasRelevantChild = children.some(child =>
+	            this.isTemplateLiteral(child, adapter) &&
+	            this.containsSQLKeywords(adapter.getNodeText(child, sourceCode))
+	          );
+	          return !hasRelevantChild;
+	        }
+
+	        return false;
+	      }
+	    });
     
     // Deduplicate by line, preferring the most specific node
     const nodesByLine = new Map<number, ASTNode[]>();
@@ -260,7 +305,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     });
     
     for (const node of uniqueNodes) {
-      const nodeText = adapter.getNodeText(node, sourceCode);
+              const nodeText = adapter.getNodeText(node, sourceCode);
       
       // Skip if the node text is too short or doesn't contain meaningful content
       if (!nodeText || nodeText.trim().length < 10) continue;
@@ -298,7 +343,8 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
           tables,
           hasOrganizationFilter: hasOrgFilter,
           hasParameterizedQuery: security.parameterized,
-          hasSqlInjectionRisk: security.injectionRisk
+          hasSqlInjectionRisk: security.injectionRisk,
+          enclosingFunction: this.findEnclosingFunctionName(node, adapter),
         });
       }
     }
@@ -349,10 +395,20 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     call: DatabaseCall,
     analysis: QueryAnalysis,
     filePath: string,
-    config: DataAccessAnalyzerConfig
+    config: DataAccessAnalyzerConfig,
+    symbolOrdinals: Map<string, number>,
   ): Violation[] {
     const violations: Violation[] = [];
-    
+
+    // Build a stable base symbol key — enclosing function + callee method.
+    // Ordinal added for genuine repeats within the same function.
+    const fnName = call.enclosingFunction ?? 'top-level';
+    const baseSymbol = `${fnName}:${call.method}`;
+
+    const ordinal = (symbolOrdinals.get(baseSymbol) ?? 0) + 1;
+    symbolOrdinals.set(baseSymbol, ordinal);
+    const symbol = ordinal > 1 ? `${baseSymbol}:${ordinal}` : baseSymbol;
+
     // Security: SQL Injection Risk
     // Spec 11 (calibration): Detection uses AST-level heuristics (string
     // concatenation in query construction) without type information. Findings
@@ -365,19 +421,23 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         filePath,
         { line: call.line, column: call.column },
         `Potential SQL injection risk in ${call.method}. Use parameterized queries.`,
-        'warning',
-        'sql-injection-risk'
+        'suggestion',
+        'sql-injection-risk',
+        undefined,
+        symbol
       ));
     }
     
     // Security: Missing Organization Filter
-    if (config.checkOrgFilters && !call.hasOrganizationFilter && call.tables.length > 0 && this.requiresOrgFilter(call.tables)) {
+    if (config.checkOrgFilters && !call.hasOrganizationFilter && call.tables.length > 0 && this.requiresOrgFilter(call.tables, config)) {
       violations.push(this.createViolation(
         filePath,
         { line: call.line, column: call.column },
         `Query on ${call.tables.join(', ')} missing organization/tenant filter`,
         'warning',
-        'missing-org-filter'
+        'missing-org-filter',
+        undefined,
+        symbol
       ));
     }
     
@@ -388,7 +448,9 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         { line: call.line, column: call.column },
         `Complex query with ${call.tables.length} tables may have performance issues`,
         'warning',
-        'complex-query'
+        'complex-query',
+        undefined,
+        symbol
       ));
     }
     
@@ -399,7 +461,9 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         { line: call.line, column: call.column },
         `Unfiltered query on ${call.tables.join(', ')} may cause performance issues`,
         'suggestion',
-        'unfiltered-query'
+        'unfiltered-query',
+        undefined,
+        symbol
       ));
     }
     
@@ -427,15 +491,25 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       custom: (node) => this.isStringLiteral(node, adapter)
     });
 
+    const hardcodedOrdinals = new Map<string, number>();
+
     for (const node of stringNodes) {
       const text = adapter.getNodeText(node, sourceCode);
       if (this.isConnectionString(text)) {
+        const fnName = this.findEnclosingFunctionName(node, adapter);
+        const baseSym = `${fnName}:hardcoded-connection`;
+        const count = (hardcodedOrdinals.get(baseSym) ?? 0) + 1;
+        hardcodedOrdinals.set(baseSym, count);
+        const sym = count > 1 ? `${baseSym}:${count}` : baseSym;
+
         violations.push(this.createViolation(
           ast.filePath,
           node.location.start,
           'Hardcoded database connection string detected. Use environment variables. (On Cloudflare Workers/D1, connection strings are injected via bindings.)',
           'suggestion',                                         // R7: direct-access → suggestion
-          'hardcoded-connection'
+          'hardcoded-connection',
+          undefined,
+          sym
         ));
       }
     }
@@ -449,6 +523,8 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
           { line: 1, column: 1 },
           'Direct SQL execution detected. Consider using an ORM or query builder.',
           'suggestion',                                         // R7: direct-access → suggestion
+          'direct-sql',
+          undefined,
           'direct-sql'
         ));
         break;
@@ -481,6 +557,67 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const sqlKeywords = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'FROM', 'WHERE', 'JOIN'];
     const upperText = text.toUpperCase();
     return sqlKeywords.some(keyword => upperText.includes(keyword));
+  }
+
+  /**
+   * R3.1: Check if a call expression's callee (excluding arguments)
+   * matches database-related patterns. Prevents false positives from
+   * non-DB calls like page.evaluate() whose arguments happen to contain
+   * SQL-like substrings.
+   */
+  private isDBCallee(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+    const children = adapter.getChildren(node);
+    const calleeParts: string[] = [];
+    for (const child of children) {
+      if (adapter.getNodeType(child) === 'arguments') break;
+      calleeParts.push(adapter.getNodeText(child, sourceCode));
+    }
+    const calleeText = calleeParts.join('');
+    const dbPatterns = ['select', 'insert', 'update', 'delete', 'from', 'where', 'execute', 'query', 'find', 'aggregate', 'count', 'distinct'];
+    return dbPatterns.some(pattern => calleeText.toLowerCase().includes(pattern));
+  }
+
+  /**
+   * R3.1: Gate template literal SQL detection by parent context.
+   * Template literals in non-DB sinks (console.log, page.evaluate) must not
+   * trigger sql-injection-risk. Conservative: variable assignments and bare
+   * statements pass the gate (they may flow to a DB call).
+   *
+   * Spec 21: When provenance context is available, uses provenance-based callee
+   * check (conjunctive guard). Falls back to isDBCallee() when no context.
+   */
+  private isTemplateInDBCallOrVariableContext(
+    node: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    provenanceContext?: ProvenanceContext,
+  ): boolean {
+    const parent = adapter.getParent(node);
+    if (!parent) return false;
+    const parentType = adapter.getNodeType(parent);
+
+    // Inside arguments of a call expression → check callee is DB-related
+    if (parentType === 'arguments') {
+      const callExpr = adapter.getParent(parent);
+      if (!callExpr || adapter.getNodeType(callExpr) !== 'call_expression') return false;
+      // Spec 21: Use provenance when available
+      if (provenanceContext) {
+        return isDBProvenanced(callExpr, adapter, sourceCode, provenanceContext, DB_CALL_METHODS);
+      }
+      return this.isDBCallee(callExpr, adapter, sourceCode);
+    }
+
+    // Variable assignment → conservative (may eventually reach a DB call)
+    if (parentType === 'binary_expression' || parentType === 'variable_declarator' || parentType === 'variable_declaration') {
+      return true;
+    }
+
+    // Statement-level or program-level → conservative
+    if (parentType === 'expression_statement' || parentType === 'program') {
+      return true;
+    }
+
+    return false;
   }
   
   private isOrmPattern(text: string): boolean {
@@ -540,7 +677,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     
     // Additional check for common ORM patterns that might be missed
     // Handle patterns like db.select().from(users) where 'users' is a variable
-    const ormVariablePattern = /\.from\s*\(\s*([a-zA-Z_]\w*)\s*\)/g;
+    const ormVariablePattern = /\.from\s*\(\s*([\p{L}_][\p{L}\p{N}_]*)\s*\)/gu;
     const ormMatches = text.matchAll(ormVariablePattern);
     for (const match of ormMatches) {
       if (match[1] && !match[1].includes('"') && !match[1].includes("'")) {
@@ -549,7 +686,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     }
     
     // Handle patterns like db.users.find() or db.orders.findOne()
-    const dbTablePattern = /db\.([a-zA-Z_]\w*)\.\w+\s*\(/g;
+    const dbTablePattern = /db\.([\p{L}_][\p{L}\p{N}_]*)\.\p{L}[\p{L}\p{N}_]*\s*\(/gu;
     const dbMatches = text.matchAll(dbTablePattern);
     for (const match of dbMatches) {
       if (match[1]) {
@@ -638,7 +775,8 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const configPatterns = config.securityPatterns?.sqlInjectionRisks || [];
     const allPatterns = [...sqlInjectionPatterns, ...configPatterns];
     
-    const injectionRisk = allPatterns.some(pattern => text.includes(pattern)) &&
+    const injectionRisk = !parameterized &&
+                          allPatterns.some(pattern => text.includes(pattern)) &&
                           this.containsSQLKeywords(text);
     
     return { parameterized, injectionRisk };
@@ -646,18 +784,59 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   
   private extractMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string {
     const text = adapter.getNodeText(node, sourceCode);
-    const match = text.match(/(\w+)\s*\(/);
+    const match = text.match(/([\p{L}\p{N}_]+)\s*\(/u);
     return match ? match[1] : 'unknown';
   }
   
-  private requiresOrgFilter(tables: string[]): boolean {
-    // Tables that typically need organization filtering
-    const orgTables = ['users', 'projects', 'orders', 'customers', 'accounts', 'teams'];
+  /**
+   * Spec 21 R6.2: Three-tier org-filter detection.
+   *
+   * Tier 1 (config-primary): `orgFilterTables` — the user's explicit declaration
+   *   of which tables are multi-tenant. Tenancy is policy; this is the
+   *   declaration of record.
+   *
+   * Tier 2 (usage-inference secondary): A table requires the filter if the
+   *   project's own corpus shows it scoped — i.e., a column matching
+   *   `orgFilterColumns` (default: org_id/tenant_id/organization_id/workspace_id)
+   *   exists on it in the schema definitions in config.
+   *   This is what makes non-English table names (e.g., 注文) detectable
+   *   with zero explicit orgFilterTables declaration.
+   *
+   * Tier 3 (fallback): English table list retained as defaults, evidence-tagged
+   *   `fallback` like every other name list in Spec 21.
+   */
+  private requiresOrgFilter(tables: string[], config: DataAccessAnalyzerConfig): boolean {
+    const orgFilterTables = config.orgFilterTables ?? [];
+    const orgFilterColumns = config.orgFilterColumns ?? ['org_id', 'tenant_id', 'organization_id', 'workspace_id'];
+    const schemas = config.schemas ?? [];
+    const fallbackOrgTables = ['users', 'projects', 'orders', 'customers', 'accounts', 'teams'];
+
+    // Build a lookup set of tables from schema definitions that have an
+    // org-filter column — this is the usage-inference tier.
+    const schemaOrgTables = new Set<string>();
+    for (const schema of schemas) {
+      for (const table of schema.tables) {
+        if (table.columns.some(c => orgFilterColumns.includes(c.name.toLowerCase()))) {
+          schemaOrgTables.add(table.name.toLowerCase());
+        }
+      }
+    }
+
     return tables.some(table => {
-      // Handle both actual table names and variable names that likely represent tables
-      const tableName = table.toLowerCase();
-      // Check exact match or if the table variable name matches (e.g., 'users' variable for 'users' table)
-      return orgTables.includes(tableName) || orgTables.some(orgTable => tableName === orgTable);
+      const tableLower = table.toLowerCase();
+
+      // Tier 1: config-primary — explicit user declaration
+      if (orgFilterTables.some(t => t.toLowerCase() === tableLower)) {
+        return true;
+      }
+
+      // Tier 2: schema-based inference — table has an org-filter column
+      if (schemaOrgTables.has(tableLower)) {
+        return true;
+      }
+
+      // Tier 3: English fallback
+      return fallbackOrgTables.includes(tableLower);
     });
   }
   
@@ -687,20 +866,23 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     ast: AST,
     adapter: LanguageAdapter,
     sourceCode: string,
-    config: DataAccessAnalyzerConfig
+    config: DataAccessAnalyzerConfig,
+    provenanceContext?: ProvenanceContext,
   ): Violation[] {
     const violations: Violation[] = [];
 
-    // Find all nodes that look like database calls
+    // Find all nodes that look like database calls (Spec 21: provenance-gated)
     const dbNodes = adapter.findNodes(ast, {
-      custom: (node) => this.isDbCallNode(node, adapter, sourceCode),
+      custom: (node) => this.isDbCallNode(node, adapter, sourceCode, provenanceContext),
     });
 
-    // Track reported line+loop combos to avoid duplicates
+    // Track reported line+loop combos to avoid duplicates (runtime dedup only)
     const reported = new Set<string>();
+    // Track symbol ordinals per enclosing function for fingerprint stability
+    const loopOrdinals = new Map<string, number>();
 
     for (const node of dbNodes) {
-      const nodeText = adapter.getNodeText(node, sourceCode);
+              const nodeText = adapter.getNodeText(node, sourceCode);
       if (!nodeText || nodeText.trim().length < 10) continue;
 
       const loopInfo = this.findEnclosingLoop(node, adapter);
@@ -714,6 +896,13 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       if (reported.has(dedupKey)) continue;
       reported.add(dedupKey);
 
+      // Stable fingerprint symbol: enclosing function + ordinal
+      const enclosingFn = this.findEnclosingFunctionName(node, adapter);
+      const baseSym = `${enclosingFn}:loop-query`;
+      const count = (loopOrdinals.get(baseSym) ?? 0) + 1;
+      loopOrdinals.set(baseSym, count);
+      const sym = count > 1 ? `${baseSym}:${count}` : baseSym;
+
       // R4.2: Nested-loop attribution
       const depthMsg = loopInfo.depth > 1
         ? ` (nested ${loopInfo.depth} levels deep)`
@@ -726,7 +915,9 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         `(loop at line ${loopInfo.loopNode.location.start.line}). ` +
         `This may cause N+1 performance issues. Consider batching queries or using a join.`,
         'warning',                                             // R7: loop-query → warning
-        'loop-query'
+        'loop-query',
+        undefined,
+        sym
       ));
     }
 
@@ -737,10 +928,36 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
    * R4.1: Determine if a node is a database call expression.
    * Lightweight check — reused from extractDatabaseCalls logic.
    */
-  private isDbCallNode(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
-    const nodeText = adapter.getNodeText(node, sourceCode);
+  /**
+   * R4.1: Determine if a node is a database call expression.
+   * Spec 21: When provenance context is available, uses provenance-based detection
+   * (conjunctive guard — never name alone). In names mode or without context,
+   * falls back to the legacy dbPatterns text match.
+   */
+  private isDbCallNode(
+    node: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    provenanceContext?: ProvenanceContext,
+  ): boolean {
+    // Spec 21: Provenance-first detection when context is available
+    if (provenanceContext && provenanceContext.mode !== 'names') {
+      // In provenance or hybrid mode, use provenance check
+      if (this.isFunctionCall(node, adapter)) {
+        if (isDBProvenanced(node, adapter, sourceCode, provenanceContext, DB_CALL_METHODS)) {
+          return true;
+        }
+      }
+      // Template literal with SQL keywords — syntax check, no name involved
+      if (this.isTemplateLiteral(node, adapter)) {
+        return this.containsSQLKeywords(adapter.getNodeText(node, sourceCode));
+      }
+      return false;
+    }
 
-    // Call-expression with DB patterns
+    // Legacy fallback: name-based matching for names mode / no context
+            const nodeText = adapter.getNodeText(node, sourceCode);
+
     if (this.isFunctionCall(node, adapter)) {
       const dbPatterns = ['select', 'insert', 'update', 'delete', 'from', 'where', 'execute', 'query', 'find', 'aggregate', 'count', 'distinct'];
       if (dbPatterns.some(pattern => nodeText.toLowerCase().includes(pattern))) {
@@ -748,7 +965,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       }
     }
 
-    // Template literal with SQL keywords
     if (this.isTemplateLiteral(node, adapter)) {
       return this.containsSQLKeywords(nodeText);
     }
@@ -845,6 +1061,66 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     for (const child of children) {
       if ((child as any).name) return (child as any).name;
       if ((child as any).text) return (child as any).text;
+    }
+
+    return '';
+  }
+
+  /**
+   * Walk the parent chain to find the enclosing function/method/arrow name.
+   * Returns 'top-level' if no enclosing function is found.
+   *
+   * Used for stable fingerprint symbols — the enclosing function name is
+   * immune to line drift (Spec 18 Gap 2).
+   */
+  private findEnclosingFunctionName(node: ASTNode, adapter: LanguageAdapter): string {
+    let current = adapter.getParent(node);
+    while (current) {
+      const type = adapter.getNodeType(current);
+
+      // Arrow functions, function declarations, function expressions
+      if (
+        type === 'arrow_function' ||
+        type === 'function_declaration' ||
+        type === 'function_expression' ||
+        type === 'generator_function_declaration' ||
+        type === 'generator_function_expression'
+      ) {
+        const name = this.getNodeName(current, adapter);
+        if (name) return name;
+      }
+
+      // Method definitions on classes/objects
+      if (type === 'method_definition' || adapter.isMethod(current)) {
+        const name = this.getNodeName(current, adapter);
+        if (name) return name;
+      }
+
+      current = adapter.getParent(current);
+    }
+    return 'top-level';
+  }
+
+  /**
+   * Extract the name/identifier from a function or method AST node.
+   */
+  private getNodeName(node: ASTNode, adapter: LanguageAdapter): string {
+    // Try named children first
+    if ((node as any).name && typeof (node as any).name === 'string') return (node as any).name;
+    if ((node as any).text && typeof (node as any).text === 'string') return (node as any).text;
+
+    // Walk children for identifier / property_identifier
+    if (node.children) {
+      for (const child of node.children) {
+        const childType = adapter.getNodeType(child);
+        if (
+          childType === 'identifier' ||
+          childType === 'property_identifier'
+        ) {
+          const name = this.getNodeName(child, adapter);
+          if (name) return name;
+        }
+      }
     }
 
     return '';

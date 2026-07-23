@@ -6,6 +6,7 @@
 import { promises as fs } from 'fs';
 import { statSync, readFileSync } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import {
   AuditResult,
@@ -24,6 +25,7 @@ import { loadConfig } from './config/configLoader.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
+import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
 
 // Import universal analyzers
 import { initializeLanguages } from './languages/index.js';
@@ -36,6 +38,12 @@ import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
 import { invariantsAnalyzer } from './analyzers/invariantsAnalyzer.js';
 import { hasRules } from './invariants/ruleEngine.js';
 import { CodeIndexDB } from './codeIndexDB.js';
+import { writeAuditToLedger, detectRunInput } from './ledger.js';
+
+// Package version — read once at module load
+const __auditRunnerDirname = path.dirname(fileURLToPath(import.meta.url));
+const _pkg = JSON.parse(readFileSync(path.join(__auditRunnerDirname, '..', 'package.json'), 'utf-8'));
+const TOOL_VERSION = String(_pkg.version || '0.0.0');
 
 // Initialize the canonical language system once
 initializeLanguages();
@@ -83,6 +91,10 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       if (config.checkDependencyInversion !== undefined) universalConfig.checkDependencyInversion = config.checkDependencyInversion;
       if (config.checkInterfaceSegregation !== undefined) universalConfig.checkInterfaceSegregation = config.checkInterfaceSegregation;
       if (config.checkLiskovSubstitution !== undefined) universalConfig.checkLiskovSubstitution = config.checkLiskovSubstitution;
+      // Forward base-class properties (Spec-20 path profiles + severity overrides)
+      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
+      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
+      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
       const result = await analyzer.analyze(files, universalConfig, {
         progressCallback: createProgressAdapter('solid', progressCallback),
         ...options as Record<string, unknown>,
@@ -126,6 +138,12 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       if (config.checkPerformance !== undefined) universalConfig.checkPerformance = config.checkPerformance;
       // R4.3: directAccess — "flag" (default) or "allow"
       if (config.directAccess !== undefined) universalConfig.directAccess = config.directAccess;
+      // Forward base-class properties (Spec-20 path profiles + severity overrides)
+      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
+      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
+      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
+      // Spec 21: Forward shared provenance timing accumulator
+      if (config._provenanceTiming !== undefined) universalConfig._provenanceTiming = config._provenanceTiming;
       return analyzer.analyze(files, universalConfig, {
         progressCallback: createProgressAdapter('data-access', progressCallback),
         ...options as Record<string, unknown>,
@@ -139,7 +157,7 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
     category: 'documentation',
     analyze: async (files, config, options, progressCallback) => {
       const analyzer = new UniversalDocumentationAnalyzer();
-      const universalConfig = {
+      const universalConfig: Record<string, unknown> = {
         requireFunctionDocs: config.requireFunctionDocs ?? true,
         requireClassDocs: config.requireComponentDocs ?? true,
         // requireFileDocs is DEPRECATED — use fileHeaders instead (default false per R1.5)
@@ -156,6 +174,10 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
         fileHeaders: config.fileHeaders ?? config.requireFileDocs ?? false,  // R1.5
         headerSkipGlobs: config.headerSkipGlobs,                            // R1.5 (undefined → analyzer default)
       };
+      // Forward base-class properties (Spec-20 path profiles + severity overrides)
+      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
+      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
+      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
       return analyzer.analyze(files, universalConfig, {
         progressCallback: createProgressAdapter('documentation', progressCallback),
         ...options as Record<string, unknown>,
@@ -189,8 +211,7 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       } catch {
         // If database isn't available, continue without schemas
       }
-      const universalConfig = {
-        enableTableUsageTracking: config.enableTableUsageTracking ?? true,
+      const universalConfig: Record<string, unknown> = {
         checkMissingReferences: config.checkMissingReferences ?? true,
         checkNamingConventions: config.checkNamingConventions ?? true,
         detectUnusedTables: config.detectUnusedTables ?? false,
@@ -205,6 +226,12 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
         dbBindingNames: config.dbBindingNames ?? ['env.DB'],               // R2.2
         fileGateGlobs: config.fileGateGlobs,                               // R2.2 (let analyzer use defaults)
       };
+      // Forward base-class properties (Spec-20 path profiles + severity overrides)
+      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
+      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
+      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
+      // Spec 21: Forward shared provenance timing accumulator
+      if (config._provenanceTiming !== undefined) universalConfig._provenanceTiming = config._provenanceTiming;
       const result = await analyzer.analyze(files, universalConfig);
       return {
         ...result,
@@ -409,6 +436,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Run analyzers
     const analyzerResults: Record<string, AnalyzerResult> = {};
     const enabledAnalyzers = getEnabledAnalyzers(mergedOptions, analyzerRegistry);
+
+    // Spec 21: Shared timing accumulator for provenance resolution.
+    // Injected into data-access and schema analyzers so they can report
+    // per-file buildProvenanceContext() wall time (hook-latency measurement).
+    const provenanceTiming = { totalMs: 0 };
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -443,10 +475,27 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           message: `Running ${analyzerName} analyzer...`
         });
 
-        // Build analyzer config; inject full index for DRY on scoped runs
-        const analyzerConfig = { ...(mergedOptions.analyzerConfigs?.[analyzerName] || {}) };
+        // Build analyzer config; inject full index for DRY on scoped runs.
+        // Skip pathProfiles for invariants (Spec-20 R3): no backdoor
+        // around declared laws — invariants severity is absolute.
+        const isInvariants = analyzerName === 'invariants';
+        const analyzerConfig: Record<string, unknown> = {
+          ...(mergedOptions.analyzerConfigs?.[analyzerName] || {}),
+        };
+        if (!isInvariants) {
+          analyzerConfig.pathProfiles = mergedOptions.pathProfiles;
+          analyzerConfig.projectRoot = root;
+          analyzerConfig.severityOverrides = mergedOptions.severityOverrides;
+        }
         if (analyzerName === 'dry' && isScoped && fullFunctionIndex) {
           analyzerConfig.fullFunctionIndex = fullFunctionIndex;
+        }
+        // Spec 21: Pass shared provenance timing accumulator to analyzers
+        // that call buildProvenanceContext() (data-access and schema).
+        // The analyzers accumulate per-file timing into this object;
+        // we read it back after all analyzers complete.
+        if (analyzerName === 'data-access' || analyzerName === 'schema') {
+          analyzerConfig._provenanceTiming = provenanceTiming;
         }
 
         logMcpInfo('analysis', `running ${analyzerName}`, { fileCount: files.length });
@@ -504,6 +553,50 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       }
     }
 
+    // ── Baseline classification (Spec 18 R1) ────────────────────────────
+    const projectRoot = path.resolve(mergedOptions.projectRoot || process.cwd());
+    const baseline = loadBaseline(projectRoot);
+    let baselineMetadata: {
+      present: boolean;
+      hash?: string;
+      newCount: number;
+      fixedCount: number;
+      knownCount: number;
+      previousKnownCount?: number;
+    } | undefined;
+
+    if (baseline) {
+      const allViolations = Object.values(orderedAnalyzerResults).flatMap(
+        (r) => r.violations
+      );
+      // For scoped runs, limit "fixed" to in-scope files
+      const scopedFiles = isScoped ? files : undefined;
+      const classified = matchFindings(allViolations, baseline, scopedFiles);
+
+      // Tag violations with their baseline status
+      for (const v of classified.new) {
+        (v as any).new = true;
+      }
+      for (const v of classified.known) {
+        (v as any).new = false;
+      }
+
+      baselineMetadata = {
+        present: true,
+        hash: hashBaseline(baseline),
+        newCount: classified.new.length,
+        fixedCount: classified.fixed.length,
+        knownCount: classified.known.length,
+        previousKnownCount: baseline.metadata.totalFindings,
+      };
+
+      logMcpInfo('baseline', 'baseline classification complete', {
+        new: classified.new.length,
+        fixed: classified.fixed.length,
+        known: classified.known.length,
+      });
+    }
+
     // Generate summary
     const summary = generateSummary(orderedAnalyzerResults, files.length);
 
@@ -519,6 +612,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         analyzersRun: enabledAnalyzers,
         configUsed: mergedOptions,
         scope: scopeResultType,
+        provenanceResolutionMs: provenanceTiming.totalMs,
+        ...(baselineMetadata && { baseline: baselineMetadata }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
           fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)
@@ -539,6 +634,32 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         handoffRemaining
       );
     }
+
+    // Spec 11 R1 — write to findings ledger (non-fatal: ledger is advisory)
+    const ledgerRunId = (async () => {
+      try {
+        const indexDb = CodeIndexDB.getInstance();
+        await indexDb.initialize();
+        const violations = Object.values(orderedAnalyzerResults).flatMap(ar => ar.violations);
+        const scopeStr = Array.isArray(scope) ? `files:${scope.length}` : (scope ?? 'all');
+        return writeAuditToLedger(
+          indexDb.rawDb,
+          detectRunInput(
+            process.argv.slice(2).join(' '),
+            (options as any).surface ?? 'cli',
+            scopeStr,
+            root,
+            TOOL_VERSION,
+          ),
+          violations,
+          Date.now() - startTime,
+          0, // exit status TBD — updateLedgerRunStatus by CLI after return
+        );
+      } catch (_err) {
+        // ledger write is non-fatal — audit result is still valid
+        return null;
+      }
+    })();
 
     return result;
   }

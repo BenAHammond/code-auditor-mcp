@@ -22,6 +22,7 @@ import { initParsers } from './languages/index.js';
 import { queryParser } from './search/QueryParser.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import type { Severity, AuditScope, SearchOptions } from './types.js';
+import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
 
 // Get package.json for version info
 const __filename = fileURLToPath(import.meta.url);
@@ -47,6 +48,9 @@ program
   .option('-o, --output <dir>', 'Output directory for reports')
   .option('-f, --format <format>', 'Report format: html, json, csv, or sarif')
   .option('--fail-on <severity>', 'Exit code 2 when violations at or above this severity exist')
+  .option('--full', 'Show full violation inventory (overrides default delta view when baseline exists)')
+  .option('--include-baseline', 'Evaluate baseline-known violations in --fail-on checks')
+  .option('--fail-on-regression', 'Exit code 2 when total advisory debt exceeds the baseline snapshot')
   .action(async (options) => {
     console.log(chalk.blue('🔍 Code Quality Audit Tool'));
     console.log(chalk.gray('══════════════════════════════════════════════════'));
@@ -72,10 +76,95 @@ program
 
       const result = await runner.run();
 
-      console.log(`\nFound ${result.summary.totalViolations} violations`);
-      console.log(`Critical: ${result.summary.criticalIssues}`);
-      console.log(`Warnings: ${result.summary.warnings}`);
-      console.log(`Suggestions: ${result.summary.suggestions}`);
+      const violations = Object.values(result.analyzerResults).flatMap(
+        (r: any) => r.violations || []
+      );
+      const baseline = result.metadata?.baseline;
+
+      // ── Delta output (Spec 18 R2) ─────────────────────────────────
+      if (baseline && !options.full) {
+        const newViolations = violations.filter((v: any) => v.new === true);
+        const knownCount = baseline.knownCount ?? 0;
+        const fixedCount = baseline.fixedCount ?? 0;
+        const previousKnown = baseline.previousKnownCount ?? 0;
+        const currentDebt = newViolations.length + knownCount;
+        const debtDelta = currentDebt - previousKnown;
+        const trendIcon = debtDelta > 0 ? '↑' : debtDelta < 0 ? '↓' : '→';
+        const trendLabel = debtDelta > 0
+          ? `(debt increased since last baseline)`
+          : debtDelta < 0
+            ? `(debt decreased since last baseline)`
+            : '(unchanged)';
+
+        console.log(`\n📊 Delta: +${newViolations.length} new · −${fixedCount} fixed · ${knownCount} known  ${trendIcon} ${trendLabel}`);
+
+        if (newViolations.length > 0) {
+          console.log(chalk.gray(`\n── New Findings (${newViolations.length}) ──────────────────────────`));
+          for (const v of newViolations) {
+            const icon =
+              v.severity === 'critical' ? '🔴' :
+              v.severity === 'warning' ? '🟡' : '🔵';
+            console.log(
+              `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}`
+            );
+          }
+        } else {
+          console.log(chalk.green('\n✓ No new findings since last baseline.'));
+        }
+
+        // Debt by analyzer
+        console.log(chalk.gray(`\n── Debt by Analyzer ──────────────────────────`));
+        const analyzerCounts: Record<string, { known: number; new: number }> = {};
+        for (const v of violations) {
+          const a = (v as any).analyzer || 'unknown';
+          if (!analyzerCounts[a]) analyzerCounts[a] = { known: 0, new: 0 };
+          if ((v as any).new === false) analyzerCounts[a].known++;
+          else if ((v as any).new === true) analyzerCounts[a].new++;
+        }
+        for (const [analyzer, counts] of Object.entries(analyzerCounts).sort()) {
+          const newPart = counts.new > 0 ? ` (+${counts.new})` : '';
+          console.log(`${analyzer}: ${counts.known.toLocaleString()} known${newPart}`);
+        }
+
+        // Top files
+        console.log(chalk.gray(`\n── Top Files ─────────────────────────────────`));
+        const fileCounts = new Map<string, number>();
+        for (const v of violations) {
+          const f = v.file || '';
+          fileCounts.set(f, (fileCounts.get(f) || 0) + 1);
+        }
+        const topFiles = [...fileCounts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5);
+        for (const [file, count] of topFiles) {
+          console.log(`${file} — ${count} finding${count !== 1 ? 's' : ''}`);
+        }
+
+        console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit --full')} to see all ${currentDebt.toLocaleString()} findings.`));
+      } else if (!baseline) {
+        // No baseline: current behavior + hint
+        console.log(`\nFound ${result.summary.totalViolations} violations`);
+        console.log(`Critical: ${result.summary.criticalIssues}`);
+        console.log(`Warnings: ${result.summary.warnings}`);
+        console.log(`Suggestions: ${result.summary.suggestions}`);
+
+        console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
+      } else {
+        // --full with baseline: full itemized inventory (current behavior)
+        console.log(`\nFound ${result.summary.totalViolations} violations`);
+        console.log(`Critical: ${result.summary.criticalIssues}`);
+        console.log(`Warnings: ${result.summary.warnings}`);
+        console.log(`Suggestions: ${result.summary.suggestions}`);
+      }
+
+      // Spec-20 R4: built-in profile visibility — silent behavior changes
+      // are never acceptable. Notify when scripts-and-tests capped findings.
+      const builtinCapped = Object.values(result.analyzerResults)
+        .reduce((count, ar) => count + ar.violations.filter(v => v.profile === 'scripts-and-tests').length, 0);
+      if (builtinCapped > 0) {
+        console.log(chalk.blue(`\nℹ️  ${builtinCapped.toLocaleString()} findings capped by built-in profile "scripts-and-tests" (scripts/tests/fixtures → suggestion).`));
+        console.log(chalk.gray(`   Set ${chalk.cyan('"builtin": false')} in .codeauditor.json to disable.`));
+      }
 
       // Generate formatted report if --format is specified
       if (options.format) {
@@ -94,14 +183,27 @@ program
         console.log(chalk.green(`\nReport written to ${reportPath}`));
       }
 
-      // Exit code based on --fail-on
+      // ── Fail-on logic (Spec 18 R3) ───────────────────────────────
+      // --fail-on-regression: compare total advisory debt to baseline snapshot
+      if (baseline && options.failOnRegression) {
+        const currentDebt = violations.filter((v: any) => v.new || v.new === false).length;
+        const snapshotDebt = baseline.previousKnownCount ?? 0;
+        if (currentDebt > snapshotDebt) {
+          console.error(
+            chalk.red(`Debt regression: ${currentDebt - snapshotDebt} findings added without re-baselining.`)
+          );
+          process.exit(2);
+        }
+      }
+
+      // --fail-on: evaluate new + invariant findings only (unless --include-baseline)
       if (failOnSeverity) {
-        const violations = Object.values(result.analyzerResults).flatMap(
-          (r: any) => r.violations || []
-        );
+        const evaluableViolations = (baseline && !options.includeBaseline)
+          ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
+          : violations;
         const severityOrder: Severity[] = ['critical', 'warning', 'suggestion'];
         const failIndex = severityOrder.indexOf(failOnSeverity);
-        const hasAtOrAbove = violations.some((v: any) => {
+        const hasAtOrAbove = evaluableViolations.some((v: any) => {
           const vIndex = severityOrder.indexOf(v.severity);
           return vIndex >= 0 && vIndex <= failIndex;
         });
@@ -125,6 +227,7 @@ program
   .option('-f, --format <format>', 'Report format: json, or sarif (overrides --json)')
   .option('--quiet', 'Suppress output when zero violations')
   .option('--fail-on <severity>', 'Exit code 2 when violations at or above this severity exist', 'critical')
+  .option('--include-baseline', 'Evaluate baseline-known violations in --fail-on checks')
   .option('--stdin', 'Read file paths from stdin (one per line)')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
   .action(async (paths: string[], options: Record<string, any>) => {
@@ -185,6 +288,12 @@ program
         (r: any) => r.violations || []
       );
 
+      // Baseline classification (Spec 18 R4 — hook path)
+      const baseline = result.metadata?.baseline;
+      const knownViolations = violations.filter((v: any) => v.new === false);
+      const newViolations = violations.filter((v: any) => v.new === true || v.new === undefined);
+      const knownCount = knownViolations.length;
+
       // JSON output
       if (options.format === 'sarif') {
         const { generateSARIFReport } = await import('./reporting/sarifReportGenerator.js');
@@ -216,7 +325,8 @@ program
             endColumn: v.end?.column,
             enclosingSymbol: v.symbol || v.enclosingFunction || '',
             suggestion: v.suggestion || '',
-            details: v.details || ''
+            details: v.details || '',
+            ...(v.new !== undefined && { new: v.new })
           };
         });
         process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
@@ -230,30 +340,116 @@ program
         console.log(`Warnings: ${result.summary.warnings}`);
         console.log(`Suggestions: ${result.summary.suggestions}`);
 
+        // Known-finding informational line (Spec 18 R4)
+        if (baseline && knownCount > 0) {
+          console.log(chalk.gray(`\nℹ️ ${knownCount} pre-existing finding${knownCount !== 1 ? 's' : ''} in files you touched (not blocking).`));
+        }
+
         if (violations.length > 0) {
           console.log(chalk.gray('\n── Violations ────────────────────────────────────'));
           for (const v of violations) {
             const icon =
               v.severity === 'critical' ? '🔴' :
               v.severity === 'warning' ? '🟡' : '🔵';
+            const statusTag = (v as any).new === false
+              ? chalk.dim(' [known]')
+              : '';
             console.log(
-              `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}`
+              `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}${statusTag}`
             );
           }
         }
       }
 
-      // Exit code based on --fail-on
+      // Exit code based on --fail-on (Spec 18 R3/R4)
       if (failOnSeverity) {
+        const evaluableViolations = (baseline && !options.includeBaseline)
+          ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
+          : violations;
         const severityOrder: Severity[] = ['critical', 'warning', 'suggestion'];
         const failIndex = severityOrder.indexOf(failOnSeverity);
-        const hasAtOrAbove = violations.some((v: any) => {
+        const hasAtOrAbove = evaluableViolations.some((v: any) => {
           const vIndex = severityOrder.indexOf(v.severity);
           return vIndex >= 0 && vIndex <= failIndex;
         });
 
         if (hasAtOrAbove) {
           process.exit(2);
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Baseline command (Spec 18 R1)
+program
+  .command('baseline')
+  .description('Snapshot current advisory findings as the baseline (excludes invariants)')
+  .option('-p, --path <path>', 'Project path', process.cwd())
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      await initParsers();
+
+      const runner = createAuditRunner({
+        projectRoot: options.path,
+      });
+
+      const result = await runner.run();
+
+      // Collect all violations from analyzer results
+      const allViolations = Object.values(result.analyzerResults).flatMap(
+        (r: any) => r.violations || []
+      );
+
+      // Compute corpus stats
+      const corpusStats = {
+        files: result.metadata.filesAnalyzed,
+        functions: result.metadata.collectedFunctions?.length ?? 0,
+      };
+
+      // Build per-analyzer counts
+      const analyzerCounts: Record<string, number> = {};
+      for (const v of allViolations) {
+        if (v.analyzer === 'invariants') continue;
+        const a = v.analyzer || 'unknown';
+        analyzerCounts[a] = (analyzerCounts[a] || 0) + 1;
+      }
+
+      // Create new baseline
+      const newBaseline = createBaselineFromFindings(allViolations, {
+        toolVersion: packageJson.version,
+        totalFindings: allViolations.filter((v) => v.analyzer !== 'invariants').length,
+        analyzerCounts,
+        corpusStats,
+      });
+
+      // Load existing baseline for diff
+      const projectRoot = resolve(options.path || process.cwd());
+      const existing = loadBaseline(projectRoot);
+      const diff = existing ? diffBaselines(existing, newBaseline) : null;
+
+      // Save
+      saveBaseline(projectRoot, newBaseline);
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify({
+          success: true,
+          absorbed: diff?.absorbed ?? newBaseline.entries.length,
+          fixed: diff?.fixed ?? 0,
+          totalKnown: newBaseline.entries.length,
+          invariantsExcluded: allViolations.filter((v: any) => v.analyzer === 'invariants').length,
+        }, null, 2) + '\n');
+      } else {
+        const absorbed = diff?.absorbed ?? newBaseline.entries.length;
+        const fixed = diff?.fixed ?? 0;
+        const totalKnown = newBaseline.entries.length;
+        console.log(chalk.green(`\n✓ Baseline updated: ${absorbed} finding${absorbed !== 1 ? 's' : ''} absorbed, ${fixed} fixed, ${totalKnown} total known.`));
+        console.log(chalk.gray('Invariants excluded (they always enforce).'));
+        if (totalKnown > 0) {
+          console.log(chalk.gray(`\nRun ${chalk.cyan('code-audit')} to see your delta view.`));
         }
       }
     } catch (error) {
@@ -402,6 +598,8 @@ const configCmd = program
     console.log(chalk.yellow('Use a config subcommand:'));
     console.log(chalk.gray('  code-audit config rules-list       List invariant rules from .codeauditor.json'));
     console.log(chalk.gray('  code-audit config rules-check      Validate .codeauditor.json rules'));
+    console.log(chalk.gray('  code-audit config profiles         Show active path profiles'));
+    console.log(chalk.gray('  code-audit config detection        Show DB/validator provenance and inferred receivers'));
   });
 
 configCmd
@@ -486,6 +684,316 @@ configCmd
       } catch (err: any) {
         console.error(chalk.red(`Failed to read/parse config: ${err.message}`));
         process.exit(1);
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Config profiles subcommand — debug surface for path profiles (Spec-20 R5)
+configCmd
+  .command('profiles')
+  .description('Show active path profiles and resolve per-file matching')
+  .option('-p, --path <path>', 'Project path', process.cwd())
+  .option('--file <file>', 'Resolve profiles for a specific file')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const fs = await import('fs/promises');
+      const pathModule = await import('path');
+      const { loadConfig } = await import('./config/configLoader.js');
+      const { resolvePathProfile } = await import('./config/pathProfiles.js');
+
+      const projectRoot = pathModule.resolve(options.path);
+      const configPath = pathModule.join(projectRoot, '.codeauditor.json');
+
+      let profiles: { name: string; paths: string[]; overrides: Record<string, unknown>; builtin?: boolean }[] = [];
+
+      try {
+        await fs.access(configPath);
+        const config = await loadConfig({ configPath });
+        profiles = config.pathProfiles || [];
+      } catch {
+        // No config file — use defaults only
+        const { mergePathProfiles } = await import('./config/defaults.js');
+        profiles = mergePathProfiles(undefined, undefined) || [];
+      }
+
+      if (options.file) {
+        // Resolve profiles for a specific file
+        const filePath = pathModule.resolve(options.file);
+        const resolved = resolvePathProfile(filePath, projectRoot, profiles);
+
+        if (options.json) {
+          process.stdout.write(JSON.stringify({
+            file: options.file,
+            resolvedFilePath: filePath,
+            matchedProfileNames: resolved.matchedProfileNames,
+            severityCap: resolved.severityCap || null,
+            overrides: resolved.overrides,
+          }, null, 2) + '\n');
+        } else {
+          if (resolved.matchedProfileNames.length === 0) {
+            console.log(chalk.gray(`No profiles match: ${options.file}`));
+          } else {
+            console.log(chalk.bold(`Profiles matching: ${options.file}`));
+            for (const name of resolved.matchedProfileNames) {
+              const profile = profiles.find(p => p.name === name);
+              const builtinTag = profile?.builtin !== false && profiles.some(p => p.name === name) ? '' : '';
+              console.log(`  ${chalk.cyan(name)}${builtinTag ? chalk.gray(' (built-in)') : ''}`);
+            }
+            if (resolved.severityCap) {
+              console.log(chalk.yellow(`  severityCap: ${resolved.severityCap}`));
+            }
+            if (Object.keys(resolved.overrides).length > 0) {
+              console.log(chalk.gray('  merged overrides:'));
+              for (const [key, value] of Object.entries(resolved.overrides)) {
+                console.log(chalk.gray(`    ${key}: ${JSON.stringify(value)}`));
+              }
+            }
+          }
+        }
+      } else {
+        // List all active profiles
+        if (options.json) {
+          process.stdout.write(JSON.stringify({
+            projectRoot,
+            profiles: profiles.map(p => ({
+              name: p.name,
+              paths: p.paths,
+              overrides: p.overrides,
+              builtin: p.builtin !== false,
+            })),
+          }, null, 2) + '\n');
+        } else {
+          if (profiles.length === 0) {
+            console.log(chalk.gray('No path profiles active.'));
+          } else {
+            console.log(chalk.bold('Active path profiles:'));
+            for (const p of profiles) {
+              const tag = p.builtin !== false ? chalk.gray(' [built-in]') : '';
+              console.log(`  ${chalk.cyan(p.name)}${tag}`);
+              console.log(chalk.gray(`    paths: ${p.paths.join(', ')}`));
+              if (p.overrides && Object.keys(p.overrides).length > 0) {
+                for (const [key, value] of Object.entries(p.overrides)) {
+                  console.log(chalk.gray(`    ${key}: ${JSON.stringify(value)}`));
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Config detection subcommand — provenance debug surface (Spec-21 R2)
+configCmd
+  .command('detection')
+  .description('Show DB-provenanced and inferred receiver identifiers with per-entry evidence')
+  .option('-p, --path <path>', 'Project path', process.cwd())
+  .option('--json', 'Output as JSON')
+  .option('--mode <mode>', 'Detection mode filter (hybrid, provenance, names)')
+  .action(async (options) => {
+    try {
+      const pathModule = await import('path');
+      const fsPromises = await import('fs/promises');
+      const { initParsers } = await import('./languages/tree-sitter/parser.js');
+      const { initializeLanguages } = await import('./languages/index.js');
+      const { LanguageRegistry } = await import('./languages/LanguageRegistry.js');
+      const { loadConfig } = await import('./config/configLoader.js');
+      const provenanceMod = await import('./analyzers/provenance.js');
+      const {
+        buildProvenanceContext,
+        inferReceivers,
+      } = provenanceMod;
+
+      initializeLanguages();
+      await initParsers();
+      const registry = LanguageRegistry.getInstance();
+      const projectRoot = pathModule.resolve(options.path);
+
+      // Load config to get detection mode and analyzer settings
+      let config: any = {};
+      try {
+        const configPath = pathModule.join(projectRoot, '.codeauditor.json');
+        await fsPromises.access(configPath);
+        config = await loadConfig({ configPath });
+      } catch {
+        // No config — use defaults
+      }
+
+      const detectionMode = options.mode ||
+        config?.analyzerOptions?.schema?.detection?.mode ||
+        config?.analyzerOptions?.['data-access']?.detection?.mode ||
+        'hybrid';
+
+      // Gather files
+      const { findFiles } = await import('./utils/fileDiscovery.js');
+      const files = await findFiles(projectRoot);
+
+      const provenanced: Array<{
+        identifier: string;
+        file: string;
+        reason: string;
+        source: string;
+        chain?: string[];
+      }> = [];
+
+      const validatorIdentifiers: Array<{
+        identifier: string;
+        file: string;
+        reason: string;
+        source: string;
+        chain?: string[];
+      }> = [];
+
+      const inferred: Array<{
+        identifier: string;
+        file: string;
+        reason: string;
+      }> = [];
+
+      // Per-file scan
+      for (const filePath of files.slice(0, 500)) {
+        const relPath = pathModule.relative(projectRoot, filePath);
+        const adapter = registry.getAdapterForFile(filePath);
+        if (!adapter) continue;
+
+        try {
+          const sourceCode = await fsPromises.readFile(filePath, 'utf-8');
+          const ast = await adapter.parse(filePath, sourceCode);
+          if (!ast?.root) continue;
+
+          const schemaCfg = config?.analyzerOptions?.schema ?? {};
+          const daCfg = config?.analyzerOptions?.['data-access'] ?? {};
+
+          // Build provenance context using schema analyzer config (most complete)
+          const ctx = buildProvenanceContext(ast, adapter, sourceCode, {
+            mode: detectionMode as any,
+            dbReceiverNames: schemaCfg.dbReceiverNames ?? daCfg.dbReceiverNames,
+            dbBindingNames: schemaCfg.dbBindingNames ?? daCfg.dbBindingNames,
+            dbCallMethods: schemaCfg.dbCallMethods ?? daCfg.dbCallMethods,
+          });
+
+          // Collect DB-provenanced
+          for (const [id, evidence] of ctx.dbProvenanced) {
+            provenanced.push({
+              identifier: id,
+              file: relPath,
+              reason: evidence.reason,
+              source: evidence.source,
+              chain: evidence.chain.length > 0 ? evidence.chain : undefined,
+            });
+          }
+
+          // Collect validator-provenanced
+          for (const [id, evidence] of ctx.validatorProvenanced) {
+            validatorIdentifiers.push({
+              identifier: id,
+              file: relPath,
+              reason: evidence.reason,
+              source: evidence.source,
+              chain: evidence.chain.length > 0 ? evidence.chain : undefined,
+            });
+          }
+
+          // Run inference
+          if (ctx.dbProvenanced.size > 0) {
+            const inf = inferReceivers(ctx.dbProvenanced, ast, adapter, sourceCode);
+            for (const ev of inf.evidence) {
+              inferred.push({
+                identifier: ev.identifier,
+                file: relPath,
+                reason: ev.reason,
+              });
+            }
+          }
+        } catch {
+          // Skip unparseable files
+        }
+      }
+
+      // Persist provenance to code index for cross-file consumption (Spec-21 R2)
+      try {
+        const db = CodeIndexDB.getInstance();
+        await db.initialize();
+
+        // Store per-file provenance
+        const byFile = new Map<string, { dbProvenanced: typeof provenanced; validatorProvenanced: typeof validatorIdentifiers }>();
+        for (const p of provenanced) {
+          const entry = byFile.get(p.file) || (byFile.set(p.file, { dbProvenanced: [], validatorProvenanced: [] }), byFile.get(p.file)!);
+          entry.dbProvenanced.push(p);
+        }
+        for (const v of validatorIdentifiers) {
+          const entry = byFile.get(v.file) || (byFile.set(v.file, { dbProvenanced: [], validatorProvenanced: [] }), byFile.get(v.file)!);
+          entry.validatorProvenanced.push(v);
+        }
+        for (const [file, data] of byFile) {
+          db.storeFileProvenance(file, data);
+        }
+
+        // Store inferred receivers
+        db.storeInferredReceivers(inferred);
+      } catch {
+        // Index not available — skip persistence
+      }
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify({
+          mode: detectionMode,
+          projectRoot,
+          filesScanned: files.slice(0, 500).length,
+          dbProvenanced: provenanced,
+          validatorProvenanced: validatorIdentifiers,
+          inferred,
+        }, null, 2) + '\n');
+      } else {
+        console.log(chalk.bold(`Detection mode: ${chalk.cyan(detectionMode)}`));
+        console.log(chalk.gray(`Scanned ${files.slice(0, 500).length} files`));
+        console.log();
+
+        if (provenanced.length > 0) {
+          console.log(chalk.bold('DB-Provenanced Identifiers:'));
+          for (const p of provenanced) {
+            const reasonColor = p.reason === 'fallback'
+              ? chalk.yellow
+              : p.reason === 'package'
+                ? chalk.green
+                : chalk.cyan;
+            console.log(`  ${chalk.white(p.identifier)} ${chalk.gray(`(${p.file})`)}`);
+            console.log(`    ${reasonColor(`reason: ${p.reason}`)} — ${chalk.gray(p.source)}`);
+            if (p.chain) {
+              console.log(`    ${chalk.gray(`chain: ${p.chain.join(' → ')}`)}`);
+            }
+          }
+          console.log();
+        }
+
+        if (inferred.length > 0) {
+          console.log(chalk.bold('Inferred Receivers:'));
+          for (const i of inferred) {
+            console.log(`  ${chalk.white(i.identifier)} ${chalk.gray(`(${i.file})`)}`);
+            console.log(`    ${chalk.magenta(i.reason)}`);
+          }
+          console.log();
+        }
+
+        if (validatorIdentifiers.length > 0) {
+          console.log(chalk.bold('Validator-Provenanced Identifiers:'));
+          for (const v of validatorIdentifiers) {
+            console.log(`  ${chalk.white(v.identifier)} ${chalk.gray(`(${v.file})`)}`);
+            console.log(`    ${chalk.green(`reason: ${v.reason}`)} — ${chalk.gray(v.source)}`);
+          }
+          console.log();
+        }
+
+        if (provenanced.length === 0 && inferred.length === 0 && validatorIdentifiers.length === 0) {
+          console.log(chalk.gray('No DB-provenanced, inferred, or validator-provenanced identifiers found.'));
+        }
       }
     } catch (error) {
       console.error(chalk.red('Error:'), error);
@@ -796,6 +1304,109 @@ tasksCmd
         console.error(chalk.red(result.error || 'Unknown error'));
         process.exit(1);
       }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// ── Ledger command — Spec 11 R1 ──────────────────────────────────────────
+const ledgerCmd = program
+  .command('ledger')
+  .description('View and manage the findings ledger (append-only audit history)');
+
+ledgerCmd
+  .command('list')
+  .description('List recent audit runs')
+  .option('--limit <n>', 'Max runs to show', '20')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const { listRuns } = await import('./ledger.js');
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const runs = listRuns(db.rawDb);
+      const limit = parseInt(options.limit, 10) || 20;
+      const limited = runs.slice(0, limit);
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify(limited, null, 2) + '\n');
+      } else if (limited.length === 0) {
+        console.log(chalk.gray('No audit runs in the ledger yet. Run an audit first.'));
+      } else {
+        console.log(chalk.blue(`Ledger runs (${limited.length} of ${runs.length}):`));
+        for (const r of limited) {
+          const dirty = (r as any).gitDirty ? chalk.yellow(' [dirty]') : '';
+          console.log(`  ${chalk.bold(r.runId.slice(0, 8))}  ${r.timestamp}  ${r.surface}/${r.scope}  ${r.findingCount} findings  ${r.durationMs}ms  exit=${r.exitStatus}${dirty}`);
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+ledgerCmd
+  .command('export')
+  .description('Export ledger as JSON')
+  .option('--since <iso>', 'Only runs from this ISO timestamp')
+  .option('--json', 'Output as JSON (always on for export)')
+  .action(async (options) => {
+    try {
+      const { exportLedger } = await import('./ledger.js');
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const data = exportLedger(db.rawDb, options.since);
+      process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+ledgerCmd
+  .command('stats')
+  .description('Show aggregated ledger statistics')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const { getLedgerStats } = await import('./ledger.js');
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const stats = getLedgerStats(db.rawDb);
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify(stats, null, 2) + '\n');
+      } else {
+        console.log(chalk.blue(`Total runs: ${stats.totalRuns}`));
+        for (const [analyzer, a] of Object.entries(stats.perAnalyzer)) {
+          console.log(chalk.bold(`\n${analyzer} (${a.total} findings):`));
+          for (const [rule, count] of Object.entries(a.perRule)) {
+            console.log(`  ${rule}: ${count}`);
+          }
+          const sev = a.severityDistribution;
+          if (Object.keys(sev).length > 0) {
+            console.log(`  severity: ${Object.entries(sev).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+ledgerCmd
+  .command('import')
+  .description('Import D1 interim ledger files from a directory')
+  .requiredOption('--dir <path>', 'Directory of JSON run files')
+  .action(async (options) => {
+    try {
+      const { importLedgerFromDir } = await import('./ledger.js');
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const result = importLedgerFromDir(db.rawDb, options.dir);
+      console.log(chalk.green(`✓ Imported ${result.imported} runs, skipped ${result.skipped}`));
     } catch (error) {
       console.error(chalk.red('Error:'), error);
       process.exit(1);

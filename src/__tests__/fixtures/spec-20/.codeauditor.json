@@ -1,0 +1,19 @@
+{
+  "pathProfiles": [
+    {
+      "name": "source-strict",
+      "paths": ["src/**"],
+      "overrides": {
+        "requireFunctionDocs": true
+      }
+    },
+    {
+      "name": "scripts-lenient",
+      "paths": ["scripts/**"],
+      "overrides": {
+        "severityCap": "suggestion",
+        "requireFunctionDocs": true
+      }
+    }
+  ]
+}

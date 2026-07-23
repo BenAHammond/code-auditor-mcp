@@ -1,0 +1,9 @@
+{
+  "analyzer": "solid",
+  "config": { "maxMethodComplexity": 5, "skipTestFiles": false },
+  "expectedViolations": [
+    { "file": "src/complex-method.ts", "rule": "solid/method-complexity", "severity": "warning" }
+  ],
+  "nearMissFiles": ["src/simple-method.ts"],
+  "description": "Tests for the SOLID analyzer — method cyclomatic complexity exceeding threshold"
+}

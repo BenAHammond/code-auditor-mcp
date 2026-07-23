@@ -1,0 +1,16 @@
+{
+  "analyzer": "invariants",
+  "config": {},
+  "expectedViolations": [
+    {
+      "file": "src/ban-violation.ts",
+      "rule": "no-legacy-imports",
+      "symbol": "",
+      "severity": "critical"
+    }
+  ],
+  "nearMissFiles": [
+    "src/compliant.ts"
+  ],
+  "description": "Tests for the invariants analyzer — import-ban rule enforcement"
+}

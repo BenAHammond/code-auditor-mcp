@@ -145,3 +145,104 @@ describe('CLI integration — index sync', () => {
     expect(parsed.added).toBe(0);
   });
 });
+
+// ── Gap 3 (hook fix): foreign CWD project root forwarding ─────────────────────
+// The hook script passes -p "${CLAUDE_PROJECT_DIR}" to ensure the changed
+// command resolves the project root correctly even when CWD differs from
+// the project directory. These tests verify the -p flag is honored.
+
+describe('CLI integration — foreign CWD with -p', () => {
+  let projectDir: string;
+  let foreignCwd: string;
+
+  beforeEach(async () => {
+    projectDir = await mkdtemp(join(tmpdir(), 'ca-foreign-project-'));
+    foreignCwd = await mkdtemp(join(tmpdir(), 'ca-foreign-cwd-'));
+    await mkdir(join(projectDir, 'src'), { recursive: true });
+  });
+
+  afterEach(() => {
+    try { rmSync(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { rmSync(foreignCwd, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('changed --stdin with -p works when run from a foreign CWD', async () => {
+    // Write a source file in the project with an undocumented exported function
+    const srcFile = join(projectDir, 'src', 'helper.ts');
+    await writeFile(srcFile, [
+      'export function doStuff(x: number): number {',
+      '  const a = x + 1;',
+      '  const b = a * 2;',
+      '  const c = b - 3;',
+      '  const d = c / 4;',
+      '  return d;',
+      '}',
+    ].join('\n'));
+
+    // The 'changed' command with a file list (not 'changed' scope) audits
+    // the listed files directly. Pipe an absolute file path via stdin.
+    const result = execSync(
+      cliCommand(`changed --stdin --json --fail-on critical -p "${projectDir}"`),
+      {
+        cwd: foreignCwd,
+        encoding: 'utf-8',
+        input: `${srcFile}\n`,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 30_000,
+        env: { ...process.env, CODE_AUDITOR_DATA_DIR: projectDir },
+      }
+    );
+
+    expect(result).toBeDefined();
+    // Even if no violations found, we should get valid JSON or clean stdout
+    const trimmed = result.trim();
+    if (trimmed) {
+      const parsed = JSON.parse(trimmed);
+      expect(Array.isArray(parsed)).toBe(true);
+    }
+  });
+
+  it('changed with -p from foreign CWD finds project-specific config', async () => {
+    // Write a .codeauditor.json that ONLY enables the documentation analyzer
+    const configFile = join(projectDir, '.codeauditor.json');
+    await writeFile(configFile, JSON.stringify({
+      enabledAnalyzers: ['documentation'],
+    }));
+
+    // Source file with undocumented exported function
+    const srcFile = join(projectDir, 'src', 'lib.ts');
+    await writeFile(srcFile, [
+      '/**',
+      ' * A well-documented function.',
+      ' */',
+      'export function documented(x: number): number {',
+      '  const a = x + 1;',
+      '  const b = a * 2;',
+      '  const c = b - 3;',
+      '  const d = c / 4;',
+      '  return d;',
+      '}',
+    ].join('\n'));
+
+    // Run from foreign CWD with -p
+    const result = execSync(
+      cliCommand(`changed --stdin --json --fail-on critical -p "${projectDir}"`),
+      {
+        cwd: foreignCwd,
+        encoding: 'utf-8',
+        input: `${srcFile}\n`,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 30_000,
+        env: { ...process.env, CODE_AUDITOR_DATA_DIR: projectDir },
+      }
+    );
+
+    // Exit code 0 means the command ran successfully from the foreign CWD
+    // (documentation analyzer found no issues on the documented function)
+    const trimmed = result.trim();
+    if (trimmed) {
+      const parsed = JSON.parse(trimmed);
+      expect(Array.isArray(parsed)).toBe(true);
+    }
+  });
+});

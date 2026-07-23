@@ -63,3 +63,7 @@ README's analyzers section is rewritten around the measured split: **determinist
 - New detection capabilities or analyzers — this spec measures and calibrates what exists.
 - Any runtime LLM integration in the product.
 - Auto-fix generation from findings.
+
+## Amendment (Spec 21 R6.2 — binding on Spec 11's implementation)
+
+Spec 11 amendment (binding on 11's implementation): the bench corpus gains a non-English-identifier fixture project (mixed Portuguese/German/Japanese identifiers, DB access via provenance only), and 11's per-rule precision/recall is reported on it alongside the English corpora. A detection gap between the two is a release-blocking finding, not a footnote.

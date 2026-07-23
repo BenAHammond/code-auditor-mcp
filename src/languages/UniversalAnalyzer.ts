@@ -5,6 +5,7 @@
 import type { AnalyzerDefinition, AnalyzerResult, Violation } from '../types.js';
 import type { AST, LanguageAdapter } from './types.js';
 import { LanguageRegistry } from './LanguageRegistry.js';
+import { resolvePathProfile } from '../config/pathProfiles.js';
 import { promises as fs } from 'fs';
 
 export interface UniversalAnalyzerOptions {
@@ -44,6 +45,14 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     const configWithoutOverrides = { ...config };
     delete configWithoutOverrides.severityOverrides;
 
+    // Extract path profiles and project root from config (Spec-20).
+    // These are applied per-file in the loop below and should not leak
+    // to individual analyzers.
+    const pathProfiles = config.pathProfiles;
+    const projectRoot: string | undefined = config.projectRoot;
+    delete configWithoutOverrides.pathProfiles;
+    delete configWithoutOverrides.projectRoot;
+
     // Group files by language
     const filesByAdapter = this.groupFilesByAdapter(files);
     
@@ -65,14 +74,43 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
             })));
           }
           
+          // Resolve path profiles for this file (Spec-20)
+          let fileConfig = configWithoutOverrides;
+          let fileSeverityCap: string | undefined;
+          let fileProfileNames: string[] = [];
+          if (pathProfiles && projectRoot && pathProfiles.length > 0) {
+            const resolved = resolvePathProfile(file, projectRoot, pathProfiles);
+            if (Object.keys(resolved.overrides).length > 0) {
+              fileConfig = { ...configWithoutOverrides, ...resolved.overrides };
+            }
+            fileSeverityCap = resolved.severityCap;
+            fileProfileNames = resolved.matchedProfileNames;
+          }
+
           // Run language-agnostic analysis
           const fileViolations = await this.analyzeAST(
             ast,
             adapter,
-            configWithoutOverrides,
+            fileConfig,
             content
           );
-          
+
+          // Attach profile attribution (last matching profile wins on merge)
+          if (fileProfileNames.length > 0) {
+            for (const v of fileViolations) {
+              v.profile = fileProfileNames[fileProfileNames.length - 1];
+            }
+          }
+
+          // Store severity cap for post-processing (applied after severityOverrides
+          // so path-level caps beat global per-rule promotions — intentional design,
+          // documented in Spec-20)
+          if (fileSeverityCap) {
+            for (const v of fileViolations) {
+              (v as any)._severityCap = fileSeverityCap;
+            }
+          }
+
           violations.push(...fileViolations);
           
           filesProcessed++;
@@ -96,6 +134,23 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
         if (override) {
           v.severity = override;
         }
+      }
+    }
+
+    // Apply severity caps from path profiles (Spec-20).
+    // Applied AFTER severityOverrides so path-level caps beat global
+    // per-rule promotions. A user who promotes a rule to "critical"
+    // in severityOverrides still gets it capped in lenient paths.
+    // This interaction is intentional, documented, and tested.
+    const severityOrder = ['suggestion', 'warning', 'critical'];
+    for (const v of violations) {
+      const cap = (v as any)._severityCap as string | undefined;
+      if (cap) {
+        const capIndex = severityOrder.indexOf(cap);
+        if (severityOrder.indexOf(v.severity) > capIndex) {
+          v.severity = cap as 'critical' | 'warning' | 'suggestion';
+        }
+        delete (v as any)._severityCap;
       }
     }
 
@@ -150,9 +205,10 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     message: string,
     severity: 'critical' | 'warning' | 'suggestion',
     rule: string,
-    fix?: { oldText: string; newText: string }
+    fix?: { oldText: string; newText: string },
+    symbol?: string
   ): Violation {
-    return {
+    const v: Violation = {
       file,
       line: location.line,
       column: location.column,
@@ -162,5 +218,9 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
       analyzer: this.name,
       fix
     };
+    if (symbol) {
+      v.functionName = symbol;
+    }
+    return v;
   }
 }

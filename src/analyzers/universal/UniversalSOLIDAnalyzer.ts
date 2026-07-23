@@ -114,7 +114,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         cls.location.start,
         `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting responsibilities.`,
         'suggestion',                                          // R7: class-size → suggestion
-        'solid/class-size'
+        'solid/class-size',
+        undefined,
+        cls.name
       ));
     }
 
@@ -136,7 +138,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             `Method "${cls.name}.${method.name}" has cyclomatic complexity ${methodComplexity}, ` +
             `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller methods.`,
             'warning',                                         // R7: method-complexity → warning
-            'solid/method-complexity'
+            'solid/method-complexity',
+            undefined,
+            `${cls.name}.${method.name}`
           ));
         }
       }
@@ -154,7 +158,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         `Class "${cls.name}" has aggregate cyclomatic complexity ${aggregateComplexity}, ` +
         `exceeding the maximum of ${maxAggregate}. Consider splitting the class.`,
         'suggestion',                                          // R7: class-size → suggestion
-        'solid/class-size'
+        'solid/class-size',
+        undefined,
+        cls.name
       ));
     }
 
@@ -165,7 +171,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         cls.location.start,
         `Class "${cls.name}" appears to be frequently modified. Consider using composition or inheritance for extension.`,
         'suggestion',
-        'open-closed'
+        'open-closed',
+        undefined,
+        cls.name
       ));
     }
 
@@ -203,7 +211,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         func.location.start,
         `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 4}. Consider using an options object.`,
         'warning',
-        'single-responsibility'
+        'single-responsibility',
+        undefined,
+        func.name
       ));
     }
 
@@ -215,7 +225,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         func.location.start,
         `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 50}. Consider breaking it down.`,
         'warning',
-        'single-responsibility'
+        'single-responsibility',
+        undefined,
+        func.name
       ));
     }
 
@@ -233,7 +245,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             `Function "${func.name}" has cyclomatic complexity ${cyclomaticComplexity}, ` +
             `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller functions.`,
             'warning',                                          // R7: method-complexity → warning
-            'solid/method-complexity'
+            'solid/method-complexity',
+            undefined,
+            func.name
           ));
         }
       }
@@ -267,7 +281,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         iface.location.start,
         `Interface "${iface.name}" has ${memberCount} members, exceeding the maximum of ${maxMembers}. Consider splitting into smaller interfaces.`,
         'warning',
-        'interface-segregation'
+        'interface-segregation',
+        undefined,
+        iface.name
       ));
     }
 
@@ -337,7 +353,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             method.location.start,
             `Method "${cls.name}.${method.name}" throws exceptions. Ensure this doesn't violate parent class contract.`,
             'suggestion',
-            'liskov-substitution'
+            'liskov-substitution',
+            undefined,
+            `${cls.name}.${method.name}`
           ));
         }
       }
@@ -391,7 +409,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         cls.location.start,
         `Class "${cls.name}" directly instantiates dependencies. Consider dependency injection.`,
         'suggestion',
-        'dependency-inversion'
+        'dependency-inversion',
+        undefined,
+        cls.name
       ));
     }
     

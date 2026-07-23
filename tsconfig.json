@@ -33,6 +33,8 @@
     "**/*.spec.ts",
     "src/test_violation.ts",
     "src/broken.ts",
-    "src/analyzers/__tests__/fixtures/**"
+    "src/analyzers/__tests__/fixtures/**",
+    "src/__tests__/fixtures/spec-19/**",
+    "src/__tests__/fixtures/spec-21/**"
   ]
 }

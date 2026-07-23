@@ -538,6 +538,7 @@ function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): 
   const recommendations: any[] = [];
   let filesAnalyzed = 0;
   let auditDuration = 0;
+  let provenanceResolutionMs = 0;
 
   for (const result of results) {
     for (const [analyzerName, analyzerResult] of Object.entries(result.analyzerResults || {})) {
@@ -551,6 +552,7 @@ function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): 
     }
     filesAnalyzed += result.metadata?.filesAnalyzed || 0;
     auditDuration += result.metadata?.auditDuration || 0;
+    provenanceResolutionMs += result.metadata?.provenanceResolutionMs || 0;
     if (result.recommendations?.length) recommendations.push(...result.recommendations);
   }
 
@@ -568,6 +570,7 @@ function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): 
       auditDuration,
       filesAnalyzed,
       analyzersRun: orderedAnalyzers,
+      provenanceResolutionMs,
       ...(collectedFunctions.length > 0 && { collectedFunctions }),
       ...(Object.keys(fileToFunctionsMap).length > 0 && { fileToFunctionsMap }),
     },

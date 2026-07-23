@@ -280,7 +280,7 @@ export class QueryParser {
     
     while (i < query.length) {
       // Look for operator:value patterns
-      const operatorMatch = query.substring(i).match(/^(\w+):/);
+      const operatorMatch = query.substring(i).match(/^([\p{L}\p{N}_]+):/u);
       
       if (operatorMatch) {
         const operator = operatorMatch[1].toLowerCase() + ':';
@@ -330,7 +330,7 @@ export class QueryParser {
             } else {
               // Unquoted value - take until whitespace or next operator
               let j = valueStartIndex;
-              while (j < query.length && !query[j].match(/\s/) && !query.substring(j).match(/^\w+:/)) {
+              while (j < query.length && !query[j].match(/\s/) && !query.substring(j).match(/^[\p{L}\p{N}_]+:/u)) {
                 value += query[j];
                 j++;
               }
@@ -551,7 +551,7 @@ export class QueryParser {
 
     for (const token of tokens) {
       const camelCaseTokens = token
-        .split(/(?=[A-Z])/)
+        .split(/(?=\p{Lu})/u)
         .filter((t) => t.length > 0);
       if (camelCaseTokens.length > 1) {
         expandedTokens.push(token);

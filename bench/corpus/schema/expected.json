@@ -1,0 +1,22 @@
+{
+  "analyzer": "schema",
+  "config": {
+    "schemas": [
+      {
+        "name": "test",
+        "tables": [
+          { "name": "users", "columns": [] },
+          { "name": "orders", "columns": [] },
+          { "name": "products", "columns": [] }
+        ]
+      }
+    ]
+  },
+  "expectedViolations": [
+    { "file": "src/unknown-table.ts", "rule": "unknown-table", "severity": "suggestion" },
+    { "file": "src/unknown-table.ts", "rule": "unknown-table", "severity": "suggestion" },
+    { "file": "src/unknown-table.ts", "rule": "unknown-table", "severity": "suggestion" }
+  ],
+  "nearMissFiles": ["src/known-tables.ts"],
+  "description": "Tests for the schema analyzer — reference to unknown tables in SQL queries. Expects 3 violations: inventory SELECT, widgets SELECT, widgets DELETE."
+}

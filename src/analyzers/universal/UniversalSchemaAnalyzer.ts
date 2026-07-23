@@ -13,6 +13,13 @@ import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, NodePattern } from '../../languages/types.js';
 import picomatch from 'picomatch';
+import {
+  buildProvenanceContext,
+  isDBProvenanced,
+  DB_CALL_METHODS,
+  type ProvenanceContext,
+  type DetectionMode,
+} from '../provenance.js';
 
 /**
  * Configuration for Schema analyzer
@@ -137,8 +144,21 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_SCHEMA_CONFIG, ...config };
 
-    // R2.2 — File gate: only analyze files with DB context
-    if (!this.passesFileGate(ast.filePath, sourceCode, finalConfig)) {
+    // Spec 21: Build provenance context for this file (R1 — provenance-primary detection)
+    const detectionMode: DetectionMode =
+      (config as any).detection?.mode ?? 'hybrid';
+    const p0 = performance.now();
+    const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
+      mode: detectionMode,
+      dbReceiverNames: finalConfig.dbReceiverNames ?? DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
+      dbBindingNames: finalConfig.dbBindingNames ?? DEFAULT_SCHEMA_CONFIG.dbBindingNames,
+      dbCallMethods: finalConfig.dbCallMethods ?? DEFAULT_SCHEMA_CONFIG.dbCallMethods,
+    });
+    const timingAcc: { totalMs: number } | undefined = (config as any)._provenanceTiming;
+    if (timingAcc) timingAcc.totalMs += performance.now() - p0;
+
+    // R2.2 — File gate: only analyze files with DB context (Spec 21: provenance-based)
+    if (!this.passesFileGate(ast.filePath, sourceCode, finalConfig, provenanceContext)) {
       return violations;
     }
 
@@ -161,13 +181,16 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
         { line: 1, column: 1 },
         'No database schemas loaded for analysis',
         'warning',
-        'missing-schemas'
+        'missing-schemas',
+        undefined,
+        'top-level:missing-schemas'
       ));
       return violations;
     }
 
     // R2.1 — AST-based table reference extraction (replaces legacy regex scan-all-strings)
-    const tableRefs = this.findTableReferences(ast, adapter, sourceCode, finalConfig);
+    // Spec 21: Uses provenance context for DB-call pattern detection
+    const tableRefs = this.findTableReferences(ast, adapter, sourceCode, finalConfig, provenanceContext);
     const columnRefs = this.findColumnReferences(ast, adapter, sourceCode);
 
     // Check for missing table references — R2.4: Levenshtein suggestions
@@ -184,7 +207,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
             ref.location,
             msg,
             'suggestion',  // R7
-            'unknown-table'
+            'unknown-table',
+            undefined,
+            ref.table
           ));
         }
       }
@@ -197,7 +222,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
             ref.location,
             `Reference to unknown column '${ref.column}' in table '${ref.table}'`,
             'warning',
-            'unknown-column'
+            'unknown-column',
+            undefined,
+            `${ref.table}.${ref.column}`
           ));
         }
       }
@@ -230,7 +257,8 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   private passesFileGate(
     filePath: string,
     sourceCode: string,
-    config: SchemaAnalyzerConfig
+    config: SchemaAnalyzerConfig,
+    provenanceContext?: ProvenanceContext,
   ): boolean {
     // Always pass .sql files and migration directories
     const gateGlobs = config.fileGateGlobs ?? ['**/*.sql', '**/migrations/**'];
@@ -240,38 +268,50 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       }
     }
 
-    // Check for D1 or SQL API imports
-    const importPatterns = [
-      /import\s+.*\b(D1Database|D1PreparedStatement|D1Result)\b/,
-      /import\s+.*from\s+['"].*d1['"]/,
-      /import\s+.*from\s+['"].*pg['"]/,
-      /import\s+.*from\s+['"].*mysql['"]/,
-      /import\s+.*from\s+['"].*sqlite['"]/,
-      /import\s+.*from\s+['"].*knex['"]/,
-      /import\s+.*from\s+['"].*drizzle['"]/,
-      /import\s+.*from\s+['"].*prisma['"]/,
-    ];
-    for (const pat of importPatterns) {
-      if (pat.test(sourceCode)) return true;
-    }
-
-    // Check for env-binding patterns (e.g., env.DB in Cloudflare Workers)
-    const bindingNames = config.dbBindingNames ?? ['env.DB'];
-    for (const binding of bindingNames) {
-      if (sourceCode.includes(binding)) return true;
-    }
-
-    // Check for DB call patterns (receiver.method)
-    const receivers = config.dbReceiverNames ?? ['db', 'database', 'sql', 'stmt'];
-    const methods = config.dbCallMethods ?? ['exec', 'prepare', 'batch', 'run', 'all', 'first'];
-    for (const receiver of receivers) {
-      for (const method of methods) {
-        const pattern = new RegExp(`\\b${escapeRegex(receiver)}\\.${escapeRegex(method)}\\s*\\(`);
-        if (pattern.test(sourceCode)) return true;
+    // Spec 21: Provenance-first DB detection — if any identifier is DB-provenanced,
+    // this file passes the gate. This replaces the regex patterns for import/environment/
+    // receiver.method checks in hybrid and provenance modes.
+    if (provenanceContext && provenanceContext.mode !== 'names') {
+      if (provenanceContext.dbProvenanced.size > 0) {
+        return true;
       }
     }
 
-    // Check for SQL tagged template literals
+    // Legacy name-based detection — used in 'names' mode or when no provenance context
+    if (!provenanceContext || provenanceContext.mode === 'names') {
+      // Check for D1 or SQL API imports
+      const importPatterns = [
+        /import\s+.*\b(D1Database|D1PreparedStatement|D1Result)\b/,
+        /import\s+.*from\s+['"].*d1['"]/,
+        /import\s+.*from\s+['"].*pg['"]/,
+        /import\s+.*from\s+['"].*mysql['"]/,
+        /import\s+.*from\s+['"].*sqlite['"]/,
+        /import\s+.*from\s+['"].*knex['"]/,
+        /import\s+.*from\s+['"].*drizzle['"]/,
+        /import\s+.*from\s+['"].*prisma['"]/,
+      ];
+      for (const pat of importPatterns) {
+        if (pat.test(sourceCode)) return true;
+      }
+
+      // Check for env-binding patterns (e.g., env.DB in Cloudflare Workers)
+      const bindingNames = config.dbBindingNames ?? ['env.DB'];
+      for (const binding of bindingNames) {
+        if (sourceCode.includes(binding)) return true;
+      }
+
+      // Check for DB call patterns (receiver.method)
+      const receivers = config.dbReceiverNames ?? ['db', 'database', 'sql', 'stmt'];
+      const methods = config.dbCallMethods ?? ['exec', 'prepare', 'batch', 'run', 'all', 'first'];
+      for (const receiver of receivers) {
+        for (const method of methods) {
+          const pattern = new RegExp(`\\b${escapeRegex(receiver)}\\.${escapeRegex(method)}\\s*\\(`);
+          if (pattern.test(sourceCode)) return true;
+        }
+      }
+    }
+
+    // Check for SQL tagged template literals (syntax feature, not naming convention)
     const sqlTags = config.sqlTagNames ?? ['sql', 'db'];
     for (const tag of sqlTags) {
       const pattern = new RegExp(`\\b${escapeRegex(tag)}\`\\s*SELECT|\\b${escapeRegex(tag)}\`\\s*INSERT|\\b${escapeRegex(tag)}\`\\s*UPDATE|\\b${escapeRegex(tag)}\`\\s*DELETE|\\b${escapeRegex(tag)}\`\\s*CREATE`, 'i');
@@ -294,14 +334,14 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     ast: AST,
     adapter: LanguageAdapter,
     sourceCode: string,
-    config: SchemaAnalyzerConfig
+    config: SchemaAnalyzerConfig,
+    provenanceContext?: ProvenanceContext,
   ): TableReference[] {
     const references: TableReference[] = [];
     const sqlTags = config.sqlTagNames ?? ['sql', 'db'];
-    const dbMethods = config.dbCallMethods ?? ['exec', 'prepare', 'batch', 'run', 'all', 'first', 'query'];
-    const dbReceivers = config.dbReceiverNames ?? ['db', 'database', 'sql', 'stmt'];
 
     // (1) Tagged template SQL — e.g. sql`SELECT * FROM heroes`
+    // This is a syntax feature, not a naming convention — keep the sqlTagNames gate.
     const taggedTemplates = adapter.findNodes(ast, {
       custom: (node: ASTNode) => {
         if (node.type !== 'call_expression') return false;
@@ -322,12 +362,19 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     }
 
     // (2) DB-call patterns — e.g. db.exec("SELECT * FROM heroes")
+    // Spec 21: Replace name-based isDbMemberCall with provenance-based isDBProvenanced.
     const dbCalls = adapter.findNodes(ast, {
       custom: (node: ASTNode) => {
         if (node.type !== 'call_expression') return false;
+        // Spec 21: Use provenance when available, fall back to name-based check
+        if (provenanceContext && provenanceContext.mode !== 'names') {
+          return isDBProvenanced(node, adapter, sourceCode, provenanceContext, DB_CALL_METHODS);
+        }
+        // Legacy name-based check for names mode / no context
         const callee = this.getCallee(node, adapter, sourceCode);
         if (!callee) return false;
-        // Check if callee is a member expression like db.exec or db.prepare
+        const dbMethods = config.dbCallMethods ?? ['exec', 'prepare', 'batch', 'run', 'all', 'first', 'query'];
+        const dbReceivers = config.dbReceiverNames ?? ['db', 'database', 'sql', 'stmt'];
         return this.isDbMemberCall(node, callee, dbMethods, dbReceivers, adapter, sourceCode);
       },
     });
@@ -368,14 +415,16 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // (the prefix is replaced with empty, the suffix remains for matching)
     const cleaned = this.resolveTemplateExpressions(sqlText);
 
-    // SQL patterns anchored to SQL keywords (not arbitrary substrings)
+    // SQL patterns anchored to SQL keywords (not arbitrary substrings).
+    // Uses Unicode-aware \p{L} so non-Latin table names (日, 注文, пользователи)
+    // are correctly matched — \w is ASCII-only. Spec 21 R5.
     const sqlPatterns: Array<{ regex: RegExp; type: TableReference['type'] }> = [
-      { regex: /\bFROM\s+([`"']?)([a-zA-Z_]\w*)\1\b/gi, type: 'select' },
-      { regex: /\bJOIN\s+([`"']?)([a-zA-Z_]\w*)\1\b/gi, type: 'select' },
-      { regex: /\bINSERT\s+INTO\s+([`"']?)([a-zA-Z_]\w*)\1\b/gi, type: 'insert' },
-      { regex: /\bUPDATE\s+([`"']?)([a-zA-Z_]\w*)\1\b/gi, type: 'update' },
-      { regex: /\bDELETE\s+FROM\s+([`"']?)([a-zA-Z_]\w*)\1\b/gi, type: 'delete' },
-      { regex: /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"']?)([a-zA-Z_]\w*)\1\b/gi, type: 'create' },
+      { regex: /\bFROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'select' },
+      { regex: /\bJOIN\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'select' },
+      { regex: /\bINSERT\s+INTO\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'insert' },
+      { regex: /\bUPDATE\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'update' },
+      { regex: /\bDELETE\s+FROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'delete' },
+      { regex: /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'create' },
     ];
 
     for (const { regex, type } of sqlPatterns) {
@@ -476,9 +525,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   ): ColumnReference[] {
     const references: ColumnReference[] = [];
     const patterns = [
-      /(\w+)\.(\w+)\s*[=<>]/gi,
-      /SELECT\s+.*?(\w+)\.(\w+)/gi,
-      /WHERE\s+.*?(\w+)\.(\w+)/gi,
+      /([\p{L}\p{N}_]+)\.([\p{L}\p{N}_]+)\s*[=<>]/giu,
+      /SELECT\s+.*?([\p{L}\p{N}_]+)\.([\p{L}\p{N}_]+)/giu,
+      /WHERE\s+.*?([\p{L}\p{N}_]+)\.([\p{L}\p{N}_]+)/giu,
     ];
 
     for (const pattern of patterns) {
@@ -519,7 +568,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
           ref.location,
           `Table name '${ref.table}' should use snake_case convention`,
           'suggestion',
-          'naming-convention'
+          'naming-convention',
+          undefined,
+          ref.table
         ));
       }
 
@@ -530,7 +581,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
           ref.location,
           `Table name '${ref.table}' is a reserved word. Consider using a different name.`,
           'warning',
-          'reserved-word'
+          'reserved-word',
+          undefined,
+          ref.table
         ));
       }
     }
@@ -565,21 +618,15 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
           func.location.start,
           `Function '${func.name}' has ${queryCount} queries, exceeding the maximum of ${config.maxQueriesPerFunction}`,
           'warning',
-          'too-many-queries'
+          'too-many-queries',
+          undefined,
+          func.name
         ));
       }
     }
 
-    // N+1 query check — only flag if we have actual DB calls, not grep
-    if (sourceCode.includes('.map') && (sourceCode.includes('.query') || sourceCode.includes('SELECT'))) {
-      violations.push(this.createViolation(
-        ast.filePath,
-        { line: 1, column: 1 },
-        'Potential N+1 query pattern detected. Consider using a join or batch query.',
-        'warning',
-        'n-plus-one'
-      ));
-    }
+    // N+1 query detection is handled by the data-access analyzer (loop-query rule).
+    // The two were consolidated in Spec-19 Corrective Batch Item 3 — see CHANGELOG.
 
     return violations;
   }
@@ -588,13 +635,19 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   // SQL injection — R7: severity changed from critical to warning
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // SQL injection — per-call-site with enclosing-function + ordinal symbols
+  // ---------------------------------------------------------------------------
+
   private checkSQLInjection(
     ast: AST,
     adapter: LanguageAdapter,
     sourceCode: string
   ): Violation[] {
     const violations: Violation[] = [];
+    const symbolOrdinals = new Map<string, number>();
 
+    // Use regex with global flag to find individual call sites
     const dangerousPatterns = [
       /query\s*\(\s*`[^`]*\$\{[^}]+\}[^`]*`/g,
       /query\s*\(\s*['"][^'"]*['"]?\s*\+/g,
@@ -602,15 +655,30 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     ];
 
     for (const pattern of dangerousPatterns) {
-      if (pattern.test(sourceCode)) {
+      // Clone regex to reset state (global regexes track lastIndex)
+      const re = new RegExp(pattern.source, pattern.flags);
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(sourceCode)) !== null) {
+        const location = this.offsetToLocation(sourceCode, match.index, { line: 1, column: 1 });
+
+        // Find enclosing function from the AST at this position
+        const node = this.findClosestNodeAt(ast.root, location, adapter);
+        const enclosingFn = node ? this.findEnclosingFunctionName(node, adapter) : 'top-level';
+
+        const baseSymbol = `${enclosingFn}:sql-injection`;
+        const ordinal = (symbolOrdinals.get(baseSymbol) ?? 0) + 1;
+        symbolOrdinals.set(baseSymbol, ordinal);
+        const symbol = ordinal > 1 ? `${baseSymbol}:${ordinal}` : baseSymbol;
+
         violations.push(this.createViolation(
           ast.filePath,
-          { line: 1, column: 1 },
+          location,
           'Potential SQL injection vulnerability. Use parameterized queries.',
-          'warning',  // R7: was 'critical'
-          'sql-injection'
+          'suggestion',  // Spec 11 R4 blanket demotion: all survivors → suggestion
+          'sql-injection',
+          undefined,
+          symbol
         ));
-        break;
       }
     }
 
@@ -830,6 +898,96 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     }
 
     return null;
+  }
+
+  /**
+   * Find the nearest AST node at a source location — walks the tree looking
+   * for the deepest node that contains the given line/column.
+   */
+  private findClosestNodeAt(
+    root: ASTNode,
+    location: { line: number; column: number },
+    adapter: LanguageAdapter
+  ): ASTNode | null {
+    let best: ASTNode | null = null;
+    let bestDepth = -1;
+
+    const walk = (node: ASTNode, depth: number) => {
+      const start = node.location.start;
+      const end = node.location.end;
+
+      // Check if node contains the location
+      if (
+        (start.line < location.line ||
+          (start.line === location.line && start.column <= location.column)) &&
+        (end.line > location.line ||
+          (end.line === location.line && end.column >= location.column))
+      ) {
+        if (depth > bestDepth) {
+          best = node;
+          bestDepth = depth;
+        }
+        if (node.children) {
+          for (const child of node.children) {
+            walk(child, depth + 1);
+          }
+        }
+      }
+    };
+
+    walk(root, 0);
+    return best;
+  }
+
+  /**
+   * Walk up the AST from a node to find the enclosing function or method name.
+   * Matches the same scheme as UniversalDataAccessAnalyzer.findEnclosingFunctionName.
+   */
+  private findEnclosingFunctionName(node: ASTNode, adapter: LanguageAdapter): string {
+    let current: ASTNode | null = node;
+    while (current) {
+      const type = adapter.getNodeType(current);
+      if (
+        type === 'arrow_function' ||
+        type === 'function_declaration' ||
+        type === 'function_expression' ||
+        type === 'generator_function_declaration' ||
+        type === 'generator_function_expression' ||
+        type === 'method_definition'
+      ) {
+        const name = this.getNodeName(current, adapter);
+        if (name) return name;
+      }
+      if (adapter.isMethod(current)) {
+        const name = this.getNodeName(current, adapter);
+        if (name) return name;
+      }
+      current = adapter.getParent(current);
+    }
+    return 'top-level';
+  }
+
+  /**
+   * Extract a human-readable name from an AST node.
+   * Matches the same scheme as UniversalDataAccessAnalyzer.getNodeName.
+   */
+  private getNodeName(node: ASTNode, adapter: LanguageAdapter): string {
+    if ((node as any).name && typeof (node as any).name === 'string') {
+      return (node as any).name;
+    }
+    if ((node as any).text && typeof (node as any).text === 'string') {
+      return (node as any).text;
+    }
+    if (node.children) {
+      for (const child of node.children) {
+        const childType = adapter.getNodeType(child);
+        if (childType === 'identifier' || childType === 'property_identifier') {
+          const name = this.getNodeName(child, adapter);
+          if (name) return name;
+        }
+      }
+    }
+    return '';
   }
 
   // ---------------------------------------------------------------------------

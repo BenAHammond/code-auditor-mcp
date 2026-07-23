@@ -1,0 +1,9 @@
+{
+  "analyzer": "react",
+  "config": { "maxComponentComplexity": 10, "checkHooksRules": true },
+  "expectedViolations": [
+    { "file": "src/bad-hook.tsx", "rule": "complexity", "severity": "warning" }
+  ],
+  "nearMissFiles": ["src/good-hook.tsx"],
+  "description": "Tests for the React analyzer — component complexity threshold"
+}

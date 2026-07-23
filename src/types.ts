@@ -47,6 +47,8 @@ export interface Violation {
   details?: string | Record<string, any>;
   snippet?: string;
   suggestion?: string;
+  /** Path profile that matched this file (last matching profile wins). */
+  profile?: string;
   [key: string]: any; // Allow analyzer-specific properties
 }
 
@@ -83,6 +85,8 @@ export interface AuditOptions {
     includeTypeOnlyImports?: boolean;
     ignorePatterns?: string[];
   };
+  /** Per-rule severity overrides applied globally (before per-file path profile caps). */
+  severityOverrides?: Record<string, Severity>;
 }
 
 export interface ProgressCallback {
@@ -135,6 +139,16 @@ export interface AuditResult {
     collectedFunctions?: FunctionMetadata[]; // Functions collected during audit
     fileToFunctionsMap?: Record<string, FunctionMetadata[]>; // Functions per file for sync
     scope?: AuditResultScope; // Whether this was a full or scoped audit
+    /** Milliseconds spent inside buildProvenanceContext() across all files (Spec 21 — hook-latency measurement). */
+    provenanceResolutionMs?: number;
+    baseline?: {
+      present: boolean;
+      hash?: string;
+      newCount: number;
+      fixedCount: number;
+      knownCount: number;
+      previousKnownCount?: number;
+    };
   };
 }
 
@@ -239,6 +253,17 @@ export interface Recommendation {
   exampleImplementation?: string;
 }
 
+export interface PathProfile {
+  /** Unique name for this profile (used in attribution and built-in replacement). */
+  name: string;
+  /** Glob patterns matching file paths relative to project root. */
+  paths: string[];
+  /** Analyzer config overrides applied to files matching this profile. */
+  overrides: Record<string, unknown>;
+  /** Set to false to replace a built-in profile of the same name. */
+  builtin?: boolean;
+}
+
 export interface AuditConfig {
   includePaths?: string[];
   excludePaths?: string[];
@@ -256,6 +281,10 @@ export interface AuditConfig {
     maxSuggestions?: number;
     minHealthScore?: number;
   };
+  /** Per-directory config overrides. Ordered array — later matching profiles win on merge. */
+  pathProfiles?: PathProfile[];
+  /** Set to false to disable all built-in profiles. */
+  builtin?: boolean;
   // Analyzer-specific configurations
   analyzerOptions?: Record<string, any>;
 }
@@ -365,6 +394,8 @@ export interface AuditRunnerOptions extends AuditOptions {
   shardSoftBudgetMs?: number;
   /** Audit scope: controls which files are analyzed. Default: 'all'. */
   scope?: AuditScope;
+  /** Path profiles from config (Spec-20). */
+  pathProfiles?: PathProfile[];
 }
 
 // Code Index Types
@@ -871,6 +902,18 @@ export interface SchemaAwareFunctionMetadata extends EnhancedFunctionMetadata {
   schemaUsage?: SchemaUsage[];
   affectedTables?: string[];
   schemaPatterns?: string[];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Spec 21 — Language-Neutral Detection / Provenance
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Detection mode for DB/validator receiver identification (Spec 21 R3). */
+export type DetectionMode = 'hybrid' | 'provenance' | 'names';
+
+/** Shared detection config consumed by provenance module, schema, and data-access analyzers. */
+export interface DetectionConfig {
+  mode: DetectionMode;
 }
 
 // Re-export whitelist types

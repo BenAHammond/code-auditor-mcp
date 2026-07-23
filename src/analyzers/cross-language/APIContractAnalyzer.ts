@@ -33,7 +33,7 @@ export interface APICall {
 }
 
 export interface ContractViolation extends Violation {
-  contractType: 'type-mismatch' | 'missing-endpoint' | 'extra-field' | 'missing-field' | 'method-mismatch' | 'auth-mismatch';
+  contractType: 'api-type-mismatch' | 'missing-endpoint' | 'api-extra-field' | 'api-missing-field' | 'method-mismatch' | 'auth-mismatch';
   endpoint?: APIEndpoint;
   call?: APICall;
   expectedType?: string;
@@ -215,7 +215,7 @@ export class APIContractAnalyzer {
           line: call.line,
           severity: 'warning',
           message: `Using deprecated API endpoint: ${endpoint.method} ${endpoint.path}`,
-          contractType: 'type-mismatch', // Reusing type for deprecated
+          contractType: 'api-type-mismatch', // Reusing type for deprecated
           endpoint,
           call,
           details: {
@@ -328,7 +328,7 @@ export class APIContractAnalyzer {
         line: call.line,
         severity: 'warning',
         message: `Type mismatch: endpoint returns object, call expects array`,
-        contractType: 'type-mismatch',
+        contractType: 'api-type-mismatch',
         endpoint,
         call,
         expectedType: 'object',
