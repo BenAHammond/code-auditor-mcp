@@ -1,9 +1,10 @@
 {
   "analyzer": "solid",
-  "config": { "maxMethodComplexity": 5, "skipTestFiles": false },
+  "config": { "maxMethodComplexity": 50, "skipTestFiles": false },
   "expectedViolations": [
-    { "file": "src/complex-method.ts", "rule": "solid/method-complexity", "severity": "warning" }
+    { "file": "src/very-complex-method.ts", "rule": "solid/method-complexity", "severity": "warning" },
+    { "file": "src/very-complex-method.ts", "rule": "single-responsibility", "severity": "warning" }
   ],
-  "nearMissFiles": ["src/simple-method.ts"],
-  "description": "Tests for the SOLID analyzer — method cyclomatic complexity exceeding threshold"
+  "nearMissFiles": ["src/simple-method.ts", "src/complex-method.ts"],
+  "description": "Tests for the SOLID analyzer — method cyclomatic complexity exceeding shipped-default threshold (50) and long method (~252 lines) exceeding maxLinesPerMethod (50)"
 }

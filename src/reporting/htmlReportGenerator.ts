@@ -116,7 +116,7 @@ function generateViolationsSection(result: AuditResult): string {
   
   // Sort by severity
   const sortedViolations = allViolations.sort((a, b) => {
-    const severityOrder = { critical: 3, warning: 2, suggestion: 1 };
+    const severityOrder = { critical: 3, warning: 2, suggestion: 1, off: 0 };
     return severityOrder[b.severity] - severityOrder[a.severity];
   });
   

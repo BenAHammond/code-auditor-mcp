@@ -113,7 +113,7 @@ function collectAllViolations(result: AuditResult): Array<Violation & { analyzer
   
   // Sort by severity and file
   return violations.sort((a, b) => {
-    const severityOrder = { critical: 3, warning: 2, suggestion: 1 };
+    const severityOrder = { critical: 3, warning: 2, suggestion: 1, off: 0 };
     const severityDiff = severityOrder[b.severity] - severityOrder[a.severity];
     if (severityDiff !== 0) return severityDiff;
     return a.file.localeCompare(b.file);

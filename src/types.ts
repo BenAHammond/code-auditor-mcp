@@ -3,7 +3,7 @@
  * Generic types that work with any TypeScript/JavaScript project
  */
 
-export type Severity = 'critical' | 'warning' | 'suggestion';
+export type Severity = 'critical' | 'warning' | 'suggestion' | 'off';
 
 export type ReportFormat = 'html' | 'json' | 'csv' | 'sarif';
 
@@ -285,6 +285,8 @@ export interface AuditConfig {
   pathProfiles?: PathProfile[];
   /** Set to false to disable all built-in profiles. */
   builtin?: boolean;
+  /** Per-rule severity overrides applied globally (before per-file path profile caps). */
+  severityOverrides?: Record<string, Severity>;
   // Analyzer-specific configurations
   analyzerOptions?: Record<string, any>;
 }

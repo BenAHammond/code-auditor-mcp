@@ -69,29 +69,52 @@ One skill, one CLI, one MCP server. Every agent gets the same audit engine — t
 
 Hook behavior: **Blocking** means violations at or above `--fail-on` severity prevent the edit from landing (the agent sees the violation and fixes inline). **Advisory** means violations are reported through the strongest available feedback channel but the edit has already occurred. Cursor's `afterFileEdit` hook is fire-and-forget with no output consumption. MCP is available everywhere for shell-less use.
 
-## Security
+## Findings: Deterministic vs Advisory
 
-### SQL Injection Detection
+Code Auditor's built-in rules fall into two categories:
 
-The `sql-injection-risk` rule uses AST-level heuristics — it detects string concatenation and dynamic patterns in query construction (e.g., `"SELECT * FROM " + table`) without type information. These findings are **high-signal, not proof of exploitable injection**.
+| Category | Meaning | Examples |
+|----------|---------|----------|
+| **Deterministic** | Structural fact — an engineer would act on every finding | `single-responsibility` (300-line functions), `solid/method-complexity` (cyclomatic complexity > 20), `solid/class-size` (40+ method classes), `dependency-inversion` (concrete imports where an interface exists) |
+| **Advisory** | Heuristic signal — may be wrong depending on domain | `sql-injection-risk` (AST-level string-pattern matching without type info), `missing-org-filter` (domain-specific — assumes SaaS tenant isolation), `unknown-table` (requires user-provided schema), `dry/duplicate` (token-identical blocks) |
 
-By default, `sql-injection-risk` is `warning` severity. The `--fail-on critical` hook path is reserved for user invariant rules — Code Auditor never ships rules at `critical`, so your `.codeauditor.json` invariants have a clean escalation path.
+Deterministic rules ship at `critical` or `warning`. Advisory rules ship at `warning` or `suggestion`. Rules proven near-zero precision on a real corpus are **disabled by default** (`off`) — users opt in when the rule matches their domain.
 
-**To block on SQL injection findings** in your hook, restore `critical` via `severityOverrides` in your analyzer config:
+### Recalibration
+
+Built-in severity defaults are recalibrated from real-corpus triage. The current defaults reflect measurement on three corpora: this tool's own codebase, [Gin](https://github.com/gin-gonic/gin), and [Excalidraw](https://github.com/excalidraw/excalidraw). Six data-access rules that produced near-zero precision across all three corpora are disabled by default.
+
+Every disabled rule documents what corpus it *would* be useful on. Users can restore any rule via `severityOverrides` in `.codeauditor.json`:
 
 ```json
 {
-  "analyzerConfigs": {
-    "data-access": {
-      "severityOverrides": {
-        "sql-injection-risk": "critical"
-      }
-    }
+  "severityOverrides": {
+    "sql-injection-risk": "warning",
+    "missing-org-filter": "critical",
+    "loop-query": "warning"
   }
 }
 ```
 
-With this config, `code-audit changed --fail-on critical` will exit 2 on SQL injection findings, and your agent's hook will block the edit.
+Severity overrides apply globally (before per-directory path profile caps). Setting a rule to `"off"` removes it from the output entirely.
+
+### SQL Injection Detection
+
+The `sql-injection-risk` rule is **disabled by default** (`off`) after recalibration. On the self-audit corpus, it produced 0% precision — the analyzer misinterpreted TypeScript pattern-matching code (string constants like `'SELECT'`, `'FROM'`, `'WHERE'` used for the tool's own SQL detection) as database queries. On the Gin and Excalidraw corpora, precision was also near zero.
+
+**When to re-enable it**: your project's SQL is constructed via string concatenation or template literals in functions whose sole purpose is query assembly. The rule detects those patterns. For codebases using ORMs or parameterized queries exclusively, the rule produces noise.
+
+**To re-enable and block on SQL injection**:
+
+```json
+{
+  "severityOverrides": {
+    "sql-injection-risk": "critical"
+  }
+}
+```
+
+With `sql-injection-risk: critical` and `code-audit changed --fail-on critical`, your agent's hook will block edits that introduce AST-level SQL injection patterns.
 
 ## License
 

@@ -681,41 +681,57 @@ interface SweepCurve {
  */
 function buildSweepParameters(): SweepParameter[] {
   return [
-    // DRY analyzer
+    // ── DRY analyzer ──────────────────────────────────────────────────────
     { configKey: 'minLineThreshold', label: 'DRY minLineThreshold', analyzer: 'dry',
-      shippedDefault: 3, values: [3, 4, 5, 6, 8, 10, 15, 20] },
+      shippedDefault: 15, values: [3, 5, 8, 10, 12, 15, 20, 30] },
+    { configKey: 'similarityThreshold', label: 'DRY similarityThreshold', analyzer: 'dry',
+      shippedDefault: 0.85, values: [0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95] },
 
-    // React analyzer
+    // ── React analyzer ────────────────────────────────────────────────────
     { configKey: 'maxComponentComplexity', label: 'React maxComponentComplexity', analyzer: 'react',
-      shippedDefault: 2, values: [1, 2, 3, 5, 8, 10, 15, 20, 30] },
+      shippedDefault: 15, values: [5, 8, 10, 12, 15, 20, 25, 30] },
+    { configKey: 'wrapperMinUsages', label: 'React wrapperMinUsages', analyzer: 'react',
+      shippedDefault: 4, values: [2, 3, 4, 5, 6, 8, 10, 15] },
 
-    // SOLID analyzer — method-level complexity
+    // ── SOLID analyzer — method-level complexity ─────────────────────────
     { configKey: 'maxMethodComplexity', label: 'SOLID maxMethodComplexity', analyzer: 'solid',
       shippedDefault: 50, values: [5, 10, 15, 20, 30, 50, 75, 100] },
-
-    // SOLID analyzer — method length
     { configKey: 'maxLinesPerMethod', label: 'SOLID maxLinesPerMethod', analyzer: 'solid',
       shippedDefault: 50, values: [10, 20, 30, 50, 75, 100, 150] },
-
-    // SOLID analyzer — parameters
     { configKey: 'maxParametersPerMethod', label: 'SOLID maxParametersPerMethod', analyzer: 'solid',
       shippedDefault: 4, values: [2, 3, 4, 5, 6, 8, 10] },
-
-    // SOLID analyzer — class methods
+    { configKey: 'maxImportsPerFile', label: 'SOLID maxImportsPerFile', analyzer: 'solid',
+      shippedDefault: 20, values: [5, 10, 15, 20, 25, 30, 40, 50] },
     { configKey: 'classMethodsThreshold', label: 'SOLID classMethodsThreshold', analyzer: 'solid',
-      shippedDefault: 5, values: [5, 8, 10, 12, 15, 20, 30] },
+      shippedDefault: 15, values: [5, 8, 10, 12, 15, 20, 30] },
+    { configKey: 'classAggregateComplexity', label: 'SOLID classAggregateComplexity', analyzer: 'solid',
+      shippedDefault: 100, values: [20, 40, 60, 80, 100, 150, 200, 300] },
 
-    // Schema analyzer
+    // ── Schema analyzer ───────────────────────────────────────────────────
     { configKey: 'maxQueriesPerFunction', label: 'Schema maxQueriesPerFunction', analyzer: 'schema',
-      shippedDefault: 1, values: [1, 2, 3, 4, 5, 7, 10, 15] },
+      shippedDefault: 5, values: [1, 2, 3, 4, 5, 7, 10, 15] },
 
-    // Data-access analyzer
+    // ── Data-access analyzer ──────────────────────────────────────────────
     { configKey: 'joinedTableCount', label: 'Data-access joinedTableCount', analyzer: 'data-access',
       shippedDefault: 2, values: [2, 3, 4, 5, 6, 8, 10] },
 
-    // Documentation analyzer
+    // ── Documentation analyzer ────────────────────────────────────────────
     { configKey: 'minDescriptionLength', label: 'Documentation minDescriptionLength', analyzer: 'documentation',
-      shippedDefault: 2, values: [2, 5, 10, 15, 20, 30, 50] },
+      shippedDefault: 10, values: [2, 5, 10, 15, 20, 30, 50] },
+
+    // ── Style analyzer (Spec 10 — registered for future use) ──────────────
+    { configKey: 'colorDeltaE', label: 'Style colorDeltaE', analyzer: 'styles',
+      shippedDefault: 3.0, values: [1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0] },
+    { configKey: 'outlierMaxShare', label: 'Style outlierMaxShare', analyzer: 'styles',
+      shippedDefault: 0.05, values: [0.01, 0.03, 0.05, 0.07, 0.10, 0.15, 0.20] },
+    { configKey: 'modeMinCount', label: 'Style modeMinCount', analyzer: 'styles',
+      shippedDefault: 3, values: [1, 2, 3, 5, 7, 10, 15] },
+    { configKey: 'styleSimilarityThreshold', label: 'Style similarityThreshold', analyzer: 'styles',
+      shippedDefault: 0.75, values: [0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95] },
+    { configKey: 'zIndexMaxDistinct', label: 'Style zIndexMaxDistinct', analyzer: 'styles',
+      shippedDefault: 5, values: [3, 5, 7, 10, 15, 20, 30] },
+    { configKey: 'minCorpus', label: 'Style minCorpus', analyzer: 'styles',
+      shippedDefault: 3, values: [1, 2, 3, 5, 8, 10, 15] },
   ];
 }
 
@@ -809,6 +825,11 @@ async function runSweep(
     }
   }
 
+  // Generate sweep report
+  if (!jsonOnly && allCurves.length > 0) {
+    generateSweepReport(allCurves);
+  }
+
   return { curves: allCurves };
 }
 
@@ -823,6 +844,87 @@ function printSweepCurve(curve: SweepCurve): void {
   }
   const status = curve.confirmed ? '✅ CONFIRMED' : `⚠️  CHANGE: ${currentDefault} → ${recommended.value}`;
   console.log(`   Default: ${currentDefault} → Recommended: ${recommended.value} (precision-first) ${status}\n`);
+}
+
+// ── Sweep report generation ──────────────────────────────────────────────
+
+/**
+ * Generate bench/results/sweep-report.md from sweep curves.
+ * Spec 11 R3.4: "A sweep-report.md is generated into bench/results/ with
+ * per-parameter curves, chosen operating points, and the delta between
+ * the previous shipped default and the new one (if any)."
+ */
+function generateSweepReport(curves: SweepCurve[]): void {
+  const now = new Date().toISOString();
+  const confirmed = curves.filter(c => c.confirmed);
+  const changed = curves.filter(c => !c.confirmed);
+
+  let md = `# Sweep Report
+
+**Generated:** ${now}
+**Parameters swept:** ${curves.length}
+**Confirmed (no change):** ${confirmed.length}
+**Changed:** ${changed.length}
+
+## Summary
+
+| Parameter | Current | Recommended | Status |
+|-----------|---------|-------------|--------|
+`;
+
+  for (const curve of curves) {
+    const status = curve.confirmed ? '✅ CONFIRMED' : '⚠️ CHANGED';
+    md += `| ${curve.parameter.label} | ${curve.currentDefault} | ${curve.recommended.value} | ${status} |\n`;
+  }
+
+  if (changed.length > 0) {
+    md += `\n### Changes Required\n\n`;
+    md += `These defaults should be updated in \`src/config/defaults.ts\`:\n\n`;
+    for (const c of changed) {
+      md += `- **${c.parameter.label}**: \`${c.parameter.configKey}: ${c.currentDefault}\` → \`${c.recommended.value}\`\n`;
+    }
+  }
+
+  // Per-parameter curves
+  md += `\n## Per-Parameter Curves\n\n`;
+
+  for (const curve of curves) {
+    const { parameter, points, recommended, currentDefault } = curve;
+    const status = curve.confirmed ? '✅ CONFIRMED' : '⚠️ CHANGED';
+
+    md += `### ${parameter.label}\n\n`;
+    md += `- **Analyzer:** \`${parameter.analyzer}\`\n`;
+    md += `- **Config key:** \`${parameter.configKey}\`\n`;
+    md += `- **Selection:** precision-first (highest precision; ties broken by highest recall)\n`;
+    md += `- **Current default:** ${currentDefault}\n`;
+    md += `- **Recommended:** ${recommended.value} ${status}\n\n`;
+
+    md += `| Value | Precision | Recall | F1 | TP | FP | FN |\n`;
+    md += `|-------|-----------|--------|----|----|----|----|\n`;
+
+    for (const p of points) {
+      const marker = p.value === recommended.value ? ' **← chosen**' : '';
+      md += `| ${p.value} | ${p.precision.toFixed(4)} | ${p.recall.toFixed(4)} | ${p.f1.toFixed(4)} | ${p.truePositives} | ${p.falsePositives} | ${p.falseNegatives}${marker} |\n`;
+    }
+    md += '\n';
+  }
+
+  // Caveat about minimal corpus
+  md += `## Notes\n\n`;
+  md += `- The bench corpus is intentionally minimal (1-9 fixtures per analyzer). `;
+  md += `For parameters where the minimal corpus cannot discriminate between threshold values `;
+  md += `(e.g., all values produce identical metrics on a single fixture), the precision-first `;
+  md += `selection picks the most permissive value. Real-corpus triage (Spec 11 R4) validates `;
+  md += `these recommendations against external repositories.\n`;
+  md += `- Style analyzer parameters (Spec 10) have no corpus and were skipped. They will be `;
+  md += `calibrated when the analyzer is implemented.\n`;
+
+  // Save
+  const reportPath = join(RESULTS_DIR, 'sweep-report.md');
+  writeFileSync(reportPath, md);
+  if (process.env['NODE_ENV'] !== 'test') {
+    console.log(`\n  Report saved: bench/results/sweep-report.md`);
+  }
 }
 
 // ── Output ───────────────────────────────────────────────────────────────

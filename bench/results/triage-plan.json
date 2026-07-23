@@ -1,0 +1,138 @@
+{
+  "corpus": "self-audit",
+  "timestamp": "2026-07-23",
+  "total_findings": 2278,
+  "total_triaged": 691,
+  "categories": {
+    "data-access/complex-query": {
+      "total": 4,
+      "triaged": 4,
+      "sampling": "exhaustive"
+    },
+    "data-access/direct-sql": {
+      "total": 18,
+      "triaged": 18,
+      "sampling": "exhaustive"
+    },
+    "data-access/loop-query": {
+      "total": 83,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "data-access/missing-org-filter": {
+      "total": 60,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "data-access/sql-injection-risk": {
+      "total": 75,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "data-access/unfiltered-query": {
+      "total": 249,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "documentation/class-documentation": {
+      "total": 76,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "documentation/function-documentation": {
+      "total": 80,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "documentation/method-documentation": {
+      "total": 364,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "documentation/parameter-documentation": {
+      "total": 352,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "documentation/return-documentation": {
+      "total": 228,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "dry/dry/duplicate": {
+      "total": 6,
+      "triaged": 6,
+      "sampling": "exhaustive"
+    },
+    "schema/UNKNOWN": {
+      "total": 4,
+      "triaged": 4,
+      "sampling": "exhaustive"
+    },
+    "schema/above-maximum": {
+      "total": 1,
+      "triaged": 1,
+      "sampling": "exhaustive"
+    },
+    "schema/invalid-format": {
+      "total": 2,
+      "triaged": 2,
+      "sampling": "exhaustive"
+    },
+    "schema/naming-convention": {
+      "total": 2,
+      "triaged": 2,
+      "sampling": "exhaustive"
+    },
+    "schema/sql-injection": {
+      "total": 6,
+      "triaged": 6,
+      "sampling": "exhaustive"
+    },
+    "schema/too-many-queries": {
+      "total": 17,
+      "triaged": 17,
+      "sampling": "exhaustive"
+    },
+    "schema/type-mismatch": {
+      "total": 1,
+      "triaged": 1,
+      "sampling": "exhaustive"
+    },
+    "schema/unknown-table": {
+      "total": 327,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "solid/dependency-inversion": {
+      "total": 16,
+      "triaged": 16,
+      "sampling": "exhaustive"
+    },
+    "solid/interface-segregation": {
+      "total": 4,
+      "triaged": 4,
+      "sampling": "exhaustive"
+    },
+    "solid/open-closed": {
+      "total": 17,
+      "triaged": 17,
+      "sampling": "exhaustive"
+    },
+    "solid/single-responsibility": {
+      "total": 243,
+      "triaged": 50,
+      "sampling": "sample"
+    },
+    "solid/solid/class-size": {
+      "total": 27,
+      "triaged": 27,
+      "sampling": "exhaustive"
+    },
+    "solid/solid/method-complexity": {
+      "total": 16,
+      "triaged": 16,
+      "sampling": "exhaustive"
+    }
+  }
+}

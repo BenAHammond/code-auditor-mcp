@@ -29,6 +29,23 @@ export function getDefaultConfig(): AuditConfig {
       maxCritical: 0,
       maxWarnings: 100,
       minHealthScore: 75
+    },
+    // Spec-11 R5: Mechanical recalibration from self-audit triage (2026-07-20).
+    // Rules with judged-true < 0.50 are disabled by default.
+    // Rules with precision ≥ 0.95 and judged-true ≥ 0.90 are promoted one tier.
+    // Users can override any rule's severity via their own .codeauditor.json.
+    severityOverrides: {
+      // Disabled — judged-true < 0.50 (domain mismatch, dogfooding artifacts, or test-fixture-only)
+      'missing-org-filter': 'off',
+      'unknown-table': 'off',
+      'sql-injection-risk': 'off',
+      'loop-query': 'off',
+      'unfiltered-query': 'off',
+      'direct-sql': 'off',
+      // Promoted — precision ≥ 0.95, judged-true ≥ 0.90, one tier only
+      'single-responsibility': 'critical',
+      'solid/class-size': 'warning',
+      'dependency-inversion': 'warning',
     }
   };
 }
@@ -107,21 +124,22 @@ export const DEFAULT_ANALYZER_CONFIGS = {
   // and classAggregateComplexity for true cyclomatic complexity.
   solid: {
     maxMethodsPerClass: 10,
-    maxLinesPerMethod: 50,
-    maxParametersPerMethod: 4,
-    maxImportsPerFile: 20,
+    maxLinesPerMethod: 50,               // Spec 11 R3 sweep: confirmed
+    maxParametersPerMethod: 4,           // Spec 11 R3 sweep: confirmed
+    maxImportsPerFile: 5,                // Spec 11 R3 sweep: 20 → 5 (precision-first)
     maxComplexity: 10,                   // DEPRECATED — old heuristic
     // R5.1: Per-method cyclomatic complexity threshold (true McCC)
-    maxMethodComplexity: 50,
+    maxMethodComplexity: 10,            // Spec 11 R3 sweep: 50 → 10 (precision-first)
     // R5.2: Class-level aggregation thresholds
-    classMethodsThreshold: 15,
-    classAggregateComplexity: 100,
+    classMethodsThreshold: 5,            // Spec 11 R3 sweep: 15 → 5 (precision-first)
+    classAggregateComplexity: 80,        // Spec 11 R3 sweep: 100 → 80 (precision-first)
   },
   
-  // Spec-17 R3: minLineThreshold raised from 5 → 15
+  // Spec 11 R3 sweep: minLineThreshold 15 → 3, similarityThreshold 0.85 → 0.5 (precision-first)
+  // ⚠️ These sweep recommendations reflect a minimal corpus; R4 real-corpus triage may revert.
   dry: {
-    minLineThreshold: 15,
-    similarityThreshold: 0.85,
+    minLineThreshold: 3,
+    similarityThreshold: 0.5,
     excludePatterns: ['**/*.test.ts', '**/*.spec.ts'],
     checkImports: true,
     checkStrings: true,
@@ -145,7 +163,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
       }
     },
     checkErrorBoundaries: true,
-    maxComplexity: 15,
+    maxComplexity: 5,              // Spec 11 R3 sweep: 15 → 5 (precision-first)
     maxNesting: 4
   },
   
@@ -177,7 +195,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     requireClassDocs: true,
     requireParamDocs: true,
     requireReturnDocs: true,
-    minDescriptionLength: 10,
+    minDescriptionLength: 2,       // Spec 11 R3 sweep: 10 → 2 (precision-first)
     exemptPatterns: [
       '\\.test\\.',
       '\\.spec\\.',
@@ -210,7 +228,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     checkNamingConventions: true,
     detectUnusedTables: false,
     validateQueryPatterns: true,
-    maxQueriesPerFunction: 5,
+    maxQueriesPerFunction: 1,      // Spec 11 R3 sweep: 5 → 1 (precision-first)
     requiredSchemas: [],
     sqlTagNames: ['sql', 'db'],
     dbReceiverNames: ['db', 'database', 'sql', 'stmt', 'connection', 'pool', 'client'],

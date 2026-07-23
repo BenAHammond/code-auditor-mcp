@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-23T19:49:00.226Z",
+  "timestamp": "2026-07-23T21:47:30.861Z",
   "summary": {
     "totalAnalyzers": 8,
     "passed": 8,
@@ -8,8 +8,8 @@
     "microAvgPrecision": 1,
     "microAvgRecall": 1,
     "microAvgF1": 1,
-    "microAvgTrueRecall": 0.9286,
-    "microAvgTrueF1": 0.963
+    "microAvgTrueRecall": 0.9302,
+    "microAvgTrueF1": 0.9638
   },
   "analyzers": {
     "data-access": {
@@ -1101,7 +1101,7 @@
       "warnings": []
     },
     "solid": {
-      "truePositives": 1,
+      "truePositives": 2,
       "falsePositives": 0,
       "falseNegatives": 0,
       "precision": 1,
@@ -1112,6 +1112,19 @@
       "knownMisses": 0,
       "recoveredMisses": 0,
       "ruleMetrics": [
+        {
+          "rule": "single-responsibility",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
         {
           "rule": "solid/method-complexity",
           "truePositives": 1,
@@ -1131,25 +1144,48 @@
           "file": "src/simple-method.ts",
           "violations": 0,
           "passed": true
+        },
+        {
+          "file": "src/complex-method.ts",
+          "violations": 0,
+          "passed": true
         }
       ],
       "details": [
         {
           "expected": {
-            "file": "src/complex-method.ts",
+            "file": "src/very-complex-method.ts",
             "rule": "solid/method-complexity",
             "severity": "warning"
           },
           "matched": true,
           "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/solid/src/complex-method.ts",
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/solid/src/very-complex-method.ts",
             "line": 5,
             "column": 2,
             "severity": "warning",
-            "message": "Method \"OrderService.processOrder\" has cyclomatic complexity 10, exceeding the maximum of 5. Consider breaking it into smaller methods.",
+            "message": "Method \"ApiRequestHandler.handleRequest\" has cyclomatic complexity 77, exceeding the maximum of 50. Consider breaking it into smaller methods.",
             "rule": "solid/method-complexity",
             "analyzer": "solid",
-            "functionName": "OrderService.processOrder"
+            "functionName": "ApiRequestHandler.handleRequest"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/very-complex-method.ts",
+            "rule": "single-responsibility",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/solid/src/very-complex-method.ts",
+            "line": 5,
+            "column": 2,
+            "severity": "warning",
+            "message": "Function \"handleRequest\" has 270 lines, exceeding the maximum of 50. Consider breaking it down.",
+            "rule": "single-responsibility",
+            "analyzer": "solid",
+            "functionName": "handleRequest"
           }
         }
       ],

@@ -137,13 +137,17 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
       }
     }
 
+    // Filter out violations whose severity was overridden to 'off' (Spec-11 R5).
+    // Must happen before severity caps so 'off' violations are removed entirely.
+    const filteredViolations = violations.filter(v => v.severity !== 'off');
+
     // Apply severity caps from path profiles (Spec-20).
     // Applied AFTER severityOverrides so path-level caps beat global
     // per-rule promotions. A user who promotes a rule to "critical"
     // in severityOverrides still gets it capped in lenient paths.
     // This interaction is intentional, documented, and tested.
     const severityOrder = ['suggestion', 'warning', 'critical'];
-    for (const v of violations) {
+    for (const v of filteredViolations) {
       const cap = (v as any)._severityCap as string | undefined;
       if (cap) {
         const capIndex = severityOrder.indexOf(cap);
@@ -155,7 +159,7 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     }
 
     return {
-      violations,
+      violations: filteredViolations,
       errors,
       filesProcessed,
       executionTime: Date.now() - startTime,

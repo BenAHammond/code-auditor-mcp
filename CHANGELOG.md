@@ -325,6 +325,79 @@ The internal version increments spec-architected for individual specs (2.7.0, 3.
 
 ## [3.1.1] — 2026-07-20
 
+### Spec 11: Analyzer Quality Evaluation
+
+Empirical measurement of every built-in rule's precision on real code. Four phases across three corpora (code-auditor self-audit, Gin web framework, Excalidraw whiteboard).
+
+#### R1: Findings Ledger
+
+- **`src/ledger/`**: Per-corpus, per-run, per-rule precision/recall/F1 ledger stored in the code index database. Every audit run records which rules fired, how many findings each produced, and (once triaged) how many were true/false/TBU.
+- **Delta tracking**: Between-run diffs show which rules gained or lost precision. Used to detect regressions from rule changes.
+
+#### R2: Benchmark Corpus and Harness
+
+- **`bench/corpus/`**: 26 fixture projects (one per analyzer rule), each with an `expected.json` ground-truth file. Fixtures are hand-crafted to exercise exactly one rule's detection logic.
+- **`bench/runBench.ts`**: Harness computing per-rule precision, recall, and F1 against ground truth. Outputs `bench/results/latest.json`.
+- **`bench/baseline.json`**: Frozen precision/recall/F1 snapshot. A regression gate (`bench/regression.test.ts`) fails the build if any rule's F1 drops more than 0.02 below baseline.
+- **Non-English corpus**: Mixed Portuguese/German/Japanese identifiers testing provenance-based detection. Detection gaps between English and non-English corpora are release-blocking (Spec 21 amendment).
+
+#### R3: Empirical Threshold Tuning
+
+- **Threshold sweeps**: Each numeric threshold (`maxFunctionLength`, `maxParameters`, `classMethodsThreshold`, `maxMethodComplexity`, `classAggregateComplexity`) swept across 5–8 values on the self-audit corpus. Per-value precision and yield recorded.
+- **`bench/results/sweep-report.md`**: Sweep results with recommended values. Applied to `DEFAULT_ANALYZER_CONFIGS` where precision improves without substantial yield loss.
+- **`very-complex-method.ts`**: Added to the SOLID bench corpus to close a detection gap at the `classAggregateComplexity` threshold.
+
+#### R4: Real-Corpus Triage
+
+- **Three-corpus triage**: 691 self-audit findings, 205 gin findings, 1,747 excalidraw findings classified as true / false / true-but-useless with one-sentence rationales.
+- **Classification principles**: Test fixtures are false positives by definition. Domain mismatch (SaaS rules on CLI tools) is false. TBU covers JSDoc-on-everything, internal-tool N+1, time-correlated git signals.
+- **`bench/results/triage-report.md`**: Per-analyzer, per-rule precision and judged-true rates with root-cause analysis.
+- **`bench/results/triage-classified.json`**: 691 classified findings with verdict and rationale.
+
+#### R5: Mechanical Recalibration
+
+Binding recalibration rules applied to the self-audit triage results:
+
+| Condition | Action |
+|-----------|--------|
+| precision ≥ 0.95 AND judged-true ≥ 0.90 | Promote one severity tier |
+| judged-true < 0.50 | Disable by default (`off`) |
+| n < 10 judged findings (T+F) | Exempt (insufficient sample) |
+
+**6 rules disabled** (`missing-org-filter`, `unknown-table`, `sql-injection-risk`, `loop-query`, `unfiltered-query`, `direct-sql`): Domain mismatch (SaaS tenant isolation on a CLI tool), dogfooding artifacts (the tool's own SQL-pattern constants detected as queries), or findings confined to test fixtures.
+
+**3 rules promoted**: `single-responsibility` (warning → critical, precision 0.98), `solid/class-size` (suggestion → warning, precision 1.00), `dependency-inversion` (suggestion → warning, precision 1.00).
+
+**Guard rails**: Minimum 10 judged findings before recalibration applies. One-tier promotion only (no suggestion → critical in a single step). Rules exempt from recalibration remain at their current severity with a note that the sample is too small.
+
+**Implementation**: `severityOverrides` on the default `AuditConfig` object. The `UniversalAnalyzer` base class filters `'off'`-severity violations before reporting. Users can override any rule's severity in their own `.codeauditor.json`.
+
+#### R6: Honest Documentation
+
+- **Deterministic vs advisory split**: README now documents which rules are structural facts and which are heuristic signals. Every disabled rule names the corpus where it *would* be useful.
+- **Recalibration disclosure**: README names the three measurement corpora, the recalibration rules, and the re-enable path (`severityOverrides`).
+- **`'off'` severity**: Documented as the opt-out mechanism. Setting a rule to `"off"` removes it from audit output entirely.
+- **`severityOverrides` on `AuditConfig`**: New top-level config field for global per-rule severity overrides. Applied before per-file path profile caps.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/ledger/findingsLedger.ts` | **New** — per-run, per-rule precision ledger |
+| `src/ledger/delta.ts` | **New** — between-run delta computation |
+| `bench/corpus/` | **New** — 26 per-analyzer fixture projects with `expected.json` |
+| `bench/runBench.ts` | **New** — harness computing precision/recall/F1 |
+| `bench/results/` | **New** — triage reports, recalibration table, sweep report |
+| `src/types.ts` | `Severity` extended with `'off'`; `severityOverrides` added to `AuditConfig` |
+| `src/languages/UniversalAnalyzer.ts` | Filter `'off'`-severity violations; preserve `errors` field |
+| `src/config/defaults.ts` | `severityOverrides` in `getDefaultConfig()` with recalibration values |
+| `src/analyzers/analyzerUtils.ts` | Severity maps include `off: 0` |
+| `src/reporting/` (html, csv) | Severity maps include `off: 0` |
+| `README.md` | Deterministic/advisory split; recalibration disclosure; re-enable path |
+| `CHANGELOG.md` | Spec 11 entry (this section) |
+
+## [3.1.1] — 2026-07-20
+
 ### Spec-18 R1/R6 follow-up: Baseline Fingerprint Scheme & Per-Analyzer Symbol Fixes
 
 #### Baseline schemaVersion bump (v1 → v2)
