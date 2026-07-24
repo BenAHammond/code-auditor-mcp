@@ -201,6 +201,7 @@ Spec 13 adds five temporal-analysis capabilities: git-powered churn tracking, ho
   2. **Tracking phase**: On every full audit, all historically-tracked pairs are re-measured. If similarity drops by ≥ `divergenceThreshold` (0.05) for `divergenceRuns` (2) consecutive runs → emit violation.
 - **`dry_pair_history` table**: `pair_fingerprint` (stable identity key), file/symbol/line/content-hash per block, `similarity`, `timestamp`, `run_id`. Content hashes are data (not keys).
 - **Config**: `DivergenceConfig` with `divergenceThreshold` (0.05), `divergenceRuns` (2), `minPairSimilarity` (0.5) in `DEFAULT_ANALYZER_CONFIGS.dry.divergence`.
+- **Re-evaluation condition**: The rule enters at `suggestion` severity and cannot be promoted to `warning` until ≥10 divergence findings exist across organic full runs. Divergence detection requires ≥2 consecutive full-run similarity snapshots — structurally unavailable from a static bench corpus. The bench fixture validates detector logic correctness; real-world efficacy is deferred. When the condition is met, re-run triage through the Spec 11 R5 recalibration pipeline.
 
 #### R6: Bench Fixtures & Baseline
 
@@ -318,6 +319,43 @@ Spec 14 adds network analysis to the code auditor: call-graph construction, cent
 | `src/scripts/runBench.ts` | Graph runner with expectedMetrics range assertions |
 | `src/__tests__/bench.test.ts` | Updated to 12 analyzers |
 | `SKILL.md` | `risk` and `architecture` command docs |
+
+### Spec-11 R5 Recalibration Audit (2026-07-20)
+
+Spec 11 R5's mechanical recalibration was applied to `defaults.ts` as part of Spec-11 closure. A subsequent audit of the recalibration table against external corpus evidence identified a pipeline defect — **"TBU Cliff + Single-Corpus Overfit"** — described in `bench/results/spec-11-recalibration-audit.md`. The recalibration has been corrected:
+
+**Pipeline defect**: The judged-true formula `true / (true + false)` excludes TBU findings from both numerator and denominator. Real findings classified as TBU (because they're "not worth fixing on THIS corpus") contribute nothing to keeping a rule alive. The self-audit corpus is adversarial for data-access rules — the tool's own source contains SQL pattern-matching logic that the detector misreads as database calls. On an external corpus (27-sample Gin-like triage), `loop-query` scored 50% judged-true vs 0% on self-audit.
+
+**Severity corrections in `defaults.ts`**:
+
+| Rule | Pre-audit | Post-audit | Δ | Rationale |
+|------|----------|------------|---|-----------|
+| `missing-org-filter` | off | **suggestion** | ↑ | Domain mismatch confirmed for non-SaaS, but must remain visible for multi-tenant apps |
+| `unknown-table` | off | **suggestion** | ↑ | Requires user-provided schema; must remain re-enablable |
+| `sql-injection-risk` | off | **suggestion** (restored) | ↑ | 50% judged-true on external corpus; self-audit scores were dogfooding artifacts |
+| `loop-query` | off | **warning** (restored) | ↑ | 50% judged-true on external corpus with confirmed production N+1s |
+| `unfiltered-query` | off | **suggestion** (restored) | ↑ | Insufficient external evidence to disable; keep at suggestion pending validation |
+| `direct-sql` | off | **suggestion** (restored) | ↑ | May have value on external corpora; restore pending evidence |
+| `single-responsibility` | **critical** | **warning** (restored) | ↓ | 0.98 judged-true but length heuristics should not block hooks |
+| `solid/class-size` | warning | **warning** (promoted) | = | 1.00/1.00 on 27 findings; one-tier promotion correct |
+| `dependency-inversion` | warning | **warning** (promoted) | = | 1.00/1.00 on 16 findings; one-tier promotion correct |
+
+Net effect: 6 rules restored from disabled, 1 promotion reversed, 2 promotions retained, 2 rules demoted to suggestion instead of off.
+
+**Process amendments** (recorded in `bench/results/recalibration.md` Limitations):
+- Multi-corpus validation required before disabling any rule globally
+- Test-fixture findings excluded from judged-true denominator (calibration artifacts, not false positives)
+- Heuristic promotion capped at warning tier — length/parameter/count rules should not block hooks
+- Re-evaluate when ≥10 external-corpus findings exist for each data-access rule
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/config/defaults.ts` | Corrected `severityOverrides` (4 overrides, 5 restores); added audit report reference in comment |
+| `bench/results/spec-11-recalibration-audit.md` | **New** — full audit report with per-finding triage data, pipeline defect analysis, external corpus cross-reference |
+| `bench/results/recalibration.md` | Updated with corrected recalibration table, audit amendment note, TBU-cliff limitation documentation |
+
 ## [3.2.0] — 2026-07-23
 
 ### Spec-21: Language-Neutral Detection — Provenance-Based DB Detection

@@ -30,20 +30,21 @@ export function getDefaultConfig(): AuditConfig {
       maxWarnings: 100,
       minHealthScore: 75
     },
-    // Spec-11 R5: Mechanical recalibration from self-audit triage (2026-07-20).
-    // Rules with judged-true < 0.50 are disabled by default.
-    // Rules with precision ≥ 0.95 and judged-true ≥ 0.90 are promoted one tier.
-    // Users can override any rule's severity via their own .codeauditor.json.
+    // Spec-11 R5: Mechanical recalibration — audited 2026-07-20.
+    // Audit report: bench/results/spec-11-recalibration-audit.md
+    //
+    // Demoted (suggestion): domain-mismatch confirmed but users with
+    //   applicable domains (multi-tenant SaaS, known-schema projects)
+    //   need these visible and re-enablable.
+    // Promoted (warning): precision ≥ 0.95, judged-true ≥ 0.90,
+    //   one tier only per Spec 11 R5. single-responsibility promotion
+    //   to critical is withheld — length heuristics should not block hooks.
+    // Restored to defaults: sql-injection-risk, loop-query, unfiltered-query,
+    //   direct-sql, single-responsibility. These have external-corpus evidence
+    //   of utility or insufficient evidence to recalibrate.
     severityOverrides: {
-      // Disabled — judged-true < 0.50 (domain mismatch, dogfooding artifacts, or test-fixture-only)
-      'missing-org-filter': 'off',
-      'unknown-table': 'off',
-      'sql-injection-risk': 'off',
-      'loop-query': 'off',
-      'unfiltered-query': 'off',
-      'direct-sql': 'off',
-      // Promoted — precision ≥ 0.95, judged-true ≥ 0.90, one tier only
-      'single-responsibility': 'critical',
+      'missing-org-filter': 'suggestion',
+      'unknown-table': 'suggestion',
       'solid/class-size': 'warning',
       'dependency-inversion': 'warning',
     }
