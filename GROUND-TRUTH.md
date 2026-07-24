@@ -311,3 +311,29 @@ All items are now dispositioned (2026-07-23):
 3. 📏 **P3-P4 deferred**: Schema-name normalization and SQL naming. Lower priority, config-primary tier sufficient. Not blocking Spec 11.
 
 **Closure statement**: Spec 21 and its entire debt chain are now genuinely closed. The corpus is guarding the remaining known gaps — the measuring exists, the debt is on the ruler, and the fix arrives where its infrastructure lives (Spec 15). Nothing stands in front of Spec 11 anymore.
+
+---
+
+## 9. Known Issues — SDK / Integration Surface
+
+*Added 2026-07-24. Release-validation findings on the MCP integration surface. Not code-auditor defects — these are limitations in the surrounding infrastructure.*
+
+### 9.1 `nextSessionsCursor`
+
+**What it is**: The Claude MCP client SDK's session-listing response includes a `nextSessionsCursor` field for pagination. The code-auditor MCP server does not currently consume or expose this cursor.
+
+**Impact**: When the session list grows large enough to require pagination, callers that only read the first page silently miss sessions beyond it. This is not a code-auditor server defect — the server returns whatever the client SDK provides — but it is a known gap in the MCP integration surface.
+
+**Mitigation**: None currently. Callers must be aware that session listing may be incomplete when the session count exceeds the SDK's default page size.
+
+### 9.2 `withRetry`
+
+**What it is**: The code-auditor MCP server and CLI do not implement retry logic for transient transport failures. The underlying MCP transport layer (stdio, HTTP) can experience connection drops, timeouts, or temporary unavailability.
+
+**Impact**: Transient failures surface as hard errors to the caller with no automatic recovery. In agent-in-loop use (where code-auditor runs as a Claude Code hook or MCP tool), a single transport hiccup can abort an entire audit operation.
+
+**Mitigation**: None currently. Callers should wrap tool invocations in their own retry logic when tolerance for transient failure is required. A `withRetry` utility in the SDK integration layer (not in code-auditor) would be the correct home for this.
+
+### 9.3 Relationship to Ground-Truth Law
+
+These entries are **annotations of known gaps**, not defects in code-auditor itself. Per the ground-truth law (§7): detector limitations are annotated, never deleted. These SDK-level gaps are documented here so the release-validation record is complete — they were discovered during release testing and are recorded, not hidden.
