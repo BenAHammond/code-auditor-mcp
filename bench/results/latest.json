@@ -1,17 +1,209 @@
 {
-  "timestamp": "2026-07-23T21:47:30.861Z",
+  "timestamp": "2026-07-24T00:39:51.429Z",
   "summary": {
-    "totalAnalyzers": 8,
-    "passed": 8,
+    "totalAnalyzers": 10,
+    "passed": 10,
     "failed": 0,
-    "totalKnownMisses": 3,
+    "totalKnownMisses": 4,
     "microAvgPrecision": 1,
     "microAvgRecall": 1,
     "microAvgF1": 1,
-    "microAvgTrueRecall": 0.9302,
-    "microAvgTrueF1": 0.9638
+    "microAvgTrueRecall": 0.931,
+    "microAvgTrueF1": 0.9643
   },
   "analyzers": {
+    "conventions": {
+      "truePositives": 5,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "conventions/error-handling",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "conventions/export-shape",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "conventions/import-form",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "conventions/naming",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "conventions/usage-pair",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [
+        {
+          "file": "src/approved.ts",
+          "violations": 0,
+          "passed": true
+        }
+      ],
+      "details": [
+        {
+          "expected": {
+            "file": "src/fixture.ts",
+            "rule": "conventions/usage-pair",
+            "symbol": "errorHandler",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "src/fixture.ts",
+            "line": 5,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "95% of `handleError` callers also call `logError` — this function calls `handleError` without `logError` (exemplar: src/approved.ts:5)",
+            "rule": "conventions/usage-pair",
+            "analyzer": "conventions",
+            "functionName": "errorHandler"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.ts",
+            "rule": "conventions/import-form",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "src/fixture.ts",
+            "line": 0,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "93% of imports of `lodash` in `src/` use default import — this file uses named (exemplar: src/approved.ts:1)",
+            "rule": "conventions/import-form",
+            "analyzer": "conventions",
+            "details": {
+              "source": "lodash",
+              "directory": "src",
+              "conventionForm": "default",
+              "actualForm": "named",
+              "localNames": [
+                "debounce"
+              ]
+            }
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.ts",
+            "rule": "conventions/error-handling",
+            "symbol": "handlePromiseError",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "src/fixture.ts",
+            "line": 15,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "88% of error-handling functions in `src/` use `try-catch` — this function uses `promise-catch` (exemplar: src/approved.ts:15)",
+            "rule": "conventions/error-handling",
+            "analyzer": "conventions",
+            "functionName": "handlePromiseError"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.ts",
+            "rule": "conventions/export-shape",
+            "symbol": "DefaultExporter",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "src/fixture.ts",
+            "line": 25,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "90% of exports in `src/` use named export — `DefaultExporter` uses default (exemplar: src/approved.ts:25)",
+            "rule": "conventions/export-shape",
+            "analyzer": "conventions",
+            "functionName": "DefaultExporter"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.ts",
+            "rule": "conventions/naming",
+            "symbol": "my_snake_function",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "src/fixture.ts",
+            "line": 30,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "92% of exports in `src/` use PascalCase — `my_snake_function` uses snake_case (exemplar: src/approved.ts:25)",
+            "rule": "conventions/naming",
+            "analyzer": "conventions",
+            "functionName": "my_snake_function"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    },
     "data-access": {
       "truePositives": 9,
       "falsePositives": 0,
@@ -1191,10 +1383,314 @@
       ],
       "knownMissDetails": [],
       "warnings": []
+    },
+    "styles": {
+      "truePositives": 9,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 0.9,
+      "trueF1": 0.9474,
+      "knownMisses": 1,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "styles/declaration-set-similarity",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "styles/mechanism-fragmentation",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "styles/mechanism-mixing",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "styles/off-scale",
+          "truePositives": 0,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 1,
+          "recoveredMisses": 0,
+          "trueRecall": 0,
+          "trueF1": 0
+        },
+        {
+          "rule": "styles/token-bypass",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "styles/undefined-class",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "styles/value-drift",
+          "truePositives": 2,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "styles/z-index-singleton",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "styles/z-index-sprawl",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [],
+      "details": [
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/value-drift",
+            "symbol": "color",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 120,
+            "column": 1,
+            "severity": "warning",
+            "message": "Color drift in \"background\": \"#273828\" is a rare value (used 1 time, 4.8% of 21 usages). Dominant cluster has 20 values. Consider using a design token.",
+            "rule": "styles/value-drift",
+            "analyzer": "styles",
+            "functionName": "color"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/value-drift",
+            "symbol": "exact",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 220,
+            "column": 1,
+            "severity": "warning",
+            "message": "Value drift in \"font-size\": \"17px\" is rare (1 of 21 usages, 4.8%). The dominant value \"16px\" is used 20 times. Consider using a consistent value or design token.",
+            "rule": "styles/value-drift",
+            "analyzer": "styles",
+            "functionName": "exact"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/token-bypass",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 300,
+            "column": 1,
+            "severity": "warning",
+            "message": "Token bypass: \"#1e2328\" for \"background-color\" matches design token \"--color-primary\" but was used as a raw value. Use the token reference instead to keep styles consistent.",
+            "rule": "styles/token-bypass",
+            "analyzer": "styles"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/undefined-class",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 1,
+            "column": 1,
+            "severity": "warning",
+            "message": "Undefined CSS class: \"obscure-custom-class-xyz\" has no matching definition in any stylesheet or Tailwind utility set.",
+            "rule": "styles/undefined-class",
+            "analyzer": "styles"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/mechanism-fragmentation",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 310,
+            "column": 1,
+            "severity": "warning",
+            "message": "Mechanism fragmentation: \"margin: 4px\" is applied via 3 different mechanisms (css, inline, tailwind). Consolidate to a single mechanism or design token.",
+            "rule": "styles/mechanism-fragmentation",
+            "analyzer": "styles"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/mechanism-mixing",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 1,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Mechanism mixing: /Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx uses 3 different style mechanisms (css, inline, tailwind). Consolidate to fewer mechanisms for maintainability.",
+            "rule": "styles/mechanism-mixing",
+            "analyzer": "styles"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/declaration-set-similarity",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 400,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Declaration-set similarity: \".block-a\" and \".block-b\" in /Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx share 5 of 5 declarations (100%). Consider consolidating these rules or extracting a shared mixin.",
+            "rule": "styles/declaration-set-similarity",
+            "analyzer": "styles"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/z-index-sprawl",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 510,
+            "column": 1,
+            "severity": "warning",
+            "message": "Z-index sprawl: 7 distinct z-index values (10, 20, 30, 40, 50, 60, 70). Consider defining a z-index scale (e.g., $z-layers: (dropdown: 100, modal: 200, toast: 300)).",
+            "rule": "styles/z-index-sprawl",
+            "analyzer": "styles"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/z-index-singleton",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/styles/src/fixture.tsx",
+            "line": 570,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Singleton z-index: z-index: 70 is used only once. Consider whether this value belongs in a shared z-index scale.",
+            "rule": "styles/z-index-singleton",
+            "analyzer": "styles"
+          }
+        }
+      ],
+      "knownMissDetails": [
+        {
+          "expected": {
+            "file": "src/fixture.tsx",
+            "rule": "styles/off-scale",
+            "reason": "inferScaleStep picks step=2 which always wins ties; all remainders fall within 1px tolerance. Off-scale detection is a known algorithmic limitation."
+          },
+          "matched": false
+        }
+      ],
+      "warnings": []
     }
   },
   "baselineComparison": {
     "regressions": [],
-    "improvements": []
+    "improvements": [
+      "  styles/styles/off-scale: F1 0 → 1 (+100)"
+    ]
   }
 }

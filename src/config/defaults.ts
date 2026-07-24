@@ -9,7 +9,7 @@ import { AuditConfig, PathProfile } from '../types.js';
  */
 export function getDefaultConfig(): AuditConfig {
   return {
-    includePaths: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go'],
+    includePaths: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.css', '**/*.scss'],
     excludePaths: [
       '**/node_modules/**',
       '**/.next/**',
@@ -19,7 +19,7 @@ export function getDefaultConfig(): AuditConfig {
       '**/*.test.{ts,tsx,js,jsx}',
       '**/*.spec.{ts,tsx,js,jsx}'
     ],
-    enabledAnalyzers: ['solid', 'dry', 'security', 'component', 'data-access'],
+    enabledAnalyzers: ['solid', 'dry', 'security', 'component', 'data-access', 'styles', 'conventions'],
     outputFormats: ['html', 'json'],
     outputDirectory: './audit-reports',
     minSeverity: 'suggestion',
@@ -244,6 +244,31 @@ export const DEFAULT_ANALYZER_CONFIGS = {
       'zod', 'joi', 'ajv', 'valibot', 'yup', 'superstruct', 'arktype',
       '@sinclair/typebox', 'class-validator',
     ],
+  },
+
+  // Spec 10 R3: style intelligence analyzer defaults
+  styles: {
+    minCorpus: 20,
+    colorDeltaE: 2.0,
+    outlierMaxShare: 0.05,
+    modeMinCount: 10,
+    scaleProperties: [
+      'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+      'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'gap', 'row-gap', 'column-gap', 'font-size',
+    ],
+    zIndexMaxDistinct: 6,
+    mechanismFragmentationMinMechanisms: 3,
+    declarationSetMinDeclarations: 5,
+    declarationSetSimilarityThreshold: 0.9,
+  },
+
+  // Spec 12 R2: convention mining analyzer defaults
+  conventions: {
+    minCorpus: 20,
+    pairConfidence: 0.9,
+    modeShare: 0.8,
+    maxConventionsPerDomain: 200,
   },
 };
 

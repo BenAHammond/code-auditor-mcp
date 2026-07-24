@@ -1,0 +1,39 @@
+{
+  "analyzer": "conventions",
+  "config": {},
+  "expectedViolations": [
+    {
+      "file": "src/fixture.ts",
+      "rule": "conventions/usage-pair",
+      "symbol": "errorHandler",
+      "severity": "suggestion"
+    },
+    {
+      "file": "src/fixture.ts",
+      "rule": "conventions/import-form",
+      "severity": "suggestion"
+    },
+    {
+      "file": "src/fixture.ts",
+      "rule": "conventions/error-handling",
+      "symbol": "handlePromiseError",
+      "severity": "suggestion"
+    },
+    {
+      "file": "src/fixture.ts",
+      "rule": "conventions/export-shape",
+      "symbol": "DefaultExporter",
+      "severity": "suggestion"
+    },
+    {
+      "file": "src/fixture.ts",
+      "rule": "conventions/naming",
+      "symbol": "my_snake_function",
+      "severity": "suggestion"
+    }
+  ],
+  "nearMissFiles": [
+    "src/approved.ts"
+  ],
+  "description": "Convention Mining — one violation per domain"
+}

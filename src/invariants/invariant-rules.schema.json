@@ -22,7 +22,7 @@
           },
           "kind": {
             "type": "string",
-            "enum": ["import-ban", "call-constraint", "module-boundary", "naming", "ast-pattern"],
+            "enum": ["import-ban", "call-constraint", "module-boundary", "naming", "ast-pattern", "style-mechanism", "no-raw-values"],
             "description": "The kind of invariant rule."
           },
           "severity": {
@@ -122,6 +122,47 @@
                   "type": "string",
                   "enum": ["typescript", "javascript", "go"],
                   "description": "Language to parse files in. Defaults to 'typescript'."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Path glob. Only files matching this pattern are checked."
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "style-mechanism" } } },
+            "then": {
+              "required": ["allow"],
+              "properties": {
+                "allow": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string" },
+                  "description": "Allowed style mechanisms (e.g. ['tailwind', 'css'])."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Path glob. Only files matching this pattern are checked."
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "no-raw-values" } } },
+            "then": {
+              "required": ["properties"],
+              "properties": {
+                "properties": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string" },
+                  "description": "CSS properties to check (e.g. ['color', 'background-color'])."
+                },
+                "allowValues": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Values always allowed even without a token ref (e.g. ['inherit', 'transparent'])."
                 },
                 "path": {
                   "type": "string",

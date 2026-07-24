@@ -19,6 +19,9 @@ import { UniversalDocumentationAnalyzer } from '../analyzers/universal/Universal
 import { UniversalSchemaAnalyzer } from '../analyzers/universal/UniversalSchemaAnalyzer.js';
 import { reactAnalyzer } from '../analyzers/reactAnalyzer.js';
 import { invariantsAnalyzer } from '../analyzers/invariantsAnalyzer.js';
+import { UniversalStylesAnalyzer } from '../analyzers/universal/UniversalStylesAnalyzer.js';
+import { UniversalConventionsAnalyzer } from '../analyzers/universal/UniversalConventionsAnalyzer.js';
+import { CodeIndexDB } from '../codeIndexDB.js';
 import { fingerprint } from '../fingerprint.js';
 import { extractSymbol } from '../symbols.js';
 import type { Violation, AnalyzerResult } from '../types.js';
@@ -26,6 +29,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { join, resolve, relative, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { createHash } from 'node:crypto';
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -138,8 +142,168 @@ interface AnalyzerRunner {
   analyze: (files: string[], config: Record<string, unknown>) => Promise<AnalyzerResult>;
 }
 
+// ── Styles bench seed data ──────────────────────────────────────────────
+
+/**
+ * Seed the in-memory SQLite DB with style declarations that trigger all
+ * 7 detectors (10 rule IDs) in UniversalStylesAnalyzer.
+ *
+ * Expected violations:
+ * 1. styles/value-drift (color)  — 20× #1e2328 tokenised + 1× #273828 straggler
+ * 2. styles/value-drift (exact)  — 20× 16px + 1× 17px straggler
+ * 3. styles/token-bypass         — #1e2328 without token_ref matching --color-primary
+ * 4. styles/undefined-class      — obscure-custom-class-xyz in class usage, no definition
+ * 5. styles/mechanism-fragmentation — margin:4px via css+tailwind+inline
+ * 6. styles/mechanism-mixing     — src/fixture.tsx uses ≥3 mechanisms
+ * 7. styles/declaration-set-similarity — two identical 5-decl rule blocks
+ * 8. styles/z-index-sprawl       — 7 distinct z-index values (> zIndexMaxDistinct=6)
+ * 9. styles/z-index-singleton    — z-index:70 used only once
+ *
+ * Known miss: styles/off-scale (algorithmic limitation — see expected.json).
+ */
+function seedStylesData(rawDb: any, files: string[]): void {
+  const file = files[0] ?? 'src/fixture.tsx';
+  let id = 0;
+  const nextId = () => ++id;
+  const hash = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 16);
+
+  const insertDecl = (
+    property: string,
+    rawValue: string,
+    mechanism: string,
+    line: number,
+    tokenRef?: string | null,
+    context?: string | null,
+    normalizedValue?: string | null,
+  ) => {
+    rawDb.prepare(
+      `INSERT INTO style_declarations (id, property, raw_value, normalized_value, mechanism, file_path, line, context, token_ref, content_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      nextId(),
+      property,
+      rawValue,
+      normalizedValue ?? rawValue,
+      mechanism,
+      file,
+      line,
+      context ?? null,
+      tokenRef ?? null,
+      hash(`${file}:${line}:${property}:${rawValue}`),
+    );
+  };
+
+  // ── Color drift: 20× #1e2328 tokenised + 1× #273828 straggler ──────
+  for (let i = 0; i < 20; i++) {
+    insertDecl('background', '#1e2328', 'css', 100 + i, '--color-primary');
+  }
+  insertDecl('background', '#273828', 'css', 120); // straggler, no token_ref
+
+  // ── Exact-value drift: 20× 16px + 1× 17px straggler ───────────────
+  for (let i = 0; i < 20; i++) {
+    insertDecl('font-size', '16px', 'css', 200 + i);
+  }
+  insertDecl('font-size', '17px', 'css', 220); // straggler
+
+  // ── Token bypass: #1e2328 (matches --color-primary) without token_ref
+  insertDecl('background-color', '#1e2328', 'css', 300);
+
+  // ── Mechanism fragmentation: margin:4px via 3 mechanisms ───────────
+  insertDecl('margin', '4px', 'css', 310);
+  insertDecl('margin', '4px', 'tailwind', 311);
+  insertDecl('margin', '4px', 'inline', 312);
+
+  // ── Declaration-set similarity: two identical 5-decl rule blocks ───
+  const blockA = '.block-a';
+  const blockB = '.block-b';
+  const sharedPairs: Array<[string, string]> = [
+    ['display', 'flex'],
+    ['flex-direction', 'column'],
+    ['gap', '8px'],
+    ['padding', '16px'],
+    ['align-items', 'center'],
+  ];
+  for (const [prop, val] of sharedPairs) {
+    insertDecl(prop, val, 'css', 400, null, blockA);
+    insertDecl(prop, val, 'css', 410, null, blockB);
+  }
+
+  // ── Z-index: 7 distinct values (sprawl), one singleton ─────────────
+  // Pair each value twice so total corpus > minCorpus
+  const zValues = [10, 20, 30, 40, 50, 60, 70];
+  for (const z of zValues) {
+    const repeat = z === 70 ? 1 : 2; // 70 is singleton
+    for (let i = 0; i < repeat; i++) {
+      insertDecl('z-index', String(z), 'css', 500 + z + i);
+    }
+  }
+
+  // ── Token: --color-primary = #1e2328 ───────────────────────────────
+  rawDb.prepare(
+    `INSERT INTO style_tokens (name, value, file_path, mechanism)
+     VALUES (?, ?, ?, ?)`,
+  ).run('--color-primary', '#1e2328', file, 'css');
+
+  // ── Class usage: obscure-custom-class-xyz (undefined in any sheet) ─
+  rawDb.prepare(
+    `INSERT INTO style_class_usage (class_name, file_path, line, mechanism, unresolvable)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run('obscure-custom-class-xyz', file, 1, 'className', 0);
+}
+
+function seedConventionsData(rawDb: any, _files: string[]): void {
+  const insertFn = rawDb.prepare(
+    `INSERT INTO functions (id, name, file_path, line_number, is_exported, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  insertFn.run(1, 'errorHandler',       'src/fixture.ts',       5,  0, null);
+  insertFn.run(2, 'handlePromiseError', 'src/fixture.ts',      15,  0, JSON.stringify({ body: "fetch('/api/data').then(res => res.json()).catch(err => console.error(err))" }));
+  insertFn.run(3, 'DefaultExporter',    'src/fixture.ts',      25,  1, null);
+  insertFn.run(4, 'my_snake_function',  'src/fixture.ts',      30,  1, null);
+  insertFn.run(5, 'approvedHandler',    'src/approved.ts',      5,  0, null);
+  insertFn.run(6, 'approvedWithCatch',  'src/approved.ts',     15,  0, JSON.stringify({ body: 'try { doSomething(); } catch (e) { logError(e); }' }));
+  insertFn.run(7, 'ApprovedExport',     'src/approved.ts',     25,  1, null);
+  insertFn.run(8,  'NoModeDefault',     'src/no-mode/index.ts', 5,  1, null);
+  insertFn.run(9,  'noModeCamelFunction','src/no-mode/index.ts',10,  1, null);
+  insertFn.run(10, 'noModeTryCatch',    'src/no-mode/index.ts',15,  0, JSON.stringify({ body: 'try { x(); } catch(e) {}' }));
+  insertFn.run(11, 'noModeCatch',       'src/no-mode/index.ts',20,  0, JSON.stringify({ body: 'p.then(r => r).catch(err => {})' }));
+  insertFn.run(12, 'noModeIfErr',       'src/no-mode/index.ts',25,  0, JSON.stringify({ body: 'if (err) return;' }));
+
+  const insertCall = rawDb.prepare(
+    `INSERT INTO function_calls (caller_id, callee_name) VALUES (?, ?)`,
+  );
+  insertCall.run(1, 'handleError');
+  insertCall.run(5, 'handleError');
+  insertCall.run(5, 'logError');
+
+  const insertConv = rawDb.prepare(
+    `INSERT INTO conventions (id, domain, rule_id, antecedent, consequent, pattern, directory, support, total_cases, confidence, exemplar_file, exemplar_line)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  insertConv.run(1, 'usage-pair',     'conventions/usage-pair',     'handleError', 'logError', null,           'src', 95, 100, 0.95, 'src/approved.ts', 5);
+  insertConv.run(2, 'import-form',    'conventions/import-form',    'lodash',      'default',  null,           'src', 20,  22, 0.93, 'src/approved.ts', 1);
+  insertConv.run(3, 'error-handling', 'conventions/error-handling', null,          null,       'try-catch',    'src', 30,  34, 0.88, 'src/approved.ts', 15);
+  insertConv.run(4, 'export-shape',   'conventions/export-shape',   null,          null,       'named',        'src', 18,  20, 0.90, 'src/approved.ts', 25);
+  insertConv.run(5, 'naming',         'conventions/naming',         null,          null,       'PascalCase',   'src', 25,  27, 0.92, 'src/approved.ts', 25);
+}
+
+// ── Analyzer registry (mirrors auditRunner DEFAULT_ANALYZERS) ────────
+
 function buildAnalyzers(): Record<string, AnalyzerRunner> {
   return {
+    conventions: {
+      name: 'conventions',
+      analyze: async (files, config) => {
+        CodeIndexDB.resetInstance();
+        const db = CodeIndexDB.getInstance(':memory:');
+        await db.initialize();
+        const rawDb = (db as any).rawDb;
+        seedConventionsData(rawDb, files);
+        const analyzer = new UniversalConventionsAnalyzer();
+        const corpusDir = dirname(dirname(files[0] || '.'));
+        return analyzer.analyze(files, { ...config, projectRoot: resolve(corpusDir) });
+      },
+    },
     documentation: {
       name: 'documentation',
       analyze: async (files, config) => {
@@ -172,6 +336,18 @@ function buildAnalyzers(): Record<string, AnalyzerRunner> {
       name: 'schema',
       analyze: async (files, config) => {
         const analyzer = new UniversalSchemaAnalyzer();
+        return analyzer.analyze(files, config);
+      },
+    },
+    styles: {
+      name: 'styles',
+      analyze: async (files, config) => {
+        CodeIndexDB.resetInstance();
+        const db = CodeIndexDB.getInstance(':memory:');
+        await db.initialize();
+        const rawDb = (db as any).rawDb;
+        seedStylesData(rawDb, files);
+        const analyzer = new UniversalStylesAnalyzer();
         return analyzer.analyze(files, config);
       },
     },
@@ -209,7 +385,7 @@ async function collectFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
   const entries = await readdir(dir, { withFileTypes: true, recursive: true });
   for (const entry of entries) {
-    if (entry.isFile() && /\.(ts|tsx|js|jsx)$/.test(entry.name) && !entry.name.includes('.d.')) {
+    if (entry.isFile() && /\.(ts|tsx|js|jsx|css|scss)$/.test(entry.name) && !entry.name.includes('.d.')) {
       files.push(join(entry.parentPath, entry.name));
     }
   }

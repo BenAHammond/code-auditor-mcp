@@ -74,6 +74,34 @@
       "rules": {
         "solid/method-complexity": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
       }
+    },
+    "conventions": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "conventions/usage-pair": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "conventions/import-form": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "conventions/error-handling": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "conventions/export-shape": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "conventions/naming": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
+    "styles": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "styles/value-drift": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "styles/off-scale": { "f1": 0, "precision": 0, "recall": 0 },
+        "styles/undefined-class": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "styles/token-bypass": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "styles/mechanism-fragmentation": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "styles/mechanism-mixing": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "styles/declaration-set-similarity": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "styles/z-index-sprawl": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "styles/z-index-singleton": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
     }
   }
 }

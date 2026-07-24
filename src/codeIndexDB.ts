@@ -27,12 +27,20 @@ import {
   AnalyzerConfigDocument,
   SchemaDefinition,
   SchemaIndexMetadata,
-  SchemaUsage
+  SchemaUsage,
+  ConventionMiningConfig,
 } from './types.js';
+import { mineConventions, computeMinerInputHash } from './conventions/conventionMiner.js';
 import { QueryParser, compileToSQL } from './search/QueryParser.js';
 import type { SqlQuery } from './search/QueryParser.js';
 import { getPersistedStorageRoot, resolvePersistedIndexPath } from './dataPaths.js';
 import { ContextualError, getErrnoCode } from './mcpToolErrors.js';
+import type {
+  NormalizedDeclaration,
+  NormalizedValue,
+  StyleToken,
+  StyleClassUsage,
+} from './styles/types.js';
 import {
   WhitelistEntry,
   WhitelistType,
@@ -265,12 +273,13 @@ export class CodeIndexDB {
   private schemaAdapter!: SqliteCollectionAdapter;
   private schemaUsageAdapter!: SqliteCollectionAdapter;
   private tasksAdapter!: SqliteCollectionAdapter;
+  private conventionsAdapter!: SqliteCollectionAdapter;
 
   private taskRepository: ProjectTaskRepository | null = null;
   private stmts: Map<string, Database.Statement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 2;
+  private static readonly SCHEMA_VERSION = 4;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -280,13 +289,24 @@ export class CodeIndexDB {
 
   static getInstance(dbPath?: string): CodeIndexDB {
     if (!CodeIndexDB.instance) {
-      const resolved =
-        dbPath !== undefined && dbPath !== ''
-          ? path.resolve(dbPath)
-          : resolvePersistedIndexPath();
+      let resolved: string;
+      if (dbPath !== undefined && dbPath !== '') {
+        resolved = dbPath === ':memory:' ? ':memory:' : path.resolve(dbPath);
+      } else {
+        resolved = resolvePersistedIndexPath();
+      }
       CodeIndexDB.instance = new CodeIndexDB(resolved);
     }
     return CodeIndexDB.instance;
+  }
+
+  /** Reset the singleton — used by tests that need a fresh in-memory instance. */
+  static resetInstance(): void {
+    if (CodeIndexDB.instance) {
+      try { CodeIndexDB.instance.db.close(); } catch { /* ignore */ }
+      CodeIndexDB.instance.isInitialized = false;
+    }
+    (CodeIndexDB as any).instance = null;
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
@@ -377,6 +397,7 @@ export class CodeIndexDB {
     this.schemaAdapter = new SqliteCollectionAdapter(this.db, 'schema_definitions');
     this.schemaUsageAdapter = new SqliteCollectionAdapter(this.db, 'schema_usage');
     this.tasksAdapter = new SqliteCollectionAdapter(this.db, 'project_tasks');
+    this.conventionsAdapter = new SqliteCollectionAdapter(this.db, 'conventions');
 
     // Init defaults
     const whitelistCount = (this.db.prepare('SELECT COUNT(*) as cnt FROM whitelist').get() as any).cnt;
@@ -416,6 +437,88 @@ export class CodeIndexDB {
       this.db.exec(`
         DROP INDEX IF EXISTS idx_functions_name_file;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
+      `);
+    }
+
+    // Migration 2 → 3: Style intelligence tables (Spec 10)
+    if (currentVersion < 3) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS style_declarations (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          property        TEXT NOT NULL,
+          raw_value       TEXT NOT NULL,
+          normalized_value TEXT,
+          mechanism       TEXT NOT NULL,
+          file_path       TEXT NOT NULL,
+          line            INTEGER NOT NULL,
+          context         TEXT,
+          variant_context TEXT,
+          token_ref       TEXT,
+          content_hash    TEXT,
+          created_at      TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_style_decls_property   ON style_declarations(property);
+        CREATE INDEX IF NOT EXISTS idx_style_decls_mechanism  ON style_declarations(mechanism);
+        CREATE INDEX IF NOT EXISTS idx_style_decls_file_path  ON style_declarations(file_path);
+        CREATE INDEX IF NOT EXISTS idx_style_decls_token_ref  ON style_declarations(token_ref);
+        CREATE INDEX IF NOT EXISTS idx_style_decls_content_hash ON style_declarations(content_hash);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS style_declarations_fts USING fts5(
+          property, raw_value, normalized_value,
+          content='style_declarations', content_rowid='id',
+          tokenize='porter unicode61'
+        );
+
+        CREATE TABLE IF NOT EXISTS style_tokens (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          name       TEXT NOT NULL,
+          value      TEXT NOT NULL,
+          file_path  TEXT NOT NULL,
+          mechanism  TEXT NOT NULL,
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_style_tokens_name ON style_tokens(name);
+
+        CREATE TABLE IF NOT EXISTS style_class_usage (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          class_name   TEXT NOT NULL,
+          file_path    TEXT NOT NULL,
+          line         INTEGER NOT NULL,
+          mechanism    TEXT NOT NULL,
+          unresolvable INTEGER DEFAULT 0,
+          created_at   TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_style_class_usage_name   ON style_class_usage(class_name);
+        CREATE INDEX IF NOT EXISTS idx_style_class_usage_file   ON style_class_usage(file_path);
+        CREATE INDEX IF NOT EXISTS idx_style_class_usage_unres  ON style_class_usage(unresolvable);
+      `);
+    }
+
+    // Migration 3 → 4: Convention mining tables (Spec 12)
+    if (currentVersion < 4) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS conventions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          domain TEXT NOT NULL,
+          rule_id TEXT NOT NULL,
+          antecedent TEXT,
+          consequent TEXT,
+          pattern TEXT,
+          directory TEXT,
+          file_path TEXT,
+          line INTEGER,
+          support INTEGER DEFAULT 0,
+          total_cases INTEGER DEFAULT 0,
+          confidence REAL DEFAULT 0,
+          exemplar_file TEXT,
+          exemplar_line INTEGER,
+          hash TEXT,
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_conv_domain ON conventions(domain);
+        CREATE INDEX IF NOT EXISTS idx_conv_rule_id ON conventions(rule_id);
+        CREATE INDEX IF NOT EXISTS idx_conv_directory ON conventions(directory);
+        CREATE INDEX IF NOT EXISTS idx_conv_hash ON conventions(hash);
       `);
     }
   }
@@ -649,6 +752,80 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_ledger_findings_run     ON findings_ledger_findings(run_id);
       CREATE INDEX IF NOT EXISTS idx_ledger_findings_fp      ON findings_ledger_findings(fingerprint);
       CREATE INDEX IF NOT EXISTS idx_ledger_findings_rule    ON findings_ledger_findings(analyzer, rule);
+
+      -- Spec 10: Style intelligence tables
+      CREATE TABLE IF NOT EXISTS style_declarations (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        property        TEXT NOT NULL,
+        raw_value       TEXT NOT NULL,
+        normalized_value TEXT,
+        mechanism       TEXT NOT NULL,
+        file_path       TEXT NOT NULL,
+        line            INTEGER NOT NULL,
+        context         TEXT,
+        variant_context TEXT,
+        token_ref       TEXT,
+        content_hash    TEXT,
+        created_at      TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_decls_property   ON style_declarations(property);
+      CREATE INDEX IF NOT EXISTS idx_style_decls_mechanism  ON style_declarations(mechanism);
+      CREATE INDEX IF NOT EXISTS idx_style_decls_file_path  ON style_declarations(file_path);
+      CREATE INDEX IF NOT EXISTS idx_style_decls_token_ref  ON style_declarations(token_ref);
+      CREATE INDEX IF NOT EXISTS idx_style_decls_content_hash ON style_declarations(content_hash);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS style_declarations_fts USING fts5(
+        property, raw_value, normalized_value,
+        content='style_declarations', content_rowid='id',
+        tokenize='porter unicode61'
+      );
+
+      CREATE TABLE IF NOT EXISTS style_tokens (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL,
+        value      TEXT NOT NULL,
+        file_path  TEXT NOT NULL,
+        mechanism  TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_tokens_name ON style_tokens(name);
+
+      CREATE TABLE IF NOT EXISTS style_class_usage (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        class_name   TEXT NOT NULL,
+        file_path    TEXT NOT NULL,
+        line         INTEGER NOT NULL,
+        mechanism    TEXT NOT NULL,
+        unresolvable INTEGER DEFAULT 0,
+        created_at   TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_class_usage_name   ON style_class_usage(class_name);
+      CREATE INDEX IF NOT EXISTS idx_style_class_usage_file   ON style_class_usage(file_path);
+      CREATE INDEX IF NOT EXISTS idx_style_class_usage_unres  ON style_class_usage(unresolvable);
+
+      -- Spec 12: Convention mining
+      CREATE TABLE IF NOT EXISTS conventions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain TEXT NOT NULL,
+        rule_id TEXT NOT NULL,
+        antecedent TEXT,
+        consequent TEXT,
+        pattern TEXT,
+        directory TEXT,
+        file_path TEXT,
+        line INTEGER,
+        support INTEGER DEFAULT 0,
+        total_cases INTEGER DEFAULT 0,
+        confidence REAL DEFAULT 0,
+        exemplar_file TEXT,
+        exemplar_line INTEGER,
+        hash TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_conv_domain ON conventions(domain);
+      CREATE INDEX IF NOT EXISTS idx_conv_rule_id ON conventions(rule_id);
+      CREATE INDEX IF NOT EXISTS idx_conv_directory ON conventions(directory);
+      CREATE INDEX IF NOT EXISTS idx_conv_hash ON conventions(hash);
     `);
 
     // Run schema migrations
@@ -1474,6 +1651,7 @@ export class CodeIndexDB {
       this.db.prepare('DELETE FROM code_maps').run();
       this.db.prepare('DELETE FROM schema_definitions').run();
       this.db.prepare('DELETE FROM schema_usage').run();
+      this.db.prepare('DELETE FROM conventions').run();
       // Preserve: project_tasks, analyzer_configs, whitelist, findings_ledger_runs, findings_ledger_findings
     })();
   }
@@ -1610,6 +1788,61 @@ export class CodeIndexDB {
           totalRemoved += result.changes;
         }
       }
+    }
+
+    // Spec 12 — Mine codebase conventions after sync when the functions table
+    // has changed. Content-hash-based skip: stored hash avoids re-mining.
+    const miningConfig: ConventionMiningConfig = {
+      minCorpus: 20,
+      pairConfidence: 0.9,
+      modeShare: 0.8,
+      maxConventionsPerDomain: 200,
+    };
+    const newHash = computeMinerInputHash(this.db, miningConfig);
+    const oldHashRow = this.db.prepare(
+      "SELECT value FROM meta WHERE key = 'conventions_hash'"
+    ).get() as { value: string } | undefined;
+
+    if (!oldHashRow || oldHashRow.value !== newHash) {
+      const conventions = mineConventions(this.db, miningConfig, projectRoot);
+      // Upsert: clear existing conventions, insert new ones
+      const deleteStmt = this.db.prepare('DELETE FROM conventions');
+      const insertStmt = this.db.prepare(
+        `INSERT INTO conventions
+         (domain, rule_id, antecedent, consequent, pattern, directory,
+          file_path, line, support, total_cases, confidence,
+          exemplar_file, exemplar_line, hash)
+         VALUES (@domain, @rule_id, @antecedent, @consequent, @pattern,
+                 @directory, @file_path, @line, @support, @total_cases,
+                 @confidence, @exemplar_file, @exemplar_line, @hash)`
+      );
+
+      const upsertAll = this.db.transaction(() => {
+        deleteStmt.run();
+        for (const c of conventions) {
+          insertStmt.run({
+            domain: c.domain,
+            rule_id: c.rule_id,
+            antecedent: c.antecedent ?? null,
+            consequent: c.consequent ?? null,
+            pattern: c.pattern ?? null,
+            directory: c.directory ?? null,
+            file_path: c.file_path ?? null,
+            line: c.line ?? null,
+            support: c.support,
+            total_cases: c.total_cases,
+            confidence: c.confidence,
+            exemplar_file: c.exemplar_file ?? null,
+            exemplar_line: c.exemplar_line ?? null,
+            hash: c.hash ?? null,
+          });
+        }
+      });
+      upsertAll();
+
+      this.db.prepare(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('conventions_hash', ?)"
+      ).run(newHash);
     }
 
     return {

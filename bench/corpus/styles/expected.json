@@ -1,0 +1,29 @@
+{
+  "analyzer": "styles",
+  "config": {
+    "minCorpus": 5,
+    "modeMinCount": 10,
+    "outlierMaxShare": 0.05,
+    "colorDeltaE": 2.0,
+    "zIndexMaxDistinct": 6,
+    "mechanismFragmentationMinMechanisms": 3,
+    "declarationSetMinDeclarations": 5,
+    "declarationSetSimilarityThreshold": 0.9
+  },
+  "expectedViolations": [
+    { "file": "src/fixture.tsx", "rule": "styles/value-drift", "symbol": "color", "severity": "warning" },
+    { "file": "src/fixture.tsx", "rule": "styles/value-drift", "symbol": "exact", "severity": "warning" },
+    { "file": "src/fixture.tsx", "rule": "styles/token-bypass", "severity": "warning" },
+    { "file": "src/fixture.tsx", "rule": "styles/undefined-class", "severity": "warning" },
+    { "file": "src/fixture.tsx", "rule": "styles/mechanism-fragmentation", "severity": "warning" },
+    { "file": "src/fixture.tsx", "rule": "styles/mechanism-mixing", "severity": "suggestion" },
+    { "file": "src/fixture.tsx", "rule": "styles/declaration-set-similarity", "severity": "suggestion" },
+    { "file": "src/fixture.tsx", "rule": "styles/z-index-sprawl", "severity": "warning" },
+    { "file": "src/fixture.tsx", "rule": "styles/z-index-singleton", "severity": "suggestion" }
+  ],
+  "knownMisses": [
+    { "file": "src/fixture.tsx", "rule": "styles/off-scale", "reason": "inferScaleStep picks step=2 which always wins ties; all remainders fall within 1px tolerance. Off-scale detection is a known algorithmic limitation." }
+  ],
+  "nearMissFiles": [],
+  "description": "Tests for the Styles analyzer — all 7 detectors: value-drift (color + exact), undefined-class, token-bypass, mechanism-fragmentation, mechanism-mixing, declaration-set-similarity, z-index-sprawl, and z-index-singleton. Off-scale is a known miss (algorithmic limitation)."
+}

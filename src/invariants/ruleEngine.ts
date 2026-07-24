@@ -1,11 +1,14 @@
 /**
  * Invariant Rules Engine — checks files and call graph against user-defined rules.
  *
- * Four rule kinds:
+ * Rule kinds:
  *   import-ban       — no file may import a banned module (except exempt files)
  *   call-constraint   — restrict which files may call a given function
  *   module-boundary   — files in `from` may not import from `to`
  *   naming            — exported symbols must match a regex
+ *   ast-pattern       — AST node pattern matching via @ast-grep/napi
+ *   style-mechanism   — enforce allowed style mechanisms per file
+ *   no-raw-values     — enforce design-token references for specified CSS properties
  */
 
 import picomatch from 'picomatch';
@@ -20,6 +23,8 @@ import type {
   ModuleBoundaryRule,
   NamingRule,
   AstPatternRule,
+  StyleMechanismRule,
+  NoRawValuesRule,
   RuleViolation,
   RuleCheckResult,
 } from './types.js';
@@ -469,6 +474,131 @@ function checkAstPattern(
   return violations;
 }
 
+// ── style-mechanism checker ────────────────────────────────────────────────
+
+/**
+ * Enforce that style declarations in matching files only use allowed mechanisms.
+ * Queries the style_declarations table in the CodeIndexDB.
+ */
+function checkStyleMechanism(
+  rule: StyleMechanismRule,
+  files: string[],
+  db: CodeIndexDB
+): RuleViolation[] {
+  const violations: RuleViolation[] = [];
+  const dbAny = db as any;
+  if (!dbAny.db) return violations;
+
+  const allowedSet = new Set(rule.allow);
+
+  for (const file of files) {
+    // Check path filter
+    if (rule.path && !matchesPattern(rule.path, file)) continue;
+
+    try {
+      const rows = dbAny.db.prepare(`
+        SELECT DISTINCT mechanism, file_path, line
+        FROM style_declarations
+        WHERE file_path = ?
+        ORDER BY line
+      `).all(file) as Array<{ mechanism: string; file_path: string; line: number }>;
+
+      for (const row of rows) {
+        if (!allowedSet.has(row.mechanism)) {
+          violations.push({
+            ruleId: rule.id,
+            kind: 'style-mechanism',
+            severity: rule.severity,
+            message: rule.message ||
+              `Style mechanism "${row.mechanism}" is not allowed (allowed: ${rule.allow.join(', ')})`,
+            file: row.file_path,
+            line: row.line,
+          });
+          // One violation per mechanism per file is sufficient
+          break;
+        }
+      }
+    } catch {
+      // Table may not exist yet (no style index built)
+      continue;
+    }
+  }
+
+  return violations;
+}
+
+// ── no-raw-values checker ──────────────────────────────────────────────────
+
+/**
+ * Enforce that designated CSS properties reference a design token.
+ * A declaration whose normalized_value is not in allowValues AND has no
+ * token_ref is a violation.
+ */
+function checkNoRawValues(
+  rule: NoRawValuesRule,
+  files: string[],
+  db: CodeIndexDB
+): RuleViolation[] {
+  const violations: RuleViolation[] = [];
+  const dbAny = db as any;
+  if (!dbAny.db) return violations;
+
+  const propertiesSet = new Set(rule.properties);
+  const allowValuesSet = new Set(rule.allowValues ?? []);
+
+  for (const file of files) {
+    // Check path filter
+    if (rule.path && !matchesPattern(rule.path, file)) continue;
+
+    try {
+      const rows = dbAny.db.prepare(`
+        SELECT property, raw_value, normalized_value, file_path, line
+        FROM style_declarations
+        WHERE file_path = ?
+        ORDER BY line
+      `).all(file) as Array<{
+        property: string;
+        raw_value: string;
+        normalized_value: string | null;
+        file_path: string;
+        line: number;
+      }>;
+
+      for (const row of rows) {
+        if (!propertiesSet.has(row.property)) continue;
+
+        const normVal = row.normalized_value ?? row.raw_value;
+        if (allowValuesSet.has(normVal) || allowValuesSet.has(row.raw_value)) continue;
+
+        // Check if this declaration has a token ref
+        const tokenRow = dbAny.db.prepare(`
+          SELECT token_ref FROM style_declarations
+          WHERE file_path = ? AND line = ? AND property = ? AND token_ref IS NOT NULL
+          LIMIT 1
+        `).get(row.file_path, row.line, row.property) as { token_ref: string } | undefined;
+
+        if (tokenRow) continue; // has a token ref — allowed
+
+        violations.push({
+          ruleId: rule.id,
+          kind: 'no-raw-values',
+          severity: rule.severity,
+          message: rule.message ||
+            `CSS property "${row.property}" has raw value "${row.raw_value}" — use a design token`,
+          file: row.file_path,
+          line: row.line,
+          symbol: row.property,
+        });
+      }
+    } catch {
+      // Table may not exist yet (no style index built)
+      continue;
+    }
+  }
+
+  return violations;
+}
+
 // ── Exported symbol extraction ────────────────────────────────────────────
 
 /**
@@ -556,6 +686,8 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   const moduleBoundaries = rules.filter(r => r.kind === 'module-boundary') as ModuleBoundaryRule[];
   const namingRules = rules.filter(r => r.kind === 'naming') as NamingRule[];
   const astPatterns = rules.filter(r => r.kind === 'ast-pattern') as AstPatternRule[];
+  const styleMechanisms = rules.filter(r => r.kind === 'style-mechanism') as StyleMechanismRule[];
+  const noRawValues = rules.filter(r => r.kind === 'no-raw-values') as NoRawValuesRule[];
 
   // Pre-extract imports and exports for all files
   interface FileData {
@@ -633,6 +765,27 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
         } catch (err: any) {
           errors.push(`Error running ast-pattern "${rule.id}" on ${file}: ${err.message}`);
         }
+      }
+    }
+  }
+
+  // 6. style-mechanism and no-raw-values checks — require DB (style index)
+  if (db) {
+    const scopedPaths = files.map(f => f.replace(/^\.\//, ''));
+
+    for (const rule of styleMechanisms) {
+      try {
+        violations.push(...checkStyleMechanism(rule, scopedPaths, db));
+      } catch (err: any) {
+        errors.push(`Error checking style-mechanism "${rule.id}": ${err.message}`);
+      }
+    }
+
+    for (const rule of noRawValues) {
+      try {
+        violations.push(...checkNoRawValues(rule, scopedPaths, db));
+      } catch (err: any) {
+        errors.push(`Error checking no-raw-values "${rule.id}": ${err.message}`);
       }
     }
   }

@@ -112,6 +112,32 @@ code-audit generate-config                           # Create .codeauditor.json 
 
 Creates a `.codeauditor.json` configuration file with invariant rules for your project. Use the interactive mode (`--interactive`) to build rules step-by-step, or generate a scaffold with sensible defaults.
 
+### `code-audit conventions` — mine and propose rules
+
+Code Auditor learns your codebase's unwritten conventions from the function index and flags deviations at suggestion severity. Use these to discover norms an unfamiliar agent would otherwise break:
+
+```bash
+code-audit conventions list                          # See what conventions were mined
+code-audit conventions list --domain naming          # Filter to naming conventions only
+code-audit conventions list --json                   # Machine-readable output
+code-audit conventions propose                       # Emit ready-to-paste .codeauditor.json rules
+code-audit conventions propose --domain naming       # Propose only naming rules
+code-audit conventions propose --json                # JSON proposal array
+```
+
+**Five convention domains:**
+- **usage-pair** — function calls that always co-occur (e.g. `handleError` callers also call `logError`)
+- **import-form** — dominant import style per module (`default`, `named`, `namespace`, etc.)
+- **error-handling** — dominant error pattern (`try/catch`, `.catch()`, `if (err)`)
+- **export-shape** — dominant export style (`default` vs `named`)
+- **naming** — dominant casing convention (`PascalCase`, `camelCase`, `UPPER_SNAKE`, etc.)
+
+**Which domains produce rules?** Only `naming` and `import-form` map to existing rule kinds (`naming` and `import-ban` rules). The other three domains are detector-only — conventions are checked at audit time but cannot be converted to `.codeauditor.json` rules.
+
+**Usage:** Run a full audit or `code-audit index sync` to mine conventions from the codebase index. Then `code-audit conventions list` to see what was found, and `code-audit conventions propose` to get the rules. Paste the proposals into the `rules` array in `.codeauditor.json`.
+
+All convention violations ship at `suggestion` severity by default. Promote them with `severityOverrides` if your team treats them as blocking.
+
 ## Interpreting hook feedback
 
 When an edit hook blocks your edit with a violation message:
@@ -146,5 +172,7 @@ The hook auto-installs the package via npx on first use — no manual npm step n
 | Triage violations | `code-audit tasks from-audit` |
 | Sync index | `code-audit index sync --path .` |
 | Codebase map | `code-audit map -p .` |
+| Mine conventions | `code-audit conventions list` |
+| Propose convention rules | `code-audit conventions propose` |
 | Rule reference | See `SKILL-RULE-KINDS.md` |
 | Search reference | See `SKILL-SEARCH.md` |

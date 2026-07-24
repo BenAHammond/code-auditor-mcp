@@ -87,7 +87,7 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
   const errors: RuleValidationError[] = [];
 
   // Validate kind
-  const validKinds: RuleKind[] = ['import-ban', 'call-constraint', 'module-boundary', 'naming', 'ast-pattern'];
+  const validKinds: RuleKind[] = ['import-ban', 'call-constraint', 'module-boundary', 'naming', 'ast-pattern', 'style-mechanism', 'no-raw-values'];
   if (!validKinds.includes(rule.kind as RuleKind)) {
     errors.push({
       ruleId: rule.id,
@@ -220,6 +220,65 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
       }
       break;
     }
+
+    case 'style-mechanism': {
+      if (!rule.allow || !Array.isArray(rule.allow) || rule.allow.length === 0) {
+        errors.push({ ruleId: rule.id, message: 'style-mechanism requires a non-empty "allow" array' });
+      } else {
+        for (const item of rule.allow) {
+          if (typeof item !== 'string') {
+            errors.push({ ruleId: rule.id, message: 'style-mechanism "allow" entries must be strings' });
+            break;
+          }
+        }
+      }
+
+      if (rule.path !== undefined) {
+        if (typeof rule.path !== 'string' || !isValidGlob(rule.path)) {
+          errors.push({
+            ruleId: rule.id,
+            message: `Invalid glob pattern in "path": "${rule.path}"`,
+          });
+        }
+      }
+      break;
+    }
+
+    case 'no-raw-values': {
+      if (!rule.properties || !Array.isArray(rule.properties) || rule.properties.length === 0) {
+        errors.push({ ruleId: rule.id, message: 'no-raw-values requires a non-empty "properties" array' });
+      } else {
+        for (const item of rule.properties) {
+          if (typeof item !== 'string') {
+            errors.push({ ruleId: rule.id, message: 'no-raw-values "properties" entries must be strings' });
+            break;
+          }
+        }
+      }
+
+      if (rule.allowValues !== undefined) {
+        if (!Array.isArray(rule.allowValues)) {
+          errors.push({ ruleId: rule.id, message: '"allowValues" must be an array of strings' });
+        } else {
+          for (const item of rule.allowValues) {
+            if (typeof item !== 'string') {
+              errors.push({ ruleId: rule.id, message: '"allowValues" entries must be strings' });
+              break;
+            }
+          }
+        }
+      }
+
+      if (rule.path !== undefined) {
+        if (typeof rule.path !== 'string' || !isValidGlob(rule.path)) {
+          errors.push({
+            ruleId: rule.id,
+            message: `Invalid glob pattern in "path": "${rule.path}"`,
+          });
+        }
+      }
+      break;
+    }
   }
 
   // Check for unknown fields
@@ -230,6 +289,8 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
     'from', 'to',                 // module-boundary
     'path', 'exports',            // naming
     'pattern', 'language',         // ast-pattern
+    'allow',                       // style-mechanism
+    'properties', 'allowValues',   // no-raw-values
   ]);
   const kindFields: Record<RuleKind, Set<string>> = {
     'import-ban': new Set(['id', 'kind', 'severity', 'message', 'module', 'except']),
@@ -237,6 +298,8 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
     'module-boundary': new Set(['id', 'kind', 'severity', 'message', 'from', 'to']),
     'naming': new Set(['id', 'kind', 'severity', 'message', 'path', 'exports']),
     'ast-pattern': new Set(['id', 'kind', 'severity', 'message', 'pattern', 'language', 'path']),
+    'style-mechanism': new Set(['id', 'kind', 'severity', 'message', 'allow', 'path']),
+    'no-raw-values': new Set(['id', 'kind', 'severity', 'message', 'properties', 'allowValues', 'path']),
   };
 
   const allowed = kindFields[rule.kind] || new Set(['id', 'kind', 'severity', 'message']);

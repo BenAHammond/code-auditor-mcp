@@ -1413,6 +1413,177 @@ ledgerCmd
     }
   });
 
+// ── Conventions command — Spec 12 R3 ────────────────────────────────────────
+const conventionsCmd = program
+  .command('conventions')
+  .description('List mined codebase conventions and propose enforceable rules');
+
+conventionsCmd
+  .command('list')
+  .description('List mined conventions from the code index')
+  .option('--domain <domain>', 'Filter by domain: usage-pair, import-form, error-handling, export-shape, naming')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const rawDb = db.rawDb;
+
+      let sql = 'SELECT * FROM conventions';
+      let params: any[] = [];
+      if (options.domain) {
+        sql += ' WHERE domain = ?';
+        params = [options.domain];
+      }
+      sql += ' ORDER BY domain, directory, confidence DESC';
+
+      const conventions = rawDb.prepare(sql).all(...params) as any[];
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify(conventions, null, 2) + '\n');
+      } else if (conventions.length === 0) {
+        console.log(chalk.gray('No conventions mined yet. Run a full audit or index sync first.'));
+      } else {
+        // Group by domain for display
+        const byDomain = new Map<string, any[]>();
+        for (const c of conventions) {
+          const list = byDomain.get(c.domain) ?? [];
+          list.push(c);
+          byDomain.set(c.domain, list);
+        }
+        console.log(chalk.blue(`Mined conventions (${conventions.length} total):\n`));
+        for (const [domain, list] of byDomain) {
+          console.log(chalk.bold(`  ${domain} (${list.length})`));
+          for (const c of list.slice(0, 5)) {
+            const exemplar = c.exemplar_file
+              ? ` (exemplar: ${c.exemplar_file}${c.exemplar_line ? `:${c.exemplar_line}` : ''})`
+              : '';
+            const pct = Math.round(c.confidence * 100);
+            const desc =
+              domain === 'usage-pair'
+                ? `${c.antecedent} → ${c.consequent}`
+                : domain === 'import-form'
+                  ? `${c.antecedent} → ${c.consequent}`
+                  : domain === 'error-handling'
+                    ? `shape: ${c.pattern}`
+                    : domain === 'export-shape'
+                      ? `form: ${c.pattern}`
+                      : `case: ${c.pattern}`; // naming
+            const dir = c.directory ? `  [${c.directory}]` : '';
+            console.log(`    ${desc}  ${pct}% (${c.support}/${c.total_cases})${dir}${exemplar}`);
+          }
+          if (list.length > 5) {
+            console.log(chalk.gray(`    ... and ${list.length - 5} more`));
+          }
+          console.log('');
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+conventionsCmd
+  .command('propose')
+  .description('Emit ready-to-paste .codeauditor.json rules from mined conventions')
+  .option('--domain <domain>', 'Filter by domain: naming or import-form (other domains do not map to rule kinds)')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const rawDb = db.rawDb;
+
+      let sql = 'SELECT * FROM conventions';
+      let params: any[] = [];
+      if (options.domain) {
+        sql += ' WHERE domain = ?';
+        params = [options.domain];
+      }
+      sql += ' ORDER BY domain, directory, confidence DESC';
+
+      const conventions = rawDb.prepare(sql).all(...params) as any[];
+
+      interface ProposedRule {
+        kind: string;
+        message: string;
+        description: string;
+        paths?: string[];
+        pattern?: string;
+        exports?: string;
+        module?: string;
+        allow?: { from?: string[] };
+        except?: Array<{ source: string; form: string }>;
+      }
+
+      const proposals: ProposedRule[] = [];
+
+      for (const c of conventions) {
+        switch (c.domain) {
+          case 'naming': {
+            if (!c.directory || !c.pattern) continue;
+            proposals.push({
+              kind: 'naming',
+              message: `Use ${c.pattern} naming in ${c.directory}/ (${Math.round(c.confidence * 100)}% convention)`,
+              description: `Exported symbols in ${c.directory}/ should use ${c.pattern}`,
+              paths: [`${c.directory}/*`],
+              pattern: getNamingPattern(c.pattern),
+              exports: '**',
+            });
+            break;
+          }
+          case 'import-form': {
+            if (!c.antecedent || !c.consequent) continue;
+            proposals.push({
+              kind: 'import-ban',
+              message: `Import '${c.antecedent}' with module form in ${c.directory || '.'}/ (${Math.round(c.confidence * 100)}% convention)`,
+              description: `In ${c.directory || '.'}/, imports of '${c.antecedent}' should use ${c.consequent} form`,
+              module: c.antecedent,
+              except: [{ source: c.directory || '.', form: c.consequent }],
+            });
+            break;
+          }
+          default:
+            // usage-pair, error-handling, export-shape: no existing rule kind
+            break;
+        }
+      }
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify(proposals, null, 2) + '\n');
+      } else if (proposals.length === 0) {
+        console.log(chalk.gray('No proposals available. Only naming and import-form conventions map to rule kinds.'));
+        console.log(chalk.gray('Usage-pair, error-handling, and export-shape are detector-only.'));
+      } else {
+        console.log(chalk.blue(`Proposed rules (${proposals.length}):\n`));
+        for (const p of proposals) {
+          console.log(chalk.green(`  // ${p.message}`));
+          console.log(JSON.stringify(p, null, 4).split('\n').map(l => `  ${l}`).join('\n'));
+          console.log('');
+        }
+        console.log(chalk.gray('# Copy the rule objects above into the "rules" array in .codeauditor.json'));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Map a case name to a regex pattern for the naming rule kind.
+ */
+function getNamingPattern(caseName: string): string {
+  switch (caseName) {
+    case 'PascalCase': return '^[A-Z][a-zA-Z0-9]*$';
+    case 'camelCase': return '^[a-z][a-zA-Z0-9]*$';
+    case 'UPPER_SNAKE': return '^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$';
+    case 'snake_case': return '^[a-z][a-z0-9]*(_[a-z0-9]+)*$';
+    case 'kebab-case': return '^[a-z][a-z0-9]*(-[a-z0-9]+)*$';
+    default: return '^.*$';
+  }
+}
+
 // Install command — copy skill folder to agent-specific paths
 program
   .command('install')

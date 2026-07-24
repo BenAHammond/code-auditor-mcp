@@ -112,7 +112,12 @@ export class QueryParser {
     'depends-on:': 'dependsOnModule',
     'imports-from:': 'dependsOnModule',
     'unused-imports': 'hasUnusedImports',
-    'dead-imports': 'hasUnusedImports'
+    'dead-imports': 'hasUnusedImports',
+    // Style intelligence operators (Spec 10)
+    'css:': 'cssProperty',
+    'value:': 'cssValue',
+    'mechanism:': 'styleMechanism',
+    'token:': 'styleToken'
   } as const;
 
   /**
@@ -531,6 +536,35 @@ export class QueryParser {
           }
           parsedQuery.filters.metadata.hasUnusedImports = true;
           break;
+
+        // Style intelligence operators (Spec 10)
+        case 'cssProperty':
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.cssProperty = value;
+          break;
+
+        case 'cssValue':
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.cssValue = value;
+          break;
+
+        case 'styleMechanism':
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.styleMechanism = value;
+          break;
+
+        case 'styleToken':
+          if (!parsedQuery.filters.metadata) {
+            parsedQuery.filters.metadata = {};
+          }
+          parsedQuery.filters.metadata.styleToken = value;
+          break;
       }
     });
   }
@@ -809,6 +843,36 @@ export function compileToSQL(
     const ext = f.fileType.startsWith('.') ? f.fileType : `.${f.fileType}`;
     whereClauses.push('file_path LIKE @fileExt');
     params.fileExt = `%${ext}`;
+  }
+
+  // ── Style intelligence operators (Spec 10) ──────────────────────────
+
+  if (typeof f.metadata?.cssProperty === 'string') {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM style_declarations sd WHERE sd.file_path = f.file_path AND sd.property = @cssProperty)',
+    );
+    params.cssProperty = f.metadata.cssProperty;
+  }
+
+  if (typeof f.metadata?.cssValue === 'string') {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM style_declarations sd WHERE sd.file_path = f.file_path AND sd.normalized_value = @cssValue)',
+    );
+    params.cssValue = f.metadata.cssValue;
+  }
+
+  if (typeof f.metadata?.styleMechanism === 'string') {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM style_declarations sd WHERE sd.file_path = f.file_path AND sd.mechanism = @styleMechanism)',
+    );
+    params.styleMechanism = f.metadata.styleMechanism;
+  }
+
+  if (typeof f.metadata?.styleToken === 'string') {
+    whereClauses.push(
+      'EXISTS (SELECT 1 FROM style_declarations sd WHERE sd.file_path = f.file_path AND sd.token_ref = @styleToken)',
+    );
+    params.styleToken = f.metadata.styleToken;
   }
 
   // ── Ordering ────────────────────────────────────────────────────────────

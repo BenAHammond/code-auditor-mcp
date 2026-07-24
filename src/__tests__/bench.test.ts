@@ -62,8 +62,9 @@ describe('Bench harness — regression gate', () => {
 // ── Per-analyzer fixture integrity ─────────────────────────────────────
 
 describe('Fixture integrity', () => {
-  it('covers all 8 analyzers', () => {
+  it('covers all 10 analyzers', () => {
     const expectedAnalyzers = [
+      'conventions',
       'data-access',
       'documentation',
       'dry',
@@ -72,6 +73,7 @@ describe('Fixture integrity', () => {
       'react',
       'schema',
       'solid',
+      'styles',
     ];
     const actualAnalyzers = Object.keys(report.analyzers).sort();
     expect(actualAnalyzers).toEqual(expectedAnalyzers.sort());

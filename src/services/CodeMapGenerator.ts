@@ -4,6 +4,7 @@
  */
 
 import { getAllFunctions, getDatabase } from '../codeIndexService.js';
+import { CodeIndexDB } from '../codeIndexDB.js';
 import { EnhancedFunctionMetadata } from '../types.js';
 import { DocumentationMetrics } from '../analyzers/documentationAnalyzer.js';
 import path from 'path';
@@ -548,6 +549,25 @@ export class CodeMapGenerator {
       metadata: { dependencyCount: fullMap.dependencies.length }
     };
 
+    // Styles section (Spec 10) — conditionally included when style data exists
+    try {
+      const styleStats = await this.queryStyleStats();
+      if (styleStats.totalDeclarations > 0) {
+        sections.styles = {
+          text: this.formatStylesSection(styleStats),
+          description: "Style intelligence — mechanism usage, property histograms, and tokens",
+          metadata: {
+            totalDeclarations: styleStats.totalDeclarations,
+            mechanismCount: styleStats.mechanisms.length,
+            tokenCount: styleStats.tokens.length,
+          }
+        };
+      }
+    } catch {
+      // Style tables may not exist if the index hasn't been upgraded to v3 yet.
+      // Silently skip the styles section — it's optional.
+    }
+
     // Documentation section (if enabled)
     if (options.includeDocumentation && fullMap.documentation) {
       sections.documentation = {
@@ -657,15 +677,159 @@ export class CodeMapGenerator {
   private formatDocumentationSection(documentation: DocumentationMetrics): string {
     const result = [];
     result.push('📝 DOCUMENTATION QUALITY\n');
-    
+
     result.push(`├── Functions with JSDoc: ${documentation.documentedFunctions}/${documentation.totalFunctions} (${Math.round((documentation.documentedFunctions / documentation.totalFunctions) * 100)}%)`);
     result.push(`├── Components documented: ${documentation.documentedComponents}/${documentation.totalComponents} (${Math.round((documentation.documentedComponents / documentation.totalComponents) * 100)}%)`);
     result.push(`├── Files with purpose: ${documentation.filesWithPurpose}/${documentation.totalFiles} (${Math.round((documentation.filesWithPurpose / documentation.totalFiles) * 100)}%)`);
-    
+
     if (documentation.wellDocumentedFiles.length > 0) {
       result.push(`└── Well documented: ${documentation.wellDocumentedFiles.slice(0, 3).join(', ')}`);
     }
-    
+
     return result.join('\n');
   }
+
+  // ── Style intelligence (Spec 10) ──────────────────────────────────────
+
+  /**
+   * Query the style index for mechanism breakdown, property histograms,
+   * and design token data.
+   */
+  private async queryStyleStats(): Promise<StyleStats> {
+    const db = CodeIndexDB.getInstance();
+    const rawDb = db.rawDb;
+
+    // Mechanism counts
+    const mechanismRows = rawDb.prepare(`
+      SELECT mechanism, COUNT(*) AS cnt
+      FROM style_declarations
+      GROUP BY mechanism
+      ORDER BY cnt DESC
+    `).all() as { mechanism: string; cnt: number }[];
+
+    // Property histogram — top 15 properties by volume
+    const propertyRows = rawDb.prepare(`
+      SELECT property, COUNT(*) AS cnt,
+             COUNT(DISTINCT normalized_value) AS distinct_values
+      FROM style_declarations
+      GROUP BY property
+      ORDER BY cnt DESC
+      LIMIT 15
+    `).all() as { property: string; cnt: number; distinct_values: number }[];
+
+    // Token table — top 20
+    const tokenRows = rawDb.prepare(`
+      SELECT st.name, st.value, st.mechanism, st.file_path,
+             (SELECT COUNT(*) FROM style_declarations sd WHERE sd.token_ref = st.name) AS usage_count
+      FROM style_tokens st
+      ORDER BY usage_count DESC
+      LIMIT 20
+    `).all() as { name: string; value: string; mechanism: string; file_path: string; usage_count: number }[];
+
+    // Total declarations
+    const totalRow = rawDb.prepare('SELECT COUNT(*) AS cnt FROM style_declarations').get() as { cnt: number };
+
+    // Bypass count — declarations whose normalized_value matches a known token
+    // but lack a token_ref
+    const bypassRow = rawDb.prepare(`
+      SELECT COUNT(*) AS cnt
+      FROM style_declarations sd
+      WHERE sd.token_ref IS NULL
+        AND EXISTS (
+          SELECT 1 FROM style_tokens st
+          WHERE st.value = sd.normalized_value
+        )
+    `).get() as { cnt: number };
+
+    // Z-index inventory
+    const zIndexRows = rawDb.prepare(`
+      SELECT DISTINCT normalized_value, COUNT(*) AS cnt,
+             GROUP_CONCAT(DISTINCT file_path) AS files
+      FROM style_declarations
+      WHERE property = 'z-index'
+      GROUP BY normalized_value
+      ORDER BY CAST(normalized_value AS INTEGER) ASC
+    `).all() as { normalized_value: string; cnt: number; files: string }[];
+
+    return {
+      totalDeclarations: totalRow.cnt,
+      mechanisms: mechanismRows,
+      properties: propertyRows,
+      tokens: tokenRows,
+      bypassCount: bypassRow.cnt,
+      zIndexes: zIndexRows.map(r => ({ value: r.normalized_value, count: r.cnt, files: r.files })),
+    };
+  }
+
+  /**
+   * Format the styles intelligence section as terminal-friendly text.
+   */
+  private formatStylesSection(stats: StyleStats): string {
+    const lines: string[] = [];
+    lines.push('🎨 STYLE INTELLIGENCE\n');
+
+    // Total
+    lines.push(`Declarations indexed: ${stats.totalDeclarations}`);
+
+    // Mechanism summary
+    lines.push('');
+    lines.push('Mechanism          Count');
+    lines.push('─────────          ──────');
+    for (const m of stats.mechanisms) {
+      const label = (m.mechanism || '(unknown)').padEnd(18);
+      lines.push(`${label} ${m.cnt}`);
+    }
+
+    // Property histogram
+    if (stats.properties.length > 0) {
+      lines.push('');
+      lines.push('Property               Count  Distinct values');
+      lines.push('────────               ─────  ───────────────');
+      for (const p of stats.properties) {
+        const label = p.property.padEnd(22);
+        const cnt = String(p.cnt).padStart(5);
+        lines.push(`${label} ${cnt}  ${p.distinct_values}`);
+      }
+    }
+
+    // Z-index inventory
+    if (stats.zIndexes.length > 0) {
+      lines.push('');
+      lines.push(`Z-index inventory (${stats.zIndexes.length} distinct values)`);
+      for (const z of stats.zIndexes) {
+        lines.push(`  z-index: ${z.value} (used ${z.count}×)`);
+      }
+    }
+
+    // Token bypass
+    if (stats.bypassCount > 0) {
+      lines.push('');
+      lines.push(`⚠️  Token bypass: ${stats.bypassCount} declaration(s) match known token values without referencing the token`);
+    }
+
+    // Top tokens
+    if (stats.tokens.length > 0) {
+      lines.push('');
+      lines.push('Design tokens (top 20)');
+      lines.push('Token                    Value                 Used');
+      lines.push('─────                    ─────                 ────');
+      for (const t of stats.tokens) {
+        const name = t.name.substring(0, 24).padEnd(24);
+        const val = t.value.substring(0, 20).padEnd(20);
+        lines.push(`${name} ${val} ${t.usage_count}×`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+}
+
+/** Statistics queried from the style index for the code-map styles section. */
+interface StyleStats {
+  totalDeclarations: number;
+  mechanisms: { mechanism: string; cnt: number }[];
+  properties: { property: string; cnt: number; distinct_values: number }[];
+  tokens: { name: string; value: string; mechanism: string; file_path: string; usage_count: number }[];
+  bypassCount: number;
+  zIndexes: { value: string; count: number; files: string }[];
 }

@@ -36,7 +36,12 @@ export const DEFAULT_REACT_CONFIG: ReactAnalyzerConfig = {
   // Best Practices
   checkAccessibility: true,
   preventDirectDOMAccess: true,
-  requireKeyProps: true
+  requireKeyProps: true,
+
+  // Raw Element Detection (Spec 10 R4)
+  rawElementCheck: true,
+  wrapperMinUsages: 5,
+  rawElementWatchList: ['button', 'input', 'select', 'textarea', 'table']
 };
 
 /**
@@ -145,7 +150,12 @@ export const reactAnalyzer: AnalyzerDefinition = {
       if (config.requireErrorBoundaries) {
         violations.push(...checkErrorBoundaryUsage(scanResults));
       }
-      
+
+      // Check for raw element usage (Spec 10 R4)
+      if (config.rawElementCheck) {
+        violations.push(...checkRawElements(scanResults, config));
+      }
+
       return {
         violations,
         filesProcessed: reactFiles.length,
@@ -511,6 +521,131 @@ function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViola
     }
   }
   
+  return violations;
+}
+
+/**
+ * Check for raw intrinsic element usage when project-defined wrappers exist (Spec 10 R4).
+ *
+ * Auto-detects wrapper components (exported components whose rendered root is a single
+ * intrinsic element from the watch list) and flags raw usages of that element outside
+ * the wrapper's definition. A {@link ReactAnalyzerConfig.componentMap} overrides
+ * auto-detection, making every raw usage a warning.
+ */
+function checkRawElements(
+  scanResults: ComponentScanResult[],
+  config: ReactAnalyzerConfig
+): ReactViolation[] {
+  const violations: ReactViolation[] = [];
+
+  const watchList = config.rawElementWatchList ?? ['button', 'input', 'select', 'textarea', 'table'];
+  const watchSet = new Set(watchList);
+
+  // Map: intrinsic element → { wrapperName, wrapperFile }
+  const wrapperMap = new Map<string, { wrapperName: string; wrapperFile: string }>();
+
+  // ── Phase 1: Build wrapper map ─────────────────────────────────────────
+  if (config.componentMap) {
+    // User-provided overrides — trust them unconditionally
+    for (const [element, wrapperName] of Object.entries(config.componentMap)) {
+      // Try to locate the wrapper component's file in scan results
+      let wrapperFile = 'unknown';
+      for (const result of scanResults) {
+        const match = result.components.find(c => c.name === wrapperName);
+        if (match) { wrapperFile = match.filePath; break; }
+      }
+      wrapperMap.set(element, { wrapperName, wrapperFile });
+    }
+  } else {
+    // Auto-detect: an exported component whose jsxElements contains exactly one
+    // watch-list intrinsic element (the thing being wrapped).
+    for (const result of scanResults) {
+      for (const component of result.components) {
+        if (!component.isExported) continue;
+        if (!component.jsxElements || component.jsxElements.length === 0) continue;
+
+        // Filter to intrinsic elements (lowercase-first-character tag names)
+        const intrinsicElements = component.jsxElements.filter(el => {
+          const firstChar = el.charAt(0);
+          return firstChar === firstChar.toLowerCase() && firstChar !== firstChar.toUpperCase();
+        });
+
+        // A single intrinsic from the watch list → wrapper candidate
+        if (intrinsicElements.length === 1 && watchSet.has(intrinsicElements[0])) {
+          const element = intrinsicElements[0];
+          // Pick the shortest-name wrapper when multiple candidates exist
+          const existing = wrapperMap.get(element);
+          if (!existing || component.name.length < existing.wrapperName.length) {
+            wrapperMap.set(element, {
+              wrapperName: component.name,
+              wrapperFile: result.filePath
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (wrapperMap.size === 0) return violations;
+
+  // ── Phase 2: Count raw usages and collect locations ────────────────────
+  const rawUsageCounts = new Map<string, number>();
+  const rawUsageLocations: Array<{
+    element: string;
+    componentName: string;
+    filePath: string;
+    line: number;
+    wrapperName: string;
+    wrapperFile: string;
+  }> = [];
+
+  for (const result of scanResults) {
+    for (const component of result.components) {
+      if (!component.jsxElements) continue;
+
+      for (const jsxEl of component.jsxElements) {
+        if (!watchSet.has(jsxEl) || !wrapperMap.has(jsxEl)) continue;
+
+        const wrapper = wrapperMap.get(jsxEl)!;
+
+        // Don't flag the wrapper component itself
+        if (component.name === wrapper.wrapperName &&
+            component.filePath === wrapper.wrapperFile) {
+          continue;
+        }
+
+        rawUsageCounts.set(jsxEl, (rawUsageCounts.get(jsxEl) || 0) + 1);
+        rawUsageLocations.push({
+          element: jsxEl,
+          componentName: component.name,
+          filePath: component.filePath,
+          line: component.lineNumber ?? 0,
+          wrapperName: wrapper.wrapperName,
+          wrapperFile: wrapper.wrapperFile,
+        });
+      }
+    }
+  }
+
+  // ── Phase 3: Emit violations ──────────────────────────────────────────
+  const minUsages = config.wrapperMinUsages ?? 5;
+  const severity: 'warning' | 'suggestion' = config.componentMap ? 'warning' : 'suggestion';
+
+  for (const loc of rawUsageLocations) {
+    const count = rawUsageCounts.get(loc.element) || 0;
+    if (count < minUsages) continue;
+
+    violations.push({
+      file: loc.filePath,
+      line: loc.line,
+      severity,
+      message: `raw \`<${loc.element}>\` — this project uses \`${loc.wrapperName}\` (${loc.wrapperFile})`,
+      componentName: loc.componentName,
+      violationType: 'raw-element',
+      suggestion: `Replace raw <${loc.element}> with the project's <${loc.wrapperName}> component`
+    });
+  }
+
   return violations;
 }
 

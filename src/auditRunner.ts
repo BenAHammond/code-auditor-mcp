@@ -34,6 +34,9 @@ import { UniversalDRYAnalyzer } from './analyzers/universal/UniversalDRYAnalyzer
 import { UniversalDataAccessAnalyzer } from './analyzers/universal/UniversalDataAccessAnalyzer.js';
 import { UniversalDocumentationAnalyzer } from './analyzers/universal/UniversalDocumentationAnalyzer.js';
 import { UniversalSchemaAnalyzer } from './analyzers/universal/UniversalSchemaAnalyzer.js';
+import { UniversalStylesAnalyzer } from './analyzers/universal/UniversalStylesAnalyzer.js';
+import { UniversalConventionsAnalyzer } from './analyzers/universal/UniversalConventionsAnalyzer.js';
+import { syncStyleIndex } from './styles/styleIndexer.js';
 import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
 import { invariantsAnalyzer } from './analyzers/invariantsAnalyzer.js';
 import { hasRules } from './invariants/ruleEngine.js';
@@ -244,6 +247,53 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       };
     },
   },
+  'styles': {
+    name: 'styles',
+    description: 'Detects style fragmentation, value drift, token bypass, dead classes, off-scale values, mechanism fragmentation, and z-index sprawl',
+    category: 'style',
+    analyze: async (files, config, options, progressCallback) => {
+      const analyzer = new UniversalStylesAnalyzer();
+      const universalConfig: Record<string, unknown> = {};
+      if (config.minCorpus !== undefined) universalConfig.minCorpus = config.minCorpus;
+      if (config.colorDeltaE !== undefined) universalConfig.colorDeltaE = config.colorDeltaE;
+      if (config.outlierMaxShare !== undefined) universalConfig.outlierMaxShare = config.outlierMaxShare;
+      if (config.modeMinCount !== undefined) universalConfig.modeMinCount = config.modeMinCount;
+      if (config.scaleProperties !== undefined) universalConfig.scaleProperties = config.scaleProperties;
+      if (config.zIndexMaxDistinct !== undefined) universalConfig.zIndexMaxDistinct = config.zIndexMaxDistinct;
+      if (config.mechanismFragmentationMinMechanisms !== undefined) universalConfig.mechanismFragmentationMinMechanisms = config.mechanismFragmentationMinMechanisms;
+      if (config.declarationSetMinDeclarations !== undefined) universalConfig.declarationSetMinDeclarations = config.declarationSetMinDeclarations;
+      if (config.declarationSetSimilarityThreshold !== undefined) universalConfig.declarationSetSimilarityThreshold = config.declarationSetSimilarityThreshold;
+      // Forward base-class properties (Spec-20 path profiles + severity overrides)
+      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
+      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
+      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
+      return analyzer.analyze(files, universalConfig, {
+        progressCallback: createProgressAdapter('styles', progressCallback),
+        ...options as Record<string, unknown>,
+      });
+    },
+  },
+  'conventions': {
+    name: 'conventions',
+    description: 'Mines codebase conventions and flags deviations at suggestion severity',
+    category: 'style',
+    analyze: async (files, config, options, progressCallback) => {
+      const analyzer = new UniversalConventionsAnalyzer();
+      const universalConfig: Record<string, unknown> = {};
+      if (config.minCorpus !== undefined) universalConfig.minCorpus = config.minCorpus;
+      if (config.pairConfidence !== undefined) universalConfig.pairConfidence = config.pairConfidence;
+      if (config.modeShare !== undefined) universalConfig.modeShare = config.modeShare;
+      if (config.maxConventionsPerDomain !== undefined) universalConfig.maxConventionsPerDomain = config.maxConventionsPerDomain;
+      // Forward base-class properties (Spec-20 path profiles + severity overrides)
+      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
+      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
+      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
+      return analyzer.analyze(files, universalConfig, {
+        progressCallback: createProgressAdapter('conventions', progressCallback),
+        ...options as Record<string, unknown>,
+      });
+    },
+  },
 };
 
 /**
@@ -436,6 +486,32 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Run analyzers
     const analyzerResults: Record<string, AnalyzerResult> = {};
     const enabledAnalyzers = getEnabledAnalyzers(mergedOptions, analyzerRegistry);
+
+    // ── Style index sync (Spec 10) ────────────────────────────────────
+    // Sync style declarations, tokens, and class usage before the
+    // styles analyzer runs, mirroring the function index sync pattern.
+    if (enabledAnalyzers.includes('styles')) {
+      try {
+        const styleDb = CodeIndexDB.getInstance();
+        const styleSyncResult = await syncStyleIndex(
+          styleDb.rawDb,
+          files,
+          root,
+          { scoped: isScoped }
+        );
+        logMcpInfo('style-index', 'style index sync complete', {
+          changed: styleSyncResult.changed,
+          skipped: styleSyncResult.skipped,
+          removed: styleSyncResult.removed,
+          errors: styleSyncResult.errors,
+        });
+      } catch (err) {
+        // Non-fatal: styles analyzer will run with whatever is in the index
+        logMcpInfo('style-index', 'style index sync failed (continuing)', {
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
 
     // Spec 21: Shared timing accumulator for provenance resolution.
     // Injected into data-access and schema analyzers so they can report

@@ -243,7 +243,7 @@ fi
 echo ""
 echo "Checking WASM grammars shipped..."
 MISSING=0
-for grammar in tree-sitter-typescript.wasm tree-sitter-tsx.wasm tree-sitter-javascript.wasm tree-sitter-go.wasm; do
+for grammar in tree-sitter-typescript.wasm tree-sitter-tsx.wasm tree-sitter-javascript.wasm tree-sitter-go.wasm tree-sitter-css.wasm; do
   if [ -f "node_modules/code-auditor-mcp/dist/grammars/$grammar" ]; then
     echo "  OK: $grammar"
   else

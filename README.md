@@ -53,6 +53,8 @@ Five kinds. The agent writes them to `.codeauditor.json`. Bad configs fail the a
 | `module-boundary` | Imports across module boundaries |
 | `naming` | Exported symbols not matching a pattern |
 | `ast-pattern` | AST nodes matching an ast-grep pattern |
+| `style-mechanism` | Unapproved style mechanisms per file/glob |
+| `no-raw-values` | Hardcoded values for specific CSS properties |
 
 ## Works with your agent
 
@@ -115,6 +117,55 @@ The `sql-injection-risk` rule is **disabled by default** (`off`) after recalibra
 ```
 
 With `sql-injection-risk: critical` and `code-audit changed --fail-on critical`, your agent's hook will block edits that introduce AST-level SQL injection patterns.
+
+## Style Intelligence
+
+Code Auditor indexes every style declaration in your project — CSS, SCSS, Tailwind, inline styles, and CSS-in-JS. The styles analyzer reads global distributions and flags fragmentation that no single-file linter can see.
+
+**7 detectors, 10 rule IDs:**
+
+| Detector | What it finds |
+|----------|---------------|
+| **Value drift** | Near-duplicate color values (delta-E < 2.0) and exact-value outliers where one value dominates |
+| **Off-scale** | Margin/padding/gap/font-size values not on the inferred project scale |
+| **Undefined class** | `className` values with no matching CSS selector or Tailwind utility |
+| **Token bypass** | Hardcoded values that match a design token but don't reference it |
+| **Mechanism fragmentation** | Same `(property, value)` delivered via ≥ 3 mechanisms (CSS, inline, Tailwind) |
+| **Declaration-set similarity** | Two CSS rule blocks with > 90% identical declarations |
+| **Z-index sprawl** | Project-wide z-index inventory — too many distinct values or orphan singletons |
+
+The analyzer reads from a project-wide SQLite index, so scoped runs (changed files only) still compare against the full project baseline. A fresh `#273828` drift color in a scoped run is caught against the full corpus of `#1e2328` values.
+
+**Style invariant rules:**
+
+```json
+{
+  "rules": [
+    {
+      "kind": "style-mechanism",
+      "message": "Only Tailwind in src/components/",
+      "allow": ["tailwind"],
+      "path": "src/components/**"
+    },
+    {
+      "kind": "no-raw-values",
+      "message": "No raw colors in src/pages/ — use design tokens",
+      "properties": ["color", "background-color"],
+      "path": "src/pages/**"
+    }
+  ]
+}
+```
+
+**Style search operators** — search by property, value, mechanism, or token:
+
+```bash
+code-audit search "css:margin-top value:16px"          # specific value
+code-audit search "mechanism:inline css:color"          # inline color declarations
+code-audit search "token:--color-primary"                # bypassing a design token
+```
+
+**The React analyzer** also gains raw-element detection: if your project has a `Button` wrapper, raw `<button>` usages outside `Button`'s definition become warnings.
 
 ## License
 

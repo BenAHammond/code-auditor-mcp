@@ -2,6 +2,168 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.3.0] — 2026-07-20
+
+### Spec-10: Style Intelligence — Distribution-Aware Style Analysis
+
+LLM coding agents produce styling fragmentation that line-level linting can't see — near-duplicate hex values, off-scale margins, inline styles where the project uses Tailwind, mechanism mixing within a single component. The insight lives in the distribution. Spec 10 builds a style index parallel to the function index, extracts normalized declarations from five style sources, derives findings statistically from value histograms, and extends the invariant engine so style policy is enforceable in the agent loop.
+
+#### R1: CSS/SCSS Language Support
+
+- **New adapter `TreeSitterCssAdapter`**: Implements the `LanguageAdapter` interface for `.css` and `.scss` files via tree-sitter-css and tree-sitter-scss grammars. Methods returning AST concepts not present in CSS (functions, classes, imports, exports) return empty/null.
+- **Grammar loading**: `tree-sitter-css.wasm` and `tree-sitter-scss.wasm` added to `GRAMMAR_FILES` and `LANGUAGE_GRAMMAR_MAP` in parser.ts. Both shipped in `dist/grammars/`.
+
+#### R2: Style Extraction — Everything Normalizes to Declarations
+
+The unit is the **normalized declaration**: `(property, rawValue, normalizedValue, mechanism, file, line, context, variantContext, tokenRef)`.
+
+- **New module `src/styles/styleExtractor.ts`**: Extracts declarations from five mechanisms: CSS/SCSS files (tree-sitter rule-set walking), Tailwind utility classes (class name → declaration expansion), inline styles (`style={{...}}` object expression resolution), CSS-in-JS (styled-components/emotion tagged templates), and design tokens (CSS custom properties, Tailwind theme).
+- **New module `src/styles/tailwindExpander.ts`**: Maps Tailwind utility classes to normalized declarations. Supports arbitrary values (`mt-[17px]` → `margin-top: 17px`), variant prefixes (`hover:`, `md:` → `variantContext`), and three-tier config resolution (v3 JS config, v4 CSS `@theme` blocks, bundled defaults).
+- **New module `src/styles/tailwindConfigLoader.ts`**: Dynamically loads project's Tailwind config with graceful fallback. Resolves `theme.extend` merged with defaults for v3, parses `@theme` blocks for v4.
+- **New module `src/styles/normalizer.ts`**: Color normalization (lowercase, shorthand hex expansion, canonical functional notation), length parsing to `{number, unit}`, short→longhand expansion (`margin: 4px 8px` → four directional declarations sharing source location). Delta-E color distance for value-drift clustering.
+
+#### R3: Style Index — SQLite Storage and Search
+
+- **`style_declarations` table**: Columns for property, raw_value, normalized_value, mechanism, file_path, line, context (selector), variant_context (at-rule prefix), token_ref, content_hash.
+- **`style_tokens` table**: Design token registry with name, value, mechanism (`css-custom-property` or `tailwind-theme`).
+- **`style_class_usage` table**: Per-file class name usage tracking with mechanism and `unresolvable` flag for dynamically-computed class names.
+- **FTS5 virtual table** (`style_declarations_fts`): Full-text search over property and normalized values.
+- **Schema migration 2→3**: Creates all three style tables with appropriate indexes.
+- **New module `src/styles/styleIndexer.ts`**: Content-hash-based change detection — re-extracts only changed files. Called from `auditRunner.ts` before the analyzer run.
+- **New search operators**: `css:<property>`, `value:<normalized-value>`, `mechanism:<css|tailwind|inline|css-in-js|scss>`, `token:<design-token-name>`. When used, `compileToSQL()` JOINs the `style_declarations` table.
+- **Code map `styles` section**: Mechanism summary (declaration counts per mechanism), property→value histogram with shares and token coverage, token table.
+
+#### R4: Styles Analyzer — 7 Detectors, 10 Rule IDs
+
+**New analyzer `UniversalStylesAnalyzer`**: DB-based — reads from the full style index rather than per-file AST parsing. Every detector has configurable thresholds and fires only when per-property corpus ≥ `minCorpus`.
+
+| Detector | Rule ID(s) | What it finds | Severity |
+|----------|-----------|---------------|----------|
+| **Value drift** (color) | `styles/value-drift` | Color near-duplicates (delta-E < 2.0) where one value dominates and a straggler is barely used | warning |
+| **Value drift** (exact) | `styles/value-drift` | Exact-value histogram outliers (share < 5% when mode ≥ 10 uses) | warning |
+| **Off-scale** | `styles/off-scale` | Scale-family values (margin, padding, gap, font-size) not on the inferred project scale | warning |
+| **Undefined class** | `styles/undefined-class` | `className` values with no matching selector in any CSS/SCSS file and not a known Tailwind utility | warning |
+| **Token bypass** | `styles/token-bypass` | Normalized value matches a known design token but `tokenRef` is absent | warning |
+| **Mechanism fragmentation** | `styles/mechanism-fragmentation` | Same `(property, value)` pair delivered via ≥ 3 different mechanisms | warning |
+| **Mechanism mixing** | `styles/mechanism-mixing` | Single component mixing ≥ 3 style mechanisms | suggestion |
+| **Declaration-set similarity** | `styles/declaration-set-similarity` | Two CSS rule blocks with Jaccard similarity ≥ 0.9 and ≥ 5 declarations each | suggestion |
+| **Z-index sprawl** | `styles/z-index-sprawl` | More than 6 distinct z-index values across the project | warning |
+| **Z-index singleton** | `styles/z-index-singleton` | z-index values used exactly once with no other close values | suggestion |
+
+All detectors read corpus statistics from the full SQLite index, so **scoped runs** (changed files only) still compare against the complete project baseline. A fresh drift value in a scoped run is always caught against the full corpus.
+
+#### R5: React Analyzer — Raw-Element Detection
+
+- **`checkRawElements()`**: Auto-detects wrapper components (exported component whose rendered root is a single intrinsic element from the watch list AND which forwards props/children). Flags raw usages of that intrinsic element anywhere outside the wrapper when call sites ≥ `wrapperMinUsages` (default 5).
+- **Config**: `rawElementWatchList` (default `['button', 'input', 'select', 'textarea', 'table']`), `wrapperMinUsages`, `componentMap`. `componentMap` overrides auto-detection: `{"button": "Button"}` → any raw `<button>` is a warning (not suggestion).
+- Finding message names the wrapper: "raw `<button>` — this project uses `Button` (src/components/Button.tsx)".
+
+#### R6: Style Invariant Rule Kinds
+
+Two new rule kinds added to the invariant engine:
+
+| Rule kind | Purpose | Key config |
+|-----------|---------|------------|
+| `style-mechanism` | Require allowed style mechanisms per file/glob (e.g., "only Tailwind in `src/components/`") | `allow: ["tailwind"]`, `path` |
+| `no-raw-values` | Ban hardcoded values for specific CSS properties (e.g., "no raw colors in `src/pages/`") | `properties: ["color", "background-color"]`, `allowValues`, `path` |
+
+Both query the `style_declarations` table via `CodeIndexDB` for evidence. JSON Schema validation covers the new kinds. `code-audit config rules-create` auto-discovers them alongside the existing five kinds.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/languages/tree-sitter/TreeSitterCssAdapter.ts` | **New** — LanguageAdapter for CSS/SCSS |
+| `src/languages/tree-sitter/parser.ts` | Add CSS/SCSS to GRAMMAR_FILES + LANGUAGE_GRAMMAR_MAP |
+| `src/languages/index.ts` | Register TreeSitterCssAdapter |
+| `src/styles/styleExtractor.ts` | **New** — extraction from all 5 style sources |
+| `src/styles/normalizer.ts` | **New** — color/length/shorthand normalization |
+| `src/styles/tailwindExpander.ts` | **New** — Tailwind utility → declaration expansion |
+| `src/styles/tailwindConfigLoader.ts` | **New** — load project's Tailwind config (v3/v4) |
+| `src/styles/styleIndexer.ts` | **New** — sync style declarations to SQLite |
+| `src/styles/types.ts` | **New** — style-specific TypeScript interfaces |
+| `src/analyzers/universal/UniversalStylesAnalyzer.ts` | **New** — DB-based analyzer with 7 detectors |
+| `src/types.ts` | New types: NormalizedDeclaration, StyleToken, StylesAnalyzerConfig; extend ReactAnalyzerConfig |
+| `src/codeIndexDB.ts` | SCHEMA_VERSION → 3; new tables (style_declarations, style_tokens, style_class_usage, style_declarations_fts); migration 2→3 |
+| `src/search/QueryParser.ts` | 4 new operators: `css:`, `value:`, `mechanism:`, `token:` |
+| `src/services/CodeMapGenerator.ts` | New `styles` section with mechanism summary and property histogram |
+| `src/analyzers/reactAnalyzer.ts` | `checkRawElements()`; new config fields (rawElementWatchList, wrapperMinUsages, componentMap) |
+| `src/auditRunner.ts` | Register styles analyzer; call styleIndexer.syncStyleIndex(); thread React raw-element config |
+| `src/config/defaults.ts` | `DEFAULT_ANALYZER_CONFIGS.styles`; `includePaths` extended with `**/*.css`, `**/*.scss`; `enabledAnalyzers` extended |
+| `src/invariants/types.ts` | New RuleKind values: `style-mechanism`, `no-raw-values` |
+| `src/invariants/ruleEngine.ts` | `checkStyleMechanism()`, `checkNoRawValues()` checkers |
+| `src/invariants/invariant-rules.schema.json` | Schemas for two new rule kinds |
+| `src/invariants/ruleValidator.ts` | Validation for new rule kinds |
+| `src/cli.ts` | RULE_KINDS array extended with two new kinds |
+| `bench/corpus/styles/` | **New** — bench fixture project + expected.json |
+| `bench/baselines/baseline.json` | Add styles analyzer baseline (9 rule IDs) |
+| `src/scripts/runBench.ts` | Styles runner with in-memory seed data |
+| `src/__tests__/bench.test.ts` | Updated to 9 analyzers |
+| `package.json` | Add tree-sitter-css, tree-sitter-scss devDeps |
+
+## [3.4.0] — 2026-07-23
+
+### Spec-12: Convention Mining — Codebase Convention Discovery and Enforcement
+
+Code Auditor now learns your codebase's unwritten conventions from the function index and flags deviations at suggestion severity. An LLM coding agent unfamiliar with the codebase breaks these conventions silently because no linter enforces them — Spec 12 detects the conventions from the existing SQLite index, flags violations, and can propose ready-to-paste `.codeauditor.json` rules.
+
+#### R1: Convention Mining — Five Domains
+
+Five convention domains are mined from the `functions` and `function_calls` tables at sync time. Every convention stores its `support` (cases that follow) and `total_cases` for confidence (`support / total_cases`). Only conventions meeting the `minCorpus` (default 20) and `modeShare` (default 0.8) thresholds are established.
+
+- **Usage Pairs** (`usage-pair`): Function calls that always co-occur. If 95% of `handleError` callers also call `logError`, a function calling only `handleError` is flagged.
+- **Import Form** (`import-form`): Per module specifier + directory, the dominant import style (`default`, `named`, `namespace`, `side-effect`, `require`). Minority import styles in directories where a clear dominant form exists are flagged.
+- **Error Handling** (`error-handling`): Per directory, the dominant error-handling pattern (`try/catch`, `.catch()`, `if (err)`, Go-style). Functions in that directory that *have* error handling but use a different shape are flagged. Functions with no error handling are never flagged.
+- **Export Shape** (`export-shape`): Per directory, dominant export style (`default` vs `named`). Minority exports are flagged only when a clear dominant shape exists.
+- **Naming** (`naming`): Per directory, dominant casing convention (`PascalCase`, `camelCase`, `UPPER_SNAKE`, `snake_case`, `kebab-case`). Non-Latin identifiers are skipped (Spec 21 R5.4).
+
+**New module `src/conventions/conventionMiner.ts`**: Mines all five domains from the SQLite index. Content-hash-based skip prevents redundant mining when the underlying data hasn't changed. Configuration thresholds: `minCorpus` (20), `pairConfidence` (0.9), `modeShare` (0.8), `maxConventionsPerDomain` (200).
+
+**Schema migration 3→4**: New `conventions` table with indexes on domain, rule_id, directory, and hash.
+
+#### R2: Conventions Analyzer
+
+**New analyzer `UniversalConventionsAnalyzer`**: DB-based — reads from the conventions table rather than per-file AST parsing. All findings ship at `suggestion` severity by default (promotable via `severityOverrides`).
+
+| Rule ID | Domain | What it finds |
+|---------|--------|---------------|
+| `conventions/usage-pair` | usage-pair | Function calls antecedent without its required consequent |
+| `conventions/import-form` | import-form | Minority import style where a dominant form is established |
+| `conventions/error-handling` | error-handling | Different error-handling shape from the directory convention |
+| `conventions/export-shape` | export-shape | Minority export style where a dominant shape is established |
+| `conventions/naming` | naming | Minority casing convention where a dominant casing is established |
+
+#### R3: CLI Commands
+
+**New command group `code-audit conventions`**:
+- `code-audit conventions list [--domain <domain>] [--json]` — list all mined conventions with support/confidence
+- `code-audit conventions propose [--domain <domain>] [--json]` — emit ready-to-paste `.codeauditor.json` rules. Only `naming` → `naming` rule kind and `import-form` → `import-ban` rule kind produce proposals. Other domains are detector-only.
+
+#### R4: Bench Fixture
+
+- **`bench/corpus/conventions/`** — fixture project with:
+  - `src/fixture.ts` — one violation per domain (usage-pair, import-form, error-handling, export-shape, naming)
+  - `src/approved.ts` — near-miss file following all conventions (zero violations expected)
+  - `src/no-mode/` — mixed-shape directory below `modeShare` threshold where zero findings are expected
+  - `expected.json` — ground truth manifest with 5 expected violations at suggestion severity
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/types.ts` | Add `Convention`, `ConventionMiningConfig`, `ConventionsAnalyzerConfig` types |
+| `src/codeIndexDB.ts` | SCHEMA_VERSION → 4, `conventions` table, migration 3→4, `mineConventions()` in `deepSync()` |
+| `src/conventions/conventionMiner.ts` | **New** — five-domain mining from functions/calls tables |
+| `src/analyzers/universal/UniversalConventionsAnalyzer.ts` | **New** — DB-based analyzer, suggestion-only findings |
+| `src/auditRunner.ts` | `conventions` entry in `DEFAULT_ANALYZERS` |
+| `src/config/defaults.ts` | `DEFAULT_ANALYZER_CONFIGS.conventions`, enabled analyzers |
+| `src/cli.ts` | `conventions list` and `conventions propose` subcommands |
+| `SKILL.md` | "mine and propose rules" workflow |
+| `bench/corpus/conventions/` | **New** — bench fixture project + expected.json |
+| `bench/baselines/baseline.json` | Add conventions analyzer baseline (5 rule IDs) |
+| `src/scripts/runBench.ts` | Conventions runner with in-memory seed data |
+| `src/__tests__/bench.test.ts` | Updated to 10 analyzers |
+
 ## [3.2.0] — 2026-07-23
 
 ### Spec-21: Language-Neutral Detection — Provenance-Based DB Detection

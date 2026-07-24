@@ -497,6 +497,11 @@ export interface ParsedQuery {
       calledByFunction?: string;
       dependsOnModule?: string;
       hasUnusedImports?: boolean;
+      // Style intelligence operators (Spec 10)
+      cssProperty?: string;
+      cssValue?: string;
+      styleMechanism?: string;
+      styleToken?: string;
     };
   };
   fuzzy?: boolean;
@@ -693,8 +698,8 @@ export interface ComponentRelationship {
 
 export interface ReactViolation extends Violation {
   componentName?: string;
-  violationType: 'missing-props' | 'hooks-violation' | 'no-error-boundary' | 
-                 'complexity' | 'performance' | 'accessibility';
+  violationType: 'missing-props' | 'hooks-violation' | 'no-error-boundary' |
+                 'complexity' | 'performance' | 'accessibility' | 'raw-element';
 }
 
 export interface ReactAnalyzerConfig {
@@ -717,6 +722,15 @@ export interface ReactAnalyzerConfig {
   checkAccessibility: boolean;
   preventDirectDOMAccess: boolean;
   requireKeyProps: boolean;
+
+  // Raw Element Detection (Spec 10 R4)
+  rawElementCheck?: boolean;
+  /** Mapping of intrinsic element names to wrapper component names (e.g. {"button": "Button"}). */
+  componentMap?: Record<string, string>;
+  /** Minimum call sites before a raw-element usage becomes a finding. Default 5. */
+  wrapperMinUsages?: number;
+  /** Intrinsic elements that trigger raw-element detection. Default ['button', 'input', 'select', 'textarea', 'table']. */
+  rawElementWatchList?: string[];
 }
 
 // Component Scanner Types
@@ -907,6 +921,75 @@ export interface SchemaAwareFunctionMetadata extends EnhancedFunctionMetadata {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// Spec 10 — Style Intelligence Analyzer Config
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface StylesAnalyzerConfig {
+  /** Minimum declarations per property before histogram analysis runs. Default 20. */
+  minCorpus: number;
+  /** Delta-E threshold for color drift detection. Default 2.0. */
+  colorDeltaE: number;
+  /** Maximum share for outlier values before flagging. Default 0.05. */
+  outlierMaxShare: number;
+  /** Minimum count for modal value before outliers are flagged. Default 10. */
+  modeMinCount: number;
+  /** Properties that take scale-family values (margin, padding, gap, font-size). */
+  scaleProperties: string[];
+  /** Maximum distinct z-index values before flagging. Default 6. */
+  zIndexMaxDistinct: number;
+  /** Minimum number of mechanisms before fragmentation is flagged. Default 3. */
+  mechanismFragmentationMinMechanisms: number;
+  /** Minimum declarations in a rule block for similarity analysis. Default 5. */
+  declarationSetMinDeclarations: number;
+  /** Jaccard similarity threshold for declaration-set matching. Default 0.9. */
+  declarationSetSimilarityThreshold: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Spec 12 — Convention Mining Types
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** A mined convention stored in the conventions table. */
+export interface Convention {
+  id?: number;
+  domain: 'usage-pair' | 'import-form' | 'error-handling' | 'export-shape' | 'naming';
+  rule_id: string;
+  antecedent: string | null;
+  consequent: string | null;
+  pattern: string | null;
+  directory: string | null;
+  file_path: string | null;
+  line: number | null;
+  support: number;
+  total_cases: number;
+  confidence: number;
+  exemplar_file: string | null;
+  exemplar_line: number | null;
+  hash: string | null;
+  created_at?: string;
+}
+
+/** Thresholds for the convention miner. */
+export interface ConventionMiningConfig {
+  /** Minimum cases for a convention to be established. Default 20. */
+  minCorpus: number;
+  /** Usage-pair co-occurrence confidence threshold. Default 0.9. */
+  pairConfidence: number;
+  /** Minimum share for a mode to be considered dominant. Default 0.8. */
+  modeShare: number;
+  /** Cap to avoid unbounded output per domain. Default 200. */
+  maxConventionsPerDomain: number;
+}
+
+/** Config for the UniversalConventionsAnalyzer (mirrors mining config). */
+export interface ConventionsAnalyzerConfig {
+  minCorpus: number;
+  pairConfidence: number;
+  modeShare: number;
+  maxConventionsPerDomain: number;
+}
+
 // Spec 21 — Language-Neutral Detection / Provenance
 // ═══════════════════════════════════════════════════════════════════════════
 

@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "3.1.1",
+  "version": "3.4.0",
   "description": "Architectural invariants and code quality analysis, enforced inside your AI agent's edit loop. MCP server + CLI + Claude Code plugin. TypeScript, JavaScript, Go.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsc && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
     "download:natives": "bash scripts/download-natives.sh",
-    "build:grammars": "cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm dist/grammars/",
+    "build:grammars": "cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm node_modules/tree-sitter-css/tree-sitter-css.wasm dist/grammars/",
     "build:skills": "cp -r plugin/skills/* ../skills/",
     "watch": "tsc --watch",
     "dev": "tsx src/cli.ts",
@@ -72,10 +72,10 @@
   "optionalDependencies": {
     "@ast-grep/napi-darwin-arm64": "0.44.1",
     "@ast-grep/napi-darwin-x64": "0.44.1",
-    "@ast-grep/napi-linux-x64-gnu": "0.44.1",
     "@ast-grep/napi-linux-arm64-gnu": "0.44.1",
-    "@ast-grep/napi-linux-x64-musl": "0.44.1",
     "@ast-grep/napi-linux-arm64-musl": "0.44.1",
+    "@ast-grep/napi-linux-x64-gnu": "0.44.1",
+    "@ast-grep/napi-linux-x64-musl": "0.44.1",
     "@ast-grep/napi-win32-x64-msvc": "0.44.1"
   },
   "devDependencies": {
@@ -85,8 +85,10 @@
     "@types/inquirer": "^9.0.10",
     "@types/node": "^26.1.1",
     "@types/picomatch": "^4.0.3",
+    "tree-sitter-css": "^0.25.0",
     "tree-sitter-go": "^0.25.0",
     "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-scss": "^1.0.0",
     "tree-sitter-typescript": "^0.23.2",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
