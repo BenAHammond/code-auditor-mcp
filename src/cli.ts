@@ -2085,6 +2085,96 @@ program
     }
   });
 
+// ── Coverage command — Spec 15 R4 ─────────────────────────────────────
+
+const coverageCmd = program
+  .command('coverage')
+  .description('Import and report test coverage data');
+
+coverageCmd
+  .command('import')
+  .description('Import a coverage file (lcov .info or Istanbul JSON)')
+  .argument('<path>', 'Path to the coverage file')
+  .option('--project-root <path>', 'Project root for resolving relative paths', process.cwd())
+  .action(async (filePath: string, options: { projectRoot: string }) => {
+    try {
+      const { importCoverageFile } = await import('./coverage/coverageService.js');
+      const result = await importCoverageFile(filePath, options.projectRoot);
+      console.log(chalk.green(`Imported ${result.format} coverage:`));
+      console.log(`  Format:        ${result.format}`);
+      console.log(`  Files:         ${result.filesImported}`);
+      console.log(`  Entries:       ${result.entriesImported}`);
+      console.log(`  Source:        ${result.source}`);
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+coverageCmd
+  .command('by-risk', { isDefault: true })
+  .description('Show coverage rate by risk decile')
+  .option('--json', 'Output as JSON')
+  .action(async (options: { json?: boolean }) => {
+    try {
+      const { generateCoverageReport } = await import('./coverage/coverageService.js');
+      const report = await generateCoverageReport();
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+        return;
+      }
+
+      console.log(chalk.blue(`Coverage Report:\n`));
+      console.log(`  Total functions:     ${report.totalFunctions}`);
+      console.log(`  Covered functions:   ${report.coveredFunctions}`);
+      console.log(`  Coverage rate:       ${(report.coverageRate * 100).toFixed(1)}%`);
+      if (report.staleImport) {
+        console.log(chalk.yellow(`  ⚠ Coverage data is stale — sync index and re-import`));
+      }
+
+      console.log(chalk.blue(`\n  By Risk Decile:`));
+      if (report.byRiskDecile.length === 0) {
+        console.log(chalk.gray('    No data available. Run a full audit with hotspot scoring first.'));
+      } else {
+        for (const d of report.byRiskDecile) {
+          const bar = renderBar(d.rate, 20);
+          console.log(
+            `    Decile ${String(d.decile).padStart(2)}: ${bar} ${(d.rate * 100).toFixed(0)}% ` +
+            `(${d.covered}/${d.total})`,
+          );
+        }
+      }
+
+      console.log(chalk.blue(`\n  Untested Top-Risk Functions:`));
+      if (report.untestedTopDecile.length === 0) {
+        console.log(chalk.green('    All top-risk functions have coverage.'));
+      } else {
+        for (const fn of report.untestedTopDecile.slice(0, 10)) {
+          console.log(
+            `    ${chalk.yellow('⚠')} ${fn.functionName} (risk: ${fn.riskScore.toFixed(3)}) — ${fn.filePath}`,
+          );
+        }
+        if (report.untestedTopDecile.length > 10) {
+          console.log(chalk.gray(`    ... and ${report.untestedTopDecile.length - 10} more`));
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Render a simple ASCII bar chart.
+ */
+function renderBar(value: number, width: number): string {
+  const filled = Math.round(value * width);
+  const empty = width - filled;
+  const color = value > 0.8 ? chalk.green : value > 0.5 ? chalk.yellow : chalk.red;
+  return color('█'.repeat(filled) + '░'.repeat(empty));
+}
+
 // Parse command line arguments
 program.parse(process.argv);
 

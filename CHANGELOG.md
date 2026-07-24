@@ -356,6 +356,90 @@ Net effect: 6 rules restored from disabled, 1 promotion reversed, 2 promotions r
 | `bench/results/spec-11-recalibration-audit.md` | **New** — full audit report with per-finding triage data, pipeline defect analysis, external corpus cross-reference |
 | `bench/results/recalibration.md` | Updated with corrected recalibration table, audit amendment note, TBU-cliff limitation documentation |
 
+### Spec-15: Cross-Domain Joins — Schema Lifecycle, Validation Bypass, and Coverage by Importance
+
+Spec 15 adds five detectors that no single per-file analyzer can run alone. Each joins the SQLite index tables built by earlier specs — `schema_usage` (Spec 14), `graph_cache` (Spec 14), `hotspot_scores` (Spec 13), `coverage_data` (Spec 15 R4) — to produce findings at the system level. **All detectors enter at `suggestion` severity.**
+
+#### R1: Schema Lifecycle Detection
+
+Three detectors query `schema_usage` joined with `graph_cache` and `functions`:
+
+- **Written-never-read** (`cross-domain/written-never-read`): Tables with INSERT/UPDATE/CREATE usage but zero SELECT. Catches write-only tables that may be abandoned or log sinks no one queries.
+- **Read-never-written** (`cross-domain/read-never-written`): Tables with SELECT usage but zero INSERT/UPDATE/CREATE. Catches external-data reads where the codebase never writes — possible data-source documentation gaps.
+- **Transaction-boundary risk** (`cross-domain/transaction-boundary-risk`): Functions writing ≥ `txnTableMax` (default 4) distinct tables, including callee tables via depth-1 BFS on `graph_cache`. Flags functions whose transaction scope is too wide (coordinator anti-pattern).
+
+**New analyzer `CrossDomainAnalyzer`**: Extends `UniversalAnalyzer` with a full `analyze()` override — bypasses the per-file AST loop and queries the SQLite DB directly. Population happens in `UniversalSchemaAnalyzer.analyzeAST()`: after `findTableReferences()` extracts table names, each reference is written to `schema_usage` (idempotent per-file).
+
+**Schema migration 6→7**: `schema_usage` table with columns `(table_name, file_path, function_name, usage_type, analyzer)`. Indexed on `(table_name, usage_type)`.
+
+#### R2: ORM-Aware Schema Extraction
+
+- **New module `src/analyzers/orm/`** — adapter registry pattern (same shape as `LanguageAdapter` registry):
+  - `OrmAdapter` interface: `extractTableReferences()` and `extractSchemaDefinitions()`
+  - **Drizzle adapter**: Detects `pgTable`/`mysqlTable`/`sqliteTable` schema definitions, `.select().from()` query chains
+  - **Prisma adapter**: Parses `schema.prisma` model definitions, `prisma.model.operation()` query patterns
+- **Integration**: `UniversalSchemaAnalyzer.findTableReferences()` queries the ORM registry before falling back to SQL pattern detection
+
+#### R3: Validation-Bypass Detection
+
+**Detector** (`cross-domain/validation-bypass`): Flags functions that write data without reaching a validator, when their directory peers typically do.
+
+**Primary — provenance-based**: Uses Spec 21's `VALIDATOR_PACKAGES` (zod, joi, ajv, valibot, class-validator, yup, typebox, superstruct, io-ts) to identify validators via import provenance. All exported functions from provenanced files are treated as validators.
+
+**Conjunctive fallback**: Only when zero provenance-detected validators exist AND no user config is provided → `name GLOB 'validate*' OR name GLOB 'assert*'` heuristics with downgraded confidence.
+
+**Algorithm**: Groups writers (functions with INSERT/UPDATE/CREATE in `schema_usage`) by directory. For each directory with ≥ `minCorpus` (default 3) writers, BFS depth ≤ `depth` (default 3) through `graph_cache` call edges. If ≥ `modeShare` (default 0.5) of writers reach a validator, flags uncovered writers.
+
+**Config** (`validatorBypass` in `CrossDomainConfig`): `modeShare` (0.5), `minCorpus` (3), `depth` (3).
+
+#### R4: Coverage by Importance
+
+- **New module `src/coverage/`** — LCOV (`.info`) and Istanbul (JSON) coverage format parsers with auto-detection
+- **`coverage_data` table**: `(file_path, function_name, line_pct, branch_pct, statement_pct, function_pct, uncovered_lines, source_format)` — same schema as `hotspot_scores` with coverage columns
+- **`code-audit coverage`** CLI: `coverage --import <path>` (auto-detect format, store in SQLite), `coverage --by-risk [--json]` (show coverage gaps ranked by hotspot score)
+- **Detector** (`cross-domain/uncovered-risk`): Exported functions in the top `topRiskDecile` (default 0.5) of hotspot scores with no measured coverage → flag at `suggestion` severity. **Static-reach fallback**: When no `coverage_data` exists, checks if each high-risk function is imported by any test file (2-hop transitive caller search via `graph_cache`).
+
+#### R5: Bench Fixtures
+
+- **New corpus `bench/corpus/cross-domain/`**: 8 fixture source files in directory-structured layout:
+  - `src/orders/orders.ts` — 7 writer functions, 4 reach validator → 3 bypass violations
+  - `src/validators/validators.ts` — zod-importing validator functions for provenance detection
+  - `src/audit/audit.ts` — read-only module (read-never-written)
+  - `src/sessions/sessions.ts` — isolated write-only module (written-never-read)
+  - `src/users/users.ts` — read+write module (no lifecycle violation)
+  - `src/risk/risk.ts` — high-risk functions (uncovered-risk)
+  - `src/tests/orders.test.ts` — test file providing call-graph edges
+- **`expected.json`**: Metrics-only manifest (`kind: "metrics"`) with min-count ranges per detector. Vacuous precision/recall/F1=1.0000 (metrics-only: no expectedViolations list).
+- **Bench runner**: Seeds `schema_usage` (11 entries), `graph_cache` (10 edges), `hotspot_scores` (5 entries), `coverage_data` (1 entry), and `functions` (16 functions) in-memory, then runs `CrossDomainAnalyzer.analyze()`.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/analyzers/crossDomain/CrossDomainAnalyzer.ts` | **New** — post-analysis DB queries for 5 detectors |
+| `src/analyzers/crossDomain/__tests__/CrossDomainAnalyzer.test.ts` | **New** — unit tests for R1+R3 detectors |
+| `src/analyzers/orm/types.ts` | **New** — `OrmAdapter` interface |
+| `src/analyzers/orm/adapterRegistry.ts` | **New** — ORM adapter registry |
+| `src/analyzers/orm/drizzleAdapter.ts` | **New** — Drizzle ORM schema/query extraction |
+| `src/analyzers/orm/prismaAdapter.ts` | **New** — Prisma ORM schema extraction |
+| `src/analyzers/orm/index.ts` | **New** — ORM module barrel export |
+| `src/analyzers/orm/__tests__/ormAdapters.test.ts` | **New** — unit tests for Drizzle + Prisma |
+| `src/coverage/lcovParser.ts` | **New** — LCOV `.info` parser |
+| `src/coverage/istanbulParser.ts` | **New** — Istanbul JSON parser |
+| `src/coverage/coverageService.ts` | **New** — coverage storage/query in SQLite |
+| `src/coverage/__tests__/parsers.test.ts` | **New** — unit tests for coverage parsers |
+| `src/types.ts` | Add `CrossDomainConfig`, `CoverageEntry`, `OrmAdapter`/`OrmTableReference` types |
+| `src/codeIndexDB.ts` | SCHEMA_VERSION → 7, `schema_usage` + `coverage_data` tables, migration 6→7 |
+| `src/analyzers/universal/UniversalSchemaAnalyzer.ts` | schema_usage recording, `txnTableMax` config field |
+| `src/auditRunner.ts` | Cross-domain analyzer entry, config forwarding |
+| `src/config/defaults.ts` | Cross-domain + coverage configs |
+| `src/cli.ts` | `coverage --import` and `coverage --by-risk` commands |
+| `src/services/CodeMapGenerator.ts` | Coverage-by-risk section |
+| `src/scripts/runBench.ts` | Cross-domain bench runner with in-memory seed data |
+| `bench/corpus/cross-domain/` | **New** — bench corpus + expected.json |
+| `bench/baselines/baseline.json` | Add cross-domain analyzer baseline |
+| `src/__tests__/bench.test.ts` | Updated to 10 analyzers |
+
 ## [3.2.0] — 2026-07-23
 
 ### Spec-21: Language-Neutral Detection — Provenance-Based DB Detection

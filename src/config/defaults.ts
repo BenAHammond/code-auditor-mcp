@@ -19,7 +19,7 @@ export function getDefaultConfig(): AuditConfig {
       '**/*.test.{ts,tsx,js,jsx}',
       '**/*.spec.{ts,tsx,js,jsx}'
     ],
-    enabledAnalyzers: ['solid', 'dry', 'security', 'component', 'data-access', 'styles', 'conventions'],
+    enabledAnalyzers: ['solid', 'dry', 'security', 'component', 'data-access', 'styles', 'conventions', 'cross-domain'],
     outputFormats: ['html', 'json'],
     outputDirectory: './audit-reports',
     minSeverity: 'suggestion',
@@ -276,6 +276,27 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     pairConfidence: 0.9,
     modeShare: 0.8,
     maxConventionsPerDomain: 200,
+  },
+
+  // Spec 15: cross-domain analysis defaults
+  crossDomain: {
+    schemaLifecycle: {
+      enableWrittenNeverRead: true,
+      enableReadNeverWritten: true,
+      enableTransactionBoundaryRisk: true,
+      txnTableMax: 4,
+    },
+    validatorBypass: {
+      validators: [],
+      modeShare: 0.8,
+      minCorpus: 20,
+      depth: 3,
+    },
+    coverage: {
+      testGlobs: ['**/*.test.*', '**/*.spec.*', '**/__tests__/**'],
+      staticReachDepth: 2,
+      topRiskDecile: 0.1,
+    },
   },
 };
 

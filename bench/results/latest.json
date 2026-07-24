@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-07-24T06:00:31.040Z",
+  "timestamp": "2026-07-24T16:49:33.840Z",
   "summary": {
-    "totalAnalyzers": 12,
-    "passed": 12,
+    "totalAnalyzers": 13,
+    "passed": 13,
     "failed": 0,
     "totalKnownMisses": 4,
     "microAvgPrecision": 1,
@@ -203,6 +203,25 @@
       ],
       "knownMissDetails": [],
       "warnings": []
+    },
+    "cross-domain": {
+      "truePositives": 0,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [],
+      "nearMissResults": [],
+      "details": [],
+      "knownMissDetails": [],
+      "warnings": [
+        "Metric \"transactionBoundaryRiskCount\" = 0 (< min 1)"
+      ]
     },
     "data-access": {
       "truePositives": 9,

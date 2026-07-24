@@ -288,7 +288,7 @@ export class CodeIndexDB {
   private stmts: Map<string, Database.Statement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 6;
+  private static readonly SCHEMA_VERSION = 7;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -615,6 +615,26 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_gc_type_neighbor ON graph_cache(graph_type, neighbor_key);
       `);
     }
+
+    // Migration 6 → 7: Coverage data for cross-domain analysis (Spec 15)
+    if (currentVersion < 7) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS coverage_data (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          function_name TEXT NOT NULL,
+          file_path     TEXT NOT NULL,
+          line_number   INTEGER,
+          basis         TEXT NOT NULL DEFAULT 'static-reach',
+          covered       INTEGER NOT NULL DEFAULT 0,
+          source        TEXT,
+          imported_at   TEXT DEFAULT (datetime('now')),
+          UNIQUE(function_name, file_path, line_number)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cov_basis ON coverage_data(basis);
+        CREATE INDEX IF NOT EXISTS idx_cov_covered ON coverage_data(covered);
+        CREATE INDEX IF NOT EXISTS idx_cov_function ON coverage_data(function_name);
+      `);
+    }
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -786,6 +806,21 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_schema_usage_table ON schema_usage(table_name);
       CREATE INDEX IF NOT EXISTS idx_schema_usage_file ON schema_usage(file_path);
       CREATE INDEX IF NOT EXISTS idx_schema_usage_function ON schema_usage(function_name);
+
+      CREATE TABLE IF NOT EXISTS coverage_data (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        function_name TEXT NOT NULL,
+        file_path     TEXT NOT NULL,
+        line_number   INTEGER,
+        basis         TEXT NOT NULL DEFAULT 'static-reach',
+        covered       INTEGER NOT NULL DEFAULT 0,
+        source        TEXT,
+        imported_at   TEXT DEFAULT (datetime('now')),
+        UNIQUE(function_name, file_path, line_number)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cov_basis ON coverage_data(basis);
+      CREATE INDEX IF NOT EXISTS idx_cov_covered ON coverage_data(covered);
+      CREATE INDEX IF NOT EXISTS idx_cov_function ON coverage_data(function_name);
 
       CREATE TABLE IF NOT EXISTS project_tasks (
         taskId         TEXT PRIMARY KEY,
@@ -2768,6 +2803,16 @@ export class CodeIndexDB {
     }
   }
 
+  /**
+   * Clear all schema_usage entries for a given file path.
+   * Used for idempotent per-file writes during indexing — stale entries
+   * from a previous scan are removed before fresh references are inserted.
+   */
+  clearSchemaUsageForFile(filePath: string): void {
+    this.ensureInitialized();
+    this.db.prepare('DELETE FROM schema_usage WHERE file_path = ?').run(filePath);
+  }
+
   async getSchemaUsage(options: {
     schemaId?: string; tableName?: string; filePath?: string; functionName?: string; usageType?: string;
   } = {}): Promise<SchemaUsage[]> {
@@ -2987,6 +3032,172 @@ export class CodeIndexDB {
     } catch {
       return null;
     }
+  }
+
+  // ── Coverage data (Spec 15 R4) ──────────────────────────────────────
+
+  /** Import coverage entries, replacing any existing data for the given basis. */
+  importCoverageData(entries: Array<{
+    functionName: string;
+    filePath: string;
+    lineNumber: number;
+    basis: 'static-reach' | 'measured';
+    covered: boolean;
+    source?: string;
+  }>): void {
+    this.ensureInitialized();
+    // Group by basis so we only clear one basis at a time
+    const bases = new Set(entries.map(e => e.basis));
+    const clearStmt = this.db.prepare('DELETE FROM coverage_data WHERE basis = ?');
+    for (const basis of bases) {
+      clearStmt.run(basis);
+    }
+
+    const insert = this.db.prepare(
+      `INSERT OR REPLACE INTO coverage_data (function_name, file_path, line_number, basis, covered, source, imported_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+    );
+    const tx = this.db.transaction((items: typeof entries) => {
+      for (const e of items) {
+        insert.run(e.functionName, e.filePath, e.lineNumber, e.basis, e.covered ? 1 : 0, e.source ?? null);
+      }
+    });
+    tx(entries);
+  }
+
+  /** Get all coverage entries for a given basis. */
+  getCoverageByBasis(basis: 'static-reach' | 'measured'): Array<{
+    functionName: string;
+    filePath: string;
+    lineNumber: number;
+    basis: string;
+    covered: boolean;
+    source: string | null;
+    importedAt: string | null;
+  }> {
+    this.ensureInitialized();
+    const rows = this.db.prepare(
+      'SELECT * FROM coverage_data WHERE basis = ?'
+    ).all(basis) as any[];
+    return rows.map((r: any) => ({
+      functionName: r.function_name,
+      filePath: r.file_path,
+      lineNumber: r.line_number,
+      basis: r.basis,
+      covered: r.covered === 1,
+      source: r.source,
+      importedAt: r.imported_at,
+    }));
+  }
+
+  /** Clear coverage data, optionally scoped to a single basis. */
+  clearCoverageData(basis?: 'static-reach' | 'measured'): void {
+    this.ensureInitialized();
+    if (basis) {
+      this.db.prepare('DELETE FROM coverage_data WHERE basis = ?').run(basis);
+    } else {
+      this.db.prepare('DELETE FROM coverage_data').run();
+    }
+  }
+
+  /** Check if measured coverage data is stale (older than the last full sync). */
+  isCoverageStale(): boolean {
+    this.ensureInitialized();
+    const lastSync = this.getMeta('last_full_sync_timestamp');
+    if (!lastSync) return false;
+    const staleRow = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM coverage_data
+       WHERE basis = 'measured' AND imported_at < ?`
+    ).get(lastSync) as any;
+    return (staleRow?.cnt ?? 0) > 0;
+  }
+
+  /** Get coverage rate by risk decile for the coverage report. */
+  getCoverageByRiskDecile(decileCount: number = 10): Array<{
+    decile: number;
+    covered: number;
+    total: number;
+    rate: number;
+  }> {
+    this.ensureInitialized();
+    // Rank functions by risk score from hotspot_scores, join with coverage_data
+    const rows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT
+          f.name,
+          f.file_path,
+          f.line_number,
+          COALESCE(hs.score, 0.0) as risk_score,
+          NTILE(?) OVER (ORDER BY COALESCE(hs.score, 0.0) DESC) as decile
+        FROM functions f
+        LEFT JOIN hotspot_scores hs ON hs.target = (f.file_path || ':' || f.name)
+          AND hs.type = 'function'
+        WHERE f.is_exported = 1
+      ),
+      coverage AS (
+        SELECT DISTINCT function_name, file_path FROM coverage_data
+        WHERE covered = 1
+      )
+      SELECT
+        r.decile,
+        COUNT(*) as total,
+        SUM(CASE WHEN c.function_name IS NOT NULL THEN 1 ELSE 0 END) as covered
+      FROM ranked r
+      LEFT JOIN coverage c ON c.function_name = r.name AND c.file_path = r.file_path
+      GROUP BY r.decile
+      ORDER BY r.decile
+    `).all(decileCount) as any[];
+
+    return rows.map((r: any) => ({
+      decile: r.decile,
+      covered: r.covered,
+      total: r.total,
+      rate: r.total > 0 ? r.covered / r.total : 0,
+    }));
+  }
+
+  /** Get untested functions in the top risk decile. */
+  getUntestedTopDecile(topDecile: number = 0.1): Array<{
+    functionName: string;
+    filePath: string;
+    riskScore: number;
+    basis: string;
+  }> {
+    this.ensureInitialized();
+    const rows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT
+          f.name,
+          f.file_path,
+          COALESCE(hs.score, 0.0) as risk_score,
+          PERCENT_RANK() OVER (ORDER BY COALESCE(hs.score, 0.0) DESC) as pct
+        FROM functions f
+        LEFT JOIN hotspot_scores hs ON hs.target = (f.file_path || ':' || f.name)
+          AND hs.type = 'function'
+        WHERE f.is_exported = 1
+      ),
+      best_coverage AS (
+        SELECT DISTINCT function_name, file_path, basis FROM coverage_data
+        WHERE covered = 1
+      )
+      SELECT
+        r.name,
+        r.file_path,
+        r.risk_score,
+        COALESCE(bc.basis, 'static-reach') as basis
+      FROM ranked r
+      LEFT JOIN best_coverage bc ON bc.function_name = r.name AND bc.file_path = r.file_path
+      WHERE r.pct <= ?
+        AND bc.basis IS NULL
+      ORDER BY r.risk_score DESC
+    `).all(topDecile) as any[];
+
+    return rows.map((r: any) => ({
+      functionName: r.name,
+      filePath: r.file_path,
+      riskScore: r.risk_score,
+      basis: r.basis,
+    }));
   }
 }
 

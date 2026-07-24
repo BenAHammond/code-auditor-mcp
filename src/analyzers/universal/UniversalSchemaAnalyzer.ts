@@ -20,6 +20,7 @@ import {
   type ProvenanceContext,
   type DetectionMode,
 } from '../provenance.js';
+import { OrmAdapterRegistry } from '../orm/index.js';
 
 /**
  * Configuration for Schema analyzer
@@ -103,7 +104,8 @@ interface ColumnReference {
 }
 
 import { promises as fs } from 'fs';
-import type { Violation as BaseViolation, AnalyzerResult } from '../../types.js';
+import { CodeIndexDB } from '../../codeIndexDB.js';
+import type { Violation as BaseViolation, AnalyzerResult, SchemaUsage } from '../../types.js';
 
 export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   readonly name = 'schema';
@@ -192,6 +194,12 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Spec 21: Uses provenance context for DB-call pattern detection
     const tableRefs = this.findTableReferences(ast, adapter, sourceCode, finalConfig, provenanceContext);
     const columnRefs = this.findColumnReferences(ast, adapter, sourceCode);
+
+    // Spec 15 R1 — Record schema usage for cross-domain lifecycle analysis.
+    // Idempotent per-file: clear stale entries before inserting fresh references.
+    if (finalConfig.enableTableUsageTracking) {
+      this.recordTableUsage(ast, adapter, ast.filePath, tableRefs);
+    }
 
     // Check for missing table references — R2.4: Levenshtein suggestions
     if (finalConfig.checkMissingReferences) {
@@ -397,7 +405,74 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       references.push(...fileRefs);
     }
 
+    // (4) Spec 15 R2 — ORM-aware extraction (Drizzle + Prisma)
+    // Run ORM adapter extraction for files that match a registered adapter.
+    // This complements raw-SQL extraction by picking up ORM-specific patterns
+    // like db.select().from(users) and prisma.user.findMany().
+    const ormRegistry = OrmAdapterRegistry.getInstance();
+    const ormAdapter = ormRegistry.getAdapterForFile(ast.filePath);
+    if (ormAdapter) {
+      try {
+        const ormRefs = ormAdapter.extractTableReferences(ast, adapter, sourceCode);
+        for (const ormRef of ormRefs) {
+          references.push({
+            table: ormRef.table,
+            type: ormRef.type,
+            location: ormRef.location,
+            context: ormRef.context,
+          });
+        }
+      } catch {
+        // ORM extraction is best-effort — failures don't block raw-SQL extraction.
+      }
+    }
+
     return references;
+  }
+
+  /**
+   * Spec 15 R1 — Record extracted table references to schema_usage for
+   * cross-domain lifecycle analysis (written-never-read, read-never-written,
+   * transaction-boundary risk).
+   *
+   * Idempotent per-file: stale entries are cleared before fresh references
+   * are inserted. For .sql/migration files, uses "schema-file" as the
+   * function name since there's no AST function context.
+   */
+  private recordTableUsage(
+    ast: AST,
+    adapter: LanguageAdapter,
+    filePath: string,
+    references: TableReference[],
+  ): void {
+    try {
+      const db = CodeIndexDB.getInstance();
+      db.clearSchemaUsageForFile(filePath);
+
+      for (const ref of references) {
+        // Find enclosing function from the AST position
+        const node = this.findClosestNodeAt(ast.root, ref.location, adapter);
+        const functionName = node
+          ? this.findEnclosingFunctionName(node, adapter)
+          : ast.filePath.endsWith('.sql') || ast.filePath.includes('/migrations/')
+            ? 'schema-file'
+            : 'top-level';
+
+        const usage: SchemaUsage = {
+          tableName: ref.table,
+          filePath,
+          functionName,
+          usageType: ref.type,
+          line: ref.location.line,
+          column: ref.location.column,
+          rawQuery: ref.context,
+        };
+
+        db.recordSchemaUsage(usage);
+      }
+    } catch {
+      // Schema recording is best-effort — failures don't block analysis.
+    }
   }
 
   /**

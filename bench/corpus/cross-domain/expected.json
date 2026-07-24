@@ -1,0 +1,31 @@
+{
+  "kind": "metrics",
+  "analyzer": "cross-domain",
+  "config": {
+    "schemaLifecycle": {
+      "enableWrittenNeverRead": true,
+      "enableReadNeverWritten": true,
+      "enableTransactionBoundaryRisk": true,
+      "txnTableMax": 4
+    },
+    "validatorBypass": {
+      "modeShare": 0.5,
+      "minCorpus": 3,
+      "depth": 3
+    },
+    "coverage": {
+      "topRiskDecile": 0.5
+    }
+  },
+  "expectedViolations": [],
+  "expectedMetrics": {
+    "writtenNeverReadCount": { "min": 5 },
+    "readNeverWrittenCount": { "min": 1 },
+    "transactionBoundaryRiskCount": { "min": 1 },
+    "validationBypassCount": { "min": 3 },
+    "uncoveredRiskCount": { "min": 1 },
+    "totalViolations": { "min": 11 }
+  },
+  "nearMissFiles": [],
+  "description": "Cross-Domain Joins (Spec 15) — post-analysis DB queries for schema lifecycle, validation bypass, and coverage by importance. All detectors enter at suggestion severity."
+}

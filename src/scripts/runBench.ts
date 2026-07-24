@@ -21,6 +21,7 @@ import { reactAnalyzer } from '../analyzers/reactAnalyzer.js';
 import { invariantsAnalyzer } from '../analyzers/invariantsAnalyzer.js';
 import { UniversalStylesAnalyzer } from '../analyzers/universal/UniversalStylesAnalyzer.js';
 import { UniversalConventionsAnalyzer } from '../analyzers/universal/UniversalConventionsAnalyzer.js';
+import { CrossDomainAnalyzer } from '../analyzers/crossDomain/CrossDomainAnalyzer.js';
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { fingerprint } from '../fingerprint.js';
 import { extractSymbol } from '../symbols.js';
@@ -336,7 +337,139 @@ function seedDivergingClonesData(rawDb: any, files: string[]): void {
     0.68, '2026-01-03T00:00:00.000Z', 'run-3');
 }
 
-// ── Graph bench seed data ──────────────────────────────────────────────
+// ── Cross-domain bench seed data ───────────────────────────────────────
+
+/**
+ * Seed the in-memory SQLite DB with schema_usage, functions, function_calls,
+ * graph_cache, hotspot_scores, and coverage_data to trigger all 5 cross-domain
+ * detectors.
+ *
+ * Tables & expected violations:
+ *   - written-never-read (5): orders, sessions, inventory, payments, notifications
+ *   - read-never-written (1): audit_log
+ *   - transaction-boundary-risk (1): processOrder writes orders + 3 callees (updateInventory→inventory,
+ *     processPayment→payments, sendNotification→notifications) = 4 ≥ txnTableMax
+ *   - validation-bypass (1): createUnvalidatedOrder (writer without validator in validator-dense src/)
+ *   - uncovered-risk (1): highRiskUntested (top decile risk, no coverage_data)
+ */
+function seedCrossDomainData(rawDb: any, _files: string[]): void {
+  const hash = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 16);
+
+  // ── Functions table ──────────────────────────────────────────────────
+  const insertFn = rawDb.prepare(
+    `INSERT INTO functions (id, name, file_path, line_number, complexity, is_exported, used_imports, content_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  // src/orders.ts
+  insertFn.run(1, 'saveOrder',             'src/orders/orders.ts',  5,  2, 1, null, hash('orders:saveOrder'));
+  insertFn.run(2, 'processOrder',          'src/orders/orders.ts',  9,  3, 1, null, hash('orders:processOrder'));
+  insertFn.run(3, 'updateInventory',       'src/orders/orders.ts', 16, 1, 0, null, hash('orders:updateInventory'));
+  insertFn.run(4, 'processPayment',        'src/orders/orders.ts', 20, 1, 0, null, hash('orders:processPayment'));
+  insertFn.run(5, 'sendNotification',      'src/orders/orders.ts', 24, 1, 0, null, hash('orders:sendNotification'));
+  insertFn.run(6, 'createValidatedOrder',  'src/orders/orders.ts', 28, 2, 1, null, hash('orders:createValidatedOrder'));
+  insertFn.run(7, 'createUnvalidatedOrder','src/orders/orders.ts', 33, 1, 1, null, hash('orders:createUnvalidatedOrder'));
+  // src/audit.ts
+  insertFn.run(8, 'readAuditLog',          'src/audit/audit.ts',   4,  1, 1, null, hash('audit:readAuditLog'));
+  // src/users.ts
+  insertFn.run(9, 'manageUsers',           'src/users/users.ts',   5,  2, 1, null, hash('users:manageUsers'));
+  // src/sessions.ts
+  insertFn.run(10,'createSession',         'src/sessions/sessions.ts',5,  1, 1, null, hash('sessions:createSession'));
+  // src/validators.ts
+  insertFn.run(11,'validateOrder',         'src/validators/validators.ts',12,1, 1, JSON.stringify(['zod']), hash('validators:validateOrder'));
+  insertFn.run(12,'validatePayment',       'src/validators/validators.ts',22,1, 1, JSON.stringify(['zod']), hash('validators:validatePayment'));
+  // src/risk.ts
+  insertFn.run(13,'highRiskTested',        'src/risk/risk.ts',     9, 3, 1, null, hash('risk:highRiskTested'));
+  insertFn.run(14,'highRiskUntested',      'src/risk/risk.ts',    19, 3, 1, null, hash('risk:highRiskUntested'));
+  // src/orders.test.ts
+  insertFn.run(15,'test saveOrder',        'src/tests/orders.test.ts',7,1, 0, null, hash('test:saveOrder'));
+  insertFn.run(16,'test validatedOrder',   'src/tests/orders.test.ts',11,1,0, null, hash('test:validatedOrder'));
+
+  // ── Function calls ───────────────────────────────────────────────────
+  const insertCall = rawDb.prepare(
+    `INSERT INTO function_calls (caller_id, callee_name) VALUES (?, ?)`,
+  );
+  // processOrder calls its 3 internal helpers
+  insertCall.run(2, 'updateInventory');
+  insertCall.run(2, 'processPayment');
+  insertCall.run(2, 'sendNotification');
+  // Writers that also call validateOrder (validation-bypass reach)
+  insertCall.run(1, 'validateOrder');
+  insertCall.run(2, 'validateOrder');
+  insertCall.run(3, 'validateOrder');
+  // createValidatedOrder calls validateOrder
+  insertCall.run(6, 'validateOrder');
+  // test functions call production functions
+  insertCall.run(15, 'saveOrder');
+  insertCall.run(16, 'createValidatedOrder');
+  insertCall.run(16, 'processOrder');
+
+  // ── Graph cache (call edges) ─────────────────────────────────────────
+  const insertCache = rawDb.prepare(
+    `INSERT OR REPLACE INTO graph_cache (graph_type, node_key, neighbor_key, weight)
+     VALUES (?, ?, ?, ?)`,
+  );
+  // processOrder → callees (for transaction-boundary BFS)
+  // Use string values for node_key/neighbor_key — graph_cache columns are TEXT
+  insertCache.run('call', '2', '3', 1);   // processOrder → updateInventory
+  insertCache.run('call', '2', '4', 1);   // processOrder → processPayment
+  insertCache.run('call', '2', '5', 1);   // processOrder → sendNotification
+  // Writers that reach validateOrder (for validation-bypass BFS — need ≥ 50% coverage)
+  insertCache.run('call', '1', '11', 1);  // saveOrder → validateOrder
+  insertCache.run('call', '2', '11', 1);  // processOrder → validateOrder
+  insertCache.run('call', '3', '11', 1);  // updateInventory → validateOrder
+  insertCache.run('call', '6', '11', 1);  // createValidatedOrder → validateOrder
+  // test functions → production functions (for uncovered-risk static-reach fallback)
+  insertCache.run('call', '15', '1', 1);  // test:saveOrder → saveOrder
+  insertCache.run('call', '16', '6', 1);  // test:validatedOrder → createValidatedOrder
+  insertCache.run('call', '16', '2', 1);  // test:validatedOrder → processOrder
+
+  // ── Schema usage ─────────────────────────────────────────────────────
+  const insertUsage = rawDb.prepare(
+    `INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line, column, raw_query, parameters)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  // Write-only tables (written, never read) → written-never-read (5)
+  insertUsage.run('orders',       'src/orders/orders.ts',    'saveOrder',              'insert', 6,  5,  null, null);
+  insertUsage.run('orders',       'src/orders/orders.ts',    'processOrder',           'update', 12, 5,  null, null);
+  insertUsage.run('orders',       'src/orders/orders.ts',    'createValidatedOrder',   'insert', 30, 3,  null, null);
+  insertUsage.run('orders',       'src/orders/orders.ts',    'createUnvalidatedOrder', 'insert', 35, 3,  null, null);
+  insertUsage.run('inventory',    'src/orders/orders.ts',    'updateInventory',        'update', 17, 5,  null, null);
+  insertUsage.run('payments',     'src/orders/orders.ts',    'processPayment',         'insert', 21, 5,  null, null);
+  insertUsage.run('notifications','src/orders/orders.ts',    'sendNotification',       'insert', 25, 5,  null, null);
+  insertUsage.run('sessions',     'src/sessions/sessions.ts',  'createSession',          'insert', 6,  5,  null, null);
+
+  // Read-only table (read, never written) → read-never-written (1)
+  insertUsage.run('audit_log',    'src/audit/audit.ts',     'readAuditLog',           'select', 5,  5,  null, null);
+
+  // Both read+write (no violation)
+  insertUsage.run('users',        'src/users/users.ts',     'manageUsers',            'select', 7,  5,  null, null);
+  insertUsage.run('users',        'src/users/users.ts',     'manageUsers',            'insert', 8,  5,  null, null);
+
+  // ── Hotspot scores (for uncovered-risk detection) ─────────────────────
+  const insertHotspot = rawDb.prepare(
+    `INSERT OR REPLACE INTO hotspot_scores (target, type, score, churn_pct, complexity_pct, commit_count)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  // High-risk functions for top decile detection
+  insertHotspot.run('highRiskTested',   'function', 0.85, 75.0, 90.0, 15);
+  insertHotspot.run('highRiskUntested', 'function', 0.92, 80.0, 95.0, 20);
+  // Lower-risk functions to provide contrast
+  insertHotspot.run('saveOrder',        'function', 0.30, 20.0, 15.0, 3);
+  insertHotspot.run('processOrder',     'function', 0.45, 35.0, 40.0, 8);
+  insertHotspot.run('validateOrder',    'function', 0.20, 10.0, 10.0, 2);
+
+  // ── Coverage data ────────────────────────────────────────────────────
+  const insertCov = rawDb.prepare(
+    `INSERT OR REPLACE INTO coverage_data (function_name, file_path, line_number, basis, covered, source)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  // highRiskTested has measured coverage → NOT flagged
+  insertCov.run('highRiskTested', 'src/risk/risk.ts', 9, 'measured', 1, 'lcov');
+  // highRiskUntested has no coverage_data → flagged as uncovered-risk
+}
+
 
 /**
  * Seed the in-memory SQLite DB with a known call graph and import graph.
@@ -773,6 +906,39 @@ function buildAnalyzers(): Record<string, AnalyzerRunner> {
           // Extra diagnostics
           callNodes: callGraph.nodeIds.size,
           importNodes: importGraph.filePaths.size,
+        };
+
+        return {
+          violations: [],
+          filesProcessed: _files.length,
+          executionTime: 0,
+          extras: { metrics },
+        };
+      },
+    },
+
+    // ── Cross-Domain — metrics-only (DB-driven, advisory) ─────────────
+    'cross-domain': {
+      name: 'cross-domain',
+      async analyze(_files: string[], config: any) {
+        CodeIndexDB.resetInstance();
+        const db = CodeIndexDB.getInstance(':memory:');
+        await db.initialize();
+        const rawDb = (db as any).rawDb;
+        seedCrossDomainData(rawDb, _files);
+
+        const analyzer = new CrossDomainAnalyzer();
+        const result = await analyzer.analyze(_files, config);
+
+        // Collect metrics for expectedMetrics range assertions
+        const violations = result.violations;
+        const metrics = {
+          writtenNeverReadCount: violations.filter(v => v.rule === 'cross-domain/written-never-read').length,
+          readNeverWrittenCount: violations.filter(v => v.rule === 'cross-domain/read-never-written').length,
+          transactionBoundaryRiskCount: violations.filter(v => v.rule === 'cross-domain/transaction-boundary-risk').length,
+          validationBypassCount: violations.filter(v => v.rule === 'cross-domain/validation-bypass').length,
+          uncoveredRiskCount: violations.filter(v => v.rule === 'cross-domain/uncovered-risk').length,
+          totalViolations: violations.length,
         };
 
         return {
@@ -1384,6 +1550,14 @@ function buildSweepParameters(): SweepParameter[] {
       shippedDefault: 5, values: [3, 5, 7, 10, 15, 20, 30] },
     { configKey: 'minCorpus', label: 'Style minCorpus', analyzer: 'styles',
       shippedDefault: 3, values: [1, 2, 3, 5, 8, 10, 15] },
+
+    // ── Cross-Domain analyzer ──────────────────────────────────────────
+    { configKey: 'schemaLifecycle.txnTableMax', label: 'Cross-Domain txnTableMax', analyzer: 'cross-domain',
+      shippedDefault: 4, values: [2, 3, 4, 5, 6, 8, 10] },
+    { configKey: 'validatorBypass.modeShare', label: 'Cross-Domain modeShare', analyzer: 'cross-domain',
+      shippedDefault: 0.5, values: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95] },
+    { configKey: 'validatorBypass.depth', label: 'Cross-Domain depth', analyzer: 'cross-domain',
+      shippedDefault: 3, values: [1, 2, 3, 4, 5] },
   ];
 }
 

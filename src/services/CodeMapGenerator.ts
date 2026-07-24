@@ -603,6 +603,24 @@ export class CodeMapGenerator {
       // Import graph may not be available. Silently skip.
     }
 
+    // Coverage section (Spec 15 R4) — coverage by risk decile
+    try {
+      const coverageStats = await this.queryCoverageStats();
+      if (coverageStats.byRiskDecile.length > 0) {
+        sections.coverage = {
+          text: this.formatCoverageSection(coverageStats),
+          description: "Test coverage by risk decile — measured or static-reach coverage data",
+          metadata: {
+            totalFunctions: coverageStats.totalFunctions,
+            coveredFunctions: coverageStats.coveredFunctions,
+            coverageRate: coverageStats.coverageRate,
+          }
+        };
+      }
+    } catch {
+      // Coverage data may not be available. Silently skip.
+    }
+
     // Documentation section (if enabled)
     if (options.includeDocumentation && fullMap.documentation) {
       sections.documentation = {
@@ -1005,6 +1023,119 @@ export class CodeMapGenerator {
 
     return lines.join('\n');
   }
+
+  /**
+   * Query coverage statistics from the DB for the code-map coverage section (Spec 15 R4).
+   */
+  private async queryCoverageStats(): Promise<CoverageStats> {
+    const db = CodeIndexDB.getInstance();
+    const rawDb = db.rawDb;
+
+    const totalResult = rawDb
+      .prepare('SELECT COUNT(*) as cnt FROM functions WHERE exported = 1')
+      .get() as { cnt: number } | undefined;
+    const totalFunctions = totalResult?.cnt ?? 0;
+
+    let coveredFunctions = 0;
+    try {
+      const coverageResult = rawDb
+        .prepare('SELECT COUNT(DISTINCT function_name || \'|\' || file_path) as cnt FROM coverage_data')
+        .get() as { cnt: number } | undefined;
+      coveredFunctions = coverageResult?.cnt ?? 0;
+    } catch {
+      // coverage_data table may not exist yet
+    }
+
+    const coverageRate = totalFunctions > 0 ? coveredFunctions / totalFunctions : 0;
+
+    // Build risk decile breakdown
+    const byRiskDecile: CoverageStats['byRiskDecile'] = [];
+    try {
+      const riskResult = rawDb
+        .prepare(`WITH ranked AS (
+          SELECT f.function_name, f.file_path, h.risk_score,
+            NTILE(10) OVER (ORDER BY h.risk_score DESC) AS decile
+          FROM functions f
+          JOIN hotspot_scores h ON h.function_id = f.function_id
+          WHERE f.exported = 1
+        ), decile_stats AS (
+          SELECT decile, COUNT(*) as total,
+            SUM(CASE WHEN cd.function_name IS NOT NULL THEN 1 ELSE 0 END) as covered
+          FROM ranked r
+          LEFT JOIN coverage_data cd ON cd.function_name = r.function_name AND cd.file_path = r.file_path
+          GROUP BY decile
+        )
+        SELECT * FROM decile_stats ORDER BY decile`)
+        .all() as Array<{ decile: number; total: number; covered: number }>;
+
+      for (const row of riskResult) {
+        byRiskDecile.push({
+          decile: row.decile,
+          covered: row.covered,
+          total: row.total,
+          rate: row.total > 0 ? row.covered / row.total : 0,
+        });
+      }
+    } catch {
+      // hotspot_scores or coverage_data may not exist
+    }
+
+    // Untested top-decile functions
+    const untestedTopDecile: CoverageStats['untestedTopDecile'] = [];
+    try {
+      const untested = db.getUntestedTopDecile(0.1);
+      for (const fn of untested) {
+        untestedTopDecile.push({
+          functionName: fn.functionName,
+          filePath: fn.filePath,
+          riskScore: fn.riskScore,
+        });
+      }
+    } catch {
+      // DB method may throw if tables don't exist
+    }
+
+    return { totalFunctions, coveredFunctions, coverageRate, byRiskDecile, untestedTopDecile };
+  }
+
+  /**
+   * Format the coverage section as terminal-friendly text (Spec 15 R4).
+   */
+  private formatCoverageSection(stats: CoverageStats): string {
+    const lines: string[] = [];
+    lines.push('🧪 COVERAGE\n');
+
+    const pct = (stats.coverageRate * 100).toFixed(1);
+    lines.push(`Functions: ${stats.totalFunctions} total, ${stats.coveredFunctions} covered (${pct}%)\n`);
+
+    if (stats.byRiskDecile.length > 0) {
+      lines.push('Coverage rate by risk decile (1 = highest risk):');
+      lines.push('Decile  Covered/Total  Rate    Bar');
+      lines.push('──────  ─────────────  ──────  ────────────────────');
+      for (const d of stats.byRiskDecile) {
+        const label = `#${String(d.decile).padStart(2)}`;
+        const counts = `${String(d.covered).padStart(3)}/${String(d.total).padStart(3)}`;
+        const rate = (d.rate * 100).toFixed(0).padStart(3) + '%';
+        const barLen = Math.round(d.rate * 20);
+        const bar = '█'.repeat(barLen) + '░'.repeat(20 - barLen);
+        lines.push(` ${label}    ${counts}          ${rate}   ${bar}`);
+      }
+      lines.push('');
+    }
+
+    if (stats.untestedTopDecile.length > 0) {
+      lines.push(`Untested high-risk functions (top ${stats.untestedTopDecile.length}):`);
+      for (const fn of stats.untestedTopDecile.slice(0, 10)) {
+        const score = fn.riskScore.toFixed(4);
+        lines.push(`  ${fn.functionName}  (${fn.filePath})  risk=${score}`);
+      }
+      if (stats.untestedTopDecile.length > 10) {
+        lines.push(`  ... and ${stats.untestedTopDecile.length - 10} more`);
+      }
+    }
+
+    return lines.join('\n');
+  }
 }
 
 /** Statistics queried from the style index for the code-map styles section. */
@@ -1044,4 +1175,13 @@ interface ArchitectureStats {
     abstractness: number;
     distanceFromMain: number;
   }>;
+}
+
+/** Coverage stats for the code-map coverage section (Spec 15 R4). */
+interface CoverageStats {
+  totalFunctions: number;
+  coveredFunctions: number;
+  coverageRate: number;
+  byRiskDecile: Array<{ decile: number; covered: number; total: number; rate: number }>;
+  untestedTopDecile: Array<{ functionName: string; filePath: string; riskScore: number }>;
 }

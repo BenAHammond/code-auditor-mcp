@@ -38,6 +38,8 @@ import { UniversalDocumentationAnalyzer } from './analyzers/universal/UniversalD
 import { UniversalSchemaAnalyzer } from './analyzers/universal/UniversalSchemaAnalyzer.js';
 import { UniversalStylesAnalyzer } from './analyzers/universal/UniversalStylesAnalyzer.js';
 import { UniversalConventionsAnalyzer } from './analyzers/universal/UniversalConventionsAnalyzer.js';
+import { CrossDomainAnalyzer } from './analyzers/crossDomain/CrossDomainAnalyzer.js';
+import { initializeOrmAdapters } from './analyzers/orm/index.js';
 import { syncStyleIndex } from './styles/styleIndexer.js';
 import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
 import { invariantsAnalyzer } from './analyzers/invariantsAnalyzer.js';
@@ -52,6 +54,9 @@ const TOOL_VERSION = String(_pkg.version || '0.0.0');
 
 // Initialize the canonical language system once
 initializeLanguages();
+
+// Initialize ORM adapters for cross-domain schema extraction (Spec 15 R2)
+initializeOrmAdapters();
 
 /**
  * Shared progress callback adapter: translates universal analyzer's (number) into
@@ -292,6 +297,26 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
       return analyzer.analyze(files, universalConfig, {
         progressCallback: createProgressAdapter('conventions', progressCallback),
+        ...options as Record<string, unknown>,
+      });
+    },
+  },
+  'cross-domain': {
+    name: 'cross-domain',
+    description: 'Detects cross-domain issues (schema lifecycle, validation bypass, coverage gaps)',
+    category: 'architecture',
+    analyze: async (files, config, options, progressCallback) => {
+      const analyzer = new CrossDomainAnalyzer();
+      const universalConfig: Record<string, unknown> = {};
+      if (config.schemaLifecycle !== undefined) universalConfig.schemaLifecycle = config.schemaLifecycle;
+      if (config.validatorBypass !== undefined) universalConfig.validatorBypass = config.validatorBypass;
+      if (config.coverage !== undefined) universalConfig.coverage = config.coverage;
+      // Forward base-class properties (Spec-20 path profiles + severity overrides)
+      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
+      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
+      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
+      return analyzer.analyze(files, universalConfig, {
+        progressCallback: createProgressAdapter('cross-domain', progressCallback),
         ...options as Record<string, unknown>,
       });
     },

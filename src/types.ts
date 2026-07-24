@@ -295,6 +295,8 @@ export interface AuditConfig {
   churn?: ChurnConfig;
   /** Spec 13 — Diverging-clone detection config. */
   divergence?: DivergenceConfig;
+  /** Spec 15 — Cross-domain analysis config. */
+  crossDomain?: CrossDomainConfig;
   // Analyzer-specific configurations
   analyzerOptions?: Record<string, any>;
 }
@@ -902,7 +904,7 @@ export interface SchemaUsage {
   tableName: string;
   filePath: string;
   functionName: string;
-  usageType: 'query' | 'insert' | 'update' | 'delete' | 'reference';
+  usageType: 'select' | 'insert' | 'update' | 'delete' | 'create' | 'reference';
   line: number;
   column?: number;
   rawQuery?: string;
@@ -1123,6 +1125,125 @@ export interface GraphStats {
   unresolvedShare: number;
   importNodes: number;
   importEdges: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Spec 15 — Cross-Domain Join Types
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Extracted table reference from ORM adapter (feeds schema_usage). */
+export interface OrmTableReference {
+  tableName: string;
+  usageType: 'select' | 'insert' | 'update' | 'delete' | 'create' | 'reference';
+  filePath: string;
+  functionName?: string;
+  line: number;
+  column?: number;
+  rawQuery?: string;
+  parameters?: string[];
+}
+
+/** ORM adapter contract — same shape as LanguageAdapter registry. */
+export interface OrmAdapter {
+  /** Unique adapter name (e.g. "drizzle", "prisma"). */
+  readonly name: string;
+  /** File globs this adapter handles. */
+  readonly filePatterns: string[];
+  /** Extract table references from source code (query-builder patterns). */
+  extractTableReferences(source: string, filePath: string): OrmTableReference[];
+  /** Extract schema definitions from source code (schema/model declarations). */
+  extractSchemaDefinitions(source: string, filePath: string): SchemaTable[];
+}
+
+/** Config for schema lifecycle detectors (R1). */
+export interface SchemaLifecycleConfig {
+  /** Enable written-never-read detection. Default true. */
+  enableWrittenNeverRead: boolean;
+  /** Enable read-never-written detection. Default true. */
+  enableReadNeverWritten: boolean;
+  /** Enable transaction-boundary risk detection. Default true. */
+  enableTransactionBoundaryRisk: boolean;
+  /** Max distinct tables a function can write before flagging txn-boundary risk. Default 4. */
+  txnTableMax: number;
+}
+
+/** Config for validation-bypass detection (R3). */
+export interface ValidatorBypassConfig {
+  /** User-configured validator function names or "path#name". */
+  validators: string[];
+  /** Minimum share of peer writers that must reach a validator. Default 0.8. */
+  modeShare: number;
+  /** Minimum directory corpus size before detection activates. Default 20. */
+  minCorpus: number;
+  /** BFS depth limit in call graph for validator reach. Default 3. */
+  depth: number;
+}
+
+/** Config for coverage-by-importance (R4). */
+export interface CoverageConfig {
+  /** Glob patterns identifying test files. Default ['**\/*.test.*', '**\/*.spec.*', '**\/__tests__/**']. */
+  testGlobs: string[];
+  /** BFS depth from test files for static-reach coverage. Default 2. */
+  staticReachDepth: number;
+  /** Fraction of top-risk functions to flag when untested. Default 0.1. */
+  topRiskDecile: number;
+}
+
+/** Aggregate config for the cross-domain analyzer (R1+R3+R4). */
+export interface CrossDomainConfig {
+  schemaLifecycle: SchemaLifecycleConfig;
+  validatorBypass: ValidatorBypassConfig;
+  coverage: CoverageConfig;
+}
+
+/** A row in the coverage_data table. */
+export interface CoverageEntry {
+  functionName: string;
+  filePath: string;
+  lineNumber: number;
+  /** Which coverage basis was used. */
+  basis: 'static-reach' | 'measured';
+  /** Whether this function is covered. */
+  covered: boolean;
+  /** For measured coverage: source file path (lcov .info or istanbul JSON). */
+  source?: string;
+  /** When this entry was imported (measured basis only). */
+  importedAt?: string;
+}
+
+/** Coverage report returned by coverage --by-risk (R4). */
+export interface CoverageReport {
+  totalFunctions: number;
+  coveredFunctions: number;
+  coverageRate: number;
+  byRiskDecile: Array<{
+    decile: number;
+    covered: number;
+    total: number;
+    rate: number;
+  }>;
+  untestedTopDecile: Array<{
+    functionName: string;
+    filePath: string;
+    riskScore: number;
+    basis: 'static-reach' | 'measured';
+  }>;
+  /** Whether imported coverage data is stale (older than last full sync). */
+  staleImport: boolean;
+}
+
+/** Validator set entry for config inspectability (R3). */
+export interface ValidatorEntry {
+  /** Function name or "file#name". */
+  name: string;
+  /** How this validator was discovered. */
+  basis: 'user-config' | 'provenance' | 'heuristic-match';
+  /** For provenance basis: the package that sourced it (e.g. "zod"). */
+  source?: string;
+  /** For heuristic-match basis: confidence is "downgraded". */
+  confidence?: 'high' | 'downgraded';
+  /** File path where this validator is defined. */
+  filePath?: string;
 }
 
 // Re-export whitelist types
