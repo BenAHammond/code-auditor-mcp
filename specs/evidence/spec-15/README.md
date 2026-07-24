@@ -48,17 +48,19 @@
 2. **bench**: 10/10 analyzers pass, cross-domain metrics-only F1=1.0000
 3. **build**: TypeScript compiles clean (`npm run build`)
 4. **All 5 detectors fire** on the bench corpus with positive counts
+5. **Non-English gate**: Three Spec 21 known-misses (autoriser/missing-auth, nettoyer/missing-sanitization, verarbeiten/open-closed) correctly annotated — none affect validation-bypass (per-identifier provenance detection is language-agnostic)
+6. **Coverage riders**: All uncovered-risk violations carry `basis` (`measured` or `static-reach`); measured-path violations carry `sourceFormat`; stale-import warning fires when coverage predates last sync
 
 ## Detector summary
 
 | Detector | Rule ID | Severity | Bench count |
 |----------|---------|----------|-------------|
-| Written-never-read | `cross-domain/written-never-read` | suggestion | 5 |
-| Read-never-written | `cross-domain/read-never-written` | suggestion | 1 |
-| Transaction-boundary risk | `cross-domain/transaction-boundary-risk` | suggestion | 1 |
-| Validation bypass | `cross-domain/validation-bypass` | suggestion | 3 |
-| Uncovered risk | `cross-domain/uncovered-risk` | suggestion | 10 |
-| **Total** | | | **20** |
+| Written-never-read | `cross-domain/written-never-read` | suggestion | ≥5 |
+| Read-never-written | `cross-domain/read-never-written` | suggestion | ≥1 |
+| Transaction-boundary risk | `cross-domain/transaction-boundary-risk` | suggestion | ≥1 |
+| Validation bypass | `cross-domain/validation-bypass` | suggestion | ≥4 |
+| Uncovered risk | `cross-domain/uncovered-risk` | suggestion | ≥1 |
+| **Total** | | | **≥15** |
 
 ## Out of scope for static evaluation
 

@@ -384,20 +384,20 @@ Three detectors query `schema_usage` joined with `graph_cache` and `functions`:
 
 **Detector** (`cross-domain/validation-bypass`): Flags functions that write data without reaching a validator, when their directory peers typically do.
 
-**Primary — provenance-based**: Uses Spec 21's `VALIDATOR_PACKAGES` (zod, joi, ajv, valibot, class-validator, yup, typebox, superstruct, io-ts) to identify validators via import provenance. All exported functions from provenanced files are treated as validators.
+**Primary — provenance-based**: Uses Spec 21's `VALIDATOR_PACKAGES` (zod, joi, ajv, valibot, class-validator, yup, typebox, superstruct, io-ts) to identify validators via import provenance. Per-identifier detection: a function is a validator iff `isValidatorProvenanced()` holds for usage *inside its body* (its own `used_imports` include a validator package), not merely because it cohabits a zod-importing file.
 
 **Conjunctive fallback**: Only when zero provenance-detected validators exist AND no user config is provided → `name GLOB 'validate*' OR name GLOB 'assert*'` heuristics with downgraded confidence.
 
-**Algorithm**: Groups writers (functions with INSERT/UPDATE/CREATE in `schema_usage`) by directory. For each directory with ≥ `minCorpus` (default 3) writers, BFS depth ≤ `depth` (default 3) through `graph_cache` call edges. If ≥ `modeShare` (default 0.5) of writers reach a validator, flags uncovered writers.
+**Algorithm**: Groups writers (functions with INSERT/UPDATE/CREATE in `schema_usage`) by directory. For each directory with ≥ `minCorpus` (default 20) writers, BFS depth ≤ `depth` (default 3) through `graph_cache` call edges. If ≥ `modeShare` (default 0.8) of writers reach a validator, flags uncovered writers.
 
-**Config** (`validatorBypass` in `CrossDomainConfig`): `modeShare` (0.5), `minCorpus` (3), `depth` (3).
+**Config** (`validatorBypass` in `CrossDomainConfig`): `modeShare` (0.8), `minCorpus` (20), `depth` (3).
 
 #### R4: Coverage by Importance
 
 - **New module `src/coverage/`** — LCOV (`.info`) and Istanbul (JSON) coverage format parsers with auto-detection
 - **`coverage_data` table**: `(file_path, function_name, line_pct, branch_pct, statement_pct, function_pct, uncovered_lines, source_format)` — same schema as `hotspot_scores` with coverage columns
 - **`code-audit coverage`** CLI: `coverage --import <path>` (auto-detect format, store in SQLite), `coverage --by-risk [--json]` (show coverage gaps ranked by hotspot score)
-- **Detector** (`cross-domain/uncovered-risk`): Exported functions in the top `topRiskDecile` (default 0.5) of hotspot scores with no measured coverage → flag at `suggestion` severity. **Static-reach fallback**: When no `coverage_data` exists, checks if each high-risk function is imported by any test file (2-hop transitive caller search via `graph_cache`).
+- **Detector** (`cross-domain/uncovered-risk`): Exported functions in the top `topRiskDecile` (default 0.1) of hotspot scores with no measured coverage → flag at `suggestion` severity. Coverage findings include `source_format` and `basis` (measured or static-reach) on every output surface. Stale coverage imports (>7 days since last import) produce a warning. **Static-reach fallback**: When no `coverage_data` exists, checks if each high-risk function is reachable from any test file via call-graph BFS.
 
 #### R5: Bench Fixtures
 

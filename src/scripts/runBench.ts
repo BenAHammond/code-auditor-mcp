@@ -349,8 +349,8 @@ function seedDivergingClonesData(rawDb: any, files: string[]): void {
  *   - read-never-written (1): audit_log
  *   - transaction-boundary-risk (1): processOrder writes orders + 3 callees (updateInventory→inventory,
  *     processPayment→payments, sendNotification→notifications) = 4 ≥ txnTableMax
- *   - validation-bypass (1): createUnvalidatedOrder (writer without validator in validator-dense src/)
- *   - uncovered-risk (1): highRiskUntested (top decile risk, no coverage_data)
+ *   - validation-bypass (4): createUnvalidatedOrder + processPayment + sendNotification + formatOrder (writers reaching no validator; formatOrder is the poison case — reaches formatHelper which cohabits validators.ts but has no zod in its own usedImports)
+ *   - uncovered-risk (10): high-risk functions without test coverage via static-reach fallback
  */
 function seedCrossDomainData(rawDb: any, _files: string[]): void {
   const hash = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 16);
@@ -369,6 +369,7 @@ function seedCrossDomainData(rawDb: any, _files: string[]): void {
   insertFn.run(5, 'sendNotification',      'src/orders/orders.ts', 24, 1, 0, null, hash('orders:sendNotification'));
   insertFn.run(6, 'createValidatedOrder',  'src/orders/orders.ts', 28, 2, 1, null, hash('orders:createValidatedOrder'));
   insertFn.run(7, 'createUnvalidatedOrder','src/orders/orders.ts', 33, 1, 1, null, hash('orders:createUnvalidatedOrder'));
+  insertFn.run(18,'formatOrder',            'src/orders/orders.ts', 38, 1, 1, JSON.stringify(['../validators/validators']), hash('orders:formatOrder')); // poison: calls formatHelper, not a real validator
   // src/audit.ts
   insertFn.run(8, 'readAuditLog',          'src/audit/audit.ts',   4,  1, 1, null, hash('audit:readAuditLog'));
   // src/users.ts
@@ -378,6 +379,7 @@ function seedCrossDomainData(rawDb: any, _files: string[]): void {
   // src/validators.ts
   insertFn.run(11,'validateOrder',         'src/validators/validators.ts',12,1, 1, JSON.stringify(['zod']), hash('validators:validateOrder'));
   insertFn.run(12,'validatePayment',       'src/validators/validators.ts',22,1, 1, JSON.stringify(['zod']), hash('validators:validatePayment'));
+  insertFn.run(17,'formatHelper',          'src/validators/validators.ts',35,1, 1, null, hash('validators:formatHelper')); // poison: exported, no zod in usedImports
   // src/risk.ts
   insertFn.run(13,'highRiskTested',        'src/risk/risk.ts',     9, 3, 1, null, hash('risk:highRiskTested'));
   insertFn.run(14,'highRiskUntested',      'src/risk/risk.ts',    19, 3, 1, null, hash('risk:highRiskUntested'));
@@ -399,6 +401,8 @@ function seedCrossDomainData(rawDb: any, _files: string[]): void {
   insertCall.run(3, 'validateOrder');
   // createValidatedOrder calls validateOrder
   insertCall.run(6, 'validateOrder');
+  // formatOrder calls formatHelper (poison: non-validator cohabitant)
+  insertCall.run(18, 'formatHelper');
   // test functions call production functions
   insertCall.run(15, 'saveOrder');
   insertCall.run(16, 'createValidatedOrder');
@@ -419,6 +423,8 @@ function seedCrossDomainData(rawDb: any, _files: string[]): void {
   insertCache.run('call', '2', '11', 1);  // processOrder → validateOrder
   insertCache.run('call', '3', '11', 1);  // updateInventory → validateOrder
   insertCache.run('call', '6', '11', 1);  // createValidatedOrder → validateOrder
+  // formatOrder → formatHelper (poison: non-validator cohabitant in validators.ts)
+  insertCache.run('call', '18', '17', 1);  // formatOrder → formatHelper (not a real validator)
   // test functions → production functions (for uncovered-risk static-reach fallback)
   insertCache.run('call', '15', '1', 1);  // test:saveOrder → saveOrder
   insertCache.run('call', '16', '6', 1);  // test:validatedOrder → createValidatedOrder
@@ -435,6 +441,7 @@ function seedCrossDomainData(rawDb: any, _files: string[]): void {
   insertUsage.run('orders',       'src/orders/orders.ts',    'processOrder',           'update', 12, 5,  null, null);
   insertUsage.run('orders',       'src/orders/orders.ts',    'createValidatedOrder',   'insert', 30, 3,  null, null);
   insertUsage.run('orders',       'src/orders/orders.ts',    'createUnvalidatedOrder', 'insert', 35, 3,  null, null);
+  insertUsage.run('orders',       'src/orders/orders.ts',    'formatOrder',            'insert', 40, 3,  null, null); // poison: writer reaches only non-validator
   insertUsage.run('inventory',    'src/orders/orders.ts',    'updateInventory',        'update', 17, 5,  null, null);
   insertUsage.run('payments',     'src/orders/orders.ts',    'processPayment',         'insert', 21, 5,  null, null);
   insertUsage.run('notifications','src/orders/orders.ts',    'sendNotification',       'insert', 25, 5,  null, null);

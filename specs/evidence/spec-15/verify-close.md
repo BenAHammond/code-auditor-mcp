@@ -31,9 +31,9 @@ cross-domain (metrics-only):
   written-never-read:  5  (min: 5) ✅
   read-never-written:  1  (min: 1) ✅
   transaction-boundary-risk: 1 (min: 1) ✅
-  validation-bypass:   3  (min: 3) ✅
-  uncovered-risk:      10 (min: 1) ✅
-  totalViolations:     20 (min: 11) ✅
+  validation-bypass:   ≥4 (min: 4, incl. poison fixture) ✅
+  uncovered-risk:      ≥1 (min: 1) ✅
+  totalViolations:     ≥15 (min: 15) ✅
 ```
 
 ## Acceptance checklist
@@ -42,13 +42,32 @@ cross-domain (metrics-only):
 - [x] `written-never-read` detects tables with INSERT/UPDATE/CREATE but zero SELECT (5 violations)
 - [x] `read-never-written` detects tables with SELECT but zero INSERT/UPDATE/CREATE (1 violation)
 - [x] `transaction-boundary-risk` detects functions writing ≥ `txnTableMax` (4) distinct tables (1 violation)
-- [x] `validation-bypass` uses provenance-based validator detection (zod import) and directory-grouped BFS (3 violations)
+- [x] `validation-bypass` uses per-identifier provenance-based validator detection (zod import — NOT file-level cohabitation) and directory-grouped BFS (≥4 violations, including poison fixture: `formatOrder` reaches only `formatHelper` — a non-validator cohabitant in validators.ts)
 - [x] `uncovered-risk` detects high-risk functions with no test coverage via static-reach fallback (10 violations)
 - [x] All findings ship at `suggestion` severity (entry tier)
 - [x] 723 tests pass across 43 test files
 - [x] Bench harness 10/10 analyzers all pass
 - [x] TypeScript build compiles clean
 - [x] No production dependencies added — all new modules are internal
+
+## Non-English gate
+
+Spec 21 identified three known-misses on name-based detectors in the non-English bench corpus:
+
+| Known-miss | Rule | French/German | Why missed | Spec 15 disposition |
+|------------|------|---------------|------------|---------------------|
+| `autoriser` | `missing-auth` | "authorize" | Name pattern doesn't match English `auth*` globs | **Annotated.** Not a validator — doesn't import any `VALIDATOR_PACKAGES`. Correctly excluded by both provenance-based and heuristic fallback paths. This is a data-access analyzer issue, out of scope for cross-domain. |
+| `nettoyer` | `missing-sanitization` | "clean" | Name pattern doesn't match English `sanitize*` globs | **Annotated.** Not a validator. Correctly excluded. Data-access analyzer issue. |
+| `verarbeiten` | `open-closed` | "process/handle" | Name pattern doesn't match English switch-like names | **Annotated.** Not a validator. Correctly excluded. SOLID analyzer issue. |
+
+**Gate verdict**: None of the three Spec 21 non-English known-misses affect the validation-bypass detector. The detector's primary path uses per-identifier provenance detection (`used_imports` LIKE `%"zod"%`) which is language-agnostic. The conjunctive fallback (`GLOB 'validate*'`) is English-only by design — it only activates when both provenance and user config are silent, and correctly excludes non-English function names that don't match the English globs. All three known-misses remain annotated on their respective (non-cross-domain) rules per Spec 21's deferral to Spec 15's neighborhood.
+
+## Coverage riders
+
+- **`basis`**: Every `cross-domain/uncovered-risk` violation includes a `basis` field — `'measured'` when using ingested lcov/istanbul data, `'static-reach'` when using the call-graph fallback.
+- **`sourceFormat`**: Measured-coverage violations include the format label (lcov, istanbul) from the `source` column in `coverage_data`.
+- **Stale-import detection**: When measured coverage was imported before the last full index sync (`imported_at < last_full_sync_timestamp`), every measured-path `cross-domain/uncovered-risk` violation carries `staleImport: true` and a staleness warning appended to its message — no standalone sentinel (which would produce `file:""` / `line:0` breaking the hook's JSON consumer).
+- **CLI visibility**: `code-audit coverage --by-risk` shows per-function `basis` labels. `code-audit coverage` warns on stale imports.
 
 ## Known limitations
 

@@ -2,7 +2,7 @@
  * Orders module — writes to orders, inventory, payments, notifications tables.
  * Provides both validated and unvalidated write paths.
  */
-import { validateOrder } from '../validators/validators';
+import { validateOrder, formatHelper } from '../validators/validators';
 
 export function saveOrder(data: Record<string, unknown>): void {
   // INSERT INTO orders ...
@@ -37,4 +37,9 @@ export function createValidatedOrder(data: Record<string, unknown>): void {
 
 export function createUnvalidatedOrder(data: Record<string, unknown>): void {
   // INSERT INTO orders ... (no validation)
+}
+
+export function formatOrder(amount: number): string {
+  // INSERT INTO orders ...
+  return formatHelper(amount); // reaches only the non-validator helper
 }

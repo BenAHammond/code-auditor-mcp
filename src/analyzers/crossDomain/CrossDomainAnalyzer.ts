@@ -409,33 +409,23 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       }
     }
 
-    // 1b. Provenanced validators: exported functions from files that import
-    //     any VALIDATOR_PACKAGES module.
+    // 1b. Provenanced validators: exported functions whose OWN used_imports
+    //     includes a validator package. Per-identifier check — a function in
+    //     a zod-importing file only qualifies if its own body uses the
+    //     validator package, not just because it cohabits the file.
     if (validatorIds.size === 0) {
       const likeClauses = [...VALIDATOR_PACKAGES].map(() => 'used_imports LIKE ?');
       const likeParams = [...VALIDATOR_PACKAGES].map((pkg) => `%"${pkg}"%`);
 
-      const validatorFiles = rawDb
+      const validatorFuncs = rawDb
         .prepare(
-          `SELECT DISTINCT file_path FROM functions
+          `SELECT id FROM functions
            WHERE used_imports IS NOT NULL
              AND (${likeClauses.join(' OR ')})
              AND is_exported = 1`,
         )
-        .all(...likeParams) as Array<{ file_path: string }>;
-
-      if (validatorFiles.length > 0) {
-        const fileClauses = validatorFiles.map(() => 'file_path = ?');
-        const fileParams = validatorFiles.map((f) => f.file_path);
-        const exportedFuncs = rawDb
-          .prepare(
-            `SELECT id FROM functions
-             WHERE (${fileClauses.join(' OR ')})
-               AND is_exported = 1`,
-          )
-          .all(...fileParams) as Array<{ id: number }>;
-        for (const f of exportedFuncs) validatorIds.add(f.id);
-      }
+        .all(...likeParams) as Array<{ id: number }>;
+      for (const f of validatorFuncs) validatorIds.add(f.id);
     }
 
     // 1c. Heuristic fallback: name-based matching (only when provenance
@@ -598,6 +588,27 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       // Use measured coverage data from lcov/istanbul imports
       const untested = db.getUntestedTopDecile(topRiskDecile);
 
+      // Determine source format from existing coverage entries
+      const sourceRow = rawDb
+        .prepare(
+          "SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1",
+        )
+        .get() as { source: string | null; imported_at: string | null } | undefined;
+      const sourceFormat = sourceRow?.source ?? 'unknown';
+      const importedAt = sourceRow?.imported_at ?? null;
+
+      // Stale-import detection: measured coverage predates last full index sync
+      let staleWarning: string | null = null;
+      if (importedAt) {
+        const lastSync = db.getMeta?.('last_full_sync_timestamp') ?? null;
+        if (lastSync && importedAt < lastSync) {
+          staleWarning =
+            ` — WARNING: this coverage data may be stale (imported ${importedAt}, ` +
+            `last index sync was ${lastSync}). ` +
+            `Re-import with 'code-audit coverage --import <path>' for accurate results.`;
+        }
+      }
+
       for (const fn of untested) {
         violations.push({
           file: fn.filePath,
@@ -606,10 +617,14 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
           severity: 'suggestion',
           message:
             `Exported function '${fn.functionName}' (risk ${fn.riskScore.toFixed(3)}) has no measured test coverage. ` +
-            `Top imported functions should have test coverage. Import coverage data with 'code-audit coverage --import <path>'.`,
+            `Top imported functions should have test coverage. Import coverage data with 'code-audit coverage --import <path>'.` +
+            (staleWarning ?? ''),
           rule: 'cross-domain/uncovered-risk',
           analyzer: this.name,
           functionName: fn.functionName,
+          basis: fn.basis,
+          sourceFormat,
+          ...(staleWarning ? { staleImport: true } : {}),
         });
       }
     } else {
@@ -727,6 +742,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
             rule: 'cross-domain/uncovered-risk',
             analyzer: this.name,
             functionName: fn.name,
+            basis: 'static-reach',
           });
         }
       }
