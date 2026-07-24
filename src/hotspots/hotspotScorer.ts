@@ -160,7 +160,7 @@ export function computeHotspots(rawDb: any): HotspotEntry[] {
   // ── Write to database ────────────────────────────────────────────────
 
   const insert = rawDb.prepare(`
-    INSERT INTO hotspot_scores
+    INSERT OR REPLACE INTO hotspot_scores
       (target, type, score, churn_pct, complexity_pct, commit_count,
        distinct_authors, dominant_author, dominant_author_share,
        bus_factor_risk, complexity)

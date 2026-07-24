@@ -165,7 +165,9 @@ function extractFileChurn(targetPath: string, windowMonths: number): Map<string,
 
       const added = parts[0] === '-' ? 0 : parseInt(parts[0], 10) || 0;
       const deleted = parts[1] === '-' ? 0 : parseInt(parts[1], 10) || 0;
-      const file = parts[2];
+      // git log --numstat produces repo-relative paths; resolve to absolute
+      // so they match functions.file_path which stores absolute paths.
+      const file = path.resolve(targetPath, parts[2]);
 
       let entry = result.get(file);
       if (!entry) {

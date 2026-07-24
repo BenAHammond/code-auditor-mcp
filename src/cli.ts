@@ -1401,8 +1401,11 @@ program
         try {
           extractChurn(rawDb, options.path, { churnWindowMonths: 12 });
           computeHotspots(rawDb);
-        } catch {
-          // Graceful: no git repo or extraction failure
+        } catch (err) {
+          // Graceful: no git repo or extraction failure.
+          // Warn so the agent/user knows hotspots are unavailable.
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[code-audit] On-demand churn extraction failed: ${message}`);
         }
       }
 

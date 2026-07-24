@@ -1853,6 +1853,7 @@ export class CodeIndexDB {
       this.db.prepare('DELETE FROM hotspot_scores').run();
       this.db.prepare('DELETE FROM dry_pair_history').run();
       this.db.prepare('DELETE FROM graph_cache').run();
+      this.db.prepare("DELETE FROM meta WHERE key IN ('churn_hash', 'conventions_hash', 'style_last_sync')").run();
       // Preserve: project_tasks, analyzer_configs, whitelist, findings_ledger_runs, findings_ledger_findings
     })();
   }
@@ -1999,8 +2000,11 @@ export class CodeIndexDB {
         extractChurn(this.db, projectRoot, { churnWindowMonths: 12 });
         // Compute hotspot scores from churn data
         computeHotspots(this.db);
-      } catch {
-        // Churn extraction failure is non-fatal — continue without hotspot data
+      } catch (err) {
+        // Churn extraction failure is non-fatal — continue without hotspot data.
+        // Log the error so the agent/user knows hotspots are unavailable.
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[code-audit] Churn/hotspot extraction failed (non-fatal): ${message}`);
       }
     }
 

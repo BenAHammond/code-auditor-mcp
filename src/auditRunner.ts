@@ -562,6 +562,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     if (enabledAnalyzers.includes('styles')) {
       try {
         const styleDb = CodeIndexDB.getInstance();
+        await styleDb.initialize();
         const styleSyncResult = await syncStyleIndex(
           styleDb.rawDb,
           files,
@@ -989,6 +990,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         const indexDb = CodeIndexDB.getInstance();
         await indexDb.initialize();
         const violations = Object.values(orderedAnalyzerResults).flatMap(ar => ar.violations);
+        // Hook-contract guard: no violation may carry an empty file path or line 0.
+        // A sentinel violation with file:'' broke the Claude Code hook's JSON consumer
+        // (Spec 15 regression). This guard is permanent — every analyzer code path
+        // must produce properly anchored violations.
+        validateHookContract(violations);
         const scopeStr = Array.isArray(scope) ? `files:${scope.length}` : (scope ?? 'all');
         return writeAuditToLedger(
           indexDb.rawDb,
@@ -1222,6 +1228,44 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
     violationsByCategory,
     topIssues
   };
+}
+
+/**
+ * Hook-contract regression guard.
+ *
+ * Every violation must carry a non-empty `file` path. A sentinel violation with
+ * `file: ''` (Spec 15 regression, commit 3419ed0) broke the Claude Code hook's
+ * JSON consumer, which expects every violation to anchor to a real file.
+ *
+ * When `line` is present, it must be > 0 — a zero line means the analyzer
+ * failed to locate the finding and shipped an unactionable anchor.
+ *
+ * Contract violations are logged as warnings and dropped from the pipeline
+ * (they are never written to the ledger or surfaced to the hook).
+ *
+ * This guard is permanent — no analyzer code path may produce violations with
+ * empty file paths or line 0.
+ */
+function validateHookContract(violations: Violation[]): void {
+  for (let i = violations.length - 1; i >= 0; i--) {
+    const v = violations[i];
+    const problems: string[] = [];
+    if (!v.file || v.file.trim() === '') {
+      problems.push('empty file path');
+    }
+    if (v.line !== undefined && v.line === 0) {
+      problems.push('line=0 (unactionable anchor)');
+    }
+    if (problems.length > 0) {
+      console.warn(
+        `[hook-contract] Dropping violation from analyzer '${v.analyzer ?? 'unknown'}': ` +
+        `${problems.join(', ')}. Rule: ${v.rule ?? 'unknown'}. ` +
+        `Message: "${v.message.slice(0, 120)}". ` +
+        `This is a bug in the analyzer — violations must anchor to real files with valid lines.`
+      );
+      violations.splice(i, 1);
+    }
+  }
 }
 
 /**
