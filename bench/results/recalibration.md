@@ -7,6 +7,30 @@
 - judged-true < 0.50 → disable by default
 - Rules with < 10 judged findings (T+F) exempt from mechanical recalibration (insufficient sample)
 
+## Methodological Amendments (Ratified 2026-07-20)
+
+The audit identified three defects in the recalibration *method*, not in any single pipeline implementation. These amendments are binding on every future recalibration run — including Spec 15 step 21 — and are the most important methodology finding of the series.
+
+### Amendment 1: Three-way verdicts are load-bearing
+
+**Disable is about falsity; tier is about usefulness.**
+
+TBU (true-but-useless) findings are precision-true: the detector correctly identified the pattern. They contribute to keeping a rule alive — what they argue for is lower tier or path-profile capping, never deletion. A rule disables only when **false-positive share** exceeds 0.50 (i.e., `false / (true + TBU + false) > 0.50`, not `false / (true + false) > 0.50`).
+
+The judged-true formula becomes: `(true + TBU) / (true + TBU + false)`. TBU findings are excluded from the numerator only for promotion calculations, not for disable calculations.
+
+The loop-query N+1s were real patterns that didn't matter *on local SQLite*. Context-relevance is what Spec 20 profiles encode, not what existence decisions consume.
+
+### Amendment 2: Single-corpus guard
+
+**No disable and no promotion into blocking from a single corpus.** Minimum two corpora. Self-audit can never be the sole basis for rules whose subject matter the tool's own source contains (meta-contamination rule — a SQL-pattern-matching tool auditing its own SQL-pattern-matching source is the one codebase on earth guaranteed to confuse those detectors).
+
+The retained promotions (`solid/class-size`, `dependency-inversion`) stand because they're warning-tier and unaffected by the contamination mechanism. Nothing reaches **critical** under single-corpus evidence, ever.
+
+### Amendment 3: Fixture exclusion
+
+**Fixture and test paths are excluded from triage sampling.** The rubric's "test fixtures are false positives by definition" rule is correct for corpus triage but creates a structural perversion: better bench coverage → lower judged-true → higher chance of being disabled. Test fixtures are calibration artifacts, not production findings — exclude them from the judged-true denominator alongside TBU.
+
 ## Recalibration Table
 
 > **⚠️ AUDITED 2026-07-20 — original recalibration superseded.**
@@ -24,8 +48,8 @@
 
 | Rule | n | Precision | Judged-true | Current | Corrected | Rationale |
 |------|---|-----------|-------------|---------|-----------|-----------|
-| `missing-org-filter` | 50 | 0.00 | 0.00 | warning | **suggestion** | Domain-mismatch confirmed — genuinely useless on non-SaaS. But "off" hides it from users who DO have multi-tenant apps. Demote to suggestion so it's visible but non-blocking. |
-| `unknown-table` | 50 | 0.00 | 0.00 | warning | **suggestion** | Requires user-provided schema. Demote to suggestion; document config option. |
+| `missing-org-filter` | 50 | 0.00 | 0.00 | warning | **suggestion** (judgment pending) | Domain-mismatch confirmed on single corpus. Demotion to suggestion (not off) is the conservative choice — visible but non-blocking for users with multi-tenant apps. **Judgment pending two-corpus data** per Amendment 2; may return to warning with external evidence. |
+| `unknown-table` | 50 | 0.00 | 0.00 | warning | **suggestion** (judgment pending) | Requires user-provided schema. Demotion to suggestion (not off) is the conservative choice. **Judgment pending two-corpus data** per Amendment 2; may return to warning with external evidence. |
 
 ### Rules Restored to Original Severity (pipeline defect — self-audit ≠ global)
 
@@ -103,9 +127,10 @@ severityOverrides: {
 
 ## Limitations
 
+- **Three amendments ratified** (see top of this document): future recalibration runs — including Spec 15 step 21 — must apply the amended method, not the original Spec 11 R5 formula. TBU findings keep rules alive; single-corpus guard prevents disables and promotion-to-blocking; fixtures are excluded from sampling.
 - **Single corpus:** The original recalibration was based on one corpus (a TypeScript CLI tool). Rules that appeared weak (especially `loop-query`, `sql-injection-risk`) showed real utility on external corpora — the 27-sample Gin-like triage measured loop-query at 50% judged-true. Multi-corpus validation is required before disabling any rule globally.
-- **TBU cliff:** The judged-true formula `true / (true + false)` excludes TBU findings from both numerator and denominator. Real findings classified as TBU contribute nothing to keeping a rule alive. The 10 real loop-query N+1 findings (TBU on local SQLite, true on PostgreSQL/MySQL) counted as zero.
+- **TBU cliff:** The original judged-true formula `true / (true + false)` excluded TBU findings from both numerator and denominator. Real findings classified as TBU contributed nothing to keeping a rule alive. The 10 real loop-query N+1 findings (TBU on local SQLite, true on PostgreSQL/MySQL) counted as zero. **Fixed by Amendment 1.**
 - **Sampling error:** For rules with < 50 total findings, the sample is exhaustive but small. The 10-finding minimum guard prevents overfitting to tiny samples.
 - **"Disabled" means off-by-default:** Users can re-enable any rule via `severityOverrides` in their `.codeauditor.json`.
-- **No two-tier promotion:** Rules are promoted at most one severity tier (e.g., suggestion→warning, not suggestion→critical). Multi-tier jumps require multi-corpus validation.
+- **No two-tier promotion:** Rules are promoted at most one severity tier (e.g., suggestion→warning, not suggestion→critical). Multi-tier jumps require multi-corpus validation. **Strengthened by Amendment 2: nothing reaches critical under single-corpus evidence.**
 - **Heuristic cap:** Length/parameter/count heuristics (e.g., `single-responsibility`) should not block hooks regardless of precision — promotions are capped at warning.
