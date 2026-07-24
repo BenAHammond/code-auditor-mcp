@@ -355,7 +355,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
 
         violations.push({
           file: fp,
-          line: 0, // import line not parsed
+          line: imp.line,
           column: 1,
           severity: 'suggestion',
           message:

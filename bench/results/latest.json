@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-24T17:51:19.042Z",
+  "timestamp": "2026-07-24T19:44:32.545Z",
   "summary": {
     "totalAnalyzers": 13,
     "passed": 13,
@@ -126,7 +126,7 @@
           "matched": true,
           "actualViolation": {
             "file": "src/fixture.ts",
-            "line": 0,
+            "line": 9,
             "column": 1,
             "severity": "suggestion",
             "message": "93% of imports of `lodash` in `src/` use default import — this file uses named (exemplar: src/approved.ts:1)",
@@ -202,7 +202,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "cross-domain": {
       "truePositives": 0,
@@ -221,7 +222,8 @@
       "knownMissDetails": [],
       "warnings": [
         "Metric \"transactionBoundaryRiskCount\" = 0 (< min 1)"
-      ]
+      ],
+      "hookContractViolations": 0
     },
     "data-access": {
       "truePositives": 9,
@@ -454,7 +456,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "diverging-clones": {
       "truePositives": 1,
@@ -502,7 +505,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "documentation": {
       "truePositives": 1,
@@ -558,7 +562,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "dry": {
       "truePositives": 1,
@@ -618,7 +623,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "graph": {
       "truePositives": 0,
@@ -637,7 +643,8 @@
       "knownMissDetails": [],
       "warnings": [
         "Metric \"abstractness\" = 0 (< min 0.01)"
-      ]
+      ],
+      "hookContractViolations": 0
     },
     "invariants": {
       "truePositives": 1,
@@ -694,7 +701,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "non-english": {
       "truePositives": 22,
@@ -1225,7 +1233,8 @@
           "matched": false
         }
       ],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "react": {
       "truePositives": 1,
@@ -1284,7 +1293,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "schema": {
       "truePositives": 3,
@@ -1376,7 +1386,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "solid": {
       "truePositives": 2,
@@ -1468,7 +1479,8 @@
         }
       ],
       "knownMissDetails": [],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     },
     "styles": {
       "truePositives": 9,
@@ -1770,7 +1782,8 @@
           "matched": false
         }
       ],
-      "warnings": []
+      "warnings": [],
+      "hookContractViolations": 0
     }
   },
   "baselineComparison": {

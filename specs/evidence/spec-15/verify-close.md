@@ -56,9 +56,9 @@ Spec 21 identified three known-misses on name-based detectors in the non-English
 
 | Known-miss | Rule | French/German | Why missed | Spec 15 disposition |
 |------------|------|---------------|------------|---------------------|
-| `autoriser` | `missing-auth` | "authorize" | Name pattern doesn't match English `auth*` globs | **Annotated.** Not a validator — doesn't import any `VALIDATOR_PACKAGES`. Correctly excluded by both provenance-based and heuristic fallback paths. This is a data-access analyzer issue, out of scope for cross-domain. |
-| `nettoyer` | `missing-sanitization` | "clean" | Name pattern doesn't match English `sanitize*` globs | **Annotated.** Not a validator. Correctly excluded. Data-access analyzer issue. |
-| `verarbeiten` | `open-closed` | "process/handle" | Name pattern doesn't match English switch-like names | **Annotated.** Not a validator. Correctly excluded. SOLID analyzer issue. |
+| `autoriser` | `missing-auth` | "authorize" | Name pattern doesn't match English `auth*` globs | **Annotated.** Not a validator — doesn't import any `VALIDATOR_PACKAGES`. Correctly excluded by both provenance-based and heuristic fallback paths. Security-role classification via framework provenance not yet implemented; Spec 21 P1 debt, carried in trueRecall. |
+| `nettoyer` | `missing-sanitization` | "clean" | Name pattern doesn't match English `sanitize*` globs | **Annotated.** Not a validator. Correctly excluded. Security-role classification via framework provenance not yet implemented; Spec 21 P1 debt, carried in trueRecall. |
+| `verarbeiten` | `open-closed` | "process/handle" | Name pattern doesn't match English switch-like names | **Annotated.** Not a validator. Correctly excluded. Security-role classification via framework provenance not yet implemented; Spec 21 P1 debt, carried in trueRecall. |
 
 **Gate verdict**: None of the three Spec 21 non-English known-misses affect the validation-bypass detector. The detector's primary path uses per-identifier provenance detection (`used_imports` LIKE `%"zod"%`) which is language-agnostic. The conjunctive fallback (`GLOB 'validate*'`) is English-only by design — it only activates when both provenance and user config are silent, and correctly excludes non-English function names that don't match the English globs. All three known-misses remain annotated on their respective (non-cross-domain) rules per Spec 21's deferral to Spec 15's neighborhood.
 

@@ -79,18 +79,21 @@ export function detectCase(name: string): string | null {
  */
 export function parseFileImports(
   content: string,
-): Array<{ source: string; localNames: string[]; form: 'default' | 'named' | 'namespace' | 'side-effect' | 'require' }> {
+): Array<{ source: string; localNames: string[]; form: 'default' | 'named' | 'namespace' | 'side-effect' | 'require'; line: number }> {
   const results: Array<{
     source: string;
     localNames: string[];
     form: 'default' | 'named' | 'namespace' | 'side-effect' | 'require';
+    line: number;
   }> = [];
 
   const lines = content.split('\n');
   let multiLineBuf: string | null = null;
+  let multiLineStart: number = 0;
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i].trim();
+    const lineNum = i + 1;
 
     // Skip comments and empty lines
     if (!line || line.startsWith('//') || line.startsWith('/*') || line.startsWith('*')) continue;
@@ -109,20 +112,24 @@ export function parseFileImports(
     // Detect multi-line import start: "import {" with no closing "}" and no "from" yet
     if (line.startsWith('import') && line.includes('{') && !line.includes('}') && !line.includes('from')) {
       multiLineBuf = line;
+      multiLineStart = lineNum;
       continue;
     }
+
+    const effectiveLine = multiLineStart > 0 ? multiLineStart : lineNum;
+    multiLineStart = 0; // reset after use
 
     // import 'source' or import "source" (side-effect)
     const sideEffectMatch = line.match(/^import\s+['"]([^'"]+)['"]\s*;?\s*$/);
     if (sideEffectMatch) {
-      results.push({ source: sideEffectMatch[1], localNames: [], form: 'side-effect' });
+      results.push({ source: sideEffectMatch[1], localNames: [], form: 'side-effect', line: effectiveLine });
       continue;
     }
 
     // import * as Name from 'source' (namespace)
     const nsMatch = line.match(/^import\s+\*\s+as\s+(\w+)\s+from\s+['"]([^'"]+)['"]/);
     if (nsMatch) {
-      results.push({ source: nsMatch[2], localNames: [nsMatch[1]], form: 'namespace' });
+      results.push({ source: nsMatch[2], localNames: [nsMatch[1]], form: 'namespace', line: effectiveLine });
       continue;
     }
 
@@ -149,7 +156,7 @@ export function parseFileImports(
         }).filter(Boolean);
         localNames.push(...resolved);
       }
-      results.push({ source: defaultMatch[2], localNames, form: 'default' });
+      results.push({ source: defaultMatch[2], localNames, form: 'default', line: effectiveLine });
       continue;
     }
 
@@ -164,7 +171,7 @@ export function parseFileImports(
           return asMatch ? asMatch[2] : trimmed;
         })
         .filter(Boolean);
-      results.push({ source: namedMatch[2], localNames: names, form: 'named' });
+      results.push({ source: namedMatch[2], localNames: names, form: 'named', line: effectiveLine });
       continue;
     }
 
@@ -173,7 +180,7 @@ export function parseFileImports(
       /(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)/,
     );
     if (reqDefMatch) {
-      results.push({ source: reqDefMatch[2], localNames: [reqDefMatch[1]], form: 'require' });
+      results.push({ source: reqDefMatch[2], localNames: [reqDefMatch[1]], form: 'require', line: effectiveLine });
       continue;
     }
 
@@ -191,7 +198,7 @@ export function parseFileImports(
           return colonMatch ? colonMatch[2] : trimmed;
         })
         .filter(Boolean);
-      results.push({ source: reqNamedMatch[2], localNames: names, form: 'named' });
+      results.push({ source: reqNamedMatch[2], localNames: names, form: 'named', line: effectiveLine });
       continue;
     }
   }

@@ -145,3 +145,23 @@ describe('Bench report structure', () => {
     }
   });
 });
+
+// ── Hook-contract regression guard ──────────────────────────────────────
+
+describe('Hook-contract regression guard', () => {
+  it('zero violations carry empty file path or line 0', () => {
+    // Every violation must anchor to a real file. A sentinel with
+    // file:'' (Spec 15 regression, fixed in commit 3419ed0) broke the
+    // Claude Code hook's JSON consumer. This is permanent.
+    const failures: string[] = [];
+    for (const [name, metrics] of Object.entries(report.analyzers)) {
+      if ((metrics.hookContractViolations ?? 0) > 0) {
+        failures.push(
+          `${name}: ${metrics.hookContractViolations} hook-contract violation(s) — ` +
+          `empty file path or line=0`
+        );
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+});

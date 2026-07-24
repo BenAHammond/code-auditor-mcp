@@ -99,6 +99,8 @@ export interface AnalyzerMetrics {
   details: MatchResult[];
   knownMissDetails: MatchResult[];
   warnings: string[];
+  /** Count of violations that violate the hook contract (empty file path or line 0). Must always be zero. */
+  hookContractViolations: number;
 }
 
 export interface BenchReport {
@@ -961,6 +963,15 @@ function buildAnalyzers(): Record<string, AnalyzerRunner> {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+/**
+ * Hook-contract validation: count violations with empty file paths or line 0.
+ * These always indicate a bug — every violation must anchor to a real file.
+ * Used in the bench runner (production guard is validateHookContract in auditRunner.ts).
+ */
+function countHookContractViolations(violations: Violation[]): number {
+  return violations.filter(v => !v.file || v.file.trim() === '' || v.line === 0).length;
+}
+
 async function collectFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
   const entries = await readdir(dir, { withFileTypes: true, recursive: true });
@@ -1030,6 +1041,10 @@ function matchViolations(
   analyzerName: string,
   knownMisses: ExpectedEntry[] = []
 ): AnalyzerMetrics {
+  // Hook-contract regression guard: no violation may carry an empty file path or line 0.
+  // This is a permanent integration test — every analyzer must produce properly anchored violations.
+  const hookContractViolations = violations.filter(v => !v.file || v.file.trim() === '' || v.line === 0).length;
+
   const nearMissSet = new Set(nearMissFiles);
 
   // Partition violations by whether they're from near-miss files
@@ -1267,6 +1282,7 @@ function matchViolations(
     details,
     knownMissDetails,
     warnings,
+    hookContractViolations,
   };
 }
 
@@ -1382,6 +1398,11 @@ async function runSingleCorpus(
   const config = manifest.config ?? {};
   const result = await runner.analyze(files, config);
 
+  // Hook-contract regression guard: surface contract-violating violations
+  // discovered during bench runs. Production guard is validateHookContract()
+  // in auditRunner.ts — this is the permanent test gate.
+  const contractViolations = countHookContractViolations(result.violations);
+
   // Metrics-only analyzers (e.g. graph): zero violations, real gate is expectedMetrics ranges
   const isMetricsOnly = manifest.kind === 'metrics';
 
@@ -1429,6 +1450,7 @@ async function runSingleCorpus(
       details: [],
       knownMissDetails: [],
       warnings,
+      hookContractViolations: contractViolations,
     };
 
     report.analyzers[manifest.analyzer] = metrics;
@@ -1562,7 +1584,7 @@ function buildSweepParameters(): SweepParameter[] {
     { configKey: 'schemaLifecycle.txnTableMax', label: 'Cross-Domain txnTableMax', analyzer: 'cross-domain',
       shippedDefault: 4, values: [2, 3, 4, 5, 6, 8, 10] },
     { configKey: 'validatorBypass.modeShare', label: 'Cross-Domain modeShare', analyzer: 'cross-domain',
-      shippedDefault: 0.5, values: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95] },
+      shippedDefault: 0.8, values: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95] },
     { configKey: 'validatorBypass.depth', label: 'Cross-Domain depth', analyzer: 'cross-domain',
       shippedDefault: 3, values: [1, 2, 3, 4, 5] },
   ];
