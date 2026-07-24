@@ -36,7 +36,8 @@ export const TYPESCRIPT_EXTENSIONS = ['.ts', '.tsx'];
 export const JAVASCRIPT_EXTENSIONS = ['.js', '.jsx'];
 export const JSON_EXTENSIONS = ['.json'];
 export const GO_EXTENSIONS = ['.go'];
-export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS];
+export const CSS_EXTENSIONS = ['.css', '.scss'];
+export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS, ...CSS_EXTENSIONS];
 
 export interface FileDiscoveryOptions {
   extensions?: string[];

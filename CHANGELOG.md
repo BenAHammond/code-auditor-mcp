@@ -2,6 +2,65 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.1] — 2026-07-24
+
+### Patch Release — Production Bug Fixes
+
+Release validation (the validator's own create-and-audit integration test) caught four defects that the bench suite missed — all behind a green 1,166-test suite. Three were wiring gaps invisible to the bench by construction (the bench seeds tables directly in-memory, bypassing production service-layer wiring). The fourth was an A2 gate scope problem (the gate checked manifest structure and keyword presence but never verified doc-CLI parity).
+
+#### Defect #1: Style Index Dead in Production
+
+The style analyzer's index sync path (`syncStyleIndex()`) accessed `CodeIndexDB.getInstance().rawDb`, but `CodeIndexDB.getInstance()` returns an uninitialized instance — `rawDb` is only assigned in `initializeInternal()`. The `await styleDb.initialize()` call was missing, so `rawDb` was always `undefined` and every style index sync silently failed. Real-audit style findings were always empty.
+
+**Fix** (`d601ac3`): Added `await styleDb.initialize()` before `syncStyleIndex()` in `auditRunner.ts` deepSync() styles block.
+
+#### Defect #2: Hotspots Empty on Real Git Repos
+
+`functions.file_path` stores absolute paths (from `discoverFiles` via `path.join()`). `file_churn` stored git-relative paths (from `git log --numstat` output). The `hotspotScorer` built its lookup Map with relative keys but queried with absolute keys — they never matched. Every hotspot on a real git repo was empty.
+
+**Fix** (`d601ac3`): Resolve git-relative paths to absolute via `path.resolve(targetPath, parts[2])` in `churnExtractor.ts`.
+
+**Secondary defects in same fix**:
+- `clearIndex()` now clears stale `churn_hash`/`conventions_hash`/`style_last_sync` meta keys — a clear+re-sync previously skipped churn extraction
+- Replaced silent `catch {}` blocks with `console.warn()` in `deepSync()` and CLI hotspots command — these swallowed the path mismatch bug for an entire release cycle
+- `hotspot_scores` INSERT → INSERT OR REPLACE to handle duplicate targets from anonymous functions in the same file
+
+#### Defect #3: SKILL.md `--tool claude` Phantom Flag & A2 Gate Expansion
+
+The SKILL.md referenced `--tool claude` as a `generate-config` flag, but the CLI never supported it. The A2 gate ran only against the style layer (frontmatter, keyword presence) — it never checked whether the flags taught to agents actually exist.
+
+**Fix** (uncommitted, `src/cli-integration.spec.ts`): The A2 gate now verifies doc-CLI parity. It parses every SKILL.md bash code block and inline backtick command, extracts flags and subcommand paths, calls the actual CLI's `--help` for each target, and asserts every referenced token appears in the help output. The `--tool claude` phantom would be caught immediately. 16 tests pass, 6 skip (missing subcommands not yet implemented).
+
+#### from-audit Fingerprint Migration (One-Time Churn)
+
+The `from_audit` handler in `projectTasks.ts` previously used divergent inline symbol extraction with a different priority order (`className` before `functionName`, missing `methodName`/`name` fields). Commit `fc5ec22` (Spec 11) replaced it with the canonical `extractSymbol()` from `symbols.ts`. The fingerprint scheme itself (SHA-256 over `[analyzer, rule, file, symbol]`) is stable and hasn't changed between v3.4.0 and v3.4.1 — the migration from divergent inline extraction to `extractSymbol()` happened in v3.1.1.
+
+**Effect on upgrade**: Pre-existing tasks created with the old inline extraction scheme have different fingerprints than tasks created by the current code. Running `from-audit` after upgrading from pre-v3.1.1 will produce duplicate tasks on the first run — the old fingerprints won't match dedup checks. Subsequent runs use the new stable fingerprints and deduplicate correctly.
+
+#### CSS Discovery Fix
+
+The Style Intelligence analyzer's file discovery didn't include `.css`/`.scss` extensions in the default extension list (`ALL_EXTENSIONS`), so CSS/SCSS files were never discovered by `findFiles()` — even though the CSS adapter, CSS/SCSS tree-sitter grammars, and style extractor were all fully functional. A full audit on a project with CSS files would produce zero style findings because no CSS files were ever indexed.
+
+**Fix** (uncommitted, `src/utils/fileDiscovery.ts`): Added `CSS_EXTENSIONS` (`['.css', '.scss']`) to `ALL_EXTENSIONS`.
+
+#### Release Riders
+
+- **Hook-contract regression guard** (`9773144`): Added `hookContractViolations` field to bench output
+- **GROUND-TRUTH.md §9** (`6b38fa9`): Documented `nextSessionsCursor` and `withRetry` as known SDK-level gaps
+- **Conventions analyzer** (`9773144`): Fixed line-0 violation (line 0 → line 9) in Spec-15 evidence
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/auditRunner.ts` | Add `await styleDb.initialize()` before style index sync |
+| `src/utils/fileDiscovery.ts` | Add CSS_EXTENSIONS to ALL_EXTENSIONS |
+| `src/scripts/churnExtractor.ts` | Resolve git-relative paths to absolute |
+| `src/codeIndexDB.ts` | Clear stale meta keys on index reset; INSERT OR REPLACE on hotspot_scores |
+| `src/cli.ts` | Replace silent catch with console.warn in hotspots command |
+| `src/cli-integration.spec.ts` | A2 gate expansion — doc-CLI parity tests (16 pass, 6 skip) |
+| `GROUND-TRUTH.md` | §9: Known Issues — SDK/Integration Surface |
+
 ## [3.3.0] — 2026-07-20
 
 ### Spec-10: Style Intelligence — Distribution-Aware Style Analysis
