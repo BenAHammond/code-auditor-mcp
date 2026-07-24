@@ -281,6 +281,169 @@ export function exportLedger(
   };
 }
 
+// ── Trends (Spec 13 R4) ──────────────────────────────────────────────────────
+
+export interface TrendRuleSummary {
+  rule: string;
+  newCount: number;
+  fixedCount: number;
+  net: number;
+}
+
+export interface TrendRunPair {
+  previousRunId: string;
+  previousTimestamp: string;
+  currentRunId: string;
+  currentTimestamp: string;
+}
+
+export interface TrendReport {
+  target: string;
+  runPairs: TrendRunPair[];
+  timeRange: { start: string; end: string };
+  perRule: Record<string, TrendRuleSummary>;
+}
+
+/**
+ * Compare consecutive full-audit runs of the same target and report per-rule
+ * new/fixed/net trends. Non-full runs are excluded. If fewer than 2 comparable
+ * runs exist, returns null.
+ *
+ * @param db        The better-sqlite3 database handle.
+ * @param sinceRunId  Only consider runs after this run ID.
+ */
+export function getTrends(db: Database.Database, sinceRunId?: string): TrendReport | null {
+  // 1. Fetch full-scope runs, optionally filtered by sinceRunId
+  let runQuery = `
+    SELECT run_id, timestamp, target, scope
+    FROM findings_ledger_runs
+    WHERE scope = 'full'
+  `;
+  const params: any[] = [];
+
+  if (sinceRunId) {
+    // We need the timestamp of the sinceRunId to filter runs after it
+    const sinceRow = db.prepare(
+      'SELECT timestamp FROM findings_ledger_runs WHERE run_id = ?',
+    ).get(sinceRunId) as { timestamp: string } | undefined;
+    if (sinceRow) {
+      runQuery += ' AND timestamp > ?';
+      params.push(sinceRow.timestamp);
+    }
+  }
+
+  runQuery += ' ORDER BY timestamp ASC';
+  const runs = db.prepare(runQuery).all(...params) as Array<{
+    run_id: string; timestamp: string; target: string; scope: string;
+  }>;
+
+  // 2. Group runs by target, then find consecutive pairs
+  const runsByTarget = new Map<string, typeof runs>();
+  for (const r of runs) {
+    const list = runsByTarget.get(r.target) ?? [];
+    list.push(r);
+    runsByTarget.set(r.target, list);
+  }
+
+  // Pick the target with the most runs as the primary (matches common CLI usage)
+  let bestRuns: typeof runs = [];
+  for (const [, list] of runsByTarget) {
+    if (list.length > bestRuns.length) bestRuns = list;
+  }
+
+  if (bestRuns.length < 2) return null;
+
+  const target = bestRuns[0].target;
+
+  // 3. For each consecutive pair, compare fingerprint sets per rule
+  const runPairs: TrendRunPair[] = [];
+  const ruleAccum: Map<string, { newCount: number; fixedCount: number }> = new Map();
+
+  const getFingerprints = db.prepare(`
+    SELECT analyzer || '/' || rule AS rule, fingerprint
+    FROM findings_ledger_findings
+    WHERE run_id = ?
+  `);
+
+  for (let i = 1; i < bestRuns.length; i++) {
+    const prev = bestRuns[i - 1];
+    const curr = bestRuns[i];
+
+    const prevFindings = getFingerprints.all(prev.run_id) as Array<{ rule: string; fingerprint: string }>;
+    const currFindings = getFingerprints.all(curr.run_id) as Array<{ rule: string; fingerprint: string }>;
+
+    // Build fingerprint sets per rule
+    const prevFps = new Map<string, Set<string>>();
+    for (const f of prevFindings) {
+      const s = prevFps.get(f.rule) ?? new Set();
+      s.add(f.fingerprint);
+      prevFps.set(f.rule, s);
+    }
+
+    const currFps = new Map<string, Set<string>>();
+    for (const f of currFindings) {
+      const s = currFps.get(f.rule) ?? new Set();
+      s.add(f.fingerprint);
+      currFps.set(f.rule, s);
+    }
+
+    // All rules that appear in either run
+    const allRules = new Set([...prevFps.keys(), ...currFps.keys()]);
+
+    for (const rule of allRules) {
+      const prevSet = prevFps.get(rule) ?? new Set();
+      const currSet = currFps.get(rule) ?? new Set();
+
+      // New: present in current, absent in previous
+      let newCount = 0;
+      for (const fp of currSet) {
+        if (!prevSet.has(fp)) newCount++;
+      }
+
+      // Fixed: absent in current, present in previous
+      let fixedCount = 0;
+      for (const fp of prevSet) {
+        if (!currSet.has(fp)) fixedCount++;
+      }
+
+      if (newCount > 0 || fixedCount > 0) {
+        const acc = ruleAccum.get(rule) ?? { newCount: 0, fixedCount: 0 };
+        acc.newCount += newCount;
+        acc.fixedCount += fixedCount;
+        ruleAccum.set(rule, acc);
+      }
+    }
+
+    runPairs.push({
+      previousRunId: prev.run_id,
+      previousTimestamp: prev.timestamp,
+      currentRunId: curr.run_id,
+      currentTimestamp: curr.timestamp,
+    });
+  }
+
+  // 4. Build per-rule output
+  const perRule: Record<string, TrendRuleSummary> = {};
+  for (const [rule, acc] of ruleAccum) {
+    perRule[rule] = {
+      rule,
+      newCount: acc.newCount,
+      fixedCount: acc.fixedCount,
+      net: acc.fixedCount - acc.newCount,
+    };
+  }
+
+  return {
+    target,
+    runPairs,
+    timeRange: {
+      start: bestRuns[0].timestamp,
+      end: bestRuns[bestRuns.length - 1].timestamp,
+    },
+    perRule,
+  };
+}
+
 export function getLedgerStats(db: Database.Database): LedgerStats {
   const totalRuns = (db.prepare('SELECT COUNT(*) AS cnt FROM findings_ledger_runs').get() as any).cnt;
 

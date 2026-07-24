@@ -568,6 +568,41 @@ export class CodeMapGenerator {
       // Silently skip the styles section — it's optional.
     }
 
+    // Risk section (Spec 14) — top-N risk-ranked functions
+    try {
+      const riskStats = await this.queryRiskStats();
+      if (riskStats.entries.length > 0) {
+        sections.risk = {
+          text: this.formatRiskSection(riskStats),
+          description: "Risk-ranked functions — PageRank, betweenness, complexity, and untested penalty",
+          metadata: {
+            entryCount: riskStats.entries.length,
+            topRisk: riskStats.entries[0]?.riskScore ?? 0,
+          }
+        };
+      }
+    } catch {
+      // Graph cache may not be populated. Silently skip.
+    }
+
+    // Architecture section (Spec 14) — community detection and Martin metrics
+    try {
+      const archStats = await this.queryArchitectureStats();
+      if (archStats.communityCount > 0 || archStats.martinEntries.length > 0) {
+        sections.architecture = {
+          text: this.formatArchitectureSection(archStats),
+          description: "Import-graph architecture — communities, directory purity, and Martin instability metrics",
+          metadata: {
+            communityCount: archStats.communityCount,
+            martinEntryCount: archStats.martinEntries.length,
+            agreementScore: archStats.agreementScore,
+          }
+        };
+      }
+    } catch {
+      // Import graph may not be available. Silently skip.
+    }
+
     // Documentation section (if enabled)
     if (options.includeDocumentation && fullMap.documentation) {
       sections.documentation = {
@@ -822,6 +857,154 @@ export class CodeMapGenerator {
 
     return lines.join('\n');
   }
+
+  // ── Graph risk (Spec 14) ─────────────────────────────────────────────
+
+  /**
+   * Query risk-ranked functions from the graph cache.
+   */
+  private async queryRiskStats(): Promise<RiskStats> {
+    const db = CodeIndexDB.getInstance();
+    const rawDb = db.rawDb;
+
+    // Check if graph cache has data
+    const cacheCount = (rawDb.prepare(
+      "SELECT COUNT(*) as cnt FROM graph_cache WHERE graph_type = 'call'"
+    ).get() as { cnt: number }).cnt;
+
+    if (cacheCount === 0) return { entries: [] };
+
+    const { buildCallGraphFromCache, computeRisk } = await import('../graph/callGraph.js');
+    const { graph: callGraph } = buildCallGraphFromCache(rawDb);
+
+    const riskEntries = computeRisk(
+      rawDb,
+      callGraph.adjacency,
+      callGraph.nodeIds,
+      callGraph.nodeNames,
+      callGraph.nodePaths
+    );
+
+    return {
+      entries: riskEntries.slice(0, 20), // Top 20
+    };
+  }
+
+  /**
+   * Format the risk section as terminal-friendly text.
+   */
+  private formatRiskSection(stats: RiskStats): string {
+    const lines: string[] = [];
+    lines.push('⚠️  RISK RANKING (top 20)\n');
+
+    if (stats.entries.length === 0) {
+      lines.push('No risk data available. Run a full sync (code-audit index sync) first.');
+      return lines.join('\n');
+    }
+
+    lines.push('Function                           PageRank%  Between%  Complexity%  Untested  Score');
+    lines.push('────────                           ─────────  ────────  ────────────  ────────  ─────');
+
+    for (const entry of stats.entries) {
+      const name = entry.functionName.substring(0, 35).padEnd(35);
+      const pr = (entry.pageRankPercentile * 100).toFixed(0).padStart(8);
+      const bw = (entry.betweennessPercentile * 100).toFixed(0).padStart(7);
+      const cx = (entry.complexityPercentile * 100).toFixed(0).padStart(11);
+      const untested = entry.untested ? '  ✓' : '  –';
+      const score = entry.riskScore.toFixed(2).padStart(6);
+      lines.push(`${name} ${pr}%  ${bw}%  ${cx}%    ${untested}    ${score}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  // ── Graph architecture (Spec 14) ──────────────────────────────────────
+
+  /**
+   * Query import-graph architecture data: communities, purity, Martin metrics.
+   */
+  private async queryArchitectureStats(): Promise<ArchitectureStats> {
+    const db = CodeIndexDB.getInstance();
+    const rawDb = db.rawDb;
+
+    // Check if graph cache has import data
+    const cacheCount = (rawDb.prepare(
+      "SELECT COUNT(*) as cnt FROM graph_cache WHERE graph_type = 'import'"
+    ).get() as { cnt: number }).cnt;
+
+    if (cacheCount === 0) {
+      return { communityCount: 0, agreementScore: 0, splitCandidates: [], mergeCandidates: [], martinEntries: [] };
+    }
+
+    const { buildImportGraphFromCache, detectCommunities, computeDirectoryPurity, computeMartinMetrics } = await import('../graph/importGraph.js');
+
+    const importGraph = buildImportGraphFromCache(rawDb);
+
+    if (importGraph.filePaths.size === 0) {
+      return { communityCount: 0, agreementScore: 0, splitCandidates: [], mergeCandidates: [], martinEntries: [] };
+    }
+
+    const communities = detectCommunities(importGraph.adjacency, importGraph.filePaths);
+    const purity = computeDirectoryPurity(communities.communities, importGraph.filePaths);
+    const martinEntries = computeMartinMetrics(rawDb, importGraph);
+
+    return {
+      communityCount: communities.communityCount,
+      agreementScore: Math.round(purity.agreementScore * 10000) / 10000,
+      splitCandidates: purity.splitCandidates,
+      mergeCandidates: purity.mergeCandidates,
+      martinEntries: martinEntries.slice(0, 15),
+    };
+  }
+
+  /**
+   * Format the architecture section as terminal-friendly text.
+   */
+  private formatArchitectureSection(stats: ArchitectureStats): string {
+    const lines: string[] = [];
+    lines.push('🏗️  ARCHITECTURE\n');
+
+    // Community overview
+    lines.push(`Communities detected: ${stats.communityCount}`);
+    lines.push(`Structure-agreement score: ${stats.agreementScore.toFixed(2)} (1.0 = directories match communities)\n`);
+
+    // Split candidates
+    if (stats.splitCandidates.length > 0) {
+      lines.push('Split candidates (directories spanning multiple communities):');
+      for (const s of stats.splitCandidates) {
+        lines.push(`  ${s.directory} — ${s.communities.length} communities: ${s.communities.map((c: number, i: number) => `C${c}(${s.fileCounts[i]})`).join(', ')}`);
+      }
+      lines.push('');
+    }
+
+    // Merge candidates
+    if (stats.mergeCandidates.length > 0) {
+      lines.push('Merge candidates (one community dominating multiple directories):');
+      for (const m of stats.mergeCandidates) {
+        lines.push(`  Community ${m.community} — ${m.directories.length} dirs: ${m.directories.join(', ')} (${m.fileCount} files)`);
+      }
+      lines.push('');
+    }
+
+    // Martin metrics
+    if (stats.martinEntries.length > 0) {
+      lines.push('Martin instability metrics (top 15 by distance from main sequence):');
+      lines.push('Directory              Ce   Ca     I      A      D');
+      lines.push('─────────              ──   ──   ─────  ─────  ─────');
+
+      for (const m of stats.martinEntries) {
+        const dir = m.directory.substring(0, 22).padEnd(22);
+        const ce = String(m.ce).padStart(2);
+        const ca = String(m.ca).padStart(4);
+        const inst = m.instability.toFixed(3).padStart(5);
+        const abst = m.abstractness.toFixed(3).padStart(5);
+        const dist = m.distanceFromMain.toFixed(3).padStart(5);
+        lines.push(`${dir} ${ce}  ${ca}  ${inst}  ${abst}  ${dist}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
 }
 
 /** Statistics queried from the style index for the code-map styles section. */
@@ -832,4 +1015,33 @@ interface StyleStats {
   tokens: { name: string; value: string; mechanism: string; file_path: string; usage_count: number }[];
   bypassCount: number;
   zIndexes: { value: string; count: number; files: string }[];
+}
+
+/** Risk-ranked function entries for the code-map risk section (Spec 14). */
+interface RiskStats {
+  entries: Array<{
+    functionName: string;
+    filePath: string;
+    pageRankPercentile: number;
+    betweennessPercentile: number;
+    complexityPercentile: number;
+    untested: boolean;
+    riskScore: number;
+  }>;
+}
+
+/** Architecture stats for the code-map architecture section (Spec 14). */
+interface ArchitectureStats {
+  communityCount: number;
+  agreementScore: number;
+  splitCandidates: Array<{ directory: string; communities: number[]; fileCounts: number[] }>;
+  mergeCandidates: Array<{ directories: string[]; community: number; fileCount: number }>;
+  martinEntries: Array<{
+    directory: string;
+    ce: number;
+    ca: number;
+    instability: number;
+    abstractness: number;
+    distanceFromMain: number;
+  }>;
 }

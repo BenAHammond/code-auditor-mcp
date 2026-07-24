@@ -23,6 +23,7 @@ const DEFAULT_COLUMNS = [
   'severity',
   'type',
   'message',
+  'hotspot',
   'recommendation',
   'estimatedEffort'
 ];
@@ -165,6 +166,11 @@ function generateDataRow(
         break;
       case 'message':
         value = violation.message;
+        break;
+      case 'hotspot':
+        value = violation.hotspot !== undefined && violation.hotspot > 0
+          ? (Math.round(violation.hotspot * 1000) / 1000).toString()
+          : '';
         break;
       case 'recommendation':
         value = violation.recommendation || '';

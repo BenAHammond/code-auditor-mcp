@@ -21,6 +21,14 @@
         "function-documentation": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
       }
     },
+    "diverging-clones": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {
+        "dry/diverging-clone": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+      }
+    },
     "dry": {
       "f1": 1.0,
       "precision": 1.0,
@@ -102,6 +110,12 @@
         "styles/z-index-sprawl": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
         "styles/z-index-singleton": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
       }
+    },
+    "graph": {
+      "f1": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "rules": {}
     }
   }
 }

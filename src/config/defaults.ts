@@ -145,6 +145,12 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     checkStrings: true,
     ignoreComments: true,
     ignoreWhitespace: true,
+    // Spec 13 R5 — Diverging-clone detection
+    divergence: {
+      divergenceThreshold: 0.05,
+      divergenceRuns: 2,
+      minPairSimilarity: 0.5,
+    },
   },
   
   security: {

@@ -1,0 +1,17 @@
+{
+  "kind": "metrics",
+  "analyzer": "graph",
+  "expectedViolations": [],
+  "expectedMetrics": {
+    "riskEntryCount": { "min": 15 },
+    "corePageRank": { "min": 0.05 },
+    "bridgeBetweenness": { "min": 0.01 },
+    "untestedRisk": { "min": 0.001 },
+    "communityCount": { "min": 1, "max": 6 },
+    "agreementScore": { "min": 0.0, "max": 1.0 },
+    "abstractness": { "min": 0.01 },
+    "martinEntryCount": { "min": 1 }
+  },
+  "nearMissFiles": [],
+  "description": "Graph & Architecture — advisory metrics only (zero violations). Verifies PageRank, betweenness, risk formula, community detection, directory purity, and Martin instability/abstractness metrics."
+}

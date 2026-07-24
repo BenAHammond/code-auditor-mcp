@@ -8,6 +8,7 @@ import { statSync, readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { randomUUID } from 'node:crypto';
 import {
   AuditResult,
   AuditRunnerOptions,
@@ -26,6 +27,7 @@ import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
 import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
+import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
 
 // Import universal analyzers
 import { initializeLanguages } from './languages/index.js';
@@ -391,6 +393,48 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       }
     }
 
+    // ── Blast-radius impact (Spec 14 R6) ──────────────────────────────
+    // Compute transitive-caller impact for changed functions.
+    // If latency exceeds the 100ms budget, skip and emit a warning;
+    // the feature is disabled-by-default when over budget.
+    let blastRadius: import('./types.js').BlastRadiusImpact | undefined;
+    if (isScoped && changedFunctions && changedFunctions.length > 0) {
+      try {
+        const db = CodeIndexDB.getInstance();
+        const rawDb = db.rawDb;
+        const functionIds: number[] = [];
+        for (const fn of changedFunctions) {
+          const row = rawDb.prepare(
+            'SELECT id FROM functions WHERE name = ? AND file_path = ?'
+          ).get(fn.name, fn.filePath) as { id: number } | undefined;
+          if (row) functionIds.push(row.id);
+        }
+
+        if (functionIds.length > 0) {
+          const impact = computeImpact(rawDb, functionIds);
+          if (impact.latencyMs > LATENCY_BUDGET_MS) {
+            logMcpInfo('blast-radius',
+              `latency ${impact.latencyMs}ms exceeds ${LATENCY_BUDGET_MS}ms budget — blast radius disabled for this run`,
+              {}
+            );
+          } else {
+            blastRadius = impact;
+            logMcpInfo('blast-radius', 'computed', {
+              editedFunctionCount: impact.editedFunctionCount,
+              transitiveCallers: impact.transitiveCallers,
+              reachableExports: impact.reachableExports,
+              latencyMs: impact.latencyMs,
+            });
+          }
+        }
+      } catch (err) {
+        // Blast radius is advisory — non-fatal
+        logMcpInfo('blast-radius', 'computation failed (continuing)', {
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+
     const handoffRemaining: string[] = [];
     const maxPerRun = mergedOptions.maxFilesPerRun;
     if (typeof maxPerRun === 'number' && maxPerRun > 0 && files.length > maxPerRun) {
@@ -629,6 +673,46 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       }
     }
 
+    // ── Spec 13 R5 Phase 1: Persist seeded DRY pairs ──────────────────
+    // Store pairs from DRY analysis in dry_pair_history for divergence tracking.
+    // Pair identity is fingerprint-based (file + nodeType + line),
+    // NOT content-hash-based — so a diverging clone stays the same pair.
+    let dryPersistRunId: string | null = null;
+    try {
+      const dryResult = orderedAnalyzerResults['dry'];
+      const dryPairs = (dryResult as any)?.dryPairs as Array<{
+        pairFingerprint: string;
+        file1: string; symbol1: string; line1: number; contentHash1: string;
+        file2: string; symbol2: string; line2: number; contentHash2: string;
+        similarity: number;
+      }> | undefined;
+      if (dryPairs && dryPairs.length > 0) {
+        const indexDb = CodeIndexDB.getInstance();
+        await indexDb.initialize();
+        dryPersistRunId = randomUUID();
+        const insertStmt = indexDb.rawDb.prepare(`
+          INSERT OR IGNORE INTO dry_pair_history
+            (pair_fingerprint, file1, symbol1, line1, content_hash1,
+             file2, symbol2, line2, content_hash2, similarity, timestamp, run_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+        `);
+        const tx = indexDb.rawDb.transaction(() => {
+          for (const pair of dryPairs) {
+            insertStmt.run(
+              pair.pairFingerprint,
+              pair.file1, pair.symbol1, pair.line1, pair.contentHash1,
+              pair.file2, pair.symbol2, pair.line2, pair.contentHash2,
+              pair.similarity,
+              dryPersistRunId,
+            );
+          }
+        });
+        tx();
+      }
+    } catch {
+      // dry_pair_history persistence is advisory — non-fatal
+    }
+
     // ── Baseline classification (Spec 18 R1) ────────────────────────────
     const projectRoot = path.resolve(mergedOptions.projectRoot || process.cwd());
     const baseline = loadBaseline(projectRoot);
@@ -673,6 +757,168 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       });
     }
 
+    // ── Spec 13 R2 — Hotspot scoring & finding reordering ──────────────
+    // Attach hotspot scores to violations and reorder within severity tiers.
+    // Falls back gracefully when no churn/hotspot data exists.
+    try {
+      const indexDb = CodeIndexDB.getInstance();
+      await indexDb.initialize();
+
+      // Build hotspot lookup: target -> score
+      const hotspotRows = indexDb.rawDb
+        .prepare('SELECT target, type, score FROM hotspot_scores')
+        .all() as Array<{ target: string; type: string; score: number }>;
+
+      if (hotspotRows.length > 0) {
+        const hotspotByTarget = new Map<string, number>();
+        const hotspotByFile = new Map<string, number>();
+        for (const row of hotspotRows) {
+          hotspotByTarget.set(row.target, row.score);
+          if (row.type === 'file') {
+            hotspotByFile.set(row.target, row.score);
+          }
+        }
+
+        // Attach hotspot to each violation and reorder within each analyzer
+        for (const analyzerName of Object.keys(orderedAnalyzerResults)) {
+          const result = orderedAnalyzerResults[analyzerName];
+          const violations = result.violations;
+
+          // Attach hotspot scores
+          for (const v of violations) {
+            const funcName = v.functionName as string | undefined;
+            const file = v.file as string;
+
+            // Try function-level hotspot first: "filePath::functionName"
+            const funcTarget = funcName ? `${file}::${funcName}` : undefined;
+            v.hotspot = (funcTarget ? hotspotByTarget.get(funcTarget) : undefined)
+              ?? hotspotByFile.get(file)
+              ?? 0;
+          }
+
+          // Reorder within severity tiers: sort by hotspot descending,
+          // preserving original order as tiebreaker.
+          const severityOrder: Record<string, number> = {
+            critical: 0,
+            warning: 1,
+            suggestion: 2,
+            info: 3,
+          };
+
+          const indexed = violations.map((v, i) => ({ v, i }));
+          indexed.sort((a, b) => {
+            const sevA = severityOrder[a.v.severity] ?? 99;
+            const sevB = severityOrder[b.v.severity] ?? 99;
+            if (sevA !== sevB) return sevA - sevB;
+            // Within same severity: higher hotspot first
+            const hsA = a.v.hotspot ?? 0;
+            const hsB = b.v.hotspot ?? 0;
+            if (hsA !== hsB) return hsB - hsA;
+            // Tiebreaker: original order
+            return a.i - b.i;
+          });
+
+          result.violations = indexed.map(x => x.v);
+        }
+      }
+    } catch {
+      // Hotspot reordering is advisory — failure is non-fatal
+    }
+
+    // ── Spec 13 R5 Phase 2: Divergence tracking pass ──────────────────
+    // For every pair in dry_pair_history, compare the last 2 similarity
+    // measurements. If similarity has declined by ≥ divergenceThreshold
+    // for divergenceRuns consecutive runs, emit dry/diverging-clone.
+    //
+    // New rows are inserted by Phase 1 for pairs the DRY analyzer re-detects
+    // this run. Pairs that weren't re-detected don't get a new measurement
+    // this pass — full source re-read is deferred to the 20% case.
+    try {
+      const divergenceCfg: {
+        divergenceThreshold?: number;
+        divergenceRuns?: number;
+        minPairSimilarity?: number;
+      } = (mergedOptions.analyzerConfigs as any)?.dry?.divergence
+        ?? (mergedOptions as any).divergence
+        ?? { divergenceThreshold: 0.05, divergenceRuns: 2, minPairSimilarity: 0.5 };
+
+      const threshold = divergenceCfg.divergenceThreshold ?? 0.05;
+      const requiredDeclines = divergenceCfg.divergenceRuns ?? 2;
+
+      if (threshold > 0) {
+        const indexDb = CodeIndexDB.getInstance();
+        await indexDb.initialize();
+
+        // Get all distinct pair fingerprints
+        const fingerprints = indexDb.rawDb
+          .prepare('SELECT DISTINCT pair_fingerprint FROM dry_pair_history')
+          .all() as Array<{ pair_fingerprint: string }>;
+
+        if (fingerprints.length > 0) {
+          const getRows = indexDb.rawDb.prepare(`
+            SELECT similarity, timestamp
+            FROM dry_pair_history
+            WHERE pair_fingerprint = ?
+            ORDER BY timestamp ASC
+          `);
+
+          const divergingViolations: Violation[] = [];
+
+          for (const { pair_fingerprint: fp } of fingerprints) {
+            const rows = getRows.all(fp) as Array<{ similarity: number; timestamp: string }>;
+            if (rows.length < requiredDeclines + 1) continue;
+
+            // Check last `requiredDeclines` consecutive pairs for decline
+            let consecutiveDeclines = 0;
+            for (let i = rows.length - requiredDeclines; i < rows.length; i++) {
+              if (rows[i].similarity < rows[i - 1].similarity - threshold) {
+                consecutiveDeclines++;
+              }
+            }
+
+            if (consecutiveDeclines >= requiredDeclines) {
+              // Get file/line info from the last row
+              const lastRow = indexDb.rawDb.prepare(`
+                SELECT file1, file2, line1, line2 FROM dry_pair_history
+                WHERE pair_fingerprint = ?
+                ORDER BY timestamp DESC LIMIT 1
+              `).get(fp) as { file1: string; file2: string; line1: number; line2: number } | undefined;
+
+              if (lastRow) {
+                const currentSim = rows[rows.length - 1].similarity;
+                const prevSim = rows[rows.length - 2].similarity;
+                const drop = Math.round((prevSim - currentSim) * 1000) / 1000;
+
+                divergingViolations.push({
+                  file: lastRow.file1,
+                  line: lastRow.line1,
+                  severity: 'suggestion',
+                  message: `Clone pair has diverged: similarity dropped ${drop} (from ${prevSim.toFixed(3)} to ${currentSim.toFixed(3)}) across ${requiredDeclines} consecutive runs (pair: ${fp.slice(0, 12)}…). Review ${lastRow.file1}:${lastRow.line1} and ${lastRow.file2}:${lastRow.line2} for diverged logic.`,
+                  analyzer: 'dry',
+                  rule: 'dry/diverging-clone',
+                });
+              }
+            }
+          }
+
+          if (divergingViolations.length > 0) {
+            // Append to the dry analyzer result, or create one if none exists
+            if (orderedAnalyzerResults['dry']) {
+              orderedAnalyzerResults['dry'].violations.push(...divergingViolations);
+            } else {
+              orderedAnalyzerResults['dry'] = {
+                violations: divergingViolations,
+                filesProcessed: 0,
+                executionTime: 0,
+              };
+            }
+          }
+        }
+      }
+    } catch {
+      // Divergence tracking is advisory — non-fatal
+    }
+
     // Generate summary
     const summary = generateSummary(orderedAnalyzerResults, files.length);
 
@@ -689,6 +935,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         configUsed: mergedOptions,
         scope: scopeResultType,
         provenanceResolutionMs: provenanceTiming.totalMs,
+        ...(blastRadius && { blastRadius }),
         ...(baselineMetadata && { baseline: baselineMetadata }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,

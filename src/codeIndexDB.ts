@@ -31,6 +31,10 @@ import {
   ConventionMiningConfig,
 } from './types.js';
 import { mineConventions, computeMinerInputHash } from './conventions/conventionMiner.js';
+import { extractChurn } from './churn/churnExtractor.js';
+import { computeHotspots } from './hotspots/hotspotScorer.js';
+import { populateCallGraphCache, getGraphStats as getGs } from './graph/callGraph.js';
+import { populateImportGraphCache } from './graph/importGraph.js';
 import { QueryParser, compileToSQL } from './search/QueryParser.js';
 import type { SqlQuery } from './search/QueryParser.js';
 import { getPersistedStorageRoot, resolvePersistedIndexPath } from './dataPaths.js';
@@ -274,12 +278,17 @@ export class CodeIndexDB {
   private schemaUsageAdapter!: SqliteCollectionAdapter;
   private tasksAdapter!: SqliteCollectionAdapter;
   private conventionsAdapter!: SqliteCollectionAdapter;
+  private fileChurnAdapter!: SqliteCollectionAdapter;
+  private functionChurnAdapter!: SqliteCollectionAdapter;
+  private pairHistoryAdapter!: SqliteCollectionAdapter;
+  private hotspotScoresAdapter!: SqliteCollectionAdapter;
+  private graphCacheAdapter!: SqliteCollectionAdapter;
 
   private taskRepository: ProjectTaskRepository | null = null;
   private stmts: Map<string, Database.Statement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 4;
+  private static readonly SCHEMA_VERSION = 6;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -398,6 +407,11 @@ export class CodeIndexDB {
     this.schemaUsageAdapter = new SqliteCollectionAdapter(this.db, 'schema_usage');
     this.tasksAdapter = new SqliteCollectionAdapter(this.db, 'project_tasks');
     this.conventionsAdapter = new SqliteCollectionAdapter(this.db, 'conventions');
+    this.fileChurnAdapter = new SqliteCollectionAdapter(this.db, 'file_churn');
+    this.functionChurnAdapter = new SqliteCollectionAdapter(this.db, 'function_churn');
+    this.pairHistoryAdapter = new SqliteCollectionAdapter(this.db, 'dry_pair_history');
+    this.hotspotScoresAdapter = new SqliteCollectionAdapter(this.db, 'hotspot_scores');
+    this.graphCacheAdapter = new SqliteCollectionAdapter(this.db, 'graph_cache');
 
     // Init defaults
     const whitelistCount = (this.db.prepare('SELECT COUNT(*) as cnt FROM whitelist').get() as any).cnt;
@@ -519,6 +533,86 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_conv_rule_id ON conventions(rule_id);
         CREATE INDEX IF NOT EXISTS idx_conv_directory ON conventions(directory);
         CREATE INDEX IF NOT EXISTS idx_conv_hash ON conventions(hash);
+      `);
+    }
+
+    // Migration 4 → 5: Hotspots & temporal analysis (Spec 13)
+    if (currentVersion < 5) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS file_churn (
+          file_path            TEXT PRIMARY KEY,
+          commit_count         INTEGER NOT NULL DEFAULT 0,
+          lines_added          INTEGER NOT NULL DEFAULT 0,
+          lines_deleted        INTEGER NOT NULL DEFAULT 0,
+          distinct_authors     INTEGER NOT NULL DEFAULT 0,
+          dominant_author      TEXT,
+          dominant_author_share REAL DEFAULT 0,
+          last_touched         TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_file_churn_cc ON file_churn(commit_count);
+
+        CREATE TABLE IF NOT EXISTS function_churn (
+          id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+          function_id          INTEGER REFERENCES functions(id) ON DELETE CASCADE,
+          function_name        TEXT NOT NULL,
+          file_path            TEXT NOT NULL,
+          commit_count         INTEGER NOT NULL DEFAULT 0,
+          distinct_authors     INTEGER NOT NULL DEFAULT 0,
+          dominant_author      TEXT,
+          dominant_author_share REAL DEFAULT 0,
+          renamed              INTEGER DEFAULT 0,
+          confidence           REAL DEFAULT 1.0
+        );
+        CREATE INDEX IF NOT EXISTS idx_func_churn_fid ON function_churn(function_id);
+
+        CREATE TABLE IF NOT EXISTS hotspot_scores (
+          target       TEXT PRIMARY KEY,
+          type         TEXT NOT NULL,
+          score        REAL NOT NULL DEFAULT 0,
+          churn_pct    REAL NOT NULL DEFAULT 0,
+          complexity_pct REAL NOT NULL DEFAULT 0,
+          commit_count INTEGER NOT NULL DEFAULT 0,
+          distinct_authors INTEGER NOT NULL DEFAULT 0,
+          dominant_author TEXT,
+          dominant_author_share REAL DEFAULT 0,
+          bus_factor_risk INTEGER DEFAULT 0,
+          complexity   INTEGER NOT NULL DEFAULT 0,
+          updated_at   TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_hotspot_scores_score ON hotspot_scores(score DESC);
+
+        CREATE TABLE IF NOT EXISTS dry_pair_history (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          pair_fingerprint TEXT NOT NULL,
+          file1           TEXT NOT NULL,
+          symbol1         TEXT,
+          line1           INTEGER NOT NULL,
+          content_hash1   TEXT NOT NULL,
+          file2           TEXT NOT NULL,
+          symbol2         TEXT,
+          line2           INTEGER NOT NULL,
+          content_hash2   TEXT NOT NULL,
+          similarity      REAL NOT NULL,
+          timestamp       TEXT DEFAULT (datetime('now')),
+          run_id          TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_dph_fingerprint ON dry_pair_history(pair_fingerprint);
+        CREATE INDEX IF NOT EXISTS idx_dph_run ON dry_pair_history(run_id);
+      `);
+    }
+
+    // Migration 5 → 6: Graph cache for call/import graph construction (Spec 14)
+    if (currentVersion < 6) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS graph_cache (
+          graph_type   TEXT NOT NULL,
+          node_key     TEXT NOT NULL,
+          neighbor_key TEXT NOT NULL,
+          weight       REAL NOT NULL,
+          PRIMARY KEY (graph_type, node_key, neighbor_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_gc_type_node ON graph_cache(graph_type, node_key);
+        CREATE INDEX IF NOT EXISTS idx_gc_type_neighbor ON graph_cache(graph_type, neighbor_key);
       `);
     }
   }
@@ -826,6 +920,67 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_conv_rule_id ON conventions(rule_id);
       CREATE INDEX IF NOT EXISTS idx_conv_directory ON conventions(directory);
       CREATE INDEX IF NOT EXISTS idx_conv_hash ON conventions(hash);
+
+      -- Spec 13: Hotspots & temporal analysis
+      CREATE TABLE IF NOT EXISTS file_churn (
+        file_path            TEXT PRIMARY KEY,
+        commit_count         INTEGER NOT NULL DEFAULT 0,
+        lines_added          INTEGER NOT NULL DEFAULT 0,
+        lines_deleted        INTEGER NOT NULL DEFAULT 0,
+        distinct_authors     INTEGER NOT NULL DEFAULT 0,
+        dominant_author      TEXT,
+        dominant_author_share REAL DEFAULT 0,
+        last_touched         TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_file_churn_cc ON file_churn(commit_count);
+
+      CREATE TABLE IF NOT EXISTS function_churn (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        function_id          INTEGER REFERENCES functions(id) ON DELETE CASCADE,
+        function_name        TEXT NOT NULL,
+        file_path            TEXT NOT NULL,
+        commit_count         INTEGER NOT NULL DEFAULT 0,
+        distinct_authors     INTEGER NOT NULL DEFAULT 0,
+        dominant_author      TEXT,
+        dominant_author_share REAL DEFAULT 0,
+        renamed              INTEGER DEFAULT 0,
+        confidence           REAL DEFAULT 1.0
+      );
+      CREATE INDEX IF NOT EXISTS idx_func_churn_fid ON function_churn(function_id);
+
+      CREATE TABLE IF NOT EXISTS hotspot_scores (
+        target       TEXT PRIMARY KEY,
+        type         TEXT NOT NULL,
+        score        REAL NOT NULL DEFAULT 0,
+        churn_pct    REAL NOT NULL DEFAULT 0,
+        complexity_pct REAL NOT NULL DEFAULT 0,
+        commit_count INTEGER NOT NULL DEFAULT 0,
+        distinct_authors INTEGER NOT NULL DEFAULT 0,
+        dominant_author TEXT,
+        dominant_author_share REAL DEFAULT 0,
+        bus_factor_risk INTEGER DEFAULT 0,
+        complexity   INTEGER NOT NULL DEFAULT 0,
+        updated_at   TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hotspot_scores_score ON hotspot_scores(score DESC);
+
+      CREATE TABLE IF NOT EXISTS dry_pair_history (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        pair_fingerprint TEXT NOT NULL,
+        file1           TEXT NOT NULL,
+        symbol1         TEXT,
+        line1           INTEGER NOT NULL,
+        content_hash1   TEXT NOT NULL,
+        file2           TEXT NOT NULL,
+        symbol2         TEXT,
+        line2           INTEGER NOT NULL,
+        content_hash2   TEXT NOT NULL,
+        similarity      REAL NOT NULL,
+        timestamp       TEXT DEFAULT (datetime('now')),
+        run_id          TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_dph_fingerprint ON dry_pair_history(pair_fingerprint);
+      CREATE INDEX IF NOT EXISTS idx_dph_run ON dry_pair_history(run_id);
     `);
 
     // Run schema migrations
@@ -1640,6 +1795,12 @@ export class CodeIndexDB {
     };
   }
 
+  /** Get graph statistics — delegates to graph/callGraph.ts (Spec 14 R1). */
+  getGraphStats(): import('./types.js').GraphStats {
+    this.ensureInitialized();
+    return getGs(this.db);
+  }
+
   // ── Lifecycle: clear & close ────────────────────────────────────────
 
   async clearIndex(): Promise<void> {
@@ -1652,6 +1813,11 @@ export class CodeIndexDB {
       this.db.prepare('DELETE FROM schema_definitions').run();
       this.db.prepare('DELETE FROM schema_usage').run();
       this.db.prepare('DELETE FROM conventions').run();
+      this.db.prepare('DELETE FROM file_churn').run();
+      this.db.prepare('DELETE FROM function_churn').run();
+      this.db.prepare('DELETE FROM hotspot_scores').run();
+      this.db.prepare('DELETE FROM dry_pair_history').run();
+      this.db.prepare('DELETE FROM graph_cache').run();
       // Preserve: project_tasks, analyzer_configs, whitelist, findings_ledger_runs, findings_ledger_findings
     })();
   }
@@ -1790,6 +1956,19 @@ export class CodeIndexDB {
       }
     }
 
+    // Spec 13 — Extract git churn data after index is built and stale entries
+    // are cleaned up. Runs before conventions mining so hotspot data is
+    // available for reordering. Degrades gracefully when no repo exists.
+    if (projectRoot) {
+      try {
+        extractChurn(this.db, projectRoot, { churnWindowMonths: 12 });
+        // Compute hotspot scores from churn data
+        computeHotspots(this.db);
+      } catch {
+        // Churn extraction failure is non-fatal — continue without hotspot data
+      }
+    }
+
     // Spec 12 — Mine codebase conventions after sync when the functions table
     // has changed. Content-hash-based skip: stored hash avoids re-mining.
     const miningConfig: ConventionMiningConfig = {
@@ -1843,6 +2022,14 @@ export class CodeIndexDB {
       this.db.prepare(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('conventions_hash', ?)"
       ).run(newHash);
+    }
+
+    // Spec 14 — Populate graph caches after index is built
+    try {
+      populateCallGraphCache(this.db);
+      populateImportGraphCache(this.db);
+    } catch {
+      // Graph cache population failure is non-fatal — continue without graph data
     }
 
     return {

@@ -590,6 +590,74 @@ indexCmd
     }
   });
 
+// ── Index status command (Spec 14 R1) ──────────────────────────
+indexCmd
+  .command('status')
+  .description('Show index health and graph statistics')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const stats = await db.getStats();
+
+      // Graph stats — non-fatal if graph cache is empty
+      let graphStats: import('./types.js').GraphStats | null = null;
+      try {
+        graphStats = db.getGraphStats();
+      } catch {
+        // No graph data yet — ok
+      }
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify({
+          totalFunctions: stats.totalFunctions,
+          totalFiles: stats.filesIndexed,
+          languageBreakdown: stats.languages,
+          graphStats: graphStats ? {
+            callNodes: graphStats.callNodes,
+            callEdges: graphStats.callEdges,
+            unresolvedCalls: graphStats.unresolvedCalls,
+            unresolvedShare: graphStats.unresolvedShare,
+            importNodes: graphStats.importNodes,
+            importEdges: graphStats.importEdges,
+          } : null,
+        }, null, 2) + '\n');
+      } else {
+        console.log(chalk.blue('📊 Index Status'));
+        console.log(chalk.gray('══════════════════════════════════'));
+        console.log(`${chalk.bold('Total functions:')} ${(stats.totalFunctions ?? 0).toLocaleString()}`);
+        console.log(`${chalk.bold('Total files:')} ${(stats.filesIndexed ?? 0).toLocaleString()}`);
+        if (stats.languages && Object.keys(stats.languages).length > 0) {
+          console.log(chalk.bold('\nLanguage breakdown:'));
+          for (const [lang, count] of Object.entries(stats.languages)) {
+            console.log(`  ${lang}: ${(count as number).toLocaleString()}`);
+          }
+        }
+
+        if (graphStats) {
+          console.log(chalk.bold('\nCall Graph:'));
+          console.log(`  ${chalk.bold('Nodes:')} ${graphStats.callNodes.toLocaleString()}`);
+          console.log(`  ${chalk.bold('Edges:')} ${graphStats.callEdges.toLocaleString()}`);
+          const pct = (graphStats.unresolvedShare * 100).toFixed(1);
+          if (graphStats.unresolvedShare > 0.3) {
+            console.log(`  ${chalk.yellow(`⚠ Unresolved: ${graphStats.unresolvedCalls.toLocaleString()} (${pct}%) — graph metrics may be incomplete`)}`);
+          } else {
+            console.log(`  ${chalk.bold('Unresolved:')} ${graphStats.unresolvedCalls.toLocaleString()} (${pct}%)`);
+          }
+          console.log(chalk.bold('\nImport Graph:'));
+          console.log(`  ${chalk.bold('Nodes:')} ${graphStats.importNodes.toLocaleString()}`);
+          console.log(`  ${chalk.bold('Edges:')} ${graphStats.importEdges.toLocaleString()}`);
+        } else {
+          console.log(chalk.gray('\nNo graph data available. Run a full sync (code-audit index sync) first.'));
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
 // Config command
 const configCmd = program
   .command('config')
@@ -1311,6 +1379,170 @@ tasksCmd
   });
 
 // ── Ledger command — Spec 11 R1 ──────────────────────────────────────────
+// ── Hotspots command (Spec 13 R2/R3) ─────────────────────────────────────────
+
+program
+  .command('hotspots')
+  .description('Rank files and functions by hotspot score (churn × complexity)')
+  .option('--limit <n>', 'Max entries to show')
+  .option('--path <dir>', 'Target directory (triggers spot churn extraction if index is empty)')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const rawDb = db.rawDb;
+
+      // Trigger a fast churn extraction if no hotspot scores exist yet
+      const existing = rawDb.prepare('SELECT COUNT(*) AS cnt FROM hotspot_scores').get() as any;
+      if (existing.cnt === 0 && options.path) {
+        const { extractChurn } = await import('./churn/churnExtractor.js');
+        const { computeHotspots } = await import('./hotspots/hotspotScorer.js');
+        try {
+          extractChurn(rawDb, options.path, { churnWindowMonths: 12 });
+          computeHotspots(rawDb);
+        } catch {
+          // Graceful: no git repo or extraction failure
+        }
+      }
+
+      const rows = rawDb.prepare(`
+        SELECT target, type, score, churn_pct, complexity_pct, commit_count,
+               distinct_authors, dominant_author, dominant_author_share,
+               bus_factor_risk, complexity
+        FROM hotspot_scores
+        ORDER BY score DESC
+        ${options.limit ? 'LIMIT ?' : ''}
+      `).all(...(options.limit ? [parseInt(options.limit, 10)] : [])) as any[];
+
+      if (options.json) {
+        const entries = rows.map((r: any) => ({
+          target: r.target,
+          type: r.type,
+          score: Math.round(r.score * 1000) / 1000,
+          churnPercentile: Math.round(r.churn_pct * 1000) / 1000,
+          complexityPercentile: Math.round(r.complexity_pct * 1000) / 1000,
+          commitCount: r.commit_count,
+          distinctAuthors: r.distinct_authors,
+          dominantAuthor: r.dominant_author,
+          dominantAuthorShare: Math.round((r.dominant_author_share ?? 0) * 1000) / 1000,
+          busFactorRisk: !!r.bus_factor_risk,
+          complexity: r.complexity,
+        }));
+        process.stdout.write(JSON.stringify(entries, null, 2) + '\n');
+      } else if (rows.length === 0) {
+        console.log(chalk.gray('No hotspot data found. Run a full sync with --path in a git repo first.'));
+      } else {
+        console.log(chalk.blue(`Hotspots (${rows.length}):\n`));
+        for (const r of rows) {
+          const icon = r.bus_factor_risk ? chalk.red(' ⚠ BUS-FACTOR') : '';
+          const typeColor = r.type === 'function' ? chalk.cyan : chalk.yellow;
+          const scorePct = Math.round(r.score * 100);
+          const bar = scorePct > 0 ? '█'.repeat(Math.max(1, Math.round(scorePct / 5))) : '';
+          console.log(
+            `  ${typeColor(`[${r.type}]`)} ${r.target}` +
+            `\n    score: ${chalk.bold(`${scorePct}%`)} ${chalk.gray(bar)}` +
+            `  churn: ${r.commit_count} commits (${r.distinct_authors} authors)` +
+            `  complexity: ${r.complexity}` +
+            `${r.dominant_author ? `  owner: ${r.dominant_author} (${Math.round(r.dominant_author_share * 100)}%)` : ''}` +
+            `${icon}`,
+          );
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// ── Risk command — Spec 14 R2 ───────────────────────────────────────
+program
+  .command('risk')
+  .description('Rank functions by architectural risk (PageRank × betweenness × complexity × untested)')
+  .option('--limit <n>', 'Max entries to show', '20')
+  .option('--path <dir>', 'Project path', process.cwd())
+  .option('--json', 'Output as JSON')
+  .option('--format <format>', 'Output format: dot (call-graph neighborhood of top functions)')
+  .action(async (options) => {
+    try {
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const rawDb = db.rawDb;
+
+      const { computeRisk, buildCallGraphFromCache } = await import('./graph/callGraph.js');
+      const { graph: callGraph } = buildCallGraphFromCache(rawDb);
+      const riskEntries = computeRisk(
+        rawDb,
+        callGraph.adjacency,
+        callGraph.nodeIds,
+        callGraph.nodeNames,
+        callGraph.nodePaths
+      );
+      const limit = parseInt(options.limit, 10) || 20;
+      const top = riskEntries.slice(0, limit);
+
+      if (options.format === 'dot') {
+        // DOT output: call-graph neighborhood of top-N risk functions
+        const { callGraphToDot } = await import('./graph/outputFormatter.js');
+
+        // Collect IDs for top risk functions
+        const topIds = new Set<number>();
+        for (const e of top) {
+          const rows = rawDb.prepare(
+            'SELECT id FROM functions WHERE name = ? AND file_path = ?'
+          ).all(e.functionName, e.filePath) as Array<{ id: number }>;
+          for (const r of rows) topIds.add(r.id);
+        }
+
+        const dot = callGraphToDot(callGraph, {
+          label: `Call Graph — Top ${top.length} Risk Functions`,
+          maxNodes: 60,
+          rankdir: 'LR',
+          showWeights: true,
+        });
+        process.stdout.write(dot);
+      } else if (options.json) {
+        process.stdout.write(JSON.stringify(top.map(e => ({
+          functionName: e.functionName,
+          filePath: e.filePath,
+          pageRankPercentile: Math.round(e.pageRankPercentile * 1000) / 1000,
+          betweennessPercentile: Math.round(e.betweennessPercentile * 1000) / 1000,
+          complexityPercentile: Math.round(e.complexityPercentile * 1000) / 1000,
+          untested: e.untested,
+          riskScore: Math.round(e.riskScore * 1000) / 1000,
+        })), null, 2) + '\n');
+      } else if (top.length === 0) {
+        console.log(chalk.gray('No risk data available. Run a full sync (code-audit index sync) first.'));
+      } else {
+        console.log(chalk.blue(`Risk Rankings (${top.length} of ${riskEntries.length}):\n`));
+        console.log(chalk.gray(
+          'Rank  Function                            File                                PR%    BW%    CX%   Untested   Risk'
+        ));
+        console.log(chalk.gray(
+          '────  ────────                            ────                                ───    ───    ───   ────────   ────'
+        ));
+        for (let i = 0; i < top.length; i++) {
+          const e = top[i];
+          const fnName = e.functionName.length > 36 ? e.functionName.slice(0, 33) + '...' : e.functionName.padEnd(36);
+          const fp = (e.filePath || '').length > 36 ? '...' + (e.filePath || '').slice(-33) : (e.filePath || '').padEnd(36);
+          const prPct = String(Math.round(e.pageRankPercentile * 100)).padStart(4);
+          const bwPct = String(Math.round(e.betweennessPercentile * 100)).padStart(4);
+          const cxPct = String(Math.round(e.complexityPercentile * 100)).padStart(4);
+          const untested = e.untested ? chalk.red(' ✗      ') : chalk.green(' ✓      ');
+          const riskScore = String((Math.round(e.riskScore * 1000) / 1000).toFixed(3)).padStart(6);
+          console.log(
+            `  ${chalk.dim(String(i + 1).padStart(3))}  ${chalk.bold(fnName)}  ${chalk.green(fp)}  ${prPct}  ${bwPct}  ${cxPct}  ${untested}  ${chalk.yellow(riskScore)}`
+          );
+        }
+        console.log(chalk.gray('\nPR% = PageRank percentile, BW% = Betweenness percentile, CX% = Complexity percentile'));
+        console.log(chalk.gray('Risk = max(PR%, BW%) × CX% × (1 + untested)'));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
 const ledgerCmd = program
   .command('ledger')
   .description('View and manage the findings ledger (append-only audit history)');
@@ -1388,6 +1620,55 @@ ledgerCmd
           if (Object.keys(sev).length > 0) {
             console.log(`  severity: ${Object.entries(sev).map(([k, v]) => `${k}=${v}`).join(', ')}`);
           }
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+ledgerCmd
+  .command('trends')
+  .description('Compare consecutive full-audit runs and report new vs fixed findings per rule')
+  .option('--since <runId>', 'Only consider runs after this run ID')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const { getTrends } = await import('./ledger.js');
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const trends = getTrends(db.rawDb, options.since);
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify(trends, null, 2) + '\n');
+      } else if (!trends) {
+        console.log(chalk.gray('Need at least 2 full-audit runs of the same target for trend analysis.'));
+      } else {
+        console.log(chalk.blue(`Trends for ${chalk.bold(trends.target)}`));
+        console.log(chalk.gray(`  ${trends.runPairs.length} run pairs from ${trends.timeRange.start} to ${trends.timeRange.end}\n`));
+
+        // Sort rules by |net| descending
+        const rules = Object.values(trends.perRule).sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+
+        if (rules.length === 0) {
+          console.log(chalk.gray('No trend changes detected — findings are stable across runs.'));
+        } else {
+          for (const r of rules) {
+            const netIcon = r.net > 0 ? chalk.green(`↓${r.net}`) : r.net < 0 ? chalk.red(`↑${-r.net}`) : chalk.gray('→0');
+            console.log(
+              `  ${chalk.bold(r.rule)}` +
+              `  new: ${chalk.red(r.newCount)}` +
+              `  fixed: ${chalk.green(r.fixedCount)}` +
+              `  net: ${netIcon}`,
+            );
+          }
+        }
+
+        // Comparison basis
+        console.log(chalk.gray(`\nComparison basis: target=${trends.target}, ${trends.runPairs.length} consecutive full-audit pairs`));
+        if (options.since) {
+          console.log(chalk.gray(`Filter: since run ${options.since.slice(0, 8)}`));
         }
       }
     } catch (error) {
@@ -1602,6 +1883,175 @@ program
         hooks: options.hooks,
         list: options.list,
       });
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// ── Architecture command — Spec 14 R3/R4 ────────────────────────────────
+program
+  .command('architecture')
+  .description('Analyze import graph: community detection, directory purity, Martin instability metrics')
+  .option('--path <dir>', 'Project path', process.cwd())
+  .option('--json', 'Output as JSON')
+  .option('--format <format>', 'Output format: dot or mermaid (import graph colored by community)')
+  .action(async (options) => {
+    try {
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const rawDb = db.rawDb;
+
+      const {
+        buildImportGraphFromCache,
+        detectCommunities,
+        computeDirectoryPurity,
+        computeMartinMetrics,
+      } = await import('./graph/importGraph.js');
+
+      const importGraph = buildImportGraphFromCache(rawDb);
+
+      if (importGraph.filePaths.size === 0) {
+        if (options.json) {
+          process.stdout.write(JSON.stringify({ error: 'No import graph data. Run a full sync first.' }) + '\n');
+        } else {
+          console.log(chalk.gray('No import graph data. Run a full sync (code-audit index sync) first.'));
+        }
+        return;
+      }
+
+      const communities = detectCommunities(importGraph.adjacency, importGraph.filePaths);
+      const purity = computeDirectoryPurity(communities.communities, importGraph.filePaths);
+      const martin = computeMartinMetrics(rawDb, importGraph);
+
+      if (options.format === 'dot' || options.format === 'mermaid') {
+        // Emit import graph colored by community
+        const { importGraphToDot, importGraphToMermaid } = await import('./graph/outputFormatter.js');
+
+        if (options.format === 'dot') {
+          const dot = importGraphToDot(importGraph, {
+            label: 'Import Graph — Colored by Community',
+            communities: communities.communities,
+            rankdir: 'LR',
+            showWeights: true,
+            legend: true,
+          });
+          process.stdout.write(dot);
+        } else {
+          const mermaid = importGraphToMermaid(importGraph, {
+            label: 'Import Graph — Colored by Community',
+            communities: communities.communities,
+            showWeights: true,
+          });
+          process.stdout.write(mermaid);
+        }
+        return;
+      }
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify({
+          communityCount: communities.communityCount,
+          modularity: Math.round(communities.modularity * 10000) / 10000,
+          directoryPurity: purity.directoryPurities.map(d => ({
+            directory: d.directory,
+            totalFiles: d.totalFiles,
+            pluralityCommunity: d.pluralityCommunity,
+            pluralityCount: d.pluralityCount,
+            purity: Math.round(d.purity * 10000) / 10000,
+          })),
+          splitCandidates: purity.splitCandidates.map(s => ({
+            directory: s.directory,
+            communities: s.communities,
+            fileCounts: s.fileCounts,
+          })),
+          mergeCandidates: purity.mergeCandidates.map(m => ({
+            directories: m.directories,
+            community: m.community,
+            fileCount: m.fileCount,
+          })),
+          agreementScore: Math.round(purity.agreementScore * 10000) / 10000,
+          martinMetrics: martin.map(m => ({
+            directory: m.directory,
+            ce: m.ce,
+            ca: m.ca,
+            instability: Math.round(m.instability * 10000) / 10000,
+            abstractness: Math.round(m.abstractness * 10000) / 10000,
+            distanceFromMain: Math.round(m.distanceFromMain * 10000) / 10000,
+          })),
+        }, null, 2) + '\n');
+      } else {
+        // Community summary
+        console.log(chalk.blue('🏗️  Architecture Analysis\n'));
+        console.log(chalk.bold('Community Detection (Louvain):'));
+        console.log(chalk.gray(`  ${communities.communityCount} communities detected (modularity: ${communities.modularity.toFixed(4)})`));
+
+        // Directory Purity
+        if (purity.directoryPurities.length > 0) {
+          console.log(chalk.bold('\nDirectory Purity (agreement score: ') + chalk.yellow(purity.agreementScore.toFixed(2)) + chalk.bold(')\n'));
+          console.log(chalk.gray(
+            '  Directory                                  Files  Plurality  Purity'
+          ));
+          console.log(chalk.gray(
+            '  ─────────                                  ─────  ─────────  ──────'
+          ));
+          for (const d of purity.directoryPurities) {
+            const dirName = d.directory.length > 40 ? '...' + d.directory.slice(-37) : d.directory.padEnd(40);
+            const files = String(d.totalFiles).padStart(5);
+            const comm = String(d.pluralityCommunity).padStart(9);
+            const pur = (d.purity * 100).toFixed(0).padStart(4) + '%';
+            const purColor = d.purity >= 0.8 ? chalk.green(pur) : d.purity >= 0.5 ? chalk.yellow(pur) : chalk.red(pur);
+            console.log(`  ${chalk.dim(dirName)}  ${files}  ${comm}  ${purColor}`);
+          }
+        }
+
+        // Split Candidates
+        if (purity.splitCandidates.length > 0) {
+          console.log(chalk.bold('\n🔀 Split Candidates (directories spanning ≥2 communities):'));
+          for (const s of purity.splitCandidates) {
+            console.log(chalk.yellow(`  ${s.directory}`));
+            for (let i = 0; i < s.communities.length; i++) {
+              console.log(chalk.gray(`    Community ${s.communities[i]}: ${s.fileCounts[i]} files`));
+            }
+          }
+        }
+
+        // Merge Candidates
+        if (purity.mergeCandidates.length > 0) {
+          console.log(chalk.bold('\n🔗 Merge Candidates (one community dominating ≥2 directories):'));
+          for (const m of purity.mergeCandidates) {
+            const dirs = m.directories.join(', ');
+            console.log(chalk.green(`  Community ${m.community}: ${dirs} (${m.fileCount} files)`));
+          }
+        }
+
+        // Martin Metrics
+        console.log(chalk.bold('\nMain-Sequence Distance (Martin Metrics):\n'));
+        if (martin.length === 0) {
+          console.log(chalk.gray('  No directory-level metrics available.'));
+        } else {
+          console.log(chalk.gray(
+            '  Directory                                  Ce   Ca     I     A    |D|'
+          ));
+          console.log(chalk.gray(
+            '  ─────────                                  ──   ──   ────  ────  ────'
+          ));
+          // Sort by distance from main sequence descending
+          const sorted = [...martin].sort((a, b) => b.distanceFromMain - a.distanceFromMain);
+          for (const m of sorted.slice(0, 30)) {
+            const dirName = m.directory.length > 40 ? '...' + m.directory.slice(-37) : m.directory.padEnd(40);
+            const ce = String(m.ce).padStart(3);
+            const ca = String(m.ca).padStart(3);
+            const inst = m.instability.toFixed(2).padStart(5);
+            const abst = m.abstractness.toFixed(2).padStart(5);
+            const dist = m.distanceFromMain.toFixed(2).padStart(5);
+            const distColor = m.distanceFromMain <= 0.3 ? chalk.green(dist) : m.distanceFromMain <= 0.5 ? chalk.yellow(dist) : chalk.red(dist);
+            console.log(`  ${chalk.dim(dirName)}  ${ce}  ${ca}  ${inst}  ${abst}  ${distColor}`);
+          }
+          console.log(chalk.gray('\n  Ce = efferent couplings, Ca = afferent couplings'));
+          console.log(chalk.gray('  I = Ce/(Ca+Ce), A = abstractness, |D| = |A+I−1|'));
+          console.log(chalk.gray('  Ideal: |D| → 0 (close to main sequence)'));
+        }
+      }
     } catch (error) {
       console.error(chalk.red('Error:'), error);
       process.exit(1);

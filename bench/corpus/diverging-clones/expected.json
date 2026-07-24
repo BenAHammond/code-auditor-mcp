@@ -1,0 +1,8 @@
+{
+  "analyzer": "diverging-clones",
+  "expectedViolations": [
+    { "file": "src/clone_a.ts", "rule": "dry/diverging-clone", "severity": "suggestion" }
+  ],
+  "nearMissFiles": [],
+  "description": "Tests for diverging-clone detection — a tracked clone pair whose similarity has declined across consecutive audit runs"
+}

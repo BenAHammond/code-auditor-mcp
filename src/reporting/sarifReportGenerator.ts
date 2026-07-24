@@ -195,6 +195,14 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
         };
       }
 
+      // Add hotspot score as a property (Spec 13 R2)
+      if (violation.hotspot !== undefined && violation.hotspot > 0) {
+        sarifResult.properties = {
+          ...sarifResult.properties,
+          hotspot: String(Math.round(violation.hotspot * 1000) / 1000),
+        };
+      }
+
       results.push(sarifResult);
     }
   }

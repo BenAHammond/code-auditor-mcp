@@ -164,6 +164,160 @@ Five convention domains are mined from the `functions` and `function_calls` tabl
 | `src/scripts/runBench.ts` | Conventions runner with in-memory seed data |
 | `src/__tests__/bench.test.ts` | Updated to 10 analyzers |
 
+### Spec-13: Hotspots & Temporal Analysis — Churn, Trends, and Diverging Clones
+
+Spec 13 adds five temporal-analysis capabilities: git-powered churn tracking, hotspot scoring (churn × complexity), ownership/bus-factor detection, audit trend analysis, and diverging-clone detection. All git access is read-only and degrades gracefully when no repo exists.
+
+#### R1: Churn Extraction
+
+- **New module `src/churn/churnExtractor.ts`**: Shells out to `git log --numstat` and `git log -p` for per-file and per-function churn. Gracefully handles missing git repos (logs warning, returns empty). Returns cost measurements (`{ fileCount, functionCount, durationMs }`).
+- **`file_churn` table** (schema v5): `file_path`, `commit_count`, `lines_added`, `lines_deleted`, `distinct_authors`, `dominant_author`, `dominant_author_share`, `last_touched`.
+- **`function_churn` table** (schema v5): `function_id` FK to `functions`, `function_name`, `file_path`, `commit_count`, `distinct_authors`, `dominant_author`, `dominant_author_share`, `renamed` flag, `confidence`.
+- **Schema migration** (4→5): Creates both churn tables + `dry_pair_history` table + indexes.
+- **Sync integration**: `extractChurn()` called from `deepSync()` after indexing, gated by git HEAD + window meta hash cache invalidation.
+
+#### R2: Hotspot Scoring
+
+- **New module `src/hotspots/hotspotScorer.ts`**: Percentile-based scoring combining churn and complexity. Function hotspot = `churnPercentile × complexityPercentile`, scaled to [0, 1]. File hotspot = `fileChurnPercentile × maxFunctionComplexityPercentileInFile`. Zero-churn files score 0 (never penalized for complexity alone).
+- **`hotspot_scores` table**: Cached scores recomputed on sync (like conventions).
+- **Finding reordering** (`auditRunner.ts`): Within each severity tier, findings sort by containing function's hotspot score descending (falling back to file hotspot, then original order).
+- **`hotspot` field on every Violation**: Optional `hotspot?: number` field on `Violation` type, populated from containing function's or file's hotspot score. Included on all output surfaces (JSON, HTML, CSV, SARIF).
+
+#### R3: Ownership / Bus-Factor Detection
+
+- **Bus-factor analysis**: For files and functions in the top quartile of hotspot scores, checks if `dominant_author_share ≥ 0.9` (single author owns ≥90% of commits). Flags emitted as report-level `busFactorRisks` array.
+- **CLI visibility**: `code-audit hotspots` command shows ⚠ icon next to bus-factor risks.
+
+#### R4: Ledger Trends
+
+- **New CLI subcommand** `code-audit ledger trends [--since <runId>] [--json]`: Compares fingerprint sets across consecutive same-target full-audit runs. Tracks `newCount`, `fixedCount`, and `net` per rule. Output includes comparison basis (target, run pairs, time range).
+- **Filtering**: Excludes non-full-audit runs and runs of different targets. Requires ≥2 full-audit runs of the same target.
+
+#### R5: Diverging Clones
+
+- **New rule** `dry/diverging-clone` at **suggestion** severity: Detects clone pairs whose similarity has declined across consecutive audit runs. Pair identity is fingerprint-based (`file + enclosingSymbol`), not content-hash-based (stable across line drift).
+- **Two-phase mechanism**:
+  1. **Seed phase**: During DRY analysis, pairs with similarity ≥ `minPairSimilarity` (0.5) are persisted into `dry_pair_history`.
+  2. **Tracking phase**: On every full audit, all historically-tracked pairs are re-measured. If similarity drops by ≥ `divergenceThreshold` (0.05) for `divergenceRuns` (2) consecutive runs → emit violation.
+- **`dry_pair_history` table**: `pair_fingerprint` (stable identity key), file/symbol/line/content-hash per block, `similarity`, `timestamp`, `run_id`. Content hashes are data (not keys).
+- **Config**: `DivergenceConfig` with `divergenceThreshold` (0.05), `divergenceRuns` (2), `minPairSimilarity` (0.5) in `DEFAULT_ANALYZER_CONFIGS.dry.divergence`.
+
+#### R6: Bench Fixtures & Baseline
+
+- **New corpus** `bench/corpus/diverging-clones/`: Fixture files (`clone_a.ts`, `clone_b.ts`) with seeded `dry_pair_history` rows simulating a tracked pair with declining similarity (0.85 → 0.78 → 0.68) across three runs.
+- **Bench runner** (`runBench.ts`): `diverging-clones` entry with in-memory `dry_pair_history` seeding → violation detection → F1/recall/precision computation.
+- **Baseline** (`baseline.json`): `diverging-clones` entry with `dry/diverging-clone` rule at F1=1.0.
+- **Bench test** (`bench.test.ts`): Updated to 11 analyzers.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/types.ts` | `ChurnConfig`, `HotspotEntry`, `TrendSummary`, `DivergenceConfig` types; `hotspot` field on `Violation` |
+| `src/codeIndexDB.ts` | SCHEMA_VERSION → 5, `file_churn`, `function_churn`, `dry_pair_history` tables, migration 4→5 |
+| `src/churn/churnExtractor.ts` | **New** — git shell-out for per-file and per-function churn |
+| `src/hotspots/hotspotScorer.ts` | **New** — percentile math, hotspot scoring, bus-factor detection |
+| `src/auditRunner.ts` | Hotspot-based finding reordering, hotspot field attachment, two-phase diverging-clone tracking (seed + re-measure) |
+| `src/ledger.ts` | `getTrends()` — same-target full-run fingerprint trend comparison |
+| `src/cli.ts` | `hotspots` command, `ledger trends` subcommand |
+| `src/config/defaults.ts` | Churn and divergence configs |
+| `src/reporting/jsonReportGenerator.ts` | `hotspot` field in output |
+| `src/reporting/htmlReportGenerator.ts` | `hotspot` field in output |
+| `src/reporting/csvReportGenerator.ts` | `hotspot` field in output |
+| `src/reporting/sarifReportGenerator.ts` | `hotspot` field in `properties` |
+| `bench/corpus/diverging-clones/` | **New** — bench fixture project + expected.json |
+| `bench/baselines/baseline.json` | Add diverging-clones analyzer baseline |
+| `src/scripts/runBench.ts` | Diverging-clones runner with in-memory seed data |
+| `src/__tests__/bench.test.ts` | Updated to 11 analyzers |
+| `SKILL.md` | Hotspot + trends workflows |
+
+
+### Spec-14: Graph & Architecture Metrics — Call Graphs, Centrality, Community Detection, and Martin Instability
+
+Spec 14 adds network analysis to the code auditor: call-graph construction, centrality ranking (PageRank + betweenness), community detection vs directory structure, Martin instability metrics, DOT/Mermaid output, and blast-radius estimates in the hook path. All output is advisory — reports and annotations only, zero violations.
+
+#### R1: Graph Construction and Caching
+
+- **`src/graph/callGraph.ts`** — `buildCallGraph(db)`: Constructs the function call graph from `function_calls` joined with `functions`. Resolves `callee_name` TEXT → `functions.id` via name join. Edge weight = call-site count (duplicate `(caller_id, callee_name)` rows aggregate). Reports `unresolvedShare` for calls to symbols not in the index.
+- **`src/graph/importGraph.ts`** — `buildImportGraph(db)`: Derives file-level imports by aggregating `function_dependencies` joined with `functions.file_path`. Resolves dependencies using 4 strategies: exact match, relative path resolution, module name matching (packages), and fuzzy path matching.
+- **`graph_cache` table** (schema v6): Persistent SQLite cache for adjacency, populated after each full sync and rebuilt entirely on each scoped sync. Columns: `graph_type` ('call' or 'import'), `node_key`, `neighbor_key`, `weight`. Stale edges cleared on rebuild — no accumulation.
+- **Schema migration 5→6**: Creates `graph_cache` table with primary key on `(graph_type, node_key, neighbor_key)`.
+- **Incremental scoped-sync**: Cache rebuilt from scratch on each sync via `populateCallGraphCache(db)` and `populateImportGraphCache(db)` called from `deepSync()`.
+
+#### R2: Centrality and Risk Ranking
+
+- **`computePageRank(adjacency, damping=0.85, convergence=1e-6)`**: Standard iterative PageRank on weighted directed graph. Initializes all nodes to 1/N, iterates until max change < convergence (capped at 100). Handles dangling nodes with uniform teleportation distribution.
+- **`computeBetweenness(adjacency, nodeIds)`**: Brandes exact algorithm for N ≤ 2000 nodes. Brandes-Pich pivot sampling above cap. Uses directed edge traversal (BFS on outgoing edges only). Pivot count reported in output.
+- **`computeRisk(db, adjacency, nodeIds, nodeNames, nodePaths)`**:
+  - Percentile math: `(rank - 1) / (total - 1)` for PageRank, betweenness, and complexity
+  - Untested detection: 2-hop transitive caller search via graph cache; if no caller file matches test globs (`**/*.{test,spec}.*`, `**/__tests__/**`) → untested
+  - Formula: `risk = max(pagerank%, betweenness%) × complexity% × (1 + untested)` where untested = 1 if true, 0 otherwise
+  - Returns `RiskEntry[]` sorted by risk descending
+- **`code-audit risk` CLI**: `risk [--limit <n>] [--json] [--path <dir>] [--format dot]` — ranked table with PageRank%, Betweenness%, Complexity%, Untested, Risk Score. `--format dot` emits call-graph neighborhood (depth 2) of top-N risk functions.
+
+#### R3: Community Detection vs Directory Structure
+
+- **`detectCommunities(adjacency, filePaths)`**: Louvain two-phase greedy modularity optimization. Converts directed graph to undirected (summing weights). Phase 1: greedy node movement with strict `gain > 0`. Phase 2: community aggregation. Iterates until modularity gain < 1e-5. Returns `CommunityResult` with `communities` map, `communityCount`, and `modularity`.
+- **`computeDirectoryPurity(communities, filePaths)`**: Per-directory purity (share of files in plurality community), weighted agreement score, split candidates (directories spanning ≥2 communities with ≥5 files each), merge candidates (one community dominating ≥2 directories).
+- **`code-audit architecture` CLI**: `architecture [--json] [--path <dir>] [--format dot|mermaid]` — directory purity table, main-sequence distance table, split/merge candidates. `--format` emits import graph colored by community.
+
+#### R4: Instability and Abstractness (Martin Metrics)
+
+- **`computeMartinMetrics(db, importGraph)`**: Per-directory Ce (efferent couplings), Ca (afferent couplings), I = Ce/(Ca+Ce), A from per-file AST scan of export type/interface declarations, D = |A+I-1|. Returns `MartinEntry[]` sorted by D descending.
+- **Abstractness verification**: Per-file AST scan counts `export type` and `export interface` declarations. Dead-path guard: bench fixture includes `src/interfaces/payments.ts` with `export interface IPaymentProcessor` — test asserts `abstractness > 0`.
+- Included in `code-audit architecture` output and `code_map` `architecture` section.
+
+#### R5: Graph Output Formats
+
+- **`src/graph/outputFormatter.ts`** — `toDot(graph, options?)`: Standard DOT format with community-based node coloring, legend, edge labels with weight. `toMermaid(graph, options?)`: Mermaid `graph TD` with `classDef`/`class` for community styling. Zero rendering dependencies — pure string emission.
+
+#### R6: Blast Radius in Hook Path
+
+- **`src/graph/blastRadius.ts`** — `computeImpact(db, functionIds)`: Recursive CTE against `graph_cache` to walk the caller graph outward (depth-capped at 10). Counts `is_exported=1` rows among reachable callers. Cost scales with BFS neighborhood size, not codebase size.
+- **Hook path integration** (`auditRunner.ts`): After `detectChangedFunctions()` in diff-scoped audit, calls `computeImpact()`. Measured with `performance.now()` — if >100ms, emits warning and skips annotation (disabled-by-default when over budget). Human output: "reaches N callers, M exports" per changed function.
+
+#### Bench Fixture
+
+- **`bench/corpus/graph/`**: Synthetic source files producing known call graph and import graph structures:
+  - `src/core.ts`: High-PageRank hub function
+  - `src/bridge.ts`: High-betweenness bridge function
+  - `src/untested.ts`: Central function with no test coverage
+  - `src/module_a/a1.ts`, `src/module_a/a2.ts`: Community A
+  - `src/module_b/b1.ts`, `src/module_b/b2.ts`: Community B
+  - `src/module_c/c_a.ts`, `src/module_c/c_b.ts`: Community C split across directory boundary
+  - `src/interfaces/payments.ts`: Exported interfaces for A > 0 assertion
+  - `expected.json`: `kind: "metrics"` with `expectedMetrics` range assertions (communityCount, abstractness > 0, etc.)
+- **Bench runner**: `graph` entry in `buildAnalyzers()` with expectedMetrics range checks
+- **Baseline**: `graph` entry in `baseline.json` (empty rules, metrics-only)
+
+#### Unit Tests (51 tests across 3 files)
+
+- **`src/graph/__tests__/callGraph.test.ts`** (23 tests): PageRank on 3-node chain, 4-node converging graph, convergence within few iterations; Brandes exact betweenness on 5-node path, star graph with bidirectional edges, disconnected graph; risk formula — percentile math, untested penalty, field validation; buildCallGraph — node IDs, names, paths, adjacency, duplicate call site weight; buildCallGraphFromCache.
+- **`src/graph/__tests__/importGraph.test.ts`** (17 tests): buildImportGraph — file nodes, intra-module imports, empty DB; detectCommunities — two-cluster graph, positive gain merging, empty/single-node graphs; computeDirectoryPurity — aligned communities, split detection, weighted agreement; computeMartinMetrics — Ce/Ca/I/D, abstractness > 0 guard, concrete-only A=0, distanceFromMain sorting.
+- **`src/graph/__tests__/graphCache.test.ts`** (11 tests): populateCallGraphCache — edge correctness, weight=1, duplicate aggregation, stale edge clearance; populateImportGraphCache — edge correctness, stale clearance; incremental update simulation — new functions/calls, removed calls, new dependencies, empty rebuild, cache matches direct build.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/types.ts` | Add `RiskEntry`, `DirectoryPurity`, `MartinEntry`, `BlastRadiusImpact`, `GraphStats`, `CallGraph`, `ImportGraph`, `CommunityResult`, `PurityResult` |
+| `src/codeIndexDB.ts` | SCHEMA_VERSION → 6, `graph_cache` table, migration 5→6, `getGraphStats()` |
+| `src/graph/callGraph.ts` | **New** — buildCallGraph, computePageRank, computeBetweenness, computeRisk, populateCallGraphCache, buildCallGraphFromCache |
+| `src/graph/importGraph.ts` | **New** — buildImportGraph, detectCommunities, computeDirectoryPurity, computeMartinMetrics, populateImportGraphCache, buildImportGraphFromCache |
+| `src/graph/outputFormatter.ts` | **New** — toDot, toMermaid (string emission) |
+| `src/graph/blastRadius.ts` | **New** — computeImpact (recursive CTE, not full adjacency load) |
+| `src/graph/__tests__/callGraph.test.ts` | **New** — 23 tests: PageRank, Brandes, risk, buildCallGraph, cache |
+| `src/graph/__tests__/importGraph.test.ts` | **New** — 17 tests: Louvain, Martin metrics, A > 0, import graph |
+| `src/graph/__tests__/graphCache.test.ts` | **New** — 11 tests: cache population, incremental update simulation |
+| `src/auditRunner.ts` | Blast radius integration in scoped audit path |
+| `src/cli.ts` | `index status` subcommand, `risk` command, `architecture` command |
+| `src/config/defaults.ts` | Graph config (betweennessExactNodeCap, blastRadiusEnabled, etc.) |
+| `src/services/CodeMapGenerator.ts` | `risk` and `architecture` sections (conditional, try/catch) |
+| `bench/corpus/graph/` | **New** — bench fixture with synthetic graph + expectedMetrics |
+| `bench/baselines/baseline.json` | Add `graph` entry (empty rules, metrics-only) |
+| `src/scripts/runBench.ts` | Graph runner with expectedMetrics range assertions |
+| `src/__tests__/bench.test.ts` | Updated to 12 analyzers |
+| `SKILL.md` | `risk` and `architecture` command docs |
 ## [3.2.0] — 2026-07-23
 
 ### Spec-21: Language-Neutral Detection — Provenance-Based DB Detection

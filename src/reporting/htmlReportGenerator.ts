@@ -133,11 +133,15 @@ function generateViolationsSection(result: AuditResult): string {
  * Generate a violation card
  */
 function generateViolationCard(violation: Violation & { analyzer: string }): string {
+  const hotspotBadge = violation.hotspot && violation.hotspot > 0
+    ? `<span class="hotspot-badge" title="Hotspot score (churn × complexity)">🔥 ${(violation.hotspot * 100).toFixed(0)}%</span>`
+    : '';
   return `
     <div class="violation-card ${violation.severity}">
         <div class="violation-header">
             <span class="severity-badge">${violation.severity.toUpperCase()}</span>
             <span class="analyzer-badge">${violation.analyzer}</span>
+            ${hotspotBadge}
             <span class="file-path">${violation.file}${violation.line ? `:${violation.line}` : ''}</span>
         </div>
         <div class="violation-body">

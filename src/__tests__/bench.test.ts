@@ -62,12 +62,14 @@ describe('Bench harness — regression gate', () => {
 // ── Per-analyzer fixture integrity ─────────────────────────────────────
 
 describe('Fixture integrity', () => {
-  it('covers all 10 analyzers', () => {
+  it('covers all 11 analyzers', () => {
     const expectedAnalyzers = [
       'conventions',
       'data-access',
+      'diverging-clones',
       'documentation',
       'dry',
+      'graph',
       'invariants',
       'non-english',
       'react',

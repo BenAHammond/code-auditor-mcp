@@ -91,6 +91,7 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
         message: violation.message,
         type: violation.type,
         ...(violation.profile && { profile: violation.profile }),
+        ...(violation.hotspot !== undefined && violation.hotspot > 0 && { hotspot: Math.round(violation.hotspot * 1000) / 1000 }),
         ...(violation.recommendation && { recommendation: violation.recommendation }),
         ...(violation.estimatedEffort && { estimatedEffort: violation.estimatedEffort }),
         ...(violation.snippet && { snippet: violation.snippet }),

@@ -24,7 +24,7 @@ import { UniversalConventionsAnalyzer } from '../analyzers/universal/UniversalCo
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { fingerprint } from '../fingerprint.js';
 import { extractSymbol } from '../symbols.js';
-import type { Violation, AnalyzerResult } from '../types.js';
+import type { Violation, AnalyzerResult, RiskEntry, MartinEntry } from '../types.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { join, resolve, relative, dirname } from 'path';
@@ -42,11 +42,15 @@ interface ExpectedEntry {
 }
 
 interface ExpectedManifest {
+  /** 'violations' (default) or 'metrics' (advisory-only analyzer). */
+  kind?: 'violations' | 'metrics';
   analyzer: string;
   config?: Record<string, unknown>;
   expectedViolations: ExpectedEntry[];
   /** Ground-truth violations the analyzer cannot currently detect due to known limitations. */
   knownMisses?: ExpectedEntry[];
+  /** Range assertions for metrics-only analyzers. Key → { min?, max? }. */
+  expectedMetrics?: Record<string, { min?: number; max?: number }>;
   nearMissFiles: string[];
   description: string;
 }
@@ -287,6 +291,268 @@ function seedConventionsData(rawDb: any, _files: string[]): void {
   insertConv.run(5, 'naming',         'conventions/naming',         null,          null,       'PascalCase',   'src', 25,  27, 0.92, 'src/approved.ts', 25);
 }
 
+/**
+ * Seed dry_pair_history with pre-declining similarity rows to simulate
+ * a tracked clone pair that has diverged across consecutive audit runs.
+ *
+ * 3 rows: similarity 0.85 → 0.78 → 0.68
+ * With divergenceThreshold=0.05 and divergenceRuns=2:
+ *   - Row 1→2: 0.78 < 0.85 - 0.05 = 0.80 ✓ (decline)
+ *   - Row 2→3: 0.68 < 0.78 - 0.05 = 0.73 ✓ (decline)
+ *   - consecutiveDeclines = 2 ≥ requiredDeclines = 2 → triggers
+ */
+function seedDivergingClonesData(rawDb: any, files: string[]): void {
+  const file1 = files[0] ?? 'src/clone_a.ts';
+  const file2 = files[1] ?? 'src/clone_b.ts';
+  const shortHash = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 16);
+
+  // Stable pair_fingerprint: SHA256 of sorted member identity strings
+  const pairFp = createHash('sha256')
+    .update([`${file1}|function_declaration|1`, `${file2}|function_declaration|1`].sort().join('||'))
+    .digest('hex');
+
+  const insert = rawDb.prepare(`
+    INSERT INTO dry_pair_history
+      (pair_fingerprint, file1, symbol1, line1, content_hash1,
+       file2, symbol2, line2, content_hash2,
+       similarity, timestamp, run_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  // Run 1: initial similarity 0.85
+  insert.run(pairFp,
+    file1, 'processOrder', 12, shortHash('order-block-v1'),
+    file2, 'handleInvoice', 12, shortHash('invoice-block-v1'),
+    0.85, '2026-01-01T00:00:00.000Z', 'run-1');
+  // Run 2: slight divergence, similarity 0.78 (decline 0.07 > 0.05)
+  insert.run(pairFp,
+    file1, 'processOrder', 12, shortHash('order-block-v2'),
+    file2, 'handleInvoice', 12, shortHash('invoice-block-v2'),
+    0.78, '2026-01-02T00:00:00.000Z', 'run-2');
+  // Run 3: further divergence, similarity 0.68 (decline 0.10 > 0.05)
+  insert.run(pairFp,
+    file1, 'processOrder', 12, shortHash('order-block-v3'),
+    file2, 'handleInvoice', 12, shortHash('invoice-block-v3'),
+    0.68, '2026-01-03T00:00:00.000Z', 'run-3');
+}
+
+// ── Graph bench seed data ──────────────────────────────────────────────
+
+/**
+ * Seed the in-memory SQLite DB with a known call graph and import graph.
+ *
+ * Graph structure:
+ *   - core.ts: calculateTotal (hub — high PageRank, called by many)
+ *   - bridge.ts: validateOrder (bridge — high betweenness, connects module_a ↔ module_b)
+ *   - untested.ts: processPayment, refundPayment (no test-file callers → untested penalty)
+ *   - module_a: a1.ts (calculateTax, processModuleA), a2.ts (calculateShipping, estimateTotal)
+ *   - module_b: b1.ts (processOrder, handleModuleB), b2.ts (generateReport, auditModuleB)
+ *   - module_c: c_a.ts (crossModuleOperation, moduleCOperation), c_b.ts (processModuleC, handleModuleC)
+ *   - interfaces/: payments.ts with 2 exported interfaces + 1 exported function (abstractness > 0)
+ */
+function seedGraphData(rawDb: any, _files: string[]): void {
+  const insertFn = rawDb.prepare(
+    `INSERT INTO functions (id, name, file_path, line_number, complexity, is_exported, content_hash, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const hash = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 16);
+
+  // ── Functions ───────────────────────────────────────────────────────
+  const fns: Array<[number, string, string, number, number, number]> = [
+    // core.ts — hub
+    [1,  'calculateTotal',       'src/core.ts',                1,  1, 1],
+    [2,  'finalizeOrder',        'src/core.ts',                8,  3, 1],
+    // bridge.ts — bridge
+    [3,  'validateOrder',        'src/bridge.ts',              2,  2, 1],
+    [4,  'processAndReport',     'src/bridge.ts',              9,  2, 1],
+    // untested.ts
+    [5,  'processPayment',       'src/untested.ts',            2,  2, 1],
+    [6,  'refundPayment',        'src/untested.ts',            8,  1, 1],
+    // module_a/a1.ts — Community A
+    [7,  'calculateTax',         'src/module_a/a1.ts',         2,  1, 1],
+    [8,  'processModuleA',       'src/module_a/a1.ts',         6,  2, 1],
+    // module_a/a2.ts — Community A
+    [9,  'calculateShipping',    'src/module_a/a2.ts',         2,  1, 1],
+    [10, 'estimateTotal',        'src/module_a/a2.ts',         6,  2, 1],
+    // module_b/b1.ts — Community B
+    [11, 'processOrder',         'src/module_b/b1.ts',         2,  1, 1],
+    [12, 'handleModuleB',        'src/module_b/b1.ts',         6,  2, 1],
+    // module_b/b2.ts — Community B
+    [13, 'generateReport',       'src/module_b/b2.ts',         2,  1, 1],
+    [14, 'auditModuleB',         'src/module_b/b2.ts',         6,  1, 1],
+    // module_c/c_a.ts — Community C (split)
+    [15, 'crossModuleOperation', 'src/module_c/c_a.ts',        2,  1, 1],
+    [16, 'moduleCOperation',     'src/module_c/c_a.ts',        6,  1, 1],
+    // module_c/c_b.ts — Community C (split)
+    [17, 'processModuleC',       'src/module_c/c_b.ts',        2,  1, 1],
+    [18, 'handleModuleC',        'src/module_c/c_b.ts',        6,  1, 1],
+    // interfaces/payments.ts
+    [19, 'createPaymentProcessor','src/interfaces/payments.ts',11, 1, 1],
+  ];
+
+  for (const [id, name, file, line, cx, exported] of fns) {
+    insertFn.run(id, name, file, line, cx, exported, hash(`${file}:${name}`), null);
+  }
+
+  // ── Function calls (caller_id → callee_name) ───────────────────────
+  const insertCall = rawDb.prepare(
+    `INSERT INTO function_calls (caller_id, callee_name) VALUES (?, ?)`,
+  );
+
+  const calls: Array<[number, string]> = [
+    // finalizeOrder orchestrates hub + module_a + module_b
+    [2, 'calculateTotal'],
+    [2, 'calculateTax'],
+    [2, 'processOrder'],
+    // processAndReport calls bridge + module_b
+    [4, 'validateOrder'],
+    [4, 'generateReport'],
+    // processModuleA calls hub + module_a internal
+    [8, 'calculateTotal'],
+    [8, 'calculateTax'],
+    // estimateTotal calls module_a internal
+    [10, 'calculateTax'],
+    [10, 'calculateShipping'],
+    // handleModuleB calls hub + module_b internal
+    [12, 'calculateTotal'],
+    [12, 'processOrder'],
+    // generateReport calls module_b internal
+    [13, 'processOrder'],
+    // auditModuleB calls module_b internal
+    [14, 'processOrder'],
+    // crossModuleOperation calls module_b (cross-community)
+    [15, 'generateReport'],
+    // processModuleC calls module_c internal
+    [17, 'moduleCOperation'],
+    // handleModuleC calls module_c internal
+    [18, 'processModuleC'],
+    // validateOrder bridges module_a (= calls calculateShipping)
+    [3, 'calculateShipping'],
+  ];
+
+  for (const [callerId, calleeName] of calls) {
+    insertCall.run(callerId, calleeName);
+  }
+
+  // ── Function dependencies (for import graph) ────────────────────────
+  // function_dependencies schema: (function_id, dependency)
+  // dependency = module specifier string (resolved to files in buildImportGraph)
+  const insertDep = rawDb.prepare(
+    `INSERT OR IGNORE INTO function_dependencies (function_id, dependency)
+     VALUES (?, ?)`,
+  );
+
+  // Map: function_name → function_id (used by both deps and call graph cache)
+  const nameToId = new Map<string, number>();
+  for (const [id, name] of fns) {
+    nameToId.set(name, id);
+  }
+
+  // Simulate import edges between files
+  // (source_function_id, dependency_module_specifier)
+  const deps: Array<[number, string]> = [
+    // core.ts functions import from module_a/a1 and module_b/b1
+    [nameToId.get('calculateTotal')!,    './module_a/a1'],
+    [nameToId.get('calculateTotal')!,    './module_b/b1'],
+    [nameToId.get('finalizeOrder')!,     './module_b/b1'],
+    // bridge.ts functions import from module_a/a2 and module_b/b2
+    [nameToId.get('validateOrder')!,     './module_a/a2'],
+    [nameToId.get('validateOrder')!,     './module_b/b2'],
+    [nameToId.get('customerReport')!,    './module_b/b2'],
+    // module_a/a1.ts imports from core.ts
+    [nameToId.get('calculateTax')!,      './core'],
+    [nameToId.get('applyDiscount')!,     './core'],
+    // module_a/a2.ts imports from module_a/a1.ts
+    [nameToId.get('calculateShipping')!, './module_a/a1'],
+    [nameToId.get('updateInventory')!,   './module_a/a1'],
+    // module_b/b1.ts imports from core.ts
+    [nameToId.get('processOrder')!,      './core'],
+    [nameToId.get('sendNotification')!,  './core'],
+    // module_b/b2.ts imports from module_b/b1.ts
+    [nameToId.get('generateReport')!,    './module_b/b1'],
+    [nameToId.get('archiveData')!,       './module_b/b1'],
+    // module_c/c_a.ts imports from module_b/b2.ts
+    [nameToId.get('moduleCOperation')!,  './module_b/b2'],
+    [nameToId.get('crossModuleHelper')!, './module_b/b2'],
+    // module_c/c_b.ts imports from module_c/c_a.ts
+    [nameToId.get('finalModuleStep')!,   './module_c/c_a'],
+    [nameToId.get('aggregateResults')!,  './module_c/c_a'],
+    // untested.ts imports from core.ts
+    [nameToId.get('processPayment')!,    './core'],
+    [nameToId.get('refundPayment')!,     './core'],
+  ];
+
+  for (const [fnId, dep] of deps) {
+    insertDep.run(fnId, dep);
+  }
+
+  // ── Populate graph_cache ────────────────────────────────────────────
+  // Call graph cache: insert all resolved (caller_id → callee_id) edges
+
+  const insertCache = rawDb.prepare(
+    `INSERT OR REPLACE INTO graph_cache (graph_type, node_key, neighbor_key, weight)
+     VALUES (?, ?, ?, ?)`,
+  );
+
+  const callWeight = new Map<string, number>();
+  for (const [callerId, calleeName] of calls) {
+    const calleeId = nameToId.get(calleeName);
+    if (!calleeId) continue;
+    const key = `call:${callerId}:${calleeId}`;
+    callWeight.set(key, (callWeight.get(key) ?? 0) + 1);
+  }
+
+  for (const [key, weight] of callWeight) {
+    const [, callerStr, calleeStr] = key.split(':');
+    insertCache.run('call', Number(callerStr), Number(calleeStr), weight);
+  }
+
+  // Import graph cache: insert file-level import edges
+  // Derive file paths from the seeded function IDs and dependency specifiers
+  const idToFilePath = new Map<number, string>();
+  for (const [id, , filePath] of fns) {
+    idToFilePath.set(id, filePath);
+  }
+
+  // Resolve dependency specifiers to actual file paths in the fixture
+  const resolveDep = (dep: string): string | null => {
+    // './module_a/a1' → 'src/module_a/a1.ts'
+    // './module_b/b1' → 'src/module_b/b1.ts'
+    // './core' → 'src/core.ts'
+    const clean = dep.replace(/^\.\//, '');
+    const candidates = [
+      `src/${clean}.ts`,
+      `src/${clean}/index.ts`,
+    ];
+    for (const c of candidates) {
+      if (filePaths.has(c)) return c;
+    }
+    return null;
+  };
+
+  const filePaths = new Set<string>();
+  for (const [, , fp] of fns) {
+    filePaths.add(fp);
+  }
+
+  const importWeight = new Map<string, number>();
+  for (const [fnId, dep] of deps) {
+    const srcFile = idToFilePath.get(fnId);
+    const dstFile = resolveDep(dep);
+    if (!srcFile || !dstFile) continue;
+    const key = `import:${srcFile}:${dstFile}`;
+    importWeight.set(key, (importWeight.get(key) ?? 0) + 1);
+  }
+
+  for (const [key, weight] of importWeight) {
+    const parts = key.split(':');
+    // key format: "import:srcFile:dstFile" — srcFile may contain colons on macOS? No.
+    const srcFile = parts.slice(1, -1).join(':');
+    const dstFile = parts[parts.length - 1];
+    insertCache.run('import', srcFile, dstFile, weight);
+  }
+}
+
 // ── Analyzer registry (mirrors auditRunner DEFAULT_ANALYZERS) ────────
 
 function buildAnalyzers(): Record<string, AnalyzerRunner> {
@@ -323,6 +589,71 @@ function buildAnalyzers(): Record<string, AnalyzerRunner> {
       analyze: async (files, config) => {
         const analyzer = new UniversalDRYAnalyzer();
         return analyzer.analyze(files, config);
+      },
+    },
+    'diverging-clones': {
+      name: 'diverging-clones',
+      analyze: async (files, _config) => {
+        CodeIndexDB.resetInstance();
+        const db = CodeIndexDB.getInstance(':memory:');
+        await db.initialize();
+        const rawDb = (db as any).rawDb;
+        seedDivergingClonesData(rawDb, files);
+
+        const violations: Violation[] = [];
+        const threshold = 0.05;
+        const requiredDeclines = 2;
+
+        // Run the divergence tracking pass (mirrors auditRunner Phase 2)
+        const fingerprints = rawDb
+          .prepare('SELECT DISTINCT pair_fingerprint FROM dry_pair_history')
+          .all() as Array<{ pair_fingerprint: string }>;
+
+        if (fingerprints.length > 0) {
+          const getRows = rawDb.prepare(`
+            SELECT similarity, timestamp
+            FROM dry_pair_history
+            WHERE pair_fingerprint = ?
+            ORDER BY timestamp ASC
+          `);
+
+          for (const { pair_fingerprint: fp } of fingerprints) {
+            const rows = getRows.all(fp) as Array<{ similarity: number; timestamp: string }>;
+            if (rows.length < requiredDeclines + 1) continue;
+
+            let consecutiveDeclines = 0;
+            for (let i = rows.length - requiredDeclines; i < rows.length; i++) {
+              if (rows[i].similarity < rows[i - 1].similarity - threshold) {
+                consecutiveDeclines++;
+              }
+            }
+
+            if (consecutiveDeclines >= requiredDeclines) {
+              const lastRow = rawDb.prepare(`
+                SELECT file1, file2, line1, line2 FROM dry_pair_history
+                WHERE pair_fingerprint = ?
+                ORDER BY timestamp DESC LIMIT 1
+              `).get(fp) as { file1: string; file2: string; line1: number; line2: number } | undefined;
+
+              if (lastRow) {
+                const currentSim = rows[rows.length - 1].similarity;
+                const prevSim = rows[rows.length - 2].similarity;
+                const drop = Math.round((prevSim - currentSim) * 1000) / 1000;
+
+                violations.push({
+                  file: lastRow.file1,
+                  line: lastRow.line1,
+                  severity: 'suggestion',
+                  message: `Clone pair has diverged: similarity dropped ${drop} (from ${prevSim.toFixed(3)} to ${currentSim.toFixed(3)}) across ${requiredDeclines} consecutive runs (pair: ${fp.slice(0, 12)}…). Review ${lastRow.file1}:${lastRow.line1} and ${lastRow.file2}:${lastRow.line2} for diverged logic.`,
+                  analyzer: 'dry',
+                  rule: 'dry/diverging-clone',
+                });
+              }
+            }
+          }
+        }
+
+        return { violations, filesProcessed: files.length, executionTime: 0 };
       },
     },
     'data-access': {
@@ -374,6 +705,82 @@ function buildAnalyzers(): Record<string, AnalyzerRunner> {
       analyze: async (files, config) => {
         const analyzer = new UniversalDataAccessAnalyzer();
         return analyzer.analyze(files, config);
+      },
+    },
+
+    // ── Graph — metrics-only (advisory, zero violations) ────────────────
+    graph: {
+      name: 'graph',
+      async analyze(_files: string[], _config: any) {
+        CodeIndexDB.resetInstance();
+        const db = CodeIndexDB.getInstance(':memory:');
+        await db.initialize();
+        const rawDb = (db as any).rawDb;
+
+        // Seed graph data into tables
+        seedGraphData(rawDb, _files);
+
+        // Dynamic import from built graph modules (bench runs against built dist)
+        // Use computed import path so tsc doesn't statically resolve to dist files (avoids TS5055)
+        const _importDist = (p: string) => import(p);
+        const callGraphMod = await _importDist('../../dist/graph/callGraph.js');
+        const { buildCallGraphFromCache, computeRisk } = callGraphMod as any;
+        const importGraphMod = await _importDist('../../dist/graph/importGraph.js');
+        const {
+          buildImportGraphFromCache,
+          detectCommunities,
+          computeDirectoryPurity,
+          computeMartinMetrics,
+        } = importGraphMod as any;
+
+        // Build call graph from cache and compute risk rankings
+        const callGraphResult = buildCallGraphFromCache(rawDb);
+        const callGraph = callGraphResult.graph;
+        const riskEntries = computeRisk(
+          rawDb,
+          callGraph.adjacency,
+          callGraph.nodeIds,
+          callGraph.nodeNames,
+          callGraph.nodePaths,
+        );
+
+        // Build import graph from cache and compute community detection + Martin metrics
+        const importGraph = buildImportGraphFromCache(rawDb);
+        const communityResult = detectCommunities(importGraph.adjacency, importGraph.filePaths);
+        const purityResult = computeDirectoryPurity(
+          communityResult.communities,
+          importGraph.filePaths,
+        );
+        const martinEntries = computeMartinMetrics(rawDb, importGraph);
+
+        // Collect metrics for expectedMetrics range assertions
+        const coreEntry = riskEntries.find((e: RiskEntry) => e.functionName === 'calculateTotal');
+        const bridgeEntry = riskEntries.find((e: RiskEntry) => e.functionName === 'validateOrder');
+        const untestedEntry = riskEntries.find((e: RiskEntry) => e.functionName === 'processPayment');
+
+        // Abstractness: extract from Martin entries for interfaces directory
+        const interfacesMartin = martinEntries.find((e: MartinEntry) => e.directory === 'src/interfaces');
+
+        const metrics = {
+          riskEntryCount: riskEntries.length,
+          corePageRank: coreEntry?.pageRankPercentile ?? 0,
+          bridgeBetweenness: bridgeEntry?.betweennessPercentile ?? 0,
+          untestedRisk: untestedEntry?.riskScore ?? 0,
+          communityCount: communityResult.communityCount,
+          agreementScore: purityResult.agreementScore,
+          abstractness: interfacesMartin?.abstractness ?? 0,
+          martinEntryCount: martinEntries.length,
+          // Extra diagnostics
+          callNodes: callGraph.nodeIds.size,
+          importNodes: importGraph.filePaths.size,
+        };
+
+        return {
+          violations: [],
+          filesProcessed: _files.length,
+          executionTime: 0,
+          extras: { metrics },
+        };
       },
     },
   };
@@ -801,6 +1208,75 @@ async function runSingleCorpus(
 
   const config = manifest.config ?? {};
   const result = await runner.analyze(files, config);
+
+  // Metrics-only analyzers (e.g. graph): zero violations, real gate is expectedMetrics ranges
+  const isMetricsOnly = manifest.kind === 'metrics';
+
+  if (isMetricsOnly) {
+    const actualMetrics: Record<string, number> = result.extras?.metrics ?? {};
+    const expectedMetrics = manifest.expectedMetrics ?? {};
+    const warnings: string[] = [];
+    let metricsPassed = true;
+
+    for (const [key, range] of Object.entries(expectedMetrics)) {
+      const actual = actualMetrics[key] ?? null;
+      if (actual === null) {
+        warnings.push(`Metric "${key}" not found in analyzer output`);
+        metricsPassed = false;
+        continue;
+      }
+      if (range.min !== undefined && actual < range.min) {
+        warnings.push(
+          `Metric "${key}" = ${actual} (< min ${range.min})`,
+        );
+        metricsPassed = false;
+      }
+      if (range.max !== undefined && actual > range.max) {
+        warnings.push(
+          `Metric "${key}" = ${actual} (> max ${range.max})`,
+        );
+        metricsPassed = false;
+      }
+    }
+
+    // Vacuous violation metrics — empty sets, precision/recall/F1 = 1.0
+    const metrics: AnalyzerMetrics = {
+      truePositives: 0,
+      falsePositives: 0,
+      falseNegatives: 0,
+      precision: 1.0,
+      recall: 1.0,
+      f1: 1.0,
+      trueRecall: 1.0,
+      trueF1: 1.0,
+      knownMisses: 0,
+      recoveredMisses: 0,
+      ruleMetrics: [],
+      nearMissResults: [],
+      details: [],
+      knownMissDetails: [],
+      warnings,
+    };
+
+    report.analyzers[manifest.analyzer] = metrics;
+
+    if (print) {
+      if (metricsPassed) {
+        console.log(`  ✅ ${name}: ${Object.keys(expectedMetrics).length} metric ranges passed`);
+        for (const [key, val] of Object.entries(actualMetrics)) {
+          if (expectedMetrics[key] !== undefined) {
+            console.log(`     ${key}: ${typeof val === 'number' ? val.toFixed(4) : val}`);
+          }
+        }
+      } else {
+        console.log(`  ❌ ${name}: ${warnings.length} metric range failures`);
+        for (const w of warnings) {
+          console.log(`     ${w}`);
+        }
+      }
+    }
+    return;
+  }
 
   const metrics = matchViolations(
     result.violations,

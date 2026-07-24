@@ -49,6 +49,8 @@ export interface Violation {
   suggestion?: string;
   /** Path profile that matched this file (last matching profile wins). */
   profile?: string;
+  /** Hotspot score [0,1] — churn percentile × complexity percentile. */
+  hotspot?: number;
   [key: string]: any; // Allow analyzer-specific properties
 }
 
@@ -141,6 +143,8 @@ export interface AuditResult {
     scope?: AuditResultScope; // Whether this was a full or scoped audit
     /** Milliseconds spent inside buildProvenanceContext() across all files (Spec 21 — hook-latency measurement). */
     provenanceResolutionMs?: number;
+    /** Blast radius impact for changed functions (Spec 14 R6 — scoped audits only). */
+    blastRadius?: BlastRadiusImpact;
     baseline?: {
       present: boolean;
       hash?: string;
@@ -287,6 +291,10 @@ export interface AuditConfig {
   builtin?: boolean;
   /** Per-rule severity overrides applied globally (before per-file path profile caps). */
   severityOverrides?: Record<string, Severity>;
+  /** Spec 13 — Churn extraction config. */
+  churn?: ChurnConfig;
+  /** Spec 13 — Diverging-clone detection config. */
+  divergence?: DivergenceConfig;
   // Analyzer-specific configurations
   analyzerOptions?: Record<string, any>;
 }
@@ -990,6 +998,70 @@ export interface ConventionsAnalyzerConfig {
   maxConventionsPerDomain: number;
 }
 
+// Spec 13 — Hotspots & Temporal Analysis
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Config for git churn extraction. */
+export interface ChurnConfig {
+  /** Lookback window for git history in months. Default 12. */
+  churnWindowMonths: number;
+}
+
+/** A single hotspot entry — file or function with its churn×complexity score. */
+export interface HotspotEntry {
+  /** File path (repo-relative) or function identifier. */
+  target: string;
+  /** Type discriminator: 'file' or 'function'. */
+  type: 'file' | 'function';
+  /** Hotspot score [0,1] — product of churn and complexity percentiles. */
+  score: number;
+  /** File churn percentile [0,1]. */
+  churnPercentile: number;
+  /** Complexity percentile [0,1]. */
+  complexityPercentile: number;
+  /** Number of commits touching this target. */
+  commitCount: number;
+  /** Number of distinct authors. */
+  distinctAuthors: number;
+  /** Author with the most commits. */
+  dominantAuthor: string;
+  /** Share of commits by the dominant author [0,1]. */
+  dominantAuthorShare: number;
+  /** Bus-factor risk: true if dominant_author_share ≥ 0.9. */
+  busFactorRisk: boolean;
+  /** Complexity value (raw, not percentile). */
+  complexity: number;
+}
+
+/** Summary of trend changes between two full-audit runs of the same target. */
+export interface TrendSummary {
+  /** The target directory these trends are for. */
+  target: string;
+  /** Time range covered — [earliest run timestamp, latest run timestamp]. */
+  range: [string, string];
+  /** Run IDs used for comparison (ordered oldest→newest). */
+  comparedRunIds: string[];
+  /** Per-rule trend counts. */
+  rules: Record<string, {
+    /** Findings present in run N but absent in run N-1. */
+    newCount: number;
+    /** Findings absent in run N but present in run N-1. */
+    fixedCount: number;
+    /** fixedCount - newCount. Negative means net increase. */
+    net: number;
+  }>;
+}
+
+/** Config for diverging-clone detection (R5). */
+export interface DivergenceConfig {
+  /** Minimum similarity drop to flag divergence. Default 0.05. */
+  divergenceThreshold: number;
+  /** Number of consecutive declining runs before flagging. Default 2. */
+  divergenceRuns: number;
+  /** Minimum Jaccard similarity to seed a pair for tracking. Default 0.5. */
+  minPairSimilarity: number;
+}
+
 // Spec 21 — Language-Neutral Detection / Provenance
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -999,6 +1071,58 @@ export type DetectionMode = 'hybrid' | 'provenance' | 'names';
 /** Shared detection config consumed by provenance module, schema, and data-access analyzers. */
 export interface DetectionConfig {
   mode: DetectionMode;
+}
+
+// Spec 14 — Graph & Architecture Metrics
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Per-function risk ranking entry (Spec 14 R2). */
+export interface RiskEntry {
+  functionName: string;
+  filePath: string;
+  pageRankPercentile: number;
+  betweennessPercentile: number;
+  complexityPercentile: number;
+  untested: boolean;
+  riskScore: number;
+}
+
+/** Directory-level community purity (Spec 14 R3). */
+export interface DirectoryPurity {
+  directory: string;
+  totalFiles: number;
+  pluralityCommunity: number;
+  pluralityCount: number;
+  purity: number;
+}
+
+/** Martin metrics per directory/package (Spec 14 R4). */
+export interface MartinEntry {
+  directory: string;
+  ce: number;
+  ca: number;
+  instability: number;
+  abstractness: number;
+  distanceFromMain: number;
+}
+
+/** Blast-radius impact estimate for hook path (Spec 14 R6). */
+export interface BlastRadiusImpact {
+  editedFunctionCount: number;
+  transitiveCallers: number;
+  reachableExports: number;
+  depthReached: number;
+  latencyMs: number;
+}
+
+/** Summarized graph statistics (Spec 14 R1). */
+export interface GraphStats {
+  callNodes: number;
+  callEdges: number;
+  unresolvedCalls: number;
+  unresolvedShare: number;
+  importNodes: number;
+  importEdges: number;
 }
 
 // Re-export whitelist types

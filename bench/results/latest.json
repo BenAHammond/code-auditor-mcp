@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-07-24T00:39:51.429Z",
+  "timestamp": "2026-07-24T02:58:43.846Z",
   "summary": {
-    "totalAnalyzers": 10,
-    "passed": 10,
+    "totalAnalyzers": 12,
+    "passed": 12,
     "failed": 0,
     "totalKnownMisses": 4,
     "microAvgPrecision": 1,
     "microAvgRecall": 1,
     "microAvgF1": 1,
-    "microAvgTrueRecall": 0.931,
-    "microAvgTrueF1": 0.9643
+    "microAvgTrueRecall": 0.9322,
+    "microAvgTrueF1": 0.9649
   },
   "analyzers": {
     "conventions": {
@@ -437,6 +437,54 @@
       "knownMissDetails": [],
       "warnings": []
     },
+    "diverging-clones": {
+      "truePositives": 1,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "dry/diverging-clone",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [],
+      "details": [
+        {
+          "expected": {
+            "file": "src/clone_a.ts",
+            "rule": "dry/diverging-clone",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/diverging-clones/src/clone_a.ts",
+            "line": 12,
+            "severity": "suggestion",
+            "message": "Clone pair has diverged: similarity dropped 0.1 (from 0.780 to 0.680) across 2 consecutive runs (pair: 3e329d37d60e…). Review /Users/ben/playground/code-auditor/app/bench/corpus/diverging-clones/src/clone_a.ts:12 and /Users/ben/playground/code-auditor/app/bench/corpus/diverging-clones/src/clone_b.ts:12 for diverged logic.",
+            "analyzer": "dry",
+            "rule": "dry/diverging-clone"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": []
+    },
     "documentation": {
       "truePositives": 1,
       "falsePositives": 0,
@@ -552,6 +600,25 @@
       ],
       "knownMissDetails": [],
       "warnings": []
+    },
+    "graph": {
+      "truePositives": 0,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [],
+      "nearMissResults": [],
+      "details": [],
+      "knownMissDetails": [],
+      "warnings": [
+        "Metric \"abstractness\" = 0 (< min 0.01)"
+      ]
     },
     "invariants": {
       "truePositives": 1,

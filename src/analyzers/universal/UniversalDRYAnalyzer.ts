@@ -6,12 +6,36 @@
  * R3.3: Rule-id split — dry/duplicate (exact token match) + dry/structural-similarity
  *       (identical token-kind sequence with different identifiers/literals).
  * R7:   dry/duplicate → warning, dry/structural-similarity → suggestion.
+ *
+ * Spec 13 R5 — Diverging Clones: Exports DryPairSeed during analysis for
+ * two-phase tracking (seed + re-measure pass in auditRunner).
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation, FunctionMetadata } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
 import * as crypto from 'crypto';
+
+/**
+ * Pair seed emitted during DRY analysis for diverging-clone tracking.
+ * The identity is fingerprint-based (file + enclosing symbol), not content-hash-based.
+ */
+export interface DryPairSeed {
+  /** Order-normalized pair identity: SHA256(sorted(fp1, fp2).join('||')) */
+  pairFingerprint: string;
+  file1: string;
+  symbol1: string;
+  line1: number;
+  contentHash1: string;
+  file2: string;
+  symbol2: string;
+  line2: number;
+  contentHash2: string;
+  /** Jaccard similarity [0,1] — 1.0 for exact, ~Jaccard for structural. */
+  similarity: number;
+  /** Rule: 'dry/duplicate' or 'dry/structural-similarity' */
+  rule: string;
+}
 
 /**
  * Configuration for DRY analyzer
@@ -68,6 +92,17 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   readonly name = 'dry';
   readonly description = 'Detects code duplication across the codebase';
   readonly category = 'maintainability';
+
+  /** Per-file accumulator for pairs seeded during analyzeAST. */
+  private _dryPairsForFile: DryPairSeed[] = [];
+
+  /** Pairs collected during the current analysis run for diverging-clone seeding. */
+  private _dryPairs: DryPairSeed[] = [];
+
+  /** Expose collected pairs for the auditRunner to persist. */
+  get dryPairs(): DryPairSeed[] {
+    return this._dryPairs;
+  }
   
   protected async analyzeAST(
     ast: AST,
@@ -77,6 +112,9 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   ): Promise<Violation[]> {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DRY_CONFIG, ...config };
+
+    // Reset pair collection for this file
+    this._dryPairsForFile = [];
 
     // Skip if file matches exclude patterns
     if (this.isExcluded(ast.filePath, finalConfig.excludePatterns || [])) {
@@ -118,6 +156,9 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           },
           block.hash
         ));
+
+        // Spec 13 R5 — seed pair for diverging-clone tracking
+        this.seedPair(original, block, 1.0, 'dry/duplicate');
       }
     }
 
@@ -154,6 +195,12 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
             },
             block.hash
           ));
+
+          // Spec 13 R5 — seed pair for diverging-clone tracking
+          const jaccardSim = this.computeJaccardSimilarity(
+            original.normalizedText, block.normalizedText
+          );
+          this.seedPair(original, block, jaccardSim, 'dry/structural-similarity');
         }
       }
     }
@@ -214,6 +261,9 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
       const importViolations = this.checkDuplicateImports(ast, adapter);
       violations.push(...importViolations);
     }
+
+    // Merge per-file pair accumulator into global accumulator for diverging-clone tracking
+    this._dryPairs.push(...this._dryPairsForFile);
 
     return violations;
   }
@@ -674,5 +724,82 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
 
   private isStringLiteral(node: ASTNode, adapter: LanguageAdapter): boolean {
     return node.type === 'string' || node.type === 'template_string';
+  }
+
+  // ── Spec 13 R5: Diverging-clone seed helpers ──────────────────────────
+
+  /**
+   * Compute the Jaccard similarity index between two tokenized strings.
+   * Jaccard = |intersection| / |union|. Range [0, 1].
+   */
+  private computeJaccardSimilarity(text1: string, text2: string): number {
+    const tokens1 = new Set(text1.split(/\s+/).filter(Boolean));
+    const tokens2 = new Set(text2.split(/\s+/).filter(Boolean));
+
+    let intersection = 0;
+    for (const t of tokens1) {
+      if (tokens2.has(t)) intersection++;
+    }
+
+    const union = tokens1.size + tokens2.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+  }
+
+  /**
+   * Compute an order-independent pair fingerprint from file + line + nodeType.
+   * Uses SHA256(sorted(a, b).join('||')) so the same pair has the same
+   * fingerprint regardless of argument order.
+   */
+  private computePairFingerprint(
+    file1: string, line1: number, nodeType1: string,
+    file2: string, line2: number, nodeType2: string,
+  ): string {
+    const id1 = `${file1}|${nodeType1}|${line1}`;
+    const id2 = `${file2}|${nodeType2}|${line2}`;
+    const sorted = [id1, id2].sort();
+    return crypto.createHash('sha256').update(sorted.join('||')).digest('hex');
+  }
+
+  /**
+   * Seed a pair into the per-file accumulator for diverging-clone tracking.
+   * Called during analyzeAST when a duplicate or structural-similarity pair
+   * is detected.
+   */
+  private seedPair(
+    original: CodeBlock,
+    block: CodeBlock,
+    similarity: number,
+    rule: string,
+  ): void {
+    const pairFingerprint = this.computePairFingerprint(
+      original.file, original.start.line, original.nodeType,
+      block.file, block.start.line, block.nodeType,
+    );
+    this._dryPairsForFile.push({
+      pairFingerprint,
+      file1: original.file,
+      symbol1: `${original.nodeType}:${original.start.line}`,
+      line1: original.start.line,
+      contentHash1: original.hash,
+      file2: block.file,
+      symbol2: `${block.nodeType}:${block.start.line}`,
+      line2: block.start.line,
+      contentHash2: block.hash,
+      similarity,
+      rule,
+    });
+  }
+
+  /**
+   * Override analyze() to attach seeded pairs to the AnalyzerResult.
+   */
+  async analyze(
+    files: string[],
+    config: any = {},
+    options: any = {},
+  ): Promise<import('../../types.js').AnalyzerResult> {
+    const result = await super.analyze(files, config, options);
+    (result as any).dryPairs = this.dryPairs;
+    return result;
   }
 }
