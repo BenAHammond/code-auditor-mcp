@@ -1,0 +1,7 @@
+{
+  "name": "recall-fixture",
+  "private": true,
+  "dependencies": {
+    "drizzle-orm": "^0.29.0"
+  }
+}

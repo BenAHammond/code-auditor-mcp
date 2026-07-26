@@ -362,7 +362,7 @@ function extractDeclarationsFromBlock(
                 line: baseLine + lineInBlock,
                 context: selector,
                 variantContext,
-                tokenRef: rawValue.trim().startsWith('var(') ? extractTokenRef(rawValue) : null,
+                tokenRef: property.startsWith('--') ? property : (rawValue.trim().startsWith('var(') ? extractTokenRef(rawValue) : null),
               });
             }
           }
@@ -557,12 +557,12 @@ function parseStyleObjectExpression(expr: string): Array<{ property: string; val
 
   // Simple regex-based property: value extraction from JS object expressions
   // Handles: property: 'value', property: "value", property: 42, property: 3.14
-  const propRegex = /([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*(?:'([^']*)'|"([^"]*)"|([\d.]+))/g;
+  const propRegex = /([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*(?:'([^']*)'|"([^"]*)"|`([^`]*)`|([\d.]+))/g;
   let match: RegExpExecArray | null;
 
   while ((match = propRegex.exec(expr)) !== null) {
     const property = match[1];
-    const value = match[2] ?? match[3] ?? match[4];
+    const value = match[2] ?? match[3] ?? match[4] ?? match[5];
 
     if (property && value !== undefined) {
       pairs.push({ property, value });

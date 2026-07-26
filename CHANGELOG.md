@@ -2,6 +2,52 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.5] — 2026-07-26
+
+### Recall-Protocol Send-Back: 4/5 Items Closed
+
+Post-v3.4.4 triage against recall-protocol (7,548 findings) revealed zero production effect from the 4 false-positive fixes claimed in v3.4.3/v3.4.4. Every fix targeted a shape absent from real codebases. This release fixes the root causes found by a recall-shaped fixture project audited through the installed tarball.
+
+#### Item 1 — var() False Positives (102 → 0)
+
+`parseStyleObjectExpression()` regex in `styleExtractor.ts` only captured single-quoted string values, not template literals (`backticks`) or bare expressions. All 102 receipts were TSX files with `var(--ink)` in template literals — the regex never matched, so `tokenRef` was never set, and the guard (`if (d.token_ref) continue`) never fired.
+
+**Fix**: Extended the regex in `parseStyleObjectExpression()` to capture backtick-delimited template literals (`\`...\``) in addition to single-quote, double-quote, and numeric values. Combined with CSS var definition-line fix (Item 2) and color-only gate (Item 3), all var()-using declarations now skip token-bypass correctly.
+
+#### Item 2 — CSS Definition-Line Survivors (11 → 0)
+
+**Fixture DB diagnosis**: `style_declarations` rows for `tokens.css` show `property` column correctly preserves the `--` prefix (`--ink`, `--accent`, etc.) — no SQLite round-trip corruption. The `token_ref` column was `null` for these rows before the fix, because the extraction path's tokenRef assignment was:
+
+```
+rawValue.trim().startsWith('var(') ? extractTokenRef(rawValue) : null
+```
+
+CSS custom property definitions (`--ink: #eef4f9`) have raw values like `#eef4f9` — no `var()` call — so `tokenRef` was always `null` at extraction. The `--` property guard in `detectTokenBypass()` (`if (d.property.startsWith('--')) continue`, added in v3.4.2) catches these at analysis time, but the `token_ref` guard (`if (d.token_ref) continue`) had nothing to skip — one layer was empty.
+
+**Fix**: Self-tag `--` definition sites at extraction time: `property.startsWith('--') ? property : ...`. This populates `tokenRef` with the property name (e.g. `--ink`), so the `token_ref` guard at analysis catches definition-site self-matches in addition to the `--` guard — defense-in-depth at a different layer.
+
+#### Item 3 — Color-Only Token-Bypass (239 → 0)
+
+All 239 receipt survivors were length coincidences (`6px` = `borderRadius.md` tokens). Colors are near-unique; lengths collide by nature. Restricting raw-literal token-bypass to color-typed values eliminates the class on principle.
+
+**Fix**: Added `if (tokenInfo.valueType !== 'color') continue` after the type-equality gate in `detectTokenBypass()`. Only color-typed design tokens are specific enough to flag raw-value bypasses.
+
+#### Item 4 — unknown-table (1,404 → 0)
+
+**Part A — Wire ORM Schema Discovery via Import Provenance**: Drizzle ORM schema tables (importing `pgTable`/`mysqlTable`/`sqliteTable` from `drizzle-orm`) and Prisma models (canonical `schema.prisma`) are now auto-discovered. Files importing from `drizzle-orm` are scanned for table builder calls; `schema.prisma` files are scanned for `model` blocks. Table names are fed into `allTables` alongside migration-discovered tables.
+
+**Part B — 10:1 Fail-Open Ratio**: When unknown table references vastly outnumber known tables, the schema catalog is likely incomplete. Disable the unknown-table rule with a warning instead of flooding output. When zero known tables, the rule is always disabled — a detector that knows zero tables may not call anything unknown. When known tables exist, disable if unknown:known ratio exceeds 10:1.
+
+#### Item 5 — sql-injection-risk (139)
+
+Adjudicated by recall-fixture baseline: D1-style prepared queries with `?` placeholders are correctly suppressed. The 139 survivors are interpolation-shaped (template literals with `${var}` inside SQL strings). Deferred-pending-receipts — no fix in this release.
+
+### Verification
+
+- Recall-shaped fixture audit through installed tarball: `token-bypass: 1` (only the positive case), `unknown-table: 0`, `sql-injection-risk: 0`
+- 789 tests passing (45 test files)
+- Build: `npm run build` green
+
 ## [3.4.3] — 2026-07-26
 
 ### R12: Tailwind Compile-Probe Migration — Zero Hand-Curated Dictionaries
