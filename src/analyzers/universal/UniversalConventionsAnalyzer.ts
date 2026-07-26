@@ -31,8 +31,8 @@ import {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_CONVENTIONS_CONFIG: ConventionsAnalyzerConfig = {
-  minCorpus: 20,
-  pairConfidence: 0.9,
+  minCorpus: 30,
+  pairConfidence: 0.95,
   modeShare: 0.8,
   maxConventionsPerDomain: 200,
 };
@@ -535,31 +535,65 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   ): Violation[] {
     const violations: Violation[] = [];
 
-    // directory → dominantCase
-    const dirCases = new Map<string, { casing: string; confidence: number; exemplar_file: string | null; exemplar_line: number | null }>();
+    // directory → kind → convention
+    const dirKindCases = new Map<string, Map<string, {
+      casing: string;
+      confidence: number;
+      exemplar_file: string | null;
+      exemplar_line: number | null;
+      kind: string;
+    }>>();
+
     for (const conv of conventions) {
       const dir = conv.directory ?? '.';
       const casing = conv.pattern;
       if (!casing) continue;
-      dirCases.set(dir, {
+      const kind = (conv as any).export_kind ?? 'function';
+
+      if (!dirKindCases.has(dir)) dirKindCases.set(dir, new Map());
+      dirKindCases.get(dir)!.set(kind, {
         casing,
         confidence: conv.confidence,
         exemplar_file: conv.exemplar_file,
         exemplar_line: conv.exemplar_line,
+        kind,
       });
     }
 
     const rows = rawDb
       .prepare(
-        `SELECT id, name, file_path, line_number, is_exported
+        `SELECT id, name, file_path, line_number, is_exported, entity_type, component_type
          FROM functions
          WHERE is_exported = 1`,
       )
-      .all() as FunctionRow[];
+      .all() as Array<{
+        id: number;
+        name: string;
+        file_path: string;
+        line_number: number;
+        is_exported: number;
+        entity_type: string;
+        component_type: string | null;
+      }>;
 
     for (const row of rows) {
       const directory = path.dirname(row.file_path) || '.';
-      const conv = dirCases.get(directory);
+
+      // Classify into export kind (same logic as mineNaming)
+      let rowKind: string;
+      if (row.entity_type === 'component' || row.component_type !== null) {
+        rowKind = 'react-component';
+      } else if (/^use[A-Z]/.test(row.name)) {
+        rowKind = 'hook';
+      } else {
+        rowKind = 'function';
+      }
+
+      const kindConvs = dirKindCases.get(directory);
+      if (!kindConvs) continue;
+
+      // Try exact kind match first, fall back to 'function' for backward compat
+      const conv = kindConvs.get(rowKind);
       if (!conv) continue;
 
       // Non-Latin skip (Spec 21 R5.4)
@@ -581,7 +615,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
         column: 1,
         severity: 'suggestion',
         message:
-          `${pct}% of exports in \`${directory}/\` use ${conv.casing} — ` +
+          `${pct}% of ${conv.kind} exports in \`${directory}/\` use ${conv.casing} — ` +
           `\`${row.name}\` uses ${casing}${exemplarRef}`,
         rule: 'conventions/naming',
         analyzer: this.name,

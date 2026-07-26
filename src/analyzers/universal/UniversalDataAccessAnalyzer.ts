@@ -262,7 +262,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
 
 	        // Check if it's a variable declaration with SQL (but not if it contains a template literal)
 	        if (this.isVariableAssignment(node, adapter)) {
-	          if (!this.containsSQLKeywords(nodeText)) return false;
+	          if (!this.containsSQLStructure(nodeText)) return false;
 
 	          // Skip parent nodes if they contain template literals we'll analyze separately
 	          const children = adapter.getChildren(node);
@@ -557,6 +557,24 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const sqlKeywords = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'FROM', 'WHERE', 'JOIN'];
     const upperText = text.toUpperCase();
     return sqlKeywords.some(keyword => upperText.includes(keyword));
+  }
+
+  /**
+   * Spec 22 R4.2: Requires ≥2 SQL keywords for variable-assignment detection.
+   *
+   * Single-keyword substring matches (e.g. "FROM" inside "Array.from") produce
+   * ~120 false positives on the recall corpus. Genuine SQL in variable
+   * assignments (string literals, ORM chains) almost always has ≥2 keywords
+   * (SELECT+FROM, INSERT+INTO, DELETE+FROM, etc.).
+   *
+   * This is only used for the variable-assignment fallback path — template
+   * literals and function calls use separate, context-aware gating.
+   */
+  private containsSQLStructure(text: string): boolean {
+    const sqlKeywords = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'FROM', 'WHERE', 'JOIN'];
+    const upperText = text.toUpperCase();
+    const found = sqlKeywords.filter(keyword => upperText.includes(keyword));
+    return found.length >= 2;
   }
 
   /**

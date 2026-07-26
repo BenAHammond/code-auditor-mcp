@@ -46,18 +46,25 @@ export function toASTNode(
 }
 
 /**
- * Convert a tree-sitter node to a SourceLocation.
+ * Convert tree-sitter node position to 1-based SourceLocation.
+ *
+ * INVARIANT: All positions returned by this function are 1-based (line and column).
+ * Tree-sitter uses 0-based positions internally; the conversion happens once here.
+ * Callers MUST NOT add their own +1 compensations — doing so produces 2-based values.
+ *
+ * This is the single conversion point for the adapter boundary. All downstream
+ * consumers (violation display, DB index, churn mapping, SARIF export, hook
+ * contract validation) receive 1-based positions from this function.
  */
 export function toSourceLocation(node: TreeSitterNode): SourceLocation {
   return {
     start: {
-      line: node.startPosition.row,
-      // tree-sitter positions are 0-based; convert to 1-based columns
-      column: node.startPosition.column,
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column + 1,
     },
     end: {
-      line: node.endPosition.row,
-      column: node.endPosition.column,
+      line: node.endPosition.row + 1,
+      column: node.endPosition.column + 1,
     },
   };
 }

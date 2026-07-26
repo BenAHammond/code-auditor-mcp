@@ -29,6 +29,15 @@ function makeNode(type: string, line: number, column: number): ASTNode {
   };
 }
 
+/**
+ * Spec 22 R4.2: Create an import-statement mock node that causes the
+ * Drizzle adapter's file-level gate to pass. Without this, every file
+ * is rejected before reaching the expression-level checks.
+ */
+function makeDrizzleImport(line = 1, column = 0): ASTNode {
+  return makeNode('import_statement', line, column);
+}
+
 /** Create a minimal mock AST with the given file path and nodes. */
 function makeAST(filePath: string, nodes: ASTNode[]): AST {
   return {
@@ -37,6 +46,17 @@ function makeAST(filePath: string, nodes: ASTNode[]): AST {
     root: makeNode('program', 0, 0),
     errors: [],
   };
+}
+
+/**
+ * Create an AST that includes a drizzle-orm import, so the file-level
+ * import gate passes for Drizzle table-reference tests.
+ */
+function makeDrizzleAST(filePath: string, nodes: ASTNode[]): AST {
+  const ast = makeAST(filePath, nodes);
+  const importNode = makeDrizzleImport();
+  (ast as any).__imports = [importNode];
+  return ast;
 }
 
 /**
@@ -52,10 +72,20 @@ function makeAdapter(
   return {
     // Required members
     findNodes: (ast: AST, pattern: any) => {
-      // Return all nodes except the root
+      // Spec 22 R4.2: The Drizzle adapter's file-level gate uses
+      // findNodes({ type: 'import_statement' }) to detect drizzle-orm imports.
+      // Return __imports when searching for import statements, __nodes otherwise.
+      if (pattern?.type === 'import_statement') {
+        return (ast as any).__imports ?? [];
+      }
       return (ast as any).__nodes ?? [];
     },
     getNodeText: (node: ASTNode, _sourceCode: string) => {
+      // Spec 22 R4.2: import_statement nodes always return drizzle-orm text
+      // so the file-level import gate passes for Drizzle table-reference tests.
+      if (node.type === 'import_statement') {
+        return 'import { eq } from "drizzle-orm";';
+      }
       const key = `${node.location.start.line}:${node.location.start.column}`;
       return nodeTexts.get(key) ?? '';
     },
@@ -118,7 +148,7 @@ describe('DrizzleAdapter', () => {
   describe('extractTableReferences', () => {
     it('extracts select + from pattern: db.select().from(users)', () => {
       const node = makeNode('call_expression', 10, 4);
-      const ast = makeAST('src/queries.ts', [node]);
+      const ast = makeDrizzleAST('src/queries.ts', [node]);
       (ast as any).__nodes = [node];
 
       const texts = new Map([
@@ -132,7 +162,7 @@ describe('DrizzleAdapter', () => {
 
     it('extracts select from with chained .where(): db.select().from(posts).where(...)', () => {
       const node = makeNode('call_expression', 12, 2);
-      const ast = makeAST('src/queries.ts', [node]);
+      const ast = makeDrizzleAST('src/queries.ts', [node]);
       (ast as any).__nodes = [node];
 
       const texts = new Map([
@@ -146,7 +176,7 @@ describe('DrizzleAdapter', () => {
 
     it('extracts insert pattern: db.insert(users).values(...)', () => {
       const node = makeNode('call_expression', 20, 4);
-      const ast = makeAST('src/queries.ts', [node]);
+      const ast = makeDrizzleAST('src/queries.ts', [node]);
       (ast as any).__nodes = [node];
 
       const texts = new Map([
@@ -160,7 +190,7 @@ describe('DrizzleAdapter', () => {
 
     it('extracts update pattern: db.update(users).set(...)', () => {
       const node = makeNode('call_expression', 25, 4);
-      const ast = makeAST('src/queries.ts', [node]);
+      const ast = makeDrizzleAST('src/queries.ts', [node]);
       (ast as any).__nodes = [node];
 
       const texts = new Map([
@@ -174,7 +204,7 @@ describe('DrizzleAdapter', () => {
 
     it('extracts delete pattern: db.delete(users).where(...)', () => {
       const node = makeNode('call_expression', 30, 4);
-      const ast = makeAST('src/queries.ts', [node]);
+      const ast = makeDrizzleAST('src/queries.ts', [node]);
       (ast as any).__nodes = [node];
 
       const texts = new Map([
@@ -188,7 +218,7 @@ describe('DrizzleAdapter', () => {
 
     it('returns empty for non-Drizzle query calls', () => {
       const node = makeNode('call_expression', 40, 4);
-      const ast = makeAST('src/queries.ts', [node]);
+      const ast = makeDrizzleAST('src/queries.ts', [node]);
       (ast as any).__nodes = [node];
 
       const texts = new Map([
@@ -202,7 +232,7 @@ describe('DrizzleAdapter', () => {
     it('handles multiple references in one file', () => {
       const node1 = makeNode('call_expression', 5, 2);
       const node2 = makeNode('call_expression', 15, 2);
-      const ast = makeAST('src/queries.ts', [node1, node2]);
+      const ast = makeDrizzleAST('src/queries.ts', [node1, node2]);
       (ast as any).__nodes = [node1, node2];
 
       const texts = new Map([
@@ -214,6 +244,35 @@ describe('DrizzleAdapter', () => {
       expect(refs).toHaveLength(2);
       expect(refs[0].table).toBe('users');
       expect(refs[1].table).toBe('profiles');
+    });
+
+    // Spec 22 R4.2: File-level gate — no drizzle-orm import → empty
+    it('returns empty when file does not import drizzle-orm', () => {
+      const node = makeNode('call_expression', 10, 4);
+      // Use makeAST (NOT makeDrizzleAST) — no import statement provided
+      const ast = makeAST('src/utils.ts', [node]);
+      (ast as any).__nodes = [node];
+
+      const texts = new Map([
+        ['10:4', 'db.select().from(users)'],
+      ]);
+
+      const refs = adapter.extractTableReferences(ast, makeAdapter(texts), '');
+      expect(refs).toHaveLength(0);
+    });
+
+    // Spec 22 R4.2: Array.from(map) is NOT a SQL query — no .select() companion
+    it('does not match Array.from(map) — requires .select() companion', () => {
+      const node = makeNode('call_expression', 42, 4);
+      const ast = makeDrizzleAST('src/queries.ts', [node]);
+      (ast as any).__nodes = [node];
+
+      const texts = new Map([
+        ['42:4', 'const arr = Array.from(map)'],
+      ]);
+
+      const refs = adapter.extractTableReferences(ast, makeAdapter(texts), '');
+      expect(refs).toHaveLength(0);
     });
   });
 

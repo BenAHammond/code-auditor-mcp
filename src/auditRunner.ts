@@ -348,7 +348,19 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
    * Run the audit
    */
   async function run(runOptions?: AuditRunnerOptions): Promise<AuditResult> {
-    const mergedOptions = { ...options, ...runOptions };
+    // Auto-load .codeauditor.json from project root so the programmatic API
+    // respects the same config the CLI surface reads. RunOptions (caller)
+    // override file config, and createAuditRunner options override both.
+    const rootForConfig = runOptions?.projectRoot || options.projectRoot || process.cwd();
+    let fileConfig: Partial<AuditRunnerOptions> = {};
+    try {
+      const configPath = path.join(rootForConfig, '.codeauditor.json');
+      await fs.access(configPath);
+      fileConfig = await loadConfig({ configPath });
+    } catch {
+      // No config file — proceed with defaults
+    }
+    const mergedOptions = { ...fileConfig, ...options, ...runOptions };
     const startTime = Date.now();
 
     // ── Scope resolution ─────────────────────────────────────────────
@@ -945,6 +957,18 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // Divergence tracking is advisory — non-fatal
     }
 
+    // Hook-contract guard: no violation may carry an empty file path, line 0, or
+    // missing line. A sentinel violation with file:'' broke the Claude Code hook's
+    // JSON consumer (Spec 15 regression). line:0 from CrossDomainAnalyzer broke it
+    // again (Spec 22 alarm #1). This guard is permanent — every analyzer code path
+    // must produce properly anchored violations.
+    //
+    // Runs BEFORE result construction so the CLI/MCP surfaces never see bad
+    // violations. Operates on the originals (via splice), not a copy.
+    for (const ar of Object.values(orderedAnalyzerResults)) {
+      validateHookContract(ar.violations);
+    }
+
     // Generate summary
     const summary = generateSummary(orderedAnalyzerResults, files.length);
 
@@ -990,11 +1014,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         const indexDb = CodeIndexDB.getInstance();
         await indexDb.initialize();
         const violations = Object.values(orderedAnalyzerResults).flatMap(ar => ar.violations);
-        // Hook-contract guard: no violation may carry an empty file path or line 0.
-        // A sentinel violation with file:'' broke the Claude Code hook's JSON consumer
-        // (Spec 15 regression). This guard is permanent — every analyzer code path
-        // must produce properly anchored violations.
-        validateHookContract(violations);
         const scopeStr = Array.isArray(scope) ? `files:${scope.length}` : (scope ?? 'all');
         return writeAuditToLedger(
           indexDb.rawDb,
@@ -1249,20 +1268,21 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
 function validateHookContract(violations: Violation[]): void {
   for (let i = violations.length - 1; i >= 0; i--) {
     const v = violations[i];
-    const problems: string[] = [];
+    let drop = false;
     if (!v.file || v.file.trim() === '') {
-      problems.push('empty file path');
+      drop = true;
     }
-    if (v.line !== undefined && v.line === 0) {
-      problems.push('line=0 (unactionable anchor)');
+    if (v.line === undefined || v.line === null) {
+      drop = true;
     }
-    if (problems.length > 0) {
-      console.warn(
-        `[hook-contract] Dropping violation from analyzer '${v.analyzer ?? 'unknown'}': ` +
-        `${problems.join(', ')}. Rule: ${v.rule ?? 'unknown'}. ` +
-        `Message: "${v.message.slice(0, 120)}". ` +
-        `This is a bug in the analyzer — violations must anchor to real files with valid lines.`
-      );
+    if (v.line !== undefined && v.line !== null && v.line < 1) {
+      drop = true;
+    }
+    if (drop) {
+      // Silent filter — no console output. The hook-audit.sh script does NOT
+      // merge stderr into stdout, but any console.warn/console.error output
+      // would still corrupt the JSON stream if it reached stdout.
+      // The structured logger writes to stderr only, so it's safe.
       violations.splice(i, 1);
     }
   }

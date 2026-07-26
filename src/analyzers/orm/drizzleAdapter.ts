@@ -52,6 +52,13 @@ export class DrizzleAdapter implements OrmAdapter {
     adapter: LanguageAdapter,
     sourceCode: string,
   ): OrmTableReference[] {
+    // Spec 22 R4.2: File-level gate — only scan files that import drizzle-orm.
+    // Prevents false positives from generic .from()/.insert()/.delete() calls
+    // in non-Drizzle files (e.g. Array.from(map) → map flagged as a table).
+    if (!this.fileImportsDrizzleOrm(ast, adapter, sourceCode)) {
+      return [];
+    }
+
     const references: OrmTableReference[] = [];
 
     // Find all call_expression nodes
@@ -65,11 +72,38 @@ export class DrizzleAdapter implements OrmAdapter {
   }
 
   /**
+   * Spec 22 R4.2: Check whether the file imports from drizzle-orm.
+   *
+   * Scans import statement text for "drizzle-orm" — faster and more
+   * reliable than AST traversal across language adapters.
+   */
+  private fileImportsDrizzleOrm(
+    ast: AST,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+  ): boolean {
+    const importNodes = adapter.findNodes(ast, { type: 'import_statement' });
+    for (const node of importNodes) {
+      const text = adapter.getNodeText(node, sourceCode);
+      if (text.includes('drizzle-orm')) return true;
+    }
+    return false;
+  }
+
+  /**
    * Try to extract a table reference from a Drizzle query chain.
    *
    * Pattern: db.select().from(users)  or  db.insert(users).values(...)
    * The table identifier is the argument to .from(), or the argument to
    * insert()/update()/delete() when they take a table directly.
+   *
+   * Spec 22 R4.2: Each pattern requires companion Drizzle methods in the
+   * same expression to avoid matching generic .from()/.insert()/.delete()
+   * calls (e.g. Array.from(map), .insert(record), .delete(id)).
+   * - .from(identifier) requires .select() in the expression
+   * - .insert(identifier) requires .values() in the expression
+   * - .update(identifier) already requires .set() — no change needed
+   * - .delete(identifier) requires .where() in the expression
    */
   private extractQueryTable(
     node: ASTNode,
@@ -79,8 +113,9 @@ export class DrizzleAdapter implements OrmAdapter {
     const text = adapter.getNodeText(node, sourceCode);
 
     // db.select().from(tableName)
+    // Spec 22 R4.2: Require .select() companion — prevents Array.from(map) false positives.
     const fromMatch = text.match(/\.from\s*\(\s*(\w+)\s*\)/);
-    if (fromMatch) {
+    if (fromMatch && /\.select\s*\(/.test(text)) {
       return {
         table: fromMatch[1],
         type: 'select',
@@ -90,6 +125,7 @@ export class DrizzleAdapter implements OrmAdapter {
     }
 
     // db.insert(tableName).values(...)  → insert
+    // Spec 22 R4.2: Requires .values() companion — prevents generic .insert(record) false positives.
     const insertMatch = text.match(/\.insert\s*\(\s*(\w+)\s*\)/);
     if (insertMatch && /\.values\s*\(/.test(text)) {
       return {
@@ -101,6 +137,7 @@ export class DrizzleAdapter implements OrmAdapter {
     }
 
     // db.update(tableName).set(...)  → update
+    // Already gated by .set() — no Spec 22 change needed.
     const updateMatch = text.match(/\.update\s*\(\s*(\w+)\s*\)/);
     if (updateMatch && /\.set\s*\(/.test(text)) {
       return {
@@ -112,8 +149,9 @@ export class DrizzleAdapter implements OrmAdapter {
     }
 
     // db.delete(tableName).where(...)  → delete
+    // Spec 22 R4.2: Require .where() companion — prevents generic .delete(id) false positives.
     const deleteMatch = text.match(/\.delete\s*\(\s*(\w+)\s*\)/);
-    if (deleteMatch) {
+    if (deleteMatch && /\.where\s*\(/.test(text)) {
       return {
         table: deleteMatch[1],
         type: 'delete',

@@ -23,6 +23,7 @@ import type {
   StyleClassUsage,
 } from '../../styles/types.js';
 import type { StylesAnalyzerConfig } from '../../types.js';
+import { getTailwindExpander, type TailwindUtilityExpander } from '../../styles/tailwindUtilityExpander.js';
 
 // ---------------------------------------------------------------------------
 // Default configuration
@@ -177,7 +178,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     // Run detectors
     violations.push(...this.detectValueDrift(byProperty, cfg, declarations));
     violations.push(...this.detectOffScaleValues(byProperty, cfg));
-    violations.push(...this.detectUndefinedClasses(classUsage, declarations, byProperty));
+    violations.push(...this.detectUndefinedClasses(classUsage, declarations, byProperty, cfg));
     violations.push(...this.detectTokenBypass(declarations, tokenValueMap, cfg));
     violations.push(...this.detectMechanismFragmentation(declarations, cfg));
     violations.push(...this.detectDeclarationSetSimilarity(declarations, cfg));
@@ -267,9 +268,16 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     allDecls: StyleDeclRow[],
   ): Violation[] {
     const violations: Violation[] = [];
+    const exclusions = new Set(cfg.categoricalPropertyExclusions ?? []);
 
     for (const [property, decls] of byProperty) {
       if (decls.length < cfg.minCorpus) continue;
+
+      // Spec 22 R3.1: skip hardcoded categorical exclusions
+      if (exclusions.has(property)) continue;
+
+      // Spec 22 R3.1 structural rule: skip properties whose values are all keywords
+      if (this.isCategoricalByValues(decls)) continue;
 
       // Determine if this property holds color values
       const isColorProp = this.isColorProperty(property);
@@ -282,6 +290,28 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     }
 
     return violations;
+  }
+
+  /**
+   * Spec 22 R3.1 structural rule: a property whose observed values are all
+   * keywords (non-numeric, non-color) is categorical regardless of the
+   * hardcoded exclusion list.
+   */
+  private isCategoricalByValues(decls: StyleDeclRow[]): boolean {
+    for (const d of decls) {
+      const v = (d.normalized_value ?? d.raw_value).trim();
+      if (!v) continue;
+      // Numeric: starts with a digit, or a sign followed by a digit
+      if (/^-?\d/.test(v)) return false;
+      // Color: hex, rgb, hsl, or named colors
+      if (/^#[0-9a-fA-F]{3,8}$/.test(v)) return false;
+      if (/^(rgb|rgba|hsl|hsla)\(/.test(v)) return false;
+      // Length: number + unit
+      if (/^-?\d+(\.\d+)?(px|em|rem|vw|vh|vmin|vmax|%|ch|ex|cm|mm|in|pt|pc|deg|rad|turn|s|ms|dpi|dpcm|dppx|fr)$/.test(v)) return false;
+      // calc(), clamp(), min(), max()
+      if (/^(calc|clamp|min|max)\(/.test(v)) return false;
+    }
+    return true;
   }
 
   private isColorProperty(property: string): boolean {
@@ -508,6 +538,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     classUsage: StyleClassUsageRow[],
     _declarations: StyleDeclRow[],
     byProperty: Map<string, StyleDeclRow[]>,
+    cfg?: StylesAnalyzerConfig & { projectRoot?: string },
   ): Violation[] {
     const violations: Violation[] = [];
 
@@ -526,22 +557,25 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       }
     }
 
-    // Also add common Tailwind utilities
-    const tailwindUtils = new Set([
-      'flex', 'grid', 'block', 'inline', 'hidden', 'relative', 'absolute',
-      'fixed', 'sticky', 'static', 'container', 'w-full', 'h-full',
-      'text-sm', 'text-base', 'text-lg', 'text-xl', 'font-bold', 'font-normal',
-      'bg-white', 'bg-black', 'rounded', 'rounded-lg', 'shadow', 'shadow-md',
-      'p-4', 'm-4', 'gap-4', 'border', 'cursor-pointer', 'hover',
-      'text-center', 'text-left', 'items-center', 'justify-between',
-    ]);
+    // ── Fail-open: init Tailwind expander ──────────────────────────
+    const expander = getTailwindExpander();
+    expander.init({
+      projectRoot: cfg?.projectRoot,
+      useProjectConfig: true,
+    });
 
-    // Track files with unresolvable class usage (dynamic classes)
-    const unresolvableFiles = new Set<string>();
-    for (const u of classUsage) {
-      if (u.unresolvable) {
-        unresolvableFiles.add(u.file_path);
-      }
+    // Fail-open rule (Spec 22 R1.3): if project config resolution fails,
+    // disable the detector for this audit with one visible warning.
+    if (expander.configFailed) {
+      violations.push(this.makeViolation(
+        '', 0,
+        `undefined-class detector disabled: failed to resolve project Tailwind config — ` +
+        `${expander.configFailureReason ?? 'unknown error'}. ` +
+        `A claim that a class "does not exist" may not ship on a known-incomplete dictionary.`,
+        'warning',
+        'styles/undefined-class-disabled',
+      ));
+      return violations;
     }
 
     // Check each class usage
@@ -551,27 +585,47 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      // Skip unresolvable files
-      if (unresolvableFiles.has(u.file_path)) continue;
+      // Skip unresolvable individual class usages (dynamic expressions that
+      // produce class names at runtime — variables, ternaries, clsx calls,
+      // template literals). Per-entry skip replaces the old per-file skip
+      // which was too aggressive (one dynamic class disabled the detector
+      // for every class in the file). Spec 22 Task #254.
+      if (u.unresolvable) continue;
 
-      // Skip known classes
+      // Skip known classes from CSS definitions
       if (definedClasses.has(u.class_name)) continue;
-      if (tailwindUtils.has(u.class_name)) continue;
 
-      // Skip pseudo-class/variant selectors (hover:, focus:, sm:, etc.)
-      if (u.class_name.includes(':')) continue;
+      // Skip PascalCase — likely a component
+      if (/^[A-Z]/.test(u.class_name)) continue;
 
-      // Skip common HTML attributes and dynamic-looking classes
-      if (/^[A-Z]/.test(u.class_name)) continue; // PascalCase — likely a component
-      if (u.class_name.includes('[') || u.class_name.includes(']')) continue; // arbitrary values
-      if (u.class_name.includes('(')) continue; // function-like
-      if (/^\d/.test(u.class_name)) continue; // numeric
+      // Skip function-like
+      if (u.class_name.includes('(')) continue;
+
+      // Skip numeric
+      if (/^\d/.test(u.class_name)) continue;
+
+      // Skip classes that start/end with [] — not valid CSS class names
+      // (arbitrary-value grammar requires a known prefix, e.g. mt-[17px])
+      if (u.class_name.startsWith('[') || u.class_name.startsWith(']')) continue;
+      if (u.class_name.endsWith('[') || u.class_name.endsWith(']')) continue;
+
+      // Skip extraction artifacts — characters that can never appear in a
+      // valid CSS class name (defense-in-depth; primary fix is at extraction
+      // time where all dynamic-expression classes are now marked unresolvable).
+      if (/['`"${}?;!@#%^&*+=<>|\\,~]/.test(u.class_name)) continue;
+
+      // ── Expand: variant prefix stripping + full expansion path ──
+      // The expander strips variant prefixes (hover:, sm:, etc.) recursively
+      // and checks against bundled dictionary, project config, and arbitrary-
+      // value grammar. A single resolve() call covers the entire chain.
+      const resolved = expander.resolve(u.class_name);
+      if (resolved.valid) continue;
 
       violations.push(this.makeViolation(
         u.file_path,
         u.line,
         `Undefined CSS class: "${u.class_name}" has no matching definition ` +
-        `in any stylesheet or Tailwind utility set.`,
+        `in any stylesheet, Tailwind utility set, or project config.`,
         'warning',
         'styles/undefined-class',
       ));
@@ -587,6 +641,17 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
   /**
    * Flag raw values that match a known design token's value but don't
    * reference the token via tokenRef.
+   *
+   * Exclusions (per Spec 22 R2):
+   * - CSS custom-property definition sites (--x: <value>) — these are where
+   *   token values are allowed to be literal. Aliased tokens sharing a value
+   *   (e.g. --accent / --brand-action) produce zero findings.
+   * - var(--token) references — tokenRef is already populated by the
+   *   style indexer; the existing token_ref check handles these.
+   *
+   * Token-bypass flags exactly one shape: a raw literal value (hex, rgb,
+   * length) in a *usage* position whose normalized value matches a defined
+   * token.
    */
   private detectTokenBypass(
     declarations: StyleDeclRow[],
@@ -597,8 +662,12 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     if (tokenValueMap.size === 0) return violations;
 
     for (const d of declarations) {
-      // Skip if already referencing a token
+      // Skip if already referencing a token (var(--...) reference)
       if (d.token_ref) continue;
+
+      // Skip CSS custom-property definition sites — these define
+      // token values, so literals are expected (Spec 22 R2.1).
+      if (d.property.startsWith('--')) continue;
 
       // Normalize the raw value for comparison
       const normalized = this.normalizeForTokenMatch(d.raw_value);

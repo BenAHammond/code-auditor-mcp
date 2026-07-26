@@ -969,7 +969,12 @@ function buildAnalyzers(): Record<string, AnalyzerRunner> {
  * Used in the bench runner (production guard is validateHookContract in auditRunner.ts).
  */
 function countHookContractViolations(violations: Violation[]): number {
-  return violations.filter(v => !v.file || v.file.trim() === '' || v.line === 0).length;
+  return violations.filter(v => {
+    if (!v.file || v.file.trim() === '') return true;
+    if (v.line === undefined || v.line === null) return true;
+    if (v.line < 1) return true;
+    return false;
+  }).length;
 }
 
 async function collectFiles(dir: string): Promise<string[]> {
@@ -1041,9 +1046,15 @@ function matchViolations(
   analyzerName: string,
   knownMisses: ExpectedEntry[] = []
 ): AnalyzerMetrics {
-  // Hook-contract regression guard: no violation may carry an empty file path or line 0.
-  // This is a permanent integration test — every analyzer must produce properly anchored violations.
-  const hookContractViolations = violations.filter(v => !v.file || v.file.trim() === '' || v.line === 0).length;
+  // Hook-contract regression guard: no violation may carry an empty file path,
+  // a missing line, or a line < 1. This is a permanent integration test — every
+  // analyzer must produce properly anchored violations.
+  // Must match the comprehensive check in countHookContractViolations() below.
+  const hookContractViolations = violations.filter(v =>
+    !v.file || v.file.trim() === '' ||
+    v.line === undefined || v.line === null ||
+    v.line < 1
+  ).length;
 
   const nearMissSet = new Set(nearMissFiles);
 

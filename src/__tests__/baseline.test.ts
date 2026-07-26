@@ -1512,3 +1512,202 @@ describe('Rule Registry', () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JSON purity — enforce that --json mode writes exactly one valid JSON document
+// to stdout with no interstitial text. The hook contract (hook-audit.sh) pipes
+// stdout back to the agent as JSON; any non-JSON text in stdout corrupts the
+// MCP tool result.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('JSON output purity', () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), 'ca-purity-'));
+    await mkdir(join(testDir, 'src'), { recursive: true });
+    // File large enough to exceed docsMinLines default (5) and trigger
+    // function-documentation
+    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
+    await writeConfig(testDir, { scope: 'all' });
+  });
+
+  afterEach(() => {
+    try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('changed --json produces parseable JSON on stdout with zero non-JSON text', () => {
+    const r = runCli(`changed src/lib.ts --json --fail-on suggestion -p "${testDir}"`, testDir);
+    // stdout must be valid JSON — no interstitial banners, progress bars, or
+    // migration notices. JSON.parse throws on any preamble/postamble text.
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('changed --stdin --json produces parseable JSON (hook invocation path)', () => {
+    // The hook pipes file paths via stdin — this is the exact invocation path
+    // used by hook-audit.sh
+    const cmd = `${distCli()} changed --stdin --json --fail-on critical -p "${testDir}"`;
+    const result = execSync(cmd, {
+      cwd: testDir,
+      encoding: 'utf-8',
+      input: 'src/lib.ts\n',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 60_000,
+      env: { ...process.env, CODE_AUDITOR_DATA_DIR: testDir, NODE_ENV: 'test' },
+    });
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(result.trim()); }).not.toThrow();
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('changed --stdin --json with zero matches produces empty array, not empty string', () => {
+    // Edge case: no files match any analyzer → stdout must still be valid JSON
+    const cmd = `${distCli()} changed --stdin --json --fail-on critical -p "${testDir}"`;
+    const result = execSync(cmd, {
+      cwd: testDir,
+      encoding: 'utf-8',
+      input: 'src/nonexistent.ts\n',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 60_000,
+      env: { ...process.env, CODE_AUDITOR_DATA_DIR: testDir, NODE_ENV: 'test' },
+    });
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(result.trim()); }).not.toThrow();
+    expect(parsed).toEqual([]);
+  });
+
+  // ── Extended purity coverage: all --json CLI commands ──
+  //
+  // Each test verifies that `COMMAND --json` writes exactly one valid JSON
+  // document to stdout with zero non-JSON text (no banners, progress bars,
+  // migration notices, or stderr contamination). JSON.parse throws on any
+  // preamble or postamble, so these tests act as a hard guard.
+  //
+  // Commands that accept --project/-p use the testDir. Commands that don't
+  // rely on CODE_AUDITOR_DATA_DIR (set by runCli). The `audit` command uses
+  // `-f json`, not `--json`, and is tested separately in the audit report tests.
+  // `map` does not support --json. `coverage import` has no --json option.
+
+  it('index status --json produces parseable JSON', () => {
+    const r = runCli(`index status --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+    expect(typeof parsed.totalFiles).toBe('number');
+  });
+
+  it('config rules-list --json produces parseable JSON', () => {
+    const r = runCli(`config rules-list --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+    expect(Array.isArray(parsed.rules)).toBe(true);
+  });
+
+  it('config profiles --json produces parseable JSON', () => {
+    const r = runCli(`config profiles --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+    expect(Array.isArray(parsed.profiles)).toBe(true);
+  });
+
+  it('config detection --json produces parseable JSON', () => {
+    const r = runCli(`config detection --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+  });
+
+  it('search --json produces parseable JSON', () => {
+    // Must sync first so the search index is populated
+    runCli(`sync -p "${testDir}"`, testDir);
+    const r = runCli(`search "calculateTotal" --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+    expect(Array.isArray(parsed.functions)).toBe(true);
+  });
+
+  it('tasks list --json produces parseable JSON', () => {
+    const r = runCli(`tasks list --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+    expect(typeof parsed.success).toBe('boolean');
+  });
+
+  it('tasks from-audit --json produces parseable JSON', () => {
+    // Must sync + audit first so from-audit has violations to process
+    runCli(`sync -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on suggestion -p "${testDir}"`, testDir);
+    const r = runCli(`tasks from-audit --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+  });
+
+  it('hotspots --json produces parseable JSON (after audit)', () => {
+    // Hotspots needs prior audit data in the ledger
+    runCli(`sync -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on suggestion -p "${testDir}"`, testDir);
+    const r = runCli(`hotspots --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('ledger stats --json produces parseable JSON (after audit)', () => {
+    runCli(`sync -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on suggestion -p "${testDir}"`, testDir);
+    const r = runCli(`ledger stats --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+    expect(typeof parsed.totalRuns).toBe('number');
+  });
+
+  it('ledger list --json produces parseable JSON (after audit)', () => {
+    runCli(`sync -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on suggestion -p "${testDir}"`, testDir);
+    const r = runCli(`ledger list --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('risk --json produces parseable JSON', () => {
+    const r = runCli(`risk --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('baseline --json produces parseable JSON (after audit)', () => {
+    // Baseline snapshots current findings — needs audit first
+    runCli(`sync -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on suggestion -p "${testDir}"`, testDir);
+    const r = runCli(`baseline --json -p "${testDir}"`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+  });
+
+  it('conventions list --json produces parseable JSON', () => {
+    // Conventions needs sync + conventions mining
+    runCli(`sync -p "${testDir}"`, testDir);
+    const r = runCli(`conventions list --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it('architecture --json produces parseable JSON', () => {
+    const r = runCli(`architecture --json`, testDir);
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
+    expect(parsed && typeof parsed === 'object').toBe(true);
+  });
+});

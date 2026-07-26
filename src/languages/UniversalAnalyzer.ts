@@ -212,6 +212,8 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     fix?: { oldText: string; newText: string },
     symbol?: string
   ): Violation {
+    // Tree-sitter uses 0-based line numbers. Convert to 1-based for all
+    // toSourceLocation() now returns 1-based positions — no compensation needed.
     const v: Violation = {
       file,
       line: location.line,

@@ -81,8 +81,9 @@ export async function parseTypeScriptFile(filePath: string): Promise<ParseResult
       ast,
       errors: ast.errors.map(e => ({
         message: e.message,
-        line: e.location.start.line + 1,
-        column: e.location.start.column + 1,
+        // toSourceLocation() now returns 1-based positions — no compensation needed.
+        line: e.location.start.line,
+        column: e.location.start.column,
       })),
     };
   } catch (error) {

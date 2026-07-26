@@ -268,12 +268,19 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     mechanismFragmentationMinMechanisms: 3,
     declarationSetMinDeclarations: 5,
     declarationSetSimilarityThreshold: 0.9,
+    categoricalPropertyExclusions: [
+      'display', 'position', 'flex-direction', 'flex-wrap',
+      'align-items', 'align-content', 'justify-content', 'justify-items',
+      'text-align', 'vertical-align', 'overflow', 'overflow-x', 'overflow-y',
+      'white-space', 'cursor', 'pointer-events', 'visibility',
+      'float', 'clear', 'box-sizing', 'text-transform', 'font-style',
+    ],
   },
 
   // Spec 12 R2: convention mining analyzer defaults
   conventions: {
-    minCorpus: 20,
-    pairConfidence: 0.9,
+    minCorpus: 30,
+    pairConfidence: 0.95,
     modeShare: 0.8,
     maxConventionsPerDomain: 200,
   },

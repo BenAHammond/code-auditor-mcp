@@ -247,8 +247,13 @@ export function filterFiles(
 function globToRegex(pattern: string): RegExp {
   // Escape special regex characters except * and ?
   let regex = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  // Convert glob wildcards to regex
+  // Convert **/ (zero or more path segments). Use a sentinel to prevent
+  // the subsequent single-* replacement from corrupting the quantifier.
+  regex = regex.replace(/\*\*\//g, '\x00');
+  // Convert remaining glob wildcards to regex
   regex = regex.replace(/\*/g, '.*').replace(/\?/g, '.');
+  // Restore **/ pattern as (.*/)* (zero or more segments)
+  regex = regex.replace(/\x00/g, '(.*/)*');
   return new RegExp(`^${regex}$`);
 }
 

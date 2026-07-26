@@ -19,6 +19,61 @@ import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
 import type { Convention, ConventionMiningConfig } from '../types.js';
 
+// ─── Built-in / stdlib exclusion ──────────────────────────────────────────────
+
+/**
+ * Common built-in and standard-library method names excluded from usage-pair
+ * mining (Spec 22 R5.2). Co-occurrence of universal methods is arithmetic, not
+ * convention. The list is deliberately focused on JavaScript/TypeScript globals
+ * that appear in every codebase; it does not attempt to be exhaustive.
+ *
+ * Antecedents must additionally be project-defined (resolvable in the function
+ * index) — see mineUsagePairs.
+ */
+const BUILT_IN_CALLEES = new Set([
+  // Array
+  'map', 'filter', 'reduce', 'reduceRight', 'forEach', 'find', 'findIndex',
+  'some', 'every', 'flat', 'flatMap', 'slice', 'splice', 'concat', 'push',
+  'pop', 'shift', 'unshift', 'sort', 'reverse', 'includes', 'indexOf',
+  'lastIndexOf', 'join', 'fill', 'copyWithin', 'keys', 'values', 'entries',
+  'at', 'from', 'isArray', 'of',
+  // String
+  'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase',
+  'charAt', 'charCodeAt', 'codePointAt', 'startsWith', 'endsWith',
+  'split', 'substring', 'substr', 'replace', 'replaceAll',
+  'match', 'matchAll', 'search', 'padStart', 'padEnd', 'repeat',
+  'localeCompare',
+  // Object / utility
+  'hasOwnProperty', 'toString', 'valueOf', 'toLocaleString',
+  'assign', 'freeze', 'seal', 'create',
+  'getPrototypeOf', 'setPrototypeOf',
+  'getOwnPropertyDescriptor', 'getOwnPropertyNames', 'getOwnPropertySymbols',
+  'defineProperty', 'defineProperties',
+  // Math
+  'abs', 'ceil', 'floor', 'round', 'max', 'min', 'sqrt', 'pow', 'random',
+  'sign', 'trunc', 'log', 'log2', 'log10', 'exp', 'sin', 'cos', 'tan',
+  // JSON
+  'parse', 'stringify',
+  // Promise
+  'then', 'catch', 'finally', 'all', 'allSettled', 'race', 'any',
+  'resolve', 'reject',
+  // Console
+  'log', 'error', 'warn', 'info', 'debug', 'trace', 'dir', 'table',
+  'group', 'groupEnd', 'assert', 'clear', 'count', 'countReset',
+  'time', 'timeEnd', 'timeLog',
+  // Timers / globals
+  'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+  'encodeURI', 'encodeURIComponent', 'decodeURI', 'decodeURIComponent',
+  // Number / Boolean / RegExp
+  'toFixed', 'toPrecision', 'toExponential',
+  'exec', 'test',
+  // Map / Set
+  'has', 'get', 'set', 'delete', 'add', 'clear', 'size',
+  // Error
+  'captureStackTrace',
+]);
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Escape regex special characters in a string. */
@@ -319,6 +374,13 @@ function mineUsagePairs(db: Database.Database, config: ConventionMiningConfig): 
     callSets.get(cr.caller_id)!.add(cr.callee_name);
   }
 
+  // Build a set of project-defined function names (antecedents must be
+  // resolvable in the function index — Spec 22 R5.2).
+  const projectSymbols = new Set<string>();
+  for (const r of rows) {
+    projectSymbols.add(r.func_name);
+  }
+
   // For each unique callee (potential antecedent), find all callers
   // antecedentName -> Set<callerId>
   const antecedentCallers = new Map<string, Set<number>>();
@@ -327,18 +389,25 @@ function mineUsagePairs(db: Database.Database, config: ConventionMiningConfig): 
     antecedentCallers.get(cr.callee_name)!.add(cr.caller_id);
   }
 
-  // For each antecedent A, among A-callers, compute co-occurring calls X
+  // For each antecedent A, among A-callers, compute co-occurring calls X.
+  // Skip built-in/stdlib and non-project antecedents (Spec 22 R5.2).
   for (const [antecedent, callerIds] of antecedentCallers) {
+    // Antecedent must be project-defined and not a built-in
+    if (BUILT_IN_CALLEES.has(antecedent) || !projectSymbols.has(antecedent)) continue;
+
     const total = callerIds.size;
     if (total < config.minCorpus) continue;
 
-    // Count how many A-callers also call each other function
+    // Count how many A-callers also call each other function.
+    // Skip built-in consequents — co-occurrence of universal methods is
+    // arithmetic, not convention (Spec 22 R5.2).
     const coOccurCounts = new Map<string, number>();
     for (const cid of callerIds) {
       const callSet = callSets.get(cid);
       if (!callSet) continue;
       for (const callee of callSet) {
         if (callee === antecedent) continue;
+        if (BUILT_IN_CALLEES.has(callee)) continue;
         coOccurCounts.set(callee, (coOccurCounts.get(callee) ?? 0) + 1);
       }
     }
@@ -691,17 +760,46 @@ function mineExportShape(
 }
 
 /**
+ * Classify a function into its export kind for naming-convention partitioning.
+ *
+ *   - react-component: entity_type = 'component' (JSX-returning / PascalCase React entities)
+ *   - hook:            name starts with "use" followed by uppercase (e.g. useState, useAuth)
+ *   - function:        everything else
+ *
+ * Constants (top-level literal-initialized) are not stored in the functions table
+ * and therefore produce no population — permitted per Spec 22 R5.1.
+ */
+function classifyExportKind(row: {
+  name: string;
+  entity_type: string;
+  component_type: string | null;
+}): 'react-component' | 'hook' | 'function' {
+  if (row.entity_type === 'component' || row.component_type !== null) {
+    return 'react-component';
+  }
+  // Hook: starts with "use" followed by uppercase letter
+  if (/^use[A-Z]/.test(row.name)) {
+    return 'hook';
+  }
+  return 'function';
+}
+
+/**
  * Mine `naming` conventions.
  *
- * Per directory, compute the dominant casing convention for exported symbols.
- * Non-Latin identifiers are excluded (Spec 21 R5.4).
+ * Per (directory, export_kind), compute the dominant casing convention for
+ * exported symbols. Non-Latin identifiers are excluded (Spec 21 R5.4).
+ *
+ * Spec 22 R5.1: populations are partitioned by export kind before computing
+ * a mode. A directory's convention is computed per kind; kinds with sub-
+ * minCorpus populations produce nothing.
  */
 function mineNaming(db: Database.Database, config: ConventionMiningConfig): Convention[] {
   const conventions: Convention[] = [];
 
   const rows = db
     .prepare(
-      `SELECT id, name, file_path, line_number
+      `SELECT id, name, file_path, line_number, entity_type, component_type
        FROM functions
        WHERE is_exported = 1`,
     )
@@ -710,23 +808,34 @@ function mineNaming(db: Database.Database, config: ConventionMiningConfig): Conv
     name: string;
     file_path: string;
     line_number: number;
+    entity_type: string;
+    component_type: string | null;
   }>;
 
-  // directory -> Map<case, count>
-  const dirCases = new Map<string, Map<string, number>>();
-  const dirExemplars = new Map<string, { file: string; line: number; casing: string }>();
+  // directory -> export_kind -> Map<case, count>
+  type KindCasingMap = Map<string, Map<string, number>>;
+  const dirKindCases = new Map<string, KindCasingMap>();
+  // directory -> export_kind -> exemplar
+  type KindExemplarMap = Map<string, { file: string; line: number; casing: string }>;
+  const dirKindExemplars = new Map<string, KindExemplarMap>();
 
   for (const row of rows) {
     const casing = detectCase(row.name);
     if (!casing) continue; // non-Latin or unclassifiable → skip
 
+    const kind = classifyExportKind(row);
     const directory = path.dirname(row.file_path) || '.';
-    if (!dirCases.has(directory)) dirCases.set(directory, new Map());
-    const cases = dirCases.get(directory)!;
+
+    if (!dirKindCases.has(directory)) dirKindCases.set(directory, new Map());
+    const kindCases = dirKindCases.get(directory)!;
+    if (!kindCases.has(kind)) kindCases.set(kind, new Map());
+    const cases = kindCases.get(kind)!;
     cases.set(casing, (cases.get(casing) ?? 0) + 1);
 
-    if (!dirExemplars.has(directory)) {
-      dirExemplars.set(directory, {
+    if (!dirKindExemplars.has(directory)) dirKindExemplars.set(directory, new Map());
+    const kindExemplars = dirKindExemplars.get(directory)!;
+    if (!kindExemplars.has(kind)) {
+      kindExemplars.set(kind, {
         file: row.file_path,
         line: row.line_number,
         casing,
@@ -734,44 +843,44 @@ function mineNaming(db: Database.Database, config: ConventionMiningConfig): Conv
     }
   }
 
-  for (const [directory, cases] of dirCases) {
-    const total = [...cases.values()].reduce((s, c) => s + c, 0);
-    if (total < config.minCorpus) continue;
+  for (const [directory, kindCases] of dirKindCases) {
+    const kindExemplars = dirKindExemplars.get(directory)!;
 
-    let maxCount = 0;
-    let dominantCase = '';
-    for (const [casing, count] of cases) {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantCase = casing;
+    for (const [kind, cases] of kindCases) {
+      const total = [...cases.values()].reduce((s, c) => s + c, 0);
+      if (total < config.minCorpus) continue;
+
+      let maxCount = 0;
+      let dominantCase = '';
+      for (const [casing, count] of cases) {
+        if (count > maxCount) {
+          maxCount = count;
+          dominantCase = casing;
+        }
       }
-    }
 
-    const modeShare = maxCount / total;
-    if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      const minorityCases = [...cases.entries()]
-        .filter(([c]) => c !== dominantCase)
-        .map(([c, n]) => `${c}:${n}`)
-        .join(',');
+      const modeShare = maxCount / total;
+      if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
+        const exemplar = kindExemplars.get(kind);
 
-      const exemplar = dirExemplars.get(directory);
-
-      conventions.push({
-        domain: 'naming',
-        rule_id: 'conventions/naming',
-        antecedent: null,
-        consequent: null,
-        pattern: dominantCase,
-        directory,
-        file_path: null,
-        line: null,
-        support: maxCount,
-        total_cases: total,
-        confidence: Math.round(modeShare * 10000) / 10000,
-        exemplar_file: exemplar?.file ?? null,
-        exemplar_line: exemplar?.line ?? null,
-        hash: computeHash([directory, dominantCase, maxCount, total]),
-      });
+        conventions.push({
+          domain: 'naming',
+          rule_id: 'conventions/naming',
+          antecedent: null,
+          consequent: null,
+          pattern: dominantCase,
+          directory,
+          file_path: null,
+          line: null,
+          support: maxCount,
+          total_cases: total,
+          confidence: Math.round(modeShare * 10000) / 10000,
+          exemplar_file: exemplar?.file ?? null,
+          exemplar_line: exemplar?.line ?? null,
+          export_kind: kind,
+          hash: computeHash([directory, kind, dominantCase, maxCount, total]),
+        });
+      }
     }
   }
 

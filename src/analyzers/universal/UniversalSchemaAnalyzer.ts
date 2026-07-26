@@ -527,8 +527,52 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
         });
       }
     }
+	    // Spec 22 R4.3: Filter out alias identifiers.
+	    // "FROM x AS t" defines t as an alias; later references like "JOIN t.posts"
+	    // would capture t via the JOIN regex. Scan for explicit AS aliases.
+	    const aliasIds = this.extractAliasIdentifiers(cleaned);
+	    if (aliasIds.size > 0) {
+	      return references.filter(ref => !aliasIds.has(ref.table.toLowerCase()));
+	    }
 
-    return references;
+	    return references;
+  }
+
+
+  /**
+   * Spec 22 R4.3: Extract alias identifiers from SQL text.
+   *
+   * Detects both explicit (`FROM x AS t`) and bare (`FROM x t`) aliases
+   * so they can be filtered from table-references in parseSqlTables().
+   * Without this, "JOIN t.posts" captures t via the JOIN regex when t is
+   * an alias for the real table x.
+   */
+  private extractAliasIdentifiers(sqlText: string): Set<string> {
+    const aliases = new Set<string>();
+
+    // Explicit: FROM/JOIN <table> AS <alias>
+    const explicitRe = /\b(?:FROM|JOIN)\s+[\p{L}_][\p{L}\p{N}_]*\s+AS\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
+    let m: RegExpExecArray | null;
+    while ((m = explicitRe.exec(sqlText)) !== null) {
+      aliases.add(m[1].toLowerCase());
+    }
+
+    // Bare: FROM/JOIN <table> <alias> (alias is a bare identifier, not a keyword)
+    // Pattern: keyword + table + word — the third word is the alias if it's
+    // not a SQL keyword and not followed by '.' (table.column reference).
+    const bareRe = /\b(?:FROM|JOIN)\s+([\p{L}_][\p{L}\p{N}_]*)\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
+    while ((m = bareRe.exec(sqlText)) !== null) {
+      const alias = m[2];
+      // Don't add if it looks like a keyword or is followed by '.' (table ref)
+      if (!this.isSqlKeyword(alias)) {
+        const afterMatch = sqlText.substring(m.index + m[0].length);
+        if (!/^\s*\./.test(afterMatch)) {
+          aliases.add(alias.toLowerCase());
+        }
+      }
+    }
+
+    return aliases;
   }
 
   /**

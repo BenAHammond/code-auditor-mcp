@@ -149,16 +149,19 @@ describe('Bench report structure', () => {
 // ── Hook-contract regression guard ──────────────────────────────────────
 
 describe('Hook-contract regression guard', () => {
-  it('zero violations carry empty file path or line 0', () => {
-    // Every violation must anchor to a real file. A sentinel with
-    // file:'' (Spec 15 regression, fixed in commit 3419ed0) broke the
-    // Claude Code hook's JSON consumer. This is permanent.
+  it('zero violations carry empty file path, missing line, or line < 1', () => {
+    // Every violation must anchor to a real file with a valid line number.
+    // Spec 15 regression: file:'' sentinel (commit 3419ed0).
+    // Spec 22 regression: line:0 sentinel + the guard itself producing console
+    // output that the 2>&1 hook script merged into JSON — the warning was the
+    // failure. This test covers the full extended guard: no empty/missing file,
+    // no undefined/null line, no line < 1.
     const failures: string[] = [];
     for (const [name, metrics] of Object.entries(report.analyzers)) {
       if ((metrics.hookContractViolations ?? 0) > 0) {
         failures.push(
           `${name}: ${metrics.hookContractViolations} hook-contract violation(s) — ` +
-          `empty file path or line=0`
+          `empty/missing file path, undefined/null line, or line < 1`
         );
       }
     }

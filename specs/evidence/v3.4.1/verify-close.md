@@ -159,18 +159,26 @@ If `ALL_EXTENSIONS` excludes `.css`/`.scss`, `discoverFiles()` never finds them 
 
 ---
 
-## Pre-Existing Baseline Failures
+## Baseline Test Failures — Diagnosed and Fixed
 
-Three baseline tests fail on HEAD (before any v3.4.1 changes) and continue to fail:
+### Diagnosis
 
-```
-FAIL  src/__tests__/baseline.test.ts
-  ✗ R6.1 — known finding in baseline is not reported as new
-  ✗ R6.6 — known finding stays known after lines inserted above
-  ✗ JSON report includes baseline block and per-violation new field
-```
+Three baseline tests failed after the `configLoader.normalizePaths()` bug was exposed by auto-loading `.codeauditor.json` in the programmatic `run()` API (needed to respect `enabledAnalyzers` from config).
 
-Root cause: These tests expect `newCount = 0` after baselining, but the codebase has 21 findings whose fingerprints don't match the committed baseline. This is a pre-existing issue — the committed baseline is stale relative to the current codebase state. Not a v3.4.1 regression.
+The root cause was in two places:
+
+1. **`configLoader.ts:normalizePaths()`** (line 148): resolved relative `includePaths`/`excludePaths` against `process.cwd()` instead of the config file's directory. When `runAudit()` auto-loads config from a temp test directory, `includePaths: ['src/**/*.ts']` became `/Users/ben/.../app/src/**/*.ts` — the wrong project. File discovery found 0 files.
+
+2. **`fileDiscovery.ts:globToRegex()`** (lines 250-253): `**/ → (.*/)*` was applied *before* `* → .*`, so the `*` characters inside `(.*/)*` got double-replaced to `(..*/)*(..*/)`, breaking the regex for any path with `**/`.
+
+### Fix
+
+- `normalizePaths`: now accepts a `baseDir` parameter (defaults to `cwd()`); `loadConfig` passes `path.dirname(configPath)` — relative paths resolve against the config file's directory, not the caller's cwd.
+- `globToRegex`: uses a null-byte sentinel — `**/` → `\x00`, then `* → .*`, then `\x00 → (.*/)*` — so the quantifier isn't corrupted.
+
+### Resolution
+
+All 48 baseline tests pass (11 were failing, not just the 3 originally noted — the normalizePaths bug cascaded into CLI end-to-end tests too). Full suite: **43 files, 743 tests, 0 failures**.
 
 ---
 
@@ -179,11 +187,11 @@ Root cause: These tests expect `newCount = 0` after baselining, but the codebase
 ```
 > vitest run
 
- Test Files  1 failed | 42 passed (43)
-      Tests  3 failed | 740 passed (743)
+ Test Files  43 passed (43)
+      Tests  743 passed (743)
 ```
 
-**740 of 743 tests pass** (99.6%). Three pre-existing baseline failures. All v3.4.1 changes are green.
+**743 of 743 tests pass** (100%). All v3.4.1 changes green. Zero pre-existing failures.
 
 The `cli-integration.spec.ts` suite: **25 tests, 25 pass** — consisting of 22 A2 gate tests (16 pass + 6 skip) and 3 CSS discovery integration tests (3 pass).
 
@@ -193,7 +201,9 @@ The `cli-integration.spec.ts` suite: **25 tests, 25 pass** — consisting of 22 
 
 | File | Change |
 |------|--------|
-| `src/auditRunner.ts` | Add `await styleDb.initialize()` before style index sync |
+| `src/config/configLoader.ts` | Fix `normalizePaths()` to resolve relative paths against config file directory, not `cwd()` |
+| `src/utils/fileDiscovery.ts` | Fix `globToRegex()` sentinel to prevent double-replacement of `**/` quantifier |
+| `src/auditRunner.ts` | Add `await styleDb.initialize()` before style index sync; auto-load `.codeauditor.json` in `run()` |
 | `src/utils/fileDiscovery.ts` | Add CSS_EXTENSIONS to ALL_EXTENSIONS |
 | `src/scripts/churnExtractor.ts` | Resolve git-relative paths to absolute |
 | `src/codeIndexDB.ts` | Clear stale meta keys on index reset; INSERT OR REPLACE on hotspot_scores |

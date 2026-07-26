@@ -12,6 +12,6 @@
     { "file": "src/clean-queries.ts", "rule": "unfiltered-query", "severity": "suggestion" },
     { "file": "src/clean-queries.ts", "rule": "direct-sql", "severity": "suggestion" }
   ],
-  "nearMissFiles": [],
+  "nearMissFiles": ["src/no-sql-signal.ts"],
   "description": "Tests for the data-access analyzer — SQL patterns. All db.query() calls trigger multiple checks."
 }

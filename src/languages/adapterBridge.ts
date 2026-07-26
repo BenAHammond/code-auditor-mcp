@@ -164,10 +164,17 @@ export function getNodeText(node: ASTNode, sourceCode: string): string {
 /**
  * Get a 1-based line and column from an ASTNode's start position.
  */
+/**
+ * Return 1-based line and column for an ASTNode.
+ *
+ * toSourceLocation() already converts tree-sitter 0-based positions to 1-based,
+ * so no additional +1 compensation is needed here. Adding one would produce
+ * 2-based values (a double compensation).
+ */
 export function getLineAndColumn(node: ASTNode): { line: number; column: number } {
   return {
-    line: node.location.start.line + 1,
-    column: node.location.start.column + 1,
+    line: node.location.start.line,
+    column: node.location.start.column,
   };
 }
 

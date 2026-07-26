@@ -954,6 +954,8 @@ export interface StylesAnalyzerConfig {
   declarationSetMinDeclarations: number;
   /** Jaccard similarity threshold for declaration-set matching. Default 0.9. */
   declarationSetSimilarityThreshold: number;
+  /** CSS properties excluded from value-drift detection (categorical domains). Spec 22 R3. */
+  categoricalPropertyExclusions?: string[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -976,6 +978,8 @@ export interface Convention {
   confidence: number;
   exemplar_file: string | null;
   exemplar_line: number | null;
+  /** For naming conventions: the sub-population (react-component, hook, function). */
+  export_kind?: string | null;
   hash: string | null;
   created_at?: string;
 }

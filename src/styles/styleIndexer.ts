@@ -215,9 +215,15 @@ function extractClassUsage(
     const line = sourceCode.slice(0, match.index).split('\n').length;
     const classes = value.split(/\s+/).filter(Boolean);
 
-    // Determine if unresolvable (dynamic expressions like clsx, template literals)
+    // Any className wrapped in {…} is dynamic — the expression can produce
+    // arbitrary class names at runtime (variables, ternaries, clsx calls,
+    // template literals, etc.). Mark all extracted fragments as unresolvable
+    // so the undefined-class detector skips them individually rather than
+    // false-flagging runtime values as missing CSS definitions.
+    // Spec 22 Task #254 — root cause: the old code only set unresolvable
+    // when the expression contained ${} template interpolation, missing
+    // simple variable/ternary/function-call expressions.
     const isDynamic = !!(match[4] ?? match[3]);
-    const hasDynamicParts = isDynamic && /[\${}]/.test(value);
 
     for (const className of classes) {
       // Skip obvious static utility fragments from dynamic expressions
@@ -228,7 +234,7 @@ function extractClassUsage(
         filePath,
         line,
         mechanism,
-        unresolvable: hasDynamicParts,
+        unresolvable: isDynamic,
       });
     }
   }

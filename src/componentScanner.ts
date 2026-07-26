@@ -146,15 +146,16 @@ export async function scanFile(
       if (!options.includeTests && componentName.includes('Test')) return;
       if (!options.includeStories && componentName.includes('Story')) return;
 
+      // getLineAndColumn returns 1-based via toSourceLocation — no compensation needed.
       const { line } = getLineAndColumn(node);
       const endLine = node.location?.end?.line ?? line;
 
       const component: ComponentMetadata = {
         name: componentName,
         filePath: state.currentFile,
-        lineNumber: line + 1, // Convert to 1-based
-        startLine: line + 1,
-        endLine: endLine + 1,
+        lineNumber: line,
+        startLine: line,
+        endLine: endLine,
         entityType: 'component',
         componentType,
         dependencies: [], // Will be populated later from imports

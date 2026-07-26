@@ -37,8 +37,10 @@ export async function loadConfig(options?: {
     config = { ...config, ...options.cliArgs };
   }
   
-  // Normalize paths
-  config = normalizePaths(config);
+  // Normalize paths — resolve relative paths against the config file's directory
+  // (or cwd when loading defaults only, which is the CLI's typical invocation)
+  const baseDir = options?.configPath ? path.dirname(options.configPath) : undefined;
+  config = normalizePaths(config, baseDir);
 
   // Merge built-in path profiles with user-configured profiles (Spec-20)
   config.pathProfiles = mergePathProfiles(
@@ -135,27 +137,28 @@ function mergeConfig(base: AuditConfig, override: Partial<AuditConfig>): AuditCo
 /**
  * Normalize file paths in configuration
  */
-function normalizePaths(config: AuditConfig): AuditConfig {
+function normalizePaths(config: AuditConfig, baseDir?: string): AuditConfig {
   const normalized = { ...config };
-  
+  const root = baseDir || process.cwd();
+
   // Normalize output directory
   if (normalized.outputDirectory) {
-    normalized.outputDirectory = path.resolve(normalized.outputDirectory);
+    normalized.outputDirectory = path.resolve(root, normalized.outputDirectory);
   }
-  
+
   // Normalize include/exclude paths
   if (normalized.includePaths) {
-    normalized.includePaths = normalized.includePaths.map(p => 
-      path.isAbsolute(p) ? p : path.join(process.cwd(), p)
+    normalized.includePaths = normalized.includePaths.map(p =>
+      path.isAbsolute(p) ? p : path.resolve(root, p)
     );
   }
-  
+
   if (normalized.excludePaths) {
-    normalized.excludePaths = normalized.excludePaths.map(p => 
-      path.isAbsolute(p) ? p : path.join(process.cwd(), p)
+    normalized.excludePaths = normalized.excludePaths.map(p =>
+      path.isAbsolute(p) ? p : path.resolve(root, p)
     );
   }
-  
+
   return normalized;
 }
 

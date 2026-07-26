@@ -288,7 +288,7 @@ export class CodeIndexDB {
   private stmts: Map<string, Database.Statement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 7;
+  private static readonly SCHEMA_VERSION = 8;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -635,6 +635,16 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_cov_function ON coverage_data(function_name);
       `);
     }
+
+    // Migration 7 → 8: export_kind on conventions (Spec 22 R5.1)
+    if (currentVersion < 8) {
+      const cols = this.db
+        .prepare(`PRAGMA table_info('conventions')`)
+        .all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'export_kind')) {
+        this.db.exec(`ALTER TABLE conventions ADD COLUMN export_kind TEXT`);
+      }
+    }
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -948,6 +958,7 @@ export class CodeIndexDB {
         confidence REAL DEFAULT 0,
         exemplar_file TEXT,
         exemplar_line INTEGER,
+        export_kind TEXT,
         hash TEXT,
         created_at TEXT DEFAULT (datetime('now'))
       );
@@ -1219,7 +1230,7 @@ export class CodeIndexDB {
         configCount && `${configCount} analyzer configs`,
         whitelistCount && `${whitelistCount} whitelist entries`,
       ].filter(Boolean).join(', ') || '0 entries';
-      console.log(`[code-auditor] Migrated ${countLine} from LokiJS to SQLite. Old file saved as ${path.basename(bakPath)}`);
+      console.error(`[code-auditor] Migrated ${countLine} from LokiJS to SQLite. Old file saved as ${path.basename(bakPath)}`);
       return { migrated: true, counts: { tasks: taskCount, configs: configCount, whitelist: whitelistCount } };
     } catch (err) {
       // Migration failed — try to restore the backup
@@ -2029,10 +2040,10 @@ export class CodeIndexDB {
         `INSERT INTO conventions
          (domain, rule_id, antecedent, consequent, pattern, directory,
           file_path, line, support, total_cases, confidence,
-          exemplar_file, exemplar_line, hash)
+          exemplar_file, exemplar_line, export_kind, hash)
          VALUES (@domain, @rule_id, @antecedent, @consequent, @pattern,
                  @directory, @file_path, @line, @support, @total_cases,
-                 @confidence, @exemplar_file, @exemplar_line, @hash)`
+                 @confidence, @exemplar_file, @exemplar_line, @export_kind, @hash)`
       );
 
       const upsertAll = this.db.transaction(() => {
@@ -2052,6 +2063,7 @@ export class CodeIndexDB {
             confidence: c.confidence,
             exemplar_file: c.exemplar_file ?? null,
             exemplar_line: c.exemplar_line ?? null,
+            export_kind: (c as any).export_kind ?? null,
             hash: c.hash ?? null,
           });
         }
@@ -3164,6 +3176,7 @@ export class CodeIndexDB {
   getUntestedTopDecile(topDecile: number = 0.1): Array<{
     functionName: string;
     filePath: string;
+    lineNumber: number;
     riskScore: number;
     basis: string;
   }> {
@@ -3173,6 +3186,7 @@ export class CodeIndexDB {
         SELECT
           f.name,
           f.file_path,
+          f.line_number,
           COALESCE(hs.score, 0.0) as risk_score,
           PERCENT_RANK() OVER (ORDER BY COALESCE(hs.score, 0.0) DESC) as pct
         FROM functions f
@@ -3187,6 +3201,7 @@ export class CodeIndexDB {
       SELECT
         r.name,
         r.file_path,
+        r.line_number,
         r.risk_score,
         COALESCE(bc.basis, 'static-reach') as basis
       FROM ranked r
@@ -3199,6 +3214,7 @@ export class CodeIndexDB {
     return rows.map((r: any) => ({
       functionName: r.name,
       filePath: r.file_path,
+      lineNumber: r.line_number ?? 1,
       riskScore: r.risk_score,
       basis: r.basis,
     }));

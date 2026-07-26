@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-24T19:44:32.545Z",
+  "timestamp": "2026-07-26T02:26:35.908Z",
   "summary": {
     "totalAnalyzers": 13,
     "passed": 13,
@@ -194,7 +194,7 @@
             "line": 30,
             "column": 1,
             "severity": "suggestion",
-            "message": "92% of exports in `src/` use PascalCase — `my_snake_function` uses snake_case (exemplar: src/approved.ts:25)",
+            "message": "92% of function exports in `src/` use PascalCase — `my_snake_function` uses snake_case (exemplar: src/approved.ts:25)",
             "rule": "conventions/naming",
             "analyzer": "conventions",
             "functionName": "my_snake_function"
@@ -290,7 +290,13 @@
           "trueF1": 1
         }
       ],
-      "nearMissResults": [],
+      "nearMissResults": [
+        {
+          "file": "src/no-sql-signal.ts",
+          "violations": 0,
+          "passed": true
+        }
+      ],
       "details": [
         {
           "expected": {
@@ -301,8 +307,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/n-plus-one.ts",
-            "line": 14,
-            "column": 25,
+            "line": 15,
+            "column": 26,
             "severity": "warning",
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -319,8 +325,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/n-plus-one.ts",
-            "line": 14,
-            "column": 25,
+            "line": 15,
+            "column": 26,
             "severity": "suggestion",
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
@@ -337,10 +343,10 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/n-plus-one.ts",
-            "line": 14,
-            "column": 25,
+            "line": 15,
+            "column": 26,
             "severity": "warning",
-            "message": "Database query inside loop (loop at line 12). This may cause N+1 performance issues. Consider batching queries or using a join.",
+            "message": "Database query inside loop (loop at line 13). This may cause N+1 performance issues. Consider batching queries or using a join.",
             "rule": "loop-query",
             "analyzer": "data-access",
             "functionName": "top-level:loop-query"
@@ -373,8 +379,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
-            "line": 6,
-            "column": 23,
+            "line": 7,
+            "column": 24,
             "severity": "warning",
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -391,8 +397,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
-            "line": 6,
-            "column": 23,
+            "line": 7,
+            "column": 24,
             "severity": "suggestion",
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
@@ -409,8 +415,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
-            "line": 14,
-            "column": 23,
+            "line": 15,
+            "column": 24,
             "severity": "warning",
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -427,8 +433,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
-            "line": 14,
-            "column": 23,
+            "line": 15,
+            "column": 24,
             "severity": "suggestion",
             "message": "Unfiltered query on users may cause performance issues",
             "rule": "unfiltered-query",
@@ -551,8 +557,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/documentation/src/undocumented.ts",
-            "line": 4,
-            "column": 7,
+            "line": 5,
+            "column": 8,
             "severity": "suggestion",
             "message": "exported function 'publicAPI' lacks proper documentation",
             "rule": "function-documentation",
@@ -608,10 +614,10 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/dry/src/duplicates.ts",
-            "line": 51,
-            "column": 2,
+            "line": 52,
+            "column": 3,
             "severity": "warning",
-            "message": "Duplicate code block detected (19 lines). First occurrence at /Users/ben/playground/code-auditor/app/bench/corpus/dry/src/duplicates.ts:19",
+            "message": "Duplicate code block detected (19 lines). First occurrence at /Users/ben/playground/code-auditor/app/bench/corpus/dry/src/duplicates.ts:20",
             "rule": "dry/duplicate",
             "analyzer": "dry",
             "fix": {
@@ -819,10 +825,10 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
-            "line": 28,
-            "column": 29,
+            "line": 29,
+            "column": 30,
             "severity": "warning",
-            "message": "Database query inside loop (loop at line 24). This may cause N+1 performance issues. Consider batching queries or using a join.",
+            "message": "Database query inside loop (loop at line 25). This may cause N+1 performance issues. Consider batching queries or using a join.",
             "rule": "loop-query",
             "analyzer": "data-access",
             "functionName": "top-level:loop-query"
@@ -837,8 +843,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
-            "line": 28,
-            "column": 29,
+            "line": 29,
+            "column": 30,
             "severity": "warning",
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -855,8 +861,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
-            "line": 28,
-            "column": 29,
+            "line": 29,
+            "column": 30,
             "severity": "suggestion",
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
@@ -873,8 +879,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
-            "line": 40,
-            "column": 25,
+            "line": 41,
+            "column": 26,
             "severity": "warning",
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -891,8 +897,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
-            "line": 40,
-            "column": 25,
+            "line": 41,
+            "column": 26,
             "severity": "suggestion",
             "message": "Unfiltered query on users may cause performance issues",
             "rule": "unfiltered-query",
@@ -927,8 +933,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
-            "line": 17,
-            "column": 26,
+            "line": 18,
+            "column": 27,
             "severity": "warning",
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -945,8 +951,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
-            "line": 17,
-            "column": 26,
+            "line": 18,
+            "column": 27,
             "severity": "suggestion",
             "message": "Unfiltered query on users may cause performance issues",
             "rule": "unfiltered-query",
@@ -963,8 +969,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
-            "line": 25,
-            "column": 24,
+            "line": 26,
+            "column": 25,
             "severity": "warning",
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -981,8 +987,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
-            "line": 25,
-            "column": 24,
+            "line": 26,
+            "column": 25,
             "severity": "suggestion",
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
@@ -1017,8 +1023,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
-            "line": 21,
-            "column": 19,
+            "line": 22,
+            "column": 20,
             "severity": "warning",
             "message": "Query on 注文 missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -1035,8 +1041,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
-            "line": 21,
-            "column": 19,
+            "line": 22,
+            "column": 20,
             "severity": "suggestion",
             "message": "Unfiltered query on 注文 may cause performance issues",
             "rule": "unfiltered-query",
@@ -1053,8 +1059,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
-            "line": 30,
-            "column": 19,
+            "line": 31,
+            "column": 20,
             "severity": "warning",
             "message": "Query on 商品 missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -1071,8 +1077,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
-            "line": 30,
-            "column": 19,
+            "line": 31,
+            "column": 20,
             "severity": "suggestion",
             "message": "Unfiltered query on 商品 may cause performance issues",
             "rule": "unfiltered-query",
@@ -1107,8 +1113,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
-            "line": 22,
-            "column": 11,
+            "line": 23,
+            "column": 12,
             "severity": "warning",
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -1125,8 +1131,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
-            "line": 22,
-            "column": 11,
+            "line": 23,
+            "column": 12,
             "severity": "suggestion",
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
@@ -1143,8 +1149,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
-            "line": 24,
-            "column": 11,
+            "line": 25,
+            "column": 12,
             "severity": "warning",
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
@@ -1161,8 +1167,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
-            "line": 24,
-            "column": 11,
+            "line": 25,
+            "column": 12,
             "severity": "suggestion",
             "message": "Unfiltered query on users may cause performance issues",
             "rule": "unfiltered-query",
@@ -1179,8 +1185,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
-            "line": 26,
-            "column": 11,
+            "line": 27,
+            "column": 12,
             "severity": "suggestion",
             "message": "Unfiltered query on products may cause performance issues",
             "rule": "unfiltered-query",
@@ -1279,7 +1285,7 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/bad-hook.tsx",
-            "line": 17,
+            "line": 16,
             "severity": "warning",
             "message": "Component 'UserProfile' has high complexity (12)",
             "componentName": "UserProfile",
@@ -1327,6 +1333,16 @@
           "file": "src/known-tables.ts",
           "violations": 0,
           "passed": true
+        },
+        {
+          "file": "src/no-sql-signal.ts",
+          "violations": 0,
+          "passed": true
+        },
+        {
+          "file": "src/aliased-queries.ts",
+          "violations": 0,
+          "passed": true
         }
       ],
       "details": [
@@ -1339,7 +1355,7 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
-            "line": 12,
+            "line": 13,
             "column": 27,
             "severity": "suggestion",
             "message": "Reference to unknown table 'inventory' (select)",
@@ -1357,7 +1373,7 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
-            "line": 20,
+            "line": 21,
             "column": 25,
             "severity": "suggestion",
             "message": "Reference to unknown table 'widgets' (select)",
@@ -1375,7 +1391,7 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
-            "line": 20,
+            "line": 21,
             "column": 18,
             "severity": "suggestion",
             "message": "Reference to unknown table 'widgets' (delete)",
@@ -1450,8 +1466,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/solid/src/very-complex-method.ts",
-            "line": 5,
-            "column": 2,
+            "line": 6,
+            "column": 3,
             "severity": "warning",
             "message": "Method \"ApiRequestHandler.handleRequest\" has cyclomatic complexity 77, exceeding the maximum of 50. Consider breaking it into smaller methods.",
             "rule": "solid/method-complexity",
@@ -1468,8 +1484,8 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/solid/src/very-complex-method.ts",
-            "line": 5,
-            "column": 2,
+            "line": 6,
+            "column": 3,
             "severity": "warning",
             "message": "Function \"handleRequest\" has 270 lines, exceeding the maximum of 50. Consider breaking it down.",
             "rule": "single-responsibility",
@@ -1681,7 +1697,7 @@
             "line": 1,
             "column": 1,
             "severity": "warning",
-            "message": "Undefined CSS class: \"obscure-custom-class-xyz\" has no matching definition in any stylesheet or Tailwind utility set.",
+            "message": "Undefined CSS class: \"obscure-custom-class-xyz\" has no matching definition in any stylesheet, Tailwind utility set, or project config.",
             "rule": "styles/undefined-class",
             "analyzer": "styles"
           }

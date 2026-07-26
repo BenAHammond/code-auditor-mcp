@@ -48,9 +48,9 @@ CODE_AUDIT_BIN="$(resolve_code_audit)"
 # stdout/stderr are fed back to the agent by Claude Code
 set +e
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-	  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json --fail-on critical -p "${CLAUDE_PROJECT_DIR}" 2>&1
+	  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json --fail-on critical -p "${CLAUDE_PROJECT_DIR}"
 	else
-	  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json --fail-on critical 2>&1
+	  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json --fail-on critical
 	fi
 exit_code=$?
 set -e

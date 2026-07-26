@@ -193,8 +193,9 @@ export function resolveCallExpression(
     return {
       callee,
       callType,
-      line: line + 1, // Convert to 1-based
-      column: column + 1,
+      // getLineAndColumn now returns 1-based via toSourceLocation — no compensation needed.
+      line,
+      column,
       arguments: argCount
     };
   }
@@ -273,7 +274,8 @@ export function extractIdentifierUsage(
     };
 
     existing.usageCount++;
-    existing.lineNumbers.push(line + 1);
+    // getLineAndColumn now returns 1-based via toSourceLocation — no compensation needed.
+    existing.lineNumbers.push(line);
 
     // Determine usage type from parent context
     if (parent) {

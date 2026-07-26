@@ -612,7 +612,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       for (const fn of untested) {
         violations.push({
           file: fn.filePath,
-          line: 0, // Risk-based finding; no single line anchors this
+          line: fn.lineNumber ?? 1,
           column: 0,
           severity: 'suggestion',
           message:

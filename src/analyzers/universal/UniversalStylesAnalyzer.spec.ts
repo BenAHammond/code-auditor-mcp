@@ -246,6 +246,73 @@ describe('Detector 1 — Value Drift', () => {
     const drifts = findViolations(violations, 'styles/value-drift');
     expect(drifts.length).toBe(0);
   });
+
+  // Spec 22 R3.2: categorical property exclusion
+  it('does NOT fire on categorical properties (align-items with keyword values)', async () => {
+    for (let i = 0; i < 431; i++) {
+      insertDecl({
+        property: 'align-items',
+        raw_value: 'center',
+        normalized_value: 'center',
+        mechanism: 'css',
+        file_path: `src/comp${i % 10}.css`,
+        line: i + 1,
+      });
+    }
+    for (let i = 0; i < 4; i++) {
+      insertDecl({
+        property: 'align-items',
+        raw_value: 'stretch',
+        normalized_value: 'stretch',
+        mechanism: 'css',
+        file_path: 'src/outlier.css',
+        line: 500 + i,
+      });
+    }
+
+    const violations = await runAnalyzer({
+      minCorpus: 3,
+      outlierMaxShare: 0.05,
+      modeMinCount: 3,
+    });
+
+    const drifts = findViolations(violations, 'styles/value-drift');
+    expect(drifts.length).toBe(0);
+  });
+
+  // Spec 22 R3.2: color drift still fires on continuous domains
+  it('still fires color drift on continuous values (original motivating case)', async () => {
+    for (let i = 0; i < 47; i++) {
+      insertDecl({
+        property: 'background-color',
+        raw_value: '#1e2327',
+        normalized_value: '#1e2327',
+        mechanism: 'css',
+        file_path: `src/comp${i % 10}.css`,
+        line: i + 1,
+      });
+    }
+    for (let i = 0; i < 2; i++) {
+      insertDecl({
+        property: 'background-color',
+        raw_value: '#1e2328',
+        normalized_value: '#1e2328',
+        mechanism: 'css',
+        file_path: 'src/outlier.css',
+        line: 100 + i,
+      });
+    }
+
+    const violations = await runAnalyzer({
+      minCorpus: 3,
+      colorDeltaE: 0.5,
+      outlierMaxShare: 0.05,
+      modeMinCount: 3,
+    });
+
+    const drifts = findViolations(violations, 'styles/value-drift');
+    expect(drifts.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -386,16 +453,18 @@ describe('Detector 3 — Undefined Classes', () => {
     expect(fromDynamic.length).toBe(0);
   });
 
-  it('skips pseudo-class selectors and dynamic-looking classes', async () => {
-    insertClassUsage('hover:bg-blue', 'src/component.tsx', 5, 'className');
-    insertClassUsage('[active]', 'src/component.tsx', 8, 'className');
+  it('skips PascalCase, function-like, brackets, and arbitrary-value classes; flags genuinely undefined classes', async () => {
+    insertClassUsage('hover:bg-blue-500', 'src/component.tsx', 5, 'className'); // variant → valid
+    insertClassUsage('[active]', 'src/component.tsx', 8, 'className');  // bare brackets — skipped
     insertClassUsage('Button', 'src/component.tsx', 10, 'className');    // PascalCase
     insertClassUsage('mt-[17px]', 'src/component.tsx', 12, 'className'); // arbitrary values
     insertClassUsage('var(--x)', 'src/component.tsx', 14, 'className');  // function-like
+    insertClassUsage('hover:bg-blue', 'src/component.tsx', 16, 'className'); // bg-blue → genuinely undefined
 
     const violations = await runAnalyzer();
     const undef = findViolations(violations, 'styles/undefined-class');
-    expect(undef.length).toBe(0);
+    expect(undef.length).toBe(1);
+    expect(undef[0].message).toContain('hover:bg-blue');
   });
 });
 
@@ -467,6 +536,78 @@ describe('Detector 4 — Token Bypass', () => {
     const violations = await runAnalyzer();
     const bypasses = findViolations(violations, 'styles/token-bypass');
     expect(bypasses.length).toBe(1);
+  });
+
+  // Spec 22 R2 fixtures
+  it('does NOT fire on CSS custom-property definition sites (--x)', async () => {
+    // Definition site: --accent is being defined with a literal value
+    insertToken('--accent', '#22d3ee');
+    insertDecl({
+      property: '--accent',
+      raw_value: '#22d3ee',
+      token_ref: null,
+      file_path: 'src/tokens.css',
+      line: 1,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(0);
+  });
+
+  it('does NOT fire on aliased tokens sharing a value', async () => {
+    // Two tokens deliberately share the same value — this is the token
+    // system working, not a bypass.
+    insertToken('--accent', '#22d3ee');
+    insertToken('--brand-action', '#22d3ee');
+    // Definition site for the second token — literal is expected here
+    insertDecl({
+      property: '--brand-action',
+      raw_value: '#22d3ee',
+      token_ref: null,
+      file_path: 'src/tokens.css',
+      line: 2,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(0);
+  });
+
+  it('does NOT fire on var() references even when value collides', async () => {
+    // --surface-raised value collides with another token, but the
+    // declaration uses var() — this is a token reference, not a bypass.
+    insertToken('--surface-raised', '#1e2328');
+    insertToken('--fg-default', '#1e2328');
+    insertDecl({
+      property: 'background',
+      raw_value: 'var(--surface-raised)',
+      token_ref: '--surface-raised',
+      file_path: 'src/component.css',
+      line: 5,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(0);
+  });
+
+  it('flags raw literal that matches a token in usage position', async () => {
+    // Raw #22d3ee in a component style where --accent exists → one finding
+    insertToken('--accent', '#22d3ee');
+    insertDecl({
+      property: 'color',
+      raw_value: '#22d3ee',
+      token_ref: null,
+      file_path: 'src/component.css',
+      line: 10,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(1);
+    expect(bypasses[0].message).toContain('--accent');
+    expect(bypasses[0].message).toContain('Token bypass');
   });
 });
 

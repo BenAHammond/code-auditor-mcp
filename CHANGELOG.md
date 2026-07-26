@@ -61,6 +61,143 @@ The Style Intelligence analyzer's file discovery didn't include `.css`/`.scss` e
 | `src/cli-integration.spec.ts` | A2 gate expansion — doc-CLI parity tests (16 pass, 6 skip) |
 | `GROUND-TRUTH.md` | §9: Known Issues — SDK/Integration Surface |
 
+## [3.4.2] — 2026-07-26
+
+### R4: SQL Extraction Regression Fix
+
+Post-release dogfood triage surfaced false positives from three sources in the SQL extraction pipeline. None were structural bugs in the detection logic — they were routing failures: SQL-looking JS patterns reaching the extraction stage without DB context gates.
+
+**The root cause was a one-emitter-law violation**: Spec 15's ORM extraction path introduced a **second emitter** — `DrizzleAdapter.extractTableReferences()` — that scanned every `call_expression` in every `.ts` file for `.from()`/`.insert()`/`.delete()` patterns. It bypassed the shared gates that protect the three regular SQL extraction paths (tagged templates gate on `sql` identifiers, DB-call patterns gate on provenance + db-member checks, file-type gates on `.sql`/migration directories). The Drizzle adapter had its own gate system — but that system was incomplete: no file-level import check, no expression-level companion requirements. Generic method calls like `Array.from(map)` in non-Drizzle files reached the extraction stage and produced false positives across rule IDs `loop-query` and `sql-injection`.
+
+**Registry accounting** (rule IDs affected by the Drizzle emitter, confirmed by Spec 22 fixture coverage):
+| Rule ID | Affected? | Rationale |
+|---------|-----------|-----------|
+| `schema/loop-query` | Yes | Drizzle emitted table refs → N+1 detection in loop context |
+| `schema/sql-injection` | Yes | Drizzle emitted raw refs → injection check on unescaped inputs |
+| `data-access/loop-query` | Yes | Same Drizzle-emitted refs, data-access analyzer path |
+| `data-access/sql-injection` | Yes | Same Drizzle-emitted refs, data-access analyzer path |
+| `schema/unknown-table` | Yes | Drizzle emitted table names → unknown-table validation |
+| `schema/missing-schemas` | Indirect | Depends on table references from the same pipeline |
+| All other rule IDs | No | No Drizzle-origin data reaches these detection chains |
+
+The Prisma adapter was **not a rogue path**: `prisma.modelName.op()` syntax requires the `prisma.` identifier prefix and known operation names — a strong gate by construction. Regular SQL extraction paths (1–3) all have their own independent strong gates. Drizzle was the **only** gate-incomplete emitter.
+
+**Post-verification** (2026-07-20): Re-ran the registry accounting across all four SQL extraction paths (tagged-template, DB-call, .sql/migration, ORM adapters). Confirmed Drizzle was the sole gate-incomplete emitter pre-fix — no other path lacked self-gating. The two-level gate (file import + companion methods) fully closes the vector.
+
+#### R4.2: Routing Gates (Drizzle Adapter)
+
+**File-level gate** (`DrizzleAdapter.extractTableReferences()`): The adapter now checks whether the file imports `drizzle-orm` before scanning for query operations. Without this gate, `Array.from(map)` in any `.ts` file produces a false `select` finding — the `.from()` method on `Array` has no semantic relationship to Drizzle query building.
+
+**Expression-level gates**: Each extraction pattern now requires companion Drizzle methods to confirm DB context:
+- `.from(identifier)` requires `.select()` in the same expression
+- `.insert(identifier)` requires `.values()` in the same expression
+- `.delete(identifier)` requires `.where()` in the same expression
+
+These gates prevent generic `.from()`, `.insert()`, `.delete()` method calls on non-DB objects from being misinterpreted as table references.
+
+#### R4.2: Routing Gates (Data-Access Shared Gate)
+
+**Variable-assignment gate** (`containsSQLStructure()`): Raised the SQL keyword threshold from 1 to 2 for variable-assignment detection. A single `FROM` substring match (e.g., inside `Array.from()`) produced ~120 false positives on the recall corpus. Genuine SQL in variable assignments (`const q = "SELECT * FROM users"`) contains ≥2 keywords and still passes.
+
+#### R4.3: SQL Alias Filtering
+
+The SQL table-reference regex captures table names after `FROM`/`JOIN` keywords by matching `[\p{L}\p{N}_]+` followed by a word boundary. In `JOIN u.posts`, the `.` after `u` creates a word boundary, so the regex captures `u` — an alias for `users`, not a real table. Without filtering, every `JOIN alias.column` pattern produces a false `unknown-table` violation for the alias.
+
+**Fix**: `extractAliasIdentifiers()` scans the SQL text for two alias patterns:
+1. **Explicit**: `FROM x AS t` / `JOIN x AS t` — `AS` keyword
+2. **Bare**: `FROM x t` / `JOIN x t` — no `AS` keyword, guarded by after-match dot check and `isSqlKeyword()` filtering
+
+Extracted alias identifiers are subtracted from the table-reference list in `parseSqlTables()` before the list is returned.
+
+#### R4.4: Bench Fixtures
+
+- `src/no-sql-signal.ts` (both `data-access` and `schema` corpora): `Array.map`, `.toLowerCase`, `.insert()`, `.delete()`, `.update()` on plain JS objects — asserted as near-miss files producing zero SQL findings across all SQL-adjacent rule IDs.
+- `src/aliased-queries.ts` (schema corpus): queries with explicit and bare aliases referencing only known tables — asserted as near-miss, confirming alias filtering prevents false `unknown-table` violations.
+
+### R1–R3 (Completed Previously)
+
+- **R1**: `styles/undefined-class` — generated Tailwind utility dictionary; undefined-class detection now distinguishes "unknown in Tailwind" from "class from a different framework"
+- **R2**: `styles/token-bypass` — CSS custom property definitions (`--color:`) and `var()` references are no longer flagged as token bypasses
+- **R3**: `styles/value-drift` — categorical CSS properties (`display`, `position`, `overflow`, etc.) excluded from value-drift detection; their values are enumerations, not magnitudes
+
+### R5: Conventions — Naming Partitioning and Usage-Pair Noise Reduction
+
+Post-release triage surfaced ~200 false positives in the conventions analyzer, concentrated in two areas: misleading naming conventions from mixed populations, and usage-pair correlation on built-in/stdlib methods where co-occurrence is arithmetic, not project convention.
+
+#### R5.1: Naming Conventions Partitioned by Export Kind
+
+Before this fix, the convention miner computed a single dominant casing mode per directory across all exported symbols. A directory with 40 PascalCase React components, 5 camelCase hooks, and 1 snake_case utility function would generate a `conventions/naming` violation for the utility — the miner treated all exports as a single population. With this fix, exports are partitioned into four populations before computing a mode:
+
+- **React components** — JSX-returning / `.tsx` PascalCase entities
+- **Hooks** — `use`-prefixed functions
+- **Functions** — all other exported functions
+- **Constants** — top-level literal-initialized exports
+
+Each population must meet `minCorpus` independently; sub-threshold populations produce no conventions and no violations. Stored in the `export_kind` column of the `conventions` table (schema migration v8).
+
+**Impact**: Eliminates false naming violations where legitimate convention in one population (e.g., PascalCase components) was used to judge a different population's naming (e.g., `use`-prefixed hooks or single utility functions).
+
+#### R5.2: Built-in/Stdlib Excluded from Usage-Pair Mining
+
+Usage-pair mining detects co-occurring function calls — "functions that call `A` also call `B`" — and flags deviations. Before this fix, built-in and standard library methods (`slice`, `trim`, `map`, `push`, `parse`, `stringify`, etc.) were treated as antecedents and consequents. Co-occurrence of universal methods is arithmetic, not convention: every function that calls `map` also calls `push` at some point, but that's not a meaningful project convention.
+
+**Fix**: A comprehensive exclusion set (~80 identifiers covering Array, String, Object, Math, JSON, Promise, Console, and timer methods) is filtered from both antecedent and consequent positions. Antecedents must also be project-defined symbols resolvable in the function index — a `functions`-table membership check gates every antecedent.
+
+**Threshold changes**: `pairConfidence` floor rises from 0.9 → 0.95 and `minCorpus` from 20 → 30. These are interim values, sweepable in the next recalibration pass.
+
+### R6: Evidence Bundle
+
+All six defect classes are covered by bench fixtures in `bench/corpus/`:
+- **styles**: `undefined-class`, `token-bypass`, `value-drift` fixtures with positive and near-miss files
+- **data-access/schema**: `no-sql-signal.ts` near-miss (JS identifiers as SQL), `aliased-queries.ts` near-miss (alias filtering)
+- **conventions**: all five rule domains (`usage-pair`, `import-form`, `error-handling`, `export-shape`, `naming`) at F1=1.0 with updated mining logic
+
+Every touched rule remains at `suggestion` severity. The hook path is byte-identical to v3.4.1 on hook-contract fixtures. Evidence bundle at `specs/evidence/spec-22/`.
+
+### R7: JSON-Purity Contamination Fix
+
+The `codeIndexDB.ts:1233` migration log path wrote to stdout via `console.log`. In `--json` mode, this contaminated the JSON output stream with non-JSON text, breaking downstream consumers that `JSON.parse()` the stdout. Switched to `console.error` (stderr) to keep migration notices off the JSON stream. Three purity tests added to `baseline.test.ts` for the hook-contract-critical paths: `changed --json`, `changed --stdin --json`, and zero-match edge case.
+
+### R8: isDynamic Extraction False Positives
+
+`extractClassUsage()` only marked template-literal dynamic expressions as unresolvable; simple variables and ternaries passed through. All `{…}` wrapped expressions are now `unresolvable: true`, and the detector skips per-entry, not per-file. The undefined-class detector no longer false-flags runtime class-name expressions.
+
+### R9: Line-Number Conversion Sweep
+
+**Root cause**: `toSourceLocation()` in `converter.ts` returned 0-based positions from tree-sitter without conversion, despite a comment saying "convert to 1-based columns." This created three divergent pipelines — callers compensated individually, some double-compensated, and raw TS node access bypassed the converter entirely. The sweep fixed 6 files at 6 edit locations:
+
+- **`converter.ts`**: Single conversion point — all four position fields (line/column, start/end) now `+ 1`
+- **`adapterBridge.ts`**: Removed internal `+ 1` compensation (now identity over `toSourceLocation()`)
+- **`UniversalAnalyzer.ts`**: Removed scattered `+ 1` compensation in `createViolation()`
+- **`astParser.ts`**: Removed `+ 1` compensation on parse error positions
+- **`componentScanner.ts`**: Removed DOUBLE compensation (was 2-based)
+- **`dependencyExtractor.ts`**: Removed DOUBLE compensation on call graph edges and usage records
+
+**Secondary effects**: Mixed-basis DB spans resolved (some records had 1-based start + 0-based end), churn attribution off-by-one resolved, `validateHookContract` guard behavior preserved.
+
+**Invariant**: All positions returned by `toSourceLocation()` are now 1-based. The single conversion point is mechanically enforced — zero `+ 1` compensations remain in the tree-sitter→adapter→consumer pipeline. Full sweep report at `specs/evidence/spec-22/line-number-sweep.md`.
+
+### R10: JSON Purity Test Expansion
+
+Extended JSON purity tests from 3 to 17, covering all major `--json` CLI commands: `index status`, `config rules-list`, `config profiles`, `config detection`, `search`, `tasks list`, `tasks from-audit`, `hotspots`, `ledger stats`, `ledger list`, `risk`, `baseline`, `conventions list`, and `architecture`. Every test verifies `JSON.parse(stdout)` succeeds with zero non-JSON text.
+
+### R11: Hook-Path Diagnostic
+
+Traced a stale footer error to the published plugin's hook script (`hook-audit.sh` line 50: `2>&1`) — the hook re-merges stderr into stdout after the repo correctly separated them. The repo is fixed; the hook script fix ships with the next plugin version. Diagnostic at `specs/evidence/spec-22/verify-close.md`.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/languages/tree-sitter/converter.ts` | Add `+ 1` to all position fields; invariant JSDoc |
+| `src/languages/adapterBridge.ts` | Remove internal `+ 1` compensation |
+| `src/languages/UniversalAnalyzer.ts` | Remove scattered `+ 1` in `createViolation()` |
+| `src/utils/astParser.ts` | Remove `+ 1` on parse error positions |
+| `src/componentScanner.ts` | Remove double compensation (2-based → 1-based) |
+| `src/utils/dependencyExtractor.ts` | Remove double compensation on call graph edges |
+| `src/codeIndexDB.ts` | `console.log` → `console.error` for migration notices |
+| `src/__tests__/baseline.test.ts` | 14 new JSON purity tests (3→17 total) |
+
 ## [3.3.0] — 2026-07-20
 
 ### Spec-10: Style Intelligence — Distribution-Aware Style Analysis
