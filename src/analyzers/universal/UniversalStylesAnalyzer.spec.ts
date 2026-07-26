@@ -625,6 +625,23 @@ describe('Detector 4 — Token Bypass', () => {
     expect(bypasses[0].message).toContain('--accent');
     expect(bypasses[0].message).toContain('Token bypass');
   });
+
+  it('does NOT fire on SCSS $variable definition sites', async () => {
+    // SCSS $variable definitions ($accent: #22d3ee) are token-value
+    // definition sites, just like CSS --custom properties. Zero findings.
+    insertToken('$accent', '#22d3ee', 'scss-variable');
+    insertDecl({
+      property: '$accent',
+      raw_value: '#22d3ee',
+      token_ref: null,
+      file_path: 'src/variables.scss',
+      line: 1,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

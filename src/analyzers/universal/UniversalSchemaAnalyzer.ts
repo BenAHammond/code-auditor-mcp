@@ -120,6 +120,25 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     const jsonFiles = files.filter(f => f.endsWith('.json'));
     const codeFiles = files.filter(f => !f.endsWith('.json'));
 
+    // Spec 22 Item 2 — Auto-discover known tables from migration/SQL files
+    // when no schemas are configured. Feeds discovered table names (CREATE TABLE)
+    // into allTables so the unknown-table detector works without explicit user
+    // config. Previously allTables was built exclusively from config.schemas, so
+    // projects without explicit schema config saw every table reference as unknown.
+    const schemas = config.schemas;
+    if (!schemas || schemas.length === 0) {
+      const discovered = await this.discoverTablesFromMigrations(codeFiles, config);
+      if (discovered.size > 0) {
+        config = {
+          ...config,
+          schemas: [{
+            name: 'auto-discovered',
+            tables: [...discovered].map(name => ({ name, columns: [] })),
+          }],
+        };
+      }
+    }
+
     const codeResult = codeFiles.length > 0 ? await super.analyze(codeFiles, config) : {
       violations: [],
       errors: [],
@@ -135,6 +154,52 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       filesProcessed: codeResult.filesProcessed + jsonResult.filesProcessed,
       executionTime: (codeResult.executionTime || 0) + (jsonResult.executionTime || 0)
     };
+  }
+
+  /**
+   * Spec 22 Item 2 — Auto-discover known tables from migration/SQL files.
+   *
+   * When config.schemas is empty, scans files matching fileGateGlobs for
+   * CREATE TABLE statements and returns the set of discovered table names.
+   * These are injected as a synthetic schema so the unknown-table detector
+   * has a reference set to check against.
+   *
+   * Only extracts `create`-type references (CREATE TABLE ...), since those
+   * define tables — SELECT/INSERT/UPDATE references to an unknown table are
+   * the violations we're trying to avoid flagging.
+   */
+  private async discoverTablesFromMigrations(
+    files: string[],
+    config: SchemaAnalyzerConfig,
+  ): Promise<Set<string>> {
+    const tables = new Set<string>();
+    const gateGlobs = config.fileGateGlobs ?? ['**/*.sql', '**/migrations/**'];
+
+    for (const file of files) {
+      // Only scan files matching the file gate — same glob that passesFileGate uses
+      let matches = false;
+      for (const glob of gateGlobs) {
+        if (picomatch.isMatch(file, glob)) {
+          matches = true;
+          break;
+        }
+      }
+      if (!matches) continue;
+
+      try {
+        const source = await fs.readFile(file, 'utf8');
+        const refs = this.parseSqlTables(source, { line: 1, column: 1 }, source);
+        for (const ref of refs) {
+          if (ref.type === 'create') {
+            tables.add(ref.table);
+          }
+        }
+      } catch {
+        // Skip unreadable files — discovery is best-effort
+      }
+    }
+
+    return tables;
   }
 
   protected async analyzeAST(
@@ -484,7 +549,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     baseLocation: { line: number; column: number },
     sourceCode: string
   ): TableReference[] {
-    const references: TableReference[] = [];
+    let references: TableReference[] = [];
 
     // R2.3: Strip template expressions — `${prefix}_builds` → `_builds`
     // (the prefix is replaced with empty, the suffix remains for matching)
@@ -527,6 +592,11 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
         });
       }
     }
+	    // Template sentinel filter: resolveTemplateExpressions() replaces
+	    // ${...} with __TMPL__. Strip these before alias extraction and
+	    // before returning — __TMPL__ is never a real table name.
+	    references = references.filter(ref => !ref.table.startsWith('__TMPL__'));
+
 	    // Spec 22 R4.3: Filter out alias identifiers.
 	    // "FROM x AS t" defines t as an alias; later references like "JOIN t.posts"
 	    // would capture t via the JOIN regex. Scan for explicit AS aliases.
@@ -577,14 +647,19 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
 
   /**
    * R2.3: Resolve template expressions in SQL text.
-   * `${prefix}_builds` → `_builds` (dynamic prefix removed, suffix kept).
-   * `${identifier}` (fully dynamic) → empty string (no finding produced).
+   *
+   * Uses the sentinel `__TMPL__` instead of an empty string. An empty
+   * replacement produces whitespace artifacts (e.g. `FROM   t WHERE`
+   * when `${tableName}` is stripped), which causes the bare-alias regex
+   * in extractAliasIdentifiers() to misalign: `t` lands in the table-name
+   * capture group instead of the alias group, and is never denylisted.
+   *
+   * `__TMPL__` keeps the token boundaries intact so alias extraction
+   * correctly identifies `t` as the alias. `__TMPL__` table references
+   * are filtered in parseSqlTables().
    */
   private resolveTemplateExpressions(text: string): string {
-    // Replace dynamic segments with wildcard-aware placeholders
-    // ${var} alone → consume the entire segment (no table name to extract)
-    // ${p}_suffix → keep "_suffix" for matching
-    return text.replace(/\$\{[^}]+\}/g, '');
+    return text.replace(/\$\{[^}]+\}/g, '__TMPL__');
   }
 
   // ---------------------------------------------------------------------------

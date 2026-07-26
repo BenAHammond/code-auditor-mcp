@@ -24,6 +24,7 @@ import type {
 } from '../../styles/types.js';
 import type { StylesAnalyzerConfig } from '../../types.js';
 import { getTailwindExpander, type TailwindUtilityExpander } from '../../styles/tailwindUtilityExpander.js';
+import { normalizeValue } from '../../styles/normalizer.js';
 
 // ---------------------------------------------------------------------------
 // Default configuration
@@ -162,9 +163,10 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     }
 
     // Build helpers
-    const tokenValueMap = new Map<string, string>();  // normalized value → token name
+    const tokenValueMap = new Map<string, {name: string; valueType: string | null}>();  // normalized value → token info
     for (const t of tokens) {
-      tokenValueMap.set(t.value, t.name);
+      const normalizedTokenVal = normalizeValue(t.value, '__token__');
+      tokenValueMap.set(t.value, { name: t.name, valueType: normalizedTokenVal?.type ?? null });
     }
 
     // Declarations by property
@@ -650,6 +652,16 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
   // -----------------------------------------------------------------------
 
   /**
+   * Spec 22 Item 1 — Values so common that coincidental token-name matches
+   * are always noise. Filtered before any token comparison.
+   */
+  private static readonly TRIVIAL_VALUES = new Set([
+    '0', '0px', '0rem', '0em', '0%', 'none', 'transparent',
+    'inherit', 'initial', 'unset', 'currentcolor', 'auto',
+    '100%', '50%',
+  ]);
+
+  /**
    * Flag raw values that match a known design token's value but don't
    * reference the token via tokenRef.
    *
@@ -666,7 +678,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    */
   private detectTokenBypass(
     declarations: StyleDeclRow[],
-    tokenValueMap: Map<string, string>,
+    tokenValueMap: Map<string, {name: string; valueType: string | null}>,
     cfg: StylesAnalyzerConfig,
   ): Violation[] {
     const violations: Violation[] = [];
@@ -683,6 +695,10 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       // token values, so literals are expected (Spec 22 R2.1).
       if (d.property.startsWith('--')) continue;
 
+      // Skip SCSS variable definitions — these define token values
+      // so literals are expected (Spec 22 R2.1).
+      if (d.property.startsWith('$')) continue;
+
       // Spec 22 R2.2: skip categorical properties — they have a small set
       // of valid keyword values (display, position, etc.) and coincidental
       // token-value matches are noise.
@@ -695,14 +711,35 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
 
       // Normalize the raw value for comparison
       const normalized = this.normalizeForTokenMatch(d.raw_value);
-      const tokenName = tokenValueMap.get(normalized);
-      if (!tokenName) continue;
+
+      // Spec 22 Item 1: skip trivial values — they're so common that
+      // coincidental token-name matches are always noise.
+      if (UniversalStylesAnalyzer.TRIVIAL_VALUES.has(normalized)) continue;
+
+      const tokenInfo = tokenValueMap.get(normalized);
+      if (!tokenInfo) continue;
+
+      // Spec 22 Item 1: value-type equality gate — a token only
+      // matches declarations whose normalized value type is the same.
+      // E.g., --border-radius-lg: 8px (length) should not flag
+      // max-width: 8px because the normalizer types them the same, but
+      // --color-red: #22d3ee (color) should flag color: #22d3ee.
+      if (tokenInfo.valueType !== null) {
+        let declType: string | null = null;
+        if (d.normalized_value) {
+          try {
+            const nv = JSON.parse(d.normalized_value) as NormalizedValue;
+            declType = nv.type;
+          } catch { /* invalid JSON — proceed neutrally */ }
+        }
+        if (declType !== null && declType !== tokenInfo.valueType) continue;
+      }
 
       violations.push(this.makeViolation(
         d.file_path,
         d.line,
         `Token bypass: "${d.raw_value}" for "${d.property}" matches design ` +
-        `token "${tokenName}" but was used as a raw value. ` +
+        `token "${tokenInfo.name}" but was used as a raw value. ` +
         `Use the token reference instead to keep styles consistent.`,
         'warning',
         'styles/token-bypass',

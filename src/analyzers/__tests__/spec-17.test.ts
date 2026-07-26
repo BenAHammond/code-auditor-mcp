@@ -181,6 +181,54 @@ describe('Spec-17 R2 — Schema Analyzer', () => {
     expect(tableViolations).toHaveLength(0);
   });
 
+  // ── Spec 22 Item 4 — Alias sentinel ─────────────────────────────────────
+
+  it('Item 4 — FROM ${t} x: alias identified, table template filtered (fixture 9b)', async () => {
+    const file = join(FIXTURES, 'template-alias-from.ts');
+    const result = await analyzer.analyze([file], { schemas: [] });
+    expect(result.errors).toHaveLength(0);
+    // __TMPL__ sentinel keeps token boundaries intact; bare-alias regex
+    // captures x as alias, __TMPL__ is filtered. Zero unknown-table.
+    const tableViolations = result.violations.filter(v => v.rule === 'unknown-table');
+    expect(tableViolations).toHaveLength(0);
+  });
+
+  it('Item 4 — JOIN ${t} y: alias identified, table template filtered (fixture 9c)', async () => {
+    const file = join(FIXTURES, 'template-alias-join.ts');
+    const result = await analyzer.analyze([file], { schemas: [] });
+    expect(result.errors).toHaveLength(0);
+    // Same as above, but via JOIN: y is the alias, __TMPL__ filtered.
+    const tableViolations = result.violations.filter(v => v.rule === 'unknown-table');
+    expect(tableViolations).toHaveLength(0);
+  });
+
+  // ── Spec 22 Item 2 — Auto-discovery from migration files ──────────────────
+
+  it('Item 2 — unknown-table skipped: auto-discovered tables from .sql migration (fixture 11a)', async () => {
+    const sqlFile = join(FIXTURES, 'migration-create-table.sql');
+    const tsFile = join(FIXTURES, 'schema-auto-discover.ts');
+    // No schemas configured — discoverTablesFromMigrations() should scan the
+    // .sql file for CREATE TABLE and feed "heroes"/"quests" into allTables.
+    const result = await analyzer.analyze([sqlFile, tsFile], { schemas: [] });
+    expect(result.errors).toHaveLength(0);
+    // "heroes" and "quests" are auto-discovered → zero unknown-table
+    const tableViolations = result.violations.filter(v => v.rule === 'unknown-table');
+    expect(tableViolations).toHaveLength(0);
+  });
+
+  it('Item 2 — unknown-table fires: .sql file has no CREATE TABLE (fixture 11b)', async () => {
+    // Same .ts fixture references tables not in any CREATE TABLE
+    const tsFile = join(FIXTURES, 'schema-auto-discover.ts');
+    // No .sql file passed → no auto-discovered tables → heroes/quests are unknown
+    const result = await analyzer.analyze([tsFile], { schemas: [] });
+    expect(result.errors).toHaveLength(0);
+    // Without auto-discovery, both "heroes" and "quests" are unknown
+    const tableViolations = result.violations.filter(v => v.rule === 'unknown-table');
+    expect(tableViolations.length).toBeGreaterThanOrEqual(1);
+    // R7: severity is suggestion
+    tableViolations.forEach(v => expect(v.severity).toBe('suggestion'));
+  });
+
   it('R2.2 — TSX file with no DB usage produces zero findings (fixture 10)', async () => {
     const file = join(FIXTURES, 'tsx-no-db-usage.tsx');
     const result = await analyzer.analyze([file], {});

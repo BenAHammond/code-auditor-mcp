@@ -163,8 +163,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
       mongodb: ['mongodb', 'mongoose']
     },
     securityPatterns: {
-      parameterized: ['?', '$1', ':param'],
-      sanitized: ['sanitize', 'escape', 'clean']
+      parameterizedQueries: ['?', '$1', ':param'],
     },
     performanceThresholds: {
       maxJoins: 5,
