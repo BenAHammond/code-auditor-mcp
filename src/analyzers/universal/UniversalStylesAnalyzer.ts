@@ -178,7 +178,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     // Run detectors
     violations.push(...this.detectValueDrift(byProperty, cfg, declarations));
     violations.push(...this.detectOffScaleValues(byProperty, cfg));
-    violations.push(...this.detectUndefinedClasses(classUsage, declarations, byProperty, cfg));
+    violations.push(...await this.detectUndefinedClasses(classUsage, declarations, byProperty, cfg));
     violations.push(...this.detectTokenBypass(declarations, tokenValueMap, cfg));
     violations.push(...this.detectMechanismFragmentation(declarations, cfg));
     violations.push(...this.detectDeclarationSetSimilarity(declarations, cfg));
@@ -533,23 +533,27 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
   /**
    * Flag CSS classes used in markup that have no matching definition in
    * any CSS/SCSS file. Files with unresolvable class usage are exempted.
+   *
+   * Uses compile-probe (Spec 22 R1.2):
+   * 1. Init TailwindProbe against project's installed tailwindcss
+   * 2. Collect all candidate class names
+   * 3. Batch-probe unknown classes via @apply compilation
+   * 4. Resolve each class from cache + structural patterns
    */
-  private detectUndefinedClasses(
+  private async detectUndefinedClasses(
     classUsage: StyleClassUsageRow[],
     _declarations: StyleDeclRow[],
     byProperty: Map<string, StyleDeclRow[]>,
     cfg?: StylesAnalyzerConfig & { projectRoot?: string },
-  ): Violation[] {
+  ): Promise<Violation[]> {
     const violations: Violation[] = [];
 
     // Collect all defined class names from CSS declarations
-    // (context field contains selectors like ".btn-primary")
     const definedClasses = new Set<string>();
     for (const [, decls] of byProperty) {
       for (const d of decls) {
         const ctx = d.context;
         if (!ctx) continue;
-        // Extract class selectors from context
         const matches = ctx.matchAll(/\.([a-zA-Z0-9_-]+)/g);
         for (const m of matches) {
           definedClasses.add(m[1]);
@@ -557,19 +561,20 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       }
     }
 
-    // ── Fail-open: init Tailwind expander ──────────────────────────
+    // ── Init compile-probe (async) ─────────────────────────────────
     const expander = getTailwindExpander();
-    expander.init({
+    await expander.init({
       projectRoot: cfg?.projectRoot,
       useProjectConfig: true,
+      customClasses: cfg?.tailwindClasses ? new Set(cfg.tailwindClasses) : undefined,
     });
 
-    // Fail-open rule (Spec 22 R1.3): if project config resolution fails,
-    // disable the detector for this audit with one visible warning.
+    // Fail-open rule (Spec 22 R1.3): if probe init fails, disable the
+    // detector for this audit with one visible warning.
     if (expander.configFailed) {
       violations.push(this.makeViolation(
         '', 0,
-        `undefined-class detector disabled: failed to resolve project Tailwind config — ` +
+        `undefined-class detector disabled: failed to probe project Tailwind — ` +
         `${expander.configFailureReason ?? 'unknown error'}. ` +
         `A claim that a class "does not exist" may not ship on a known-incomplete dictionary.`,
         'warning',
@@ -578,18 +583,20 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       return violations;
     }
 
-    // Check each class usage
-    const seen = new Set<string>(); // deduplicate by (className, filePath)
+    // ── Collect candidate class names for batch probing ─────────────
+    // Gather all potentially-unknown class names first, then batch-probe
+    // them against the project's Tailwind compiler. This is more efficient
+    // than probing one-at-a-time and lets the probe batch in groups.
+    const seen = new Set<string>();
+    const candidates: string[] = [];
+    const usageEntries: StyleClassUsageRow[] = [];
+
     for (const u of classUsage) {
       const key = `${u.class_name}::${u.file_path}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
-      // Skip unresolvable individual class usages (dynamic expressions that
-      // produce class names at runtime — variables, ternaries, clsx calls,
-      // template literals). Per-entry skip replaces the old per-file skip
-      // which was too aggressive (one dynamic class disabled the detector
-      // for every class in the file). Spec 22 Task #254.
+      // Skip unresolvable individual class usages
       if (u.unresolvable) continue;
 
       // Skip known classes from CSS definitions
@@ -605,19 +612,23 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       if (/^\d/.test(u.class_name)) continue;
 
       // Skip classes that start/end with [] — not valid CSS class names
-      // (arbitrary-value grammar requires a known prefix, e.g. mt-[17px])
       if (u.class_name.startsWith('[') || u.class_name.startsWith(']')) continue;
       if (u.class_name.endsWith('[') || u.class_name.endsWith(']')) continue;
 
-      // Skip extraction artifacts — characters that can never appear in a
-      // valid CSS class name (defense-in-depth; primary fix is at extraction
-      // time where all dynamic-expression classes are now marked unresolvable).
+      // Skip extraction artifacts
       if (/['`"${}?;!@#%^&*+=<>|\\,~]/.test(u.class_name)) continue;
 
-      // ── Expand: variant prefix stripping + full expansion path ──
-      // The expander strips variant prefixes (hover:, sm:, etc.) recursively
-      // and checks against bundled dictionary, project config, and arbitrary-
-      // value grammar. A single resolve() call covers the entire chain.
+      usageEntries.push(u);
+      candidates.push(u.class_name);
+    }
+
+    // ── Batch-probe unknown classes ─────────────────────────────────
+    if (candidates.length > 0 && expander.probeReady) {
+      await expander.validateBatch(candidates);
+    }
+
+    // ── Resolve each class from cache + structural patterns ─────────
+    for (const u of usageEntries) {
       const resolved = expander.resolve(u.class_name);
       if (resolved.valid) continue;
 

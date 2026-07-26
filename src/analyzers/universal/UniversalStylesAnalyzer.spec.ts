@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { UniversalStylesAnalyzer } from './UniversalStylesAnalyzer.js';
 import { CodeIndexDB } from '../../codeIndexDB.js';
+import { resetTailwindExpander } from '../../styles/tailwindUtilityExpander.js';
 
 let rawDb: any;
 
@@ -133,6 +134,7 @@ beforeEach(() => {
 
 afterAll(async () => {
   await CodeIndexDB.getInstance().close();
+  resetTailwindExpander();
 });
 
 // ---------------------------------------------------------------------------
@@ -402,6 +404,19 @@ describe('Detector 2 — Off-Scale Values', () => {
 // ---------------------------------------------------------------------------
 
 describe('Detector 3 — Undefined Classes', () => {
+  /**
+   * Known Tailwind utilities for test-seeded validation.
+   *
+   * In production, the compile-probe validates class names against the
+   * project's own installed tailwindcss package. In the test environment,
+   * we pass these classes via config.tailwindClasses so the detector
+   * doesn't fail-open (no tailwindcss in the test project's node_modules).
+   *
+   * This is NOT a hand-curated dictionary — it's a test fixture listing
+   * only the classes the tests explicitly reference.
+   */
+  const KNOWN_TAILWIND: string[] = ['flex', 'bg-blue-500'];
+
   beforeEach(() => {
     // Register a known class in the declaration context
     insertDecl({
@@ -417,7 +432,7 @@ describe('Detector 3 — Undefined Classes', () => {
   it('flags class names with no matching definition', async () => {
     insertClassUsage('undefined-class-name', 'src/component.tsx', 5, 'className');
 
-    const violations = await runAnalyzer();
+    const violations = await runAnalyzer({ tailwindClasses: KNOWN_TAILWIND });
 
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(1);
@@ -428,7 +443,7 @@ describe('Detector 3 — Undefined Classes', () => {
   it('does NOT fire for classes defined in a stylesheet', async () => {
     insertClassUsage('btn-primary', 'src/component.tsx', 5, 'className');
 
-    const violations = await runAnalyzer();
+    const violations = await runAnalyzer({ tailwindClasses: KNOWN_TAILWIND });
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(0);
   });
@@ -436,7 +451,7 @@ describe('Detector 3 — Undefined Classes', () => {
   it('does NOT fire for known Tailwind utilities', async () => {
     insertClassUsage('flex', 'src/component.tsx', 5, 'className');
 
-    const violations = await runAnalyzer();
+    const violations = await runAnalyzer({ tailwindClasses: KNOWN_TAILWIND });
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(0);
   });
@@ -446,7 +461,7 @@ describe('Detector 3 — Undefined Classes', () => {
     // Also mark the file as unresolvable
     insertClassUsage('another-class', 'src/dynamic.tsx', 8, 'className', 1);
 
-    const violations = await runAnalyzer();
+    const violations = await runAnalyzer({ tailwindClasses: KNOWN_TAILWIND });
     const undef = findViolations(violations, 'styles/undefined-class');
     // Should NOT fire because the file is in unresolvableFiles set
     const fromDynamic = undef.filter((v: any) => v.file.includes('dynamic'));
@@ -461,7 +476,7 @@ describe('Detector 3 — Undefined Classes', () => {
     insertClassUsage('var(--x)', 'src/component.tsx', 14, 'className');  // function-like
     insertClassUsage('hover:bg-blue', 'src/component.tsx', 16, 'className'); // bg-blue → genuinely undefined
 
-    const violations = await runAnalyzer();
+    const violations = await runAnalyzer({ tailwindClasses: KNOWN_TAILWIND });
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(1);
     expect(undef[0].message).toContain('hover:bg-blue');

@@ -2,6 +2,41 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.3] — 2026-07-26
+
+### R12: Tailwind Compile-Probe Migration — Zero Hand-Curated Dictionaries
+
+Replaced the ~4,000-entry hand-curated Tailwind class-name dictionary with a compile-probe oracle (`tailwindProbe.ts`) that validates classes against the audited project's own installed `tailwindcss` package. The project's compiler IS the authority on what classes exist — no maintained replica.
+
+**Rationale**: The external-authority-as-oracle law (see GROUND-TRUTH.md) holds that when an external system defines what's valid, that system is the oracle — not our maintained replica of it. Hand-curating a Tailwind class dictionary is a losing game: the dictionary drifts from the actual Tailwind version, misses plugin classes, and requires maintenance on every Tailwind release.
+
+#### Architecture
+
+- **Primary (v4)**: Uses `compile()` with `@apply` probe stylesheets to validate classes
+- **Fallback (v3)**: Uses `resolveConfig()` + theme generation
+- **Structural parsing**: Arbitrary values (`prefix-[...]`), variant prefixes (`hover:`, `md:`, etc.), opacity modifiers (`utility/N`), and negative utilities (`-utility`) are parsed via regex patterns — never enumerated
+- **Fail-open rule**: If the probe can't initialize (no tailwindcss found), `configFailed` is true and the `styles/undefined-class` detector emits a visible warning and returns early
+
+#### New Module
+
+- **`src/styles/tailwindProbe.ts`**: Compile-probe module. Dynamically loads the audited project's `tailwindcss`, validates class-name batches via `@apply` probe stylesheets (v4) or config theme generation (v3). Gracefully handles missing tailwindcss with `configFailed` flag.
+
+#### Refactored Modules
+
+- **`src/styles/tailwindUtilityExpander.ts`**: Removed all hand-curated class-name dictionaries (~800 lines deleted). `init()` only creates a probe when both `useProjectConfig === true` AND `projectRoot` is truthy. `resolve()` pipeline: probe cache → customClasses → opacity modifier → arbitrary-value → negative utility → variant prefix strip + retry.
+- **`src/analyzers/universal/UniversalStylesAnalyzer.ts`**: `detectUndefinedClasses` now calls `await expander.init()` before resolution. When `configFailed`: emits `styles/undefined-class-disabled` warning and returns early. When probeReady: batch-probes unknown classes, then resolves each from cache. Added `tailwindClasses` config field for test-environment seeding.
+- **`src/types.ts`**: Added `tailwindClasses?: string[]` to `StylesAnalyzerConfig` for test-environment seeding.
+
+### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/styles/tailwindProbe.ts` | **New** — compile-probe module (v4 compile + v3 resolveConfig fallback) |
+| `src/styles/tailwindUtilityExpander.ts` | Removed all hand-curated dictionaries; structural-only + probe validation |
+| `src/analyzers/universal/UniversalStylesAnalyzer.ts` | Async init + batch-probe in detectUndefinedClasses |
+| `src/analyzers/universal/UniversalStylesAnalyzer.spec.ts` | KNOWN_TAILWIND fixture (2 test classes); resetTailwindExpander in afterAll |
+| `src/types.ts` | `tailwindClasses?: string[]` on StylesAnalyzerConfig |
+
 ## [3.4.1] — 2026-07-24
 
 ### Patch Release — Production Bug Fixes

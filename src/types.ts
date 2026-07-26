@@ -956,6 +956,11 @@ export interface StylesAnalyzerConfig {
   declarationSetSimilarityThreshold: number;
   /** CSS properties excluded from value-drift detection (categorical domains). Spec 22 R3. */
   categoricalPropertyExclusions?: string[];
+  /** Known Tailwind utility class names for the undefined-class detector.
+   *  When provided, these seed the expander's validation cache, bypassing
+   *  the compile-probe (useful in test environments without tailwindcss
+   *  installed). In production, the compile-probe is always preferred. */
+  tailwindClasses?: string[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
