@@ -40,6 +40,7 @@ import { UniversalStylesAnalyzer } from './analyzers/universal/UniversalStylesAn
 import { UniversalConventionsAnalyzer } from './analyzers/universal/UniversalConventionsAnalyzer.js';
 import { CrossDomainAnalyzer } from './analyzers/crossDomain/CrossDomainAnalyzer.js';
 import { initializeOrmAdapters } from './analyzers/orm/index.js';
+import { DEFAULT_ANALYZER_CONFIGS } from './config/defaults.js';
 import { syncStyleIndex } from './styles/styleIndexer.js';
 import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
 import { invariantsAnalyzer } from './analyzers/invariantsAnalyzer.js';
@@ -80,7 +81,7 @@ function createProgressAdapter(
 /**
  * Default analyzer registry
  */
-const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
+export const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
   'solid': {
     name: 'solid',
     description: 'Detects violations of SOLID principles',
@@ -307,10 +308,18 @@ const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
     category: 'architecture',
     analyze: async (files, config, options, progressCallback) => {
       const analyzer = new CrossDomainAnalyzer();
-      const universalConfig: Record<string, unknown> = {};
-      if (config.schemaLifecycle !== undefined) universalConfig.schemaLifecycle = config.schemaLifecycle;
-      if (config.validatorBypass !== undefined) universalConfig.validatorBypass = config.validatorBypass;
-      if (config.coverage !== undefined) universalConfig.coverage = config.coverage;
+      const cxDefaults = DEFAULT_ANALYZER_CONFIGS.crossDomain;
+      const universalConfig: Record<string, unknown> = {
+        // R1 — Schema lifecycle: enabled by default, overridable.
+        // Use defaults when the user doesn't configure these explicitly.
+        schemaLifecycle: config.schemaLifecycle ?? cxDefaults.schemaLifecycle,
+        // R3 — Validation-bypass: enabled by default with Spec 21 provenance-based
+        // detection. Detector gates on truthiness so we must supply a default.
+        validatorBypass: config.validatorBypass ?? cxDefaults.validatorBypass,
+        // R4 — Coverage: enabled by default. Reads coverage_data when measured
+        // coverage has been imported, falls back to static-reach otherwise.
+        coverage: config.coverage ?? cxDefaults.coverage,
+      };
       // Forward base-class properties (Spec-20 path profiles + severity overrides)
       if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
       if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
@@ -652,6 +661,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         // that call buildProvenanceContext() (data-access and schema).
         // The analyzers accumulate per-file timing into this object;
         // we read it back after all analyzers complete.
+        // Spec 15: cross-domain config lives at top-level crossDomain,
+        // not under analyzerConfigs — merge it in so the analyzer sees it.
+        if (analyzerName === 'cross-domain' && (mergedOptions as any).crossDomain) {
+          Object.assign(analyzerConfig, (mergedOptions as any).crossDomain);
+        }
         if (analyzerName === 'data-access' || analyzerName === 'schema') {
           analyzerConfig._provenanceTiming = provenanceTiming;
         }

@@ -103,6 +103,13 @@ async function searchUsers(keyword: string) {
  * Template literal assigned to a variable, then used in a DB call —
  * we can't track the data flow, so should STILL flag (conservative).
  */
+/**
+ * Spec 17 R2 (Item 4 fix): Template literal assigned to variable, then
+ * passed to query(). The template does NOT sit directly in DB-provenanced
+ * call arguments — it's assigned to a local first. Detecting this requires
+ * dataflow analysis (out of scope per Spec 15 R3).
+ * Expected: 0 violations (documented false negative).
+ */
 const VARIABLE_ASSIGNMENT_TEMPLATE = `
 import { query } from './db';
 
@@ -158,10 +165,14 @@ const TEST_CASES: TestCase[] = [
     expectedSeverity: 'suggestion',
   },
   {
-    name: 'template literal assigned to variable then passed to query — should be suggestion',
+    // Spec 17 R2: template literals are SQL candidates only when they sit
+    // directly in DB-provenanced call arguments, not when assigned to variables.
+    // This fixture assigns the template to `const sql`, then passes `sql` to
+    // query() — detecting that requires dataflow analysis, which is outside
+    // the product's stated scope (Spec 15 R3). This is a documented false negative.
+    name: 'template literal assigned to variable then passed to query — NOT detected (no dataflow)',
     code: VARIABLE_ASSIGNMENT_TEMPLATE,
-    expectedCount: 1,
-    expectedSeverity: 'suggestion',
+    expectedCount: 0,
   },
   {
     name: 'console.log with SQL template — should NOT trigger (non-DB sink)',

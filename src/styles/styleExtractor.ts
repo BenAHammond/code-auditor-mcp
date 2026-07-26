@@ -362,7 +362,7 @@ function extractDeclarationsFromBlock(
                 line: baseLine + lineInBlock,
                 context: selector,
                 variantContext,
-                tokenRef: rawValue.startsWith('var(--') ? extractTokenRef(rawValue) : null,
+                tokenRef: rawValue.trim().startsWith('var(') ? extractTokenRef(rawValue) : null,
               });
             }
           }
@@ -530,7 +530,7 @@ function extractFromInlineStyle(
       line,
       context: null,
       variantContext: null,
-      tokenRef: value.startsWith('var(--') ? extractTokenRef(value) : null,
+      tokenRef: value.trim().startsWith('var(') ? extractTokenRef(value) : null,
     });
   }
 
@@ -750,7 +750,10 @@ function camelToKebab(str: string): string {
 }
 
 function extractTokenRef(rawValue: string): string | null {
-  const match = rawValue.match(/var\((--[a-zA-Z0-9_-]+)\)/);
+  // Match `var(--token)` with optional whitespace and fallback values.
+  // \s* handles `var( --token )`, and dropping the trailing \) lets it
+  // match through fallback args like `var(--token, fallback)`.
+  const match = rawValue.match(/var\(\s*(--[a-zA-Z0-9_-]+)/);
   return match ? match[1] : null;
 }
 

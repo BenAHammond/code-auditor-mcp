@@ -249,28 +249,21 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
 	            if (isDBProvenanced(node, adapter, sourceCode, provenanceContext, DB_CALL_METHODS)) {
 	              return true;
 	            }
-	          } else if (this.isDBCallee(node, adapter, sourceCode)) {
-	            return true;
 	          }
 	        }
 
-	        // Check if it's a template literal with SQL in a DB-call context
-	        if (this.isTemplateLiteral(node, adapter)) {
-	          return this.containsSQLKeywords(nodeText) &&
-	            this.isTemplateInDBCallOrVariableContext(node, adapter, sourceCode, provenanceContext);
-	        }
+        // Spec 17 R2: Template literals are SQL candidates because of
+        // where they sit (DB-provenanced call arguments), not what their
+        // body contains. Content scanning with substring matching is removed.
+        if (this.isTemplateLiteral(node, adapter)) {
+          return this.isTemplateInDBProvenancedCall(node, adapter, sourceCode, provenanceContext);
+        }
 
-	        // Check if it's a variable declaration with SQL (but not if it contains a template literal)
+	        // Variable assignment with SQL structure — no child template check:
+	        // the template-literal path is now provenance-only (Spec 17 R2), so
+	        // there is no overlap risk from child template detection.
 	        if (this.isVariableAssignment(node, adapter)) {
-	          if (!this.containsSQLStructure(nodeText)) return false;
-
-	          // Skip parent nodes if they contain template literals we'll analyze separately
-	          const children = adapter.getChildren(node);
-	          const hasRelevantChild = children.some(child =>
-	            this.isTemplateLiteral(child, adapter) &&
-	            this.containsSQLKeywords(adapter.getNodeText(child, sourceCode))
-	          );
-	          return !hasRelevantChild;
+	          return this.containsSQLStructure(nodeText);
 	        }
 
 	        return false;
@@ -578,33 +571,17 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * R3.1: Check if a call expression's callee (excluding arguments)
-   * matches database-related patterns. Prevents false positives from
-   * non-DB calls like page.evaluate() whose arguments happen to contain
-   * SQL-like substrings.
-   */
-  private isDBCallee(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
-    const children = adapter.getChildren(node);
-    const calleeParts: string[] = [];
-    for (const child of children) {
-      if (adapter.getNodeType(child) === 'arguments') break;
-      calleeParts.push(adapter.getNodeText(child, sourceCode));
-    }
-    const calleeText = calleeParts.join('');
-    const dbPatterns = ['select', 'insert', 'update', 'delete', 'from', 'where', 'execute', 'query', 'find', 'aggregate', 'count', 'distinct'];
-    return dbPatterns.some(pattern => calleeText.toLowerCase().includes(pattern));
-  }
-
-  /**
-   * R3.1: Gate template literal SQL detection by parent context.
-   * Template literals in non-DB sinks (console.log, page.evaluate) must not
-   * trigger sql-injection-risk. Conservative: variable assignments and bare
-   * statements pass the gate (they may flow to a DB call).
+   * Spec 17 R2 provenance gate: a template literal is a SQL candidate
+   * because of where it sits (inside a DB-provenanced call's arguments),
+   * NOT because its body contains SQL-shaped substrings.
    *
-   * Spec 21: When provenance context is available, uses provenance-based callee
-   * check (conjunctive guard). Falls back to isDBCallee() when no context.
+   * Content scanning with substring matching is removed — template bodies
+   * containing natural-language words like "from" or "select" are no longer
+   * misclassified. The cost: template literals assigned to variables whose
+   * values eventually flow to DB calls are not detected (requires dataflow
+   * analysis, which is outside the product's stated scope per Spec 15 R3).
    */
-  private isTemplateInDBCallOrVariableContext(
+  private isTemplateInDBProvenancedCall(
     node: ASTNode,
     adapter: LanguageAdapter,
     sourceCode: string,
@@ -614,25 +591,18 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     if (!parent) return false;
     const parentType = adapter.getNodeType(parent);
 
-    // Inside arguments of a call expression → check callee is DB-related
+    // Only the arguments-of-DB-call path survives the Spec 17 R2 cut.
+    // Variable-assignment and statement-level conservative passes are
+    // removed — they were the primary source of false positives.
     if (parentType === 'arguments') {
       const callExpr = adapter.getParent(parent);
       if (!callExpr || adapter.getNodeType(callExpr) !== 'call_expression') return false;
-      // Spec 21: Use provenance when available
       if (provenanceContext) {
         return isDBProvenanced(callExpr, adapter, sourceCode, provenanceContext, DB_CALL_METHODS);
       }
-      return this.isDBCallee(callExpr, adapter, sourceCode);
-    }
-
-    // Variable assignment → conservative (may eventually reach a DB call)
-    if (parentType === 'binary_expression' || parentType === 'variable_declarator' || parentType === 'variable_declaration') {
-      return true;
-    }
-
-    // Statement-level or program-level → conservative
-    if (parentType === 'expression_statement' || parentType === 'program') {
-      return true;
+      // Without provenance context, can't determine DB association —
+      // do not speculate.
+      return false;
     }
 
     return false;
@@ -966,14 +936,25 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
           return true;
         }
       }
-      // Template literal with SQL keywords — syntax check, no name involved
+      // Spec 17 R2: Template literal is a DB node only when it sits
+      // inside a DB-provenanced call's arguments — no content scan.
       if (this.isTemplateLiteral(node, adapter)) {
-        return this.containsSQLKeywords(adapter.getNodeText(node, sourceCode));
+        const parent = adapter.getParent(node);
+        if (parent && adapter.getNodeType(parent) === 'arguments') {
+          const callExpr = adapter.getParent(parent);
+          if (callExpr && adapter.getNodeType(callExpr) === 'call_expression') {
+            return isDBProvenanced(callExpr, adapter, sourceCode, provenanceContext, DB_CALL_METHODS);
+          }
+        }
+        return false;
       }
       return false;
     }
 
-    // Legacy fallback: name-based matching for names mode / no context
+    // Legacy fallback: name-based matching for names mode / no context.
+    // Template-literal content scanning is removed (Spec 17 R2) — without
+    // provenance context, we can't determine if a template literal is SQL;
+    // function-call-based SQL detection still works via dbPatterns match.
             const nodeText = adapter.getNodeText(node, sourceCode);
 
     if (this.isFunctionCall(node, adapter)) {
@@ -981,10 +962,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       if (dbPatterns.some(pattern => nodeText.toLowerCase().includes(pattern))) {
         return true;
       }
-    }
-
-    if (this.isTemplateLiteral(node, adapter)) {
-      return this.containsSQLKeywords(nodeText);
     }
 
     return false;
@@ -1126,6 +1103,9 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     // Try named children first
     if ((node as any).name && typeof (node as any).name === 'string') return (node as any).name;
     if ((node as any).text && typeof (node as any).text === 'string') return (node as any).text;
+    // Fall back to the raw tree-sitter node's text content (leaf identifiers etc.)
+    const rawText = (node.raw as any)?.text;
+    if (typeof rawText === 'string' && rawText.length > 0) return rawText;
 
     // Walk children for identifier / property_identifier
     if (node.children) {

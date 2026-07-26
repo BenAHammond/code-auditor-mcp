@@ -1091,11 +1091,17 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * Matches the same scheme as UniversalDataAccessAnalyzer.getNodeName.
    */
   private getNodeName(node: ASTNode, adapter: LanguageAdapter): string {
+    // Try explicit name/text on the converted ASTNode (some adapters set it)
     if ((node as any).name && typeof (node as any).name === 'string') {
       return (node as any).name;
     }
     if ((node as any).text && typeof (node as any).text === 'string') {
       return (node as any).text;
+    }
+    // Fall back to the raw tree-sitter node's text content (leaf identifiers etc.)
+    const rawText = (node.raw as any)?.text;
+    if (typeof rawText === 'string' && rawText.length > 0) {
+      return rawText;
     }
     if (node.children) {
       for (const child of node.children) {

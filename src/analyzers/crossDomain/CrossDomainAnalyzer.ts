@@ -44,13 +44,6 @@ interface FilePathClause {
   param: string;
 }
 
-interface WriterRow {
-  function_name: string;
-  file_path: string;
-  table_name: string;
-  line: number;
-  function_id: number;
-}
 
 // ---------------------------------------------------------------------------
 // Analyzer
@@ -104,8 +97,9 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     // is shared across tests, so schema_usage entries from previous test
     // cases leak into subsequent queries. Filter to the current project root.
     const projectRoot = config.projectRoot as string | undefined;
-    const filePathClause = projectRoot
-      ? { prefix: projectRoot, clause: 'AND file_path LIKE ?', param: `${projectRoot}%` }
+    const resolvedRoot = projectRoot ? path.resolve(projectRoot) : undefined;
+    const filePathClause = resolvedRoot
+      ? { prefix: resolvedRoot, clause: 'AND file_path LIKE ?', param: `${resolvedRoot}%` }
       : undefined;
 
     // R1 — Schema lifecycle detectors
@@ -260,23 +254,28 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
   ): Violation[] {
     const violations: Violation[] = [];
 
-    const fpSu = filePath ? `su.${filePath.clause.slice(4)}` : ''; // "AND file_path LIKE ?" → "AND su.file_path LIKE ?"
-    const fpSuClause = filePath ? `AND su.file_path LIKE ?` : '';
+    const fpWhere = filePath ? filePath.clause : '';
+    const fpParams = filePath ? [filePath.param] : [];
 
-    // Find all functions that perform writes, joined to functions table for
-    // the function ID needed by graph_cache lookups.
+    // ── 1. Group writes by (function_name, file_path) — no JOIN on functions.
+    //    The functions table is only populated during deepSync (code-audit index
+    //    sync), not during normal audit. We query schema_usage directly so this
+    //    detector works in both modes.
     const writerRows = rawDb
       .prepare(
-        `SELECT DISTINCT su.function_name, su.file_path, su.table_name, su.line,
-                f.id as function_id
+        `SELECT su.function_name, su.file_path, su.table_name, MIN(su.line) as line
          FROM schema_usage su
-         JOIN functions f ON f.name = su.function_name
-                          AND f.file_path = su.file_path
          WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
-         ${fpSuClause}
+         ${fpWhere}
+         GROUP BY su.function_name, su.file_path, su.table_name
          ORDER BY su.function_name, su.file_path`,
       )
-      .all(...(filePath ? [filePath.param] : [])) as WriterRow[];
+      .all(...fpParams) as Array<{
+      function_name: string;
+      file_path: string;
+      table_name: string;
+      line: number;
+    }>;
 
     if (writerRows.length === 0) return violations;
 
@@ -284,7 +283,6 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     interface FuncWriteEntry {
       filePath: string;
       line: number;
-      functionId: number;
       tables: Set<string>;
     }
 
@@ -298,48 +296,84 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
         funcWrites.set(key, {
           filePath: row.file_path,
           line: row.line,
-          functionId: row.function_id,
           tables: new Set([row.table_name]),
         });
       }
     }
 
-    // For each writing function, expand to depth-1 callees via graph_cache
-    // and union their written tables.
+    // ── 2. Attempt callee expansion via graph_cache when the infrastructure
+    //    is populated (requires code-audit index sync). When the functions or
+    //    graph_cache tables are empty/missing, we fall back to reporting on
+    //    direct writes only — the basic signal is still useful without the
+    //    call-graph context.
+    const hasGraphData: boolean = (() => {
+      try {
+        const cnt = rawDb.prepare(
+          "SELECT COUNT(*) AS n FROM graph_cache WHERE graph_type = 'call'",
+        ).get() as { n: number } | null;
+        return (cnt?.n ?? 0) > 0;
+      } catch {
+        return false;
+      }
+    })();
+
+    // Build a lookup of function IDs from the functions table (only if it
+    // has data — i.e., deepSync has been run).
+    let fnIdLookup: Map<string, number> | null = null;
+    if (hasGraphData) {
+      try {
+        const fnRows = rawDb.prepare(
+          'SELECT id, name, file_path FROM functions',
+        ).all() as Array<{ id: number; name: string; file_path: string }>;
+        if (fnRows.length > 0) {
+          fnIdLookup = new Map();
+          for (const r of fnRows) {
+            fnIdLookup.set(`${r.file_path}::${r.name}`, r.id);
+          }
+        }
+      } catch {
+        // functions table might not exist or be unpopulated
+      }
+    }
+
     for (const [key, funcData] of funcWrites) {
       const allTables = new Set(funcData.tables);
 
-      // Depth-1 callees: graph_cache stores node_key=caller_function_id,
-      // neighbor_key=callee_function_id for graph_type='call'.
-      const calleeRows = rawDb
-        .prepare(
-          `SELECT neighbor_key FROM graph_cache
-           WHERE graph_type = 'call' AND node_key = ?`,
-        )
-        .all(String(funcData.functionId)) as Array<{ neighbor_key: string }>;
-
-      for (const callee of calleeRows) {
-        // Get callee function details and their written tables
-        const calleeFuncs = rawDb
-          .prepare(
-            `SELECT name, file_path FROM functions WHERE id = ?`,
-          )
-          .all(parseInt(callee.neighbor_key, 10)) as Array<{
-          name: string;
-          file_path: string;
-        }>;
-
-        for (const cf of calleeFuncs) {
-          const calleeTables = rawDb
+      // Depth-1 callee expansion: only when graph_cache and functions tables
+      // are both populated. Without deepSync, this is skipped gracefully.
+      if (fnIdLookup && hasGraphData) {
+        const funcId = fnIdLookup.get(key);
+        if (funcId !== undefined) {
+          const calleeRows = rawDb
             .prepare(
-              `SELECT DISTINCT table_name FROM schema_usage
-               WHERE usage_type IN ('insert', 'update', 'delete', 'create')
-                 AND function_name = ? AND file_path = ?`,
+              `SELECT neighbor_key FROM graph_cache
+               WHERE graph_type = 'call' AND node_key = ?`,
             )
-            .all(cf.name, cf.file_path) as Array<{ table_name: string }>;
+            .all(String(funcId)) as Array<{ neighbor_key: string }>;
 
-          for (const ct of calleeTables) {
-            allTables.add(ct.table_name);
+          for (const callee of calleeRows) {
+            const calleeFuncs = rawDb
+              .prepare(
+                `SELECT name, file_path FROM functions WHERE id = ?`,
+              )
+              .all(parseInt(callee.neighbor_key, 10)) as Array<{
+              name: string;
+              file_path: string;
+            }>;
+
+            for (const cf of calleeFuncs) {
+              const calleeTables = rawDb
+                .prepare(
+                  `SELECT DISTINCT table_name FROM schema_usage
+                   WHERE usage_type IN ('insert', 'update', 'delete', 'create')
+                     AND function_name = ? AND file_path = ?`,
+                )
+                .all(cf.name, cf.file_path) as Array<{ table_name: string }>;
+
+              for (const ct of calleeTables) {
+                allTables.add(ct.table_name);
+              }
+            }
           }
         }
       }

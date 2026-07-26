@@ -672,6 +672,9 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
     if (tokenValueMap.size === 0) return violations;
 
+    const categoricalExclusions = new Set(cfg.categoricalPropertyExclusions ?? []);
+    const scaleProps = new Set(cfg.scaleProperties ?? []);
+
     for (const d of declarations) {
       // Skip if already referencing a token (var(--...) reference)
       if (d.token_ref) continue;
@@ -679,6 +682,16 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       // Skip CSS custom-property definition sites — these define
       // token values, so literals are expected (Spec 22 R2.1).
       if (d.property.startsWith('--')) continue;
+
+      // Spec 22 R2.2: skip categorical properties — they have a small set
+      // of valid keyword values (display, position, etc.) and coincidental
+      // token-value matches are noise.
+      if (categoricalExclusions.has(d.property)) continue;
+
+      // Spec 22 R2.3: skip scale properties — values naturally vary along
+      // a scale (font-size, margin, padding, etc.) and raw values at
+      // different scale points are expected, not token bypasses.
+      if (scaleProps.has(d.property)) continue;
 
       // Normalize the raw value for comparison
       const normalized = this.normalizeForTokenMatch(d.raw_value);

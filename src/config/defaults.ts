@@ -19,7 +19,7 @@ export function getDefaultConfig(): AuditConfig {
       '**/*.test.{ts,tsx,js,jsx}',
       '**/*.spec.{ts,tsx,js,jsx}'
     ],
-    enabledAnalyzers: ['solid', 'dry', 'security', 'component', 'data-access', 'styles', 'conventions', 'cross-domain'],
+    enabledAnalyzers: ['solid', 'dry', 'react', 'data-access', 'documentation', 'schema', 'styles', 'conventions', 'cross-domain'],
     outputFormats: ['html', 'json'],
     outputDirectory: './audit-reports',
     minSeverity: 'suggestion',
@@ -152,26 +152,6 @@ export const DEFAULT_ANALYZER_CONFIGS = {
       divergenceRuns: 2,
       minPairSimilarity: 0.5,
     },
-  },
-  
-  security: {
-    authPatterns: ['withAuth', 'requireAuth', 'isAuthenticated'],
-    adminPatterns: ['withAdmin', 'requireAdmin', 'isAdmin'],
-    rateLimitPatterns: ['rateLimit', 'withRateLimit'],
-    publicPatterns: ['public', 'noAuth', 'skipAuth']
-  },
-  
-  component: {
-    frameworkPatterns: {
-      react: {
-        components: ['*.tsx', '*.jsx'],
-        hooks: ['use*'],
-        context: ['*Context', '*Provider']
-      }
-    },
-    checkErrorBoundaries: true,
-    maxComplexity: 5,              // Spec 11 R3 sweep: 15 → 5 (precision-first)
-    maxNesting: 4
   },
   
   dataAccess: {

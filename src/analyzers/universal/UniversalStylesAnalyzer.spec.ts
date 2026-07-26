@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { UniversalStylesAnalyzer } from './UniversalStylesAnalyzer.js';
 import { CodeIndexDB } from '../../codeIndexDB.js';
 import { resetTailwindExpander } from '../../styles/tailwindUtilityExpander.js';
+import { extractDeclarations } from '../../styles/styleExtractor.js';
 
 let rawDb: any;
 
@@ -623,6 +624,65 @@ describe('Detector 4 — Token Bypass', () => {
     expect(bypasses.length).toBe(1);
     expect(bypasses[0].message).toContain('--accent');
     expect(bypasses[0].message).toContain('Token bypass');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Extraction: var() token_ref detection
+// ---------------------------------------------------------------------------
+
+describe('Extraction — var() token_ref from CSS', () => {
+  it('extracts token_ref from var(--name)', () => {
+    const css = '.foo { color: var(--my-color); }';
+    const decls = extractDeclarations('test.css', null as any, css, undefined, undefined);
+    expect(decls.length).toBe(1);
+    expect(decls[0].tokenRef).toBe('--my-color');
+  });
+
+  it('extracts token_ref from var(--name, fallback)', () => {
+    const css = '.foo { color: var(--my-color, #ff0000); }';
+    const decls = extractDeclarations('test.css', null as any, css, undefined, undefined);
+    expect(decls.length).toBe(1);
+    expect(decls[0].tokenRef).toBe('--my-color');
+  });
+
+  it('extracts token_ref from var( --name ) with whitespace', () => {
+    const css = '.foo { color: var( --my-color ); }';
+    const decls = extractDeclarations('test.css', null as any, css, undefined, undefined);
+    expect(decls.length).toBe(1);
+    expect(decls[0].tokenRef).toBe('--my-color');
+  });
+
+  it('extracts token_ref from var( --name , fallback ) with whitespace everywhere', () => {
+    const css = '.foo { color: var( --my-color , #000 ); }';
+    const decls = extractDeclarations('test.css', null as any, css, undefined, undefined);
+    expect(decls.length).toBe(1);
+    expect(decls[0].tokenRef).toBe('--my-color');
+  });
+
+  it('returns null tokenRef for plain values (no var)', () => {
+    const css = '.foo { color: #ff0000; }';
+    const decls = extractDeclarations('test.css', null as any, css, undefined, undefined);
+    expect(decls.length).toBe(1);
+    expect(decls[0].tokenRef).toBeNull();
+  });
+
+  it('returns null tokenRef for var() that does not reference a custom property', () => {
+    // var() with a non-custom-property name (no leading --)
+    const css = '.foo { color: var(nonsense); }';
+    const decls = extractDeclarations('test.css', null as any, css, undefined, undefined);
+    expect(decls.length).toBe(1);
+    expect(decls[0].tokenRef).toBeNull();
+  });
+
+  it('handles multiple declarations, mixed var() and plain', () => {
+    // Use multi-line — the CSS extractor processes one declaration per line
+    const css = '.bar {\n  color: var(--accent, blue);\n  margin-top: 8px;\n}';
+    const decls = extractDeclarations('test.css', null as any, css, undefined, undefined);
+    const colorDecl = decls.find(d => d.property === 'color');
+    const marginDecl = decls.find(d => d.property === 'margin-top');
+    expect(colorDecl?.tokenRef).toBe('--accent');
+    expect(marginDecl?.tokenRef).toBeNull();
   });
 });
 

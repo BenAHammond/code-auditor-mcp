@@ -1,7 +1,6 @@
 {
   "$schema": "https://unpkg.com/code-auditor-mcp/dist/invariant-rules.schema.json",
-  "enabledAnalyzers": ["dry", "invariants"],
-  "analyzerConfigs": {
+"analyzerConfigs": {
     "dry": {
       "debug": true,
       "debugLogPath": "./dry-analyzer-debug.log",

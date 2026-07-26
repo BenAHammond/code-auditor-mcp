@@ -37,6 +37,38 @@ Replaced the ~4,000-entry hand-curated Tailwind class-name dictionary with a com
 | `src/analyzers/universal/UniversalStylesAnalyzer.spec.ts` | KNOWN_TAILWIND fixture (2 test classes); resetTailwindExpander in afterAll |
 | `src/types.ts` | `tailwindClasses?: string[]` on StylesAnalyzerConfig |
 
+### R13: Default-Analyzer Ghost Fix — Schema, Documentation, Component
+
+**Discovery**: Git archaeology (`git log -p -G enabledAnalyzers`) revealed that `defaults.ts` has never included `schema` in `enabledAnalyzers` on the main branch — not since the schema analyzer was registered in 3.0.0. The July diagnostic's 6,770 schema findings ran through a non-default path (CLI override or bench harness). Default-config users never had the schema analyzer.
+
+**Two ghost names** also sat in the defaults list since initial commit `02f3fe8`:
+- `security` — never existed as a registered analyzer. The category tag on `data-access` is `category: 'security'`, not a standalone analyzer.
+- `component` — renamed to `react` at some point; the registry key is `react`, and `component` never matched.
+
+**Two more absentees** found during cross-reference:
+- `react` — registered since inception, never in the defaults list (users who wanted React analysis had to explicitly enable it)
+- `documentation` — same class of bug as `schema`: registered but never enabled by default
+
+**Fix**: Corrected the defaults list to match the registry's non-experimental set:
+- `security` → removed (ghost), `component` → `react` (actual key)
+- `documentation` and `react` added to defaults (same bug class as `schema`)
+
+**Guard test** (`src/__tests__/defaultsRegistry.test.ts`): Import-time test asserting:
+1. No ghost analyzer names in defaults (present in defaults, missing from registry)
+2. No duplicate entries
+3. Every non-conditional registry key present in defaults (`invariants` is conditional — Spec 05 R3.1)
+4. Canonical order matches
+
+This is a **behavior change for every user**: `schema` and `documentation` are now enabled by default for the first time. Expect new suggestion-tier findings (`unknown-table`, `missing-function-docs`, etc.) that were always meant to ship but never did.
+
+#### Changed Files
+
+| File | Change |
+|------|--------|
+| `src/config/defaults.ts` | Corrected enabledAnalyzers: security→removed, component→react, +documentation |
+| `src/auditRunner.ts` | Export DEFAULT_ANALYZERS for the guard test |
+| `src/__tests__/defaultsRegistry.test.ts` | **New** — guard: defaults ≡ registry (no ghosts, no absentees) |
+
 ## [3.4.1] — 2026-07-24
 
 ### Patch Release — Production Bug Fixes

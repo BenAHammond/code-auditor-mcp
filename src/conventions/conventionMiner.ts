@@ -893,6 +893,19 @@ function mineNaming(db: Database.Database, config: ConventionMiningConfig): Conv
  * Compute a content hash of the miner inputs for change detection.
  * Callers can store this in the meta table to skip re-mining when unchanged.
  */
+/**
+ * Increment this when the miner algorithm changes (new domains, new logic,
+ * threshold changes not captured by ConventionMiningConfig). The version is
+ * folded into the skip-hash so that miner upgrades force re-mining rather
+ * than silently reusing stale results from the old algorithm.
+ */
+export const MINER_VERSION = 1;
+
+/**
+ * Compute a content hash of the miner inputs for change detection.
+ * Callers can store this in the meta table to skip re-mining when unchanged.
+ * Includes MINER_VERSION so that algorithm changes force a re-mine.
+ */
 export function computeMinerInputHash(
   db: Database.Database,
   config: ConventionMiningConfig,
@@ -904,7 +917,7 @@ export function computeMinerInputHash(
     db.prepare('SELECT COUNT(*) as c FROM function_calls').get() as { c: number }
   ).c;
 
-  return computeHash([funcCount, callCount, config]);
+  return computeHash([MINER_VERSION, funcCount, callCount, config]);
 }
 
 /**

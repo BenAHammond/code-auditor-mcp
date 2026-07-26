@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-26T02:26:35.908Z",
+  "timestamp": "2026-07-26T17:38:47.572Z",
   "summary": {
     "totalAnalyzers": 13,
     "passed": 13,
@@ -313,7 +313,7 @@
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function fetchUserOrders(userIds: number[]): Promise<Record<number, any[]>> {\n  const results: Record<number, any[]> = {};\n\n  for (const userId of userIds) {\n    // This query inside a loop is the N+1 pattern\n    const orders = await db.query('SELECT * FROM orders WHERE user_id = $1', [userId]);\n    results[userId] = orders;\n  }\n\n  return results;\n}:query"
           }
         },
         {
@@ -331,7 +331,7 @@
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function fetchUserOrders(userIds: number[]): Promise<Record<number, any[]>> {\n  const results: Record<number, any[]> = {};\n\n  for (const userId of userIds) {\n    // This query inside a loop is the N+1 pattern\n    const orders = await db.query('SELECT * FROM orders WHERE user_id = $1', [userId]);\n    results[userId] = orders;\n  }\n\n  return results;\n}:query"
           }
         },
         {
@@ -349,7 +349,7 @@
             "message": "Database query inside loop (loop at line 13). This may cause N+1 performance issues. Consider batching queries or using a join.",
             "rule": "loop-query",
             "analyzer": "data-access",
-            "functionName": "top-level:loop-query"
+            "functionName": "async function fetchUserOrders(userIds: number[]): Promise<Record<number, any[]>> {\n  const results: Record<number, any[]> = {};\n\n  for (const userId of userIds) {\n    // This query inside a loop is the N+1 pattern\n    const orders = await db.query('SELECT * FROM orders WHERE user_id = $1', [userId]);\n    results[userId] = orders;\n  }\n\n  return results;\n}:loop-query"
           }
         },
         {
@@ -385,7 +385,7 @@
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function fetchAllOrders(userIds: number[]): Promise<any[]> {\n  // Batch query — no loop, this is the correct pattern\n  const orders = await db.query(\n    'SELECT * FROM orders WHERE user_id = ANY($1)',\n    [userIds]\n  );\n  return orders;\n}:query"
           }
         },
         {
@@ -403,7 +403,7 @@
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function fetchAllOrders(userIds: number[]): Promise<any[]> {\n  // Batch query — no loop, this is the correct pattern\n  const orders = await db.query(\n    'SELECT * FROM orders WHERE user_id = ANY($1)',\n    [userIds]\n  );\n  return orders;\n}:query"
           }
         },
         {
@@ -421,7 +421,7 @@
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function fetchUser(userId: number): Promise<any> {\n  const result = await db.query(\n    'SELECT * FROM users WHERE id = $1',\n    [userId]\n  );\n  return result[0] || null;\n}:query"
           }
         },
         {
@@ -439,7 +439,7 @@
             "message": "Unfiltered query on users may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function fetchUser(userId: number): Promise<any> {\n  const result = await db.query(\n    'SELECT * FROM users WHERE id = $1',\n    [userId]\n  );\n  return result[0] || null;\n}:query"
           }
         },
         {
@@ -831,7 +831,7 @@
             "message": "Database query inside loop (loop at line 25). This may cause N+1 performance issues. Consider batching queries or using a join.",
             "rule": "loop-query",
             "analyzer": "data-access",
-            "functionName": "top-level:loop-query"
+            "functionName": "async function benutzerBestellungenAbrufen(benutzerIds: number[]): Promise<Record<number, any[]>> {\n  const ergebnisse: Record<number, any[]> = {};\n\n  for (const id of benutzerIds) {\n    // Query inside loop — N+1 pattern\n    // Non-English variable \"datenbank\" detected via provenance\n    // Table \"orders\" is English → matches org-filter check\n    const bestellung = await datenbank.query(\n      'SELECT * FROM orders WHERE user_id = $1',\n      [id]\n    );\n    ergebnisse[id] = bestellung;\n  }\n\n  return ergebnisse;\n}:loop-query"
           }
         },
         {
@@ -849,7 +849,7 @@
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function benutzerBestellungenAbrufen(benutzerIds: number[]): Promise<Record<number, any[]>> {\n  const ergebnisse: Record<number, any[]> = {};\n\n  for (const id of benutzerIds) {\n    // Query inside loop — N+1 pattern\n    // Non-English variable \"datenbank\" detected via provenance\n    // Table \"orders\" is English → matches org-filter check\n    const bestellung = await datenbank.query(\n      'SELECT * FROM orders WHERE user_id = $1',\n      [id]\n    );\n    ergebnisse[id] = bestellung;\n  }\n\n  return ergebnisse;\n}:query"
           }
         },
         {
@@ -867,7 +867,7 @@
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function benutzerBestellungenAbrufen(benutzerIds: number[]): Promise<Record<number, any[]>> {\n  const ergebnisse: Record<number, any[]> = {};\n\n  for (const id of benutzerIds) {\n    // Query inside loop — N+1 pattern\n    // Non-English variable \"datenbank\" detected via provenance\n    // Table \"orders\" is English → matches org-filter check\n    const bestellung = await datenbank.query(\n      'SELECT * FROM orders WHERE user_id = $1',\n      [id]\n    );\n    ergebnisse[id] = bestellung;\n  }\n\n  return ergebnisse;\n}:query"
           }
         },
         {
@@ -885,7 +885,7 @@
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function alleBenutzerAbrufen() {\n  const benutzer = await datenbank.query(\n    'SELECT * FROM users'\n  );\n  return benutzer;\n}:query"
           }
         },
         {
@@ -903,7 +903,7 @@
             "message": "Unfiltered query on users may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function alleBenutzerAbrufen() {\n  const benutzer = await datenbank.query(\n    'SELECT * FROM users'\n  );\n  return benutzer;\n}:query"
           }
         },
         {
@@ -939,7 +939,7 @@
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function buscarUsuarios() {\n  const resultado = await banco.query(\n    'SELECT * FROM users WHERE id = 1'\n  );\n  return resultado;\n}:query"
           }
         },
         {
@@ -957,7 +957,7 @@
             "message": "Unfiltered query on users may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function buscarUsuarios() {\n  const resultado = await banco.query(\n    'SELECT * FROM users WHERE id = 1'\n  );\n  return resultado;\n}:query"
           }
         },
         {
@@ -975,7 +975,7 @@
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function consultarPedidos() {\n  const pedidos = await banco.query(\n    'SELECT * FROM orders WHERE status = $1',\n    ['ativo']\n  );\n  return pedidos;\n}:query"
           }
         },
         {
@@ -993,7 +993,7 @@
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function consultarPedidos() {\n  const pedidos = await banco.query(\n    'SELECT * FROM orders WHERE status = $1',\n    ['ativo']\n  );\n  return pedidos;\n}:query"
           }
         },
         {
@@ -1029,7 +1029,7 @@
             "message": "Query on 注文 missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function 注文を取得(ユーザーID: number) {\n  const 注文 = await データベース.query(\n    'SELECT * FROM 注文 WHERE ユーザーID = $1',\n    [ユーザーID]\n  );\n  return 注文;\n}:query"
           }
         },
         {
@@ -1047,7 +1047,7 @@
             "message": "Unfiltered query on 注文 may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function 注文を取得(ユーザーID: number) {\n  const 注文 = await データベース.query(\n    'SELECT * FROM 注文 WHERE ユーザーID = $1',\n    [ユーザーID]\n  );\n  return 注文;\n}:query"
           }
         },
         {
@@ -1065,7 +1065,7 @@
             "message": "Query on 商品 missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function 全商品を取得() {\n  const 商品 = await データベース.query(\n    'SELECT * FROM 商品'\n  );\n  return 商品;\n}:query"
           }
         },
         {
@@ -1083,7 +1083,7 @@
             "message": "Unfiltered query on 商品 may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function 全商品を取得() {\n  const 商品 = await データベース.query(\n    'SELECT * FROM 商品'\n  );\n  return 商品;\n}:query"
           }
         },
         {
@@ -1119,7 +1119,7 @@
             "message": "Query on orders missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query"
           }
         },
         {
@@ -1137,7 +1137,7 @@
             "message": "Unfiltered query on orders may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query"
+            "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query"
           }
         },
         {
@@ -1155,7 +1155,7 @@
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query:2"
           }
         },
         {
@@ -1173,7 +1173,7 @@
             "message": "Unfiltered query on users may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query:2"
+            "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query:2"
           }
         },
         {
@@ -1191,7 +1191,7 @@
             "message": "Unfiltered query on products may cause performance issues",
             "rule": "unfiltered-query",
             "analyzer": "data-access",
-            "functionName": "top-level:query:3"
+            "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query:3"
           }
         },
         {
