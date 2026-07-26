@@ -93,3 +93,21 @@ The stale footer error reported in-session was traced:
 **Verdict**: The repo is fixed. The footer error in the session is from the **published plugin's hook script** (`2>&1` in version 3.0.2), not from any repo defect. The hook re-merges stderr into stdout after the repo correctly separated them. This is expected until the next plugin release.
 
 **Next publish**: Either remove `2>&1` from the hook script (Claude Code separates stdout/stderr natively), or redirect stderr to `/dev/null` in the hook invocation. Either fix ships with the next plugin version.
+
+## Open Spec 22 Debt
+
+Items discovered during close-out that should be addressed in a subsequent spec or hotfix:
+
+### 5. Tailwind dictionary — replace hand-curation with the project's own Tailwind as oracle
+
+The R6.5 report documents hand-adding classes to `tailwindUtilityExpander.ts` ("Added missing standard Tailwind classes: flex-grow, flex-shrink-0, group, col-span-{1..12}, outline-none…"). This is a hand-typed list being grown class-by-class as bug reports arrive, violating Spec 22 R1.2 which specified "generated from the Tailwind default theme, not hand-curated."
+
+The 2,837→882 drop is at least partly enumeration whack-a-mole, and it can never converge, because Tailwind's surface isn't a list — it's a grammar (prefixes × theme scale × variants × arbitrary values × opacity modifiers × negative forms), it grows every Tailwind release, and plugins extend it per-project. This is the styles-domain twin of the English word lists Spec 21 killed, and the same doctrine applies: **when an external system defines what's valid, that system is the oracle — never our maintained replica of it.**
+
+**a. PRIMARY — compile-probe:** validate candidate classes against the project's own installed Tailwind (v4: compile via the project's tailwind package with a probe stylesheet; v3: their config through their resolveConfig/postcss). A class is defined iff their compiler emits CSS for it. This makes plugins, theme extensions, and version differences correct by construction — zero dictionaries.
+
+**b. FALLBACK — when the project's Tailwind isn't resolvable:** the existing fail-open rule applies (detector disables with a visible warning). A bundled dictionary may exist ONLY as a build-time artifact generated programmatically from a pinned tailwindcss release, with the generator script committed and a test asserting the artifact matches regenerator output. Hand-editing the artifact is a suite failure (byte-identity pattern, same as SKILL.md).
+
+**c. Grammar shapes:** arbitrary values, variant prefixes, opacity modifiers, and negative forms are parsed structurally, never enumerated.
+
+**d. Evidence:** the recall corpus re-run — the 882 current residuals get re-adjudicated by the oracle, and any hand-added entry in the current expander that the oracle contradicts is listed as a corrected error.
