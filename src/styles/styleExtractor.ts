@@ -276,7 +276,28 @@ function findMatchingBrace(css: string, openIdx: number): number {
   return depth === 0 ? i - 1 : -1;
 }
 
-function extractDeclarationsFromBlock(
+/**
+ * Strip all `/* ... *​/` block comments from a string, looping until none remain.
+ * Handles multiple comments on a single line and incomplete (unclosed) comments.
+ */
+function stripAllBlockComments(s: string): string {
+  let result = '';
+  let remaining = s;
+  while (remaining.length > 0) {
+    const start = remaining.indexOf('/*');
+    if (start === -1) {
+      result += remaining;
+      break;
+    }
+    result += remaining.slice(0, start);
+    const end = remaining.indexOf('*/', start + 2);
+    if (end === -1) break; // unclosed comment — discard the rest
+    remaining = remaining.slice(end + 2);
+  }
+  return result;
+}
+
+export function extractDeclarationsFromBlock(
   block: string,
   filePath: string,
   mechanism: StyleMechanism,
@@ -285,18 +306,21 @@ function extractDeclarationsFromBlock(
   declarations: NormalizedDeclaration[],
   baseLine: number,
 ): void {
-  const lines = block.split('\n');
+  // Strip all block comments from the entire block before splitting into lines.
+  // CSS comments are not line-scoped; per-line stripping silently preserves
+  // comment tail text when `/*` is on one line and `*/` is on another.
+  const cleanBlock = stripAllBlockComments(block);
+  const lines = cleanBlock.split('\n');
 
   // Parse each line for property: value; declarations
   let lineInBlock = 0;
   let buffer = '';
-  let inComment = false;
 
   for (const line of lines) {
     lineInBlock++;
     const trimmed = line.trim();
 
-    // Skip empty lines
+    // Skip empty lines (comments that were stripped become empty)
     if (!trimmed) {
       if (buffer) {
         // Multi-line value continuation
@@ -306,33 +330,8 @@ function extractDeclarationsFromBlock(
       continue;
     }
 
-    // Handle block comments inside the block
-    if (inComment) {
-      const end = trimmed.indexOf('*/');
-      if (end !== -1) {
-        buffer = trimmed.slice(end + 2).trim();
-        inComment = false;
-      } else {
-        continue;
-      }
-    }
-
-    // Check for comment starts
-    const commentStart = trimmed.indexOf('/*');
-    if (commentStart !== -1) {
-      const before = trimmed.slice(0, commentStart).trim();
-      if (before) buffer += (buffer ? ' ' : '') + before;
-      const afterComment = trimmed.indexOf('*/', commentStart + 2);
-      if (afterComment !== -1) {
-        const after = trimmed.slice(afterComment + 2).trim();
-        if (after) buffer += (buffer ? ' ' : '') + after;
-      } else {
-        inComment = true;
-        continue;
-      }
-    }
-
-    buffer += (buffer ? ' ' : '') + trimmed;
+    // Accumulate the line into the buffer
+    if (trimmed) buffer += (buffer ? ' ' : '') + trimmed;
 
     // Check if this buffer contains a complete declaration
     if (buffer.includes(':')) {
@@ -362,7 +361,7 @@ function extractDeclarationsFromBlock(
                 line: baseLine + lineInBlock,
                 context: selector,
                 variantContext,
-                tokenRef: rawValue.trim().startsWith('var(') ? extractTokenRef(rawValue) : null,
+                tokenRef: property.startsWith('--') ? property : (rawValue.trim().startsWith('var(') ? extractTokenRef(rawValue) : null),
               });
             }
           }
@@ -557,12 +556,12 @@ function parseStyleObjectExpression(expr: string): Array<{ property: string; val
 
   // Simple regex-based property: value extraction from JS object expressions
   // Handles: property: 'value', property: "value", property: 42, property: 3.14
-  const propRegex = /([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*(?:'([^']*)'|"([^"]*)"|([\d.]+))/g;
+  const propRegex = /([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:\s*(?:'([^']*)'|"([^"]*)"|`([^`]*)`|([\d.]+))/g;
   let match: RegExpExecArray | null;
 
   while ((match = propRegex.exec(expr)) !== null) {
     const property = match[1];
-    const value = match[2] ?? match[3] ?? match[4];
+    const value = match[2] ?? match[3] ?? match[4] ?? match[5];
 
     if (property && value !== undefined) {
       pairs.push({ property, value });

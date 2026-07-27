@@ -735,6 +735,10 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
         if (declType !== null && declType !== tokenInfo.valueType) continue;
       }
 
+      // Only color-typed tokens are specific enough to flag;
+      // lengths collide by nature (e.g., 6px matching border-radius tokens).
+      if (tokenInfo.valueType !== 'color') continue;
+
       violations.push(this.makeViolation(
         d.file_path,
         d.line,

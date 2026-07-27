@@ -157,17 +157,11 @@ describe('Spec-17 R2 — Schema Analyzer', () => {
     const result = await analyzer.analyze([file], { schemas: [] });
     expect(result.errors).toHaveLength(0);
 
-    // Should identify at least "heroes" from sql`SELECT * FROM heroes`
+    // Spec 24 Item 4 Part B: knownCount === 0 → rule disabled.
+    // With zero known tables, a detector may not call anything unknown.
     const tableViolations = result.violations.filter(v => v.rule === 'unknown-table');
-    expect(tableViolations.length).toBeGreaterThanOrEqual(1);
-
-    // Location should be the tagged template line, not line 1
-    tableViolations.forEach(v => {
-      expect(v.line).toBeGreaterThan(1);
-    });
-
-    // R7: severity is suggestion
-    tableViolations.forEach(v => expect(v.severity).toBe('suggestion'));
+    expect(tableViolations).toHaveLength(0);
+    // Rule disabled: no violations to assert location/severity on.
   });
 
   it('R2.3 — template prefix table produces zero unknown-table (fixture 9)', async () => {
@@ -222,11 +216,11 @@ describe('Spec-17 R2 — Schema Analyzer', () => {
     // No .sql file passed → no auto-discovered tables → heroes/quests are unknown
     const result = await analyzer.analyze([tsFile], { schemas: [] });
     expect(result.errors).toHaveLength(0);
-    // Without auto-discovery, both "heroes" and "quests" are unknown
+    // Spec 24 Item 4 Part B: knownCount === 0 → rule disabled.
+    // With zero known tables, a detector may not call anything unknown.
     const tableViolations = result.violations.filter(v => v.rule === 'unknown-table');
-    expect(tableViolations.length).toBeGreaterThanOrEqual(1);
-    // R7: severity is suggestion
-    tableViolations.forEach(v => expect(v.severity).toBe('suggestion'));
+    expect(tableViolations).toHaveLength(0);
+    // Rule disabled: no violations to assert severity on.
   });
 
   it('R2.2 — TSX file with no DB usage produces zero findings (fixture 10)', async () => {

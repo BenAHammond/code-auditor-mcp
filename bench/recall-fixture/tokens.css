@@ -1,0 +1,16 @@
+:root {
+  --ink: #eef4f9;
+  --accent: #22d3ee;
+  /*
+   * Multi-line comment — the whole-block comment strip must drop
+   * this entire block, including the tokens inside it, without
+   * leaking comment text into the property column. Per-line
+   * stripping would preserve the `*/` tail text on the closing
+   * line and contaminate the next declaration.
+   */
+  /* --brand-action: #22d3ee; */
+  /* --brand-surface: #0f172a; */
+  --border-radius-md: 6px;
+  --spacing-sm: 8px;
+  --font-size-lg: 18px;
+}

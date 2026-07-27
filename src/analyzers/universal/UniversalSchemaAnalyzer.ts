@@ -121,13 +121,18 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     const codeFiles = files.filter(f => !f.endsWith('.json'));
 
     // Spec 22 Item 2 — Auto-discover known tables from migration/SQL files
-    // when no schemas are configured. Feeds discovered table names (CREATE TABLE)
-    // into allTables so the unknown-table detector works without explicit user
-    // config. Previously allTables was built exclusively from config.schemas, so
-    // projects without explicit schema config saw every table reference as unknown.
+    // when no schemas are configured.
+    //
+    // Spec 24 Item 4 — Also auto-discover from ORM schema definitions (Drizzle
+    // pgTable/mysqlTable/sqliteTable calls and Prisma schema.prisma model blocks)
+    // via import provenance: files importing Drizzle table constructors from
+    // drizzle-orm are schema files. Prisma's schema.prisma filename is Prisma's
+    // own convention — an external authority.
     const schemas = config.schemas;
     if (!schemas || schemas.length === 0) {
-      const discovered = await this.discoverTablesFromMigrations(codeFiles, config);
+      const fromMigrations = await this.discoverTablesFromMigrations(codeFiles, config);
+      const fromOrm = await this.discoverTablesFromOrmSchemas(codeFiles);
+      const discovered = new Set([...fromMigrations, ...fromOrm]);
       if (discovered.size > 0) {
         config = {
           ...config,
@@ -202,6 +207,61 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     return tables;
   }
 
+  /**
+   * Spec 24 Item 4 — Auto-discover known tables from ORM schema definitions.
+   *
+   * Uses import provenance to identify schema files (files importing Drizzle
+   * table constructors from drizzle-orm) and Prisma's canonical schema.prisma
+   * filename. Extracts table/model names and feeds them into allTables so the
+   * unknown-table detector works without explicit user config.
+   *
+   * Drizzle: scans .ts/.tsx/.js/.jsx files that import from drizzle-orm for
+   *   pgTable/mysqlTable/sqliteTable('tableName', ...) calls.
+   * Prisma: scans schema.prisma files for model Name { ... } blocks.
+   */
+  private async discoverTablesFromOrmSchemas(
+    files: string[],
+  ): Promise<Set<string>> {
+    const tables = new Set<string>();
+
+    for (const file of files) {
+      const lowerFile = file.toLowerCase();
+
+      // ── Drizzle: import provenance — files importing drizzle-orm table builders ──
+      if (/\.(ts|tsx|js|jsx)$/i.test(file)) {
+        try {
+          const source = await fs.readFile(file, 'utf8');
+          // Import provenance: only scan files that import from drizzle-orm
+          if (/from\s+['"]drizzle-orm/.test(source)) {
+            const builderRegex = /(?:pgTable|mysqlTable|sqliteTable)\s*\(\s*['"]([^'"]+)['"]/g;
+            let match: RegExpExecArray | null;
+            while ((match = builderRegex.exec(source)) !== null) {
+              tables.add(match[1]);
+            }
+          }
+        } catch {
+          // Skip unreadable files — discovery is best-effort
+        }
+      }
+
+      // ── Prisma: canonical schema.prisma filename ──
+      if (file.endsWith('schema.prisma') || file.endsWith('\\schema.prisma')) {
+        try {
+          const source = await fs.readFile(file, 'utf8');
+          const modelRegex = /model\s+(\w+)\s*\{/g;
+          let match: RegExpExecArray | null;
+          while ((match = modelRegex.exec(source)) !== null) {
+            tables.add(match[1]);
+          }
+        } catch {
+          // Skip unreadable files — discovery is best-effort
+        }
+      }
+    }
+
+    return tables;
+  }
+
   protected async analyzeAST(
     ast: AST,
     adapter: LanguageAdapter,
@@ -268,8 +328,32 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
 
     // Check for missing table references — R2.4: Levenshtein suggestions
     if (finalConfig.checkMissingReferences) {
-      for (const ref of tableRefs) {
-        if (!allTables.has(ref.table) && !this.isSystemTable(ref.table)) {
+      // Spec 24 Item 4 Part B — 10:1 fail-open ratio.
+      // When unknown table references vastly outnumber known tables, the
+      // schema catalog is likely incomplete (e.g. external/managed tables).
+      // Disable the rule with a warning instead of flooding the output with
+      // false positives.
+      const unknownRefs = tableRefs.filter(
+        ref => !allTables.has(ref.table) && !this.isSystemTable(ref.table)
+      );
+      const knownCount = allTables.size;
+      const unknownCount = unknownRefs.length;
+
+      // Spec 24 Item 4 Part B — 10:1 fail-open ratio.
+      // When zero known tables: a detector that knows zero tables may not
+      // call anything unknown — every reference is "unknown" by construction.
+      // When known tables exist: disable if unknown:known ratio exceeds 10:1.
+      if (knownCount === 0 || unknownCount / Math.max(knownCount, 1) > 10) {
+        const displayRatio = knownCount === 0 ? '∞' : (unknownCount / Math.max(knownCount, 1)).toFixed(1);
+        console.error(
+          `[code-auditor] unknown-table rule disabled: ` +
+          `${unknownCount} unknown refs vs ${knownCount} known tables ` +
+          `(ratio ${displayRatio}:1 exceeds 10:1). ` +
+          `Add schemas to .codeauditor.json or ORM schema files.`
+        );
+        // Skip unknown-table findings — fall through to column refs below
+      } else {
+        for (const ref of unknownRefs) {
           const suggestions = this.getNearestTableSuggestions(ref.table, allTables, 2);
           const msg = suggestions.length > 0
             ? `Reference to unknown table '${ref.table}' (${ref.type}). Did you mean: ${suggestions.join(', ')}?`

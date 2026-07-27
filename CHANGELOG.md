@@ -2,6 +2,53 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.6] — 2026-07-26
+
+### Recall-Protocol Send-Back: 4/5 Items Closed + Comment Contamination Fix
+
+Post-v3.4.4 triage against recall-protocol (7,548 findings) revealed zero production effect from the 4 false-positive fixes claimed in v3.4.3/v3.4.4. Every fix targeted a shape absent from real codebases. This release fixes the root causes found by a recall-shaped fixture project audited through the installed tarball.
+
+#### Item 1 — var() False Positives (102 → 0)
+
+`parseStyleObjectExpression()` regex in `styleExtractor.ts` only captured single-quoted string values, not template literals (`backticks`) or bare expressions. All 102 receipts were TSX files with `var(--ink)` in template literals — the regex never matched, so `tokenRef` was never set, and the guard (`if (d.token_ref) continue`) never fired.
+
+**Fix**: Extended the regex in `parseStyleObjectExpression()` to capture backtick-delimited template literals (`\`...\``) in addition to single-quote, double-quote, and numeric values.
+
+#### Item 2 — CSS Definition-Line Survivors (11 → 0)
+
+Two defects, diagnosed from fixture database rows.
+
+**2a — Comment Contamination (Production Mechanism)**: `extractDeclarationsFromBlock()` called `stripAllBlockComments()` per-line inside the `for` loop. When a multi-line `/* ... */` comment spans several lines, the body lines (lines 2 through N-1 of the comment) have no `/*` trigger and pass through `stripAllBlockComments()` verbatim. That comment body text accumulated in the parse buffer and prepended itself to the next real declaration's property field, producing malformed properties that dodged the `--` prefix guard. This is the mechanism behind the 11 item-2 survivors in recall-protocol: Frosted-prism.css (the source of those findings) is a comment-heavy design-token file with multi-line `/* ... */` blocks throughout. The clean recall-fixture couldn't reproduce the bug because `tokens.css` had no multi-line comments wrapping custom-property definitions.
+
+**Fix**: Strip all `/* ... */` comments from the entire CSS block text *before* splitting into lines — `const cleanBlock = stripAllBlockComments(block); const lines = cleanBlock.split('\n')`. This eliminates all cross-line comment state: no `inComment` flag, no per-line stripping, no edge cases.
+
+**2b — Defense-in-Depth Self-Tagging**: `--` definition sites (`--ink: #eef4f9`) had `tokenRef: null` at extraction because the assignment only checked for `var()` references. Self-tag with the property name: `property.startsWith('--') ? property : ...`. This populates `tokenRef` (e.g. `--ink`) so the analysis-side `token_ref` guard catches definition-site self-matches — defense-in-depth at a different layer from the `--` property guard.
+
+**Golden parser tests**: 12 unit tests in `src/styles/styleExtractor.spec.ts` encode the comment-contamination bug class — CSS text with gnarly comments in → expected `{property, rawValue}` array out. Tests cover: single-line comments, multi-line comments (the bug class), unclosed comments, CSS custom properties, and the item-2 production regression (multi-line comment wrapping a `--` definition).
+
+#### Item 3 — Color-Only Token-Bypass (239 → 0)
+
+All 239 receipt survivors were length coincidences (`6px` = `borderRadius.md` tokens). Colors are near-unique; lengths collide by nature. Restricting raw-literal token-bypass to color-typed values eliminates the class on principle.
+
+**Fix**: Added `if (tokenInfo.valueType !== 'color') continue` after the type-equality gate in `detectTokenBypass()`. Only color-typed design tokens are specific enough to flag raw-value bypasses.
+
+#### Item 4 — unknown-table (1,404 → 0)
+
+**Part A — Wire ORM Schema Discovery via Import Provenance**: Drizzle ORM schema tables (importing `pgTable`/`mysqlTable`/`sqliteTable` from `drizzle-orm`) and Prisma models (canonical `schema.prisma`) are now auto-discovered. Files importing from `drizzle-orm` are scanned for table builder calls; `schema.prisma` files are scanned for `model` blocks. Table names are fed into `allTables` alongside migration-discovered tables.
+
+**Part B — 10:1 Fail-Open Ratio**: When unknown table references vastly outnumber known tables, the schema catalog is likely incomplete. Disable the unknown-table rule with a warning instead of flooding output. When zero known tables, the rule is always disabled — a detector that knows zero tables may not call anything unknown. When known tables exist, disable if unknown:known ratio exceeds 10:1.
+
+#### Item 5 — sql-injection-risk (139)
+
+Adjudicated by recall-fixture baseline: D1-style prepared queries with `?` placeholders are correctly suppressed. The 139 survivors are interpolation-shaped (template literals with `${var}` inside SQL strings). Deferred-pending-receipts — no fix in this release.
+
+### Verification
+
+- Recall-shaped fixture audit through installed tarball: `token-bypass: 1` (only the positive case), `unknown-table: 0`, `sql-injection-risk: 0`
+- 12 golden parser tests for comment-contamination bug class
+- 789+ tests passing
+- Build: `npm run build` green
+
 ## [3.4.3] — 2026-07-26
 
 ### R12: Tailwind Compile-Probe Migration — Zero Hand-Curated Dictionaries
