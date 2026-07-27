@@ -1,0 +1,6 @@
+name = "recall-fixture"
+[[d1_databases]]
+binding = "DB"
+database_name = "fixture-db"
+database_id = "fake-fixture-id"
+migrations_dir = "migrations"
