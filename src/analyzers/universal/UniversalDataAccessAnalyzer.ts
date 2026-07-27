@@ -311,7 +311,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         const tables = this.extractTables(nodeText, config);
         const hasOrgFilter = this.hasOrganizationFilter(nodeText, config);
 
-        const security = this.checkQuerySecurity(nodeText, config);
+        const security = this.checkQuerySecurity(node, nodeText, ast, adapter, sourceCode, config);
         
         // Determine the type based on imports or patterns
         let callType = 'unknown';
@@ -434,6 +434,23 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       ));
     }
     
+    // Architecture: Direct SQL Execution (no ORM)
+    // Detected through the provenance path — replaces file-level regex that
+    // couldn't match function-call-wrapped queries (e.g. db.Query(fmt.Sprintf(...))).
+    // v3.4.7: Deleted sqlPatterns file-level regex; routing through adapter capabilities.
+    // R4.3: Skip when directAccess is "allow" (e.g. Cloudflare Workers/D1).
+    if (call.type === 'sql' && config.directAccess !== 'allow') {
+      violations.push(this.createViolation(
+        filePath,
+        { line: call.line, column: call.column },
+        'Direct SQL execution detected. Consider using an ORM or query builder.',
+        'suggestion',
+        'direct-sql',
+        undefined,
+        symbol
+      ));
+    }
+
     // Performance: Complex Query
     if (analysis.performanceRisk === 'high') {
       violations.push(this.createViolation(
@@ -504,23 +521,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
           undefined,
           sym
         ));
-      }
-    }
-
-    // Check for direct SQL execution without ORM
-    const sqlPatterns = [/execute\s*\(\s*['"`]SELECT/i, /query\s*\(\s*['"`]SELECT/i];
-    for (const pattern of sqlPatterns) {
-      if (pattern.test(sourceCode)) {
-        violations.push(this.createViolation(
-          ast.filePath,
-          { line: 1, column: 1 },
-          'Direct SQL execution detected. Consider using an ORM or query builder.',
-          'suggestion',                                         // R7: direct-access → suggestion
-          'direct-sql',
-          undefined,
-          'direct-sql'
-        ));
-        break;
       }
     }
 
@@ -740,36 +740,87 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     return false;
   }
   
-  private checkQuerySecurity(text: string, config: DataAccessAnalyzerConfig): {
+  private checkQuerySecurity(
+    node: ASTNode,
+    text: string,
+    ast: AST,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    config: DataAccessAnalyzerConfig
+  ): {
     parameterized: boolean;
     injectionRisk: boolean;
+    message?: string;
   } {
     const parameterized = (config.securityPatterns?.parameterizedQueries || []).some(pattern =>
       text.includes(pattern)
     );
-    
-    // Enhanced SQL injection detection
-    const sqlInjectionPatterns = [
-      '${',        // Template literal interpolation
-      'concat',    // String concatenation  
-      '+',         // String concatenation with +
-      "'${",       // Template literal in quotes
-      '"${',       // Template literal in double quotes
-      '` + ',      // String concatenation
-      '" + ',      // String concatenation
-      "' + "       // String concatenation
-    ];
-    
-    const configPatterns = config.securityPatterns?.sqlInjectionRisks || [];
-    const allPatterns = [...sqlInjectionPatterns, ...configPatterns];
-    
-    const injectionRisk = !parameterized &&
-                          allPatterns.some(pattern => text.includes(pattern)) &&
-                          this.containsSQLKeywords(text);
-    
-    return { parameterized, injectionRisk };
+
+    if (parameterized) {
+      return { parameterized: true, injectionRisk: false };
+    }
+
+    // If the adapter doesn't implement the dynamic-string capability, we can't
+    // determine whether the query text was constructed unsafely.  Err on the
+    // quiet side — no capability means no injection-risk finding.
+    if (!adapter.isDynamicStringConstruction || !adapter.getDynamicParts) {
+      return { parameterized: false, injectionRisk: false };
+    }
+
+    // Only a dynamically-constructed string (template literal, binary +, etc.)
+    // can be an injection risk.  Plain string literals are always safe.
+    if (!adapter.isDynamicStringConstruction(node)) {
+      return { parameterized: false, injectionRisk: false };
+    }
+
+    // Still require SQL keywords in the text — a dynamic string without them
+    // isn't a SQL injection.
+    if (!this.containsSQLKeywords(text)) {
+      return { parameterized: false, injectionRisk: false };
+    }
+
+    // Extract the dynamic sub-parts and check whether they're resolvable.
+    const dynamicParts = adapter.getDynamicParts(node, sourceCode);
+    const unresolved: string[] = [];
+
+    for (const part of dynamicParts) {
+      if (!part.isIdentifier) {
+        // A non-identifier expression embedded in the string — definitely dynamic.
+        unresolved.push(part.text);
+        continue;
+      }
+
+      // Try to resolve the identifier via the adapter.  If the part carries
+      // its own AST node (populated by getDynamicParts), use it directly.
+      // Otherwise we can't resolve — treat as unresolved.
+      const resolved = part.node && adapter.resolveLocalConstant
+        ? adapter.resolveLocalConstant(part.node, ast, sourceCode)
+        : null;
+
+      if (!resolved) {
+        unresolved.push(part.text);
+        continue;
+      }
+
+      if (!resolved.isStatic) {
+        unresolved.push(part.text);
+        continue;
+      }
+    }
+
+    if (unresolved.length === 0) {
+      // All dynamic parts resolved to static content — safe.
+      return { parameterized: false, injectionRisk: false };
+    }
+
+    const names = unresolved.map(id => '${' + id + '}').join(', ');
+    return {
+      parameterized: false,
+      injectionRisk: true,
+      message: `Cannot protect interpolated content: ${names}`,
+    };
   }
-  
+
   private extractMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string {
     const text = adapter.getNodeText(node, sourceCode);
     const match = text.match(/([\p{L}\p{N}_]+)\s*\(/u);

@@ -805,6 +805,13 @@ function buildAnalyzers(): Record<string, AnalyzerRunner> {
         return analyzer.analyze(files, config);
       },
     },
+    'go-data-access': {
+      name: 'go-data-access',
+      analyze: async (files, config) => {
+        const analyzer = new UniversalDataAccessAnalyzer();
+        return analyzer.analyze(files, config);
+      },
+    },
     schema: {
       name: 'schema',
       analyze: async (files, config) => {
@@ -981,7 +988,7 @@ async function collectFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
   const entries = await readdir(dir, { withFileTypes: true, recursive: true });
   for (const entry of entries) {
-    if (entry.isFile() && /\.(ts|tsx|js|jsx|css|scss)$/.test(entry.name) && !entry.name.includes('.d.')) {
+    if (entry.isFile() && /\.(ts|tsx|js|jsx|css|scss|go)$/.test(entry.name) && !entry.name.includes('.d.')) {
       files.push(join(entry.parentPath, entry.name));
     }
   }

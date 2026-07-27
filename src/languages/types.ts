@@ -134,6 +134,35 @@ export interface ExportInfo {
 }
 
 /**
+ * A sub-part of a string construction node.
+ *
+ * - For template literals: the expressions inside \${...}
+ * - For binary + concatenations: the non-string-literal operands
+ * - For fmt.Sprintf: the non-literal arguments after the format string
+ */
+export interface DynamicPart {
+  text: string;
+  /** True when the part is a simple identifier (which may be resolvable). */
+  isIdentifier: boolean;
+  /** The AST node for this part, when available.  Set for identifier parts
+   *  so callers can resolve them via resolveLocalConstant(). */
+  node?: ASTNode;
+}
+
+/**
+ * Result of resolving a local constant/let/var identifier.
+ * Null means unresolvable (complex expression, call result, parameter, etc.).
+ */
+export interface ResolvedConstant {
+  /** The RHS text of the declaration (initializer expression). */
+  initText: string;
+  /** True if the initText is static/placeholder-safe (no dynamic injection). */
+  isStatic: boolean;
+  /** The line of the declaration, for reassignment checking. */
+  declLine: number;
+}
+
+/**
  * Language adapter interface - must be implemented for each language
  */
 export interface LanguageAdapter {
@@ -198,6 +227,43 @@ export interface LanguageAdapter {
 
   // Optional: Extract exported symbol names from an AST
   extractExportedSymbols?(ast: AST): Array<{ name: string; line: number }>;
+
+  // Optional: String construction capabilities for SQL injection detection.
+  // These replace text-pattern heuristics with AST-level knowledge of how
+  // each host language constructs dynamic strings.
+  //
+  // When a language adapter does not implement these, the caller falls back
+  // to the legacy text-pattern approach (Legacy check disabled in v3.4.7 —
+  // if no adapter capability is present, no injection risk is flagged).
+
+  /**
+   * Returns true if the node is a dynamically-constructed string —
+   * template literal with interpolation, binary + concatenation,
+   * fmt.Sprintf call, etc. A plain string literal or raw string without
+   * interpolation returns false.
+   */
+  isDynamicStringConstruction?(node: ASTNode): boolean;
+
+  /**
+   * Returns the dynamic sub-parts of a string construction node.
+   * For template literals: the template_substitution children.
+   * For binary + concatenations: the non-string-literal operands.
+   * For fmt.Sprintf: the non-literal arguments after the format string.
+   * Returns an empty array for static strings (plain literals).
+   */
+  getDynamicParts?(node: ASTNode, sourceCode: string): DynamicPart[];
+
+  /**
+   * Resolve a local constant/let/var declaration for an identifier node.
+   * Searches the enclosing function scope for a declaration matching the
+   * identifier's text. Returns null when the identifier cannot be
+   * statically resolved (complex expression, parameter, reassigned, etc.).
+   *
+   * @param identifierNode - An identifier node to resolve
+   * @param ast - The full AST for scope traversal
+   * @param sourceCode - The source text
+   */
+  resolveLocalConstant?(identifierNode: ASTNode, ast: AST, sourceCode: string): ResolvedConstant | null;
 }
 
 /**

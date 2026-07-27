@@ -12,6 +12,7 @@ import type {
   AST,
   ASTNode,
   ClassInfo,
+  DynamicPart,
   ExportInfo,
   FunctionInfo,
   ImportInfo,
@@ -22,6 +23,7 @@ import type {
   ParameterInfo,
   ParseError,
   PropertyInfo,
+  ResolvedConstant,
   SourceLocation,
 } from '../types.js';
 
@@ -789,5 +791,267 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
 
   private findNamedChildren(node: TreeSitterNode, type: string): TreeSitterNode[] {
     return node.namedChildren.filter((c: TreeSitterNode) => c.type === type);
+  }
+
+  // -- String Construction Capabilities (v3.4.7) ----------------------------
+
+  /**
+   * Returns true when the node is a dynamically-constructed string in Go:
+   * - call_expression with fmt.Sprintf / fmt.Sprint / fmt.Sprintf / strings.Join
+   * - binary_expression with + operator (string concatenation)
+   * Plain string literals (interpreted_string_literal, raw_string_literal)
+   * are never dynamic.
+   */
+  isDynamicStringConstruction(node: ASTNode): boolean {
+    const raw = node.raw as TreeSitterNode;
+    const type = raw.type;
+
+    if (type === 'call_expression') {
+      const func = raw.childForFieldName?.('function');
+      if (!func) return false;
+
+      // fmt.Sprintf("format", args...) — dynamic
+      // strings.Join(parts, "sep") — dynamic
+      // fmt.Sprint(args...) — dynamic
+      const funcText = func.text;
+      if (funcText === 'fmt.Sprintf' || funcText === 'fmt.Sprintf' ||
+          funcText === 'fmt.Sprint' || funcText === 'fmt.Sprintln' ||
+          funcText === 'fmt.Appendf' || funcText === 'fmt.Appendln' ||
+          funcText === 'fmt.Append' || funcText === 'fmt.Errorf' ||
+          funcText === 'fmt.Fprintf' || funcText === 'fmt.Fprintln' ||
+          funcText === 'fmt.Fprint' || funcText === 'strings.Join' ||
+          funcText === 'fmt.Scanf') {
+        return true;
+      }
+
+      // Also check for selector_expression patterns: pkg.Symbol()
+      const selectorMatch = /^(.*?\.)?(Sprintf|Sprintf|Sprint|Sprintln|Join|Appendf|Errorf|Fprintf)$/.test(funcText);
+      if (selectorMatch) {
+        // Verify it's actually fmt.* or strings.*
+        return funcText.startsWith('fmt.') || funcText.startsWith('strings.');
+      }
+
+      // Recurse into arguments: query(fmt.Sprintf(...)) where the outer
+      // call isn't itself a format function but passes a dynamic argument.
+      for (const child of node.children ?? []) {
+        if ((child.raw as TreeSitterNode).type === 'argument_list') {
+          for (const arg of child.children ?? []) {
+            const argType = (arg.raw as TreeSitterNode).type;
+            if (argType === '(' || argType === ')' || argType === ',') continue;
+            if (this.isDynamicStringConstruction(arg)) return true;
+          }
+        }
+      }
+
+      return false;
+    }
+
+    if (type === 'binary_expression') {
+      // String concatenation: has + operator with a string literal operand
+      const children = node.children ?? [];
+      const hasStringLiteral = children.some(
+        c => (c.raw as TreeSitterNode).type === 'interpreted_string_literal' ||
+             (c.raw as TreeSitterNode).type === 'raw_string_literal'
+      );
+      const hasOperator = children.some(
+        c => (c.raw as TreeSitterNode).type === '+'
+      );
+      return hasStringLiteral && hasOperator;
+    }
+
+    return false;
+  }
+
+  /**
+   * Gets the dynamic parts of a Go string construction.
+   * - For fmt.Sprintf: args after the format string are dynamic
+   * - For binary +: non-literal operands are dynamic
+   * - For strings.Join: the parts slice is dynamic
+   */
+  getDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
+    const raw = node.raw as TreeSitterNode;
+    const type = raw.type;
+    const parts: DynamicPart[] = [];
+
+    // For call_expressions that aren't known fmt/strings functions,
+    // walk into the first argument that is itself a dynamic string construction.
+    if (type === 'call_expression') {
+      const funcText = raw.childForFieldName?.('function')?.text ?? '';
+      const isKnownFormatter = /^(fmt\.|strings\.)(Sprintf|Fprintf|Errorf|Appendf|Sprint|Sprintln|Append|Appendln|Join|Scanf|Fprint|Fprintln|Sscanf)$/u.test(funcText);
+      if (!isKnownFormatter) {
+        for (const child of node.children ?? []) {
+          if ((child.raw as TreeSitterNode).type === 'argument_list') {
+            for (const arg of child.children ?? []) {
+              const argType = (arg.raw as TreeSitterNode).type;
+              if (argType === '(' || argType === ')' || argType === ',') continue;
+              if (this.isDynamicStringConstruction(arg)) {
+                return this.getDynamicParts(arg, sourceCode);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (type === 'call_expression') {
+      const argsNode = raw.childForFieldName?.('arguments');
+      if (!argsNode) return parts;
+
+      const namedChildren = argsNode.namedChildren;
+
+      // fmt.Sprintf("format", arg1, arg2...): skip format string (first arg)
+      // strings.Join(parts, "sep"): first arg is dynamic
+      const funcText = raw.childForFieldName?.('function')?.text ?? '';
+      const isFormatFunc = /^fmt\.(Sprintf|Fprintf|Errorf|Appendf)$/u.test(funcText);
+
+      const startIdx = isFormatFunc ? 1 : 0;
+
+      for (let i = startIdx; i < namedChildren.length; i++) {
+        const arg = namedChildren[i];
+        const argType = arg.type;
+        // Skip string literals (they're the separator or static parts)
+        if (argType === 'interpreted_string_literal' || argType === 'raw_string_literal') continue;
+        const text = sourceCode.slice(arg.startIndex, arg.endIndex);
+        const isId = /^[\p{L}_][\p{L}\p{N}_]*$/u.test(text.trim());
+        const idNode = isId ? {
+          type: argType,
+          range: [arg.startIndex, arg.endIndex] as [number, number],
+          location: {
+            start: { line: arg.startPosition.row, column: arg.startPosition.column },
+            end: { line: arg.endPosition.row, column: arg.endPosition.column },
+          },
+          raw: arg,
+        } : undefined;
+        parts.push({ text: text.trim(), isIdentifier: isId, node: idNode });
+      }
+      return parts;
+    }
+
+    if (type === 'binary_expression') {
+      for (const child of node.children ?? []) {
+        const childType = (child.raw as TreeSitterNode).type;
+        if (childType === 'interpreted_string_literal' ||
+            childType === 'raw_string_literal' ||
+            childType === '+') continue;
+        const text = sourceCode.slice(child.range[0], child.range[1]);
+        const isId = /^[\p{L}_][\p{L}\p{N}_]*$/u.test(text.trim());
+        parts.push({ text: text.trim(), isIdentifier: isId, node: isId ? child : undefined });
+      }
+      return parts;
+    }
+
+    return parts;
+  }
+
+  /**
+   * Resolves a Go local constant declaration for an identifier node.
+   * Searches within the enclosing function scope for var/const/:=
+   * declarations. Returns null for unresolvable identifiers.
+   */
+  resolveLocalConstant(identifierNode: ASTNode, ast: AST, sourceCode: string): ResolvedConstant | null {
+    const idName = sourceCode.slice(identifierNode.range[0], identifierNode.range[1]).trim();
+    if (!idName) return null;
+
+    // Find enclosing function scope
+    const enclosing = this.findEnclosingScopeGo(identifierNode);
+    const scopeRoot = enclosing ?? ast.root;
+
+    // Search for declaration: var name = ..., name := ..., const name = ...
+    const declNode = this.findDeclInScopeGo(scopeRoot, idName);
+    if (!declNode) return null;
+
+    const declText = sourceCode.slice(declNode.range[0], declNode.range[1]);
+
+    // Go forms: "name := value" or "var name = value" or "const name = value"
+    // For short_var_declaration: the whole "name := value" is one node
+    // For var_spec/const_spec: "name = value" or "name type = value"
+    let initText = '';
+    const rawDecl = declNode.raw as TreeSitterNode;
+
+    if (rawDecl.type === 'short_var_declaration') {
+      // "name := value" — extract right side
+      const match = declText.match(/:=s*(.+?)$/);
+      if (match) initText = match[1].trim();
+    } else if (rawDecl.type === 'var_spec' || rawDecl.type === 'const_spec') {
+      // "name = value" or "name type = value"
+      const value = (rawDecl as any).childForFieldName?.('value');
+      if (value) {
+        initText = sourceCode.slice(value.startIndex, value.endIndex).trim();
+      }
+    } else if (rawDecl.type === 'assignment_statement' || rawDecl.type === 'expression_statement') {
+      // Could be ":=" parsed differently
+      const match = declText.match(/:=s*(.+?)$|=\s*(.+?)$/);
+      if (match) initText = (match[1] ?? match[2]).trim();
+    }
+
+    if (!initText) return null;
+
+    const declLine = declNode.location.start.line;
+
+    // Check for reassignment
+    const reassigned = this.hasReassignmentGo(scopeRoot, idName, declLine);
+
+    // Is it static? Check if init contains placeholder literals only
+    const isStatic = initText === '""' || initText === '""' ||
+      (/^["'\s?,\[\]\(\)\.\w]+$/.test(initText) &&
+       (initText.includes('"?"') || initText.includes("'?'")));
+
+    return { initText, isStatic: isStatic && !reassigned, declLine };
+  }
+
+  /** Walk parent chain to find enclosing function scope in Go. */
+  private findEnclosingScopeGo(node: ASTNode): ASTNode | null {
+    let current: ASTNode | null = node;
+    while (current) {
+      const t = (current.raw as TreeSitterNode).type;
+      if (t === 'function_declaration' || t === 'method_declaration' ||
+          t === 'source_file') {
+        return current;
+      }
+      current = current.parent ?? null;
+    }
+    return null;
+  }
+
+  /** Find declaration of targetName within scopeRoot. */
+  private findDeclInScopeGo(scopeRoot: ASTNode, targetName: string): ASTNode | null {
+    let result: ASTNode | null = null;
+    this.walk(scopeRoot, (astNode) => {
+      if (result) return;
+      const t = (astNode.raw as TreeSitterNode).type;
+      if (t === 'short_var_declaration') {
+        // Check left side for identifier match
+        const raw = astNode.raw as TreeSitterNode;
+        const left = (raw as any).childForFieldName?.('left') as TreeSitterNode;
+        if (left && left.text === targetName) {
+          result = astNode;
+        }
+      } else if (t === 'var_spec' || t === 'const_spec') {
+        const raw = astNode.raw as TreeSitterNode;
+        const name = (raw as any).childForFieldName?.('name') as TreeSitterNode;
+        if (name && name.text === targetName) {
+          result = astNode;
+        }
+      }
+    });
+    return result;
+  }
+
+  /** Check for reassignment (bare = without :=) of targetName after declLine. */
+  private hasReassignmentGo(scopeRoot: ASTNode, targetName: string, declLine: number): boolean {
+    let found = false;
+    this.walk(scopeRoot, (astNode) => {
+      if (found) return;
+      const t = (astNode.raw as TreeSitterNode).type;
+      if (t === 'assignment_statement') {
+        if (astNode.location.start.line < declLine) return;
+        const raw = astNode.raw as TreeSitterNode;
+        const left = (raw as any).childForFieldName?.('left');
+        if (left && left.text === targetName) {
+          found = true;
+        }
+      }
+    });
+    return found;
   }
 }

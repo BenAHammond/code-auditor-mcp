@@ -641,19 +641,25 @@ function getMemberExpressionReceiver(
 ): string | null {
   // Walk down the member expression chain to find the root object
   let current = node;
-  while (current.type === 'member_expression') {
+  while (
+    current.type === 'member_expression' ||
+    current.type === 'selector_expression'
+  ) {
     const children = adapter.getChildren(current);
     const object = children.find(
-      (c) => c.type !== '.' && c.type !== 'property_identifier',
+      (c) => c.type !== '.' && c.type !== 'property_identifier' && c.type !== 'field_identifier',
     );
     // The object of this member expression should be the first child
     const firstChild = children[0];
     if (
       firstChild &&
       firstChild.type !== '.' &&
-      firstChild.type !== 'property_identifier'
+      firstChild.type !== 'property_identifier' && firstChild.type !== 'field_identifier'
     ) {
-      if (firstChild.type === 'member_expression') {
+      if (
+        firstChild.type === 'member_expression' ||
+        firstChild.type === 'selector_expression'
+      ) {
         current = firstChild;
         continue;
       }
@@ -692,6 +698,7 @@ function getCallExpressionCallee(
     if (
       child.type === 'identifier' ||
       child.type === 'member_expression' ||
+      child.type === 'selector_expression' ||
       child.type === 'call_expression'
     ) {
       return child;
@@ -953,7 +960,7 @@ export function isDBProvenanced(
   }
 
   // Case 2: Member expression — e.g. db.prepare(...)
-  if (calleeNode.type === 'member_expression') {
+  if (calleeNode.type === 'member_expression' || calleeNode.type === 'selector_expression') {
     return isMemberExpressionDBProvenanced(
       calleeNode,
       adapter,
@@ -984,7 +991,7 @@ function isMemberExpressionDBProvenanced(
   let rootReceiver: string | null = null;
   let current: ASTNode = node;
 
-  while (current.type === 'member_expression') {
+  while (current.type === 'member_expression' || current.type === 'selector_expression') {
     const children = adapter.getChildren(current);
     const firstChild = children[0];
     if (!firstChild) break;
@@ -993,7 +1000,7 @@ function isMemberExpressionDBProvenanced(
       rootReceiver = adapter.getNodeText(firstChild, sourceCode);
       break;
     }
-    if (firstChild.type === 'member_expression') {
+    if (firstChild.type === 'member_expression' || firstChild.type === 'selector_expression') {
       current = firstChild;
       continue;
     }
@@ -1036,22 +1043,30 @@ function isDBMethodCall(
 ): boolean {
   // Walk the member expression chain and check each property
   let current: ASTNode = node;
-  while (current.type === 'member_expression') {
+  while (
+    current.type === 'member_expression' ||
+    current.type === 'selector_expression'
+  ) {
     const children = current.children ?? [];
     // The property is typically the second or third child
     for (const child of children) {
-      if (child.type === 'property_identifier') {
-        const propName = child.type === 'property_identifier'
-          ? _adapter.getNodeText(child, _sourceCode)
-          : null;
-        if (propName && (methods.has(propName) || ORM_METHODS.has(propName))) {
+      if (
+        child.type === 'property_identifier' ||
+        child.type === 'field_identifier'
+      ) {
+        const propName = _adapter.getNodeText(child, _sourceCode);
+        const lower = propName.toLowerCase();
+        if (methods.has(lower) || ORM_METHODS.has(lower)) {
           return true;
         }
       }
     }
-    // Go deeper if there's a nested member expression
+    // Go deeper if there's a nested member/selector expression
     const firstChild = children[0];
-    if (firstChild?.type === 'member_expression') {
+    if (
+      firstChild?.type === 'member_expression' ||
+      firstChild?.type === 'selector_expression'
+    ) {
       current = firstChild;
     } else {
       break;
@@ -1073,18 +1088,28 @@ function isDBMethodOnThis(
 ): boolean {
   // Walk the chain: this.db.prepare → check if any property matches DB methods
   let current: ASTNode = node;
-  while (current.type === 'member_expression') {
+  while (
+    current.type === 'member_expression' ||
+    current.type === 'selector_expression'
+  ) {
     const children = adapter.getChildren(current);
     for (const child of children) {
-      if (child.type === 'property_identifier') {
+      if (
+        child.type === 'property_identifier' ||
+        child.type === 'field_identifier'
+      ) {
         const propName = adapter.getNodeText(child, sourceCode);
-        if (propName && (methods.has(propName) || ORM_METHODS.has(propName))) {
+        const lower = propName.toLowerCase();
+        if (methods.has(lower) || ORM_METHODS.has(lower)) {
           return true;
         }
       }
     }
     const firstChild = children[0];
-    if (firstChild?.type === 'member_expression') {
+    if (
+      firstChild?.type === 'member_expression' ||
+      firstChild?.type === 'selector_expression'
+    ) {
       current = firstChild;
     } else {
       break;
@@ -1136,7 +1161,7 @@ export function inferReceivers(
     if (node.type !== 'call_expression') return;
 
     const callee = getCallExpressionCallee(node, adapter);
-    if (!callee || callee.type !== 'member_expression') return;
+    if (!callee || (callee.type !== 'member_expression' && callee.type !== 'selector_expression')) return;
 
     // Extract method name (the property being called)
     const methodName = extractMemberExpressionProperty(
@@ -1144,7 +1169,7 @@ export function inferReceivers(
       adapter,
       sourceCode,
     );
-    if (!methodName || !DB_CALL_METHODS.has(methodName)) return;
+    if (!methodName || !DB_CALL_METHODS.has(methodName.toLowerCase())) return;
 
     // Get the receiver identifier
     const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode);
@@ -1345,7 +1370,7 @@ function extractMemberExpressionProperty(
   // The property is the last non-dot child
   for (let i = children.length - 1; i >= 0; i--) {
     const child = children[i];
-    if (child.type === 'property_identifier') {
+    if (child.type === 'property_identifier' || child.type === 'field_identifier') {
       return adapter.getNodeText(child, sourceCode);
     }
   }

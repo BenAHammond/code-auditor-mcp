@@ -12,6 +12,7 @@ import type {
   AST,
   ASTNode,
   ClassInfo,
+  DynamicPart,
   ExportInfo,
   FunctionInfo,
   ImportInfo,
@@ -22,6 +23,7 @@ import type {
   ParameterInfo,
   ParseError,
   PropertyInfo,
+  ResolvedConstant,
   SourceLocation,
 } from '../types.js';
 
@@ -1189,5 +1191,266 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
       if (child.text === text || child.type === text) return true;
     }
     return false;
+  }
+
+  // -- String Construction Capabilities (v3.4.7) ----------------------------
+
+  /**
+   * Returns true when the node is a dynamically-constructed string in TS/JS:
+   * - template_string with template_substitution children
+   * - binary_expression with + operator (string concatenation)
+   * - call_expression with .concat() method
+   *   String-like identifiers and plain string literals are never dynamic.
+   */
+  isDynamicStringConstruction(node: ASTNode): boolean {
+    const type = (node.raw as TreeSitterNode).type;
+
+    if (type === 'template_string') {
+      // template_string is dynamic only if it has template_substitution children
+      for (const child of node.children ?? []) {
+        if ((child.raw as TreeSitterNode).type === 'template_substitution') {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    if (type === 'binary_expression') {
+      // Check for string concatenation: operands include a string literal
+      const children = node.children ?? [];
+      const hasStringLiteral = children.some(
+        c => (c.raw as TreeSitterNode).type === 'string'
+      );
+      return hasStringLiteral;
+    }
+
+    if (type === 'call_expression') {
+      // Check for .concat() calls
+      const text = (node.raw as TreeSitterNode).text;
+      if (text.includes('.concat(') || text.includes('?.concat(')) return true;
+
+      // Recurse into arguments: query(binaryExpression) where the argument
+      // itself is a dynamic string construction.
+      for (const child of node.children ?? []) {
+        if ((child.raw as TreeSitterNode).type === 'arguments') {
+          for (const arg of child.children ?? []) {
+            const argType = (arg.raw as TreeSitterNode).type;
+            if (argType === '(' || argType === ')' || argType === ',') continue;
+            if (this.isDynamicStringConstruction(arg)) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    return false;
+  }
+
+  /**
+   * Extracts dynamic sub-parts from a string construction node.
+   * Returns template_substitution text for template literals,
+   * non-string-literal operands for binary expressions,
+   * and non-literal arguments for concat calls.
+   */
+  getDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
+    const type = (node.raw as TreeSitterNode).type;
+    const parts: DynamicPart[] = [];
+
+    // For call_expressions (other than .concat), walk into the first
+    // argument that is itself a dynamic string construction.
+    if (type === 'call_expression') {
+      const text = (node.raw as TreeSitterNode).text;
+      // .concat() handled below
+      if (!text.includes('.concat(') && !text.includes('?.concat(')) {
+        for (const child of node.children ?? []) {
+          if ((child.raw as TreeSitterNode).type === 'arguments') {
+            for (const arg of child.children ?? []) {
+              const argType = (arg.raw as TreeSitterNode).type;
+              if (argType === '(' || argType === ')' || argType === ',') continue;
+              if (this.isDynamicStringConstruction(arg)) {
+                return this.getDynamicParts(arg, sourceCode);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (type === 'template_string') {
+      for (const child of node.children ?? []) {
+        if ((child.raw as TreeSitterNode).type === 'template_substitution') {
+          const text = sourceCode.slice(child.range[0], child.range[1]);
+          // Strip the ${ } wrapper to get the inner identifier/expression
+          // tree-sitter: template_substitution text includes ${ and }
+          const inner = text.startsWith('${') ? text.slice(2, -1).trim() : text;
+          const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(inner);
+          // Extract the actual identifier node from inside the template_substitution
+          // (tree-sitter nests it as: ${ <identifier> }), so resolveLocalConstant
+          // can use its range to extract the raw name.
+          let idNode: ASTNode | undefined;
+          if (isId) {
+            for (const subChild of child.children ?? []) {
+              const subType = (subChild.raw as TreeSitterNode).type;
+              if (subType === 'identifier') {
+                idNode = subChild;
+                break;
+              }
+            }
+          }
+          parts.push({ text: inner, isIdentifier: isId, node: idNode ?? (isId ? child : undefined) });
+        }
+      }
+      return parts;
+    }
+
+    if (type === 'binary_expression') {
+      for (const child of node.children ?? []) {
+        const childType = (child.raw as TreeSitterNode).type;
+        if (childType !== 'string' && childType !== '+' && childType !== 'template_string') {
+          const text = sourceCode.slice(child.range[0], child.range[1]);
+          const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(text.trim());
+          parts.push({ text: text.trim(), isIdentifier: isId, node: isId ? child : undefined });
+        }
+      }
+      return parts;
+    }
+
+    if (type === 'call_expression') {
+      // .concat() — arguments after the first are dynamic
+      for (const child of node.children ?? []) {
+        if ((child.raw as TreeSitterNode).type === 'arguments') {
+          for (const arg of child.children ?? []) {
+            const argType = (arg.raw as TreeSitterNode).type;
+            if (argType !== '(' && argType !== ')' && argType !== ',') {
+              const text = (arg.raw as TreeSitterNode).text.trim();
+              const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(text);
+              parts.push({ text, isIdentifier: isId, node: isId ? arg : undefined });
+            }
+          }
+        }
+      }
+      return parts;
+    }
+
+    return parts;
+  }
+
+  /**
+   * Resolves a local const/let/var declaration for an identifier node.
+   * Searches within the enclosing function scope for the declaration site.
+   * Returns null when the identifier is a parameter, complex expression,
+   * or cannot be statically resolved.
+   */
+  resolveLocalConstant(identifierNode: ASTNode, ast: AST, sourceCode: string): ResolvedConstant | null {
+    const idName = sourceCode.slice(identifierNode.range[0], identifierNode.range[1]).trim();
+    if (!idName) return null;
+
+    // Find the enclosing function or file scope
+    const enclosing = this.findEnclosingScope(identifierNode, ast);
+    const scopeRoot = enclosing ?? ast.root;
+
+    // Search for declarations within this scope
+    const declNode = this.findDeclarationInScope(scopeRoot, idName);
+    if (!declNode) return null;
+
+    // Extract the declaration components
+    const declText = sourceCode.slice(declNode.range[0], declNode.range[1]);
+    const declMatch = declText.match(
+      /^(?:const|let|var)\s+(\w+)\s*=\s*(.+?);?\s*$|^(\w+)\s*=\s*(.+?);?\s*$/
+    );
+    if (!declMatch) return null;
+
+    const initText = (declMatch[2] ?? declMatch[4]).replace(/;\s*$/, '').trim();
+    const declLine = declNode.location.start.line;
+
+    // Check for reassignment after declaration
+    const reassigned = this.hasReassignment(scopeRoot, idName, declLine);
+
+    // Determine if static: contains only placeholder literals ("?", '?') — no
+    // variable references, function calls, or expressions.
+    // Recognized patterns: "?", '?' literals, .map/.join chains, arrow functions.
+    const isStatic = initText === '""' || initText === "''" ||
+      /^["'\s?,\[\]\(\)\.map\(\)\.join\(\)\w=>{};]+$/.test(initText) &&
+      (initText.includes('"?"') || initText.includes("'?'"));
+
+    return { initText, isStatic: isStatic && !reassigned, declLine };
+  }
+
+  /** Walk the parent chain to find the enclosing function scope node. */
+  private findEnclosingScope(node: ASTNode, ast: AST): ASTNode | null {
+    let current: ASTNode | null = node;
+    while (current) {
+      const type = (current.raw as TreeSitterNode).type;
+      if (
+        type === 'function_declaration' ||
+        type === 'arrow_function' ||
+        type === 'function_expression' ||
+        type === 'generator_function_declaration' ||
+        type === 'method_definition' ||
+        type === 'program'
+      ) {
+        return current;
+      }
+      current = current.parent ?? null;
+    }
+    return ast.root; // fallback to file-level
+  }
+
+  /** Find a variable_declarator node within scopeRoot whose name is targetName. */
+  private findDeclarationInScope(scopeRoot: ASTNode, targetName: string): ASTNode | null {
+    const results: ASTNode[] = [];
+    this.walk(scopeRoot, (astNode) => {
+      const t = (astNode.raw as TreeSitterNode).type;
+      if (t === 'variable_declarator') {
+        const raw = astNode.raw as TreeSitterNode;
+        // variable_declarator has name and (optional) value fields
+        const nameNode = (raw as any).childForFieldName?.('name') ?? null;
+        if (nameNode && nameNode.text === targetName) {
+          // Make sure it's a top-level declarator in this scope (not nested)
+          const parent = astNode.parent;
+          if (parent) {
+            const pType = (parent.raw as TreeSitterNode).type;
+            if (pType === 'lexical_declaration' || pType === 'variable_declaration') {
+              results.push(astNode);
+            }
+          }
+        }
+      }
+    });
+    return results.length > 0 ? results[0] : null;
+  }
+
+  /** Check if identifier targetName is reassigned in scope after declLine. */
+  private hasReassignment(scopeRoot: ASTNode, targetName: string, declLine: number): boolean {
+    let found = false;
+    this.walk(scopeRoot, (astNode) => {
+      if (found) return;
+      const t = (astNode.raw as TreeSitterNode).type;
+      if (t === 'assignment_expression') {
+        if (astNode.location.start.line < declLine) return;
+        const raw = astNode.raw as TreeSitterNode;
+        const left = (raw as any).childForFieldName?.('left') as TreeSitterNode | null;
+        if (left && left.type === 'identifier' && left.text === targetName) {
+          found = true;
+        }
+      }
+    });
+    return found;
+  }
+
+  /** Helper: extract text of arguments from a call_expression node. */
+  private getCallArguments(node: ASTNode): string[] {
+    const args: string[] = [];
+    for (const child of node.children ?? []) {
+      if ((child.raw as TreeSitterNode).type === 'arguments') {
+        for (const arg of child.children ?? []) {
+          const argType = (arg.raw as TreeSitterNode).type;
+          if (argType !== '(' && argType !== ')' && argType !== ',') {
+            args.push((arg.raw as TreeSitterNode).text);
+          }
+        }
+      }
+    }
+    return args;
   }
 }

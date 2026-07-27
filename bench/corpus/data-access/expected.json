@@ -10,6 +10,7 @@
     { "file": "src/clean-queries.ts", "rule": "unfiltered-query", "severity": "suggestion" },
     { "file": "src/clean-queries.ts", "rule": "missing-org-filter", "severity": "warning" },
     { "file": "src/clean-queries.ts", "rule": "unfiltered-query", "severity": "suggestion" },
+    { "file": "src/clean-queries.ts", "rule": "direct-sql", "severity": "suggestion" },
     { "file": "src/clean-queries.ts", "rule": "direct-sql", "severity": "suggestion" }
   ],
   "nearMissFiles": ["src/no-sql-signal.ts"],
