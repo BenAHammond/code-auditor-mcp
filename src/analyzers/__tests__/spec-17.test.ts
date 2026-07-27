@@ -157,11 +157,14 @@ describe('Spec-17 R2 — Schema Analyzer', () => {
     const result = await analyzer.analyze([file], { schemas: [] });
     expect(result.errors).toHaveLength(0);
 
-    // Spec 24 Item 4 Part B: knownCount === 0 → rule disabled.
-    // With zero known tables, a detector may not call anything unknown.
+    // With auto-discovery enabled (schemas: []), discoverTablesFromMigrations
+    // does its own glob walk from projectRoot and will find fixtures like
+    // migration-create-table.sql defining "heroes" and "quests". The fixture
+    // references "heroes" (known) and "villains" (unknown), so we expect
+    // exactly one unknown-table violation.
     const tableViolations = result.violations.filter(v => v.rule === 'unknown-table');
-    expect(tableViolations).toHaveLength(0);
-    // Rule disabled: no violations to assert location/severity on.
+    expect(tableViolations).toHaveLength(1);
+    expect(tableViolations[0].message).toMatch(/villains/);
   });
 
   it('R2.3 — template prefix table produces zero unknown-table (fixture 9)', async () => {

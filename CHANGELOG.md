@@ -2,6 +2,64 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.7] — 2026-07-27
+
+### Recall-Protocol Send-Back: Three Fixes + Adapter Architecture Refactor
+
+Post-v3.4.6 audit against recall-protocol revealed three classes of false positive in `sql-injection-risk` and `unknown-table`. This release eliminates the root causes, then refactors host-language syntax detection from a static regex list onto the `LanguageAdapter` interface — the single seam for language support.
+
+### Architecture Refactor: Delete `sqlInjectionPatterns`
+
+**Before**: A string array (`['${', 'concat', "'+", ...]`) in the universal analyzer hardcoded JavaScript-specific patterns for detecting dynamic SQL construction. This was the wrong seam — it couldn't distinguish SQL arithmetic `COALESCE(a + b)` from string concatenation, couldn't resolve local constants to determine if a `${placeholder}` was safe, and had no path to handle Go's `fmt.Sprintf` or other languages' string-building idioms.
+
+**After**: Three new `LanguageAdapter` methods, each implemented with tree-sitter node types per grammar:
+
+| Method | TypeScript | Go |
+|--------|-----------|-----|
+| `isDynamicStringConstruction(node)` | Template substitution or binary-`+` with string operands | `fmt.Sprintf` call expression |
+| `getDynamicParts(node)` | Extracts `${identifier}` from template literals, inner `identifier` node from tree-sitter `template_substitution` children | Extracts format arguments from `fmt.Sprintf` call |
+| `resolveLocalConstant(scope, name)` | Finds `const`/`let`/`var` declarations in function scope, extracts RHS text, checks for reassignment | Finds `:=` and `var` declarations, same resolution logic |
+
+The `sqlInjectionPatterns` list is deleted entirely. The universal analyzer now asks the adapter: "is this node dynamic?" → "what are its dynamic parts?" → "do those parts resolve to safe constants?" Each answer comes from tree-sitter node types, not regex.
+
+### Fix 1 — sql-injection-risk on Static SQL (Receipts 2 & 3)
+
+**Receipt 2** (pure static `prepare()` string with keyword `TRIM`): The old `checkQuerySecurity()` swept whole-function node text for injection patterns. The new `checkViolations()`, wired through `extractDatabaseCalls()`, inspects only the SQL string argument node — and `isDynamicStringConstruction()` returns `false` for a static `string` literal, so the categorical guard suppresses it immediately. Static literals structurally cannot be injection risks in any language.
+
+**Receipt 3** (`+`-bearing `COALESCE(a + b)` query): The SQL `+` arithmetic operator was indistinguishable from JS string concatenation under the old regex approach. Under the adapter approach, `isDynamicStringConstruction()` checks tree-sitter node types — a bare `+` inside a SQL string literal has no `binary_expression` node, so it never matches.
+
+**Fix**: Replaced `checkQuerySecurity()` regex-pattern matching with `adapter.isDynamicStringConstruction()` + `adapter.getDynamicParts()` flowing through `checkViolations()`. The categorical guard is structural, not pattern-based.
+
+### Fix 2 — Interpolated-Placeholder Suppression (Receipts 1, 4, 5)
+
+`${placeholders}` where `placeholders = ids.map(() => "?").join(",")` was flagged because `${` always matched the old injection pattern. The `?` in the map callback isn't in the same tree-sitter node as the template literal, so the parameterized check missed it.
+
+**Fix**: Two bugs fixed in tree-sitter node traversal:
+
+1. **`getDynamicParts()` inner identifier extraction**: Tree-sitter nests `template_substitution` as `${` → `identifier` → `}`. The old code sliced `${placeholders}` instead of `placeholders`, so `resolveLocalConstant` was searching for a declaration named `${placeholders}` and finding nothing. Fixed by walking into the `identifier` child node and using its range for name extraction.
+
+2. **`isStatic` regex arrow-function support**: The regex determining whether a resolved RHS is placeholder-only (`"?"` literals) couldn't match arrow function syntax — the character class was `[\w]` which excludes `=`, `>`, `{`, `}`, `;`. Fixed to `/^["'\s?,\[\]\(\)\.map\(\)\.join\(\)\w=>{};]+$/`.
+
+**Tiered outcome**: All interpolations resolve to placeholder-only and no reassignments → suppress. Any unresolved or reassigned → fire at suggestion severity with calibrated message naming the unresolved identifiers.
+
+### Fix 3 — unknown-table Dead Discovery (204 migration files → 0 known tables)
+
+Two layers: (1) `discoverTablesFromMigrations()` depended on `discoverFiles()` → `ALL_EXTENSIONS`, which excluded `.sql`, making the function dead; (2) for D1/wrangler projects, `wrangler.toml` declares where migrations live but was never parsed.
+
+**Fix**: Implemented `discoverTablesFromWrangler()` — parses `wrangler.toml` for `[[d1_databases]]` blocks, reads `migrations_dir`, walks `.sql` files in alphanumeric order (chronological), and processes the migration ledger statefully: `CREATE TABLE` adds, `DROP TABLE` removes, `ALTER TABLE RENAME TO` updates references. Added `schemaFiles` config option for explicit schema file paths. Wire both into the table discovery pipeline: wrangler.toml runs first (highest authority), then explicit `schemaFiles`, then migration glob walk, then ORM extraction.
+
+### direct-sql Fix
+
+The `directAccess: 'allow'` config (Cloudflare Workers/D1) was dead for the `direct-sql` rule because the guard lived only in `checkGeneralPatterns()` (a file-level regex path), but `direct-sql` detection was moved to `checkViolations()` (per-`DatabaseCall` provenance). Moved the guard to the emission point.
+
+### Verification
+
+- Recall-shaped fixture audit through installed tarball: `sql-injection-risk: 2` (only the real-danger and reassignment cases fire; static SQL, `+` arithmetic, and placeholder-list all suppressed), `unknown-table: 2` (only genuinely-unrecognized tables; `posts`/`accounts` recognized from wrangler.toml)
+- Go bench corpus: 14/14 passing (zero `sql-injection-risk` false positives on `fmt.Sprintf` and static SQL; `direct-sql` suggestion still fires on raw SQL — expected, the Go corpus config doesn't set `directAccess: 'allow'`)
+- TypeScript bench corpus: 65/65 baseline + 4 new `data-access` corpus passing
+- All 801 unit tests passing
+- Build: `npm run build` green
+
 ## [3.4.6] — 2026-07-26
 
 ### Recall-Protocol Send-Back: 4/5 Items Closed + Comment Contamination Fix

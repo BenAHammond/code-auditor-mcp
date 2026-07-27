@@ -64,6 +64,7 @@ export interface SchemaAnalyzerConfig {
   dbCallMethods?: string[];         // default ['exec', 'prepare', 'batch', 'run', 'all', 'first']
   dbBindingNames?: string[];        // default ['env.DB'] — R2.2 file gate
   fileGateGlobs?: string[];         // default ['**/*.sql', '**/migrations/**'] — R2.2
+  schemaFiles?: string[];           // explicit paths to SQL schema files (e.g., 'snapshots/schema.sql')
 }
 
 export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
@@ -88,6 +89,7 @@ export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   dbCallMethods: ['exec', 'prepare', 'batch', 'run', 'all', 'first', 'query', 'get', 'each'],
   dbBindingNames: ['env.DB'],
   fileGateGlobs: ['**/*.sql', '**/migrations/**'],
+  schemaFiles: [],
 };
 
 interface TableReference {
@@ -104,6 +106,7 @@ interface ColumnReference {
 }
 
 import { promises as fs } from 'fs';
+import * as path from 'path';
 import { CodeIndexDB } from '../../codeIndexDB.js';
 import type { Violation as BaseViolation, AnalyzerResult, SchemaUsage } from '../../types.js';
 
@@ -123,16 +126,34 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Spec 22 Item 2 — Auto-discover known tables from migration/SQL files
     // when no schemas are configured.
     //
-    // Spec 24 Item 4 — Also auto-discover from ORM schema definitions (Drizzle
+    // Spec 24 Item 2 — wrangler.toml is the external authority for D1 projects:
+    // parse [[d1_databases]] migration_dir, walk .sql files statefully with
+    // CREATE/DROP/RENAME to derive the current table catalog.
+    //
+    // Spec 24 Item 3 — schemaFiles config lets users point at a full snapshot
+    // (e.g., snapshots/schema.sql) for easy mode.
+    //
+    // Spec 24 Item 4 — Auto-discover from ORM schema definitions (Drizzle
     // pgTable/mysqlTable/sqliteTable calls and Prisma schema.prisma model blocks)
-    // via import provenance: files importing Drizzle table constructors from
-    // drizzle-orm are schema files. Prisma's schema.prisma filename is Prisma's
-    // own convention — an external authority.
+    // via import provenance.
+    //
+    // Discovery priority: wrangler.toml > schemaFiles > migration glob walk > ORM.
     const schemas = config.schemas;
+    const projectRoot = (config as any).projectRoot || process.cwd();
     if (!schemas || schemas.length === 0) {
-      const fromMigrations = await this.discoverTablesFromMigrations(codeFiles, config);
+      const fromWrangler = await this.discoverTablesFromWrangler(projectRoot);
+      const schemaFiles = (config as SchemaAnalyzerConfig).schemaFiles;
+      const fromSchemaFiles = schemaFiles && schemaFiles.length > 0
+        ? await this.discoverTablesFromSchemaFiles(schemaFiles, projectRoot)
+        : new Set<string>();
+      const fromMigrations = await this.discoverTablesFromMigrations(projectRoot, config);
       const fromOrm = await this.discoverTablesFromOrmSchemas(codeFiles);
-      const discovered = new Set([...fromMigrations, ...fromOrm]);
+      const discovered = new Set([
+        ...fromWrangler,
+        ...fromSchemaFiles,
+        ...fromMigrations,
+        ...fromOrm,
+      ]);
       if (discovered.size > 0) {
         config = {
           ...config,
@@ -174,37 +195,113 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * the violations we're trying to avoid flagging.
    */
   private async discoverTablesFromMigrations(
-    files: string[],
+    projectRoot: string,
     config: SchemaAnalyzerConfig,
   ): Promise<Set<string>> {
     const tables = new Set<string>();
     const gateGlobs = config.fileGateGlobs ?? ['**/*.sql', '**/migrations/**'];
 
-    for (const file of files) {
-      // Only scan files matching the file gate — same glob that passesFileGate uses
-      let matches = false;
-      for (const glob of gateGlobs) {
-        if (picomatch.isMatch(file, glob)) {
-          matches = true;
-          break;
-        }
-      }
-      if (!matches) continue;
+    // Own glob walk — does NOT depend on codeFiles from the caller pipeline.
+    // Walks projectRoot recursively, matching files against fileGateGlobs via picomatch.
+    const walkedFiles = await this.walkFiles(projectRoot, gateGlobs);
 
+    // Sort for deterministic processing (migrations are often ordered by filename)
+    walkedFiles.sort();
+
+    // Stateful ledger processing: CREATE TABLE adds, DROP TABLE removes,
+    // ALTER TABLE RENAME TO updates references.
+    const renames = new Map<string, string>(); // oldName → newName
+
+    for (const file of walkedFiles) {
       try {
         const source = await fs.readFile(file, 'utf8');
-        const refs = this.parseSqlTables(source, { line: 1, column: 1 }, source);
-        for (const ref of refs) {
-          if (ref.type === 'create') {
-            tables.add(ref.table);
-          }
-        }
+        this.processMigrationSource(source, tables, renames);
       } catch {
         // Skip unreadable files — discovery is best-effort
       }
     }
 
+    // Apply accumulated renames: add new name, remove old name.
+    // Always adds newName since RENAME TO creates a table by that name
+    // (it might not appear in any CREATE TABLE statement).
+    for (const [oldName, newName] of renames) {
+      tables.add(newName);      // Always add the new name
+      tables.delete(oldName);   // Remove the old name
+    }
+
     return tables;
+  }
+
+  /**
+   * Walk project root recursively, returning files matching any of the given
+   * picomatch globs. Skips node_modules and dot-directories.
+   */
+  private async walkFiles(root: string, globs: string[]): Promise<string[]> {
+    const results: string[] = [];
+
+    async function walk(dir: string) {
+      let names: string[];
+      try {
+        names = await fs.readdir(dir);
+      } catch {
+        return; // Skip unreadable directories
+      }
+
+      for (const name of names) {
+        const fullPath = path.join(dir, name);
+        // Skip node_modules and dot-directories
+        if (name === 'node_modules' || name.startsWith('.')) continue;
+
+        let stat;
+        try {
+          stat = await fs.stat(fullPath);
+        } catch {
+          continue; // Skip unstatable
+        }
+        if (stat.isDirectory()) {
+          await walk(fullPath);
+        } else if (stat.isFile()) {
+          // Check picomatch against the path relative to root
+          const relative = path.relative(root, fullPath);
+          const matched = globs.some(g => picomatch.isMatch(relative, g));
+          if (matched) {
+            results.push(fullPath);
+          }
+        }
+      }
+    }
+
+    await walk(root);
+    return results;
+  }
+
+  /**
+   * Parse a migration SQL source and apply stateful CREATE/DROP/RENAME
+   * operations to the given table set and rename ledger.
+   */
+  private processMigrationSource(
+    source: string,
+    tables: Set<string>,
+    renames: Map<string, string>,
+  ): void {
+    // CREATE TABLE [IF NOT EXISTS] name
+    const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi;
+    let match: RegExpExecArray | null;
+    while ((match = createRe.exec(source)) !== null) {
+      tables.add(match[1]);
+    }
+
+    // DROP TABLE [IF EXISTS] name
+    const dropRe = /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(\w+)/gi;
+    while ((match = dropRe.exec(source)) !== null) {
+      tables.delete(match[1]);
+    }
+
+    // ALTER TABLE old RENAME TO new
+    const renameRe = /ALTER\s+TABLE\s+(\w+)\s+RENAME\s+TO\s+(\w+)/gi;
+    while ((match = renameRe.exec(source)) !== null) {
+      renames.set(match[1], match[2]);
+    }
   }
 
   /**
@@ -256,6 +353,122 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
         } catch {
           // Skip unreadable files — discovery is best-effort
         }
+      }
+    }
+
+    return tables;
+  }
+
+  /**
+   * Spec 24 Item 2 — Discover tables from wrangler.toml for D1/Cloudflare Workers projects.
+   *
+   * wrangler.toml is the external authority declaring where D1 migrations live.
+   * Parses it for [[d1_databases]] blocks with migrations_dir, then walks the
+   * migration directory reading .sql files in alphanumeric order (migration
+   * order). Processes statefully: CREATE TABLE adds, DROP TABLE removes,
+   * ALTER TABLE RENAME TO updates the rename ledger.
+   *
+   * Returns only the current table set — not historical/transient names.
+   */
+  private async discoverTablesFromWrangler(
+    projectRoot: string,
+  ): Promise<Set<string>> {
+    const tables = new Set<string>();
+    const renames = new Map<string, string>();
+
+    // 1. Look for wrangler.toml in project root
+    const wranglerPath = path.join(projectRoot, 'wrangler.toml');
+    let wranglerContent: string;
+    try {
+      wranglerContent = await fs.readFile(wranglerPath, 'utf8');
+    } catch {
+      return tables; // No wrangler.toml — nothing to discover
+    }
+
+    // 2. Parse [[d1_databases]] blocks for migrations_dir
+    // Simple TOML section parser — no dependency needed for this narrow use case
+    const migrationDirs: string[] = [];
+    let inD1Block = false;
+    for (const line of wranglerContent.split('\n')) {
+      const trimmed = line.trim();
+      if (/^\[\[d1_databases\]\]/i.test(trimmed)) {
+        inD1Block = true;
+        continue;
+      }
+      if (inD1Block && trimmed.startsWith('[')) {
+        // Next TOML section — exit d1_databases block
+        inD1Block = false;
+        continue;
+      }
+      if (inD1Block) {
+        const m = trimmed.match(/^migrations_dir\s*=\s*['"](.+?)['"]/);
+        if (m) {
+          migrationDirs.push(m[1]);
+        }
+      }
+    }
+
+    // 3. Walk each migration directory, read .sql files in alphanumeric order
+    for (const migDir of migrationDirs) {
+      const absDir = path.resolve(projectRoot, migDir);
+      let entries: string[];
+      try {
+        const dirents = await fs.readdir(absDir, { withFileTypes: true });
+        entries = dirents
+          .filter(e => e.isFile() && e.name.endsWith('.sql'))
+          .map(e => e.name)
+          .sort(); // Alphanumeric = chronological migration order
+      } catch {
+        continue; // Non-existent directory — skip
+      }
+
+      for (const entry of entries) {
+        const filePath = path.join(absDir, entry);
+        try {
+          const source = await fs.readFile(filePath, 'utf8');
+          this.processMigrationSource(source, tables, renames);
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    }
+
+    // 4. Apply accumulated renames
+    for (const [oldName, newName] of renames) {
+      tables.add(newName);      // Always add the new name
+      tables.delete(oldName);   // Remove the old name
+    }
+
+    return tables;
+  }
+
+  /**
+   * Spec 24 Item 3 — Discover tables from explicit schema file paths.
+   *
+   * Reads each file path (resolved against projectRoot) and extracts
+   * CREATE TABLE [IF NOT EXISTS] name statements. Supports the common
+   * D1 pattern where users snapshot their full schema to a single .sql file
+   * (e.g., snapshots/schema.sql).
+   */
+  private async discoverTablesFromSchemaFiles(
+    schemaFiles: string[],
+    projectRoot: string,
+  ): Promise<Set<string>> {
+    const tables = new Set<string>();
+
+    for (const file of schemaFiles) {
+      const absPath = path.resolve(projectRoot, file);
+      try {
+        const source = await fs.readFile(absPath, 'utf8');
+        // Only extract CREATE TABLE — these are snapshots, not migration streams,
+        // so no stateful DROP/RENAME processing needed.
+        const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi;
+        let match: RegExpExecArray | null;
+        while ((match = createRe.exec(source)) !== null) {
+          tables.add(match[1]);
+        }
+      } catch {
+        // Skip unreadable/missing files — best-effort
       }
     }
 

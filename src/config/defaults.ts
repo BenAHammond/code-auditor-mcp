@@ -221,6 +221,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     dbCallMethods: ['exec', 'prepare', 'batch', 'run', 'all', 'first', 'query', 'get', 'each'],
     dbBindingNames: ['env.DB'],
     fileGateGlobs: ['**/*.sql', '**/migrations/**'],
+    schemaFiles: [],
     // Spec 21 R3: shared detection mode — provenance-primary with name-fallback
     detection: {
       mode: 'hybrid' as const,
