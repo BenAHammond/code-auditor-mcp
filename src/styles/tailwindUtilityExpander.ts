@@ -16,6 +16,8 @@
  *   warning and disable the undefined-class detector.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { TailwindProbe, type ProbeInitResult } from './tailwindProbe.js';
 import type { TailwindConfigResult } from './tailwindConfigLoader.js';
 
@@ -85,6 +87,11 @@ export interface TailwindExpanderConfig {
   /** User-supplied class names (use when useProjectConfig would fail —
    *  the caller pre-resolves and passes them in). */
   customClasses?: Set<string>;
+  /** Explicit project CSS containing @theme blocks (Shadcn, custom themes).
+   *  When omitted, the expander auto-discovers CSS files with @theme in
+   *  the project root. Pass this when the caller already has the CSS
+   *  content available (e.g., from indexed style declarations). */
+  projectCss?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +128,17 @@ export class TailwindUtilityExpander {
 
     if (config.useProjectConfig && config.projectRoot) {
       this.probe = new TailwindProbe();
+
+      // Load project CSS with @theme blocks so Shadcn semantic theme
+      // classes (bg-primary, text-foreground, etc.) validate correctly.
+      // Must happen BEFORE probe.init() because the init self-test
+      // doesn't use project CSS — but validateBatch() does via
+      // _projectCss injection into the probe stylesheet.
+      const projectCss = config.projectCss ?? this.discoverProjectCss(config.projectRoot);
+      if (projectCss) {
+        this.probe.setProjectCss(projectCss);
+      }
+
       const result = await this.probe.init(config.projectRoot);
 
       if (!result.ok) {
@@ -129,6 +147,40 @@ export class TailwindUtilityExpander {
         this.probe = null;
       }
     }
+  }
+
+  /**
+   * Auto-discover project CSS files containing @theme blocks.
+   * Follows the same candidate-path pattern as tryLoadV4Config in
+   * tailwindConfigLoader.ts. Reads and concatenates all matching files
+   * so that Shadcn custom theme properties are available for validation.
+   */
+  private discoverProjectCss(projectRoot: string): string | null {
+    const candidates = [
+      'app/globals.css',
+      'src/app/globals.css',
+      'app.css',
+      'src/styles/globals.css',
+      'styles/globals.css',
+      'globals.css',
+    ];
+
+    const parts: string[] = [];
+    for (const candidate of candidates) {
+      const cssPath = join(projectRoot, candidate);
+      if (!existsSync(cssPath)) continue;
+      try {
+        const content = readFileSync(cssPath, 'utf-8');
+        // Only include files that actually contain @theme blocks
+        if (content.includes('@theme')) {
+          parts.push(content);
+        }
+      } catch {
+        // Silently skip unreadable files
+      }
+    }
+
+    return parts.length > 0 ? parts.join('\n') : null;
   }
 
   /** Did the probe initialization fail? */

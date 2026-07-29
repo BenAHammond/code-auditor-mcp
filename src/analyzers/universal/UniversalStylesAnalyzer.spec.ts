@@ -982,10 +982,11 @@ describe('Edge cases', () => {
     const analyzer = new UniversalStylesAnalyzer();
     const result = await analyzer.analyze(['src/fake.ts'], {});
 
-    expect(result.filesProcessed).toBe(1);
+    // No declarations in the DB → filesProcessed is 0 (style_declarations table is empty)
+    expect(result.filesProcessed).toBe(0);
     expect(typeof result.executionTime).toBe('number');
     expect(result.executionTime).toBeGreaterThanOrEqual(0);
     expect(result.metrics).toBeDefined();
-    expect(result.metrics.filesAnalyzed).toBe(1);
+    expect(result.metrics.filesAnalyzed).toBe(0);
   });
 });

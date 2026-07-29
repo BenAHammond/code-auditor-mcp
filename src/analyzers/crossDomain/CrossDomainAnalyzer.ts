@@ -127,13 +127,23 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       violations.push(...this.detectUncoveredRisk(rawDb, coverage, filePathClause));
     }
 
+    // Count distinct files with schema_usage entries
+    const fileRows = rawDb
+      .prepare(
+        filePathClause
+          ? `SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage WHERE 1=1 ${filePathClause.clause}`
+          : 'SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage',
+      )
+      .all(...(filePathClause ? [filePathClause.param] : [])) as Array<{ cnt: number }>;
+    const uniqueFiles = fileRows[0]?.cnt ?? 0;
+
     return {
       violations,
       errors: [],
-      filesProcessed: files.length,
+      filesProcessed: uniqueFiles,
       executionTime: Date.now() - startTime,
       metrics: {
-        filesAnalyzed: files.length,
+        filesAnalyzed: uniqueFiles,
         totalViolations: violations.length,
         executionTime: Date.now() - startTime,
       },

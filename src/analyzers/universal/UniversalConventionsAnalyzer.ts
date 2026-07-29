@@ -128,9 +128,9 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       return {
         violations: [],
         errors: [],
-        filesProcessed: files.length,
+        filesProcessed: 0,
         executionTime: Date.now() - startTime,
-        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
+        metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
@@ -174,13 +174,24 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       }
     }
 
+    // Count unique files that conventions apply to (from the function index)
+    const resolvedProjectRoot = projectRoot ? path.resolve(projectRoot) : undefined;
+    const fileRows = rawDb
+      .prepare(
+        resolvedProjectRoot
+          ? 'SELECT COUNT(DISTINCT file_path) as cnt FROM functions WHERE file_path LIKE ?'
+          : 'SELECT COUNT(DISTINCT file_path) as cnt FROM functions',
+      )
+      .all(...(resolvedProjectRoot ? [resolvedProjectRoot + '%'] : [])) as Array<{ cnt: number }>;
+    const uniqueFiles = fileRows[0]?.cnt ?? 0;
+
     return {
       violations,
       errors: [],
-      filesProcessed: files.length,
+      filesProcessed: uniqueFiles,
       executionTime: Date.now() - startTime,
       metrics: {
-        filesAnalyzed: files.length,
+        filesAnalyzed: uniqueFiles,
         totalViolations: violations.length,
         executionTime: Date.now() - startTime,
       },

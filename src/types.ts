@@ -708,7 +708,7 @@ export interface ComponentRelationship {
 
 export interface ReactViolation extends Violation {
   componentName?: string;
-  violationType: 'missing-props' | 'hooks-violation' | 'no-error-boundary' |
+  violationType: 'missing-props' | 'hooks-naming' | 'no-error-boundary' |
                  'complexity' | 'performance' | 'accessibility' | 'raw-element';
 }
 

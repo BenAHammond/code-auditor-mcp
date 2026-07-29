@@ -58,7 +58,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'complex-query':             { analyzer: 'data-access',       field: 'rule' },
   'unfiltered-query':          { analyzer: 'data-access',       field: 'rule' },
   'hardcoded-connection':      { analyzer: 'data-access',       field: 'rule' },
-  'direct-sql':                { analyzer: 'data-access',       field: 'rule' },
+
   'loop-query':                { analyzer: 'data-access',       field: 'rule' },
 
   // ── documentation (UniversalDocumentationAnalyzer) ─────────────────────
@@ -91,11 +91,10 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'sql-injection':             { analyzer: 'schema',            field: 'rule' },
 
   // ── react (reactAnalyzer) ───────────────────────────────────────────────
-  'hooks-naming':              { analyzer: 'react',             field: 'rule' },
+  'hooks-naming':              { analyzer: 'react',             field: 'violationType' },
   'complexity':                { analyzer: 'react',             field: 'violationType' },
   'missing-props':             { analyzer: 'react',             field: 'violationType' },
   'no-error-boundary':         { analyzer: 'react',             field: 'violationType' },
-  'hooks-violation':           { analyzer: 'react',             field: 'violationType' },
   'performance':               { analyzer: 'react',             field: 'violationType' },
   'accessibility':             { analyzer: 'react',             field: 'violationType' },
 

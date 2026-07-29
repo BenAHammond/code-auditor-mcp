@@ -1,0 +1,7 @@
+{
+  "name": "shadcn-jit-fixture",
+  "private": true,
+  "dependencies": {
+    "tailwindcss": "^4.0.0"
+  }
+}

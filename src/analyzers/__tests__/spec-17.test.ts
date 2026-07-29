@@ -12,7 +12,6 @@
  *   dry/duplicate       → warning
  *   dry/structural-similarity → suggestion
  *   data-access/loop-query → warning
- *   data-access/direct-access → suggestion
  *   solid/method-complexity → warning
  *   solid/class-size    → suggestion
  */
@@ -336,17 +335,8 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
     expect(messages).toMatch(/nest|depth|2|inner/i);
   });
 
-  it('R4.3 — directAccess: "allow" skips direct-access findings (fixture 18)', async () => {
-    const file = join(FIXTURES, 'direct-access-allow-config.ts');
-    const result = await analyzer.analyze([file], { directAccess: 'allow' });
-    expect(result.errors).toHaveLength(0);
 
-    // No direct-access violations when directAccess is "allow"
-    const directViolations = result.violations.filter(
-      v => v.rule === 'hardcoded-connection' || v.rule === 'direct-sql'
-    );
-    expect(directViolations).toHaveLength(0);
-  });
+
 });
 
 // ── R5: SOLID Analyzer ──────────────────────────────────────────────────────

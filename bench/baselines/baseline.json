@@ -7,7 +7,6 @@
       "precision": 1.0,
       "recall": 1.0,
       "rules": {
-        "direct-sql": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
         "loop-query": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
         "missing-org-filter": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
         "unfiltered-query": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
@@ -50,7 +49,6 @@
       "precision": 1.0,
       "recall": 1.0,
       "rules": {
-        "direct-sql": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
         "loop-query": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
         "missing-auth": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
         "missing-org-filter": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
@@ -64,7 +62,13 @@
       "precision": 1.0,
       "recall": 1.0,
       "rules": {
-        "complexity": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
+        "complexity": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "no-error-boundary": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "performance": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "hooks-naming": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "missing-props": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "accessibility": { "f1": 1.0, "precision": 1.0, "recall": 1.0 },
+        "raw-element": { "f1": 1.0, "precision": 1.0, "recall": 1.0 }
       }
     },
     "schema": {

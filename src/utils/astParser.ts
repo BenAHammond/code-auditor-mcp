@@ -81,7 +81,7 @@ export async function parseTypeScriptFile(filePath: string): Promise<ParseResult
       ast,
       errors: ast.errors.map(e => ({
         message: e.message,
-        // toSourceLocation() now returns 1-based positions — no compensation needed.
+        // collectErrors applies +1 for 0→1-based conversion; positions are 1-based here.
         line: e.location.start.line,
         column: e.location.start.column,
       })),

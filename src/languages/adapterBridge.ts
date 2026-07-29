@@ -74,8 +74,9 @@ function collectErrors(node: TreeSitterNode, errors: AST['errors']): void {
     errors.push({
       message: `Parse error near "${node.text.slice(0, 40)}"`,
       location: {
-        start: { line: node.startPosition.row, column: node.startPosition.column },
-        end: { line: node.endPosition.row, column: node.endPosition.column },
+        // +1: tree-sitter positions are 0-based; toSourceLocation invariant requires 1-based
+        start: { line: node.startPosition.row + 1, column: node.startPosition.column + 1 },
+        end: { line: node.endPosition.row + 1, column: node.endPosition.column + 1 },
       },
       severity: 'error',
     });

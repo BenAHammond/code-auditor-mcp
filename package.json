@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "3.4.7",
+  "version": "3.4.8",
   "description": "Architectural invariants and code quality analysis, enforced inside your AI agent's edit loop. MCP server + CLI + Claude Code plugin. TypeScript, JavaScript, Go.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,9 +28,10 @@
     "generate": "node dist/cli.js generate-config",
     "prepublishOnly": "pnpm run build",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest watch",
     "verify:dist": "bash scripts/verify-dist.sh",
-    "verify:close": "npm run test && npm run verify:dist",
+    "verify:close": "npm run test && npm run test:integration && npm run verify:dist",
     "bench:workers": "tsx src/scripts/benchmarkWorkers.ts",
     "bench": "node dist/scripts/runBench.js"
   },

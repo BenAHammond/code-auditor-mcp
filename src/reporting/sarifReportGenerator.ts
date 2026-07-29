@@ -207,6 +207,12 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
     }
   }
 
+  // Build per-analyzer filesProcessed summary for run properties
+  const analyzerFileCounts: Record<string, number> = {};
+  for (const [analyzerName, analyzerResult] of Object.entries(result.analyzerResults)) {
+    analyzerFileCounts[analyzerName] = analyzerResult.filesProcessed;
+  }
+
   // Build the SARIF log
   const sarifLog = {
     $schema: SARIF_SCHEMA,
@@ -222,6 +228,9 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
           },
         },
         results,
+        properties: {
+          analyzerFilesProcessed: analyzerFileCounts,
+        },
       },
     ],
   };

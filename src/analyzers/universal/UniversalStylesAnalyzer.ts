@@ -156,9 +156,9 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       return {
         violations: [],
         errors: [],
-        filesProcessed: files.length,
+        filesProcessed: 0,
         executionTime: Date.now() - startTime,
-        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
+        metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
@@ -199,13 +199,14 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
 
     const filtered = violations.filter(v => v.severity !== 'off');
 
+    const uniqueFiles = new Set(declarations.map(d => d.file_path));
     return {
       violations: filtered,
       errors: [],
-      filesProcessed: files.length,
+      filesProcessed: uniqueFiles.size,
       executionTime: Date.now() - startTime,
       metrics: {
-        filesAnalyzed: files.length,
+        filesAnalyzed: uniqueFiles.size,
         totalViolations: filtered.length,
         executionTime: Date.now() - startTime,
       },

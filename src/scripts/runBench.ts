@@ -827,8 +827,10 @@ function buildAnalyzers(): Record<string, AnalyzerRunner> {
         await db.initialize();
         const rawDb = (db as any).rawDb;
         seedStylesData(rawDb, files);
+        const corpusDir = dirname(files[0] || '.');
+        const projectRoot = resolve(corpusDir, '..');
         const analyzer = new UniversalStylesAnalyzer();
-        return analyzer.analyze(files, config);
+        return analyzer.analyze(files, { ...config, projectRoot });
       },
     },
     react: {
@@ -1324,7 +1326,9 @@ async function main(): Promise<void> {
     const corpusDirs: string[] = [];
     const entries = await readdir(CORPUS_ROOT, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.isDirectory()) corpusDirs.push(join(CORPUS_ROOT, entry.name));
+      if (entry.isDirectory() && existsSync(join(CORPUS_ROOT, entry.name, 'expected.json'))) {
+        corpusDirs.push(join(CORPUS_ROOT, entry.name));
+      }
     }
     const analyzersForSweep = buildAnalyzers();
     const { curves } = await runSweep(corpusDirs, analyzersForSweep, jsonOnly, sweepParam);
@@ -1911,7 +1915,7 @@ export async function runBench(): Promise<BenchReport> {
   const corpusDirs: string[] = [];
   const entries = await readdir(CORPUS_ROOT, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.isDirectory()) {
+    if (entry.isDirectory() && existsSync(join(CORPUS_ROOT, entry.name, 'expected.json'))) {
       corpusDirs.push(join(CORPUS_ROOT, entry.name));
     }
   }

@@ -147,8 +147,6 @@ export const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       if (config.checkOrgFilters !== undefined) universalConfig.checkOrgFilters = config.checkOrgFilters;
       if (config.checkSQLInjection !== undefined) universalConfig.checkSQLInjection = config.checkSQLInjection;
       if (config.checkPerformance !== undefined) universalConfig.checkPerformance = config.checkPerformance;
-      // R4.3: directAccess — "flag" (default) or "allow"
-      if (config.directAccess !== undefined) universalConfig.directAccess = config.directAccess;
       // Forward base-class properties (Spec-20 path profiles + severity overrides)
       if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
       if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
@@ -718,6 +716,15 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
     await Promise.all(Array.from({ length: analyzerConcurrency }, () => runAnalyzer()));
 
+    // ── Zero-files diagnostic ─────────────────────────────────────────────
+    // Extracted to runZeroFilesDiagnostics() for testability. Runs against the
+    // raw analyzerResults before truthiness filtering so the "no result" pass
+    // catches analyzers skipped by the registry, abort, or handoff exceptions.
+    for (const w of runZeroFilesDiagnostics(enabledAnalyzers, analyzerResults)) {
+      console.warn(w.message);
+    }
+    // Build ordered results — filter to truthy entries so downstream consumers
+    // (DRY pair persistence, baseline, report generation) don't see undefineds.
     const orderedAnalyzerResults: Record<string, AnalyzerResult> = {};
     for (const analyzerName of enabledAnalyzers) {
       if (analyzerResults[analyzerName]) {
@@ -1224,10 +1231,13 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
   let warnings = 0;
   let suggestions = 0;
   const violationsByCategory: Record<string, number> = {};
+  const byAnalyzer: Record<string, { violations: number; filesProcessed: number; fatalErrors: number }> = {};
 
   for (const [analyzer, result] of Object.entries(analyzerResults)) {
+    let analyzerViolations = 0;
     for (const violation of result.violations) {
       totalViolations++;
+      analyzerViolations++;
 
       switch (violation.severity) {
         case 'critical':
@@ -1244,6 +1254,12 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
       const category = violation.type || analyzer;
       violationsByCategory[category] = (violationsByCategory[category] || 0) + 1;
     }
+
+    byAnalyzer[analyzer] = {
+      violations: analyzerViolations,
+      filesProcessed: result.filesProcessed,
+      fatalErrors: result.errors ? result.errors.length : 0,
+    };
   }
 
   // Compute top issues from violationsByCategory
@@ -1259,6 +1275,7 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
     warnings,
     suggestions,
     violationsByCategory,
+    byAnalyzer,
     topIssues
   };
 }
@@ -1325,6 +1342,62 @@ function reportError(options: AuditRunnerOptions, error: Error, context: string)
   } else {
     console.error(`Error in ${context}:`, error);
   }
+}
+
+// ── Zero-files diagnostic (extracted for testability) ───────────────────────
+
+export interface DiagnosticWarning {
+  analyzerName: string;
+  kind: 'no-result' | 'zero-files';
+  message: string;
+}
+
+/**
+ * Runs post-audit diagnostics on enabled analyzers vs. results.
+ *
+ * Pass 1: Every enabled analyzer must appear in the results map. An absent entry
+ * means the analyzer was skipped (unregistered, aborted, handoff-exception).
+ *
+ * Pass 2: Every analyzer with a result entry but filesProcessed === 0 and no
+ * errors fires a warning — the analyzer ran but matched zero source files.
+ */
+export function runZeroFilesDiagnostics(
+  enabledAnalyzers: string[],
+  analyzerResults: Record<string, AnalyzerResult>
+): DiagnosticWarning[] {
+  const warnings: DiagnosticWarning[] = [];
+
+  // Pass 1: enabled but absent from results
+  for (const analyzerName of enabledAnalyzers) {
+    if (!analyzerResults[analyzerName]) {
+      warnings.push({
+        analyzerName,
+        kind: 'no-result',
+        message:
+          `⚠️  ${analyzerName} analyzer: enabled but produced no result. ` +
+          `The analyzer may not be registered or may have been silently dropped.`,
+      });
+    }
+  }
+
+  // Pass 2: filesProcessed = 0 with no errors
+  for (const [analyzerName, result] of Object.entries(analyzerResults)) {
+    if (
+      result.filesProcessed === 0 &&
+      (!(result as any).errors || (result as any).errors.length === 0)
+    ) {
+      warnings.push({
+        analyzerName,
+        kind: 'zero-files',
+        message:
+          `⚠️  ${analyzerName} analyzer: filesProcessed = 0. ` +
+          `The analyzer ran but matched zero source files. Check file extensions, ` +
+          `scanner configuration, and project structure.`,
+      });
+    }
+  }
+
+  return warnings;
 }
 
 /**

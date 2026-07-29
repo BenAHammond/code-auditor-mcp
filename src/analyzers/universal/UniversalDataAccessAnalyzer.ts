@@ -23,8 +23,6 @@ export interface DataAccessAnalyzerConfig {
   checkOrgFilters?: boolean;
   checkSQLInjection?: boolean;
 
-  // R4.3: direct access detection mode — "flag" (default) or "allow"
-  directAccess?: 'flag' | 'allow';
 
   // Database configurations
   databases?: {
@@ -77,8 +75,7 @@ export interface DataAccessAnalyzerConfig {
 export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   checkOrgFilters: true,
   checkSQLInjection: true,
-  // R4.3: default "flag" — report direct-access violations
-  directAccess: 'flag',
+
   databases: {
     'primary': {
       name: 'Primary Database',
@@ -434,22 +431,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       ));
     }
     
-    // Architecture: Direct SQL Execution (no ORM)
-    // Detected through the provenance path — replaces file-level regex that
-    // couldn't match function-call-wrapped queries (e.g. db.Query(fmt.Sprintf(...))).
-    // v3.4.7: Deleted sqlPatterns file-level regex; routing through adapter capabilities.
-    // R4.3: Skip when directAccess is "allow" (e.g. Cloudflare Workers/D1).
-    if (call.type === 'sql' && config.directAccess !== 'allow') {
-      violations.push(this.createViolation(
-        filePath,
-        { line: call.line, column: call.column },
-        'Direct SQL execution detected. Consider using an ORM or query builder.',
-        'suggestion',
-        'direct-sql',
-        undefined,
-        symbol
-      ));
-    }
 
     // Performance: Complex Query
     if (analysis.performanceRisk === 'high') {
@@ -491,10 +472,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   ): Violation[] {
     const violations: Violation[] = [];
 
-    // R4.3: Skip direct-access violations when directAccess is "allow"
-    if (config.directAccess === 'allow') {
-      return violations;
-    }
 
     // Check for hardcoded connection strings
     const stringNodes = adapter.findNodes(ast, {

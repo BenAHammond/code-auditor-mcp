@@ -50,16 +50,6 @@
   "expectedViolations": [
     {
       "file": "src/abfragen.ts",
-      "rule": "direct-sql",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/abfragen.ts",
-      "rule": "direct-sql",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/abfragen.ts",
       "rule": "loop-query",
       "severity": "warning"
     },
@@ -85,16 +75,6 @@
     },
     {
       "file": "src/consultas.ts",
-      "rule": "direct-sql",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/consultas.ts",
-      "rule": "direct-sql",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/consultas.ts",
       "rule": "missing-org-filter",
       "severity": "warning"
     },
@@ -115,16 +95,6 @@
     },
     {
       "file": "src/kuesutori.ts",
-      "rule": "direct-sql",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/kuesutori.ts",
-      "rule": "direct-sql",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/kuesutori.ts",
       "rule": "missing-org-filter",
       "severity": "warning"
     },
@@ -141,21 +111,6 @@
     {
       "file": "src/kuesutori.ts",
       "rule": "unfiltered-query",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/verarbeiten.ts",
-      "rule": "direct-sql",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/verarbeiten.ts",
-      "rule": "direct-sql",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/verarbeiten.ts",
-      "rule": "direct-sql",
       "severity": "suggestion"
     },
     {
@@ -202,5 +157,5 @@
     }
   ],
   "nearMissFiles": [],
-  "description": "Non-English identifiers \u2014 mixed Portuguese, German, Japanese, French. DB access via provenance only. 22 ground-truth violations (16 original + 6 from verarbeiten.ts). 3 known-misses: missing-auth (French autoriser), missing-sanitization (French nettoyer), open-closed (German verarbeiten). Gaps seeded per Spec 21 send-back; fixes deferred to Spec 15 neighborhood. R5 Unicode regex fix recovered 2 unfiltered-query detections. Spec 21 R6.2 three-tier requiresOrgFilter() fix recovered 2 missing-org-filter detections. True recall without known-miss debt: 22/22 = 1.0. Updated direct-sql to per-call (not per-file) after v3.4.7 provenance routing."
+  "description": "Non-English identifiers \u2014 mixed Portuguese, German, Japanese, French. DB access via provenance only. 22 ground-truth violations (16 original + 6 from verarbeiten.ts). 3 known-misses: missing-auth (French autoriser), missing-sanitization (French nettoyer), open-closed (German verarbeiten). Gaps seeded per Spec 21 send-back; fixes deferred to Spec 15 neighborhood. R5 Unicode regex fix recovered 2 unfiltered-query detections. Spec 21 R6.2 three-tier requiresOrgFilter() fix recovered 2 missing-org-filter detections. True recall without known-miss debt: 22/22 = 1.0. 13 remaining violations after v3.4.8 direct-sql deletion."
 }

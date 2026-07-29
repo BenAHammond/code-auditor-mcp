@@ -6,7 +6,7 @@
       "tool": {
         "driver": {
           "name": "code-auditor-mcp",
-          "version": "3.4.7",
+          "version": "3.4.8",
           "informationUri": "https://github.com/BenAHammond/code-auditor-mcp",
           "rules": [
             {
@@ -115,7 +115,14 @@
             "primary": "df790f0a78774271fd9869a97843db9d913d62ea95f08427ebf0d319f100a5df"
           }
         }
-      ]
+      ],
+      "properties": {
+        "analyzerFilesProcessed": {
+          "solid-analyzer": 3,
+          "dry-analyzer": 3,
+          "invariants-analyzer": 5
+        }
+      }
     }
   ]
 }

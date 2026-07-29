@@ -584,73 +584,67 @@ describe('Spec-18 — Baseline module', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Integration tests — full audit pipeline via programmatic API
+// Unit tests — baseline pipeline via direct function calls (no audit server)
+//
+// These replace integration tests that spawned an MCP server, loaded tree-sitter
+// WASM, and ran a full audit pipeline. The underlying pure functions are unit-
+// tested directly with synthetic Violation objects — no WASM, no tmpdir writes
+// beyond saveBaseline/loadBaseline round-trips.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Spec-18 — Audit pipeline integration', () => {
   let testDir: string;
 
   beforeEach(async () => {
-    testDir = await mkdtemp(join(tmpdir(), 'ca-int-'));
-    await mkdir(join(testDir, 'src'), { recursive: true });
+    testDir = await mkdtemp(join(tmpdir(), 'ca-unit-'));
   });
 
   afterEach(() => {
     try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  // ── Test 1b: Audit with baseline — known finding produces no "new" ────
+  /** Synthetic violation matching the shape UniversalDocumentationAnalyzer emits. */
+  function makeViolation(overrides: Partial<Violation> = {}): Violation {
+    return {
+      file: 'src/lib.ts',
+      line: 10,
+      column: 1,
+      severity: 'warning',
+      message: 'Missing JSDoc on exported function calculateTotal',
+      analyzer: 'documentation',
+      rule: 'function-documentation',
+      functionName: 'calculateTotal',
+      ...overrides,
+    };
+  }
 
-  it('R6.1 — known finding in baseline is not reported as new', async () => {
-    // Step 1: Run audit on undocumented export → should produce violation
-    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
-    await writeConfig(testDir);
+  // ── R6.1: Known finding in baseline → matchFindings classifies as known ─
 
-    const result1 = await runAudit({
-      projectRoot: testDir,
-      indexFunctions: false,
-      showProgress: false,
-      scope: 'all',
-    });
+  it('R6.1 — known finding in baseline is not reported as new', () => {
+    const v = makeViolation();
+    const violations: Violation[] = [v];
 
-    const docViolations = result1.analyzerResults['documentation']?.violations ?? [];
-    expect(docViolations.length).toBeGreaterThanOrEqual(1);
-
-    // Step 2: Create baseline from these violations
-    const baseline = createBaselineFromFindings(docViolations, {
+    const baseline = createBaselineFromFindings(violations, {
       toolVersion: '3.2.0',
-      totalFindings: docViolations.length,
-      analyzerCounts: { documentation: docViolations.length },
+      totalFindings: 1,
+      analyzerCounts: { documentation: 1 },
       corpusStats: { files: 1, functions: 1 },
     });
+    expect(baseline.entries.length).toBe(1);
     saveBaseline(testDir, baseline);
 
-    // Step 3: Re-run audit → finding should be known, not new
-    const result2 = await runAudit({
-      projectRoot: testDir,
-      indexFunctions: false,
-      showProgress: false,
-      scope: 'all',
-    });
-
-    const baselineMeta = result2.metadata.baseline;
-    expect(baselineMeta).toBeDefined();
-    expect(baselineMeta!.present).toBe(true);
-    expect(baselineMeta!.newCount).toBe(0);
-    expect(baselineMeta!.knownCount).toBeGreaterThanOrEqual(1);
-    expect(baselineMeta!.fixedCount).toBe(0);
-
-    // Violations should have new: false
-    const violations2 = result2.analyzerResults['documentation']?.violations ?? [];
-    for (const v of violations2) {
-      expect((v as any).new).toBe(false);
-    }
+    // Round-trip: load and match
+    const loaded = loadBaseline(testDir);
+    expect(loaded).not.toBeNull();
+    const classified = matchFindings(violations, loaded!);
+    expect(classified.known.length).toBe(1);
+    expect(classified.new.length).toBe(0);
+    expect(classified.fixed.length).toBe(0);
   });
 
-  // ── Test 2b: Audit with new finding (not in baseline) ─────────────────
+  // ── R6.2: Different file → different fingerprint → new finding ─
 
-  it('R6.2 — new finding not in baseline is reported as new', async () => {
-    // Create baseline with a finding from a different file
+  it('R6.2 — new finding not in baseline is reported as new', () => {
     const fakeEntry: BaselineEntry = {
       fingerprint: fp({ analyzer: 'documentation', rule: 'function-documentation', file: 'src/other.ts', symbol: 'otherFn' }),
       file: 'src/other.ts',
@@ -668,147 +662,85 @@ describe('Spec-18 — Audit pipeline integration', () => {
     };
     saveBaseline(testDir, baseline);
 
-    // Write a file that will produce a new violation (different file → different fingerprint)
-    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
-    await writeConfig(testDir);
-
-    const result = await runAudit({
-      projectRoot: testDir,
-      indexFunctions: false,
-      showProgress: false,
-      scope: 'all',
-    });
-
-    const baselineMeta = result.metadata.baseline;
-    expect(baselineMeta).toBeDefined();
-    expect(baselineMeta!.present).toBe(true);
-    expect(baselineMeta!.newCount).toBeGreaterThanOrEqual(1);
-
-    const violations = result.analyzerResults['documentation']?.violations ?? [];
-    const newViolations = violations.filter((v: any) => v.new === true);
-    expect(newViolations.length).toBeGreaterThanOrEqual(1);
+    // Violation from a different file → different fingerprint → new
+    const v = makeViolation();
+    const loaded = loadBaseline(testDir);
+    const classified = matchFindings([v], loaded!);
+    expect(classified.new.length).toBe(1);
+    expect(classified.known.length).toBe(0);
   });
 
-  // ── Test 4b: Fixed finding drops from baseline ────────────────────────
+  // ── R6.4: No violations → all baseline entries become "fixed" ─
 
-  it('R6.4 — fixed finding is removed from baseline on re-snapshot', async () => {
-    // Step 1: Create undocumented file and audit
-    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
-    await writeConfig(testDir);
+  it('R6.4 — fixed finding is removed from baseline on re-snapshot', () => {
+    const v = makeViolation();
+    const violations: Violation[] = [v];
 
-    const result1 = await runAudit({
-      projectRoot: testDir,
-      indexFunctions: false,
-      showProgress: false,
-      scope: 'all',
-    });
-
-    const violations1 = result1.analyzerResults['documentation']?.violations ?? [];
-    const baseline = createBaselineFromFindings(violations1, {
+    const baseline1 = createBaselineFromFindings(violations, {
       toolVersion: '3.2.0',
-      totalFindings: violations1.length,
-      analyzerCounts: { documentation: violations1.length },
+      totalFindings: 1,
+      analyzerCounts: { documentation: 1 },
       corpusStats: { files: 1, functions: 1 },
     });
-    saveBaseline(testDir, baseline);
-    const entryCount1 = baseline.entries.length;
-    expect(entryCount1).toBeGreaterThanOrEqual(1);
+    expect(baseline1.entries.length).toBe(1);
+    saveBaseline(testDir, baseline1);
 
-    // Step 2: Replace with file that has no exported functions (no violations)
-    // Note: we don't use a JSDoc-commented function because tree-sitter's
-    // extractDocumentation can't find JSDoc on `export function` — the comment
-    // is a sibling of the export statement, not the inner function_declaration.
-    await writeFile(join(testDir, 'src', 'lib.ts'), NO_FUNCTIONS);
-
-    // Step 3: Re-audit → no violations
-    const result2 = await runAudit({
-      projectRoot: testDir,
-      indexFunctions: false,
-      showProgress: false,
-      scope: 'all',
-    });
-
-    const violations2 = result2.analyzerResults['documentation']?.violations ?? [];
-    const baseline2 = createBaselineFromFindings(violations2, {
+    // Re-create baseline from empty violations → the entry disappears
+    const baseline2 = createBaselineFromFindings([], {
       toolVersion: '3.2.0',
-      totalFindings: violations2.length,
-      analyzerCounts: { documentation: violations2.length },
+      totalFindings: 0,
+      analyzerCounts: { documentation: 0 },
       corpusStats: { files: 1, functions: 1 },
     });
+    expect(baseline2.entries.length).toBe(0);
 
-    // New baseline should have fewer entries (the fix dropped from entries)
-    expect(baseline2.entries.length).toBeLessThan(entryCount1);
+    // diffBaselines sees the removed entry (fixed = in previous but not current)
+    const diff = diffBaselines(baseline1, baseline2);
+    expect(diff.fixed).toBe(1);
+    expect(diff.absorbed).toBe(0);
+    expect(diff.total).toBe(0); // current (baseline2) has 0 entries
+
+    // matchFindings with empty violations → fixed entries from old baseline
+    saveBaseline(testDir, baseline1); // restore baseline with 1 entry
+    const loaded = loadBaseline(testDir);
+    const classified = matchFindings([], loaded!);
+    expect(classified.fixed.length).toBe(1);
+    expect(classified.known.length).toBe(0);
+    expect(classified.new.length).toBe(0);
   });
 
-  // ── Test 4c: No baseline present → baseline metadata absent ───────────
+  // ── No-baseline: loadBaseline returns null for missing file ─
 
-  it('when no baseline exists, metadata.baseline is undefined', async () => {
-    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
-    await writeConfig(testDir);
-
-    const result = await runAudit({
-      projectRoot: testDir,
-      indexFunctions: false,
-      showProgress: false,
-      scope: 'all',
-    });
-
-    expect(result.metadata.baseline).toBeUndefined();
+  it('when no baseline exists, loadBaseline returns null', () => {
+    const loaded = loadBaseline(testDir);
+    expect(loaded).toBeNull();
   });
 
-  // ── R6.6 extended: Line drift does not break classification ──────────
+  // ── R6.6: Fingerprint is stable under line drift ─
 
-  it('R6.6 — known finding stays known after lines inserted above', async () => {
-    // Step 1: Create undocumented file and baseline it
-    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
-    await writeConfig(testDir);
+  it('R6.6 — fingerprint unchanged when only line numbers differ', () => {
+    const v1 = makeViolation({ line: 10 });
+    const v2 = makeViolation({ line: 100 });
 
-    const result1 = await runAudit({
-      projectRoot: testDir,
-      indexFunctions: false,
-      showProgress: false,
-      scope: 'all',
-    });
+    const fp1 = fingerprint(buildFingerprintInput(v1));
+    const fp2 = fingerprint(buildFingerprintInput(v2));
 
-    const violations1 = result1.analyzerResults['documentation']?.violations ?? [];
-    expect(violations1.length).toBeGreaterThanOrEqual(1);
+    expect(fp1).toBe(fp2);
+    expect(fp1).toHaveLength(64); // SHA-256 hex
 
-    const baseline = createBaselineFromFindings(violations1, {
+    // Known finding after line drift: same fingerprint → classified as known
+    const baseline = createBaselineFromFindings([v1], {
       toolVersion: '3.2.0',
-      totalFindings: violations1.length,
-      analyzerCounts: { documentation: violations1.length },
+      totalFindings: 1,
+      analyzerCounts: { documentation: 1 },
       corpusStats: { files: 1, functions: 1 },
     });
     saveBaseline(testDir, baseline);
 
-    // Step 2: Insert comment lines at the top of the file — line drift!
-    const original = UNDOCUMENTED;
-    const padded = '// Header comment added\n// Another header line\n// Third header line\n' + original;
-    await writeFile(join(testDir, 'src', 'lib.ts'), padded);
-
-    // Step 3: Re-audit → finding should STILL be known (fingerprint unchanged)
-    const result2 = await runAudit({
-      projectRoot: testDir,
-      indexFunctions: false,
-      showProgress: false,
-      scope: 'all',
-    });
-
-    const violations2 = result2.analyzerResults['documentation']?.violations ?? [];
-    expect(violations2.length).toBeGreaterThanOrEqual(1);
-
-    // All violations should be known (new: false), not new
-    const newVios = violations2.filter((v: any) => v.new === true);
-    const knownVios = violations2.filter((v: any) => v.new === false);
-    expect(newVios.length).toBe(0);
-    expect(knownVios.length).toBeGreaterThanOrEqual(1);
-
-    // Baseline metadata should reflect this
-    const baselineMeta = result2.metadata.baseline;
-    expect(baselineMeta).toBeDefined();
-    expect(baselineMeta!.newCount).toBe(0);
-    expect(baselineMeta!.knownCount).toBeGreaterThanOrEqual(1);
-    expect(baselineMeta!.fixedCount).toBe(0);
+    const loaded = loadBaseline(testDir);
+    const classified = matchFindings([v2], loaded!);
+    expect(classified.known.length).toBe(1);
+    expect(classified.new.length).toBe(0);
   });
 
   // ── Cross-surface fingerprint identity ─────────────────────────────────

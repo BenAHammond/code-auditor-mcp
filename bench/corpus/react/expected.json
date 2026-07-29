@@ -1,9 +1,42 @@
 {
   "analyzer": "react",
-  "config": { "maxComponentComplexity": 10, "checkHooksRules": true },
+  "config": {
+    "requireMemoization": true,
+    "requirePropTypes": true,
+    "checkHooksRules": true,
+    "checkUnnecessaryRerenders": true,
+    "checkAccessibility": true,
+    "requireErrorBoundaries": true,
+    "maxComponentComplexity": 10,
+    "rawElementCheck": true
+  },
   "expectedViolations": [
-    { "file": "src/bad-hook.tsx", "rule": "complexity", "severity": "warning" }
+    { "file": "src/bad-hook.tsx", "rule": "complexity", "severity": "warning" },
+    { "file": "src/bad-hook.tsx", "rule": "no-error-boundary", "severity": "warning" },
+    { "file": "src/bad-hook.tsx", "rule": "performance", "severity": "suggestion" },
+    { "file": "src/hooks-naming.tsx", "rule": "hooks-naming", "severity": "warning" },
+    { "file": "src/no-error-boundary.tsx", "rule": "no-error-boundary", "severity": "warning" },
+    { "file": "src/missing-props.tsx", "rule": "missing-props", "severity": "suggestion" },
+    { "file": "src/performance.tsx", "rule": "performance", "severity": "suggestion" },
+    { "file": "src/performance.tsx", "rule": "performance", "severity": "suggestion" },
+    { "file": "src/accessibility.tsx", "rule": "accessibility", "severity": "suggestion" },
+    { "file": "src/accessibility.tsx", "rule": "accessibility", "severity": "suggestion" },
+    { "file": "src/accessibility.tsx", "rule": "performance", "severity": "warning" },
+    { "file": "app-level", "rule": "no-error-boundary", "severity": "warning" },
+    { "file": "src/accessibility.tsx", "rule": "raw-element", "severity": "suggestion" },
+    { "file": "src/performance.tsx", "rule": "raw-element", "severity": "suggestion" },
+    { "file": "src/raw-element.tsx", "rule": "performance", "severity": "warning" },
+    { "file": "src/raw-element.tsx", "rule": "missing-props", "severity": "warning" },
+    { "file": "src/raw-element.tsx", "rule": "missing-props", "severity": "warning" },
+    { "file": "src/raw-element.tsx", "rule": "missing-props", "severity": "warning" },
+    { "file": "src/raw-element.tsx", "rule": "performance", "severity": "warning" },
+    { "file": "src/raw-element.tsx", "rule": "accessibility", "severity": "warning" },
+    { "file": "src/raw-element.tsx", "rule": "missing-props", "severity": "warning" },
+    { "file": "src/raw-element.tsx", "rule": "raw-element", "severity": "suggestion" },
+    { "file": "src/raw-element.tsx", "rule": "raw-element", "severity": "suggestion" },
+    { "file": "src/raw-element.tsx", "rule": "raw-element", "severity": "suggestion" },
+    { "file": "src/raw-element.tsx", "rule": "raw-element", "severity": "suggestion" }
   ],
-  "nearMissFiles": ["src/good-hook.tsx"],
-  "description": "Tests for the React analyzer — component complexity threshold"
+  "nearMissFiles": ["src/good-hook.tsx", "src/raw-element-near-miss.tsx"],
+  "description": "React component analysis: 7 rules across 10 files, 25 expected violations. Complexity 12 triggers warning + no-error-boundary + performance (memoization). AsyncWidget has useEffect → no-error-boundary. Dashboard calls fetchUserData (no 'use' prefix) → hooks-naming. AlertBanner uses non-destructured props → missing-props. HeavyRenderer memo + missing-keys → performance ×2. PhotoGallery (no alt) + ModalToggle (div onClick) → accessibility ×2. ModalToggle inline onClick → performance (legitimate FP, added v3.4.8). App-level no-error-boundary (13 components, 0 boundaries) → no-error-boundary (legitimate FP, added v3.4.8). raw-element: 4 raw <button> usages across LoginForm, SignupForm, DeleteButton, NavBar — exported Button wrapper auto-detected, minUsages=5 satisfied. Also 2 collateral raw-element from existing accessibility.tsx:39 and performance.tsx:23 (now enabled by rawElementCheck). raw-element.tsx collateral: missing-props ×4 (all non-PropTypes components), performance ×2 (Button inline fn params + DeleteButton inline onClick), accessibility (DeleteButton div onClick). Near-miss: good-hook.tsx (well below complexity, no hooks), raw-element-near-miss.tsx (uses React.createElement with Button wrapper → no JSX nodes, no violations)."
 }

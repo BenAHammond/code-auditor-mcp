@@ -40,7 +40,8 @@ export function getDefaultConfig(): AuditConfig {
     //   one tier only per Spec 11 R5. single-responsibility promotion
     //   to critical is withheld — length heuristics should not block hooks.
     // Restored to defaults: sql-injection-risk, loop-query, unfiltered-query,
-    //   direct-sql, single-responsibility. These have external-corpus evidence
+    //   single-responsibility. These have external-corpus evidence
+
     //   of utility or insufficient evidence to recalibrate.
     severityOverrides: {
       'missing-org-filter': 'suggestion',
@@ -155,8 +156,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
   },
   
   dataAccess: {
-    // R4.3: directAccess — "flag" (report direct-sql/hardcoded-connection) or "allow" (skip)
-    directAccess: 'flag',
+
     databasePatterns: {
       postgres: ['pg', 'postgres', 'postgresql'],
       mysql: ['mysql', 'mysql2'],

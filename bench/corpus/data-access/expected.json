@@ -5,13 +5,10 @@
     { "file": "src/n-plus-one.ts", "rule": "missing-org-filter", "severity": "warning" },
     { "file": "src/n-plus-one.ts", "rule": "unfiltered-query", "severity": "suggestion" },
     { "file": "src/n-plus-one.ts", "rule": "loop-query", "severity": "warning" },
-    { "file": "src/n-plus-one.ts", "rule": "direct-sql", "severity": "suggestion" },
     { "file": "src/clean-queries.ts", "rule": "missing-org-filter", "severity": "warning" },
     { "file": "src/clean-queries.ts", "rule": "unfiltered-query", "severity": "suggestion" },
     { "file": "src/clean-queries.ts", "rule": "missing-org-filter", "severity": "warning" },
-    { "file": "src/clean-queries.ts", "rule": "unfiltered-query", "severity": "suggestion" },
-    { "file": "src/clean-queries.ts", "rule": "direct-sql", "severity": "suggestion" },
-    { "file": "src/clean-queries.ts", "rule": "direct-sql", "severity": "suggestion" }
+    { "file": "src/clean-queries.ts", "rule": "unfiltered-query", "severity": "suggestion" }
   ],
   "nearMissFiles": ["src/no-sql-signal.ts"],
   "description": "Tests for the data-access analyzer — SQL patterns. All db.query() calls trigger multiple checks."

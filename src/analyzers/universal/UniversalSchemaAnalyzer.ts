@@ -99,11 +99,6 @@ interface TableReference {
   context: string;
 }
 
-interface ColumnReference {
-  table: string;
-  column: string;
-  location: { line: number; column: number };
-}
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
@@ -117,7 +112,6 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
 
   // Track references across files
   private tableReferences = new Map<string, TableReference[]>();
-  private columnReferences = new Map<string, ColumnReference[]>();
 
   async analyze(files: string[], config: any): Promise<AnalyzerResult> {
     const jsonFiles = files.filter(f => f.endsWith('.json'));
@@ -208,25 +202,16 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Sort for deterministic processing (migrations are often ordered by filename)
     walkedFiles.sort();
 
-    // Stateful ledger processing: CREATE TABLE adds, DROP TABLE removes,
-    // ALTER TABLE RENAME TO updates references.
-    const renames = new Map<string, string>(); // oldName → newName
-
+    // Sequential state-machine replay over the migration ledger:
+    // CREATE adds, DROP removes, RENAME moves — each at its position
+    // within the file (processMigrationSource applies them inline).
     for (const file of walkedFiles) {
       try {
         const source = await fs.readFile(file, 'utf8');
-        this.processMigrationSource(source, tables, renames);
+        this.processMigrationSource(source, tables);
       } catch {
         // Skip unreadable files — discovery is best-effort
       }
-    }
-
-    // Apply accumulated renames: add new name, remove old name.
-    // Always adds newName since RENAME TO creates a table by that name
-    // (it might not appear in any CREATE TABLE statement).
-    for (const [oldName, newName] of renames) {
-      tables.add(newName);      // Always add the new name
-      tables.delete(oldName);   // Remove the old name
     }
 
     return tables;
@@ -276,31 +261,42 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   }
 
   /**
+   * Strip SQL identifier delimiters: backticks or double-quotes.
+   */
+  private stripIdentifier(name: string): string {
+    if (
+      (name.startsWith('`') && name.endsWith('`')) ||
+      (name.startsWith('"') && name.endsWith('"'))
+    ) {
+      return name.slice(1, -1);
+    }
+    return name;
+  }
+
+  /**
    * Parse a migration SQL source and apply stateful CREATE/DROP/RENAME
-   * operations to the given table set and rename ledger.
+   * operations to the given table set in migration order.
    */
   private processMigrationSource(
     source: string,
     tables: Set<string>,
-    renames: Map<string, string>,
   ): void {
-    // CREATE TABLE [IF NOT EXISTS] name
-    const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi;
+    // Sequential state machine: apply CREATE/DROP/RENAME in statement order
+    // within each migration file. Fixes the rename-replay bug where CREATE
+    // after RENAME in the same file was silently deleted by the old three-pass
+    // approach (all CREATE then all DROP then all RENAME).
+    const ddlRe = /(CREATE)\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)|(DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)|(ALTER)\s+TABLE\s+(`[^`]+`|"[^"]+"|\w+)\s+RENAME\s+TO\s+(`[^`]+`|"[^"]+"|\w+)/gi;
     let match: RegExpExecArray | null;
-    while ((match = createRe.exec(source)) !== null) {
-      tables.add(match[1]);
-    }
-
-    // DROP TABLE [IF EXISTS] name
-    const dropRe = /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(\w+)/gi;
-    while ((match = dropRe.exec(source)) !== null) {
-      tables.delete(match[1]);
-    }
-
-    // ALTER TABLE old RENAME TO new
-    const renameRe = /ALTER\s+TABLE\s+(\w+)\s+RENAME\s+TO\s+(\w+)/gi;
-    while ((match = renameRe.exec(source)) !== null) {
-      renames.set(match[1], match[2]);
+    while ((match = ddlRe.exec(source)) !== null) {
+      const op = match[1] || match[3] || match[5];
+      if (op === 'CREATE') {
+        tables.add(this.stripIdentifier(match[2]));
+      } else if (op === 'DROP') {
+        tables.delete(this.stripIdentifier(match[4]));
+      } else if (op === 'ALTER') {
+        tables.delete(this.stripIdentifier(match[6]));
+        tables.add(this.stripIdentifier(match[7]));
+      }
     }
   }
 
@@ -365,8 +361,8 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * wrangler.toml is the external authority declaring where D1 migrations live.
    * Parses it for [[d1_databases]] blocks with migrations_dir, then walks the
    * migration directory reading .sql files in alphanumeric order (migration
-   * order). Processes statefully: CREATE TABLE adds, DROP TABLE removes,
-   * ALTER TABLE RENAME TO updates the rename ledger.
+   * order). Processes statefully in migration order: CREATE adds, DROP removes,
+   * RENAME moves inline (delete old + add new) so recreated tables survive.
    *
    * Returns only the current table set — not historical/transient names.
    */
@@ -374,7 +370,6 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     projectRoot: string,
   ): Promise<Set<string>> {
     const tables = new Set<string>();
-    const renames = new Map<string, string>();
 
     // 1. Look for wrangler.toml in project root
     const wranglerPath = path.join(projectRoot, 'wrangler.toml');
@@ -426,18 +421,13 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
         const filePath = path.join(absDir, entry);
         try {
           const source = await fs.readFile(filePath, 'utf8');
-          this.processMigrationSource(source, tables, renames);
+          this.processMigrationSource(source, tables);
         } catch {
           // Skip unreadable files
         }
       }
     }
 
-    // 4. Apply accumulated renames
-    for (const [oldName, newName] of renames) {
-      tables.add(newName);      // Always add the new name
-      tables.delete(oldName);   // Remove the old name
-    }
 
     return tables;
   }
@@ -462,10 +452,11 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
         const source = await fs.readFile(absPath, 'utf8');
         // Only extract CREATE TABLE — these are snapshots, not migration streams,
         // so no stateful DROP/RENAME processing needed.
-        const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi;
+        // v3.4.8: Added VIRTUAL TABLE support (FTS tables) and quoted/backtick identifiers
+        const createRe = /CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)/gi;
         let match: RegExpExecArray | null;
         while ((match = createRe.exec(source)) !== null) {
-          tables.add(match[1]);
+          tables.add(this.stripIdentifier(match[1]));
         }
       } catch {
         // Skip unreadable/missing files — best-effort
@@ -505,13 +496,10 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Get available schemas
     const schemas = finalConfig.schemas || [];
     const allTables = new Set<string>();
-    const tableColumns = new Map<string, Set<string>>();
 
     for (const schema of schemas) {
       for (const table of schema.tables) {
         allTables.add(table.name);
-        const columns = new Set<string>(table.columns.map(c => c.name));
-        tableColumns.set(table.name, columns);
       }
     }
 
@@ -530,8 +518,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
 
     // R2.1 — AST-based table reference extraction (replaces legacy regex scan-all-strings)
     // Spec 21: Uses provenance context for DB-call pattern detection
-    const tableRefs = this.findTableReferences(ast, adapter, sourceCode, finalConfig, provenanceContext);
-    const columnRefs = this.findColumnReferences(ast, adapter, sourceCode);
+    const tableRefs = this.findTableReferences(ast, adapter, sourceCode, finalConfig, provenanceContext, allTables);
 
     // Spec 15 R1 — Record schema usage for cross-domain lifecycle analysis.
     // Idempotent per-file: clear stale entries before inserting fresh references.
@@ -580,21 +567,6 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
             'unknown-table',
             undefined,
             ref.table
-          ));
-        }
-      }
-
-      for (const ref of columnRefs) {
-        const columnSet = tableColumns.get(ref.table);
-        if (columnSet && !columnSet.has(ref.column)) {
-          violations.push(this.createViolation(
-            ast.filePath,
-            ref.location,
-            `Reference to unknown column '${ref.column}' in table '${ref.table}'`,
-            'warning',
-            'unknown-column',
-            undefined,
-            `${ref.table}.${ref.column}`
           ));
         }
       }
@@ -706,6 +678,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     sourceCode: string,
     config: SchemaAnalyzerConfig,
     provenanceContext?: ProvenanceContext,
+    allTables?: Set<string>,
   ): TableReference[] {
     const references: TableReference[] = [];
     const sqlTags = config.sqlTagNames ?? ['sql', 'db'];
@@ -727,7 +700,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       const templateText = this.getTemplateText(callNode, adapter, sourceCode);
       if (!templateText) continue;
       const location = this.getCallLocation(callNode);
-      const tableRefs = this.parseSqlTables(templateText, location, sourceCode);
+      const tableRefs = this.parseSqlTables(templateText, location, sourceCode, allTables);
       references.push(...tableRefs);
     }
 
@@ -753,7 +726,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       const firstArg = this.getFirstStringArgument(callNode, adapter, sourceCode);
       if (!firstArg) continue;
       const location = this.getCallLocation(callNode);
-      const tableRefs = this.parseSqlTables(firstArg, location, sourceCode);
+      const tableRefs = this.parseSqlTables(firstArg, location, sourceCode, allTables);
       references.push(...tableRefs);
     }
 
@@ -763,7 +736,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       ast.filePath.includes('/migrations/') ||
       ast.filePath.includes('\\migrations\\')
     ) {
-      const fileRefs = this.parseSqlTables(sourceCode, { line: 1, column: 1 }, sourceCode);
+      const fileRefs = this.parseSqlTables(sourceCode, { line: 1, column: 1 }, sourceCode, allTables);
       references.push(...fileRefs);
     }
 
@@ -844,7 +817,8 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   private parseSqlTables(
     sqlText: string,
     baseLocation: { line: number; column: number },
-    sourceCode: string
+    sourceCode: string,
+    allTables?: Set<string>,
   ): TableReference[] {
     let references: TableReference[] = [];
 
@@ -856,12 +830,14 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Uses Unicode-aware \p{L} so non-Latin table names (日, 注文, пользователи)
     // are correctly matched — \w is ASCII-only. Spec 21 R5.
     const sqlPatterns: Array<{ regex: RegExp; type: TableReference['type'] }> = [
-      { regex: /\bFROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'select' },
-      { regex: /\bJOIN\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'select' },
-      { regex: /\bINSERT\s+INTO\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'insert' },
-      { regex: /\bUPDATE\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'update' },
-      { regex: /\bDELETE\s+FROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'delete' },
-      { regex: /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1\b/giu, type: 'create' },
+      // Note: no trailing \b — greedy [\p{L}\p{N}_]* consumes the full identifier and
+      // \b after a closing quote (non-word char) fails, blocking quoted-table extraction.
+      { regex: /\bFROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
+      { regex: /\bJOIN\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
+      { regex: /\bINSERT\s+INTO\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'insert' },
+      { regex: /\bUPDATE\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'update' },
+      { regex: /\bDELETE\s+FROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'delete' },
+      { regex: /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'create' },
     ];
 
     for (const { regex, type } of sqlPatterns) {
@@ -871,6 +847,14 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       while ((match = re.exec(cleaned)) !== null) {
         const table = match[2]; // The table name (capture group 2)
         if (!table || this.isSystemTable(table)) continue;
+
+        // v3.4.8: Skip very short identifiers (likely CTE names like 'x', 't',
+        // aliases like 'o', 'c') unless they are known table names.
+        // Single-char identifiers matched by FROM/JOIN regex capture short
+        // CTE names that extractAliasIdentifiers() may miss (WITH x AS (...));
+        // subquery bare aliases (FROM (SELECT ...) t) likewise. The guard
+        // catches false positives from both gaps.
+        if (!this.isSqlKeyword(table) && table.length < 3 && !allTables?.has(table.toLowerCase())) continue;
 
         // Skip common false positives: common variable names, keywords
         if (this.isSqlKeyword(table)) continue;
@@ -917,11 +901,30 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   private extractAliasIdentifiers(sqlText: string): Set<string> {
     const aliases = new Set<string>();
 
+    // CTE: WITH <name> AS ( — the CTE name is an alias, not a real table.
+    // Without this, "WITH fresh AS (SELECT ...)" causes 'fresh' to be
+    // captured by FROM/JOIN/subquery patterns and flagged as unknown-table.
+    const cteRe = /\bWITH\s+([\p{L}_][\p{L}\p{N}_]*)\s+AS\s*\(/giu;
+    let m: RegExpExecArray | null;
+    while ((m = cteRe.exec(sqlText)) !== null) {
+      aliases.add(m[1].toLowerCase());
+    }
+
     // Explicit: FROM/JOIN <table> AS <alias>
     const explicitRe = /\b(?:FROM|JOIN)\s+[\p{L}_][\p{L}\p{N}_]*\s+AS\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
-    let m: RegExpExecArray | null;
     while ((m = explicitRe.exec(sqlText)) !== null) {
       aliases.add(m[1].toLowerCase());
+    }
+
+    // Subquery bare alias: FROM (SELECT ...) <alias>
+    // The '(' stops the bare FROM/JOIN regex below because \w+ can't match it.
+    // Pattern: FROM/JOIN \s* \( ... \) \s* <alias>
+    const subqueryRe = /\b(?:FROM|JOIN)\s*\([^)]*\)\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
+    while ((m = subqueryRe.exec(sqlText)) !== null) {
+      const alias = m[1];
+      if (!this.isSqlKeyword(alias)) {
+        aliases.add(alias.toLowerCase());
+      }
     }
 
     // Bare: FROM/JOIN <table> <alias> (alias is a bare identifier, not a keyword)
@@ -1003,43 +1006,6 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       }
     }
     return dp[m][n];
-  }
-
-  // ---------------------------------------------------------------------------
-  // Column references (unchanged for now)
-  // ---------------------------------------------------------------------------
-
-  private findColumnReferences(
-    ast: AST,
-    adapter: LanguageAdapter,
-    sourceCode: string
-  ): ColumnReference[] {
-    const references: ColumnReference[] = [];
-    const patterns = [
-      /([\p{L}\p{N}_]+)\.([\p{L}\p{N}_]+)\s*[=<>]/giu,
-      /SELECT\s+.*?([\p{L}\p{N}_]+)\.([\p{L}\p{N}_]+)/giu,
-      /WHERE\s+.*?([\p{L}\p{N}_]+)\.([\p{L}\p{N}_]+)/giu,
-    ];
-
-    for (const pattern of patterns) {
-      let match;
-      while ((match = pattern.exec(sourceCode)) !== null) {
-        const table = match[1];
-        const column = match[2];
-        const index = match.index;
-        const lines = sourceCode.substring(0, index).split('\n');
-        const line = lines.length;
-        const col = lines[lines.length - 1].length + 1;
-
-        references.push({
-          table,
-          column,
-          location: { line, column: col }
-        });
-      }
-    }
-
-    return references;
   }
 
   // ---------------------------------------------------------------------------
@@ -1303,7 +1269,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     const lineOffset = before.split('\n').length - 1;
     const lastNewline = before.lastIndexOf('\n');
     const column = lastNewline >= 0 ? offset - lastNewline : offset + 1;
-    return { line: base.line + lineOffset, column };
+    // offset is absolute in sourceCode — lineOffset is 0-based, so +1 gives
+    // the correct 1-based line. base.line is the fallback guard only.
+    return { line: lineOffset + 1, column };
   }
 
   // ---------------------------------------------------------------------------

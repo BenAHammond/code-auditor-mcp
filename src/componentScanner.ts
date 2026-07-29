@@ -18,7 +18,8 @@ import {
   extractPropTypes,
   extractComponentImports,
   isFunctionalComponent,
-  isClassComponent
+  isClassComponent,
+  isBuiltInHook
 } from './utils/reactDetection.js';
 import { parseFile, walkAST, isExported, getLineAndColumn, hasModifier } from './languages/adapterBridge.js';
 import type { ASTNode } from './languages/types.js';
@@ -132,6 +133,11 @@ export async function scanFile(
       state.imports = extractComponentImports(root);
     }
 
+    // Pre-scan: find function declarations that use built-in hooks
+    // without starting with 'use' — these are hooks-naming violations
+    // when called inside components.
+    const hookUsingFunctions = options.extractHooks ? findHookUsingFunctions(root) : new Set<string>();
+
     // Walk the AST and scan for React components
     // walkAST visits every node recursively — no manual recursion needed
     walkAST(root, (node) => {
@@ -145,6 +151,10 @@ export async function scanFile(
       // Skip test/story components if configured
       if (!options.includeTests && componentName.includes('Test')) return;
       if (!options.includeStories && componentName.includes('Story')) return;
+
+      // Skip anonymous components — these are arrow callbacks in .map() / .filter()
+      // that return JSX and get misdetected as functional components.
+      if (componentName === 'AnonymousComponent') return;
 
       // getLineAndColumn returns 1-based via toSourceLocation — no compensation needed.
       const { line } = getLineAndColumn(node);
@@ -166,7 +176,7 @@ export async function scanFile(
 
       // Extract hooks if functional component
       if (options.extractHooks && (componentType === 'functional' || componentType === 'memo' || componentType === 'forwardRef')) {
-        component.hooks = extractHooks(node);
+        component.hooks = extractHooks(node, hookUsingFunctions.size > 0 ? hookUsingFunctions : undefined);
       }
 
       // Extract props (tree-sitter: no TypeChecker — capability regression per plan Step 2.5)
@@ -241,6 +251,7 @@ export async function scanFiles(
  */
 function extractComponentContext(node: ASTNode, sourceText: string): string {
   const { line } = getLineAndColumn(node);
+  const endLine = node.location?.end?.line ?? line;
   const allLines = sourceText.split('\n');
 
   const contextLines: string[] = [];
@@ -252,7 +263,18 @@ function extractComponentContext(node: ASTNode, sourceText: string): string {
     }
   }
 
-  return contextLines.join(' ').substring(0, 200);
+  // Also include first ~5 lines of the component body so accessibility and
+  // performance checks can find patterns inside the component (e.g. <div onClick=...).
+  const bodyStart = line;   // declaration line itself
+  const bodyEnd = Math.min(endLine, bodyStart + 6); // declaration + up to 5 body lines
+  for (let i = bodyStart; i <= bodyEnd && i < allLines.length; i++) {
+    const textLine = allLines[i]?.trim();
+    if (textLine) {
+      contextLines.push(textLine);
+    }
+  }
+
+  return contextLines.join(' ').substring(0, 500);
 }
 
 /**
@@ -284,7 +306,7 @@ function extractJSXElements(node: ASTNode): string[] {
 
   walkAST(node, (child) => {
     if (child.type === 'jsx_element') {
-      const openTag = findChildOfType(child, 'open_tag');
+      const openTag = findChildOfType(child, 'jsx_opening_element');
       if (openTag) {
         const tagNameNode = openTag.children?.find(c =>
           c.type === 'identifier' || c.type === 'member_expression');
@@ -302,6 +324,56 @@ function extractJSXElements(node: ASTNode): string[] {
   });
 
   return Array.from(elements);
+}
+
+/**
+ * Scan the full file AST for function declarations whose body contains
+ * built-in React hook calls but whose name does NOT start with 'use'.
+ * Returns their names so checkHooksRules can flag calls to them as
+ * hooks-naming violations.
+ */
+function findHookUsingFunctions(root: ASTNode): Set<string> {
+  const hookUsingFns = new Set<string>();
+
+  walkAST(root, (node) => {
+    if (node.type !== 'function_declaration') return;
+    const nameNode = findChildOfType(node, 'identifier');
+    if (!nameNode) return;
+    const name = rawText(nameNode);
+    // Already properly named — skip
+    if (name.startsWith('use')) return;
+
+    // Check if the function body calls any built-in hook
+    let callsHook = false;
+    walkAST(node, (inner) => {
+      if (callsHook) return; // early exit
+      if (inner.type !== 'call_expression') return;
+      const callee = inner.children?.[0];
+      if (!callee) return;
+
+      // Direct import: useState(), useEffect(), etc.
+      if (callee.type === 'identifier' && isBuiltInHook(rawText(callee))) {
+        callsHook = true;
+      }
+      // React.useState, React.useEffect, etc.
+      // tree-sitter: member_expression = [identifier, '.', property_identifier]
+      else if (callee.type === 'member_expression') {
+        const object = callee.children?.[0];
+        const property = callee.children?.find(c => c.type === 'property_identifier');
+        if (object && property &&
+            object.type === 'identifier' && rawText(object) === 'React' &&
+            isBuiltInHook(rawText(property))) {
+          callsHook = true;
+        }
+      }
+    });
+
+    if (callsHook) {
+      hookUsingFns.add(name);
+    }
+  });
+
+  return hookUsingFns;
 }
 
 /**

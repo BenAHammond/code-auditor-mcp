@@ -5,6 +5,9 @@ description: Audit code quality, search the codebase semantically, enforce invar
 
 # Code Auditor Skill
 
+> **Version 3.4.8** • Run `code-audit --version` to check your installed version.
+> If versions differ, the CLI is authoritative — use `code-audit <command> --help` to see what your install actually supports.
+
 You have the `code-audit` CLI available. It indexes every function, component, and struct in the codebase for semantic search and invariant enforcement. Use these commands instead of raw grep/find whenever possible.
 
 ## When to use which command
@@ -138,6 +141,39 @@ code-audit conventions propose --json                # JSON proposal array
 
 All convention violations ship at `suggestion` severity by default. Promote them with `severityOverrides` if your team treats them as blocking.
 
+### `code-audit hotspots` — identify churn-prone code
+
+Hotspots combine version-control churn with code complexity to identify files and functions that have changed frequently and are structurally complex — the strongest predictor of defect density.
+
+```bash
+code-audit hotspots                                   # Rank files and functions by hotspot score
+code-audit hotspots --limit 10                        # Top 10 hotspots only
+code-audit hotspots --path .                          # Trigger on-demand churn extraction if index is empty
+code-audit hotspots --json                            # Machine-readable JSON output
+```
+
+On first use, run with `--path <dir>` to trigger on-demand churn extraction from git history. If no git repository is available, hotspots gracefully fall back with a warning. Hotspot data persists in the code index across sessions — subsequent runs don't need `--path` unless the git history has changed.
+
+Terminal output shows each hotspot's type (file/function), score bar, commit count, author count, and a bus-factor warning when one author owns most changes. JSON output fields: `target`, `type`, `score`, `churnPercentile`, `complexityPercentile`, `commitCount`, `distinctAuthors`, `dominantAuthor`, `dominantAuthorShare`, `busFactorRisk`, `complexity`.
+
+### `code-audit risk` — rank functions by architectural risk
+
+Computes a composite risk score from call-graph centrality (PageRank and betweenness), code complexity, and test coverage status. High-risk functions sit at the intersection of "many things depend on this" and "this is complex" — they carry high blast radius when changed.
+
+```bash
+code-audit risk                                       # Rank top 20 functions by architectural risk
+code-audit risk --limit 50                            # Top 50 functions
+code-audit risk --path .                              # Target project directory
+code-audit risk --json                                # Machine-readable JSON output
+code-audit risk --format dot                          # Emit DOT call-graph for top functions
+```
+
+Use `--format dot` to generate a directed call-graph diagram (Graphviz DOT format) of the neighborhood around the top-risk functions. Pipe to `dot -Tsvg > graph.svg` for visualization.
+
+Terminal output shows rank, function name, file path, PageRank percentile, betweenness percentile, complexity percentile, untested status, and composite risk score. JSON output fields: `functionName`, `filePath`, `pageRankPercentile`, `betweennessPercentile`, `complexityPercentile`, `untested`, `riskScore`.
+
+> **Release checklist**: When bumping the version on a release, update the version stamp on line 8 of all three canonical SKILL.md copies. `npm run verify:close` gates on test + integration + dist verification — the tag cannot move without all three green.
+
 ## Interpreting hook feedback
 
 When an edit hook blocks your edit with a violation message:
@@ -174,5 +210,7 @@ The hook auto-installs the package via npx on first use — no manual npm step n
 | Codebase map | `code-audit map -p .` |
 | Mine conventions | `code-audit conventions list` |
 | Propose convention rules | `code-audit conventions propose` |
+| Identify hotspots | `code-audit hotspots` |
+| Architectural risk | `code-audit risk` |
 | Rule reference | See `SKILL-RULE-KINDS.md` |
 | Search reference | See `SKILL-SEARCH.md` |

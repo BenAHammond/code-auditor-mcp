@@ -47,7 +47,7 @@ function isComponentName(name: string): boolean {
 /**
  * Check if a hook name is a built-in React hook
  */
-function isBuiltInHook(hookName: string): boolean {
+export function isBuiltInHook(hookName: string): boolean {
   const builtInHooks = [
     'useState', 'useEffect', 'useContext', 'useReducer', 'useCallback',
     'useMemo', 'useRef', 'useImperativeHandle', 'useLayoutEffect',
@@ -178,9 +178,15 @@ export function isClassComponent(node: ASTNode): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract hooks usage from a component node
+ * Extract hooks usage from a component node.
+ *
+ * @param node           The component AST node to scan for hook calls.
+ * @param hookUsingFns   Optional set of function names declared in the file
+ *                       that call built-in hooks but don't start with 'use'.
+ *                       These are captured so checkHooksRules can flag the
+ *                       naming violation at the call site.
  */
-export function extractHooks(node: ASTNode): HookUsage[] {
+export function extractHooks(node: ASTNode, hookUsingFns?: Set<string>): HookUsage[] {
   const hooks: HookUsage[] = [];
 
   // Find all call expressions in the component
@@ -200,6 +206,32 @@ export function extractHooks(node: ASTNode): HookUsage[] {
           line,
           customHook: !isBuiltInHook(name)
         });
+      } else if (hookUsingFns && hookUsingFns.has(name)) {
+        // Capture calls to functions that use hooks internally but
+        // don't start with 'use' — these are hooks-naming violations.
+        const { line } = getLineAndColumn(callee);
+        hooks.push({
+          name,
+          line,
+          customHook: true
+        });
+      }
+    } else if (callee.type === 'member_expression') {
+      // React.useState, React.useEffect, etc.
+      // tree-sitter: member_expression = [identifier, '.', property_identifier]
+      const object = callee.children?.[0];
+      const property = callee.children?.find(c => c.type === 'property_identifier');
+      if (object && property &&
+          object.type === 'identifier' && rawText(object) === 'React') {
+        const name = rawText(property);
+        if (name.startsWith('use')) {
+          const { line } = getLineAndColumn(callee);
+          hooks.push({
+            name,
+            line,
+            customHook: !isBuiltInHook(name)
+          });
+        }
       }
     }
   }
@@ -263,14 +295,21 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
       if (params) {
         const firstParam = params.children?.[0];
         if (firstParam) {
-          // Check for destructured parameter (object pattern)
-          if (firstParam.type === 'object_pattern' || firstParam.type === 'object_binding_pattern') {
-            for (const element of firstParam.children ?? []) {
+          // Check for destructured parameter (object pattern) — treesitter wraps
+          // destructured params in required_parameter, so look inside it.
+          const pattern = findChildOfType(firstParam, 'object_pattern') ??
+            findChildOfType(firstParam, 'object_binding_pattern');
+          if (pattern) {
+            for (const element of pattern.children ?? []) {
               if (element.type !== 'binding_element' && element.type !== 'pair_pattern' &&
                   element.type !== 'shorthand_property_identifier_pattern') continue;
 
-              const nameNode = element.children?.find(c =>
-                c.type === 'identifier' || c.type === 'property_identifier');
+              // shorthand_property_identifier_pattern has no children — the name IS the node
+              const nameNode = element.type === 'shorthand_property_identifier_pattern'
+                ? element
+                : element.children?.find(c =>
+                    c.type === 'identifier' || c.type === 'property_identifier');
+
               if (!nameNode) continue;
 
               const raw = element.raw as TreeSitterNode;
@@ -296,13 +335,19 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
     if (params) {
       const firstParam = params.children?.[0];
       if (firstParam) {
-        // Check if parameter is destructured
-        if (firstParam.type === 'object_pattern' || firstParam.type === 'object_binding_pattern') {
-          for (const element of firstParam.children ?? []) {
+        // Check if parameter is destructured — tree-sitter wraps in required_parameter
+        const pattern = findChildOfType(firstParam, 'object_pattern') ??
+          findChildOfType(firstParam, 'object_binding_pattern');
+        if (pattern) {
+          for (const element of pattern.children ?? []) {
             if (element.type !== 'binding_element' && element.type !== 'shorthand_property_identifier_pattern') continue;
 
-            const nameNode = element.children?.find(c =>
-              c.type === 'identifier' || c.type === 'property_identifier');
+            // shorthand_property_identifier_pattern has no children — the name IS the node
+            const nameNode = element.type === 'shorthand_property_identifier_pattern'
+              ? element
+              : element.children?.find(c =>
+                  c.type === 'identifier' || c.type === 'property_identifier');
+
             if (!nameNode) continue;
 
             const raw = element.raw as TreeSitterNode;
@@ -318,11 +363,14 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
           }
         }
 
-        // Extract props from type annotation on parameter
+        // Extract props from type annotation on parameter.
+        // tree-sitter wraps type annotations as: ':' (anonymous) + the actual type node.
+        // children[0] is the ':' separator, not the type — find object_type specifically.
         const typeAnnot = findChildOfType(firstParam, 'type_annotation');
-        if (typeAnnot && typeAnnot.children?.[0]) {
-          const typeNode = typeAnnot.children[0];
-          if (typeNode.type === 'object_type' || typeNode.type === 'type_literal') {
+        if (typeAnnot) {
+          const typeNode = typeAnnot.children?.find(c =>
+            c.type === 'object_type' || c.type === 'type_literal');
+          if (typeNode) {
             props.push(...extractPropsFromTypeLiteral(typeNode));
           }
           // NOTE: type_reference (interface references) can't be resolved

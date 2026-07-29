@@ -157,6 +157,19 @@ program
         console.log(`Suggestions: ${result.summary.suggestions}`);
       }
 
+      // Per-analyzer files processed (read from result data, not serialized summary)
+      // — surfaces zero-scan failures that would otherwise be invisible.
+      if (!options.json) {
+        const analyzerFiles: string[] = [];
+        for (const [name, ar] of Object.entries(result.analyzerResults)) {
+          analyzerFiles.push(`${name}: ${(ar as any).filesProcessed ?? 0}`);
+        }
+        if (analyzerFiles.length > 0) {
+          console.log(chalk.gray(`\n── Files Processed ──────────────────────────`));
+          console.log(analyzerFiles.join('\n'));
+        }
+      }
+
       // Spec-20 R4: built-in profile visibility — silent behavior changes
       // are never acceptable. Notify when scripts-and-tests capped findings.
       const builtinCapped = Object.values(result.analyzerResults)

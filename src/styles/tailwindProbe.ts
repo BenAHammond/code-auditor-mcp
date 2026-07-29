@@ -21,7 +21,7 @@
  * @module tailwindProbe
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
@@ -98,6 +98,13 @@ export class TailwindProbe {
   private projectRoot = '';
   private tailwindPath: string | null = null;
   private version: 3 | 4 | null = null;
+  /** Cached compile function for v4 (async, requires loadStylesheet/loadModule options). */
+  private _compile: ((css: string, opts: Record<string, unknown>) => Promise<unknown>) | null = null;
+  /** tailwindcss package directory — used to load index.css via loadStylesheet. */
+  private _twDir: string | null = null;
+  /** Project CSS with @theme blocks — included in probe input to validate
+   *  Shadcn semantic theme classes (bg-background, text-foreground, etc.). */
+  private _projectCss: string | null = null;
 
   /** Whether the probe successfully initialized and is ready to validate classes. */
   get ready(): boolean {
@@ -112,6 +119,16 @@ export class TailwindProbe {
   /** Human-readable description of the validation source. */
   get source(): string | null {
     return this._source;
+  }
+
+  /**
+   * Register project-level CSS that contains @theme blocks. This is included
+   * in the compile-probe input so that Shadcn semantic theme classes
+   * (bg-background, text-foreground, etc.) validate against project custom
+   * theme definitions.
+   */
+  setProjectCss(css: string): void {
+    this._projectCss = css;
   }
 
   /**
@@ -130,15 +147,20 @@ export class TailwindProbe {
     this.tailwindPath = twPath;
 
     // ── Try v4 first (ESM import + compile() API) ──
+    // v4.3.3+: compile() is async, returns an object (not a string), and requires
+    // loadStylesheet/loadModule options. The probe validates classes via @apply:
+    // - Known-valid class (@apply flex) → compile succeeds, returns object
+    // - Unknown class (@apply nonexistent) → compile throws "Cannot apply unknown utility class"
     try {
       const mod = await this.tryImportV4(twPath);
       if (mod && typeof (mod as any).compile === 'function') {
-        const result = await (mod as any).compile(
-          Buffer.from('@import "tailwindcss";\n.p0{@apply flex;}'),
-          { base: projectRoot },
-        );
-        const output = typeof result === 'string' ? result : String(result);
-        if (output.includes('.p0') && /\{([^}]*[a-z])/.test(output)) {
+        this._compile = (mod as any).compile.bind(mod);
+        this._twDir = twPath;
+
+        // Probe with a known-good class to verify the pipeline
+        const testCss = '@import "tailwindcss";\n.p0{@apply flex;}';
+        const result = await this.compileV4(testCss, projectRoot);
+        if (result !== null) {
           this.version = 4;
           this.validClasses = new Set();
           this._ready = true;
@@ -147,13 +169,32 @@ export class TailwindProbe {
         }
       }
     } catch {
-      // Not v4 — continue to v3
+      // Not v4 — continue to CJS or v3
     }
 
-    // ── Try v3 (CJS require + resolveConfig) ──
+    // ── Try CJS require paths (v4 CJS or v3) ──
+    // v4 CJS: exports { compile, compileAst, ... } — an object with named exports,
+    // NOT a function. The ESM import in tryImportV4 may have failed (e.g., when
+    // the project is CJS or the resolver can't find the ESM entry), but the CJS
+    // build is still loadable and has the compile() API.
     try {
       const projectRequire = createRequire(join(projectRoot, 'package.json'));
       const tw = projectRequire(twPath);
+
+      if (tw && typeof tw.compile === 'function') {
+        this._compile = tw.compile.bind(tw);
+        this._twDir = twPath;
+
+        const testCss = '@import "tailwindcss";\n.p0{@apply flex;}';
+        const result = await this.compileV4(testCss, projectRoot);
+        if (result !== null) {
+          this.version = 4;
+          this.validClasses = new Set();
+          this._ready = true;
+          this._source = 'v4-cjs-compile-probe';
+          return { ok: true, source: this._source };
+        }
+      }
 
       // v3 tailwindcss exports a function (the postcss plugin)
       // It also has resolveConfig available
@@ -239,47 +280,98 @@ export class TailwindProbe {
   // -----------------------------------------------------------------------
 
   /**
-   * Generate a CSS file with @apply probe selectors, compile it with
-   * Tailwind v4, and parse the output to determine which classes are valid.
+   * Build a loadStylesheet callback for Tailwind v4 compile().
+   * When @import "tailwindcss" (or theme/preflight/utilities) is
+   * encountered during compilation, serves tailwindcss/index.css so
+   * the full base theme is available for @apply resolution.
    */
-  private async probeV4Batch(classes: string[]): Promise<string[]> {
-    // Escape backslashes in class names for CSS
-    const escapedClasses = classes.map(cls => cls.replace(/\\/g, '\\\\'));
-
-    // Build probe CSS: one selector per class with @apply
-    const rules = escapedClasses
-      .map((cls, i) => `.p${i}{@apply ${cls};}`)
-      .join('');
-
-    const css = `@import "tailwindcss";${rules}`;
-
-    try {
-      const mod = await this.tryImportV4(this.tailwindPath!);
-      if (!mod || typeof (mod as any).compile !== 'function') return [];
-      const result = await (mod as any).compile(Buffer.from(css), { base: this.projectRoot });
-      const output = typeof result === 'string' ? result : String(result);
-      return this.parseProbeOutput(output, classes);
-    } catch {
-      // Compilation failed — return empty (treat all as invalid)
-      return [];
-    }
+  private buildLoadStylesheet(): (path: string) => Promise<{ base: string; content: string; roots: Record<string, unknown> | null }> {
+    const twDir = this._twDir!;
+    return async (path: string) => {
+      if (path === 'tailwindcss' || path === 'tailwindcss/theme' ||
+          path === 'tailwindcss/preflight' || path === 'tailwindcss/utilities') {
+        const cssPath = join(twDir, 'index.css');
+        return { base: twDir, content: readFileSync(cssPath, 'utf-8'), roots: null };
+      }
+      return { base: path, content: '', roots: null };
+    };
   }
 
   /**
-   * Parse compiled CSS output to find which probe selectors have actual
-   * CSS declarations. A probe selector with no declarations or only empty
-   * rules indicates an invalid/unknown class.
+   * Build a loadModule callback for Tailwind v4 compile().
+   * Throws on all requests — no JS plugins needed for class validation.
    */
-  private parseProbeOutput(output: string, classes: string[]): string[] {
+  private buildLoadModule(): (id: string, base: string) => Promise<unknown> {
+    return async (_id: string, _base: string) => {
+      throw new Error('No addl modules');
+    };
+  }
+
+  /**
+   * Compile CSS with Tailwind v4 compile() using the cached function
+   * reference. Returns the compile result on success, null on failure.
+   */
+  private async compileV4(css: string, projectRoot: string): Promise<unknown> {
+    if (!this._compile) return null;
+    return this._compile(css, {
+      base: projectRoot,
+      loadStylesheet: this.buildLoadStylesheet(),
+      loadModule: this.buildLoadModule(),
+    });
+  }
+
+  /**
+   * Validate a batch of class names against Tailwind v4 compile() using
+   * @apply probes and iterative recompile.
+   *
+   * v4.3.3+ compile() throws "Cannot apply unknown utility class `X`"
+   * for invalid classes (clean signal). We compile all candidate classes
+   * at once in @apply probes, extract the first invalid class from the
+   * error message, remove it, and recompile the rest. When compile
+   * succeeds without throwing, all remaining classes are valid.
+   *
+   * This is efficient when most classes are valid (the common case for
+   * real projects using Tailwind utilities).
+   */
+  private async probeV4Batch(classes: string[]): Promise<string[]> {
+    const remaining = [...classes];
+
+    // Deduplicate while preserving order
     const valid: string[] = [];
-    for (let i = 0; i < classes.length; i++) {
-      // Find .pN{ ... } and check for non-whitespace declarations
-      const re = new RegExp(`\\.p${i}\\{([^}]*)\\}`, 's');
-      const m = re.exec(output);
-      if (m && m[1].trim().length > 0) {
-        valid.push(classes[i]);
+    const escapeCls = (cls: string) => cls.replace(/\\/g, '\\\\');
+
+    // Include project @theme CSS so Shadcn semantic theme classes
+    // (bg-background, text-foreground, etc.) validate correctly
+    const projectTheme = this._projectCss ?? '';
+
+    while (remaining.length > 0) {
+      const rules = remaining
+        .map((cls, i) => `.p${i}{@apply ${escapeCls(cls)};}`)
+        .join('');
+      const css = `${projectTheme}@import "tailwindcss";${rules}`;
+
+      try {
+        await this.compileV4(css, this.projectRoot);
+        // Compile succeeded — all remaining classes are valid
+        for (const cls of remaining) valid.push(cls);
+        break;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Parse first invalid class from error: "Cannot apply unknown utility class `X`"
+        const match = msg.match(/Cannot apply unknown utility class(?:es)?[`\s]+`?([^`\s]+)`?/);
+        if (match) {
+          const badClass = match[1];
+          const idx = remaining.indexOf(badClass);
+          if (idx >= 0) {
+            remaining.splice(idx, 1);
+            continue;
+          }
+        }
+        // Unrecognised error — bail out safely, don't mark any as valid
+        break;
       }
     }
+
     return valid;
   }
 
@@ -443,22 +535,48 @@ export class TailwindProbe {
 
   /**
    * Dynamically import tailwindcss v4 (ESM package).
-   * Uses file:// URL for reliable resolution from the project's node_modules.
+   *
+   * Tailwind v4.3+ uses package.json `exports` map with no `main` or `index.js`,
+   * so `import(pathToFileURL(dir).href)` fails. We read the entry point from
+   * package.json and import the resolved file directly.
    */
   private async tryImportV4(twPath: string): Promise<Record<string, unknown> | null> {
+    // Attempt 1: Read entry point from package.json exports, import directly.
+    // This handles Tailwind v4.3+ which has no index.js — only exports map.
+    const packageJsonPath = join(twPath, 'package.json');
+    if (existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+        // v4 uses exports map: { ".": { "import": "./dist/lib.mjs", "require": "./dist/lib.js" } }
+        const entry = pkg.exports?.['.']?.import
+          || pkg.module
+          || pkg.main
+          || 'index.js';
+        const resolvedPath = join(twPath, entry);
+        if (existsSync(resolvedPath)) {
+          return await import(pathToFileURL(resolvedPath).href);
+        }
+      } catch {
+        // Falls through to next attempt
+      }
+    }
+
+    // Attempt 2: Use createRequire from the project root to resolve the bare specifier,
+    // then import the resolved path. This is more reliable than bare import() because
+    // it resolves from the audited project, not from code-auditor's execution path.
     try {
-      // Try file:// URL first (reliable across platforms)
-      const packageJsonPath = join(twPath, 'package.json');
-      if (existsSync(packageJsonPath)) {
-        return await import(pathToFileURL(twPath).href);
+      const projectRequire = createRequire(join(this.projectRoot, 'package.json'));
+      const resolved = projectRequire.resolve('tailwindcss');
+      if (existsSync(resolved)) {
+        return await import(pathToFileURL(resolved).href);
       }
     } catch {
-      // Fall through
+      // Falls through to next attempt
     }
+
+    // Attempt 3: Last resort — bare specifier import. Only works when CWD is the
+    // audited project (e.g., CLI launched from the project directory).
     try {
-      // Try importing by bare specifier from the project root context.
-      // tailwindcss is a dependency of the project being audited, not of
-      // code-auditor itself — ignore the TS resolution error.
       // @ts-expect-error — tailwindcss is resolved at runtime from the audited project
       return await import('tailwindcss');
     } catch {

@@ -599,7 +599,8 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
 
       expect(result.violations).toHaveLength(0);
-      expect(result.filesProcessed).toBe(1);
+      // No schema_usage rows → filesProcessed reflects actual data source count
+      expect(result.filesProcessed).toBe(0);
     });
 
     it('returns empty results when schema_usage is empty but DB is active', async () => {
@@ -611,7 +612,8 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
 
       expect(result.violations).toHaveLength(0);
-      expect(result.filesProcessed).toBe(1);
+      // No schema_usage rows exist — filesProcessed counts from data source
+      expect(result.filesProcessed).toBe(0);
     });
 
     it('includes function name and file path in violation metadata', async () => {

@@ -54,7 +54,11 @@ export const reactAnalyzer: AnalyzerDefinition = {
     const startTime = Date.now();
     const violations: ReactViolation[] = [];
     const errors: Array<{ file: string; error: string }> = [];
-    
+
+    // Merge with defaults so partial configs (e.g., bench harness) get
+    // all required fields with their shipped defaults.
+    const cfg = { ...DEFAULT_REACT_CONFIG, ...config };
+
     try {
       // Filter for React component files
       const reactFiles = files.filter(file => 
@@ -85,7 +89,7 @@ export const reactAnalyzer: AnalyzerDefinition = {
         includeTests: false,
         includeStories: false,
         extractProps: true,
-        extractHooks: config.checkHooksRules,
+        extractHooks: cfg.checkHooksRules,
         extractImports: true,
         detectComplexity: true
       }, (current, total) => {
@@ -126,7 +130,7 @@ export const reactAnalyzer: AnalyzerDefinition = {
           }
           
           // Run all checks
-          violations.push(...analyzeComponent(component, config, scanResult));
+          violations.push(...analyzeComponent(component, cfg, scanResult));
         }
       }
       
@@ -147,13 +151,13 @@ export const reactAnalyzer: AnalyzerDefinition = {
       violations.push(...checkCircularDependencies(componentTree));
       
       // Check for missing error boundaries at app level
-      if (config.requireErrorBoundaries) {
+      if (cfg.requireErrorBoundaries) {
         violations.push(...checkErrorBoundaryUsage(scanResults));
       }
 
       // Check for raw element usage (Spec 10 R4)
-      if (config.rawElementCheck) {
-        violations.push(...checkRawElements(scanResults, config));
+      if (cfg.rawElementCheck) {
+        violations.push(...checkRawElements(scanResults, cfg));
       }
 
       return {
@@ -288,10 +292,9 @@ function checkHooksRules(component: ComponentMetadata): ReactViolation[] {
       severity: 'warning',
       message: `Custom hook '${hook.name}' should start with 'use'`,
       componentName: component.name,
-      violationType: 'hooks-violation',
+      violationType: 'hooks-naming',
       details: {
-        hookName: hook.name,
-        rule: 'hooks-naming'
+        hookName: hook.name
       },
       suggestion: `Rename to 'use${hook.name.charAt(0).toUpperCase()}${hook.name.slice(1)}'`
     });
@@ -351,8 +354,12 @@ function checkPerformanceIssues(
   }
   
   // Check for inline function props (causes re-renders)
-  if (component.jsxElements && component.context?.includes('=>') && 
-      component.context?.includes('onClick')) {
+  // Use /\bonClick\s*=\s*\{/ instead of context.includes('onClick') to avoid
+  // matching string literals ('onClick triggered') or module-level code.
+  // Combined with the '=>' check this catches real inline arrow functions
+  // (onClick={() => ...}) without flagging identifier references.
+  if (component.jsxElements && component.context?.includes('=>') &&
+      /\bonClick\s*=\s*\{/.test(component.context ?? '')) {
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
@@ -513,6 +520,7 @@ function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViola
     if (totalComponents > 10) { // Only warn for apps with significant components
       violations.push({
         file: 'app-level',
+        line: 1,
         severity: 'warning',
         message: 'No error boundaries found in the application',
         violationType: 'no-error-boundary',

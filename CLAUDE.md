@@ -111,6 +111,16 @@ print publish commands, do not treat an auth prompt as a step for Ben —
 publishing happens only when Ben independently decides to publish.
 Attempting publish and being blocked by 2FA still counts as a violation.
 
+## Repository boundary — hard constraint
+The ONLY repository you may modify is this one (code-auditor). All other
+directories on this machine — including recall-protocol and any project
+used for validation — are READ-ONLY REFERENCE. You may read files and run
+`code-audit` against them; you may NEVER edit, create, delete, git-touch,
+or install into them. recall-protocol is the validation corpus: modifying
+it corrupts the measurement this project depends on. If a task appears to
+require changing another repo, STOP and report the need to Ben — the same
+rule as publishing.
+
 ### Important Notes
 
 - ES Module project (`"type": "module"` in package.json)
