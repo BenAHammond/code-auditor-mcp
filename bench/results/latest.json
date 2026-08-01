@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-08-01T01:35:27.107Z",
+  "timestamp": "2026-08-04T22:15:35.402Z",
   "summary": {
     "totalAnalyzers": 14,
     "passed": 14,
@@ -8,8 +8,8 @@
     "microAvgPrecision": 1,
     "microAvgRecall": 1,
     "microAvgF1": 1,
-    "microAvgTrueRecall": 0.95,
-    "microAvgTrueF1": 0.9744
+    "microAvgTrueRecall": 0.9506,
+    "microAvgTrueF1": 0.9747
   },
   "analyzers": {
     "conventions": {
@@ -2010,14 +2010,14 @@
       "hookContractViolations": 0
     },
     "styles": {
-      "truePositives": 9,
+      "truePositives": 10,
       "falsePositives": 0,
       "falseNegatives": 0,
       "precision": 1,
       "recall": 1,
       "f1": 1,
-      "trueRecall": 0.9,
-      "trueF1": 0.9474,
+      "trueRecall": 0.9091,
+      "trueF1": 0.9524,
       "knownMisses": 1,
       "recoveredMisses": 0,
       "ruleMetrics": [
@@ -2088,6 +2088,19 @@
         },
         {
           "rule": "styles/undefined-class",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "styles/undefined-class-disabled",
           "truePositives": 1,
           "falsePositives": 0,
           "falseNegatives": 0,
@@ -2215,6 +2228,23 @@
         },
         {
           "expected": {
+            "file": "",
+            "rule": "styles/undefined-class-disabled",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "",
+            "line": 0,
+            "column": 1,
+            "severity": "suggestion",
+            "message": "Tailwind probe unavailable (tailwindcss not found in project node_modules) — using CSS-only detection with reduced accuracy. Classes defined only in Tailwind config may be flagged as undefined.",
+            "rule": "styles/undefined-class-disabled",
+            "analyzer": "styles"
+          }
+        },
+        {
+          "expected": {
             "file": "src/fixture.tsx",
             "rule": "styles/mechanism-fragmentation",
             "severity": "warning"
@@ -2310,7 +2340,7 @@
         }
       ],
       "warnings": [],
-      "hookContractViolations": 0
+      "hookContractViolations": 1
     }
   },
   "baselineComparison": {

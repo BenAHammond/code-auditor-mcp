@@ -12,10 +12,9 @@
  */
 
 import picomatch from 'picomatch';
-import { readFileSync } from 'fs';
 import path from 'path';
 import sg from '@ast-grep/napi';
-import type { CodeIndexDB } from '../codeIndexDB.js';
+import type { IndexHandle } from '../types.js';
 import type {
   InvariantRule,
   ImportBanRule,
@@ -87,13 +86,9 @@ function lineNumberAt(source: string, offset: number): number {
  *
  * Uses regex on raw source text — no parser dependency, works without WASM init.
  */
-function extractImports(filePath: string): FileImport[] {
-  let source: string;
-  try {
-    source = readFileSync(filePath, 'utf-8');
-  } catch {
-    return [];
-  }
+function extractImports(filePath: string, sourceMap?: Map<string, string>): FileImport[] {
+  if (!sourceMap?.has(filePath)) return [];
+  const source = sourceMap.get(filePath)!;
 
   const imports: FileImport[] = [];
 
@@ -246,12 +241,15 @@ function resolveRelativeImport(fromFile: string, specifier: string): string | nu
 /**
  * Try to resolve an import specifier to a file path, trying common extensions.
  */
-function resolveImportPath(fromFile: string, specifier: string, projectDir?: string): string | null {
+function resolveImportPath(fromFile: string, specifier: string, projectDir?: string, knownFiles?: Set<string>): string | null {
+  const fileExists = (p: string): boolean => knownFiles ? knownFiles.has(p) : false;
+
   const base = resolveRelativeImport(fromFile, specifier);
   if (base) {
     // Check with full path
     const full = projectDir ? `${projectDir}/${base}` : base;
-    try { readFileSync(full); return base; } catch { return null; }
+    if (fileExists(full)) return base;
+    return null;
   }
 
   // Try adding extensions
@@ -274,24 +272,14 @@ function resolveImportPath(fromFile: string, specifier: string, projectDir?: str
 
   // Check extensions
   for (const ext of ['.ts', '.tsx', '.js', '.jsx']) {
-    const candidate = basePath + ext;
-    try {
-      readFileSync(prefix + candidate);
-      return candidate;
-    } catch {
-      // file doesn't exist, try next extension
-    }
+    const candidate = prefix + basePath + ext;
+    if (fileExists(candidate)) return basePath + ext;
   }
 
   // Try index files
   for (const ext of ['.ts', '.tsx', '.js', '.jsx']) {
-    const candidate = basePath + '/index' + ext;
-    try {
-      readFileSync(prefix + candidate);
-      return candidate;
-    } catch {
-      // index doesn't exist either
-    }
+    const candidate = prefix + basePath + '/index' + ext;
+    if (fileExists(candidate)) return basePath + '/index' + ext;
   }
 
   return null;
@@ -483,11 +471,9 @@ function checkAstPattern(
 function checkStyleMechanism(
   rule: StyleMechanismRule,
   files: string[],
-  db: CodeIndexDB
+  indexHandle: IndexHandle
 ): RuleViolation[] {
   const violations: RuleViolation[] = [];
-  const dbAny = db as any;
-  if (!dbAny.db) return violations;
 
   const allowedSet = new Set(rule.allow);
 
@@ -496,12 +482,12 @@ function checkStyleMechanism(
     if (rule.path && !matchesPattern(rule.path, file)) continue;
 
     try {
-      const rows = dbAny.db.prepare(`
+      const rows = indexHandle.query(`
         SELECT DISTINCT mechanism, file_path, line
         FROM style_declarations
         WHERE file_path = ?
         ORDER BY line
-      `).all(file) as Array<{ mechanism: string; file_path: string; line: number }>;
+      `, [file]) as Array<{ mechanism: string; file_path: string; line: number }>;
 
       for (const row of rows) {
         if (!allowedSet.has(row.mechanism)) {
@@ -537,11 +523,9 @@ function checkStyleMechanism(
 function checkNoRawValues(
   rule: NoRawValuesRule,
   files: string[],
-  db: CodeIndexDB
+  indexHandle: IndexHandle
 ): RuleViolation[] {
   const violations: RuleViolation[] = [];
-  const dbAny = db as any;
-  if (!dbAny.db) return violations;
 
   const propertiesSet = new Set(rule.properties);
   const allowValuesSet = new Set(rule.allowValues ?? []);
@@ -551,12 +535,12 @@ function checkNoRawValues(
     if (rule.path && !matchesPattern(rule.path, file)) continue;
 
     try {
-      const rows = dbAny.db.prepare(`
+      const rows = indexHandle.query(`
         SELECT property, raw_value, normalized_value, file_path, line
         FROM style_declarations
         WHERE file_path = ?
         ORDER BY line
-      `).all(file) as Array<{
+      `, [file]) as Array<{
         property: string;
         raw_value: string;
         normalized_value: string | null;
@@ -571,11 +555,12 @@ function checkNoRawValues(
         if (allowValuesSet.has(normVal) || allowValuesSet.has(row.raw_value)) continue;
 
         // Check if this declaration has a token ref
-        const tokenRow = dbAny.db.prepare(`
+        const tokenRows = indexHandle.query(`
           SELECT token_ref FROM style_declarations
           WHERE file_path = ? AND line = ? AND property = ? AND token_ref IS NOT NULL
           LIMIT 1
-        `).get(row.file_path, row.line, row.property) as { token_ref: string } | undefined;
+        `, [row.file_path, row.line, row.property]) as Array<{ token_ref: string }>;
+        const tokenRow = tokenRows[0];
 
         if (tokenRow) continue; // has a token ref — allowed
 
@@ -608,13 +593,9 @@ function checkNoRawValues(
  *
  * Uses regex on raw source text — no parser dependency, works without WASM init.
  */
-function extractExportedSymbols(filePath: string): Array<{ name: string; line: number }> {
-  let source: string;
-  try {
-    source = readFileSync(filePath, 'utf-8');
-  } catch {
-    return [];
-  }
+function extractExportedSymbols(filePath: string, sourceMap?: Map<string, string>): Array<{ name: string; line: number }> {
+  if (!sourceMap?.has(filePath)) return [];
+  const source = sourceMap.get(filePath)!;
 
   const symbols: Array<{ name: string; line: number }> = [];
 
@@ -660,10 +641,22 @@ export interface RuleEngineOptions {
   rules: InvariantRule[];
   /** Files to check (repo-relative paths) */
   files: string[];
-  /** CodeIndexDB instance for call-graph lookups */
-  db?: CodeIndexDB;
+  /** IndexHandle for call-graph and style lookups (pipeline DB handle). */
+  indexHandle?: IndexHandle;
   /** Base project directory for resolving absolute paths */
   projectDir: string;
+  /**
+   * Optional map of absolute file path → source text.
+   * When provided, extractImports/extractExportedSymbols/ast-pattern use
+   * this instead of calling readFileSync.
+   */
+  sourceMap?: Map<string, string>;
+  /**
+   * Optional set of known absolute file paths (for existence checks).
+   * When provided, resolveImportPath checks membership here instead of
+   * calling readFileSync as a file-existence probe.
+   */
+  knownFiles?: Set<string>;
 }
 
 /**
@@ -672,7 +665,7 @@ export interface RuleEngineOptions {
  * call-constraint queries the full index for callers.
  */
 export function checkRules(options: RuleEngineOptions): RuleCheckResult {
-  const { rules, files, db, projectDir } = options;
+  const { rules, files, indexHandle, projectDir, sourceMap, knownFiles } = options;
   const violations: RuleViolation[] = [];
   const errors: string[] = [];
 
@@ -710,8 +703,8 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
 
     try {
       fileDataMap.set(normalized, {
-        imports: extractImports(fullPath),
-        exports: extractExportedSymbols(fullPath),
+        imports: extractImports(fullPath, sourceMap),
+        exports: extractExportedSymbols(fullPath, sourceMap),
       });
     } catch (err: any) {
       errors.push(`Error reading ${file}: ${err.message}`);
@@ -729,7 +722,7 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   for (const rule of moduleBoundaries) {
     for (const [filePath, data] of fileDataMap) {
       violations.push(
-        ...checkModuleBoundary(rule, filePath, data.imports, (from, spec) => resolveImportPath(from, spec, projectDir))
+        ...checkModuleBoundary(rule, filePath, data.imports, (from, spec) => resolveImportPath(from, spec, projectDir, knownFiles))
       );
     }
   }
@@ -742,9 +735,9 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   }
 
   // 4. call-constraint checks — requires DB
-  if (callConstraints.length > 0 && db) {
+  if (callConstraints.length > 0 && indexHandle) {
     try {
-      const scopedCallers = getScopedCallers(db, files);
+      const scopedCallers = getScopedCallers(indexHandle, files);
       for (const rule of callConstraints) {
         violations.push(...checkCallConstraint(rule, scopedCallers));
       }
@@ -760,7 +753,8 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
         const normalized = file.replace(/^\.\//, '');
         const fullPath = file.startsWith('/') ? file : `${projectDir}/${normalized}`;
         try {
-          const source = readFileSync(fullPath, 'utf-8');
+          const source = sourceMap?.get(fullPath);
+          if (!source) continue;
           violations.push(...checkAstPattern(rule, normalized, source));
         } catch (err: any) {
           errors.push(`Error running ast-pattern "${rule.id}" on ${file}: ${err.message}`);
@@ -770,12 +764,12 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   }
 
   // 6. style-mechanism and no-raw-values checks — require DB (style index)
-  if (db) {
+  if (indexHandle) {
     const scopedPaths = files.map(f => f.replace(/^\.\//, ''));
 
     for (const rule of styleMechanisms) {
       try {
-        violations.push(...checkStyleMechanism(rule, scopedPaths, db));
+        violations.push(...checkStyleMechanism(rule, scopedPaths, indexHandle));
       } catch (err: any) {
         errors.push(`Error checking style-mechanism "${rule.id}": ${err.message}`);
       }
@@ -783,7 +777,7 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
 
     for (const rule of noRawValues) {
       try {
-        violations.push(...checkNoRawValues(rule, scopedPaths, db));
+        violations.push(...checkNoRawValues(rule, scopedPaths, indexHandle));
       } catch (err: any) {
         errors.push(`Error checking no-raw-values "${rule.id}": ${err.message}`);
       }
@@ -798,17 +792,14 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
  * Returns [caller, callee] pairs for checking against constraints.
  */
 function getScopedCallers(
-  db: CodeIndexDB,
+  indexHandle: IndexHandle,
   scopedFiles: string[]
 ): Array<{ filePath: string; callerName: string; calleeName: string }> {
-  const dbAny = db as any;
-  if (!dbAny.db) return [];
-
-  const rows = dbAny.db.prepare(`
+  const rows = indexHandle.query(`
     SELECT DISTINCT f.name as caller_name, f.file_path, fc.callee_name
     FROM function_calls fc
     JOIN functions f ON f.id = fc.caller_id
-  `).all() as Array<{ caller_name: string; file_path: string; callee_name: string }>;
+  `) as Array<{ caller_name: string; file_path: string; callee_name: string }>;
 
   // If scoped files provided, filter to those files
   if (scopedFiles.length > 0) {

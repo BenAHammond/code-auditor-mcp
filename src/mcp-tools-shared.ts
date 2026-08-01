@@ -27,6 +27,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import chalk from 'chalk';
 import { assertAuditPathExists } from './mcpToolErrors.js';
+import { makeVisitorStatus } from './pipeline.js';
 
 export interface ToolParameter {
   name: string;
@@ -1379,20 +1380,23 @@ export class ToolHandlers {
         topIssues: violations.slice(0, 5)
       },
       analyzerResults: {
-        solid: { 
+        solid: {
           violations: violations.filter((v: any) => v.analyzer === 'solid'),
-          filesProcessed: polyglotResult.metrics?.totalFiles || 0,
-          executionTime: polyglotResult.metrics?.executionTime || 0
+          status: makeVisitorStatus(polyglotResult.metrics?.totalFiles || 0),
+          executionTime: polyglotResult.metrics?.executionTime || 0,
+          analyzerName: 'solid',
         },
-        dry: { 
+        dry: {
           violations: violations.filter((v: any) => v.analyzer === 'dry'),
-          filesProcessed: polyglotResult.metrics?.totalFiles || 0,
-          executionTime: polyglotResult.metrics?.executionTime || 0
+          status: makeVisitorStatus(polyglotResult.metrics?.totalFiles || 0),
+          executionTime: polyglotResult.metrics?.executionTime || 0,
+          analyzerName: 'dry',
         },
-        go: { 
+        go: {
           violations: violations.filter((v: any) => v.analyzer === 'go'),
-          filesProcessed: polyglotResult.metrics?.totalFiles || 0,
-          executionTime: polyglotResult.metrics?.executionTime || 0
+          status: makeVisitorStatus(polyglotResult.metrics?.totalFiles || 0),
+          executionTime: polyglotResult.metrics?.executionTime || 0,
+          analyzerName: 'go',
         }
       },
       recommendations: [],

@@ -4,6 +4,7 @@
  */
 
 import { AuditResult, Violation } from '../types.js';
+import { getFilesProcessed } from '../pipeline.js';
 
 export interface CSVReportConfig {
   delimiter?: string;
@@ -89,7 +90,7 @@ export function generateSummaryCSVReport(
     lines.push([
       escapeCSVValue(analyzer, delimiter),
       data.violations.length,
-      data.filesProcessed,
+      getFilesProcessed(data.status),
       data.executionTime
     ].join(delimiter));
   }

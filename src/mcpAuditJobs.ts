@@ -21,6 +21,7 @@ import { assertAuditPathExists, ContextualError } from './mcpToolErrors.js';
 import { createAuditJob, getAuditJob, patchAuditJob, setAuditJobProgress } from './services/auditJobService.js';
 import { mcpDebugStderr } from './mcpDiagnostics.js';
 import { findFiles } from './utils/fileDiscovery.js';
+import { makeVisitorStatus, getFilesProcessed } from './pipeline.js';
 import type {
   ParentToWorkerMessage,
   SerializableAuditRunConfig,
@@ -522,10 +523,12 @@ function mergeAnalyzerResult(base: AnalyzerResult | undefined, next: AnalyzerRes
       mergedViolations.push(v);
     }
   }
+  const baseFP = getFilesProcessed(base.status);
+  const nextFP = getFilesProcessed(next.status);
   return {
     ...base,
     violations: mergedViolations,
-    filesProcessed: (base.filesProcessed || 0) + (next.filesProcessed || 0),
+    status: makeVisitorStatus(baseFP + nextFP),
     executionTime: (base.executionTime || 0) + (next.executionTime || 0),
     errors: [...(base.errors || []), ...(next.errors || [])],
   };

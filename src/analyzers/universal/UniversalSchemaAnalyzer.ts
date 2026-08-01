@@ -9,6 +9,8 @@
  * R7:   schema/unknown-table severity is "suggestion".
  */
 
+import fs from 'fs/promises';
+import path from 'path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, NodePattern } from '../../languages/types.js';
@@ -21,6 +23,7 @@ import {
   type DetectionMode,
 } from '../provenance.js';
 import { OrmAdapterRegistry } from '../orm/index.js';
+import { makeVisitorStatus } from '../../pipeline.js';
 
 /**
  * Configuration for Schema analyzer
@@ -59,13 +62,32 @@ export interface SchemaAnalyzerConfig {
   allowAdditionalProperties?: boolean;
 
   // Spec-17 R2 additions — SQL context detection
-  sqlTagNames?: string[];           // default ['sql', 'db'] — R2.1
-  dbReceiverNames?: string[];       // default ['db', 'database', 'sql', 'stmt'] — R2.2
-  dbCallMethods?: string[];         // default ['exec', 'prepare', 'batch', 'run', 'all', 'first']
-  dbBindingNames?: string[];        // default ['env.DB'] — R2.2 file gate
+  // Default values live in DEFAULT_SCHEMA_CONFIG — the single source of truth.
+  sqlTagNames?: string[];           // @see DEFAULT_SCHEMA_CONFIG
+  dbReceiverNames?: string[];       // @see DEFAULT_SCHEMA_CONFIG
+  dbCallMethods?: string[];         // @see DEFAULT_SCHEMA_CONFIG
+  dbBindingNames?: string[];        // @see DEFAULT_SCHEMA_CONFIG
   fileGateGlobs?: string[];         // default ['**/*.sql', '**/migrations/**'] — R2.2
   schemaFiles?: string[];           // explicit paths to SQL schema files (e.g., 'snapshots/schema.sql')
 }
+
+/**
+ * Single-source constants for SQL context detection.
+ *
+ * These are the ground-truth defaults. DEFAULT_SCHEMA_CONFIG references them,
+ * and every inline fallback dereferences them directly — so ?? narrowing works
+ * (TypeScript infers `string[]`, not `string[] | undefined` from the optional
+ * SchemaAnalyzerConfig fields).
+ *
+ * Trimmed to D1/Workers DB patterns only (4 receivers, 6 methods).
+ * Broader entries like 'connection'/'client'/'query'/'get'/'each' matched
+ * non-DB code (WebSocket, Map, jQuery, vector stores), causing phantom
+ * cross-domain lifecycle violations. See CHANGELOG 3.4.9 accuracy fix.
+ */
+export const DB_RECEIVER_NAMES = ['db', 'database', 'sql', 'stmt'] as const;
+export const DB_CALL_METHOD_NAMES = ['exec', 'prepare', 'batch', 'run', 'all', 'first'] as const;
+export const DB_BINDING_NAMES = ['env.DB'] as const;
+export const SQL_TAG_NAMES = ['sql', 'db'] as const;
 
 export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   enableTableUsageTracking: true,
@@ -84,15 +106,15 @@ export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   strictMode: false,
   allowAdditionalProperties: true,
   // Spec-17 R2 defaults
-  sqlTagNames: ['sql', 'db'],
-  dbReceiverNames: ['db', 'database', 'sql', 'stmt', 'connection', 'pool', 'client'],
-  dbCallMethods: ['exec', 'prepare', 'batch', 'run', 'all', 'first', 'query', 'get', 'each'],
-  dbBindingNames: ['env.DB'],
+  sqlTagNames: [...SQL_TAG_NAMES],
+  dbReceiverNames: [...DB_RECEIVER_NAMES],
+  dbCallMethods: [...DB_CALL_METHOD_NAMES],
+  dbBindingNames: [...DB_BINDING_NAMES],
   fileGateGlobs: ['**/*.sql', '**/migrations/**'],
   schemaFiles: [],
 };
 
-interface TableReference {
+export interface TableReference {
   table: string;
   type: 'select' | 'insert' | 'update' | 'delete' | 'create' | 'reference';
   location: { line: number; column: number };
@@ -100,9 +122,6 @@ interface TableReference {
 }
 
 
-import { promises as fs } from 'fs';
-import * as path from 'path';
-import { CodeIndexDB } from '../../codeIndexDB.js';
 import type { Violation as BaseViolation, AnalyzerResult, SchemaUsage } from '../../types.js';
 
 export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
@@ -113,161 +132,16 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   // Track references across files
   private tableReferences = new Map<string, TableReference[]>();
 
-  // Project root for DB scoping (Bug #4 / Item 1)
-  private projectRoot: string | undefined;
+  // Spec 25 B4 — Queue schema records for the pipeline to write after stage 2.
+  // Was: direct CodeIndexDB.getInstance() call in recordTableUsage.
+  private _pendingSchemaRecords: { clearFiles: string[]; usages: SchemaUsage[] } = { clearFiles: [], usages: [] };
 
-  async analyze(files: string[], config: any): Promise<AnalyzerResult> {
-    const jsonFiles = files.filter(f => f.endsWith('.json'));
-    const codeFiles = files.filter(f => !f.endsWith('.json'));
-
-    // Spec 22 Item 2 — Auto-discover known tables from migration/SQL files
-    // when no schemas are configured.
-    //
-    // Spec 24 Item 2 — wrangler.toml is the external authority for D1 projects:
-    // parse [[d1_databases]] migration_dir, walk .sql files statefully with
-    // CREATE/DROP/RENAME to derive the current table catalog.
-    //
-    // Spec 24 Item 3 — schemaFiles config lets users point at a full snapshot
-    // (e.g., snapshots/schema.sql) for easy mode.
-    //
-    // Spec 24 Item 4 — Auto-discover from ORM schema definitions (Drizzle
-    // pgTable/mysqlTable/sqliteTable calls and Prisma schema.prisma model blocks)
-    // via import provenance.
-    //
-    // Discovery priority: wrangler.toml > schemaFiles > migration glob walk > ORM.
-    const schemas = config.schemas;
-    const projectRoot = (config as any).projectRoot || process.cwd();
-    this.projectRoot = projectRoot;
-    if (!schemas || schemas.length === 0) {
-      const fromWrangler = await this.discoverTablesFromWrangler(projectRoot);
-      const schemaFiles = (config as SchemaAnalyzerConfig).schemaFiles;
-      const fromSchemaFiles = schemaFiles && schemaFiles.length > 0
-        ? await this.discoverTablesFromSchemaFiles(schemaFiles, projectRoot)
-        : new Set<string>();
-      const fromMigrations = await this.discoverTablesFromMigrations(projectRoot, config);
-      const fromOrm = await this.discoverTablesFromOrmSchemas(codeFiles);
-      const discovered = new Set([
-        ...fromWrangler,
-        ...fromSchemaFiles,
-        ...fromMigrations,
-        ...fromOrm,
-      ]);
-      if (discovered.size > 0) {
-        config = {
-          ...config,
-          schemas: [{
-            name: 'auto-discovered',
-            tables: [...discovered].map(name => ({ name, columns: [] })),
-          }],
-        };
-      }
-    }
-
-    const codeResult = codeFiles.length > 0 ? await super.analyze(codeFiles, config) : {
-      violations: [],
-      errors: [],
-      filesProcessed: 0,
-      executionTime: 0
-    };
-
-    const jsonResult = await this.analyzeJsonSchemas(jsonFiles, config);
-
-    return {
-      violations: [...codeResult.violations, ...jsonResult.violations],
-      errors: [...(codeResult.errors || []), ...(jsonResult.errors || [])],
-      filesProcessed: codeResult.filesProcessed + jsonResult.filesProcessed,
-      executionTime: (codeResult.executionTime || 0) + (jsonResult.executionTime || 0)
-    };
-  }
-
-  /**
-   * Spec 22 Item 2 — Auto-discover known tables from migration/SQL files.
-   *
-   * When config.schemas is empty, scans files matching fileGateGlobs for
-   * CREATE TABLE statements and returns the set of discovered table names.
-   * These are injected as a synthetic schema so the unknown-table detector
-   * has a reference set to check against.
-   *
-   * Only extracts `create`-type references (CREATE TABLE ...), since those
-   * define tables — SELECT/INSERT/UPDATE references to an unknown table are
-   * the violations we're trying to avoid flagging.
-   */
-  private async discoverTablesFromMigrations(
-    projectRoot: string,
-    config: SchemaAnalyzerConfig,
-  ): Promise<Set<string>> {
-    const tables = new Set<string>();
-    const gateGlobs = config.fileGateGlobs ?? ['**/*.sql', '**/migrations/**'];
-
-    // Own glob walk — does NOT depend on codeFiles from the caller pipeline.
-    // Walks projectRoot recursively, matching files against fileGateGlobs via picomatch.
-    const walkedFiles = await this.walkFiles(projectRoot, gateGlobs);
-
-    // Sort for deterministic processing (migrations are often ordered by filename)
-    walkedFiles.sort();
-
-    // Sequential state-machine replay over the migration ledger:
-    // CREATE adds, DROP removes, RENAME moves — each at its position
-    // within the file (processMigrationSource applies them inline).
-    for (const file of walkedFiles) {
-      try {
-        const source = await fs.readFile(file, 'utf8');
-        this.processMigrationSource(source, tables);
-      } catch {
-        // Skip unreadable files — discovery is best-effort
-      }
-    }
-
-    return tables;
-  }
-
-  /**
-   * Walk project root recursively, returning files matching any of the given
-   * picomatch globs. Skips node_modules and dot-directories.
-   */
-  private async walkFiles(root: string, globs: string[]): Promise<string[]> {
-    const results: string[] = [];
-
-    async function walk(dir: string) {
-      let names: string[];
-      try {
-        names = await fs.readdir(dir);
-      } catch {
-        return; // Skip unreadable directories
-      }
-
-      for (const name of names) {
-        const fullPath = path.join(dir, name);
-        // Skip node_modules and dot-directories
-        if (name === 'node_modules' || name.startsWith('.')) continue;
-
-        let stat;
-        try {
-          stat = await fs.stat(fullPath);
-        } catch {
-          continue; // Skip unstatable
-        }
-        if (stat.isDirectory()) {
-          await walk(fullPath);
-        } else if (stat.isFile()) {
-          // Check picomatch against the path relative to root
-          const relative = path.relative(root, fullPath);
-          const matched = globs.some(g => picomatch.isMatch(relative, g));
-          if (matched) {
-            results.push(fullPath);
-          }
-        }
-      }
-    }
-
-    await walk(root);
-    return results;
-  }
+  private projectRoot?: string;
 
   /**
    * Strip SQL identifier delimiters: backticks or double-quotes.
    */
-  private stripIdentifier(name: string): string {
+  public stripIdentifier(name: string): string {
     if (
       (name.startsWith('`') && name.endsWith('`')) ||
       (name.startsWith('"') && name.endsWith('"'))
@@ -281,7 +155,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * Parse a migration SQL source and apply stateful CREATE/DROP/RENAME
    * operations to the given table set in migration order.
    */
-  private processMigrationSource(
+  public processMigrationSource(
     source: string,
     tables: Set<string>,
   ): void {
@@ -304,172 +178,93 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     }
   }
 
-  /**
-   * Spec 24 Item 4 — Auto-discover known tables from ORM schema definitions.
-   *
-   * Uses import provenance to identify schema files (files importing Drizzle
-   * table constructors from drizzle-orm) and Prisma's canonical schema.prisma
-   * filename. Extracts table/model names and feeds them into allTables so the
-   * unknown-table detector works without explicit user config.
-   *
-   * Drizzle: scans .ts/.tsx/.js/.jsx files that import from drizzle-orm for
-   *   pgTable/mysqlTable/sqliteTable('tableName', ...) calls.
-   * Prisma: scans schema.prisma files for model Name { ... } blocks.
-   */
-  private async discoverTablesFromOrmSchemas(
-    files: string[],
-  ): Promise<Set<string>> {
-    const tables = new Set<string>();
 
-    for (const file of files) {
-      const lowerFile = file.toLowerCase();
-
-      // ── Drizzle: import provenance — files importing drizzle-orm table builders ──
-      if (/\.(ts|tsx|js|jsx)$/i.test(file)) {
-        try {
-          const source = await fs.readFile(file, 'utf8');
-          // Import provenance: only scan files that import from drizzle-orm
-          if (/from\s+['"]drizzle-orm/.test(source)) {
-            const builderRegex = /(?:pgTable|mysqlTable|sqliteTable)\s*\(\s*['"]([^'"]+)['"]/g;
-            let match: RegExpExecArray | null;
-            while ((match = builderRegex.exec(source)) !== null) {
-              tables.add(match[1]);
-            }
-          }
-        } catch {
-          // Skip unreadable files — discovery is best-effort
-        }
-      }
-
-      // ── Prisma: canonical schema.prisma filename ──
-      if (file.endsWith('schema.prisma') || file.endsWith('\\schema.prisma')) {
-        try {
-          const source = await fs.readFile(file, 'utf8');
-          const modelRegex = /model\s+(\w+)\s*\{/g;
-          let match: RegExpExecArray | null;
-          while ((match = modelRegex.exec(source)) !== null) {
-            tables.add(match[1]);
-          }
-        } catch {
-          // Skip unreadable files — discovery is best-effort
-        }
-      }
-    }
-
-    return tables;
-  }
 
   /**
-   * Spec 24 Item 2 — Discover tables from wrangler.toml for D1/Cloudflare Workers projects.
-   *
-   * wrangler.toml is the external authority declaring where D1 migrations live.
-   * Parses it for [[d1_databases]] blocks with migrations_dir, then walks the
-   * migration directory reading .sql files in alphanumeric order (migration
-   * order). Processes statefully in migration order: CREATE adds, DROP removes,
-   * RENAME moves inline (delete old + add new) so recreated tables survive.
-   *
-   * Returns only the current table set — not historical/transient names.
+   * Standalone analyze() override for backward compatibility with direct analyzer
+   * calls (e.g., tests and non-pipeline audit paths). All production analysis now
+   * flows through the pipeline visitors, but this method is preserved so tests
+   * that call analyzer.analyze([file], config) continue to work.
    */
-  private async discoverTablesFromWrangler(
-    projectRoot: string,
-  ): Promise<Set<string>> {
-    const tables = new Set<string>();
+  async analyze(files: string[], config: any): Promise<AnalyzerResult> {
+    const jsonFiles = files.filter(f => f.endsWith('.json'));
+    const codeFiles = files.filter(f => !f.endsWith('.json'));
 
-    // 1. Look for wrangler.toml in project root
-    const wranglerPath = path.join(projectRoot, 'wrangler.toml');
-    let wranglerContent: string;
-    try {
-      wranglerContent = await fs.readFile(wranglerPath, 'utf8');
-    } catch {
-      return tables; // No wrangler.toml — nothing to discover
-    }
-
-    // 2. Parse [[d1_databases]] blocks for migrations_dir
-    // Simple TOML section parser — no dependency needed for this narrow use case
-    const migrationDirs: string[] = [];
-    let inD1Block = false;
-    for (const line of wranglerContent.split('\n')) {
-      const trimmed = line.trim();
-      if (/^\[\[d1_databases\]\]/i.test(trimmed)) {
-        inD1Block = true;
-        continue;
-      }
-      if (inD1Block && trimmed.startsWith('[')) {
-        // Next TOML section — exit d1_databases block
-        inD1Block = false;
-        continue;
-      }
-      if (inD1Block) {
-        const m = trimmed.match(/^migrations_dir\s*=\s*['"](.+?)['"]/);
-        if (m) {
-          migrationDirs.push(m[1]);
-        }
+    // Auto-discover known tables when no schemas are configured.
+    const schemas = config.schemas;
+    const projectRoot = (config as any).projectRoot || process.cwd();
+    this.projectRoot = projectRoot;
+    if (!schemas || schemas.length === 0) {
+      const fromWrangler = await this._discoverTablesFromWrangler(projectRoot);
+      const schemaFiles = (config as SchemaAnalyzerConfig).schemaFiles;
+      const fromSchemaFiles = schemaFiles && schemaFiles.length > 0
+        ? await this._discoverTablesFromSchemaFiles(schemaFiles, projectRoot)
+        : new Set<string>();
+      const fromMigrations = await this._discoverTablesFromMigrations(projectRoot, config);
+      const fromOrm = await this._discoverTablesFromOrmSchemas(codeFiles);
+      const discovered = new Set([
+        ...fromWrangler,
+        ...fromSchemaFiles,
+        ...fromMigrations,
+        ...fromOrm,
+      ]);
+      if (discovered.size > 0) {
+        config = {
+          ...config,
+          schemas: [{
+            name: 'auto-discovered',
+            tables: [...discovered].map(name => ({ name, columns: [] })),
+          }],
+        };
       }
     }
 
-    // 3. Walk each migration directory, read .sql files in alphanumeric order
-    for (const migDir of migrationDirs) {
-      const absDir = path.resolve(projectRoot, migDir);
-      let entries: string[];
-      try {
-        const dirents = await fs.readdir(absDir, { withFileTypes: true });
-        entries = dirents
-          .filter(e => e.isFile() && e.name.endsWith('.sql'))
-          .map(e => e.name)
-          .sort(); // Alphanumeric = chronological migration order
-      } catch {
-        continue; // Non-existent directory — skip
-      }
+    const codeResult = codeFiles.length > 0 ? await super.analyze(codeFiles, config) : {
+      violations: [] as Violation[],
+      executionTime: 0,
+      status: makeVisitorStatus(0),
+      analyzerName: this.name,
+      errors: [] as Array<{ file: string; error: string }>,
+      filesProcessed: 0,
+    };
 
-      for (const entry of entries) {
-        const filePath = path.join(absDir, entry);
+    // Adapt JSON handling to the pipeline-style analyzeJsonSchemas(Map) signature.
+    let jsonResult: AnalyzerResult = {
+      violations: [],
+      executionTime: 0,
+      status: makeVisitorStatus(0),
+      analyzerName: this.name,
+      errors: [],
+      filesProcessed: 0,
+    };
+    if (jsonFiles.length > 0) {
+      const jsonContents = new Map<string, { parsed: object | null; raw: string }>();
+      for (const file of jsonFiles) {
         try {
-          const source = await fs.readFile(filePath, 'utf8');
-          this.processMigrationSource(source, tables);
+          const raw = await fs.readFile(file, 'utf8');
+          let parsed: object | null = null;
+          try { parsed = JSON.parse(raw); } catch { /* not valid JSON */ }
+          jsonContents.set(file, { parsed, raw });
         } catch {
           // Skip unreadable files
         }
       }
+      jsonResult = this.analyzeJsonSchemas(jsonContents, config);
     }
 
-
-    return tables;
+    return {
+      violations: [...codeResult.violations, ...jsonResult.violations],
+      executionTime: (codeResult.executionTime || 0) + (jsonResult.executionTime || 0),
+      status: makeVisitorStatus((codeResult.filesProcessed ?? 0) + (jsonResult.filesProcessed ?? 0)),
+      analyzerName: this.name,
+      errors: [...(codeResult.errors || []), ...(jsonResult.errors || [])],
+      filesProcessed: (codeResult.filesProcessed ?? 0) + (jsonResult.filesProcessed ?? 0),
+    };
   }
 
-  /**
-   * Spec 24 Item 3 — Discover tables from explicit schema file paths.
-   *
-   * Reads each file path (resolved against projectRoot) and extracts
-   * CREATE TABLE [IF NOT EXISTS] name statements. Supports the common
-   * D1 pattern where users snapshot their full schema to a single .sql file
-   * (e.g., snapshots/schema.sql).
-   */
-  private async discoverTablesFromSchemaFiles(
-    schemaFiles: string[],
-    projectRoot: string,
-  ): Promise<Set<string>> {
-    const tables = new Set<string>();
-
-    for (const file of schemaFiles) {
-      const absPath = path.resolve(projectRoot, file);
-      try {
-        const source = await fs.readFile(absPath, 'utf8');
-        // Only extract CREATE TABLE — these are snapshots, not migration streams,
-        // so no stateful DROP/RENAME processing needed.
-        // v3.4.8: Added VIRTUAL TABLE support (FTS tables) and quoted/backtick identifiers
-        const createRe = /CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)/gi;
-        let match: RegExpExecArray | null;
-        while ((match = createRe.exec(source)) !== null) {
-          tables.add(this.stripIdentifier(match[1]));
-        }
-      } catch {
-        // Skip unreadable/missing files — best-effort
-      }
-    }
-
-    return tables;
-  }
-
+  // analyzeAST is required by the protected abstract in UniversalAnalyzer.
+  // In production, all schema analysis flows through the pipeline visitors.
+  // This method is preserved for backward compatibility with direct test calls.
   protected async analyzeAST(
     ast: AST,
     adapter: LanguageAdapter,
@@ -482,15 +277,12 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Spec 21: Build provenance context for this file (R1 — provenance-primary detection)
     const detectionMode: DetectionMode =
       (config as any).detection?.mode ?? 'hybrid';
-    const p0 = performance.now();
     const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
       mode: detectionMode,
       dbReceiverNames: finalConfig.dbReceiverNames ?? DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
       dbBindingNames: finalConfig.dbBindingNames ?? DEFAULT_SCHEMA_CONFIG.dbBindingNames,
       dbCallMethods: finalConfig.dbCallMethods ?? DEFAULT_SCHEMA_CONFIG.dbCallMethods,
     });
-    const timingAcc: { totalMs: number } | undefined = (config as any)._provenanceTiming;
-    if (timingAcc) timingAcc.totalMs += performance.now() - p0;
 
     // R2.2 — File gate: only analyze files with DB context (Spec 21: provenance-based)
     if (!this.passesFileGate(ast.filePath, sourceCode, finalConfig, provenanceContext)) {
@@ -533,29 +325,15 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Check for missing table references — R2.4: Levenshtein suggestions
     if (finalConfig.checkMissingReferences) {
       // Spec 24 Item 4 Part B — 10:1 fail-open ratio.
-      // When unknown table references vastly outnumber known tables, the
-      // schema catalog is likely incomplete (e.g. external/managed tables).
-      // Disable the rule with a warning instead of flooding the output with
-      // false positives.
       const unknownRefs = tableRefs.filter(
         ref => !allTables.has(ref.table) && !this.isSystemTable(ref.table)
       );
       const knownCount = allTables.size;
       const unknownCount = unknownRefs.length;
 
-      // Spec 24 Item 4 Part B — 10:1 fail-open ratio.
-      // When zero known tables: a detector that knows zero tables may not
-      // call anything unknown — every reference is "unknown" by construction.
-      // When known tables exist: disable if unknown:known ratio exceeds 10:1.
       if (knownCount === 0 || unknownCount / Math.max(knownCount, 1) > 10) {
         const displayRatio = knownCount === 0 ? '∞' : (unknownCount / Math.max(knownCount, 1)).toFixed(1);
-        console.error(
-          `[code-auditor] unknown-table rule disabled: ` +
-          `${unknownCount} unknown refs vs ${knownCount} known tables ` +
-          `(ratio ${displayRatio}:1 exceeds 10:1). ` +
-          `Add schemas to .codeauditor.json or ORM schema files.`
-        );
-        // Skip unknown-table findings — fall through to column refs below
+        // Silently skip — in direct test mode we don't emit console warnings
       } else {
         for (const ref of unknownRefs) {
           const suggestions = this.getNearestTableSuggestions(ref.table, allTables, 2);
@@ -567,7 +345,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
             ast.filePath,
             ref.location,
             msg,
-            'suggestion',  // R7
+            'suggestion',
             'unknown-table',
             undefined,
             ref.table
@@ -586,10 +364,201 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       violations.push(...this.checkQueryPatterns(ast, adapter, sourceCode, finalConfig));
     }
 
-    // Check for SQL injection patterns — R7: no critical by default
+    // Check for SQL injection patterns
     violations.push(...this.checkSQLInjection(ast, adapter, sourceCode));
 
     return violations;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-discovery helpers — used by the standalone analyze() override and
+  // the pre-pipeline discovery phase in auditRunner.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Walk project root recursively, returning files matching any of the given
+   * picomatch globs. Skips node_modules and dot-directories.
+   */
+  private async _walkFiles(root: string, globs: string[]): Promise<string[]> {
+    const results: string[] = [];
+
+    async function walk(dir: string) {
+      let names: string[];
+      try {
+        names = await fs.readdir(dir);
+      } catch {
+        return; // Skip unreadable directories
+      }
+
+      for (const name of names) {
+        const fullPath = path.join(dir, name);
+        // Skip node_modules and dot-directories
+        if (name === 'node_modules' || name.startsWith('.')) continue;
+
+        let stat;
+        try {
+          stat = await fs.stat(fullPath);
+        } catch {
+          continue; // Skip unstatable
+        }
+        if (stat.isDirectory()) {
+          await walk(fullPath);
+        } else if (stat.isFile()) {
+          const relative = path.relative(root, fullPath);
+          const matched = globs.some(g => picomatch.isMatch(relative, g));
+          if (matched) {
+            results.push(fullPath);
+          }
+        }
+      }
+    }
+
+    await walk(root);
+    return results;
+  }
+
+  private async _discoverTablesFromMigrations(
+    projectRoot: string,
+    config: SchemaAnalyzerConfig,
+  ): Promise<Set<string>> {
+    const tables = new Set<string>();
+    const gateGlobs = config.fileGateGlobs ?? ['**/*.sql', '**/migrations/**'];
+    const walkedFiles = await this._walkFiles(projectRoot, gateGlobs);
+    walkedFiles.sort();
+
+    for (const file of walkedFiles) {
+      try {
+        const source = await fs.readFile(file, 'utf8');
+        this.processMigrationSource(source, tables);
+      } catch {
+        // Skip unreadable files
+      }
+    }
+
+    return tables;
+  }
+
+  private async _discoverTablesFromWrangler(
+    projectRoot: string,
+  ): Promise<Set<string>> {
+    const tables = new Set<string>();
+
+    const wranglerPath = path.join(projectRoot, 'wrangler.toml');
+    let wranglerContent: string;
+    try {
+      wranglerContent = await fs.readFile(wranglerPath, 'utf8');
+    } catch {
+      return tables; // No wrangler.toml
+    }
+
+    const migrationDirs: string[] = [];
+    let inD1Block = false;
+    for (const line of wranglerContent.split('\n')) {
+      const trimmed = line.trim();
+      if (/^\[\[d1_databases\]\]/i.test(trimmed)) {
+        inD1Block = true;
+        continue;
+      }
+      if (inD1Block && trimmed.startsWith('[')) {
+        inD1Block = false;
+        continue;
+      }
+      if (inD1Block) {
+        const m = trimmed.match(/^migrations_dir\s*=\s*['"](.+?)['"]/);
+        if (m) {
+          migrationDirs.push(m[1]);
+        }
+      }
+    }
+
+    for (const migDir of migrationDirs) {
+      const absDir = path.resolve(projectRoot, migDir);
+      let entries: string[];
+      try {
+        const dirents = await fs.readdir(absDir, { withFileTypes: true });
+        entries = dirents
+          .filter(e => e.isFile() && e.name.endsWith('.sql'))
+          .map(e => e.name)
+          .sort();
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        const filePath = path.join(absDir, entry);
+        try {
+          const source = await fs.readFile(filePath, 'utf8');
+          this.processMigrationSource(source, tables);
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    }
+
+    return tables;
+  }
+
+  private async _discoverTablesFromSchemaFiles(
+    schemaFiles: string[],
+    projectRoot: string,
+  ): Promise<Set<string>> {
+    const tables = new Set<string>();
+
+    for (const file of schemaFiles) {
+      const absPath = path.resolve(projectRoot, file);
+      try {
+        const source = await fs.readFile(absPath, 'utf8');
+        const createRe = /CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)/gi;
+        let match: RegExpExecArray | null;
+        while ((match = createRe.exec(source)) !== null) {
+          tables.add(this.stripIdentifier(match[1]));
+        }
+      } catch {
+        // Skip unreadable files
+      }
+    }
+
+    return tables;
+  }
+
+  private async _discoverTablesFromOrmSchemas(
+    files: string[],
+  ): Promise<Set<string>> {
+    const tables = new Set<string>();
+
+    for (const file of files) {
+      const lowerFile = file.toLowerCase();
+
+      if (/\.(ts|tsx|js|jsx)$/i.test(file)) {
+        try {
+          const source = await fs.readFile(file, 'utf8');
+          if (/from\s+['"]drizzle-orm/.test(source)) {
+            const builderRegex = /(?:pgTable|mysqlTable|sqliteTable)\s*\(\s*['"]([^'"]+)['"]/g;
+            let match: RegExpExecArray | null;
+            while ((match = builderRegex.exec(source)) !== null) {
+              tables.add(match[1]);
+            }
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+
+      if (file.endsWith('schema.prisma') || file.endsWith('\\schema.prisma')) {
+        try {
+          const source = await fs.readFile(file, 'utf8');
+          const modelRegex = /model\s+(\w+)\s*\{/g;
+          let match: RegExpExecArray | null;
+          while ((match = modelRegex.exec(source)) !== null) {
+            tables.add(match[1]);
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    }
+
+    return tables;
   }
 
   // ---------------------------------------------------------------------------
@@ -600,7 +569,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * Pre-filter: only analyze files that show DB usage.
    * Checks: .sql/migration glob, D1/SQL imports, env-binding patterns, DB calls.
    */
-  private passesFileGate(
+  public passesFileGate(
     filePath: string,
     sourceCode: string,
     config: SchemaAnalyzerConfig,
@@ -641,14 +610,14 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       }
 
       // Check for env-binding patterns (e.g., env.DB in Cloudflare Workers)
-      const bindingNames = config.dbBindingNames ?? ['env.DB'];
+      const bindingNames = config.dbBindingNames ?? [...DB_BINDING_NAMES];
       for (const binding of bindingNames) {
         if (sourceCode.includes(binding)) return true;
       }
 
       // Check for DB call patterns (receiver.method)
-      const receivers = config.dbReceiverNames ?? ['db', 'database', 'sql', 'stmt'];
-      const methods = config.dbCallMethods ?? ['exec', 'prepare', 'batch', 'run', 'all', 'first'];
+      const receivers = config.dbReceiverNames ?? [...DB_RECEIVER_NAMES];
+      const methods = config.dbCallMethods ?? [...DB_CALL_METHOD_NAMES];
       for (const receiver of receivers) {
         for (const method of methods) {
           const pattern = new RegExp(`\\b${escapeRegex(receiver)}\\.${escapeRegex(method)}\\s*\\(`);
@@ -658,7 +627,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     }
 
     // Check for SQL tagged template literals (syntax feature, not naming convention)
-    const sqlTags = config.sqlTagNames ?? ['sql', 'db'];
+    const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
     for (const tag of sqlTags) {
       const pattern = new RegExp(`\\b${escapeRegex(tag)}\`\\s*SELECT|\\b${escapeRegex(tag)}\`\\s*INSERT|\\b${escapeRegex(tag)}\`\\s*UPDATE|\\b${escapeRegex(tag)}\`\\s*DELETE|\\b${escapeRegex(tag)}\`\\s*CREATE`, 'i');
       if (pattern.test(sourceCode)) return true;
@@ -676,7 +645,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * R2.1: Only tagged template SQL and DB-call patterns produce candidates.
    * R2.3: Template expressions (${var}) resolved to wildcards.
    */
-  private findTableReferences(
+  public findTableReferences(
     ast: AST,
     adapter: LanguageAdapter,
     sourceCode: string,
@@ -685,7 +654,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     allTables?: Set<string>,
   ): TableReference[] {
     const references: TableReference[] = [];
-    const sqlTags = config.sqlTagNames ?? ['sql', 'db'];
+    const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
 
     // (1) Tagged template SQL — e.g. sql`SELECT * FROM heroes`
     // This is a syntax feature, not a naming convention — keep the sqlTagNames gate.
@@ -720,8 +689,8 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
         // Legacy name-based check for names mode / no context
         const callee = this.getCallee(node, adapter, sourceCode);
         if (!callee) return false;
-        const dbMethods = config.dbCallMethods ?? ['exec', 'prepare', 'batch', 'run', 'all', 'first', 'query'];
-        const dbReceivers = config.dbReceiverNames ?? ['db', 'database', 'sql', 'stmt'];
+        const dbMethods = config.dbCallMethods ?? [...DB_CALL_METHOD_NAMES];
+        const dbReceivers = config.dbReceiverNames ?? [...DB_RECEIVER_NAMES];
         return this.isDbMemberCall(node, callee, dbMethods, dbReceivers, adapter, sourceCode);
       },
     });
@@ -778,15 +747,14 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * are inserted. For .sql/migration files, uses "schema-file" as the
    * function name since there's no AST function context.
    */
-  private recordTableUsage(
+  public recordTableUsage(
     ast: AST,
     adapter: LanguageAdapter,
     filePath: string,
     references: TableReference[],
   ): void {
     try {
-      const db = CodeIndexDB.getInstance(undefined, this.projectRoot);
-      db.clearSchemaUsageForFile(filePath);
+      this._pendingSchemaRecords.clearFiles.push(filePath);
 
       for (const ref of references) {
         // Find enclosing function from the AST position
@@ -797,7 +765,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
             ? 'schema-file'
             : 'top-level';
 
-        const usage: SchemaUsage = {
+        this._pendingSchemaRecords.usages.push({
           tableName: ref.table,
           filePath,
           functionName,
@@ -805,20 +773,25 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
           line: ref.location.line,
           column: ref.location.column,
           rawQuery: ref.context,
-        };
-
-        db.recordSchemaUsage(usage);
+        });
       }
     } catch {
       // Schema recording is best-effort — failures don't block analysis.
     }
   }
 
+  /** Spec 25 B4 — Drain pending schema records for the pipeline to write. */
+  getPendingSchemaRecords(): { clearFiles: string[]; usages: SchemaUsage[] } {
+    const records = this._pendingSchemaRecords;
+    this._pendingSchemaRecords = { clearFiles: [], usages: [] };
+    return records;
+  }
+
   /**
    * Parse SQL table names from a SQL text string.
    * R2.3: Template expressions (${...}) resolve portions to wildcards.
    */
-  private parseSqlTables(
+  public parseSqlTables(
     sqlText: string,
     baseLocation: { line: number; column: number },
     sourceCode: string,
@@ -973,7 +946,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   /**
    * Return known table names within edit distance ≤ maxDist.
    */
-  private getNearestTableSuggestions(
+  public getNearestTableSuggestions(
     name: string,
     knownTables: Set<string>,
     maxDist: number
@@ -990,7 +963,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     return results.slice(0, 3).map(r => `'${r.table}'`);
   }
 
-  private levenshteinDistance(a: string, b: string): number {
+  public levenshteinDistance(a: string, b: string): number {
     const m = a.length;
     const n = b.length;
     // Optimize: early exit if length difference exceeds threshold
@@ -1016,7 +989,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   // Naming conventions
   // ---------------------------------------------------------------------------
 
-  private checkNamingConventions(
+  public checkNamingConventions(
     references: TableReference[],
     filePath: string
   ): Violation[] {
@@ -1056,7 +1029,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   // Query patterns
   // ---------------------------------------------------------------------------
 
-  private checkQueryPatterns(
+  public checkQueryPatterns(
     ast: AST,
     adapter: LanguageAdapter,
     sourceCode: string,
@@ -1100,7 +1073,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   // SQL injection — per-call-site with enclosing-function + ordinal symbols
   // ---------------------------------------------------------------------------
 
-  private checkSQLInjection(
+  public checkSQLInjection(
     ast: AST,
     adapter: LanguageAdapter,
     sourceCode: string
@@ -1367,7 +1340,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * Find the nearest AST node at a source location — walks the tree looking
    * for the deepest node that contains the given line/column.
    */
-  private findClosestNodeAt(
+  public findClosestNodeAt(
     root: ASTNode,
     location: { line: number; column: number },
     adapter: LanguageAdapter
@@ -1406,7 +1379,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * Walk up the AST from a node to find the enclosing function or method name.
    * Matches the same scheme as UniversalDataAccessAnalyzer.findEnclosingFunctionName.
    */
-  private findEnclosingFunctionName(node: ASTNode, adapter: LanguageAdapter): string {
+  public findEnclosingFunctionName(node: ASTNode, adapter: LanguageAdapter): string {
     let current: ASTNode | null = node;
     while (current) {
       const type = adapter.getNodeType(current);
@@ -1463,10 +1436,19 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   // JSON Schema validation (unchanged from original)
   // ---------------------------------------------------------------------------
 
-  private async analyzeJsonSchemas(
-    files: string[],
+  /**
+   * Analyze JSON schemas and validate data files against them.
+   *
+   * Pipeline-refactored: accepts a Map of pre-loaded JSON contents instead of
+   * reading from the filesystem, so this can run inside a Stage 3 reducer.
+   *
+   * @param jsonContents Map from filePath → { parsed: pre-parsed object or null, raw: string }
+   * @param config Schema analyzer configuration
+   */
+  public analyzeJsonSchemas(
+    jsonContents: Map<string, { parsed: object | null; raw: string }>,
     config: SchemaAnalyzerConfig
-  ): Promise<AnalyzerResult> {
+  ): AnalyzerResult {
     const violations: BaseViolation[] = [];
     const errors: Array<{ file: string; error: string }> = [];
     let filesProcessed = 0;
@@ -1475,18 +1457,42 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     const finalConfig = { ...DEFAULT_SCHEMA_CONFIG, ...config };
 
     if (!finalConfig.validateJsonSchemas) {
-      return { violations, errors, filesProcessed, executionTime: 0 };
+      return { violations, errors, status: makeVisitorStatus(filesProcessed), executionTime: 0, analyzerName: this.name };
     }
 
+    const files = Array.from(jsonContents.keys());
     const schemaFiles = this.identifySchemaFiles(files, finalConfig);
     const dataFiles = this.identifyDataFiles(files, finalConfig);
     const unknownJsonFiles = files.filter(f => !schemaFiles.includes(f) && !dataFiles.includes(f));
 
+    // Helper: parse from Map content (with fallback)
+    const getParsed = (filePath: string): object | null => {
+      const entry = jsonContents.get(filePath);
+      if (!entry) return null;
+      if (entry.parsed !== null) return entry.parsed;
+      try { return JSON.parse(entry.raw); } catch { return null; }
+    };
+
     const schemas = new Map<string, any>();
     for (const file of schemaFiles) {
       try {
-        const content = await fs.readFile(file, 'utf8');
-        const schema = JSON.parse(content);
+        const entry = jsonContents.get(file);
+        const content = entry?.raw;
+        if (!content) {
+          violations.push({
+            file,
+            line: 1,
+            column: 1,
+            severity: 'warning',
+            message: `Content not available for schema file`,
+            rule: 'file-error',
+            analyzer: 'schema'
+          });
+          filesProcessed++;
+          continue;
+        }
+        const schema = entry.parsed ?? (() => { try { return JSON.parse(content); } catch { return null; } })();
+        if (schema === null) throw new SyntaxError('JSON parse failed');
         schemas.set(file, schema);
 
         const fileViolations = this.validateJsonSchema(schema, file, finalConfig);
@@ -1516,13 +1522,27 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
 
     if (finalConfig.schemaDataPairs) {
       for (const pair of finalConfig.schemaDataPairs) {
-        const schema = schemas.get(pair.schema) || await this.loadSchema(pair.schema);
+        const schema = schemas.get(pair.schema) ?? getParsed(pair.schema);
         if (schema) {
           const dataFiles = Array.isArray(pair.data) ? pair.data : [pair.data];
           for (const dataFile of dataFiles) {
             if (files.includes(dataFile)) {
-              const dataViolations = await this.validateDataAgainstSchema(dataFile, schema, finalConfig);
-              violations.push(...dataViolations);
+              const parsed = getParsed(dataFile);
+              if (parsed !== null) {
+                const dataViolations: BaseViolation[] = [];
+                this.validateAgainstSchema(parsed, schema, dataFile, dataViolations, finalConfig);
+                violations.push(...dataViolations);
+              } else {
+                violations.push({
+                  file: dataFile,
+                  line: 1,
+                  column: 1,
+                  severity: 'warning',
+                  message: 'Invalid JSON in data file',
+                  rule: 'invalid-json',
+                  analyzer: 'schema'
+                });
+              }
               filesProcessed++;
             }
           }
@@ -1532,19 +1552,21 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       for (const dataFile of [...dataFiles, ...unknownJsonFiles]) {
         const matchedSchema = this.findMatchingSchema(dataFile, schemas, finalConfig);
         if (matchedSchema) {
-          const dataViolations = await this.validateDataAgainstSchema(dataFile, matchedSchema, finalConfig);
-          violations.push(...dataViolations);
+          const parsed = getParsed(dataFile);
+          if (parsed !== null) {
+            const dataViolations: BaseViolation[] = [];
+            this.validateAgainstSchema(parsed, matchedSchema, dataFile, dataViolations, finalConfig);
+            violations.push(...dataViolations);
+          }
         } else if (unknownJsonFiles.includes(dataFile)) {
-          try {
-            const content = await fs.readFile(dataFile, 'utf8');
-            JSON.parse(content);
-          } catch (error) {
+          const parsed = getParsed(dataFile);
+          if (parsed === null) {
             violations.push({
               file: dataFile,
               line: 1,
               column: 1,
               severity: 'warning',
-              message: `Invalid JSON: ${error instanceof Error ? error.message : 'Parse error'}`,
+              message: `Invalid JSON: Parse error`,
               rule: 'invalid-json',
               analyzer: 'schema'
             });
@@ -1557,8 +1579,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     return {
       violations,
       errors,
-      filesProcessed,
-      executionTime: Date.now() - startTime
+      status: makeVisitorStatus(filesProcessed),
+      executionTime: Date.now() - startTime,
+      analyzerName: this.name,
     };
   }
 
@@ -1691,14 +1714,6 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     });
   }
 
-  private async loadSchema(schemaPath: string): Promise<any | null> {
-    try {
-      const content = await fs.readFile(schemaPath, 'utf8');
-      return JSON.parse(content);
-    } catch {
-      return null;
-    }
-  }
 
   private findMatchingSchema(
     dataFile: string,
@@ -1724,43 +1739,6 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     return null;
   }
 
-  private async validateDataAgainstSchema(
-    dataFile: string,
-    schema: any,
-    config: SchemaAnalyzerConfig
-  ): Promise<BaseViolation[]> {
-    const violations: BaseViolation[] = [];
-
-    try {
-      const content = await fs.readFile(dataFile, 'utf8');
-      const data = JSON.parse(content);
-      this.validateAgainstSchema(data, schema, dataFile, violations, config);
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        violations.push({
-          file: dataFile,
-          line: 1,
-          column: 1,
-          severity: 'warning',
-          message: `Invalid JSON: ${error.message}`,
-          rule: 'invalid-json',
-          analyzer: 'schema'
-        });
-      } else {
-        violations.push({
-          file: dataFile,
-          line: 1,
-          column: 1,
-          severity: 'warning',
-          message: `Error reading file: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          rule: 'file-error',
-          analyzer: 'schema'
-        });
-      }
-    }
-
-    return violations;
-  }
 
   private validateAgainstSchema(
     data: any,

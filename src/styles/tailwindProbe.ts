@@ -37,6 +37,8 @@ export interface ProbeInitResult {
   source?: string;
   /** Error message if init failed. */
   error?: string;
+  /** Whether the tailwindcss package was found on disk (regardless of ok). */
+  tailwindFound: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +144,7 @@ export class TailwindProbe {
     const twPath = this.findTailwindcss(projectRoot);
     if (!twPath) {
       this._failureReason = 'tailwindcss not found in project node_modules';
-      return { ok: false, error: this._failureReason };
+      return { ok: false, error: this._failureReason, tailwindFound: false };
     }
     this.tailwindPath = twPath;
 
@@ -165,7 +167,7 @@ export class TailwindProbe {
           this.validClasses = new Set();
           this._ready = true;
           this._source = 'v4-compile-probe';
-          return { ok: true, source: this._source };
+          return { ok: true, source: this._source, tailwindFound: true };
         }
       }
     } catch {
@@ -192,7 +194,7 @@ export class TailwindProbe {
           this.validClasses = new Set();
           this._ready = true;
           this._source = 'v4-cjs-compile-probe';
-          return { ok: true, source: this._source };
+          return { ok: true, source: this._source, tailwindFound: true };
         }
       }
 
@@ -207,7 +209,7 @@ export class TailwindProbe {
             this.validClasses = null; // generated lazily from config
             this._ready = true;
             this._source = 'v3-config-generation';
-            return { ok: true, source: this._source };
+            return { ok: true, source: this._source, tailwindFound: true };
           }
         } catch {
           // resolveConfig not available
@@ -218,7 +220,7 @@ export class TailwindProbe {
     }
 
     this._failureReason = 'tailwindcss found but could not be loaded (neither v4 compile() nor v3 resolveConfig detected)';
-    return { ok: false, error: this._failureReason };
+    return { ok: false, error: this._failureReason, tailwindFound: true };
   }
 
   /**

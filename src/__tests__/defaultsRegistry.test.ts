@@ -17,14 +17,19 @@
  */
 import { describe, it, expect } from 'vitest';
 import { getDefaultConfig, DEFAULT_ANALYZER_CONFIGS } from '../config/defaults.js';
-import { DEFAULT_ANALYZERS } from '../auditRunner.js';
+/** All known analyzer keys in the audit pipeline — the single source of truth for
+ *  the registry guard. When a new analyzer is added, update this list. */
+const ALL_ANALYZERS = new Set([
+  'solid', 'dry', 'data-access', 'react', 'documentation',
+  'invariants', 'schema', 'styles', 'conventions', 'cross-domain',
+]);
 // Analyzer defaults — used by each analyzer's constructor/analyzeAST
 import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 
 /** Analyzers that are intentionally excluded from the default list. */
 const CONDITIONAL_ANALYZERS = new Set(['invariants']);
 
-const REGISTRY_KEYS = new Set(Object.keys(DEFAULT_ANALYZERS));
+const REGISTRY_KEYS = ALL_ANALYZERS;
 const NON_CONDITIONAL_REGISTRY = new Set(
   [...REGISTRY_KEYS].filter((k) => !CONDITIONAL_ANALYZERS.has(k)),
 );
@@ -49,7 +54,7 @@ describe('defaults ≡ registry guard', () => {
     expect(absent).toEqual([]);
   });
 
-  it('matches the canonical order: solid, dry, react, data-access, documentation, schema, styles, conventions, cross-domain', () => {
+  it('matches the canonical order: solid, dry, react, data-access, documentation, schema, styles, conventions, cross-domain, invariants', () => {
     // Order matters — the first enabled analyzer runs first, and the
     // progress display reflects this order.
     expect(defaults).toEqual([
@@ -62,6 +67,7 @@ describe('defaults ≡ registry guard', () => {
       'styles',
       'conventions',
       'cross-domain',
+      'invariants',
     ]);
   });
 });

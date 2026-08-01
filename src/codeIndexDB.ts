@@ -671,6 +671,7 @@ export class CodeIndexDB {
         this.db.exec(`ALTER TABLE conventions ADD COLUMN export_kind TEXT`);
       }
     }
+
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -2047,59 +2048,7 @@ export class CodeIndexDB {
 
     // Spec 12 — Mine codebase conventions after sync when the functions table
     // has changed. Content-hash-based skip: stored hash avoids re-mining.
-    const miningConfig: ConventionMiningConfig = {
-      minCorpus: 20,
-      pairConfidence: 0.9,
-      modeShare: 0.8,
-      maxConventionsPerDomain: 200,
-    };
-    const newHash = computeMinerInputHash(this.db, miningConfig);
-    const oldHashRow = this.db.prepare(
-      "SELECT value FROM meta WHERE key = 'conventions_hash'"
-    ).get() as { value: string } | undefined;
-
-    if (!oldHashRow || oldHashRow.value !== newHash) {
-      const conventions = mineConventions(this.db, miningConfig, projectRoot);
-      // Upsert: clear existing conventions, insert new ones
-      const deleteStmt = this.db.prepare('DELETE FROM conventions');
-      const insertStmt = this.db.prepare(
-        `INSERT INTO conventions
-         (domain, rule_id, antecedent, consequent, pattern, directory,
-          file_path, line, support, total_cases, confidence,
-          exemplar_file, exemplar_line, export_kind, hash)
-         VALUES (@domain, @rule_id, @antecedent, @consequent, @pattern,
-                 @directory, @file_path, @line, @support, @total_cases,
-                 @confidence, @exemplar_file, @exemplar_line, @export_kind, @hash)`
-      );
-
-      const upsertAll = this.db.transaction(() => {
-        deleteStmt.run();
-        for (const c of conventions) {
-          insertStmt.run({
-            domain: c.domain,
-            rule_id: c.rule_id,
-            antecedent: c.antecedent ?? null,
-            consequent: c.consequent ?? null,
-            pattern: c.pattern ?? null,
-            directory: c.directory ?? null,
-            file_path: c.file_path ?? null,
-            line: c.line ?? null,
-            support: c.support,
-            total_cases: c.total_cases,
-            confidence: c.confidence,
-            exemplar_file: c.exemplar_file ?? null,
-            exemplar_line: c.exemplar_line ?? null,
-            export_kind: (c as any).export_kind ?? null,
-            hash: c.hash ?? null,
-          });
-        }
-      });
-      upsertAll();
-
-      this.db.prepare(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('conventions_hash', ?)"
-      ).run(newHash);
-    }
+    this.mineAllConventions(projectRoot);
 
     // Spec 14 — Populate graph caches after index is built
     try {
@@ -3244,6 +3193,112 @@ export class CodeIndexDB {
       riskScore: r.risk_score,
       basis: r.basis,
     }));
+  }
+
+  /** Execute a parameterized query and return all rows. */
+  query(sql: string, params?: any[]): any[] {
+    this.ensureInitialized();
+    return params?.length
+      ? this.db.prepare(sql).all(...params)
+      : this.db.prepare(sql).all();
+  }
+
+  /** Count rows in a table, with optional WHERE clause. */
+  count(table: string, where?: string, params?: any[]): number {
+    this.ensureInitialized();
+    const whereClause = where ? ` WHERE ${where}` : '';
+    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM ${table}${whereClause}`).get(...(params ?? [])) as { cnt: number };
+    return row.cnt;
+  }
+
+  /** Check if a table has any rows. */
+  tableHasRows(table: string): boolean {
+    this.ensureInitialized();
+    const row = this.db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get();
+    return row !== undefined;
+  }
+
+  /**
+   * Mine codebase conventions from the functions table and upsert into the
+   * conventions table. Content-hash-based skip: stored hash avoids re-mining
+   * when the function corpus hasn't changed since the last mine.
+   *
+   * Called both by deepSync() (after indexing) and by audit runs (so the
+   * conventions analyzer has data to query even without an explicit sync).
+   */
+  mineAllConventions(projectRoot?: string, getSource?: (filePath: string) => string | undefined): void {
+    this.ensureInitialized();
+    const miningConfig: ConventionMiningConfig = {
+      minCorpus: 20,
+      pairConfidence: 0.9,
+      modeShare: 0.8,
+      maxConventionsPerDomain: 200,
+    };
+    const newHash = computeMinerInputHash(this.db, miningConfig);
+    const oldHashRow = this.db.prepare(
+      "SELECT value FROM meta WHERE key = 'conventions_hash'"
+    ).get() as { value: string } | undefined;
+
+    if (!oldHashRow || oldHashRow.value !== newHash) {
+      const conventions = mineConventions(this.db, miningConfig, projectRoot, getSource);
+      const deleteStmt = this.db.prepare('DELETE FROM conventions');
+      const insertStmt = this.db.prepare(
+        `INSERT INTO conventions
+         (domain, rule_id, antecedent, consequent, pattern, directory,
+          file_path, line, support, total_cases, confidence,
+          exemplar_file, exemplar_line, export_kind, hash)
+         VALUES (@domain, @rule_id, @antecedent, @consequent, @pattern,
+                 @directory, @file_path, @line, @support, @total_cases,
+                 @confidence, @exemplar_file, @exemplar_line, @export_kind, @hash)`
+      );
+
+      const upsertAll = this.db.transaction(() => {
+        deleteStmt.run();
+        for (const c of conventions) {
+          insertStmt.run({
+            domain: c.domain,
+            rule_id: c.rule_id,
+            antecedent: c.antecedent ?? null,
+            consequent: c.consequent ?? null,
+            pattern: c.pattern ?? null,
+            directory: c.directory ?? null,
+            file_path: c.file_path ?? null,
+            line: c.line ?? null,
+            support: c.support,
+            total_cases: c.total_cases,
+            confidence: c.confidence,
+            exemplar_file: c.exemplar_file ?? null,
+            exemplar_line: c.exemplar_line ?? null,
+            export_kind: (c as any).export_kind ?? null,
+            hash: c.hash ?? null,
+          });
+        }
+      });
+      upsertAll();
+
+      // Only store the hash when conventions were actually produced.
+      // Storing it on an empty mine would be a poison pill — the hash
+      // would match on every subsequent run, skipping mining forever.
+      if (conventions.length > 0) {
+        this.db.prepare(
+          "INSERT OR REPLACE INTO meta (key, value) VALUES ('conventions_hash', ?)"
+        ).run(newHash);
+      }
+    }
+  }
+
+  /** Execute a DML statement (INSERT/UPDATE/DELETE) and return its result. */
+  run(sql: string, params?: unknown[]): { changes: number; lastInsertRowid: number | bigint } {
+    this.ensureInitialized();
+    return params?.length
+      ? this.db.prepare(sql).run(...params)
+      : this.db.prepare(sql).run();
+  }
+
+  /** Execute raw SQL (multi-statement) — for schema setup / bulk operations. */
+  exec(sql: string): void {
+    this.ensureInitialized();
+    this.db.exec(sql);
   }
 }
 

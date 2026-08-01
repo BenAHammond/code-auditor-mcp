@@ -2,6 +2,20 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.9] — unreleased
+
+### Accuracy fix: Phantom cross-domain lifecycle violations from over-broad DB detection defaults
+
+`dbReceiverNames` and `dbCallMethods` defaults existed in three (actually seven) copies across the codebase, and they disagreed: the type annotations at `UniversalSchemaAnalyzer.ts` described a narrow 4-entry / 6-entry list, but `DEFAULT_SCHEMA_CONFIG` itself held a wider 7-entry / 9-entry list (`connection`, `pool`, `client`, `query`, `get`, `each`), `pipelineAdapters.ts` hardcoded the narrow list (correct by accident), `UniversalDataAccessAnalyzer.ts` had its own 7-entry / 11-entry copy via `...DB_CALL_METHODS`, and `config/defaults.ts` held the wide list for user-facing help.
+
+The wide lists matched non-DB code: `env.VECTORIZE.query()` (Vectorize binding, not a DB client), `Map.get()`, jQuery `.each()`, WebSocket `connection.status`, generic `pool.length`, and `client.` appearing only in comments. Every match was a phantom — the extended entries produced zero signal across the entire recall-protocol corpus.
+
+**Breaking ground-truth change:** `DEFAULT_SCHEMA_CONFIG.dbReceiverNames` and `.dbCallMethods` are now the narrow lists (`db, database, sql, stmt` / `exec, prepare, batch, run, all, first`). All inline fallbacks in `passesFileGate`, `findTableReferences`, and `buildProvenanceContext` reference `DEFAULT_SCHEMA_CONFIG` as the single source of truth. `config/defaults.ts` matches. `pipelineAdapters.ts` reads `DEFAULT_SCHEMA_CONFIG` instead of hardcoding.
+
+This is not an internal cleanup — any user with a variable named `pool`, `client`, or `connection` was receiving phantom cross-domain `written-never-read` / `read-never-written` / `transaction-boundary` findings, and phantom data-access violations on generic `.query()` / `.get()` / `.each()` calls. The fix removes these false positives.
+
+Cross-domain: 37 (was 43). Data-access: 1826 (was 1827). All 803 tests pass.
+
 ## [3.4.8] — 2026-07-28
 
 ### Fix: React Analyzer Bench F1 — Config Merge + Heuristic Fix

@@ -24,8 +24,9 @@ import * as path from 'node:path';
 
 import type { AnalyzerResult, Violation, ValidatorBypassConfig, CoverageConfig } from '../../types.js';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
-import { CodeIndexDB } from '../../codeIndexDB.js';
+import type { IndexHandle } from '../../types.js';
 import { VALIDATOR_PACKAGES } from '../provenance.js';
+import { makeVisitorStatus } from '../../pipeline.js';
 
 // ---------------------------------------------------------------------------
 // DB row shapes
@@ -55,9 +56,6 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     'Detects cross-domain issues (schema lifecycle, validation bypass, coverage gaps)';
   readonly category = 'architecture';
 
-  /** Project root for DB scoping (Bug #4 / Item 1). */
-  private projectRoot: string | undefined;
-
   /**
    * Full override: query the code index DB for cross-domain findings.
    * The base-class per-file AST loop is bypassed — all detection is
@@ -71,30 +69,25 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     const startTime = Date.now();
     const violations: Violation[] = [];
 
-    // Store projectRoot for scoped DB access in private methods (Bug #4 / Item 1)
-    this.projectRoot = config.projectRoot as string | undefined;
-
-    let rawDb: any = null;
-    try {
-      const db = CodeIndexDB.getInstance(undefined, this.projectRoot);
-      await db.initialize();
-      rawDb = (db as any).rawDb;
-    } catch {
+    const indexHandle: IndexHandle | undefined = config.indexHandle;
+    if (!indexHandle) {
       return {
         violations: [],
         errors: [{ file: '', error: 'Failed to open code index database' }],
-        filesProcessed: 0,
+        status: makeVisitorStatus(0),
         executionTime: Date.now() - startTime,
+        analyzerName: 'cross-domain',
         metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
-    if (!rawDb) {
+    if (!indexHandle) {
       return {
         violations: [],
         errors: [],
-        filesProcessed: files.length,
+        status: makeVisitorStatus(files.length),
         executionTime: Date.now() - startTime,
+        analyzerName: 'cross-domain',
         metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
@@ -111,43 +104,41 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     // R1 — Schema lifecycle detectors
     const lifecycle = config.schemaLifecycle ?? {};
     if (lifecycle.enableWrittenNeverRead !== false) {
-      violations.push(...this.detectWrittenNeverRead(rawDb, filePathClause));
+      violations.push(...this.detectWrittenNeverRead(indexHandle, filePathClause));
     }
     if (lifecycle.enableReadNeverWritten !== false) {
-      violations.push(...this.detectReadNeverWritten(rawDb, filePathClause));
+      violations.push(...this.detectReadNeverWritten(indexHandle, filePathClause));
     }
     if (lifecycle.enableTransactionBoundaryRisk !== false) {
       const txnTableMax = lifecycle.txnTableMax ?? 4;
-      violations.push(...this.detectTransactionBoundaryRisk(rawDb, txnTableMax, filePathClause));
+      violations.push(...this.detectTransactionBoundaryRisk(indexHandle, txnTableMax, filePathClause));
     }
 
     // R3 — Validation-bypass detection
     const bypass = config.validatorBypass as ValidatorBypassConfig | undefined;
     if (bypass) {
-      violations.push(...this.detectValidationBypass(rawDb, bypass, filePathClause));
+      violations.push(...this.detectValidationBypass(indexHandle, bypass, filePathClause));
     }
 
     // R4 — Coverage by importance
     const coverage = config.coverage as CoverageConfig | undefined;
     if (coverage) {
-      violations.push(...this.detectUncoveredRisk(rawDb, coverage, filePathClause));
+      violations.push(...this.detectUncoveredRisk(indexHandle, coverage, filePathClause));
     }
 
     // Count distinct files with schema_usage entries
-    const fileRows = rawDb
-      .prepare(
-        filePathClause
+    const fileRows = indexHandle
+      .query(filePathClause
           ? `SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage WHERE 1=1 ${filePathClause.clause}`
-          : 'SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage',
-      )
-      .all(...(filePathClause ? [filePathClause.param] : [])) as Array<{ cnt: number }>;
+          : 'SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage', (filePathClause ? [filePathClause.param] : [])) as Array<{ cnt: number }>;
     const uniqueFiles = fileRows[0]?.cnt ?? 0;
 
     return {
       violations,
       errors: [],
-      filesProcessed: uniqueFiles || files.length,
+      status: makeVisitorStatus(uniqueFiles || files.length),
       executionTime: Date.now() - startTime,
+      analyzerName: 'cross-domain',
       metrics: {
         filesAnalyzed: uniqueFiles || files.length,
         totalViolations: violations.length,
@@ -167,23 +158,20 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
    * Detect tables that are written to (INSERT/UPDATE/DELETE/CREATE) but
    * never read from (SELECT). These might be dead writes or missed read paths.
    */
-  private detectWrittenNeverRead(rawDb: any, filePath?: FilePathClause): Violation[] {
+  private detectWrittenNeverRead(indexHandle: IndexHandle, filePath?: FilePathClause): Violation[] {
     const violations: Violation[] = [];
 
     const fpWhere = filePath ? filePath.clause : '';
 
-    const rows = rawDb
-      .prepare(
-        `SELECT DISTINCT table_name, file_path, function_name, line, usage_type
+    const rows = indexHandle
+      .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
          FROM schema_usage
          WHERE usage_type IN ('insert', 'update', 'delete', 'create')
            ${fpWhere}
            AND table_name NOT IN (
              SELECT DISTINCT table_name FROM schema_usage WHERE usage_type = 'select' ${fpWhere}
            )
-         ORDER BY table_name, file_path`,
-      )
-      .all(...(filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
+         ORDER BY table_name, file_path`, (filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
 
     // Deduplicate by table_name — one violation per table, anchored to
     // the first writing file encountered.
@@ -214,14 +202,13 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
    * (INSERT/UPDATE/DELETE/CREATE). These may be external/managed tables
    * or indicate missing write coverage.
    */
-  private detectReadNeverWritten(rawDb: any, filePath?: FilePathClause): Violation[] {
+  private detectReadNeverWritten(indexHandle: IndexHandle, filePath?: FilePathClause): Violation[] {
     const violations: Violation[] = [];
 
     const fpWhere = filePath ? filePath.clause : '';
 
-    const rows = rawDb
-      .prepare(
-        `SELECT DISTINCT table_name, file_path, function_name, line, usage_type
+    const rows = indexHandle
+      .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
          FROM schema_usage
          WHERE usage_type = 'select'
            ${fpWhere}
@@ -229,9 +216,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
              SELECT DISTINCT table_name FROM schema_usage
              WHERE usage_type IN ('insert', 'update', 'delete', 'create') ${fpWhere}
            )
-         ORDER BY table_name, file_path`,
-      )
-      .all(...(filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
+         ORDER BY table_name, file_path`, (filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
 
     const seen = new Set<string>();
     for (const row of rows) {
@@ -264,7 +249,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
    * long-running transactions, lock contention, and partial-failure complexity.
    */
   private detectTransactionBoundaryRisk(
-    rawDb: any,
+    indexHandle: IndexHandle,
     txnTableMax: number,
     filePath?: FilePathClause,
   ): Violation[] {
@@ -277,16 +262,13 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     //    The functions table is only populated during deepSync (code-audit index
     //    sync), not during normal audit. We query schema_usage directly so this
     //    detector works in both modes.
-    const writerRows = rawDb
-      .prepare(
-        `SELECT su.function_name, su.file_path, su.table_name, MIN(su.line) as line
+    const writerRows = indexHandle
+      .query(`SELECT su.function_name, su.file_path, su.table_name, MIN(su.line) as line
          FROM schema_usage su
          WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
          ${fpWhere}
          GROUP BY su.function_name, su.file_path, su.table_name
-         ORDER BY su.function_name, su.file_path`,
-      )
-      .all(...fpParams) as Array<{
+         ORDER BY su.function_name, su.file_path`, fpParams) as Array<{
       function_name: string;
       file_path: string;
       table_name: string;
@@ -324,9 +306,9 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     //    call-graph context.
     const hasGraphData: boolean = (() => {
       try {
-        const cnt = rawDb.prepare(
-          "SELECT COUNT(*) AS n FROM graph_cache WHERE graph_type = 'call'",
-        ).get() as { n: number } | null;
+        const row = indexHandle.query("SELECT COUNT(*) AS n FROM graph_cache WHERE graph_type = 'call'",
+        ) as Array<{ n: number }>;
+        const cnt = row[0] as { n: number } | undefined;
         return (cnt?.n ?? 0) > 0;
       } catch {
         return false;
@@ -338,9 +320,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     let fnIdLookup: Map<string, number> | null = null;
     if (hasGraphData) {
       try {
-        const fnRows = rawDb.prepare(
-          'SELECT id, name, file_path FROM functions',
-        ).all() as Array<{ id: number; name: string; file_path: string }>;
+        const fnRows = indexHandle.query('SELECT id, name, file_path FROM functions',) as Array<{ id: number; name: string; file_path: string }>;
         if (fnRows.length > 0) {
           fnIdLookup = new Map();
           for (const r of fnRows) {
@@ -360,31 +340,22 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       if (fnIdLookup && hasGraphData) {
         const funcId = fnIdLookup.get(key);
         if (funcId !== undefined) {
-          const calleeRows = rawDb
-            .prepare(
-              `SELECT neighbor_key FROM graph_cache
-               WHERE graph_type = 'call' AND node_key = ?`,
-            )
-            .all(String(funcId)) as Array<{ neighbor_key: string }>;
+          const calleeRows = indexHandle
+            .query(`SELECT neighbor_key FROM graph_cache
+               WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
 
           for (const callee of calleeRows) {
-            const calleeFuncs = rawDb
-              .prepare(
-                `SELECT name, file_path FROM functions WHERE id = ?`,
-              )
-              .all(parseInt(callee.neighbor_key, 10)) as Array<{
+            const calleeFuncs = indexHandle
+              .query(`SELECT name, file_path FROM functions WHERE id = ?`, [parseInt(callee.neighbor_key, 10)]) as Array<{
               name: string;
               file_path: string;
             }>;
 
             for (const cf of calleeFuncs) {
-              const calleeTables = rawDb
-                .prepare(
-                  `SELECT DISTINCT table_name FROM schema_usage
+              const calleeTables = indexHandle
+                .query(`SELECT DISTINCT table_name FROM schema_usage
                    WHERE usage_type IN ('insert', 'update', 'delete', 'create')
-                     AND function_name = ? AND file_path = ?`,
-                )
-                .all(cf.name, cf.file_path) as Array<{ table_name: string }>;
+                     AND function_name = ? AND file_path = ?`, [cf.name, cf.file_path]) as Array<{ table_name: string }>;
 
               for (const ct of calleeTables) {
                 allTables.add(ct.table_name);
@@ -425,7 +396,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
    *      above are silent)
    */
   private detectValidationBypass(
-    rawDb: any,
+    indexHandle: IndexHandle,
     config: ValidatorBypassConfig,
     filePath?: FilePathClause,
   ): Violation[] {
@@ -447,14 +418,12 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       if (hashIdx >= 0) {
         const vPath = v.substring(0, hashIdx);
         const vName = v.substring(hashIdx + 1);
-        const rows = rawDb
-          .prepare('SELECT id FROM functions WHERE name = ? AND file_path = ?')
-          .all(vName, vPath) as Array<{ id: number }>;
+        const rows = indexHandle
+          .query('SELECT id FROM functions WHERE name = ? AND file_path = ?', [vName, vPath]) as Array<{ id: number }>;
         for (const r of rows) validatorIds.add(r.id);
       } else {
-        const rows = rawDb
-          .prepare('SELECT id FROM functions WHERE name = ?')
-          .all(v) as Array<{ id: number }>;
+        const rows = indexHandle
+          .query('SELECT id FROM functions WHERE name = ?', [v]) as Array<{ id: number }>;
         for (const r of rows) validatorIds.add(r.id);
       }
     }
@@ -467,27 +436,21 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       const likeClauses = [...VALIDATOR_PACKAGES].map(() => 'used_imports LIKE ?');
       const likeParams = [...VALIDATOR_PACKAGES].map((pkg) => `%"${pkg}"%`);
 
-      const validatorFuncs = rawDb
-        .prepare(
-          `SELECT id FROM functions
+      const validatorFuncs = indexHandle
+        .query(`SELECT id FROM functions
            WHERE used_imports IS NOT NULL
              AND (${likeClauses.join(' OR ')})
-             AND is_exported = 1`,
-        )
-        .all(...likeParams) as Array<{ id: number }>;
+             AND is_exported = 1`, likeParams) as Array<{ id: number }>;
       for (const f of validatorFuncs) validatorIds.add(f.id);
     }
 
     // 1c. Heuristic fallback: name-based matching (only when provenance
     //     found nothing AND no user-configured validators exist).
     if (validatorIds.size === 0 && userValidators.length === 0) {
-      const heuristicFuncs = rawDb
-        .prepare(
-          `SELECT id FROM functions
+      const heuristicFuncs = indexHandle
+        .query(`SELECT id FROM functions
            WHERE (name GLOB 'validate*' OR name GLOB 'assert*')
-             AND is_exported = 1`,
-        )
-        .all() as Array<{ id: number }>;
+             AND is_exported = 1`,) as Array<{ id: number }>;
       for (const f of heuristicFuncs) validatorIds.add(f.id);
     }
 
@@ -499,17 +462,14 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       ? `AND su.${filePath.clause.slice(4)}`
       : '';
 
-    const writers = rawDb
-      .prepare(
-        `SELECT DISTINCT su.function_name, su.file_path, su.line, f.id as function_id
+    const writers = indexHandle
+      .query(`SELECT DISTINCT su.function_name, su.file_path, su.line, f.id as function_id
          FROM schema_usage su
          JOIN functions f ON f.name = su.function_name
                           AND f.file_path = su.file_path
          WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
          ${fpAliasWhere}
-         ORDER BY su.file_path, su.function_name`,
-      )
-      .all(...(filePath ? [filePath.param] : [])) as Array<{
+         ORDER BY su.file_path, su.function_name`, (filePath ? [filePath.param] : [])) as Array<{
       function_name: string;
       file_path: string;
       line: number;
@@ -531,7 +491,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       const key = `${w.file_path}::${w.function_name}`;
       if (writerCoverage.has(key)) continue; // deduplicate
       const covered = this.bfsReachesValidator(
-        rawDb,
+        indexHandle,
         w.function_id,
         validatorIds,
         depth,
@@ -618,39 +578,37 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
    * into the call graph).
    */
   private detectUncoveredRisk(
-    rawDb: any,
+    indexHandle: IndexHandle,
     coverage: CoverageConfig,
     filePath?: FilePathClause,
   ): Violation[] {
     const violations: Violation[] = [];
-    const db = CodeIndexDB.getInstance(undefined, this.projectRoot);
 
     const topRiskDecile = coverage.topRiskDecile ?? 0.1;
 
     // Check if any measured coverage exists
     const measuredCount = (
-      rawDb
-        .prepare("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")
-        .get() as { cnt: number }
+      indexHandle
+        .query("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")[0] as { cnt: number }
     ).cnt;
 
     if (measuredCount > 0) {
       // Use measured coverage data from lcov/istanbul imports
-      const untested = db.getUntestedTopDecile(topRiskDecile);
+      const untested = indexHandle.getUntestedTopDecile(topRiskDecile) as Array<{
+        functionName: string; filePath: string; lineNumber: number | null;
+        riskScore: number; basis: string;
+      }>;
 
       // Determine source format from existing coverage entries
-      const sourceRow = rawDb
-        .prepare(
-          "SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1",
-        )
-        .get() as { source: string | null; imported_at: string | null } | undefined;
+      const sourceRow = indexHandle
+        .query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1",)[0] as { source: string | null; imported_at: string | null } | undefined;
       const sourceFormat = sourceRow?.source ?? 'unknown';
       const importedAt = sourceRow?.imported_at ?? null;
 
       // Stale-import detection: measured coverage predates last full index sync
       let staleWarning: string | null = null;
       if (importedAt) {
-        const lastSync = db.getMeta?.('last_full_sync_timestamp') ?? null;
+        const lastSync = indexHandle.getMeta?.('last_full_sync_timestamp') ?? null;
         if (lastSync && importedAt < lastSync) {
           staleWarning =
             ` — WARNING: this coverage data may be stale (imported ${importedAt}, ` +
@@ -684,8 +642,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       const params: any[] = [topRiskDecile];
       if (filePath) params.push(filePath.param);
 
-      const highRiskFns = rawDb
-        .prepare(
+      const highRiskFns = indexHandle.query(
           `WITH ranked AS (
             SELECT
               f.name,
@@ -703,9 +660,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
           SELECT id, name, file_path, line_number, risk_score
           FROM ranked
           WHERE pct <= ?
-          ORDER BY risk_score DESC`,
-        )
-        .all(...params) as Array<{
+          ORDER BY risk_score DESC`, params) as Array<{
         id: number;
         name: string;
         file_path: string;
@@ -732,9 +687,8 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
 
       const testFuncIds = new Set<number>();
       if (testFileClause) {
-        const testFunctions = rawDb
-          .prepare(`SELECT id FROM functions WHERE ${testFileClause}`)
-          .all(...testFileParams) as Array<{ id: number }>;
+        const testFunctions = indexHandle
+          .query(`SELECT id FROM functions WHERE ${testFileClause}`, testFileParams) as Array<{ id: number }>;
         for (const tf of testFunctions) testFuncIds.add(tf.id);
       }
 
@@ -756,12 +710,9 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
               visited.add(funcId);
               reachableIds.add(funcId);
 
-              const callees = rawDb
-                .prepare(
-                  `SELECT neighbor_key FROM graph_cache
-                   WHERE graph_type = 'call' AND node_key = ?`,
-                )
-                .all(String(funcId)) as Array<{ neighbor_key: string }>;
+              const callees = indexHandle
+                .query(`SELECT neighbor_key FROM graph_cache
+                   WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
               for (const callee of callees) {
                 const calleeId = parseInt(callee.neighbor_key, 10);
                 if (!isNaN(calleeId) && !visited.has(calleeId)) {
@@ -806,7 +757,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
    * any path from startFuncId reaches a validator function ID.
    */
   private bfsReachesValidator(
-    rawDb: any,
+    indexHandle: IndexHandle,
     startFuncId: number,
     validatorIds: Set<number>,
     maxDepth: number,
@@ -823,12 +774,9 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
         visited.add(funcId);
 
         // Get callees from graph_cache call edges
-        const callees = rawDb
-          .prepare(
-            `SELECT neighbor_key FROM graph_cache
-             WHERE graph_type = 'call' AND node_key = ?`,
-          )
-          .all(String(funcId)) as Array<{ neighbor_key: string }>;
+        const callees = indexHandle
+          .query(`SELECT neighbor_key FROM graph_cache
+             WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
 
         for (const callee of callees) {
           const calleeId = parseInt(callee.neighbor_key, 10);

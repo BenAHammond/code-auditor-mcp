@@ -13,6 +13,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { generateSARIFReport, resolveRuleId, buildFullRuleId } from '../reporting/sarifReportGenerator.js';
 import type { AuditResult, Violation } from '../types.js';
+import { makeVisitorStatus } from '../pipeline.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = join(__dirname, '..', '..', 'test-fixtures', 'sarif-schema-2.1.0.json');
@@ -45,7 +46,7 @@ function makeAuditResult(analyzerResults: Record<string, any> = {}): AuditResult
     analyzerResults: {
       'solid-analyzer': {
         violations: [],
-        filesProcessed: 3,
+        status: makeVisitorStatus(3),
         executionTime: 150,
         analyzerName: 'solid-analyzer',
         ...(analyzerResults['solid-analyzer'] || {}),
@@ -89,7 +90,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'doEverything',
             }),
           ],
-          filesProcessed: 3,
+          status: makeVisitorStatus(3),
           executionTime: 150,
         },
       });
@@ -115,7 +116,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'fn1',
             }),
           ],
-          filesProcessed: 3,
+          status: makeVisitorStatus(3),
           executionTime: 100,
         },
         'dry-analyzer': {
@@ -130,7 +131,7 @@ describe('SARIF Report Generator', () => {
               similarity: 0.85,
             }),
           ],
-          filesProcessed: 3,
+          status: makeVisitorStatus(3),
           executionTime: 120,
         },
       });
@@ -157,7 +158,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'featureInit',
             }),
           ],
-          filesProcessed: 5,
+          status: makeVisitorStatus(5),
           executionTime: 80,
         },
       });
@@ -230,7 +231,7 @@ describe('SARIF Report Generator', () => {
           violations: [
             makeViolation({ severity: 'critical', principle: 'single-responsibility' }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -247,7 +248,7 @@ describe('SARIF Report Generator', () => {
           violations: [
             makeViolation({ severity: 'warning', principle: 'open-closed' }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -268,7 +269,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'foo',
             }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -296,7 +297,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'fn2',
             }),
           ],
-          filesProcessed: 3,
+          status: makeVisitorStatus(3),
           executionTime: 100,
         },
       });
@@ -329,7 +330,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'fnB',
             }),
           ],
-          filesProcessed: 2,
+          status: makeVisitorStatus(2),
           executionTime: 50,
         },
       });
@@ -351,7 +352,7 @@ describe('SARIF Report Generator', () => {
             makeViolation({ principle: 'single-responsibility', functionName: 'fn2' }),
             makeViolation({ principle: 'open-closed', functionName: 'fn3' }),
           ],
-          filesProcessed: 3,
+          status: makeVisitorStatus(3),
           executionTime: 100,
         },
       });
@@ -378,7 +379,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'init',
             }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -402,7 +403,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'init',
             }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -420,7 +421,7 @@ describe('SARIF Report Generator', () => {
           violations: [
             makeViolation({ principle: 'single-responsibility', functionName: 'fn1' }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
         'dry-analyzer': {
@@ -432,7 +433,7 @@ describe('SARIF Report Generator', () => {
               message: 'Exact duplicate detected',
             }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -462,7 +463,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'authenticate',
             }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -488,7 +489,7 @@ describe('SARIF Report Generator', () => {
               principle: 'single-responsibility',
             }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -516,7 +517,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'doWork',
             }),
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10,
         },
       });
@@ -613,7 +614,7 @@ describe('buildFullRuleId', () => {
             functionName: 'doEverything',
           }),
         ],
-        filesProcessed: 3,
+        status: makeVisitorStatus(3),
         executionTime: 150,
         analyzerName: 'solid-analyzer',
       },
@@ -628,7 +629,7 @@ describe('buildFullRuleId', () => {
             functionName: 'formatDate',
           }),
         ],
-        filesProcessed: 3,
+        status: makeVisitorStatus(3),
         executionTime: 120,
         analyzerName: 'dry-analyzer',
       },
@@ -643,7 +644,7 @@ describe('buildFullRuleId', () => {
             functionName: 'appBootstrap',
           }),
         ],
-        filesProcessed: 5,
+        status: makeVisitorStatus(5),
         executionTime: 80,
         analyzerName: 'invariants-analyzer',
       },

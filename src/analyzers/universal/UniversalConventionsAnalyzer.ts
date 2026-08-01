@@ -13,11 +13,11 @@
  *   conventions/naming        — wrong casing convention
  */
 
-import * as fs from 'fs';
 import * as path from 'path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { AnalyzerResult, Violation, ConventionsAnalyzerConfig } from '../../types.js';
-import { CodeIndexDB } from '../../codeIndexDB.js';
+import type { IndexHandle } from '../../types.js';
+import { makeVisitorStatus } from '../../pipeline.js';
 import {
   detectCase,
   detectErrorHandlingShape,
@@ -94,48 +94,37 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     const startTime = Date.now();
     const violations: Violation[] = [];
 
-    let rawDb: any = null;
-    try {
-      const db = CodeIndexDB.getInstance(undefined, config.projectRoot);
-      await db.initialize();
-      rawDb = (db as any).rawDb;
-    } catch {
+    const indexHandle: IndexHandle | undefined = config.indexHandle;
+    if (!indexHandle) {
       return {
         violations: [],
-        errors: [{ file: '', error: 'Failed to open code index database' }],
-        filesProcessed: 0,
+        errors: [{ file: '', error: 'No index handle available — code index not open' }],
+        status: makeVisitorStatus(0),
         executionTime: Date.now() - startTime,
+        analyzerName: this.name,
         metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
-    if (!rawDb) {
-      return {
-        violations: [],
-        errors: [],
-        filesProcessed: files.length,
-        executionTime: Date.now() - startTime,
-        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
-      };
-    }
-
     // Query all conventions
-    const conventions = rawDb
-      .prepare('SELECT * FROM conventions ORDER BY domain, directory')
-      .all() as ConventionRow[];
+    const conventions = indexHandle.query(
+      'SELECT * FROM conventions ORDER BY domain, directory',
+    ) as ConventionRow[];
 
     if (conventions.length === 0) {
       return {
         violations: [],
         errors: [],
-        filesProcessed: files.length,
+        status: makeVisitorStatus(files.length),
         executionTime: Date.now() - startTime,
+        analyzerName: this.name,
         metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
-    // Extract project root from config
+    // Extract project root and source map from config
     const projectRoot: string | undefined = config.projectRoot;
+    const sourceMap: Map<string, string> | undefined = config.sourceMap;
 
     // Group conventions by domain for efficient detection
     const byDomain = new Map<string, ConventionRow[]>();
@@ -149,26 +138,26 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     for (const [domain, domainConventions] of byDomain) {
       switch (domain) {
         case 'usage-pair':
-          violations.push(...this.detectUsagePairViolations(rawDb, domainConventions));
+          violations.push(...this.detectUsagePairViolations(indexHandle, domainConventions));
           break;
         case 'import-form':
           violations.push(
-            ...this.detectImportFormViolations(rawDb, domainConventions, projectRoot),
+            ...this.detectImportFormViolations(indexHandle, domainConventions, projectRoot, sourceMap),
           );
           break;
         case 'error-handling':
           violations.push(
-            ...this.detectErrorHandlingViolations(rawDb, domainConventions),
+            ...this.detectErrorHandlingViolations(indexHandle, domainConventions),
           );
           break;
         case 'export-shape':
           violations.push(
-            ...this.detectExportShapeViolations(rawDb, domainConventions, projectRoot),
+            ...this.detectExportShapeViolations(indexHandle, domainConventions, projectRoot, sourceMap),
           );
           break;
         case 'naming':
           violations.push(
-            ...this.detectNamingViolations(rawDb, domainConventions),
+            ...this.detectNamingViolations(indexHandle, domainConventions),
           );
           break;
       }
@@ -176,20 +165,20 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
 
     // Count unique files that conventions apply to (from the function index)
     const resolvedProjectRoot = projectRoot ? path.resolve(projectRoot) : undefined;
-    const fileRows = rawDb
-      .prepare(
-        resolvedProjectRoot
-          ? 'SELECT COUNT(DISTINCT file_path) as cnt FROM functions WHERE file_path LIKE ?'
-          : 'SELECT COUNT(DISTINCT file_path) as cnt FROM functions',
-      )
-      .all(...(resolvedProjectRoot ? [resolvedProjectRoot + '%'] : [])) as Array<{ cnt: number }>;
+    const fileRows = indexHandle.query(
+      resolvedProjectRoot
+        ? 'SELECT COUNT(DISTINCT file_path) as cnt FROM functions WHERE file_path LIKE ?'
+        : 'SELECT COUNT(DISTINCT file_path) as cnt FROM functions',
+      resolvedProjectRoot ? [resolvedProjectRoot + '%'] : [],
+    ) as Array<{ cnt: number }>;
     const uniqueFiles = fileRows[0]?.cnt ?? 0;
 
     return {
       violations,
       errors: [],
-      filesProcessed: uniqueFiles,
+      status: makeVisitorStatus(uniqueFiles),
       executionTime: Date.now() - startTime,
+      analyzerName: this.name,
       metrics: {
         filesAnalyzed: uniqueFiles,
         totalViolations: violations.length,
@@ -210,15 +199,15 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
    * that call the antecedent but NOT the consequent.
    */
   private detectUsagePairViolations(
-    rawDb: any,
+    indexHandle: IndexHandle,
     conventions: ConventionRow[],
   ): Violation[] {
     const violations: Violation[] = [];
 
     // Query all function calls once
-    const allCalls = rawDb
-      .prepare('SELECT caller_id, callee_name FROM function_calls')
-      .all() as FunctionCallRow[];
+    const allCalls = indexHandle.query(
+      'SELECT caller_id, callee_name FROM function_calls',
+    ) as FunctionCallRow[];
 
     // Build callerId → Set<calleeName>
     const callerCalls = new Map<number, Set<string>>();
@@ -237,9 +226,9 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     }
 
     // Query all functions for file/line info
-    const funcRows = rawDb
-      .prepare('SELECT id, name, file_path, line_number FROM functions')
-      .all() as FunctionRow[];
+    const funcRows = indexHandle.query(
+      'SELECT id, name, file_path, line_number FROM functions',
+    ) as FunctionRow[];
 
     const funcById = new Map<number, FunctionRow>();
     for (const f of funcRows) {
@@ -293,9 +282,10 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
    * find imports of that source that use a minority form.
    */
   private detectImportFormViolations(
-    rawDb: any,
+    indexHandle: IndexHandle,
     conventions: ConventionRow[],
     projectRoot?: string,
+    sourceMap?: Map<string, string>,
   ): Violation[] {
     const violations: Violation[] = [];
 
@@ -329,9 +319,9 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     }
 
     // Get unique file paths
-    const fileRows = rawDb
-      .prepare('SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL')
-      .all() as Array<{ file_path: string }>;
+    const fileRows = indexHandle.query(
+      'SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL',
+    ) as Array<{ file_path: string }>;
 
     const seenFiles = new Set<string>();
 
@@ -344,12 +334,8 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       if (!importConvs) continue;
 
       const fullPath = projectRoot ? path.join(projectRoot, fp) : fp;
-      let content: string;
-      try {
-        content = fs.readFileSync(fullPath, 'utf-8');
-      } catch {
-        continue;
-      }
+      let content: string | undefined = sourceMap?.get(fullPath);
+      if (content === undefined) continue;
 
       const imports = parseFileImports(content);
 
@@ -397,7 +383,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
    * Functions with NO error handling are excluded — never flagged.
    */
   private detectErrorHandlingViolations(
-    rawDb: any,
+    indexHandle: IndexHandle,
     conventions: ConventionRow[],
   ): Violation[] {
     const violations: Violation[] = [];
@@ -416,13 +402,11 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       });
     }
 
-    const rows = rawDb
-      .prepare(
+    const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, metadata_json
          FROM functions
          WHERE metadata_json IS NOT NULL`,
-      )
-      .all() as FunctionRow[];
+      ) as FunctionRow[];
 
     for (const row of rows) {
       const directory = path.dirname(row.file_path) || '.';
@@ -472,9 +456,10 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
    * directory that use a minority export form.
    */
   private detectExportShapeViolations(
-    rawDb: any,
+    indexHandle: IndexHandle,
     conventions: ConventionRow[],
     projectRoot?: string,
+    sourceMap?: Map<string, string>,
   ): Violation[] {
     const violations: Violation[] = [];
 
@@ -492,13 +477,11 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       });
     }
 
-    const rows = rawDb
-      .prepare(
+    const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, is_exported
          FROM functions
          WHERE is_exported = 1`,
-      )
-      .all() as FunctionRow[];
+      ) as FunctionRow[];
 
     for (const row of rows) {
       const directory = path.dirname(row.file_path) || '.';
@@ -506,7 +489,9 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       if (!conv) continue;
 
       const fullPath = projectRoot ? path.join(projectRoot, row.file_path) : row.file_path;
-      const form = detectExportForm(fullPath, row.name);
+      const sourceCode = sourceMap?.get(fullPath);
+      if (sourceCode === undefined) continue;
+      const form = detectExportForm(fullPath, row.name, sourceCode);
       if (!form || form === conv.form) continue;
 
       const pct = Math.round(conv.confidence * 100);
@@ -541,7 +526,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
    * (Spec 21 R5.4).
    */
   private detectNamingViolations(
-    rawDb: any,
+    indexHandle: IndexHandle,
     conventions: ConventionRow[],
   ): Violation[] {
     const violations: Violation[] = [];
@@ -571,13 +556,11 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       });
     }
 
-    const rows = rawDb
-      .prepare(
+    const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, is_exported, entity_type, component_type
          FROM functions
          WHERE is_exported = 1`,
-      )
-      .all() as Array<{
+      ) as Array<{
         id: number;
         name: string;
         file_path: string;

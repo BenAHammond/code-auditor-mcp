@@ -1418,7 +1418,7 @@ describe('Rule Registry', () => {
   it('has entries for every known analyzer', () => {
     const analyzers = new Set(Object.values(RULE_REGISTRY).map((e) => e.analyzer));
 
-    // Core analyzers (from auditRunner DEFAULT_ANALYZERS)
+    // Core analyzers (from auditRunner pipeline)
     expect(analyzers.has('solid'), 'solid analyzer must be registered').toBe(true);
     expect(analyzers.has('dry'), 'dry analyzer must be registered').toBe(true);
     expect(analyzers.has('data-access'), 'data-access analyzer must be registered').toBe(true);

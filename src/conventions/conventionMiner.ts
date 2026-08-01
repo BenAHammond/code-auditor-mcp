@@ -268,13 +268,9 @@ export function parseFileImports(
 export function detectExportForm(
   filePath: string,
   functionName: string,
+  sourceCode: string,
 ): 'default' | 'named' | null {
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, 'utf-8');
-  } catch {
-    return null;
-  }
+  const content = sourceCode;
 
   const escaped = escapeRegex(functionName);
 
@@ -464,6 +460,7 @@ function mineImportForm(
   db: Database.Database,
   config: ConventionMiningConfig,
   projectRoot?: string,
+  getSource?: (filePath: string) => string | undefined,
 ): Convention[] {
   const conventions: Convention[] = [];
 
@@ -490,10 +487,15 @@ function mineImportForm(
 
     const fullPath = projectRoot ? path.join(projectRoot, row.file_path) : row.file_path;
     let content: string;
-    try {
-      content = fs.readFileSync(fullPath, 'utf-8');
-    } catch {
-      continue;
+    const provided = getSource?.(row.file_path) ?? getSource?.(fullPath);
+    if (provided !== undefined) {
+      content = provided;
+    } else {
+      try {
+        content = fs.readFileSync(fullPath, 'utf-8');
+      } catch {
+        continue;
+      }
     }
 
     const directory = row.dir_part ? path.dirname(row.file_path) : '.';
@@ -676,6 +678,7 @@ function mineExportShape(
   db: Database.Database,
   config: ConventionMiningConfig,
   projectRoot?: string,
+  getSource?: (filePath: string) => string | undefined,
 ): Convention[] {
   const conventions: Convention[] = [];
 
@@ -698,7 +701,18 @@ function mineExportShape(
 
   for (const row of rows) {
     const fullPath = projectRoot ? path.join(projectRoot, row.file_path) : row.file_path;
-    const form = detectExportForm(fullPath, row.name);
+    let content: string;
+    const provided = getSource?.(row.file_path) ?? getSource?.(fullPath);
+    if (provided !== undefined) {
+      content = provided;
+    } else {
+      try {
+        content = fs.readFileSync(fullPath, 'utf-8');
+      } catch {
+        continue;
+      }
+    }
+    const form = detectExportForm(fullPath, row.name, content);
     if (!form) continue;
 
     const directory = path.dirname(row.file_path) || '.';
@@ -910,14 +924,21 @@ export function computeMinerInputHash(
   db: Database.Database,
   config: ConventionMiningConfig,
 ): string {
-  const funcCount = (
-    db.prepare('SELECT COUNT(*) as c FROM functions').get() as { c: number }
-  ).c;
-  const callCount = (
-    db.prepare('SELECT COUNT(*) as c FROM function_calls').get() as { c: number }
-  ).c;
+  // Hash actual content — not just counts — so two corpora with identical
+  // counts but different functions produce different hashes and are mined.
+  const rows = db.prepare(
+    'SELECT name, content_hash, COALESCE(body, \'\') as body, COALESCE(signature, \'\') as signature FROM functions ORDER BY name, content_hash'
+  ).all() as Array<{ name: string; content_hash: string; body: string; signature: string }>;
+  const callRows = db.prepare(
+    'SELECT fc.callee_name FROM function_calls fc ORDER BY fc.callee_name'
+  ).all() as Array<{ callee_name: string }>;
 
-  return computeHash([MINER_VERSION, funcCount, callCount, config]);
+  return computeHash([
+    MINER_VERSION,
+    rows.map(r => [r.name, r.content_hash, r.signature.length, r.body.length]),
+    callRows.map(r => r.callee_name),
+    config,
+  ]);
 }
 
 /**
@@ -933,20 +954,21 @@ export function mineConventions(
   db: Database.Database,
   config: ConventionMiningConfig,
   projectRoot?: string,
+  getSource?: (filePath: string) => string | undefined,
 ): Convention[] {
   const conventions: Convention[] = [];
 
   // 1. Usage Pairs
   conventions.push(...mineUsagePairs(db, config));
 
-  // 2. Import Form (reads files from disk)
-  conventions.push(...mineImportForm(db, config, projectRoot));
+  // 2. Import Form (reads files from disk unless getSource provided)
+  conventions.push(...mineImportForm(db, config, projectRoot, getSource));
 
   // 3. Error Handling
   conventions.push(...mineErrorHandling(db, config));
 
-  // 4. Export Shape (reads files from disk)
-  conventions.push(...mineExportShape(db, config, projectRoot));
+  // 4. Export Shape (reads files from disk unless getSource provided)
+  conventions.push(...mineExportShape(db, config, projectRoot, getSource));
 
   // 5. Naming
   conventions.push(...mineNaming(db, config));

@@ -14,6 +14,7 @@ import {
   type ProvenanceContext,
   type DetectionMode,
 } from '../provenance.js';
+import { DEFAULT_SCHEMA_CONFIG } from './UniversalSchemaAnalyzer.js';
 
 /**
  * Configuration for Data Access analyzer
@@ -166,9 +167,10 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const p0 = performance.now();
     const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
       mode: detectionMode,
-      dbReceiverNames: schemaConfig.dbReceiverNames ?? ['db', 'database', 'sql', 'stmt', 'connection', 'pool', 'client'],
-      dbBindingNames: schemaConfig.dbBindingNames ?? ['env.DB'],
-      dbCallMethods: schemaConfig.dbCallMethods ?? [...DB_CALL_METHODS],
+      // Single source of truth for DB detection patterns — see DEFAULT_SCHEMA_CONFIG.
+      dbReceiverNames: schemaConfig.dbReceiverNames ?? DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
+      dbBindingNames: schemaConfig.dbBindingNames ?? DEFAULT_SCHEMA_CONFIG.dbBindingNames,
+      dbCallMethods: schemaConfig.dbCallMethods ?? DEFAULT_SCHEMA_CONFIG.dbCallMethods,
     });
     const timingAcc: { totalMs: number } | undefined = schemaConfig._provenanceTiming;
     if (timingAcc) timingAcc.totalMs += performance.now() - p0;

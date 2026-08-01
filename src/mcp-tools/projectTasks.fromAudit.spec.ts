@@ -5,6 +5,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { handleProjectTasks } from './projectTasks.js';
+import { makeVisitorStatus } from '../pipeline.js';
 
 /**
  * Build a fixture audit result object matching the shape produced by storeAuditResults.
@@ -38,7 +39,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             type: 'solid'
           }
         ],
-        filesProcessed: 5,
+        status: makeVisitorStatus(5),
         executionTime: 120
       },
       dry: {
@@ -55,7 +56,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             similarity: 0.85
           }
         ],
-        filesProcessed: 3,
+        status: makeVisitorStatus(3),
         executionTime: 80
       },
       'data-access': {
@@ -71,7 +72,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             functionName: 'getUserById'
           }
         ],
-        filesProcessed: 2,
+        status: makeVisitorStatus(2),
         executionTime: 50
       }
     },
@@ -356,7 +357,7 @@ describe('handleProjectTasks from_audit', () => {
               type: 'solid'
             }
           ],
-          filesProcessed: 1,
+          status: makeVisitorStatus(1),
           executionTime: 10
         }
       }

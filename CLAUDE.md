@@ -105,8 +105,7 @@ When working in `/app`:
 ### Publishing — hard boundary
 NEVER run npm publish, npm dist-tag, npm login, npm adduser, or any
 command requiring account credentials or OTP. Not to `next`, not ever.
-Your release work ENDS at: version-bumped commit + tag + verify:close
-green + tarball built. Do not mention publishing as a next step, do not
+Your release work ENDS at: version-bumped commit, tag, verify:close green, pushed to main. Do not mention publishing as a next step, do not
 print publish commands, do not treat an auth prompt as a step for Ben —
 publishing happens only when Ben independently decides to publish.
 Attempting publish and being blocked by 2FA still counts as a violation.

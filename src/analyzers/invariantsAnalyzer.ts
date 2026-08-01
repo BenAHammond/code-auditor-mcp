@@ -8,32 +8,20 @@
  * Selectable via `-a invariants`.
  */
 
-import type { AnalyzerFunction, AnalyzerResult, AnalyzerDefinition, Violation, AuditOptions } from '../types.js';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { CodeIndexDB } from '../codeIndexDB.js';
+import type { AnalyzerFunction, AnalyzerResult, Violation, AuditOptions, IndexHandle } from '../types.js';
 import { checkRules, hasRules, type InvariantRule, type RuleViolation } from '../invariants/ruleEngine.js';
 import { validateRulesConfig } from '../invariants/ruleValidator.js';
+import { makeVisitorStatus } from '../pipeline.js';
 
 /**
  * Load invariant rules from the project config or the .codeauditor.json on disk.
  * Returns null if no rules are configured.
  */
-function loadRules(config: any, projectDir?: string): { rules: InvariantRule[]; errors: string[] } | null {
+function loadRules(config: any, _projectDir?: string): { rules: InvariantRule[]; errors: string[] } | null {
   // Check for rules in config (could be under `rules` or `invariantRules`)
-  let rulesConfig = config?.rules ?? config?.invariantRules;
-
-  // When config doesn't carry rules, try .codeauditor.json on disk (Spec 05 R3.1)
-  if (!rulesConfig && projectDir) {
-    try {
-      const configPath = join(projectDir, '.codeauditor.json');
-      const raw = readFileSync(configPath, 'utf-8');
-      const fileConfig = JSON.parse(raw);
-      rulesConfig = fileConfig?.rules ?? fileConfig?.invariantRules;
-    } catch {
-      // No config file on disk — that's fine
-    }
-  }
+  // The pipeline guarantees rules are pre-loaded into the namespace config;
+  // standalone callers must pass rules explicitly.
+  const rulesConfig = config?.rules ?? config?.invariantRules;
 
   if (!rulesConfig || !Array.isArray(rulesConfig)) {
     return null;
@@ -92,7 +80,7 @@ export const analyzeInvariants: AnalyzerFunction = async (
   if (!ruleData) {
     return {
       violations: [],
-      filesProcessed: 0,
+      status: makeVisitorStatus(0),
       executionTime: Date.now() - startTime,
       analyzerName: 'invariants',
     };
@@ -113,27 +101,25 @@ export const analyzeInvariants: AnalyzerFunction = async (
   if (rules.length === 0) {
     return {
       violations: errorViolations,
-      filesProcessed: 0,
+      status: makeVisitorStatus(0),
       executionTime: Date.now() - startTime,
       analyzerName: 'invariants',
     };
   }
 
-  // Get the DB for call-constraint checks
-  let db: CodeIndexDB | undefined;
-  try {
-    db = CodeIndexDB.getInstance();
-    await db.initialize();
-  } catch {
-    // DB not available — call-constraint checking will be skipped
-  }
+  // IndexHandle for call-constraint and style checks, routed via pipeline.
+  // When not running through the pipeline (standalone analyzer call), fall
+  // back to accessing the DB through the options handle if provided.
+  const indexHandle = (options as any)?.indexHandle as IndexHandle | undefined;
 
   // Run the rule engine
   const result = checkRules({
     rules,
     files,
-    db,
+    indexHandle,
     projectDir,
+    sourceMap: config.sourceMap,
+    knownFiles: config.knownFiles,
   });
 
   const violations: Violation[] = [
@@ -151,21 +137,9 @@ export const analyzeInvariants: AnalyzerFunction = async (
 
   return {
     violations,
-    filesProcessed: files.length,
+    status: makeVisitorStatus(files.length),
     executionTime: Date.now() - startTime,
     analyzerName: 'invariants',
   };
 };
 
-/**
- * The invariants analyzer definition for registration in the audit runner.
- */
-export const invariantsAnalyzer: AnalyzerDefinition = {
-  name: 'invariants',
-  description: 'Enforces custom invariant rules from .codeauditor.json (import bans, call constraints, module boundaries, naming conventions)',
-  category: 'invariants',
-  analyze: analyzeInvariants,
-  defaultConfig: {},
-};
-
-export default invariantsAnalyzer;

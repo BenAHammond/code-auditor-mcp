@@ -537,6 +537,31 @@ export function getComponentName(node: ASTNode): string {
     if (nameNode) return rawText(nameNode);
   }
 
+  // For arrow functions: walk up through memo/forwardRef wrappers to find
+  // the enclosing variable/function declaration name.  Without this, every
+  // `const X = memo(() => <div/>)` produces 'AnonymousComponent', throwing
+  // away 265 real components whose names live one level above the wrapper.
+  if (node.type === 'arrow_function') {
+    let parent: ASTNode | undefined = node.parent;
+
+    // Walk through arguments → call_expression (e.g. memo/forwardRef wrapper)
+    if (parent?.type === 'arguments') {
+      parent = parent.parent;
+    }
+    if (parent?.type === 'call_expression') {
+      parent = parent.parent;
+    }
+
+    // Parent is now the variable declarator (const X = ...) or the next
+    // enclosing node.  If it's a declarator, grab its identifier.
+    if (parent?.type === 'variable_declarator') {
+      const nameNode = parent.children?.find((c) => c.type === 'identifier');
+      if (nameNode) return rawText(nameNode);
+    }
+
+    return 'AnonymousComponent';
+  }
+
   // For memo/forwardRef wrapped components, try to extract from the argument
   if (node.type === 'call_expression') {
     const args = findChildOfType(node, 'arguments');
@@ -545,6 +570,15 @@ export function getComponentName(node: ASTNode): string {
       if (firstArg?.type === 'function_expression') {
         const nameNode = findChildOfType(firstArg, 'identifier');
         if (nameNode) return rawText(nameNode);
+      }
+      // Also handle arrow_function args: walk up from the call_expression
+      // itself to find the enclosing variable declaration name.
+      if (firstArg?.type === 'arrow_function') {
+        let parent: ASTNode | undefined = node.parent;
+        if (parent?.type === 'variable_declarator') {
+          const nameNode = parent.children?.find((c) => c.type === 'identifier');
+          if (nameNode) return rawText(nameNode);
+        }
       }
     }
   }

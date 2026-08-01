@@ -137,6 +137,7 @@ export class TailwindUtilityExpander {
   private customClasses: Set<string> | null = null;
   private _configFailed = false;
   private _configFailureReason: string | null = null;
+  private _hasTailwindConfig = false;
 
   /**
    * Initialize the expander with optional project config.
@@ -159,6 +160,8 @@ export class TailwindUtilityExpander {
       }
 
       const result = await this.probe.init(config.projectRoot);
+
+      this._hasTailwindConfig = result.tailwindFound;
 
       if (!result.ok) {
         this._configFailed = true;
@@ -200,6 +203,11 @@ export class TailwindUtilityExpander {
   /** Why did probe initialization fail? */
   get configFailureReason(): string | null {
     return this._configFailureReason;
+  }
+
+  /** Whether tailwindcss was found on disk (even if the probe failed to load it). */
+  get hasTailwindConfig(): boolean {
+    return this._hasTailwindConfig;
   }
 
   /** Whether the probe is ready (initialized successfully). */
@@ -377,6 +385,7 @@ export class TailwindUtilityExpander {
     this.customClasses = null;
     this._configFailed = false;
     this._configFailureReason = null;
+    this._hasTailwindConfig = false;
   }
 }
 

@@ -10,11 +10,11 @@ import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import { walkAST, getLineAndColumn, isExported as adapterIsExported } from '../languages/adapterBridge.js';
 import {
   Violation,
-  AnalyzerDefinition,
   AnalyzerResult,
   AuditOptions,
   ProgressCallback
 } from '../types.js';
+import { makeVisitorStatus, getFilesProcessed } from '../pipeline.js';
 import {
   getNodePosition,
   findNodesOfType,
@@ -547,20 +547,11 @@ export async function analyzeDocumentation(
 
   return {
     violations: result.violations,
-    filesProcessed: result.filesProcessed,
+    status: makeVisitorStatus(getFilesProcessed(result.status)),
     executionTime: Date.now() - startTime,
     errors: result.errors,
     analyzerName: 'documentation',
-    metrics: aggregatedMetrics
+    metrics: aggregatedMetrics as unknown as Record<string, unknown>
   };
 }
 
-/**
- * Documentation analyzer definition for the registry
- */
-export const documentationAnalyzer: AnalyzerDefinition = {
-  name: 'documentation',
-  analyze: analyzeDocumentation,
-  description: 'Analyzes JSDoc coverage and documentation quality',
-  category: 'quality'
-};
