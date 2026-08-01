@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { derivePartitionPlan, __testables } from './mcpAuditJobs.js';
+import { makeVisitorStatus } from './pipeline.js';
 
 describe('mcpAuditJobs partition planning', () => {
   let dir: string;
@@ -79,7 +80,7 @@ describe('mcpAuditJobs partition planning', () => {
             rule: 'dup-rule',
           },
         ],
-        filesProcessed: 1,
+        status: makeVisitorStatus(1),
         executionTime: 2,
         errors: [],
       },
@@ -102,14 +103,14 @@ describe('mcpAuditJobs partition planning', () => {
             rule: 'other-rule',
           },
         ],
-        filesProcessed: 1,
+        status: makeVisitorStatus(1),
         executionTime: 3,
         errors: [],
       }
     );
 
     expect(merged.violations).toHaveLength(2);
-    expect(merged.filesProcessed).toBe(2);
+    expect(merged.status.status === 'visitor-ran' ? merged.status.filesProcessed : 0).toBe(2);
     expect(merged.executionTime).toBe(5);
   });
 });

@@ -53,17 +53,236 @@ export interface Violation {
   profile?: string;
   /** Hotspot score [0,1] — churn percentile × complexity percentile. */
   hotspot?: number;
-  [key: string]: any; // Allow analyzer-specific properties (violationType, principle, contractType, functionName, etc.)
+
+  // ── Transitional fields (previously leaked via [key: string]: any) ──────
+  /** @deprecated Read from AnalyzerResult.analyzerName instead. */
+  analyzer?: string;
+  /** @deprecated Use `rule` instead — rule-identity field. */
+  type?: string;
+  /** Symbol resolution — set by analyzers for symbol-level attribution. */
+  functionName?: string;
+  componentName?: string;
+  name?: string;
+  methodName?: string;
+  hookName?: string;
+  interfaceName?: string;
+  enclosingSymbol?: string;
+  /** Alternate suggestion field — prefer `suggestion`. */
+  recommendation?: string;
+  /** Scratch flag for diff/new detection. */
+  new?: boolean;
+  violationType?: string;
+  symbol?: string;
+  principle?: string;
+  /** Estimated effort to fix (e.g. "5min", "1h"). */
+  estimatedEffort?: string;
+  /** Cross-domain: coverage basis (measured, static-reach, etc.). */
+  basis?: string;
+  /** Invariant rule: banned import specifier. */
+  importSpecifier?: string;
+  /** Class name for SOLID violations (also used via base Violation in symbols.ts). */
+  className?: string;
+  /** Schema violation type (also on SchemaViolation, read via base in SARIF). */
+  schemaType?: string;
+  /** Violation category (e.g. "security", "architecture", "style"). */
+  category?: string;
+  /** Source format for migration/compat violations. */
+  sourceFormat?: string;
+  /** Callee function/symbol name for call-graph violations. */
+  callee?: string;
+  /** Caller function/symbol name for call-constraint violations. */
+  caller?: string;
+  /** Suggested fix — either a string description or a structured {oldText, newText} patch. */
+  fix?: string | { oldText: string; newText: string };
 }
+
+/**
+ * Discriminable status union for pipeline consumers.
+ * `visitor-ran` → visitor result with filesProcessed.
+ * `reducer-ran` → reducer/derived-reducer result with factsConsumed.
+ * `notRun` → analyzer was skipped or errored.
+ */
+export interface AnalyzerVisitorStatus {
+  status: 'visitor-ran';
+  filesProcessed: number;
+}
+
+export interface AnalyzerReducerStatus {
+  status: 'reducer-ran';
+  factsConsumed: number;
+}
+
+export interface AnalyzerNotRunStatus {
+  status: 'notRun';
+  reason: string;
+}
+
+export type AnalyzerStatus = AnalyzerVisitorStatus | AnalyzerReducerStatus | AnalyzerNotRunStatus;
 
 export interface AnalyzerResult {
   violations: Violation[];
-  filesProcessed: number;
   executionTime: number;
+  status: AnalyzerStatus;
+  analyzerName: string;
   errors?: Array<{ file: string; error: string }>;
-  analyzerName?: string;
-  // Analyzer-specific data can be added by extending this interface
-  [key: string]: any;
+  /** Number of files processed by the analyzer. */
+  filesProcessed?: number;
+  /** Arbitrary metrics bag — used by cross-domain, visualizations, etc. */
+  metrics?: Record<string, unknown>;
+  /** Legacy extra payload from pre-pipeline analyzers. */
+  extras?: Record<string, unknown>;
+}
+
+/** A file with its parsed AST and language adapter — output of pipeline stage 1. */
+/** A file that was successfully parsed into an AST by a LanguageAdapter. */
+export interface ParsedFileASTTuple {
+  kind: 'parsed';
+  file: string;
+  ast: unknown;
+  adapter: unknown;
+  sourceCode: string;
+}
+
+/** A file with no matching LanguageAdapter — included as raw source for visitors
+ *  that declare support for its extension (e.g. .sql, .toml, .prisma, .json). */
+export interface RawFileASTTuple {
+  kind: 'raw';
+  file: string;
+  ast: null;
+  adapter: null;
+  sourceCode: string;
+}
+
+export type FileASTTuple = ParsedFileASTTuple | RawFileASTTuple;
+
+/** Context passed to per-file visitors in stage 2. */
+export interface VisitorContext {
+  projectRoot: string;
+  filePath: string;
+  config: Record<string, unknown>;
+  abortSignal?: AbortSignal;
+}
+
+/** Context passed to reducers in stages 3 and 4. */
+export interface ReducerContext {
+  projectRoot: string;
+  config: Record<string, unknown>;
+  indexHandle?: IndexHandle;
+  abortSignal?: AbortSignal;
+}
+
+/** Return type from stage-2 visitor visit(). */
+export interface VisitorResult {
+  violations: Violation[];
+  facts: Record<string, unknown>;
+  indexFacts?: IndexFactsEntry[];
+}
+
+/** Return type from stage-3/4 reducer reduce(). */
+export interface ReducerResult {
+  violations: Violation[];
+  facts: Record<string, unknown>;
+  factsConsumed?: number;
+}
+
+/** Per-file visitor — runs on every AST in stage 2. */
+export interface Stage2Visitor {
+  name: string;
+  stage: 'visitor';
+  /** File extensions this visitor consumes (e.g. ['.ts', '.tsx']).
+   *  Undefined = backward-compat: receives all parsed tuples, skips raw tuples.
+   *  Set to e.g. ['.sql'] to receive raw tuples for .sql files. */
+  extensions?: string[];
+  visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string): Promise<VisitorResult>;
+  getRuleIds(): string[];
+  defaultConfig: Record<string, unknown>;
+  description: string;
+  category: string;
+}
+
+/** Corpus reducer — accumulates facts in stage 3. Consumes only from stage 2 visitors. */
+export interface Stage3Reducer {
+  name: string;
+  stage: 'reducer';
+  reduce(allFacts: Readonly<Record<string, unknown>>, context: ReducerContext): Promise<ReducerResult>;
+  getRuleIds(): string[];
+  consumes: string[];
+  defaultConfig: Record<string, unknown>;
+  description: string;
+  category: string;
+}
+
+/** Derived reducer — consumes from stage 3 reducers + stage 2 visitors in stage 4. */
+export interface Stage4Reducer {
+  name: string;
+  stage: 'derivedReducer';
+  reduce(allFacts: Record<string, unknown>, context: ReducerContext): Promise<ReducerResult>;
+  getRuleIds(): string[];
+  consumes: string[];
+  defaultConfig: Record<string, unknown>;
+  description: string;
+  category: string;
+}
+
+/**
+ * DB handle abstraction for reducers.
+ * Reducers call query/count/tableHasRows instead of opening CodeIndexDB directly.
+ */
+export interface IndexHandle {
+  query(sql: string, params?: unknown[]): unknown[];
+  count(table: string, where?: string, params?: unknown[]): number;
+  tableHasRows(table: string): boolean;
+  run(sql: string, params?: unknown[]): { changes: number; lastInsertRowid: number | bigint };
+  exec(sql: string): void;
+  getMeta(key: string): unknown;
+  getUntestedTopDecile(decile: number): unknown[];
+  rawDb?: unknown;
+}
+
+/** Deferred DB write record collected in stage 2, persisted post-pipeline. */
+export interface IndexFactsEntry {
+  table: string;
+  data: Record<string, unknown>;
+  conflictKey?: string;
+}
+
+/** Pipeline configuration passed to runPipeline(). */
+export interface PipelineConfig {
+  projectRoot: string;
+  visitors?: Stage2Visitor[];
+  reducers?: Stage3Reducer[];
+  derivedReducers?: Stage4Reducer[];
+  explicitFiles?: string[];
+  /**
+   * Namespaced analyzer configs.
+   * Each key is an analyzer name, value is its config bag.
+   * The `_infra` key holds shared infrastructure config (projectRoot, severityOverrides,
+   * pathProfiles, _provenanceTiming) that every visitor/reducer receives alongside its
+   * own namespace.
+   */
+  config?: Record<string, Record<string, unknown>>;
+  /**
+   * Optional hook that fires after Stage 2 visitors complete and before Stage 3
+   * reducers run. Used for DB setup that depends on Stage 2 output (e.g.
+   * rebuilding function_calls from the functions table, mining conventions).
+   */
+  onStage2Complete?: (ctx: { allFacts: Map<string, Record<string, unknown>> }) => Promise<void>;
+  abortSignal?: AbortSignal;
+  progressCallback?: (progress: AuditProgress) => void;
+  isScoped?: boolean;
+}
+
+/** Pipeline output — merged results from all four stages. */
+export interface PipelineResult {
+  analyzerResults: Record<string, AnalyzerResult>;
+  metadata: {
+    auditDuration: number;
+    filesAnalyzed: number;
+    stageTiming: Record<string, number>;
+    scoped?: boolean;
+    diagnostics?: Array<{ analyzerName: string; kind: string; message: string }>;
+  };
+  indexFacts?: IndexFactsEntry[];
 }
 
 export interface AuditOptions {
@@ -110,15 +329,6 @@ export type AnalyzerFunction = (
   options?: AuditOptions,
   progressCallback?: ProgressCallback
 ) => Promise<AnalyzerResult>;
-
-// Analyzer registry entry
-export interface AnalyzerDefinition {
-  name: string;
-  analyze: AnalyzerFunction;
-  defaultConfig?: any;
-  description?: string;
-  category?: string;
-}
 
 export interface AuditSummary {
   totalFiles: number;

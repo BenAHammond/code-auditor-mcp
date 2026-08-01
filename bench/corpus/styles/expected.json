@@ -15,6 +15,7 @@
     { "file": "src/fixture.tsx", "rule": "styles/value-drift", "symbol": "exact", "severity": "warning" },
     { "file": "src/fixture.tsx", "rule": "styles/token-bypass", "severity": "warning" },
     { "file": "src/fixture.tsx", "rule": "styles/undefined-class", "severity": "warning" },
+    { "file": "", "rule": "styles/undefined-class-disabled", "severity": "suggestion" },
     { "file": "src/fixture.tsx", "rule": "styles/mechanism-fragmentation", "severity": "warning" },
     { "file": "src/fixture.tsx", "rule": "styles/mechanism-mixing", "severity": "suggestion" },
     { "file": "src/fixture.tsx", "rule": "styles/declaration-set-similarity", "severity": "suggestion" },

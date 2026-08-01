@@ -12,8 +12,6 @@ import { CodeIndexDB } from '../../codeIndexDB.js';
 import { resetTailwindExpander } from '../../styles/tailwindUtilityExpander.js';
 import { extractDeclarations } from '../../styles/styleExtractor.js';
 
-let rawDb: any;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -37,10 +35,9 @@ interface DeclFields {
 
 function insertDecl(fields: DeclFields): number {
   const id = ++_declId;
-  rawDb.prepare(`INSERT INTO style_declarations
+  db.run(`INSERT INTO style_declarations
     (id, property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    id,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id,
     fields.property ?? 'color',
     fields.raw_value ?? '#000000',
     fields.normalized_value ?? null,
@@ -50,22 +47,19 @@ function insertDecl(fields: DeclFields): number {
     fields.context ?? null,
     fields.variant_context ?? null,
     fields.token_ref ?? null,
-    'hash-' + id,
-  );
+    'hash-' + id,]);
   return id;
 }
 
 function insertToken(name: string, value: string, mechanism = 'css-custom-property'): number {
   const id = ++_tokenId;
-  rawDb.prepare(`INSERT INTO style_tokens
+  db.run(`INSERT INTO style_tokens
     (id, name, value, file_path, mechanism)
-    VALUES (?, ?, ?, ?, ?)`).run(
-    id,
+    VALUES (?, ?, ?, ?, ?)`, [id,
     name,
     value,
     'src/tokens.css',
-    mechanism,
-  );
+    mechanism,]);
   return id;
 }
 
@@ -77,16 +71,14 @@ function insertClassUsage(
   unresolvable: 0 | 1 = 0,
 ): number {
   const id = ++_classId;
-  rawDb.prepare(`INSERT INTO style_class_usage
+  db.run(`INSERT INTO style_class_usage
     (id, class_name, file_path, line, mechanism, unresolvable)
-    VALUES (?, ?, ?, ?, ?, ?)`).run(
-    id,
+    VALUES (?, ?, ?, ?, ?, ?)`, [id,
     className,
     filePath,
     line,
     mechanism,
-    unresolvable,
-  );
+    unresolvable,]);
   return id;
 }
 
@@ -96,7 +88,9 @@ async function runAnalyzer(
   files: string[] = [],
 ): Promise<any[]> {
   const analyzer = new UniversalStylesAnalyzer();
-  const result = await analyzer.analyze(files, config);
+  // Always inject indexHandle from the in-memory DB unless already specified
+  const merged = { indexHandle: db, ...config };
+  const result = await analyzer.analyze(files, merged);
   // If there were errors, surface them in test output
   if (result.errors.length > 0) {
     console.warn('[analyzer errors]', result.errors);
@@ -117,17 +111,18 @@ function findViolations(violations: any[], rule: string, fileSuffix?: string): a
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
+let db: CodeIndexDB;
+
 beforeAll(async () => {
-  const db = CodeIndexDB.getInstance(':memory:');
+  db = CodeIndexDB.getInstance(':memory:');
   await db.initialize();
-  rawDb = (db as any).rawDb;
 }, 15_000);
 
 beforeEach(() => {
   // Clear style tables
-  rawDb.exec('DELETE FROM style_declarations');
-  rawDb.exec('DELETE FROM style_tokens');
-  rawDb.exec('DELETE FROM style_class_usage');
+  db.exec('DELETE FROM style_declarations');
+  db.exec('DELETE FROM style_tokens');
+  db.exec('DELETE FROM style_class_usage');
   _declId = 0;
   _tokenId = 0;
   _classId = 0;
@@ -481,6 +476,42 @@ describe('Detector 3 — Undefined Classes', () => {
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(1);
     expect(undef[0].message).toContain('hover:bg-blue');
+  });
+
+  it('falls back to CSS-only detection when Tailwind is absent', async () => {
+    // /tmp/no-tailwind-project has no tailwindcss → probe won't find the
+    // package. hasTailwindConfig stays false, so the early-return gate
+    // does NOT fire — CSS-only detection is the correct fallback.
+    insertClassUsage('bg-blue-500', 'src/component.tsx', 5, 'className');
+    insertClassUsage('flex', 'src/component.tsx', 6, 'className');
+    insertClassUsage('btn-primary', 'src/component.tsx', 7, 'className');
+    insertClassUsage('undefined-class-name', 'src/component.tsx', 8, 'className');
+
+    const violations = await runAnalyzer({
+      projectRoot: '/tmp/no-tailwind-project',
+      // No tailwindClasses — simulate a project without custom Tailwind classes
+    });
+
+    // No disabled diagnostic — CSS-only fallback is the correct path
+    const disabled = findViolations(violations, 'styles/undefined-class-disabled');
+    expect(disabled.length).toBe(0);
+
+    // CSS-only detection: btn-primary IS defined in the beforeEach CSS
+    // declaration. The other three are not.
+    const undef = findViolations(violations, 'styles/undefined-class');
+    const names = undef.filter((v: any) => v.file === 'src/component.tsx')
+      .map((v: any) => v.message);
+    expect(names.length).toBe(3);
+    expect(names.some((m: string) => m.includes('bg-blue-500'))).toBe(true);
+    expect(names.some((m: string) => m.includes('flex'))).toBe(true);
+    expect(names.some((m: string) => m.includes('undefined-class-name'))).toBe(true);
+    // btn-primary is defined in beforeEach CSS, so it should NOT be in undef
+    expect(names.some((m: string) => m.includes('btn-primary'))).toBe(false);
+  });
+
+  afterEach(() => {
+    // Reset expander state so the configFailed flag doesn't leak to other tests
+    resetTailwindExpander();
   });
 });
 
@@ -980,10 +1011,10 @@ describe('Edge cases', () => {
 
   it('correctly reports filesProcessed and executionTime in result', async () => {
     const analyzer = new UniversalStylesAnalyzer();
-    const result = await analyzer.analyze(['src/fake.ts'], {});
+    const result = await analyzer.analyze(['src/fake.ts'], { indexHandle: db });
 
     // No declarations in the DB → reports input file count (ran correctly, found nothing)
-    expect(result.filesProcessed).toBe(1);
+    expect(result.status.status === 'visitor-ran' ? result.status.filesProcessed : 0).toBe(1);
     expect(typeof result.executionTime).toBe('number');
     expect(result.executionTime).toBeGreaterThanOrEqual(0);
     expect(result.metrics).toBeDefined();

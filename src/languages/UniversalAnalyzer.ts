@@ -2,11 +2,12 @@
  * Base class for universal analyzers that work across languages
  */
 
-import type { AnalyzerDefinition, AnalyzerResult, Violation } from '../types.js';
+import type { AnalyzerResult, Violation } from '../types.js';
 import type { AST, LanguageAdapter } from './types.js';
 import { LanguageRegistry } from './LanguageRegistry.js';
 import { resolvePathProfile } from '../config/pathProfiles.js';
 import { promises as fs } from 'fs';
+import { makeVisitorStatus } from '../pipeline.js';
 
 export interface UniversalAnalyzerOptions {
   progressCallback?: (progress: number) => void;
@@ -21,7 +22,7 @@ export interface UniversalAnalyzerOptions {
  */
 export type SeverityOverrides = Record<string, 'critical' | 'warning' | 'suggestion'>;
 
-export abstract class UniversalAnalyzer implements AnalyzerDefinition {
+export abstract class UniversalAnalyzer {
   abstract readonly name: string;
   abstract readonly description: string;
   abstract readonly category: string;
@@ -161,8 +162,9 @@ export abstract class UniversalAnalyzer implements AnalyzerDefinition {
     return {
       violations: filteredViolations,
       errors,
-      filesProcessed,
+      status: makeVisitorStatus(filesProcessed),
       executionTime: Date.now() - startTime,
+      analyzerName: this.name,
       metrics: {
         filesAnalyzed: filesProcessed,
         totalViolations: violations.length,

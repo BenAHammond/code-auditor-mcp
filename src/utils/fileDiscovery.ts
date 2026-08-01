@@ -37,7 +37,13 @@ export const JAVASCRIPT_EXTENSIONS = ['.js', '.jsx'];
 export const JSON_EXTENSIONS = ['.json'];
 export const GO_EXTENSIONS = ['.go'];
 export const CSS_EXTENSIONS = ['.css', '.scss'];
-export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS, ...CSS_EXTENSIONS];
+// Raw-source extensions — no tree-sitter grammar, included for visitors that
+// read sourceCode directly (e.g. SQL migrations, TOML config, Prisma schemas)
+export const SQL_EXTENSIONS = ['.sql'];
+export const TOML_EXTENSIONS = ['.toml'];
+export const PRISMA_EXTENSIONS = ['.prisma'];
+export const RAW_EXTENSIONS = [...SQL_EXTENSIONS, ...TOML_EXTENSIONS, ...PRISMA_EXTENSIONS];
+export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS, ...CSS_EXTENSIONS, ...RAW_EXTENSIONS];
 
 export interface FileDiscoveryOptions {
   extensions?: string[];

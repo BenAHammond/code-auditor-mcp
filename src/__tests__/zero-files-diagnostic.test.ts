@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { runZeroFilesDiagnostics } from '../auditRunner.js';
 import type { AnalyzerResult, Violation } from '../types.js';
+import { makeVisitorStatus } from '../pipeline.js';
 
 // Helper: construct a minimal AnalyzerResult
 function makeResult(overrides: Partial<AnalyzerResult> = {}): AnalyzerResult {
   return {
     violations: [] as Violation[],
-    filesProcessed: 42,
+    status: makeVisitorStatus(42),
     executionTime: 0,
     ...overrides,
   };
@@ -17,9 +18,9 @@ describe('runZeroFilesDiagnostics', () => {
     const warnings = runZeroFilesDiagnostics(
       ['solid', 'dry', 'react'],
       {
-        solid: makeResult({ filesProcessed: 100 }),
-        dry: makeResult({ filesProcessed: 50 }),
-        react: makeResult({ filesProcessed: 200 }),
+        solid: makeResult({ status: makeVisitorStatus(100) }),
+        dry: makeResult({ status: makeVisitorStatus(50) }),
+        react: makeResult({ status: makeVisitorStatus(200) }),
       }
     );
     expect(warnings).toHaveLength(0);
@@ -29,8 +30,8 @@ describe('runZeroFilesDiagnostics', () => {
     const warnings = runZeroFilesDiagnostics(
       ['solid', 'missing-analyzer', 'react'],
       {
-        solid: makeResult({ filesProcessed: 100 }),
-        react: makeResult({ filesProcessed: 200 }),
+        solid: makeResult({ status: makeVisitorStatus(100) }),
+        react: makeResult({ status: makeVisitorStatus(200) }),
         // 'missing-analyzer' absent
       }
     );
@@ -47,8 +48,8 @@ describe('runZeroFilesDiagnostics', () => {
     const warnings = runZeroFilesDiagnostics(
       ['solid', 'empty-analyzer'],
       {
-        solid: makeResult({ filesProcessed: 100 }),
-        'empty-analyzer': makeResult({ filesProcessed: 0 }),
+        solid: makeResult({ status: makeVisitorStatus(100) }),
+        'empty-analyzer': makeResult({ status: makeVisitorStatus(0) }),
       }
     );
 
@@ -60,18 +61,25 @@ describe('runZeroFilesDiagnostics', () => {
     expect(warnings[0].message).toContain('filesProcessed = 0');
   });
 
-  it('does NOT warn for filesProcessed = 0 when errors are present (legitimate failure)', () => {
+  it('warns for filesProcessed = 0 even when errors are present (dark-analyzer gate)', () => {
+    // A visitor that errored on every file (filesProcessed=0 with errors)
+    // is a dark-analyzer failure — the gate must fire so the bug can't hide.
     const warnings = runZeroFilesDiagnostics(
       ['errored-analyzer'],
       {
         'errored-analyzer': makeResult({
-          filesProcessed: 0,
+          status: makeVisitorStatus(0),
           errors: [{ file: 'some-file.ts', error: 'parse failure' }],
         }),
       }
     );
 
-    expect(warnings).toHaveLength(0);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      analyzerName: 'errored-analyzer',
+      kind: 'zero-files',
+    });
+    expect(warnings[0].message).toContain('(1 file error(s))');
   });
 
   it('fires both warning kinds simultaneously', () => {
@@ -80,8 +88,8 @@ describe('runZeroFilesDiagnostics', () => {
     const warnings = runZeroFilesDiagnostics(
       ['solid', 'missing-analyzer', 'empty-analyzer'],
       {
-        solid: makeResult({ filesProcessed: 100 }),
-        'empty-analyzer': makeResult({ filesProcessed: 0 }),
+        solid: makeResult({ status: makeVisitorStatus(100) }),
+        'empty-analyzer': makeResult({ status: makeVisitorStatus(0) }),
       }
     );
 
@@ -103,7 +111,7 @@ describe('runZeroFilesDiagnostics', () => {
     const warnings = runZeroFilesDiagnostics(
       ['a', 'b', 'c', 'd'],
       {
-        a: makeResult({ filesProcessed: 10 }),
+        a: makeResult({ status: makeVisitorStatus(10) }),
       }
     );
 
@@ -119,9 +127,9 @@ describe('runZeroFilesDiagnostics', () => {
     const warnings = runZeroFilesDiagnostics(
       ['a', 'b', 'c'],
       {
-        a: makeResult({ filesProcessed: 0 }),
-        b: makeResult({ filesProcessed: 0 }),
-        c: makeResult({ filesProcessed: 99 }),
+        a: makeResult({ status: makeVisitorStatus(0) }),
+        b: makeResult({ status: makeVisitorStatus(0) }),
+        c: makeResult({ status: makeVisitorStatus(99) }),
       }
     );
 
@@ -139,8 +147,8 @@ describe('runZeroFilesDiagnostics', () => {
     const warnings = runZeroFilesDiagnostics(
       ['solid'],
       {
-        solid: makeResult({ filesProcessed: 100 }),
-        'extra-analyzer': makeResult({ filesProcessed: 50 }),
+        solid: makeResult({ status: makeVisitorStatus(100) }),
+        'extra-analyzer': makeResult({ status: makeVisitorStatus(50) }),
       }
     );
 

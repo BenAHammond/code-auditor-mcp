@@ -12,7 +12,6 @@ import { randomUUID } from 'node:crypto';
 import {
   AuditResult,
   AuditRunnerOptions,
-  AnalyzerDefinition,
   AnalyzerResult,
   Violation,
   AuditProgress,
@@ -31,22 +30,35 @@ import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
 
 // Import universal analyzers
 import { initializeLanguages } from './languages/index.js';
-import { UniversalSOLIDAnalyzer } from './analyzers/universal/UniversalSOLIDAnalyzer.js';
-import { UniversalDRYAnalyzer } from './analyzers/universal/UniversalDRYAnalyzer.js';
-import { UniversalDataAccessAnalyzer } from './analyzers/universal/UniversalDataAccessAnalyzer.js';
-import { UniversalDocumentationAnalyzer } from './analyzers/universal/UniversalDocumentationAnalyzer.js';
-import { UniversalSchemaAnalyzer } from './analyzers/universal/UniversalSchemaAnalyzer.js';
-import { UniversalStylesAnalyzer } from './analyzers/universal/UniversalStylesAnalyzer.js';
-import { UniversalConventionsAnalyzer } from './analyzers/universal/UniversalConventionsAnalyzer.js';
-import { CrossDomainAnalyzer } from './analyzers/crossDomain/CrossDomainAnalyzer.js';
 import { initializeOrmAdapters } from './analyzers/orm/index.js';
-import { DEFAULT_ANALYZER_CONFIGS } from './config/defaults.js';
 import { syncStyleIndex } from './styles/styleIndexer.js';
-import { reactAnalyzer } from './analyzers/reactAnalyzer.js';
-import { invariantsAnalyzer } from './analyzers/invariantsAnalyzer.js';
+
 import { hasRules } from './invariants/ruleEngine.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { writeAuditToLedger, detectRunInput } from './ledger.js';
+
+// Pipeline imports (Spec 25 — pipeline replaces hand-rolled analyzer loop)
+import { runPipeline, writeIndexFactsToDb, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
+import {
+  createSolidVisitor,
+  createDryVisitor,
+  createDataAccessVisitor,
+  createDocumentationVisitor,
+  createFunctionIndexVisitor,
+  createFileSourcesVisitor,
+  createReactVisitor,
+  createStylesReducer,
+  createConventionsReducer,
+  createCrossDomainReducer,
+  createInvariantsReducer,
+  createSchemaSqlVisitor,
+  createSchemaCodeVisitor,
+  createSchemaPrismaVisitor,
+  createSchemaJsonVisitor,
+  createSchemaReducer,
+} from './pipelineAdapters.js';
+import type { DryVisitorBundle, ReactVisitorBundle } from './pipelineAdapters.js';
+import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer } from './types.js';
 
 // Package version — read once at module load
 const __auditRunnerDirname = path.dirname(fileURLToPath(import.meta.url));
@@ -59,289 +71,26 @@ initializeLanguages();
 // Initialize ORM adapters for cross-domain schema extraction (Spec 15 R2)
 initializeOrmAdapters();
 
-/**
- * Shared progress callback adapter: translates universal analyzer's (number) into
- * the object-based callback that auditRunner passes downstream.
- */
-function createProgressAdapter(
-  analyzerName: string,
-  progressCallback?: import('./types.js').ProgressCallback
-): ((progress: number) => void) | undefined {
-  if (!progressCallback) return undefined;
-  return (progress: number) => {
-    progressCallback({
-      current: Math.floor(progress * 100),
-      total: 100,
-      analyzer: analyzerName,
-      phase: 'analyzing',
-    });
-  };
-}
+/** Schema sub-visitor names — shown as separate rows in the CLI table. */
+const SCHEMA_SUB_VISITORS = ['schema-sql', 'schema-code', 'schema-prisma', 'schema-json'];
 
-/**
- * Default analyzer registry
- */
-export const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
-  'solid': {
-    name: 'solid',
-    description: 'Detects violations of SOLID principles',
-    category: 'architecture',
-    analyze: async (files, config, options, progressCallback) => {
-      const analyzer = new UniversalSOLIDAnalyzer();
-      const universalConfig: Record<string, unknown> = { skipTestFiles: true };
-      if (config.maxMethodsPerClass !== undefined) universalConfig.maxMethodsPerClass = config.maxMethodsPerClass;
-      if (config.maxLinesPerMethod !== undefined) universalConfig.maxLinesPerMethod = config.maxLinesPerMethod;
-      if (config.maxParametersPerMethod !== undefined) universalConfig.maxParametersPerMethod = config.maxParametersPerMethod;
-      if (config.maxClassComplexity !== undefined) universalConfig.maxClassComplexity = config.maxClassComplexity; // deprecated — use maxMethodComplexity
-      // R5.1: Per-method cyclomatic complexity (true McCC)
-      if (config.maxMethodComplexity !== undefined) universalConfig.maxMethodComplexity = config.maxMethodComplexity;
-      // R5.2: Class-level aggregation thresholds
-      if (config.classMethodsThreshold !== undefined) universalConfig.classMethodsThreshold = config.classMethodsThreshold;
-      if (config.classAggregateComplexity !== undefined) universalConfig.classAggregateComplexity = config.classAggregateComplexity;
-      if (config.maxInterfaceMembers !== undefined) universalConfig.maxInterfaceMembers = config.maxInterfaceMembers;
-      if (config.checkDependencyInversion !== undefined) universalConfig.checkDependencyInversion = config.checkDependencyInversion;
-      if (config.checkInterfaceSegregation !== undefined) universalConfig.checkInterfaceSegregation = config.checkInterfaceSegregation;
-      if (config.checkLiskovSubstitution !== undefined) universalConfig.checkLiskovSubstitution = config.checkLiskovSubstitution;
-      // Forward base-class properties (Spec-20 path profiles + severity overrides)
-      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
-      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
-      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
-      const result = await analyzer.analyze(files, universalConfig, {
-        progressCallback: createProgressAdapter('solid', progressCallback),
-        ...options as Record<string, unknown>,
-      });
-      return {
-        ...result,
-        violations: result.violations.map(v => ({
-          ...v,
-          principle: v.rule,
-          analyzer: 'solid',
-        })),
-      };
-    },
-  },
-  'dry': {
-    name: 'dry',
-    description: 'Detects code duplication across the codebase',
-    category: 'maintainability',
-    analyze: async (files, config, options, progressCallback) => {
-      const analyzer = new UniversalDRYAnalyzer();
-      return analyzer.analyze(files, config, {
-        progressCallback: createProgressAdapter('dry', progressCallback),
-        ...options as Record<string, unknown>,
-      });
-    },
-  },
-  'data-access': {
-    name: 'data-access',
-    description: 'Analyzes database access patterns and data layer interactions',
-    category: 'security',
-    analyze: async (files, config, options, progressCallback) => {
-      const analyzer = new UniversalDataAccessAnalyzer();
-      const universalConfig: Record<string, unknown> = {};
-      if (config.databases !== undefined) universalConfig.databases = config.databases;
-      if (config.organizationPatterns !== undefined) universalConfig.organizationPatterns = config.organizationPatterns;
-      if (config.tablePatterns !== undefined) universalConfig.tablePatterns = config.tablePatterns;
-      if (config.performanceThresholds !== undefined) universalConfig.performanceThresholds = config.performanceThresholds;
-      if (config.securityPatterns !== undefined) universalConfig.securityPatterns = config.securityPatterns;
-      if (config.checkOrgFilters !== undefined) universalConfig.checkOrgFilters = config.checkOrgFilters;
-      if (config.checkSQLInjection !== undefined) universalConfig.checkSQLInjection = config.checkSQLInjection;
-      if (config.checkPerformance !== undefined) universalConfig.checkPerformance = config.checkPerformance;
-      // Forward base-class properties (Spec-20 path profiles + severity overrides)
-      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
-      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
-      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
-      // Spec 21: Forward shared provenance timing accumulator
-      if (config._provenanceTiming !== undefined) universalConfig._provenanceTiming = config._provenanceTiming;
-      return analyzer.analyze(files, universalConfig, {
-        progressCallback: createProgressAdapter('data-access', progressCallback),
-        ...options as Record<string, unknown>,
-      });
-    },
-  },
-  'react': reactAnalyzer,
-  'documentation': {
-    name: 'documentation',
-    description: 'Analyzes documentation quality across the codebase',
-    category: 'documentation',
-    analyze: async (files, config, options, progressCallback) => {
-      const analyzer = new UniversalDocumentationAnalyzer();
-      const universalConfig: Record<string, unknown> = {
-        requireFunctionDocs: config.requireFunctionDocs ?? true,
-        requireClassDocs: config.requireComponentDocs ?? true,
-        // requireFileDocs is DEPRECATED — use fileHeaders instead (default false per R1.5)
-        requireFileDocs: config.requireFileDocs ?? true, // kept for back-compat
-        requireParamDocs: config.requireParamDocs ?? true,
-        requireReturnDocs: config.requireReturnDocs ?? true,
-        minDescriptionLength: config.minDescriptionLength ?? 10,
-        // checkExportedOnly is DEPRECATED — use scope instead
-        checkExportedOnly: config.checkExportedOnly ?? false,
-        exemptPatterns: config.exemptPatterns ?? ['test', 'spec', '\\.d\\.ts$', 'mock', 'fixture'],
-        // Spec-17 additions
-        scope: config.scope ?? 'public',                                    // R1.2, R1.4
-        docsMinLines: config.docsMinLines ?? 5,                             // R1.3
-        fileHeaders: config.fileHeaders ?? config.requireFileDocs ?? false,  // R1.5
-        headerSkipGlobs: config.headerSkipGlobs,                            // R1.5 (undefined → analyzer default)
-      };
-      // Forward base-class properties (Spec-20 path profiles + severity overrides)
-      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
-      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
-      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
-      return analyzer.analyze(files, universalConfig, {
-        progressCallback: createProgressAdapter('documentation', progressCallback),
-        ...options as Record<string, unknown>,
-      });
-    },
-  },
-  'invariants': invariantsAnalyzer,
-  'schema': {
-    name: 'schema',
-    description: 'Analyzes code against database schemas',
-    category: 'database',
-    analyze: async (files, config, options, progressCallback) => {
-      const analyzer = new UniversalSchemaAnalyzer();
-      let schemas: unknown[] = [];
-      try {
-        const db = CodeIndexDB.getInstance(undefined, (config as any).projectRoot);
-        await db.initialize();
-        const loadedSchemas = await db.getAllSchemas();
-        schemas = loadedSchemas.map((loaded) => {
-          const schema = loaded.schema as { name: string; databases: Array<{ tables: Array<{ name: string; columns?: unknown[] }> }> };
-          return {
-            name: schema.name,
-            tables: schema.databases.flatMap((database) =>
-              database.tables.map((table) => ({
-                name: table.name,
-                columns: table.columns || [],
-              }))
-            ),
-          };
-        });
-      } catch {
-        // If database isn't available, continue without schemas
-      }
-      const universalConfig: Record<string, unknown> = {
-        checkMissingReferences: config.checkMissingReferences ?? true,
-        checkNamingConventions: config.checkNamingConventions ?? true,
-        detectUnusedTables: config.detectUnusedTables ?? false,
-        validateQueryPatterns: config.validateQueryPatterns ?? true,
-        maxQueriesPerFunction: config.maxQueriesPerFunction ?? 5,
-        requiredSchemas: config.requiredSchemas ?? [],
-        schemas,
-        // Spec-17 R2 additions — AST-based SQL context detection
-        sqlTagNames: config.sqlTagNames ?? ['sql', 'db'],                 // R2.1
-        dbReceiverNames: config.dbReceiverNames,                           // R2.2 (let analyzer use defaults)
-        dbCallMethods: config.dbCallMethods,                               // R2.2
-        dbBindingNames: config.dbBindingNames ?? ['env.DB'],               // R2.2
-        fileGateGlobs: config.fileGateGlobs,                               // R2.2 (let analyzer use defaults)
-      };
-      // Forward base-class properties (Spec-20 path profiles + severity overrides)
-      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
-      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
-      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
-      // Spec 21: Forward shared provenance timing accumulator
-      if (config._provenanceTiming !== undefined) universalConfig._provenanceTiming = config._provenanceTiming;
-      const result = await analyzer.analyze(files, universalConfig);
-      return {
-        ...result,
-        violations: result.violations.map(v => ({
-          ...v,
-          schemaType: v.rule,
-          details: v.message,
-          analyzer: 'schema',
-        })),
-      };
-    },
-  },
-  'styles': {
-    name: 'styles',
-    description: 'Detects style fragmentation, value drift, token bypass, dead classes, off-scale values, mechanism fragmentation, and z-index sprawl',
-    category: 'style',
-    analyze: async (files, config, options, progressCallback) => {
-      const analyzer = new UniversalStylesAnalyzer();
-      const universalConfig: Record<string, unknown> = {};
-      if (config.minCorpus !== undefined) universalConfig.minCorpus = config.minCorpus;
-      if (config.colorDeltaE !== undefined) universalConfig.colorDeltaE = config.colorDeltaE;
-      if (config.outlierMaxShare !== undefined) universalConfig.outlierMaxShare = config.outlierMaxShare;
-      if (config.modeMinCount !== undefined) universalConfig.modeMinCount = config.modeMinCount;
-      if (config.scaleProperties !== undefined) universalConfig.scaleProperties = config.scaleProperties;
-      if (config.zIndexMaxDistinct !== undefined) universalConfig.zIndexMaxDistinct = config.zIndexMaxDistinct;
-      if (config.mechanismFragmentationMinMechanisms !== undefined) universalConfig.mechanismFragmentationMinMechanisms = config.mechanismFragmentationMinMechanisms;
-      if (config.declarationSetMinDeclarations !== undefined) universalConfig.declarationSetMinDeclarations = config.declarationSetMinDeclarations;
-      if (config.declarationSetSimilarityThreshold !== undefined) universalConfig.declarationSetSimilarityThreshold = config.declarationSetSimilarityThreshold;
-      // Forward base-class properties (Spec-20 path profiles + severity overrides)
-      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
-      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
-      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
-      return analyzer.analyze(files, universalConfig, {
-        progressCallback: createProgressAdapter('styles', progressCallback),
-        ...options as Record<string, unknown>,
-      });
-    },
-  },
-  'conventions': {
-    name: 'conventions',
-    description: 'Mines codebase conventions and flags deviations at suggestion severity',
-    category: 'style',
-    analyze: async (files, config, options, progressCallback) => {
-      const analyzer = new UniversalConventionsAnalyzer();
-      const universalConfig: Record<string, unknown> = {};
-      if (config.minCorpus !== undefined) universalConfig.minCorpus = config.minCorpus;
-      if (config.pairConfidence !== undefined) universalConfig.pairConfidence = config.pairConfidence;
-      if (config.modeShare !== undefined) universalConfig.modeShare = config.modeShare;
-      if (config.maxConventionsPerDomain !== undefined) universalConfig.maxConventionsPerDomain = config.maxConventionsPerDomain;
-      // Forward base-class properties (Spec-20 path profiles + severity overrides)
-      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
-      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
-      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
-      return analyzer.analyze(files, universalConfig, {
-        progressCallback: createProgressAdapter('conventions', progressCallback),
-        ...options as Record<string, unknown>,
-      });
-    },
-  },
-  'cross-domain': {
-    name: 'cross-domain',
-    description: 'Detects cross-domain issues (schema lifecycle, validation bypass, coverage gaps)',
-    category: 'architecture',
-    analyze: async (files, config, options, progressCallback) => {
-      const analyzer = new CrossDomainAnalyzer();
-      const cxDefaults = DEFAULT_ANALYZER_CONFIGS.crossDomain;
-      const universalConfig: Record<string, unknown> = {
-        // R1 — Schema lifecycle: enabled by default, overridable.
-        // Use defaults when the user doesn't configure these explicitly.
-        schemaLifecycle: config.schemaLifecycle ?? cxDefaults.schemaLifecycle,
-        // R3 — Validation-bypass: enabled by default with Spec 21 provenance-based
-        // detection. Detector gates on truthiness so we must supply a default.
-        validatorBypass: config.validatorBypass ?? cxDefaults.validatorBypass,
-        // R4 — Coverage: enabled by default. Reads coverage_data when measured
-        // coverage has been imported, falls back to static-reach otherwise.
-        coverage: config.coverage ?? cxDefaults.coverage,
-      };
-      // Forward base-class properties (Spec-20 path profiles + severity overrides)
-      if (config.severityOverrides !== undefined) universalConfig.severityOverrides = config.severityOverrides;
-      if (config.pathProfiles !== undefined) universalConfig.pathProfiles = config.pathProfiles;
-      if (config.projectRoot !== undefined) universalConfig.projectRoot = config.projectRoot;
-      return analyzer.analyze(files, universalConfig, {
-        progressCallback: createProgressAdapter('cross-domain', progressCallback),
-        ...options as Record<string, unknown>,
-      });
-    },
-  },
-};
 
 /**
  * Create an audit runner with the given options
  */
 export function createAuditRunner(options: AuditRunnerOptions = {}) {
-  const analyzerRegistry = { ...DEFAULT_ANALYZERS };
-  
-  /**
-   * Register a custom analyzer
-   */
-  function registerAnalyzer(analyzer: AnalyzerDefinition): void {
-    analyzerRegistry[analyzer.name] = analyzer;
-  }
+  const analyzerRegistry: Record<string, { name: string }> = {
+    solid: { name: 'solid' },
+    dry: { name: 'dry' },
+    'data-access': { name: 'data-access' },
+    react: { name: 'react' },
+    documentation: { name: 'documentation' },
+    invariants: { name: 'invariants' },
+    schema: { name: 'schema' },
+    styles: { name: 'styles' },
+    conventions: { name: 'conventions' },
+    'cross-domain': { name: 'cross-domain' },
+  };
   
   /**
    * Load configuration from file
@@ -396,7 +145,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // Changed scope: detect modified files
       const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
       await db.initialize();
-      const modifiedFiles = mergedOptions.explicitFiles?.length
+      const modifiedFiles = mergedOptions.explicitFiles !== undefined
         ? mergedOptions.explicitFiles
         : await db.detectModifiedFiles(
             path.resolve(mergedOptions.projectRoot || process.cwd())
@@ -486,7 +235,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       files = files.slice(0, maxPerRun);
     }
 
-    const root = mergedOptions.projectRoot || process.cwd();
+    const root = path.resolve(mergedOptions.projectRoot || process.cwd());
     logMcpInfo('discovery', 'file discovery finished', {
       projectRoot: path.resolve(root),
       totalFiles: files.length,
@@ -620,107 +369,257 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         : 1;
     logMcpInfo('analysis', 'analyzer concurrency', { analyzerConcurrency });
 
-    let cursor = 0;
-    const runAnalyzer = async (): Promise<void> => {
-      while (true) {
-        throwIfAborted(mergedOptions.abortSignal);
-        const index = cursor++;
-        if (index >= enabledAnalyzers.length) return;
-        const analyzerName = enabledAnalyzers[index];
-        const analyzer = analyzerRegistry[analyzerName];
-        logMcpDebug('analysis', `starting analyzer ${analyzerName}`, { found: !!analyzer });
-        if (!analyzer) {
-          logMcpInfo('analysis', `unknown analyzer skipped: ${analyzerName}`, {});
-          continue;
-        }
+    // ── Initialize CodeIndexDB for analyzer DB access ────────────────────
+    // Styles, conventions, and cross-domain analyzers read config.indexHandle
+    // for DB access. The singleton is shared — initialize once before the
+    // analyzer run loop so ensureInitialized() is a no-op for each call.
+    let auditIndex: CodeIndexDB | undefined;
+    try {
+      auditIndex = CodeIndexDB.getInstance(undefined, root);
+      await auditIndex.initialize();
+      logMcpInfo('analysis', 'code index initialized for analyzers', { isInitialized: (auditIndex as any).isInitialized, dbPath: (auditIndex as any).dbPath });
+    } catch (err) {
+      // Non-fatal: analyzers that need indexHandle will skip DB-dependent
+      // checks and report "No index handle available" in their errors.
+      logMcpInfo('analysis', 'failed to initialize code index for analyzers (continuing)', {
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
 
-        reportProgress(mergedOptions, {
-          phase: 'analysis',
-          analyzer: analyzerName,
-          message: `Running ${analyzerName} analyzer...`
-        });
+    // ── Analyzer execution ──────────────────────────────────────────────
+    // Spec 25 R3: The pipeline replaces the hand-rolled concurrent
+    // analyzer loop. Visitors run per-file in stage 2, corpus reducers
+    // run in stage 3, and derived reducers (cross-domain) run in stage 4.
+    // Schema runs outside the pipeline because it needs ALL file types (SQL, JSON, TS).
+    // Invariants runs inside the pipeline as a Stage 3 reducer (Spec 41 Part C).
 
-        // Build analyzer config; inject full index for DRY on scoped runs.
-        // Skip pathProfiles for invariants (Spec-20 R3): no backdoor
-        // around declared laws — invariants severity is absolute.
-        const isInvariants = analyzerName === 'invariants';
-        const analyzerConfig: Record<string, unknown> = {
-          ...(mergedOptions.analyzerConfigs?.[analyzerName] || {}),
-        };
-        if (!isInvariants) {
-          analyzerConfig.pathProfiles = mergedOptions.pathProfiles;
-          analyzerConfig.projectRoot = root;
-          analyzerConfig.severityOverrides = mergedOptions.severityOverrides;
-        }
-        if (analyzerName === 'dry' && isScoped && fullFunctionIndex) {
-          analyzerConfig.fullFunctionIndex = fullFunctionIndex;
-        }
-        // Spec 21: Pass shared provenance timing accumulator to analyzers
-        // that call buildProvenanceContext() (data-access and schema).
-        // The analyzers accumulate per-file timing into this object;
-        // we read it back after all analyzers complete.
-        // Spec 15: cross-domain config lives at top-level crossDomain,
-        // not under analyzerConfigs — merge it in so the analyzer sees it.
-        if (analyzerName === 'cross-domain' && (mergedOptions as any).crossDomain) {
-          Object.assign(analyzerConfig, (mergedOptions as any).crossDomain);
-        }
-        if (analyzerName === 'data-access' || analyzerName === 'schema') {
-          analyzerConfig._provenanceTiming = provenanceTiming;
-        }
+    // Build IndexHandle for pipeline reducers
+    let pipelineIndexHandle: IndexHandle | undefined;
+    if (auditIndex) {
+      pipelineIndexHandle = {
+        query: (sql, params) => auditIndex!.query(sql, params),
+        count: (table, where, params) => auditIndex!.count(table, where, params),
+        tableHasRows: (table) => auditIndex!.tableHasRows(table),
+        run: (sql, params) => auditIndex!.rawDb.prepare(sql).run(...(params ?? [])),
+        exec: (sql) => auditIndex!.rawDb.exec(sql),
+        getMeta: (key) => auditIndex!.getMeta(key),
+        getUntestedTopDecile: (td) => auditIndex!.getUntestedTopDecile(td),
+      };
+    }
 
-        logMcpInfo('analysis', `running ${analyzerName}`, { fileCount: files.length });
-        try {
-          const result = await analyzer.analyze(
-            files,
-            analyzerConfig,
-            mergedOptions,
-            (progress) => {
-              throwIfAborted(mergedOptions.abortSignal);
-              reportProgress(mergedOptions, {
-                phase: 'analysis',
-                analyzer: analyzerName,
-                current: progress.current,
-                total: progress.total,
-                message: `Analyzing ${progress.file}...`
-              });
-              if (isMcpDebugEnabled() && progress.current && progress.total) {
-                if (progress.current % 100 === 0 || progress.current === progress.total) {
-                  logMcpDebug('analysis', `${analyzerName} file progress`, {
-                    current: progress.current,
-                    total: progress.total,
-                    file: progress.file
-                  });
-                }
-              }
-            }
-          );
-          logMcpDebug('analysis', `${analyzerName} completed`, {
-            violations: result.violations?.length ?? 0
-          });
-          throwIfAborted(mergedOptions.abortSignal);
-          analyzerResults[analyzerName] = result;
-        } catch (error) {
-          if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
-            throw error;
-          }
-          reportError(mergedOptions, error as Error, `${analyzerName} analyzer`);
-          analyzerResults[analyzerName] = {
-            violations: [],
-            filesProcessed: 0,
-            executionTime: 0,
-            errors: [{ file: 'analyzer', error: (error as Error).message }]
-          };
+    // ── 1. Build pipeline adapters ───────────────────────────────────────
+    const pipelineVisitors: Stage2Visitor[] = [];
+    const pipelineReducers: Stage3Reducer[] = [];
+    const pipelineDerivedReducers: Stage4Reducer[] = [];
+
+    let dryBundle: DryVisitorBundle | undefined;
+    let reactBundle: ReactVisitorBundle | undefined;
+
+    // Always-on infrastructure: function-index visitor populates the
+    // `functions` table so conventions + cross-domain reducers have data
+    // even on a cold run with no prior index sync.
+    pipelineVisitors.push(createFunctionIndexVisitor());
+    // file-sources visitor records per-file source code so Stage 3 reducers
+    // can access it without calling readFileSync().
+    pipelineVisitors.push(createFileSourcesVisitor());
+
+    if (enabledAnalyzers.includes('solid')) pipelineVisitors.push(createSolidVisitor());
+    if (enabledAnalyzers.includes('dry')) {
+      dryBundle = createDryVisitor(fullFunctionIndex);
+      pipelineVisitors.push(dryBundle.visitor);
+    }
+    if (enabledAnalyzers.includes('data-access')) pipelineVisitors.push(createDataAccessVisitor());
+    if (enabledAnalyzers.includes('react')) {
+      reactBundle = createReactVisitor();
+      pipelineVisitors.push(reactBundle.visitor);
+    }
+    if (enabledAnalyzers.includes('documentation')) pipelineVisitors.push(createDocumentationVisitor());
+    if (enabledAnalyzers.includes('styles')) pipelineReducers.push(createStylesReducer());
+    if (enabledAnalyzers.includes('conventions')) pipelineReducers.push(createConventionsReducer());
+    if (enabledAnalyzers.includes('invariants')) pipelineReducers.push(createInvariantsReducer());
+    if (enabledAnalyzers.includes('cross-domain')) pipelineDerivedReducers.push(createCrossDomainReducer());
+    if (enabledAnalyzers.includes('schema')) {
+      pipelineVisitors.push(createSchemaSqlVisitor());
+      pipelineVisitors.push(createSchemaCodeVisitor());
+      pipelineVisitors.push(createSchemaPrismaVisitor());
+      pipelineVisitors.push(createSchemaJsonVisitor());
+      pipelineReducers.push(createSchemaReducer());
+    }
+
+    // ── 2. Safeguard warnings ────────────────────────────────────────────
+    if (auditIndex) {
+      if (enabledAnalyzers.includes('cross-domain')) {
+        const suCount = auditIndex.count('schema_usage');
+        if (suCount === 0) {
+          console.warn('[code-audit] ⚠ cross-domain analyzer requires schema_usage data. '
+            + 'This is populated during a full audit run by the schema analyzer. '
+            + 'If this warning persists, run a full "code-audit audit --path ." first.');
         }
       }
-    };
+    }
 
-    await Promise.all(Array.from({ length: analyzerConcurrency }, () => runAnalyzer()));
+    // ── 3. Run pipeline ──────────────────────────────────────────────────
+    const hasPipelineAnalyzers = pipelineVisitors.length > 0
+      || pipelineReducers.length > 0
+      || pipelineDerivedReducers.length > 0;
+
+    if (hasPipelineAnalyzers) {
+      // Build per-analyzer namespaced config — no flat Object.assign merge.
+      // Each analyzer gets its own namespace; _infra holds shared infrastructure keys
+      // that every visitor/reducer receives alongside its own config.
+      const pipelineAnalyzerConfig: Record<string, Record<string, unknown>> = {};
+      for (const name of enabledAnalyzers) {
+        pipelineAnalyzerConfig[name] = { ...(mergedOptions.analyzerConfigs?.[name] ?? {}) };
+      }
+      // Pass invariant rules from .codeauditor.json into the invariants pipeline config.
+      // The rules field lives at the top level of the loaded config (not under analyzerConfigs).
+      if (enabledAnalyzers.includes('invariants') && (mergedOptions as any).rules) {
+        pipelineAnalyzerConfig['invariants'] = {
+          ...(pipelineAnalyzerConfig['invariants'] ?? {}),
+          rules: (mergedOptions as any).rules,
+        };
+      }
+      // Cross-domain config lives at the top level (not analyzerConfigs)
+      if (enabledAnalyzers.includes('cross-domain') && (mergedOptions as any).crossDomain) {
+        pipelineAnalyzerConfig['cross-domain'] = {
+          ...(pipelineAnalyzerConfig['cross-domain'] ?? {}),
+          ...(mergedOptions as any).crossDomain,
+        };
+      }
+      // Schema config: all table discovery flows through visitors and facts;
+      // the reducer builds the known-tables catalog solely from fact data.
+      if (enabledAnalyzers.includes('schema')) {
+        const scConfig = mergedOptions.analyzerConfigs?.schema ?? {};
+        pipelineAnalyzerConfig['schema'] = {
+          ...(pipelineAnalyzerConfig['schema'] ?? {}),
+          sqlTagNames: scConfig.sqlTagNames ?? ['sql', 'db'],
+          dbReceiverNames: scConfig.dbReceiverNames,
+          dbCallMethods: scConfig.dbCallMethods,
+          dbBindingNames: scConfig.dbBindingNames ?? ['env.DB'],
+          fileGateGlobs: scConfig.fileGateGlobs,
+        };
+      }
+      // Global/infrastructure settings passed to all pipeline stages
+      pipelineAnalyzerConfig['_infra'] = {
+        pathProfiles: mergedOptions.pathProfiles,
+        severityOverrides: mergedOptions.severityOverrides,
+        projectRoot: root,
+        _provenanceTiming: provenanceTiming,
+        files,
+      };
+
+      const pipelineConfig: PipelineConfig = {
+        projectRoot: root,
+        explicitFiles: files,
+        visitors: pipelineVisitors,
+        reducers: pipelineReducers,
+        derivedReducers: pipelineDerivedReducers,
+        config: pipelineAnalyzerConfig,
+        abortSignal: mergedOptions.abortSignal,
+        progressCallback: (progress) => {
+          throwIfAborted(mergedOptions.abortSignal);
+          reportProgress(mergedOptions, progress);
+        },
+        isScoped,
+        onStage2Complete: async (ctx) => {
+          // Post-stage-2 setup: rebuild function_calls from the functions table
+          // (populated by the function-index visitor), then mine conventions.
+          if (auditIndex && enabledAnalyzers.includes('conventions')) {
+            try {
+              await auditIndex.updateDependencyGraph();
+            } catch (err) {
+              logMcpInfo('analysis', 'updateDependencyGraph failed (non-fatal)', {
+                error: err instanceof Error ? err.message : String(err)
+              });
+            }
+            try {
+              // Build a source provider from the file-sources infrastructure
+              // visitor fact — avoids readFileSync inside the pipeline.
+              const fileSources = ctx?.allFacts.get('file-sources') as Record<string, string> | undefined;
+              const getSource = fileSources
+                ? (filePath: string) => fileSources[filePath]
+                : undefined;
+              auditIndex.mineAllConventions(root, getSource);
+            } catch (err) {
+              logMcpInfo('analysis', 'convention mining failed (non-fatal)', {
+                error: err instanceof Error ? err.message : String(err)
+              });
+            }
+          }
+        },
+      };
+
+      try {
+        logMcpInfo('analysis', 'running pipeline', { visitorCount: pipelineVisitors.length, reducerCount: pipelineReducers.length, derivedReducerCount: pipelineDerivedReducers.length, fileCount: files.length });
+        const pipelineResult = await runPipeline(pipelineConfig, pipelineIndexHandle);
+
+        // Write index facts (schema_usage from schema visitor, etc.)
+        if (pipelineIndexHandle && pipelineResult.indexFacts && pipelineResult.indexFacts.length > 0) {
+          writeIndexFactsToDb(pipelineIndexHandle, pipelineResult.indexFacts);
+        }
+
+        // Pull in pipeline results
+        for (const [name, ar] of Object.entries(pipelineResult.analyzerResults)) {
+          analyzerResults[name] = ar;
+          logMcpDebug('analysis', `pipeline: ${name} completed`, {
+            violations: ar.violations?.length ?? 0,
+            status: ar.status?.status,
+          });
+        }
+
+        // ── Schema sub-visitors: keep separate rows for visibility ────
+        // Schema runs as 4 Stage 2 visitors + 1 Stage 3 reducer. Each visitor
+        // keeps its own violations and status row so the CLI displays per-visitor
+        // file/fact counts. Violations are NOT merged — the reducer only carries
+        // cross-file violations (unknown-table, JSON schema validation).
+        // Sub-visitors are added to orderedAnalyzerResults below (line ~650).
+
+        // ── React finalization (cross-component checks) ──────────────────
+        if (reactBundle) {
+          try {
+            const reactResult = analyzerResults['react'];
+            if (reactResult) {
+              const extraViolations = await reactBundle.finalizeCrossComponent(pipelineAnalyzerConfig);
+              reactResult.violations.push(...extraViolations);
+            }
+          } catch (err) {
+            logMcpInfo('analysis', 'react finalization failed (non-fatal)', {
+              error: err instanceof Error ? err.message : String(err)
+            });
+          }
+        }
+      } catch (error) {
+        if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
+          throw error;
+        }
+        // Pipeline failure — populate error results for all pipeline analyzers.
+        // Exclude infrastructure visitors (function-index) that don't produce violations.
+        const pipelineAnalyzerNames = new Set([
+          ...pipelineVisitors.map(v => v.name),
+          ...pipelineReducers.map(r => r.name),
+          ...pipelineDerivedReducers.map(r => r.name),
+        ]);
+        pipelineAnalyzerNames.delete('function-index');
+        for (const name of pipelineAnalyzerNames) {
+          if (!analyzerResults[name]) {
+            analyzerResults[name] = {
+              violations: [],
+              status: makeVisitorStatus(0),
+              executionTime: 0,
+              analyzerName: name,
+              errors: [{ file: 'pipeline', error: (error as Error).message }],
+            };
+          }
+        }
+        reportError(mergedOptions, error as Error, 'pipeline');
+      }
+    }
 
     // ── Zero-files diagnostic ─────────────────────────────────────────────
     // Extracted to runZeroFilesDiagnostics() for testability. Runs against the
     // raw analyzerResults before truthiness filtering so the "no result" pass
     // catches analyzers skipped by the registry, abort, or handoff exceptions.
-    const zeroFilesDiagnostics = runZeroFilesDiagnostics(enabledAnalyzers, analyzerResults);
+    const zeroFilesDiagnostics = runZeroFilesDiagnostics(enabledAnalyzers, analyzerResults, files.length);
     for (const w of zeroFilesDiagnostics) {
       console.warn(w.message);
     }
@@ -731,6 +630,15 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       if (analyzerResults[analyzerName]) {
         orderedAnalyzerResults[analyzerName] = analyzerResults[analyzerName];
       }
+      // When schema is enabled, insert sub-visitor rows after the schema entry
+      // so the CLI table shows per-visitor file/fact counts.
+      if (analyzerName === 'schema') {
+        for (const subName of SCHEMA_SUB_VISITORS) {
+          if (analyzerResults[subName]) {
+            orderedAnalyzerResults[subName] = analyzerResults[subName];
+          }
+        }
+      }
     }
 
     // ── Spec 13 R5 Phase 1: Persist seeded DRY pairs ──────────────────
@@ -739,8 +647,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // NOT content-hash-based — so a diverging clone stays the same pair.
     let dryPersistRunId: string | null = null;
     try {
-      const dryResult = orderedAnalyzerResults['dry'];
-      const dryPairs = (dryResult as any)?.dryPairs as Array<{
+      const dryPairs = dryBundle?.getDryPairs() as Array<{
         pairFingerprint: string;
         file1: string; symbol1: string; line1: number; contentHash1: string;
         file2: string; symbol2: string; line2: number; contentHash2: string;
@@ -968,8 +875,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             } else {
               orderedAnalyzerResults['dry'] = {
                 violations: divergingViolations,
-                filesProcessed: 0,
+                status: makeVisitorStatus(0),
                 executionTime: 0,
+                analyzerName: 'dry',
               };
             }
           }
@@ -1068,7 +976,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
   }
   
   return {
-    registerAnalyzer,
     loadConfiguration,
     run,
     generateReport: generateReportForResult
@@ -1089,7 +996,7 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 async function discoverProjectFiles(options: AuditRunnerOptions): Promise<string[]> {
   const rootDir = path.resolve(options.projectRoot || process.cwd());
-  if (options.explicitFiles && options.explicitFiles.length > 0) {
+  if (options.explicitFiles !== undefined) {
     return [...new Set(options.explicitFiles.map((f) => path.resolve(f)))].sort();
   }
   return discoverFiles(rootDir, {
@@ -1177,9 +1084,14 @@ async function resolveFilesScope(
       });
       for (const m of matches) result.add(m);
     } else {
-      // Direct file path
+      // Direct file path — skip files that don't exist
       const resolved = path.isAbsolute(item) ? item : path.resolve(rootDir, item);
-      result.add(resolved);
+      try {
+        await fs.stat(resolved);
+        result.add(resolved);
+      } catch {
+        // File doesn't exist — skip silently
+      }
     }
   }
 
@@ -1206,17 +1118,22 @@ function hasInvariantRules(projectDir: string): boolean {
  */
 function getEnabledAnalyzers(
   options: AuditRunnerOptions,
-  registry: Record<string, AnalyzerDefinition>
+  registry: Record<string, { name: string }>
 ): string[] {
+  const projectDir = options.projectRoot || process.cwd();
+
   // Explicit array (including empty = run no analyzers, e.g. index-only harness)
   if (options.enabledAnalyzers !== undefined) {
+    // Auto-disable invariants when no rules are configured (Spec 05 R3.1)
+    if (options.enabledAnalyzers.includes('invariants') && !hasRules(options) && !hasInvariantRules(projectDir)) {
+      return options.enabledAnalyzers.filter(a => a !== 'invariants');
+    }
     return options.enabledAnalyzers;
   }
 
   const allAnalyzers = Object.keys(registry);
 
   // Auto-disable invariants when no rules are configured (Spec 05 R3.1)
-  const projectDir = options.projectRoot || process.cwd();
   if (!hasRules(options) && !hasInvariantRules(projectDir)) {
     return allAnalyzers.filter(a => a !== 'invariants');
   }
@@ -1259,7 +1176,7 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
 
     byAnalyzer[analyzer] = {
       violations: analyzerViolations,
-      filesProcessed: result.filesProcessed,
+      filesProcessed: getFilesProcessed(result.status),
       fatalErrors: result.errors ? result.errors.length : 0,
     };
   }
@@ -1365,8 +1282,12 @@ export interface DiagnosticWarning {
  */
 export function runZeroFilesDiagnostics(
   enabledAnalyzers: string[],
-  analyzerResults: Record<string, AnalyzerResult>
+  analyzerResults: Record<string, AnalyzerResult>,
+  totalFiles?: number,
 ): DiagnosticWarning[] {
+  // When there were zero files to process, zero-files is expected, not a bug.
+  if (totalFiles === 0) return [];
+
   const warnings: DiagnosticWarning[] = [];
 
   // Pass 1: enabled but absent from results
@@ -1382,17 +1303,22 @@ export function runZeroFilesDiagnostics(
     }
   }
 
-  // Pass 2: filesProcessed = 0 with no errors
+  // Pass 2: filesProcessed = 0 — a dark-analyzer failure regardless of errors.
+  // Visitors with declared extensions that matched zero files in the corpus are
+  // benign (converted to notRun by the pipeline), but a visitor that was dispatched
+  // files and still shows visitor-ran + 0 files is broken — whether it errored or
+  // silently returned.
   for (const [analyzerName, result] of Object.entries(analyzerResults)) {
     if (
-      result.filesProcessed === 0 &&
-      (!(result as any).errors || (result as any).errors.length === 0)
+      isVisitorStatus(result.status) && getFilesProcessed(result.status) === 0
     ) {
+      const errCount = (result as any).errors?.length ?? 0;
+      const errDetail = errCount > 0 ? ` (${errCount} file error(s))` : '';
       warnings.push({
         analyzerName,
         kind: 'zero-files',
         message:
-          `⚠️  ${analyzerName} analyzer: filesProcessed = 0. ` +
+          `⚠️  ${analyzerName} analyzer: filesProcessed = 0${errDetail}. ` +
           `The analyzer ran but matched zero source files. Check file extensions, ` +
           `scanner configuration, and project structure.`,
       });

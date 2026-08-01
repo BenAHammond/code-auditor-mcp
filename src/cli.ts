@@ -22,6 +22,7 @@ import { initParsers } from './languages/index.js';
 import { queryParser } from './search/QueryParser.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import type { Severity, AuditScope, SearchOptions } from './types.js';
+import { getFilesProcessed, getFactsConsumed, isVisitorStatus, isReducerStatus } from './pipeline.js';
 import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
 
 // Get package.json for version info
@@ -157,15 +158,22 @@ program
         console.log(`Suggestions: ${result.summary.suggestions}`);
       }
 
-      // Per-analyzer files processed (read from result data, not serialized summary)
+      // Per-analyzer activity (read from result data, not serialized summary)
       // — surfaces zero-scan failures that would otherwise be invisible.
       if (!options.json) {
         const analyzerFiles: string[] = [];
         for (const [name, ar] of Object.entries(result.analyzerResults)) {
-          analyzerFiles.push(`${name}: ${(ar as any).filesProcessed ?? 0}`);
+          const vCount = ar.violations.length;
+          if (isVisitorStatus(ar.status)) {
+            analyzerFiles.push(`${name} [visitor-ran]: ${getFilesProcessed(ar.status)} files, ${vCount} violations`);
+          } else if (isReducerStatus(ar.status)) {
+            analyzerFiles.push(`${name} [reducer-ran]: ${getFactsConsumed(ar.status)} facts, ${vCount} violations`);
+          } else {
+            analyzerFiles.push(`${name} [notRun]: ${vCount} violations`);
+          }
         }
         if (analyzerFiles.length > 0) {
-          console.log(chalk.gray(`\n── Files Processed ──────────────────────────`));
+          console.log(chalk.gray(`\n── Pipeline Stages ──────────────────────────`));
           console.log(analyzerFiles.join('\n'));
         }
       }
@@ -205,6 +213,18 @@ program
           console.error(
             chalk.red(`Debt regression: ${currentDebt - snapshotDebt} findings added without re-baselining.`)
           );
+          process.exit(2);
+        }
+      }
+
+      // Zero-files gate — any enabled analyzer matching zero source files is a
+      // dark-analyzer failure; fail the run so the bug can't hide.
+      {
+        const diagnostics = result.metadata?.diagnostics ?? [];
+        const zeroFileWarnings = diagnostics.filter((d: any) => d.kind === 'zero-files');
+        if (zeroFileWarnings.length > 0) {
+          const names = zeroFileWarnings.map((d: any) => d.analyzerName ?? d.analyzer).join(', ');
+          console.error(`Zero-files failure: ${zeroFileWarnings.length} analyzer(s) matched zero source files (${names})`);
           process.exit(2);
         }
       }
@@ -539,11 +559,11 @@ indexCmd
   .action(async (options) => {
     try {
       await initParsers();
-      const db = CodeIndexDB.getInstance();
-      await db.initialize();
       const targetPath = resolve(options.path || process.cwd());
-
       const isSingleFile = (await fs.stat(targetPath).catch(() => null))?.isFile();
+      const projectRoot = isSingleFile ? dirname(targetPath) : targetPath;
+      const db = CodeIndexDB.getInstance(undefined, projectRoot);
+      await db.initialize();
       let result: any;
 
       if (isSingleFile) {

@@ -11,9 +11,9 @@
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
-import type { AnalyzerResult, Violation } from '../../types.js';
+import type { AnalyzerResult, IndexHandle, Violation } from '../../types.js';
 import type { AST, LanguageAdapter } from '../../languages/types.js';
-import { CodeIndexDB } from '../../codeIndexDB.js';
+import { makeVisitorStatus } from '../../pipeline.js';
 import type {
   NormalizedDeclaration,
   NormalizedValue,
@@ -121,43 +121,31 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     const cfg: StylesAnalyzerConfig = { ...DEFAULT_STYLES_CONFIG, ...config };
     const violations: Violation[] = [];
 
-    // Open DB from the project root
-    let rawDb: any = null;
-    try {
-      const db = CodeIndexDB.getInstance(undefined, config.projectRoot);
-      await db.initialize();
-      rawDb = (db as any).rawDb;
-    } catch {
+    // Use the IndexHandle passed through the pipeline; fall back if absent.
+    const indexHandle: IndexHandle | undefined = config.indexHandle;
+    if (!indexHandle) {
       return {
         violations: [],
-        errors: [{ file: '', error: 'Failed to open style index database' }],
-        filesProcessed: 0,
+        errors: [{ file: '', error: 'No index handle available — style index not open' }],
+        status: makeVisitorStatus(0),
         executionTime: Date.now() - startTime,
+        analyzerName: this.name,
         metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
-    if (!rawDb) {
-      return {
-        violations: [],
-        errors: [],
-        filesProcessed: files.length,
-        executionTime: Date.now() - startTime,
-        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
-      };
-    }
-
     // Query all declarations, tokens, and class usage
-    const declarations = this.queryDeclarations(rawDb);
-    const tokens = this.queryTokens(rawDb);
-    const classUsage = this.queryClassUsage(rawDb);
+    const declarations = this.queryDeclarations(indexHandle);
+    const tokens = this.queryTokens(indexHandle);
+    const classUsage = this.queryClassUsage(indexHandle);
 
     if (declarations.length === 0) {
       return {
         violations: [],
         errors: [],
-        filesProcessed: files.length,
+        status: makeVisitorStatus(files.length),
         executionTime: Date.now() - startTime,
+        analyzerName: this.name,
         metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
@@ -203,8 +191,9 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     return {
       violations: filtered,
       errors: [],
-      filesProcessed: uniqueFiles.size,
+      status: makeVisitorStatus(uniqueFiles.size),
       executionTime: Date.now() - startTime,
+      analyzerName: this.name,
       metrics: {
         filesAnalyzed: uniqueFiles.size,
         totalViolations: filtered.length,
@@ -227,27 +216,27 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
   // Database queries
   // -----------------------------------------------------------------------
 
-  private queryDeclarations(rawDb: any): StyleDeclRow[] {
+  private queryDeclarations(indexHandle: IndexHandle): StyleDeclRow[] {
     try {
-      return rawDb.prepare(
+      return indexHandle.query(
         'SELECT * FROM style_declarations ORDER BY property, file_path, line',
-      ).all() as StyleDeclRow[];
+      ) as StyleDeclRow[];
     } catch {
       return [];
     }
   }
 
-  private queryTokens(rawDb: any): StyleTokenRow[] {
+  private queryTokens(indexHandle: IndexHandle): StyleTokenRow[] {
     try {
-      return rawDb.prepare('SELECT * FROM style_tokens').all() as StyleTokenRow[];
+      return indexHandle.query('SELECT * FROM style_tokens') as StyleTokenRow[];
     } catch {
       return [];
     }
   }
 
-  private queryClassUsage(rawDb: any): StyleClassUsageRow[] {
+  private queryClassUsage(indexHandle: IndexHandle): StyleClassUsageRow[] {
     try {
-      return rawDb.prepare('SELECT * FROM style_class_usage').all() as StyleClassUsageRow[];
+      return indexHandle.query('SELECT * FROM style_class_usage') as StyleClassUsageRow[];
     } catch {
       return [];
     }
@@ -572,15 +561,21 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       customClasses: cfg?.tailwindClasses ? new Set(cfg.tailwindClasses) : undefined,
     });
 
-    // Fail-open rule (Spec 22 R1.3): if probe init fails, disable the
-    // detector for this audit with one visible warning.
-    if (expander.configFailed) {
+    // Fail-open rule (Spec 22 R1.3): if the probe fails and Tailwind IS
+    // present, disable the undefined-class detector. Without a working probe
+    // there is no way to validate Tailwind utility classes — flagging every
+    // utility would produce ~875 false positives.
+    //
+    // When Tailwind is absent (no tailwindcss in node_modules), the probe
+    // never runs and CSS-only detection is the correct fallback.
+    if (expander.configFailed && expander.hasTailwindConfig) {
       violations.push(this.makeViolation(
         '', 0,
-        `undefined-class detector disabled: failed to probe project Tailwind — ` +
-        `${expander.configFailureReason ?? 'unknown error'}. ` +
-        `A claim that a class "does not exist" may not ship on a known-incomplete dictionary.`,
-        'warning',
+        `Tailwind probe unavailable (${expander.configFailureReason ?? 'unknown error'}) — ` +
+        `undefined-class detection skipped. Classes defined only in Tailwind ` +
+        `config will not be checked. Install tailwindcss in the project ` +
+        `for full class validation.`,
+        'suggestion',
         'styles/undefined-class-disabled',
       ));
       return violations;

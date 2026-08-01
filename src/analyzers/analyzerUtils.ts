@@ -7,6 +7,7 @@ import type { AST, ASTNode } from '../languages/types.js';
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import * as fs from 'fs/promises';
 import { Violation, AnalyzerResult, SeverityLevel, AuditOptions } from '../types.js';
+import { makeVisitorStatus } from '../pipeline.js';
 import {
   walkAST,
   isExported,
@@ -85,7 +86,7 @@ export async function processFiles(
 
   const result: AnalyzerResult = {
     violations,
-    filesProcessed: processedFiles,
+    status: makeVisitorStatus(processedFiles),
     executionTime: Date.now() - startTime,
     analyzerName
   };

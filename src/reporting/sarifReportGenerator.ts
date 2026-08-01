@@ -8,6 +8,7 @@
  */
 
 import type { AuditResult, Violation } from '../types.js';
+import { getFilesProcessed } from '../pipeline.js';
 import { PACKAGE_VERSION } from '../constants.js';
 import { fingerprint, buildFingerprintInput } from '../fingerprint.js';
 
@@ -210,7 +211,7 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
   // Build per-analyzer filesProcessed summary for run properties
   const analyzerFileCounts: Record<string, number> = {};
   for (const [analyzerName, analyzerResult] of Object.entries(result.analyzerResults)) {
-    analyzerFileCounts[analyzerName] = analyzerResult.filesProcessed;
+    analyzerFileCounts[analyzerName] = getFilesProcessed(analyzerResult.status);
   }
 
   // Build the SARIF log

@@ -4,6 +4,7 @@
  */
 
 import { AuditResult } from '../types.js';
+import { getFilesProcessed } from '../pipeline.js';
 
 export interface JSONReportConfig {
   pretty?: boolean;
@@ -86,10 +87,11 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
   
   for (const [analyzer, result] of Object.entries(analyzerResults)) {
     transformed[analyzer] = {
+      status: result.status,
       summary: {
         totalViolations: result.violations.length,
         bySeverity: countBySeverity(result.violations),
-        filesProcessed: result.filesProcessed,
+        filesProcessed: getFilesProcessed(result.status),
         executionTime: result.executionTime
       },
       violations: result.violations.map(violation => {
@@ -102,7 +104,7 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
           message: violation.message,
           type: violation.type,
           ...(rule && { rule }),
-          ...(violation.ruleId && { ruleId: violation.ruleId }),
+          ...(violation.rule && { rule: violation.rule }),
           ...(violation.analyzer && { analyzer: violation.analyzer }),
           ...(violation.functionName && { functionName: violation.functionName }),
           ...(violation.symbol && { symbol: violation.symbol }),

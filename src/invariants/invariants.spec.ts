@@ -10,11 +10,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'fs';
+import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { validateRulesConfig, hasRules } from './ruleValidator.js';
-import { checkRules, clearMatcherCache } from './ruleEngine.js';
+import { checkRules, clearMatcherCache, type RuleEngineOptions, type RuleCheckResult } from './ruleEngine.js';
 import type {
   InvariantRule,
   ImportBanRule,
@@ -27,6 +27,7 @@ import type {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 let testDir: string;
+let _allFixtures: string[] = [];
 
 function fixtureDir(): string {
   const dir = join(tmpdir(), `invariant-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -38,11 +39,36 @@ function writeFixture(relativePath: string, content: string): string {
   const full = join(testDir, relativePath);
   mkdirSync(full.substring(0, full.lastIndexOf('/')), { recursive: true });
   writeFileSync(full, content, 'utf-8');
+  _allFixtures.push(relativePath);
   return relativePath;
+}
+
+type CheckRulesInput = Omit<RuleEngineOptions, 'sourceMap' | 'knownFiles'>;
+
+/**
+ * Wrapper around checkRules that reads test fixture files from disk and builds
+ * the sourceMap + knownFiles so the rule engine doesn't need fs access.
+ */
+function checkRulesWithSource(opts: CheckRulesInput): RuleCheckResult {
+  const sourceMap = new Map<string, string>();
+  const knownFiles = new Set<string>();
+  // Read all fixture files (not just the ones being checked — module-boundary
+  // rules need to resolve imports referencing other fixtures).
+  for (const file of _allFixtures) {
+    const fullPath = join(opts.projectDir, file);
+    try {
+      sourceMap.set(fullPath, readFileSync(fullPath, 'utf-8'));
+      knownFiles.add(fullPath);
+    } catch {
+      // skip missing files
+    }
+  }
+  return checkRules({ ...opts, sourceMap, knownFiles });
 }
 
 beforeEach(() => {
   testDir = fixtureDir();
+  _allFixtures = [];
   clearMatcherCache();
 });
 
@@ -325,7 +351,7 @@ describe('ruleValidator', () => {
 describe('import-ban', () => {
   it('catches static import of a banned module', () => {
     writeFixture('src/bad.ts', `import { something } from 'banned-lib';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -341,7 +367,7 @@ describe('import-ban', () => {
 
   it('catches dynamic import() of a banned module', () => {
     writeFixture('src/bad.ts', `async function load() { const m = await import('banned-lib'); }`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -354,7 +380,7 @@ describe('import-ban', () => {
 
   it('catches require() of a banned module', () => {
     writeFixture('src/bad.ts', `const x = require('banned-lib');`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -367,7 +393,7 @@ describe('import-ban', () => {
 
   it('allows import when file matches except glob', () => {
     writeFixture('src/exempt/special.ts', `import { x } from 'banned-lib';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-banned',
@@ -386,7 +412,7 @@ describe('import-ban', () => {
   it('still catches import in non-exempt files when except is configured', () => {
     writeFixture('src/exempt/special.ts', `import { x } from 'banned-lib';`);
     writeFixture('src/normal.ts', `import { x } from 'banned-lib';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-banned',
@@ -405,7 +431,7 @@ describe('import-ban', () => {
 
   it('matches module glob patterns', () => {
     writeFixture('src/bad.ts', `import { x } from '@ai-sdk/openai';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-ai-sdk',
@@ -422,7 +448,7 @@ describe('import-ban', () => {
 
   it('does not flag imports of non-banned modules', () => {
     writeFixture('src/good.ts', `import { ok } from 'allowed-lib';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -434,7 +460,7 @@ describe('import-ban', () => {
 
   it('includes the user message in violations', () => {
     writeFixture('src/bad.ts', `import { x } from 'banned';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'custom-msg',
@@ -458,7 +484,7 @@ describe('module-boundary', () => {
   it('catches an import crossing the from→to boundary', () => {
     writeFixture('src/features/a/index.ts', `export const a = 1;`);
     writeFixture('src/features/b/messy.ts', `import { a } from '../a/index';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-cross-feature',
@@ -479,7 +505,7 @@ describe('module-boundary', () => {
   it('does not flag imports within the same boundary', () => {
     writeFixture('src/features/a/index.ts', `export const a = 1;`);
     writeFixture('src/features/a/child.ts', `import { a } from './index';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-cross',
@@ -500,7 +526,7 @@ describe('module-boundary', () => {
   it('does not flag when from does not match the importing file', () => {
     writeFixture('src/lib/utils.ts', `export const util = 1;`);
     writeFixture('src/features/c/consumer.ts', `import { util } from '../../lib/utils';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-cross',
@@ -526,7 +552,7 @@ describe('naming', () => {
 export function myComponent() {}
 export const helperVar = 42;
 `);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'pascal-components',
@@ -550,7 +576,7 @@ export const helperVar = 42;
 export function NavBar() {}
 export const AppHeader = () => null;
 `);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'pascal-components',
@@ -571,7 +597,7 @@ export const AppHeader = () => null;
     writeFixture('src/utils/helpers.ts', `
 export function formatDate() {}
 `);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'pascal-components',
@@ -589,7 +615,7 @@ export function formatDate() {}
 
   it('includes user message in violation', () => {
     writeFixture('src/components/bad.ts', `export function badOne() {}`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'pascal',
@@ -613,7 +639,7 @@ export function formatDate() {}
 describe('call-constraint', () => {
   it('produces no violations when no DB is available (graceful skip)', () => {
     writeFixture('src/untrusted.ts', `import { secret } from './lib';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-external-call',
@@ -635,7 +661,7 @@ describe('call-constraint', () => {
   it('parses callee with path glob', () => {
     // Just verify the parseCallee logic doesn't throw
     writeFixture('src/trusted/caller.ts', `export function doWork() {}`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-external',
@@ -729,7 +755,7 @@ export function doUntrustedWork() {
     await db.updateDependencyGraph();
 
     // Now run the rule engine WITH the DB
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-external-call',
@@ -741,7 +767,7 @@ export function doUntrustedWork() {
       ],
       files: ['src/untrusted/caller.ts'],
       projectDir: testDir,
-      db,
+      indexHandle: db as any,
     });
 
     expect(result.errors).toHaveLength(0);
@@ -795,7 +821,7 @@ export function doTrustedWork() {
 
     await db.updateDependencyGraph();
 
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-external-call',
@@ -807,7 +833,7 @@ export function doTrustedWork() {
       ],
       files: ['src/trusted/caller.ts'],
       projectDir: testDir,
-      db,
+      indexHandle: db as any,
     });
 
     expect(result.errors).toHaveLength(0);
@@ -858,7 +884,7 @@ export function renderPage() {
 
     await db.updateDependencyGraph();
 
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         // Don't use makeRule here — it defaults allowFrom which would
         // take precedence over denyFrom in the rule engine.
@@ -872,7 +898,7 @@ export function renderPage() {
       ],
       files: ['src/ui/component.ts'],
       projectDir: testDir,
-      db,
+      indexHandle: db as any,
     });
 
     expect(result.errors).toHaveLength(0);
@@ -891,7 +917,7 @@ import { old } from 'banned-lib';
 import { helper } from '../shared/helpers';
 export function doThing() {}
 `);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
         makeRule({ id: 'pascal', kind: 'naming', severity: 'warning', path: 'src/**', exports: '^[A-Z]' }),
@@ -908,7 +934,7 @@ export function doThing() {}
 
   it('returns empty violations when rules array is empty', () => {
     writeFixture('src/ok.ts', `export const OK = 1;`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [],
       files: ['src/ok.ts'],
       projectDir: testDir,
@@ -922,7 +948,7 @@ export function doThing() {}
 
 describe('edge cases', () => {
   it('handles non-existent files gracefully', () => {
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'x', kind: 'import-ban', severity: 'critical', module: 'x' }),
       ],
@@ -935,7 +961,7 @@ describe('edge cases', () => {
 
   it('handles files with syntax errors gracefully', () => {
     writeFixture('src/broken.ts', `this is not valid typescript @@@`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'x', kind: 'import-ban', severity: 'critical', module: 'x' }),
       ],
@@ -948,7 +974,7 @@ describe('edge cases', () => {
 
   it('normalizes leading ./ in file paths', () => {
     writeFixture('src/file.ts', `import { x } from 'banned-lib';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -967,7 +993,7 @@ export function badCasing() {
   return null;
 }
 `);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'pascal', kind: 'naming', severity: 'warning', path: 'src/**', exports: '^[A-Z]' }),
       ],
@@ -985,7 +1011,7 @@ export function badCasing() {
 describe('ast-pattern', () => {
   it('detects a matching AST pattern in source code', () => {
     writeFixture('src/bad.ts', `const fn = new Function("return 1");`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1006,7 +1032,7 @@ describe('ast-pattern', () => {
 
   it('does not flag files with non-matching patterns', () => {
     writeFixture('src/good.ts', `const add = (a, b) => a + b;`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1023,7 +1049,7 @@ describe('ast-pattern', () => {
 
   it('includes the user message in violations', () => {
     writeFixture('src/bad.ts', `const fn = new Function("return 1");`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-eval',
@@ -1042,7 +1068,7 @@ describe('ast-pattern', () => {
 
   it('provides line and column location in violation', () => {
     writeFixture('src/bad.ts', `const fn = new Function("return 1");`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1063,7 +1089,7 @@ describe('ast-pattern', () => {
   it('respects path glob filter', () => {
     writeFixture('src/features/a/bad.ts', `const fn = new Function("x");`);
     writeFixture('src/lib/good.ts', `const fn = new Function("x");`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-fn-in-features',
@@ -1083,7 +1109,7 @@ describe('ast-pattern', () => {
 
   it('skips files outside the path glob', () => {
     writeFixture('src/utils/safe.ts', `const fn = new Function("x");`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-fn-ui',
@@ -1102,7 +1128,7 @@ describe('ast-pattern', () => {
   it('respects the language setting', () => {
     // JavaScript source should still be matched when language is typescript
     writeFixture('src/bad.js', `var fn = new Function("x");`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1121,7 +1147,7 @@ describe('ast-pattern', () => {
 
   it('handles parse errors gracefully (non-TS content)', () => {
     writeFixture('src/config.json', `{ "key": "value" }`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1139,7 +1165,7 @@ describe('ast-pattern', () => {
 
   it('handles multiple ast-pattern rules together', () => {
     writeFixture('src/bad.ts', `const fn = new Function("x");\nconst arr = eval("42");`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1167,7 +1193,7 @@ import { old } from 'banned-lib';
 const fn = new Function("return 1");
 export function doThing() {}
 `);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
         makeRule({ id: 'no-new-fn', kind: 'ast-pattern', severity: 'warning', pattern: 'new Function($$$)' }),
@@ -1184,7 +1210,7 @@ export function doThing() {}
 
   it('allows zero matches for a valid pattern', () => {
     writeFixture('src/clean.ts', `const add = (a, b) => a + b;\nconst mul = (a, b) => a * b;`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-debugger',
@@ -1206,7 +1232,7 @@ describe('scoped audit behavior', () => {
   it('only checks the specified files', () => {
     writeFixture('src/a.ts', `import { x } from 'banned-lib';`);
     writeFixture('src/b.ts', `import { x } from 'banned-lib';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -1221,7 +1247,7 @@ describe('scoped audit behavior', () => {
   it('checks all files when multiple are scoped', () => {
     writeFixture('src/a.ts', `import { x } from 'banned-lib';`);
     writeFixture('src/b.ts', `import { y } from 'banned-lib';`);
-    const result = checkRules({
+    const result = checkRulesWithSource({
       rules: [
         makeRule({ id: 'no', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],

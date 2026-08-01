@@ -23,7 +23,7 @@ export function resolvePersistedIndexPath(projectRoot?: string): string {
     return path.join(path.resolve(raw), 'index.db');
   }
   // Default: project-local .code-index directory
-  const root = projectRoot || process.cwd();
+  const root = path.resolve(projectRoot || process.cwd());
   return path.join(root, '.code-index', 'index.db');
 }
 

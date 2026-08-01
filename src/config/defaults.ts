@@ -19,7 +19,7 @@ export function getDefaultConfig(): AuditConfig {
       '**/*.test.{ts,tsx,js,jsx}',
       '**/*.spec.{ts,tsx,js,jsx}'
     ],
-    enabledAnalyzers: ['solid', 'dry', 'react', 'data-access', 'documentation', 'schema', 'styles', 'conventions', 'cross-domain'],
+    enabledAnalyzers: ['solid', 'dry', 'react', 'data-access', 'documentation', 'schema', 'styles', 'conventions', 'cross-domain', 'invariants'],
     outputFormats: ['html', 'json'],
     outputDirectory: './audit-reports',
     minSeverity: 'suggestion',
@@ -217,8 +217,8 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     maxQueriesPerFunction: 1,      // Spec 11 R3 sweep: 5 → 1 (precision-first)
     requiredSchemas: [],
     sqlTagNames: ['sql', 'db'],
-    dbReceiverNames: ['db', 'database', 'sql', 'stmt', 'connection', 'pool', 'client'],
-    dbCallMethods: ['exec', 'prepare', 'batch', 'run', 'all', 'first', 'query', 'get', 'each'],
+    dbReceiverNames: ['db', 'database', 'sql', 'stmt'],
+    dbCallMethods: ['exec', 'prepare', 'batch', 'run', 'all', 'first'],
     dbBindingNames: ['env.DB'],
     fileGateGlobs: ['**/*.sql', '**/migrations/**'],
     schemaFiles: [],

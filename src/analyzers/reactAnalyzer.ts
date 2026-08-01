@@ -4,15 +4,12 @@
  */
 
 import {
-  AnalyzerDefinition, 
-  AnalyzerResult, 
+  AnalyzerResult,
   ReactViolation,
   ReactAnalyzerConfig,
   ComponentMetadata,
   ComponentScanResult
 } from '../types.js';
-import { processFiles } from './analyzerUtils.js';
-import { scanFiles, buildComponentTree } from '../componentScanner.js';
 
 /**
  * Default configuration for React analyzer
@@ -45,154 +42,9 @@ export const DEFAULT_REACT_CONFIG: ReactAnalyzerConfig = {
 };
 
 /**
- * React analyzer definition
- */
-export const reactAnalyzer: AnalyzerDefinition = {
-  name: 'react',
-  defaultConfig: DEFAULT_REACT_CONFIG,
-  analyze: async (files, config, options, progressCallback) => {
-    const startTime = Date.now();
-    const violations: ReactViolation[] = [];
-    const errors: Array<{ file: string; error: string }> = [];
-
-    // Merge with defaults so partial configs (e.g., bench harness) get
-    // all required fields with their shipped defaults.
-    const cfg = { ...DEFAULT_REACT_CONFIG, ...config };
-
-    try {
-      // Filter for React component files
-      const reactFiles = files.filter(file => 
-        file.endsWith('.tsx') || file.endsWith('.jsx') || 
-        (file.endsWith('.ts') || file.endsWith('.js'))
-      );
-      
-      if (reactFiles.length === 0) {
-        return {
-          violations: [],
-          filesProcessed: 0,
-          executionTime: Date.now() - startTime,
-          analyzerName: 'react'
-        };
-      }
-      
-      // Phase 1: Component scanning
-      if (progressCallback) {
-        progressCallback({
-          current: 0,
-          total: reactFiles.length,
-          analyzer: 'react',
-          phase: 'scanning'
-        });
-      }
-      
-      const scanResults = await scanFiles(reactFiles, {
-        includeTests: false,
-        includeStories: false,
-        extractProps: true,
-        extractHooks: cfg.checkHooksRules,
-        extractImports: true,
-        detectComplexity: true
-      }, (current, total) => {
-        if (progressCallback) {
-          progressCallback({
-            current,
-            total,
-            analyzer: 'react',
-            phase: 'scanning'
-          });
-        }
-      });
-      
-      // Phase 2: Component analysis
-      let componentsAnalyzed = 0;
-      const totalComponents = scanResults.reduce((sum, r) => sum + r.components.length, 0);
-      
-      for (const scanResult of scanResults) {
-        // Check for scan errors
-        if (scanResult.parseErrors) {
-          errors.push({
-            file: scanResult.filePath,
-            error: scanResult.parseErrors.join(', ')
-          });
-          continue;
-        }
-        
-        // Analyze each component
-        for (const component of scanResult.components) {
-          if (progressCallback) {
-            progressCallback({
-              current: ++componentsAnalyzed,
-              total: totalComponents,
-              analyzer: 'react',
-              phase: 'analyzing',
-              file: scanResult.filePath
-            });
-          }
-          
-          // Run all checks
-          violations.push(...analyzeComponent(component, cfg, scanResult));
-        }
-      }
-      
-      // Phase 3: Cross-component analysis
-      if (progressCallback) {
-        progressCallback({
-          current: totalComponents,
-          total: totalComponents,
-          analyzer: 'react',
-          phase: 'cross-analysis'
-        });
-      }
-      
-      // Build component dependency tree
-      const componentTree = buildComponentTree(scanResults);
-      
-      // Check for circular dependencies
-      violations.push(...checkCircularDependencies(componentTree));
-      
-      // Check for missing error boundaries at app level
-      if (cfg.requireErrorBoundaries) {
-        violations.push(...checkErrorBoundaryUsage(scanResults));
-      }
-
-      // Check for raw element usage (Spec 10 R4)
-      if (cfg.rawElementCheck) {
-        violations.push(...checkRawElements(scanResults, cfg));
-      }
-
-      return {
-        violations,
-        filesProcessed: reactFiles.length,
-        executionTime: Date.now() - startTime,
-        errors: errors.length > 0 ? errors : undefined,
-        analyzerName: 'react',
-        metadata: {
-          totalComponents,
-          componentTypes: getComponentTypeStats(scanResults),
-          averageComplexity: calculateAverageComplexity(scanResults)
-        }
-      };
-      
-    } catch (error) {
-      console.error('React analysis failed:', error);
-      return {
-        violations,
-        filesProcessed: files.length,
-        executionTime: Date.now() - startTime,
-        errors: [{
-          file: 'react-analyzer',
-          error: error instanceof Error ? error.message : String(error)
-        }],
-        analyzerName: 'react'
-      };
-    }
-  }
-};
-
-/**
  * Analyze a single component for violations
  */
-function analyzeComponent(
+export function analyzeComponent(
   component: ComponentMetadata,
   config: ReactAnalyzerConfig,
   scanResult: ComponentScanResult
@@ -453,7 +305,7 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
 /**
  * Check for circular dependencies between components
  */
-function checkCircularDependencies(
+export function checkCircularDependencies(
   componentTree: Map<string, Set<string>>
 ): ReactViolation[] {
   const violations: ReactViolation[] = [];
@@ -510,7 +362,7 @@ function checkCircularDependencies(
 /**
  * Check for proper error boundary usage
  */
-function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViolation[] {
+export function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViolation[] {
   const violations: ReactViolation[] = [];
   
   // Find all components with error boundaries
@@ -551,7 +403,7 @@ function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViola
  * the wrapper's definition. A {@link ReactAnalyzerConfig.componentMap} overrides
  * auto-detection, making every raw usage a warning.
  */
-function checkRawElements(
+export function checkRawElements(
   scanResults: ComponentScanResult[],
   config: ReactAnalyzerConfig
 ): ReactViolation[] {
@@ -667,43 +519,4 @@ function checkRawElements(
   }
 
   return violations;
-}
-
-/**
- * Get component type statistics
- */
-function getComponentTypeStats(scanResults: ComponentScanResult[]): Record<string, number> {
-  const stats: Record<string, number> = {
-    functional: 0,
-    class: 0,
-    memo: 0,
-    forwardRef: 0
-  };
-  
-  for (const result of scanResults) {
-    for (const component of result.components) {
-      stats[component.componentType]++;
-    }
-  }
-  
-  return stats;
-}
-
-/**
- * Calculate average component complexity
- */
-function calculateAverageComplexity(scanResults: ComponentScanResult[]): number {
-  let totalComplexity = 0;
-  let componentCount = 0;
-  
-  for (const result of scanResults) {
-    for (const component of result.components) {
-      if (component.complexity) {
-        totalComplexity += component.complexity;
-        componentCount++;
-      }
-    }
-  }
-  
-  return componentCount > 0 ? Math.round(totalComplexity / componentCount * 10) / 10 : 0;
 }
