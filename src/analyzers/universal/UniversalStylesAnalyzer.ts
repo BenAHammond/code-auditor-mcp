@@ -124,7 +124,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     // Open DB from the project root
     let rawDb: any = null;
     try {
-      const db = CodeIndexDB.getInstance();
+      const db = CodeIndexDB.getInstance(undefined, config.projectRoot);
       await db.initialize();
       rawDb = (db as any).rawDb;
     } catch {
@@ -141,9 +141,9 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       return {
         violations: [],
         errors: [],
-        filesProcessed: 0,
+        filesProcessed: files.length,
         executionTime: Date.now() - startTime,
-        metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
+        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
@@ -156,9 +156,9 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       return {
         violations: [],
         errors: [],
-        filesProcessed: 0,
+        filesProcessed: files.length,
         executionTime: Date.now() - startTime,
-        metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
+        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 

@@ -13,6 +13,7 @@ import {
   detectRunInput,
 } from '../ledger.js';
 import type { Violation } from '../types.js';
+import { buildFingerprintInput, fingerprint } from '../fingerprint.js';
 
 function makeViolation(overrides: Partial<Violation> = {}): Violation {
   return {
@@ -513,5 +514,72 @@ describe('Findings Ledger — corruption resilience', () => {
     const runs = listRuns(db);
     expect(runs).toHaveLength(1);
     expect(runs[0].findingCount).toBe(1);
+  });
+
+  it('different React violationType on same line produce distinct fingerprints', () => {
+    // Two React violations on the same file/line with different violationType
+    // must have different fingerprints — otherwise ledger dedupe merges them
+    const complexityViolation: Violation = {
+      file: 'src/App.tsx',
+      line: 42,
+      rule: 'complexity',
+      severity: 'suggestion',
+      message: 'Component is too complex',
+      analyzer: 'react',
+      violationType: 'complexity',
+      functionName: 'Dashboard',
+    };
+
+    const accessibilityViolation: Violation = {
+      file: 'src/App.tsx',
+      line: 42,
+      rule: 'accessibility',
+      severity: 'warning',
+      message: 'Missing aria-label',
+      analyzer: 'react',
+      violationType: 'accessibility',
+      functionName: 'Dashboard',
+    };
+
+    const fp1 = fingerprint(buildFingerprintInput(complexityViolation));
+    const fp2 = fingerprint(buildFingerprintInput(accessibilityViolation));
+
+    expect(fp1).toMatch(/^[a-f0-9]{64}$/);
+    expect(fp2).toMatch(/^[a-f0-9]{64}$/);
+    expect(fp1).not.toBe(fp2);
+  });
+
+  it('React hooks-naming rule identity for fingerprint', () => {
+    // rule is now required on Violation — no fallback chain needed
+    const violation: Violation = {
+      file: 'src/useToggle.ts',
+      line: 10,
+      rule: 'hooks-naming',
+      severity: 'suggestion',
+      message: 'Hook name should start with "use"',
+      analyzer: 'react',
+      violationType: 'hooks-naming',
+    };
+
+    const input = buildFingerprintInput(violation);
+    expect(input.rule).toBe('hooks-naming');
+    expect(input.analyzer).toBe('react');
+    expect(input.file).toBe('src/useToggle.ts');
+  });
+
+  it('React raw-element rule identity for fingerprint', () => {
+    // rule is now required on Violation — no fallback chain needed
+    const violation: Violation = {
+      file: 'src/Home.tsx',
+      line: 15,
+      rule: 'raw-element',
+      severity: 'warning',
+      message: 'raw <button> — this project uses <Button>',
+      analyzer: 'react',
+      violationType: 'raw-element',
+    };
+
+    const input = buildFingerprintInput(violation);
+    expect(input.rule).toBe('raw-element');
   });
 });

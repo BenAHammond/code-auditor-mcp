@@ -33,6 +33,7 @@ export interface APICall {
 }
 
 export interface ContractViolation extends Violation {
+  rule: 'api-type-mismatch' | 'missing-endpoint' | 'api-extra-field' | 'api-missing-field' | 'method-mismatch' | 'auth-mismatch';
   contractType: 'api-type-mismatch' | 'missing-endpoint' | 'api-extra-field' | 'api-missing-field' | 'method-mismatch' | 'auth-mismatch';
   endpoint?: APIEndpoint;
   call?: APICall;
@@ -139,6 +140,7 @@ export class APIContractAnalyzer {
           line: call.line,
           severity: 'warning',
           message: `API call to ${call.method} ${call.url} has no matching endpoint`,
+          rule: 'missing-endpoint',
           contractType: 'missing-endpoint',
           call,
           details: {
@@ -173,6 +175,7 @@ export class APIContractAnalyzer {
           line: call.line,
           severity: 'warning',
           message: `HTTP method mismatch: call uses ${call.method}, endpoint expects ${endpoint.method}`,
+          rule: 'method-mismatch',
           contractType: 'method-mismatch',
           endpoint,
           call,
@@ -215,6 +218,7 @@ export class APIContractAnalyzer {
           line: call.line,
           severity: 'warning',
           message: `Using deprecated API endpoint: ${endpoint.method} ${endpoint.path}`,
+          rule: 'api-type-mismatch',
           contractType: 'api-type-mismatch', // Reusing type for deprecated
           endpoint,
           call,
@@ -248,6 +252,7 @@ export class APIContractAnalyzer {
           line: call.line,
           severity: 'warning',
           message: `API call missing required authentication for endpoint ${endpoint.method} ${endpoint.path}`,
+          rule: 'auth-mismatch',
           contractType: 'auth-mismatch',
           endpoint,
           call,
@@ -328,6 +333,7 @@ export class APIContractAnalyzer {
         line: call.line,
         severity: 'warning',
         message: `Type mismatch: endpoint returns object, call expects array`,
+        rule: 'api-type-mismatch',
         contractType: 'api-type-mismatch',
         endpoint,
         call,

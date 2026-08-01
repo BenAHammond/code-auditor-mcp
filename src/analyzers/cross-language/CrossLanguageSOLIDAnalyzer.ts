@@ -23,6 +23,7 @@ export interface CrossLanguageSOLIDConfig {
 }
 
 export interface CrossLanguageSOLIDViolation extends Violation {
+  rule: 'SRP' | 'OCP' | 'LSP' | 'ISP' | 'DIP';
   principle: 'SRP' | 'OCP' | 'LSP' | 'ISP' | 'DIP';
   entityId: string;
   entityName: string;
@@ -102,6 +103,7 @@ export class CrossLanguageSOLIDAnalyzer {
           line: entity.startLine || 0,
           severity: responsibilities.count > this.config.maxResponsibilities * 2 ? 'warning' : 'warning',
           message: `${entity.type} '${entity.name}' has too many responsibilities (${responsibilities.count}) across ${responsibilities.languages.size} languages`,
+          rule: 'SRP',
           principle: 'SRP',
           entityId: entity.id,
           entityName: entity.name,
@@ -147,6 +149,7 @@ export class CrossLanguageSOLIDAnalyzer {
           line: entity.startLine || 0,
           severity: 'suggestion',
           message: `${entity.type} '${entity.name}' shows patterns that could benefit from polymorphism across ${polymorphismOpportunities.languages.size} languages`,
+          rule: 'OCP',
           principle: 'OCP',
           entityId: entity.id,
           entityName: entity.name,
@@ -209,6 +212,7 @@ export class CrossLanguageSOLIDAnalyzer {
           line: interfaceEntity.startLine || 0,
           severity: 'warning',
           message: `Interface '${interfaceEntity.name}' has ${usage.memberCount} members used across ${usage.languages.size} languages`,
+          rule: 'ISP',
           principle: 'ISP',
           entityId: interfaceEntity.id,
           entityName: interfaceEntity.name,
@@ -255,6 +259,7 @@ export class CrossLanguageSOLIDAnalyzer {
             line: entity.startLine || 0,
             severity: 'suggestion',
             message: `${entity.type} '${entity.name}' depends on ${dependencies.concreteCount} concrete types across ${dependencies.languages.size} languages`,
+            rule: 'DIP',
             principle: 'DIP',
             entityId: entity.id,
             entityName: entity.name,
@@ -548,6 +553,7 @@ export class CrossLanguageSOLIDAnalyzer {
             line: entity.startLine || 0,
             severity: 'warning',
             message: `${entity.type} '${entity.name}' (${entity.language}) inherits from ${parent.name} (${parent.language}), creating cross-language LSP risks`,
+            rule: 'LSP',
             principle: 'LSP',
             entityId: entity.id,
             entityName: entity.name,
@@ -711,6 +717,7 @@ export class CrossLanguageSOLIDAnalyzer {
           line: apiEntity.startLine || 0,
           severity: 'suggestion',
           message: `API endpoint '${apiEntity.name}' is called from ${callerLanguages.size} different languages, suggesting multiple responsibilities`,
+          rule: 'SRP',
           principle: 'SRP',
           entityId: apiEntity.id,
           entityName: apiEntity.name,
@@ -752,6 +759,7 @@ export class CrossLanguageSOLIDAnalyzer {
           line: entity.startLine || 0,
           severity: 'warning',
           message: `${entity.type} '${entity.name}' has dependencies across ${new Set(crossLangRefs.map(r => r.targetLanguage)).size} different languages`,
+          rule: 'SRP',
           principle: 'SRP',
           entityId: entity.id,
           entityName: entity.name,
@@ -798,6 +806,7 @@ export class CrossLanguageSOLIDAnalyzer {
           line: iface.startLine || 0,
           severity: 'suggestion',
           message: `Interface '${iface.name}' is implemented across ${implLanguages.size} different languages`,
+          rule: 'ISP',
           principle: 'ISP',
           entityId: iface.id,
           entityName: iface.name,

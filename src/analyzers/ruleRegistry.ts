@@ -91,41 +91,45 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'sql-injection':             { analyzer: 'schema',            field: 'rule' },
 
   // ── react (reactAnalyzer) ───────────────────────────────────────────────
-  'hooks-naming':              { analyzer: 'react',             field: 'violationType' },
-  'complexity':                { analyzer: 'react',             field: 'violationType' },
-  'missing-props':             { analyzer: 'react',             field: 'violationType' },
-  'no-error-boundary':         { analyzer: 'react',             field: 'violationType' },
-  'performance':               { analyzer: 'react',             field: 'violationType' },
-  'accessibility':             { analyzer: 'react',             field: 'violationType' },
+  'hooks-naming':              { analyzer: 'react',             field: 'rule' },
+  'complexity':                { analyzer: 'react',             field: 'rule' },
+  'missing-props':             { analyzer: 'react',             field: 'rule' },
+  'no-error-boundary':         { analyzer: 'react',             field: 'rule' },
+  'performance':               { analyzer: 'react',             field: 'rule' },
+  'accessibility':             { analyzer: 'react',             field: 'rule' },
+  'raw-element':               { analyzer: 'react',             field: 'rule' },
 
   // ── invariants (invariantsAnalyzer) — fixed internal IDs only ──────────
   'config-error':              { analyzer: 'invariants',        field: 'rule' },
   'engine-error':              { analyzer: 'invariants',        field: 'rule' },
 
   // ── cross-language-solid (CrossLanguageSOLIDAnalyzer) ───────────────────
-  'SRP':                       { analyzer: 'cross-language-solid', field: 'principle' },
-  'OCP':                       { analyzer: 'cross-language-solid', field: 'principle' },
-  'ISP':                       { analyzer: 'cross-language-solid', field: 'principle' },
-  'DIP':                       { analyzer: 'cross-language-solid', field: 'principle' },
-  'LSP':                       { analyzer: 'cross-language-solid', field: 'principle' },
+  'SRP':                       { analyzer: 'cross-language-solid', field: 'rule' },
+  'OCP':                       { analyzer: 'cross-language-solid', field: 'rule' },
+  'ISP':                       { analyzer: 'cross-language-solid', field: 'rule' },
+  'DIP':                       { analyzer: 'cross-language-solid', field: 'rule' },
+  'LSP':                       { analyzer: 'cross-language-solid', field: 'rule' },
 
   // ── schema-validator (SchemaValidator) ──────────────────────────────────
-  'field-mismatch':            { analyzer: 'schema-validator',  field: 'violationType' },
-  'schema-field-mismatch':     { analyzer: 'schema-validator',  field: 'violationType' },
-  'missing-field':             { analyzer: 'schema-validator',  field: 'violationType' },
-  'extra-field':               { analyzer: 'schema-validator',  field: 'violationType' },
-  'constraint-mismatch':       { analyzer: 'schema-validator',  field: 'violationType' },
-  'version-mismatch':          { analyzer: 'schema-validator',  field: 'violationType' },
+  'field-mismatch':            { analyzer: 'schema-validator',  field: 'rule' },
+  'schema-field-mismatch':     { analyzer: 'schema-validator',  field: 'rule' },
+  'missing-field':             { analyzer: 'schema-validator',  field: 'rule' },
+  'extra-field':               { analyzer: 'schema-validator',  field: 'rule' },
+  'constraint-mismatch':       { analyzer: 'schema-validator',  field: 'rule' },
+  'version-mismatch':          { analyzer: 'schema-validator',  field: 'rule' },
 
   // ── api-contract (APIContractAnalyzer) ──────────────────────────────────
-  // NOTE: contractType is NOT in the buildFingerprintInput chain.
-  // These IDs are fingerprint-invisible but listed for collision detection.
-  'api-type-mismatch':         { analyzer: 'api-contract',      field: 'contractType' },
-  'missing-endpoint':          { analyzer: 'api-contract',      field: 'contractType' },
-  'api-extra-field':           { analyzer: 'api-contract',      field: 'contractType' },
-  'api-missing-field':         { analyzer: 'api-contract',      field: 'contractType' },
-  'method-mismatch':           { analyzer: 'api-contract',      field: 'contractType' },
-  'auth-mismatch':             { analyzer: 'api-contract',      field: 'contractType' },
+  'api-type-mismatch':         { analyzer: 'api-contract',      field: 'rule' },
+  'missing-endpoint':          { analyzer: 'api-contract',      field: 'rule' },
+  'api-extra-field':           { analyzer: 'api-contract',      field: 'rule' },
+  'api-missing-field':         { analyzer: 'api-contract',      field: 'rule' },
+  'method-mismatch':           { analyzer: 'api-contract',      field: 'rule' },
+  'auth-mismatch':             { analyzer: 'api-contract',      field: 'rule' },
+
+  // ── schema-parser (SchemaParser) ────────────────────────────────────────
+  'naming-convention':         { analyzer: 'schema-parser',     field: 'rule' },
+  'missing-index':             { analyzer: 'schema-parser',     field: 'rule' },
+  'missing-reference':         { analyzer: 'schema-parser',     field: 'rule' },
 
   // ── dependency-graph (DependencyGraphBuilder) ───────────────────────────
   'circular-dependency':       { analyzer: 'dependency-graph',  field: 'type' },

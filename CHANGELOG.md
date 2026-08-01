@@ -88,6 +88,18 @@ Grep audit across all universal analyzers, invariants engine, and reporting code
 
 Validated against `bench/corpus/shadcn-jit/` fixture — all Shadcn theme classes recognized; `not-a-real-class-xyzzy` correctly flagged as unknown.
 
+### Fix: Cross-Project Index Data Leakage (Bug #4)
+
+`CodeIndexDB.getInstance()` was a process-level singleton keyed only by `CODE_AUDITOR_DATA_DIR`. When the MCP server ran without `--data-dir`, the singleton used `<cwd>/.code-index/index.db` — switching projects mid-session leaked the prior project's indexed functions, audit results, and tasks into the new project's audit output. The singleton held a stale reference and never re-scoped.
+
+**Fix**: The `--data-dir` flag (parsed in MCP bootstrap before any `CodeIndexDB` import) sets `CODE_AUDITOR_DATA_DIR` to an absolute path. `resolvePersistedIndexPath()` respects this env var as the storage root, pinning `index.db` to a fixed directory. When `--data-dir` is not set, the default `<cwd>/.code-index/index.db` is per-project by convention — callers that change `cwd` across projects must also call `CodeIndexDB.resetInstance()` or pass an explicit `dbPath` to `getInstance()`. The CLI audit commands already pass `projectRoot` for per-invocation scoping.
+
+### Fix: verify-dist Gate Hardening — Zero-Files Warning Now Fails the Gate (Bug #5)
+
+`runZeroFilesDiagnostics()` emitted `console.warn` messages when analyzers processed zero source files, but these warnings never affected exit code. The `verify-dist.sh` Guard 5 (`code-audit changed --json fixtures/test.ts`) checked only exit code, which was always 0 even when all analyzers silently processed nothing — a systemic failure (missing parsers, WASM load failure, index corruption) looked identical to a clean run.
+
+**Fix**: Added `--fail-on-zero-files` flag to `code-audit changed`. Uses a majority threshold: exits 2 only when more than half of enabled analyzers report zero files. A single analyzer (e.g. `react` on a `.ts`-only corpus) is normal operation; all or most is systemic failure. Diagnostics are surfaced through `AuditResult.metadata.diagnostics` so the CLI has access to per-analyzer zero-files counts. `verify-dist.sh` Guard 5 now passes `--fail-on-zero-files`.
+
 ### Maintenance: Skill Staleness Guard
 
 Added version stamp to `SKILL.md` and a CLI mismatch warning: when the installed `code-auditor-mcp` version differs from the skill's documented version, `code-audit --version` prints a warning. Prevents stale-skill drift across installs. Note: the 3 SKILL.md copies (repo root, plugin/, user skills dir) are identical and version-stamped, but `hotspots` and `risk` CLI commands are not yet documented in any copy — the sync is correct for what exists, not comprehensive.

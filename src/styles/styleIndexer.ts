@@ -260,12 +260,20 @@ function getStoredHash(rawDb: Database.Database, filePath: string): string | nul
 function deleteFileEntries(rawDb: Database.Database, filePath: string): void {
   rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?').run(filePath);
   rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(filePath);
+  rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(filePath);
 }
 
 function removeStaleEntries(rawDb: Database.Database, currentFiles: string[]): number {
   const filesSet = new Set(currentFiles);
+  // Union all three tables — style_class_usage and style_tokens can have
+  // entries for files that don't appear in style_declarations (e.g. TSX
+  // files that use Tailwind classes without defining CSS declarations).
   const allIndexed = rawDb.prepare(
-    'SELECT DISTINCT file_path FROM style_declarations',
+    `SELECT DISTINCT file_path FROM style_declarations
+     UNION
+     SELECT DISTINCT file_path FROM style_class_usage
+     UNION
+     SELECT DISTINCT file_path FROM style_tokens`,
   ).all() as { file_path: string }[];
 
   let removed = 0;
@@ -273,6 +281,7 @@ function removeStaleEntries(rawDb: Database.Database, currentFiles: string[]): n
     if (!filesSet.has(file_path)) {
       rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?').run(file_path);
       rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(file_path);
+      rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(file_path);
       removed++;
     }
   }

@@ -209,7 +209,7 @@ echo ""
 echo "Checking code-audit changed (tests full native bootstrap chain)..."
 mkdir -p fixtures
 echo 'function add(a: number, b: number): number { return a + b; }' > fixtures/test.ts
-if node node_modules/code-auditor-mcp/dist/cli.js changed --json fixtures/test.ts 2>&1; then
+if node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1; then
   pass "code-audit changed runs end-to-end"
 else
   rc=$?

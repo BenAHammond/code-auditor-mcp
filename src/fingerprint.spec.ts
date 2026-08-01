@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { fingerprint } from './fingerprint.js';
+import { fingerprint, buildFingerprintInput } from './fingerprint.js';
+import type { Violation } from './types.js';
 
 describe('fingerprint', () => {
   it('produces the same fingerprint for the same violation at different lines (line-shift stability)', () => {
@@ -87,5 +88,41 @@ describe('fingerprint', () => {
       symbol: 'e',
     });
     expect(fp1).not.toBe(fp2);
+  });
+
+  it('produces distinct fingerprints for different react rules on the same line', () => {
+    // React analyzer sets violationType, not rule. Two different
+    // react rules on the same line must fingerprint as distinct
+    // findings — otherwise baseline known/new counts are wrong.
+    const complexityViolation: Violation = {
+      file: 'src/components/Widget.tsx',
+      line: 42,
+      rule: 'complexity',
+      severity: 'suggestion',
+      message: "Component 'Widget' has high complexity (25)",
+      analyzer: 'react',
+      violationType: 'complexity',
+    };
+
+    const errorBoundaryViolation: Violation = {
+      file: 'src/components/Widget.tsx',
+      line: 42,
+      rule: 'no-error-boundary',
+      severity: 'warning',
+      message: "Complex component 'Widget' should be wrapped in an error boundary",
+      analyzer: 'react',
+      violationType: 'no-error-boundary',
+    };
+
+    const fp1 = fingerprint(buildFingerprintInput(complexityViolation));
+    const fp2 = fingerprint(buildFingerprintInput(errorBoundaryViolation));
+
+    // Same line, same analyzer, same file — but different rules.
+    // rule is now required on Violation, so they produce distinct fingerprints directly.
+    expect(fp1).not.toBe(fp2);
+
+    // Verify the rules are correct
+    expect(buildFingerprintInput(complexityViolation).rule).toBe('complexity');
+    expect(buildFingerprintInput(errorBoundaryViolation).rule).toBe('no-error-boundary');
   });
 });

@@ -13,6 +13,15 @@ export interface JSONReportConfig {
 }
 
 /**
+ * Resolve the rule identity for a violation.
+ *
+ * `rule` is now required on the Violation type — no fallback chain needed.
+ */
+function resolveViolationRule(violation: Record<string, any>): string {
+  return violation.rule ?? '';
+}
+
+/**
  * Generate a JSON report from audit results
  */
 export function generateJSONReport(
@@ -83,25 +92,28 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
         filesProcessed: result.filesProcessed,
         executionTime: result.executionTime
       },
-      violations: result.violations.map(violation => ({
-        file: violation.file,
-        line: violation.line,
-        column: violation.column,
-        severity: violation.severity,
-        message: violation.message,
-        type: violation.type,
-        ...(violation.rule && { rule: violation.rule }),
-        ...(violation.ruleId && { ruleId: violation.ruleId }),
-        ...(violation.analyzer && { analyzer: violation.analyzer }),
-        ...(violation.functionName && { functionName: violation.functionName }),
-        ...(violation.symbol && { symbol: violation.symbol }),
-        ...(violation.profile && { profile: violation.profile }),
-        ...(violation.hotspot !== undefined && violation.hotspot > 0 && { hotspot: Math.round(violation.hotspot * 1000) / 1000 }),
-        ...(violation.recommendation && { recommendation: violation.recommendation }),
-        ...(violation.estimatedEffort && { estimatedEffort: violation.estimatedEffort }),
-        ...(violation.snippet && { snippet: violation.snippet }),
-        ...(violation.new !== undefined && { new: violation.new })
-      })),
+      violations: result.violations.map(violation => {
+        const rule = resolveViolationRule(violation);
+        return {
+          file: violation.file,
+          line: violation.line,
+          column: violation.column,
+          severity: violation.severity,
+          message: violation.message,
+          type: violation.type,
+          ...(rule && { rule }),
+          ...(violation.ruleId && { ruleId: violation.ruleId }),
+          ...(violation.analyzer && { analyzer: violation.analyzer }),
+          ...(violation.functionName && { functionName: violation.functionName }),
+          ...(violation.symbol && { symbol: violation.symbol }),
+          ...(violation.profile && { profile: violation.profile }),
+          ...(violation.hotspot !== undefined && violation.hotspot > 0 && { hotspot: Math.round(violation.hotspot * 1000) / 1000 }),
+          ...(violation.recommendation && { recommendation: violation.recommendation }),
+          ...(violation.estimatedEffort && { estimatedEffort: violation.estimatedEffort }),
+          ...(violation.snippet && { snippet: violation.snippet }),
+          ...(violation.new !== undefined && { new: violation.new })
+        };
+      }),
       ...(result.errors && { errors: result.errors })
     };
   }

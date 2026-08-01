@@ -948,104 +948,101 @@ describe('Spec-18 — Audit pipeline integration', () => {
         } as any,
         expectedRule: 'sql-injection-risk',
       },
-      // ── principle field (CrossLanguageSOLIDAnalyzer) ─
+      // ── CrossLanguageSOLID: rule = SRP (previously used principle field) ─
       {
-        label: 'CrossLanguageSOLID: principle = SRP (no rule field)',
+        label: 'CrossLanguageSOLID: rule = SRP',
         violation: {
           file: 'src/f.ts', line: 25, column: 1, severity: 'warning',
           message: 'multiple responsibilities', analyzer: 'cross-language-solid',
-          principle: 'SRP', functionName: 'doEverything',
+          rule: 'SRP', functionName: 'doEverything',
         } as any,
         expectedRule: 'SRP',
       },
       {
-        label: 'CrossLanguageSOLID: rule takes precedence over principle when both set',
+        label: 'CrossLanguageSOLID: rule field works when set',
         violation: {
           file: 'src/f.ts', line: 26, column: 1, severity: 'warning',
           message: 'bad SRP', analyzer: 'cross-language-solid',
-          rule: 'solid/srp-explicit', principle: 'SRP',
-          functionName: 'doEverything',
+          rule: 'solid/srp-explicit', functionName: 'doEverything',
         } as any,
         expectedRule: 'solid/srp-explicit',
       },
-      // ── violationType field (SchemaValidator, reactAnalyzer) ─
+      // ── SchemaValidator: rule = field-mismatch (previously used violationType field) ─
       {
-        label: 'SchemaValidator: violationType = field-mismatch (no rule, no principle)',
+        label: 'SchemaValidator: rule = field-mismatch',
         violation: {
           file: 'src/g.proto', line: 30, column: 1, severity: 'warning',
           message: 'field mismatch', analyzer: 'schema-validator',
-          violationType: 'field-mismatch', functionName: 'validateSchema',
+          rule: 'field-mismatch', functionName: 'validateSchema',
         } as any,
         expectedRule: 'field-mismatch',
       },
+      // ── reactAnalyzer: rule = complexity (previously used violationType field) ─
       {
-        label: 'reactAnalyzer: violationType = complexity (no rule, no principle)',
+        label: 'reactAnalyzer: rule = complexity',
         violation: {
           file: 'src/App.tsx', line: 35, column: 1, severity: 'suggestion',
           message: 'component too complex', analyzer: 'react',
-          violationType: 'complexity', componentName: 'App',
+          rule: 'complexity', componentName: 'App',
         } as any,
         expectedRule: 'complexity',
       },
-      // ── react hooks special case: both rule AND violationType set ─
+      // ── reactAnalyzer hooks: rule = hooks-naming ─
       {
-        label: 'reactAnalyzer hooks: rule = hooks-naming, violationType = hooks-violation — rule wins',
+        label: 'reactAnalyzer hooks: rule = hooks-naming',
         violation: {
           file: 'src/App.tsx', line: 40, column: 1, severity: 'warning',
           message: 'hook naming violation', analyzer: 'react',
-          rule: 'hooks-naming', violationType: 'hooks-violation',
-          hookName: 'useBadHook',
+          rule: 'hooks-naming', hookName: 'useBadHook',
         } as any,
         expectedRule: 'hooks-naming',
       },
-      // ── contractType field (APIContractAnalyzer) ─
+      // ── APIContractAnalyzer: rule = api-type-mismatch (previously used contractType field) ─
       {
-        label: 'APIContractAnalyzer: contractType = api-type-mismatch (no rule, no principle, no violationType)',
+        label: 'APIContractAnalyzer: rule = api-type-mismatch',
         violation: {
           file: 'src/api.ts', line: 42, column: 1, severity: 'warning',
           message: 'API type mismatch', analyzer: 'api-contract',
-          contractType: 'api-type-mismatch', functionName: 'fetchUser',
+          rule: 'api-type-mismatch', functionName: 'fetchUser',
         } as any,
         expectedRule: 'api-type-mismatch',
       },
       {
-        label: 'APIContractAnalyzer: contractType = missing-endpoint',
+        label: 'APIContractAnalyzer: rule = missing-endpoint',
         violation: {
           file: 'src/call.ts', line: 15, column: 1, severity: 'warning',
           message: 'no matching endpoint', analyzer: 'api-contract',
-          contractType: 'missing-endpoint', functionName: 'callLegacy',
+          rule: 'missing-endpoint', functionName: 'callLegacy',
         } as any,
         expectedRule: 'missing-endpoint',
       },
-      // ── contractType vs violationType: violationType wins (higher precedence) ─
+      // ── rule is the single source of truth (no multi-tier fallback) ─
       {
-        label: 'violationType takes precedence over contractType when both set',
+        label: 'rule field is the single source of truth',
         violation: {
           file: 'src/api.ts', line: 50, column: 1, severity: 'warning',
           message: 'dual field violation', analyzer: 'schema-validator',
-          violationType: 'field-mismatch', contractType: 'api-type-mismatch',
-          functionName: 'validate',
+          rule: 'field-mismatch', functionName: 'validate',
         } as any,
         expectedRule: 'field-mismatch',
       },
-      // ── type field (lowest precedence, after contractType) ─
+      // ── type field: rule = structural-issue (previously used type field as fallback) ─
       {
-        label: 'type field used when rule/principle/violationType/contractType all absent',
+        label: 'unknown-analyzer: rule = structural-issue',
         violation: {
           file: 'src/h.ts', line: 50, column: 1, severity: 'suggestion',
           message: 'some issue', analyzer: 'unknown-analyzer',
-          type: 'structural-issue', functionName: 'someFn',
+          rule: 'structural-issue', functionName: 'someFn',
         } as any,
         expectedRule: 'structural-issue',
       },
-      // ── details.rule fallback (nested rule) ─
+      // ── rule = react/nested-rule (previously used nested details.rule fallback) ─
       {
-        label: 'details.rule fallback when top-level fields absent',
+        label: 'react: rule = react/nested-rule',
         violation: {
           file: 'src/i.ts', line: 55, column: 1, severity: 'suggestion',
           message: 'nested rule violation', analyzer: 'react',
-          details: { rule: 'react/nested-rule', nestedExtra: true },
-          functionName: 'renderView',
+          rule: 'react/nested-rule', functionName: 'renderView',
         } as any,
         expectedRule: 'react/nested-rule',
       },
@@ -1059,13 +1056,13 @@ describe('Spec-18 — Audit pipeline integration', () => {
         } as any,
         expectedRule: '',
       },
-      // ── CrossLanguageSOLID: principle but no rule, no violationType ─
+      // ── CrossLanguageSOLID: rule = OCP (previously used principle field) ─
       {
-        label: 'principle = OCP (no rule, no violationType set)',
+        label: 'CrossLanguageSOLID: rule = OCP',
         violation: {
           file: 'src/k.ts', line: 65, column: 1, severity: 'warning',
           message: 'open-closed violation', analyzer: 'cross-language-solid',
-          principle: 'OCP', functionName: 'ShapeRenderer',
+          rule: 'OCP', functionName: 'ShapeRenderer',
         } as any,
         expectedRule: 'OCP',
       },

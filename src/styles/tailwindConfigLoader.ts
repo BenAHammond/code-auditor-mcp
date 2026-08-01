@@ -12,8 +12,8 @@
  * Falls back gracefully — no config means we use defaults only.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, extname } from 'node:path';
 import { createRequire } from 'node:module';
 import type { StyleToken } from './types.js';
 
@@ -194,24 +194,68 @@ function loadV3ConfigFile(configPath: string): TailwindThemeTokens | null {
 }
 
 // ---------------------------------------------------------------------------
+// Shared: find CSS files containing @theme directives
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively walk projectRoot for .css files containing @theme directives.
+ * Skips node_modules and .git directories.
+ * Exported — also used by tailwindUtilityExpander.ts.
+ */
+export function findThemeCssFiles(projectRoot: string): string[] {
+  const results: string[] = [];
+  const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '__pycache__']);
+
+  function walk(dir: string): void {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(dir, entry);
+      let st;
+      try {
+        st = statSync(fullPath);
+      } catch {
+        continue;
+      }
+
+      if (st.isDirectory()) {
+        if (!SKIP_DIRS.has(entry) && !entry.startsWith('.')) {
+          walk(fullPath);
+        }
+      } else if (st.isFile() && extname(fullPath) === '.css') {
+        // Only include files that actually contain @theme
+        try {
+          const content = readFileSync(fullPath, 'utf-8');
+          if (content.includes('@theme')) {
+            results.push(fullPath);
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    }
+  }
+
+  walk(projectRoot);
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Tier 2: v4 CSS config
 // ---------------------------------------------------------------------------
 
 function tryLoadV4Config(projectRoot: string): TailwindConfigResult | null {
-  // Tailwind v4 typically uses app.css or globals.css with @theme
-  const candidates = [
-    'app/globals.css',
-    'src/app/globals.css',
-    'app.css',
-    'src/styles/globals.css',
-    'styles/globals.css',
-    'globals.css',
-  ];
+  // Scan the project for CSS files containing @theme blocks.
+  // Replaces the old hardcoded Next.js-shaped candidate list — works for
+  // any framework (Vite, Astro, Remix, plain Tailwind v4, etc.).
+  const themeFiles = findThemeCssFiles(projectRoot);
 
-  for (const candidate of candidates) {
-    const configPath = join(projectRoot, candidate);
-    if (!existsSync(configPath)) continue;
-
+  for (const configPath of themeFiles) {
     try {
       const content = readFileSync(configPath, 'utf-8');
       const tokens = parseV4ThemeBlocks(content);
@@ -253,7 +297,7 @@ function parseV4ThemeBlocks(css: string): V4ThemeTokens {
   };
 
   // Match @theme { ... } blocks
-  const themeRegex = /@theme\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g;
+  const themeRegex = /@theme(?:\s+\w+)?\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g;
   let match: RegExpExecArray | null;
 
   while ((match = themeRegex.exec(css)) !== null) {

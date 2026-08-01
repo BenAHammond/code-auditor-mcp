@@ -265,6 +265,7 @@ export class SchemaParser {
         file: 'schema',
         severity: 'warning' as Severity,
         message: `Unknown database type: ${database.type}`,
+        rule: 'naming-convention',
         schemaType: 'naming-convention',
         details: `Supported types: ${SchemaParser.DATABASE_TYPES.join(', ')}`
       });
@@ -296,6 +297,7 @@ export class SchemaParser {
         file: 'schema',
         severity: 'warning' as Severity,
         message: `Table '${table.name}' has no primary key`,
+        rule: 'missing-index',
         schemaType: 'missing-index',
         tableName: table.name
       });
@@ -326,6 +328,7 @@ export class SchemaParser {
         file: 'schema',
         severity: 'critical' as Severity,
         message: `Column '${column.name}' in table '${table.name}' is missing type`,
+        rule: 'missing-reference',
         schemaType: 'missing-reference',
         tableName: table.name,
         columnName: column.name
@@ -338,6 +341,7 @@ export class SchemaParser {
         file: 'schema',
         severity: 'warning' as Severity,
         message: `Enum column '${column.name}' in table '${table.name}' has no values defined`,
+        rule: 'missing-reference',
         schemaType: 'missing-reference',
         tableName: table.name,
         columnName: column.name
@@ -359,6 +363,7 @@ export class SchemaParser {
         file: 'schema',
         severity: 'suggestion' as Severity,
         message: `Table name '${table.name}' should follow snake_case convention`,
+        rule: 'naming-convention',
         schemaType: 'naming-convention',
         tableName: table.name,
         suggestion: 'Use lowercase letters, numbers, and underscores only'
@@ -371,6 +376,7 @@ export class SchemaParser {
         file: 'schema',
         severity: 'suggestion' as Severity,
         message: `Table name '${table.name}' should typically be plural`,
+        rule: 'naming-convention',
         schemaType: 'naming-convention',
         tableName: table.name,
         suggestion: 'Consider using plural form for table names'
@@ -395,6 +401,7 @@ export class SchemaParser {
             file: 'schema',
             severity: 'critical' as Severity,
             message: `Reference in table '${table.name}' points to non-existent table '${reference.referencedTable}'`,
+            rule: 'missing-reference',
             schemaType: 'missing-reference',
             tableName: table.name,
             details: `Foreign key: ${reference.foreignKey} -> ${reference.referencedTable}.${reference.referencedColumn}`
@@ -411,6 +418,7 @@ export class SchemaParser {
               file: 'schema',
               severity: 'critical' as Severity,
               message: `Reference in table '${table.name}' points to non-existent column '${reference.referencedColumn}' in table '${reference.referencedTable}'`,
+              rule: 'missing-reference',
               schemaType: 'missing-reference',
               tableName: table.name,
               columnName: reference.referencedColumn,
@@ -426,6 +434,7 @@ export class SchemaParser {
             file: 'schema',
             severity: 'critical' as Severity,
             message: `Foreign key column '${reference.foreignKey}' not found in table '${table.name}'`,
+            rule: 'missing-reference',
             schemaType: 'missing-reference',
             tableName: table.name,
             columnName: reference.foreignKey

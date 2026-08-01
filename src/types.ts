@@ -40,6 +40,8 @@ export type AuditResultScope = 'full' | 'scoped';
 
 export interface Violation {
   file: string;
+  /** The canonical rule ID this violation represents (one emitter per ID — see ruleRegistry). */
+  rule: string;
   line?: number;
   column?: number;
   severity: Severity;
@@ -51,7 +53,7 @@ export interface Violation {
   profile?: string;
   /** Hotspot score [0,1] — churn percentile × complexity percentile. */
   hotspot?: number;
-  [key: string]: any; // Allow analyzer-specific properties
+  [key: string]: any; // Allow analyzer-specific properties (violationType, principle, contractType, functionName, etc.)
 }
 
 export interface AnalyzerResult {
@@ -145,6 +147,8 @@ export interface AuditResult {
     provenanceResolutionMs?: number;
     /** Blast radius impact for changed functions (Spec 14 R6 — scoped audits only). */
     blastRadius?: BlastRadiusImpact;
+    /** Zero-files or missing-result diagnostics (v3.4.8 — verify:dist gate hardening). */
+    diagnostics?: Array<{analyzerName: string; kind: string; message: string}>;
     baseline?: {
       present: boolean;
       hash?: string;

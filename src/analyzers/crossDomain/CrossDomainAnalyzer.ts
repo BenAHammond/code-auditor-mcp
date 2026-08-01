@@ -55,6 +55,9 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     'Detects cross-domain issues (schema lifecycle, validation bypass, coverage gaps)';
   readonly category = 'architecture';
 
+  /** Project root for DB scoping (Bug #4 / Item 1). */
+  private projectRoot: string | undefined;
+
   /**
    * Full override: query the code index DB for cross-domain findings.
    * The base-class per-file AST loop is bypassed — all detection is
@@ -68,9 +71,12 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     const startTime = Date.now();
     const violations: Violation[] = [];
 
+    // Store projectRoot for scoped DB access in private methods (Bug #4 / Item 1)
+    this.projectRoot = config.projectRoot as string | undefined;
+
     let rawDb: any = null;
     try {
-      const db = CodeIndexDB.getInstance();
+      const db = CodeIndexDB.getInstance(undefined, this.projectRoot);
       await db.initialize();
       rawDb = (db as any).rawDb;
     } catch {
@@ -87,9 +93,9 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       return {
         violations: [],
         errors: [],
-        filesProcessed: 0,
+        filesProcessed: files.length,
         executionTime: Date.now() - startTime,
-        metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
+        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
@@ -140,10 +146,10 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     return {
       violations,
       errors: [],
-      filesProcessed: uniqueFiles,
+      filesProcessed: uniqueFiles || files.length,
       executionTime: Date.now() - startTime,
       metrics: {
-        filesAnalyzed: uniqueFiles,
+        filesAnalyzed: uniqueFiles || files.length,
         totalViolations: violations.length,
         executionTime: Date.now() - startTime,
       },
@@ -617,7 +623,7 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     filePath?: FilePathClause,
   ): Violation[] {
     const violations: Violation[] = [];
-    const db = CodeIndexDB.getInstance();
+    const db = CodeIndexDB.getInstance(undefined, this.projectRoot);
 
     const topRiskDecile = coverage.topRiskDecile ?? 0.1;
 

@@ -1008,24 +1008,11 @@ function loadManifest(corpusDir: string): ExpectedManifest {
 
 /**
  * Get the rule identifier for a violation.
- * The React analyzer uses `violationType` instead of `rule`,
- * and for hooks-naming it's in `details.rule`.
+ *
+ * `rule` is now required on the Violation type — no fallback needed.
  */
-function getViolationRule(v: Violation, analyzerName: string): string {
-  // Direct rule field
-  if (v.rule) return v.rule;
-
-  // React analyzer puts it in details.rule
-  if (analyzerName === 'react' && (v as any).details?.rule) {
-    return (v as any).details.rule;
-  }
-
-  // React analyzer uses violationType as the rule identifier
-  if (analyzerName === 'react' && (v as any).violationType) {
-    return (v as any).violationType;
-  }
-
-  return '';
+function getViolationRule(v: Violation, _analyzerName: string): string {
+  return v.rule ?? '';
 }
 
 /**

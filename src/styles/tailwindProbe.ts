@@ -340,9 +340,14 @@ export class TailwindProbe {
     const valid: string[] = [];
     const escapeCls = (cls: string) => cls.replace(/\\/g, '\\\\');
 
-    // Include project @theme CSS so Shadcn semantic theme classes
-    // (bg-background, text-foreground, etc.) validate correctly
-    const projectTheme = this._projectCss ?? '';
+    // Extract only @theme { ... } blocks from project CSS. Including raw
+    // CSS causes two failures: (a) duplicate @import "tailwindcss", (b)
+    // relative @import "./theme.css" that loadStylesheet can't resolve,
+    // which throws a non-matchable error that breaks the retry loop.
+    // Extracting only @theme blocks gives the compiler the custom property
+    // definitions it needs to resolve semantic tokens (bg-surface-elevated,
+    // text-danger-default) without the import directives that break compilation.
+    const projectTheme = this.extractThemeBlocks();
 
     while (remaining.length > 0) {
       const rules = remaining
@@ -373,6 +378,30 @@ export class TailwindProbe {
     }
 
     return valid;
+  }
+
+  /**
+   * Extract @theme { ... } blocks from project CSS for inclusion in the
+   * probe stylesheet. Strips @import directives and other CSS that would
+   * cause the compile-probe to fail with non-matchable errors.
+   *
+   * Returns only the @theme blocks concatenated so the compiler sees
+   * the custom property definitions (--color-surface-elevated, etc.)
+   * without any import side effects.
+   */
+  private extractThemeBlocks(): string {
+    const css = this._projectCss;
+    if (!css) return '';
+
+    const themeRegex = /@theme(?:\s+\w+)?\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/g;
+    const blocks: string[] = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = themeRegex.exec(css)) !== null) {
+      blocks.push(match[0]);
+    }
+
+    return blocks.join('\n');
   }
 
   // -----------------------------------------------------------------------
@@ -783,6 +812,9 @@ function addStaticCoreUtilities(classes: Set<string>): void {
 
     // ── Container ──
     'container',
+
+    // ── Variant markers (bare prefix-less utilities) ──
+    'group', 'peer', 'dark',
 
     // ── Background ──
     'bg-auto', 'bg-cover', 'bg-contain',

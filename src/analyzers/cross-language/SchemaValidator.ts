@@ -37,6 +37,7 @@ export interface FieldConstraints {
 }
 
 export interface SchemaViolation extends Violation {
+  rule: 'field-mismatch' | 'schema-field-mismatch' | 'missing-field' | 'extra-field' | 'constraint-mismatch' | 'version-mismatch';
   violationType: 'field-mismatch' | 'schema-field-mismatch' | 'missing-field' | 'extra-field' | 'constraint-mismatch' | 'version-mismatch';
   schemas: SchemaDefinition[];
   fieldName?: string;
@@ -177,6 +178,7 @@ export class SchemaValidator {
           line: current.line,
           severity: 'warning',
           message: `Missing required field '${fieldName}' in ${current.type} ${current.name}`,
+          rule: "missing-field",
           violationType: 'missing-field',
           schemas: [reference, current],
           fieldName,
@@ -196,6 +198,7 @@ export class SchemaValidator {
             line: current.line,
             severity: 'warning',
             message: `Extra field '${fieldName}' in ${current.type} ${current.name}`,
+            rule: 'extra-field',
             violationType: 'extra-field',
             schemas: [reference, current],
             fieldName,
@@ -237,6 +240,7 @@ export class SchemaValidator {
           line: schema.line,
           severity: 'warning',
           message: `Schema ${schema.name} contains ${deprecatedFields.length} deprecated fields`,
+          rule: "field-mismatch",
           violationType: 'field-mismatch',
           schemas: [schema],
           suggestion: 'Review and migrate away from deprecated fields',
@@ -273,6 +277,7 @@ export class SchemaValidator {
         line: current.line,
         severity: 'warning',
         message: `Version mismatch: ${reference.name} v${reference.version} vs v${current.version}`,
+        rule: "version-mismatch",
         violationType: 'version-mismatch',
         schemas: [reference, current],
         suggestion: 'Ensure schemas are using compatible versions',
@@ -304,6 +309,7 @@ export class SchemaValidator {
           line: curSchema.line,
           severity: 'warning',
           message: `Type mismatch for field '${fieldName}': expected ${normalizedRefType}, got ${normalizedCurType}`,
+          rule: "schema-field-mismatch",
           violationType: 'schema-field-mismatch',
           schemas: [refSchema, curSchema],
           fieldName,
@@ -322,6 +328,7 @@ export class SchemaValidator {
           line: curSchema.line,
           severity: 'warning',
           message: `Potentially incompatible types for field '${fieldName}': ${normalizedRefType} vs ${normalizedCurType}`,
+          rule: "schema-field-mismatch",
           violationType: 'schema-field-mismatch',
           schemas: [refSchema, curSchema],
           fieldName,
@@ -362,6 +369,7 @@ export class SchemaValidator {
         line: curSchema.line,
         severity: 'warning',
         message: `Length constraint mismatch for field '${fieldName}'`,
+        rule: "constraint-mismatch",
         violationType: 'constraint-mismatch',
         schemas: [refSchema, curSchema],
         fieldName,
@@ -379,6 +387,7 @@ export class SchemaValidator {
         line: curSchema.line,
         severity: 'warning',
         message: `Numeric constraint mismatch for field '${fieldName}'`,
+        rule: "constraint-mismatch",
         violationType: 'constraint-mismatch',
         schemas: [refSchema, curSchema],
         fieldName,
@@ -405,6 +414,7 @@ export class SchemaValidator {
           line: schema.line,
           severity: 'suggestion',
           message: `Field '${field.name}' doesn't follow ${schema.language} naming conventions`,
+          rule: "field-mismatch",
           violationType: 'field-mismatch',
           schemas: [schema],
           fieldName: field.name,

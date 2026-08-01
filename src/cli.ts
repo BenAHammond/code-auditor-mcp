@@ -241,6 +241,7 @@ program
   .option('--quiet', 'Suppress output when zero violations')
   .option('--fail-on <severity>', 'Exit code 2 when violations at or above this severity exist', 'critical')
   .option('--include-baseline', 'Evaluate baseline-known violations in --fail-on checks')
+  .option('--fail-on-zero-files', 'Exit code 2 when any enabled analyzer matches zero source files', true)
   .option('--stdin', 'Read file paths from stdin (one per line)')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
   .action(async (paths: string[], options: Record<string, any>) => {
@@ -387,6 +388,19 @@ program
         });
 
         if (hasAtOrAbove) {
+          process.exit(2);
+        }
+      }
+
+      // Exit code based on --no-fail-on-zero-files (default-on in v3.4.8)
+      // Any enabled analyzer matching zero source files is a failure — a >50%
+      // threshold lets the exact bug (3/9 analyzers dark) pass silently.
+      if (options.failOnZeroFiles !== false) {
+        const diagnostics = result.metadata?.diagnostics ?? [];
+        const zeroFileWarnings = diagnostics.filter((d: any) => d.kind === 'zero-files');
+        if (zeroFileWarnings.length > 0) {
+          const names = zeroFileWarnings.map((d: any) => d.analyzer).join(', ');
+          console.error(`Zero-files failure: ${zeroFileWarnings.length} analyzer(s) matched zero source files (${names})`);
           process.exit(2);
         }
       }

@@ -113,6 +113,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   // Track references across files
   private tableReferences = new Map<string, TableReference[]>();
 
+  // Project root for DB scoping (Bug #4 / Item 1)
+  private projectRoot: string | undefined;
+
   async analyze(files: string[], config: any): Promise<AnalyzerResult> {
     const jsonFiles = files.filter(f => f.endsWith('.json'));
     const codeFiles = files.filter(f => !f.endsWith('.json'));
@@ -134,6 +137,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Discovery priority: wrangler.toml > schemaFiles > migration glob walk > ORM.
     const schemas = config.schemas;
     const projectRoot = (config as any).projectRoot || process.cwd();
+    this.projectRoot = projectRoot;
     if (!schemas || schemas.length === 0) {
       const fromWrangler = await this.discoverTablesFromWrangler(projectRoot);
       const schemaFiles = (config as SchemaAnalyzerConfig).schemaFiles;
@@ -781,7 +785,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     references: TableReference[],
   ): void {
     try {
-      const db = CodeIndexDB.getInstance();
+      const db = CodeIndexDB.getInstance(undefined, this.projectRoot);
       db.clearSchemaUsageForFile(filePath);
 
       for (const ref of references) {

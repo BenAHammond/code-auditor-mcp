@@ -207,6 +207,7 @@ function analyzeComponent(
       severity: 'warning',
       message: `Component '${component.name}' has high complexity (${component.complexity})`,
       componentName: component.name,
+      rule: 'complexity',
       violationType: 'complexity',
       details: {
         currentComplexity: component.complexity,
@@ -229,6 +230,7 @@ function analyzeComponent(
       severity: 'warning',
       message: `Component '${component.name}' is missing prop type definitions`,
       componentName: component.name,
+      rule: 'missing-props',
       violationType: 'missing-props',
       suggestion: 'Add TypeScript interface or PropTypes for component props'
     });
@@ -242,6 +244,7 @@ function analyzeComponent(
       severity: 'warning',
       message: `Complex component '${component.name}' should be wrapped in an error boundary`,
       componentName: component.name,
+      rule: 'no-error-boundary',
       violationType: 'no-error-boundary',
       suggestion: 'Wrap this component in an error boundary to handle runtime errors gracefully'
     });
@@ -292,6 +295,7 @@ function checkHooksRules(component: ComponentMetadata): ReactViolation[] {
       severity: 'warning',
       message: `Custom hook '${hook.name}' should start with 'use'`,
       componentName: component.name,
+      rule: 'hooks-naming',
       violationType: 'hooks-naming',
       details: {
         hookName: hook.name
@@ -344,6 +348,7 @@ function checkPerformanceIssues(
       severity: 'suggestion',
       message: `Consider memoizing component '${component.name}' for better performance`,
       componentName: component.name,
+      rule: 'performance',
       violationType: 'performance',
       details: {
         complexity: component.complexity,
@@ -366,6 +371,7 @@ function checkPerformanceIssues(
       severity: 'warning',
       message: `Component '${component.name}' may have inline function props causing unnecessary re-renders`,
       componentName: component.name,
+      rule: 'performance',
       violationType: 'performance',
       suggestion: 'Use useCallback to memoize event handlers passed as props'
     });
@@ -391,6 +397,7 @@ function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
       severity: 'warning',
       message: `Component '${component.name}' may have <img> elements without alt attributes`,
       componentName: component.name,
+      rule: 'accessibility',
       violationType: 'accessibility',
       suggestion: 'All <img> elements should have descriptive alt attributes for screen readers'
     });
@@ -408,6 +415,7 @@ function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
         severity: 'warning',
         message: `Component '${component.name}' has onClick on non-interactive element <${element}>`,
         componentName: component.name,
+        rule: 'accessibility',
         violationType: 'accessibility',
         suggestion: `Use a <button> or add role="button" and tabIndex={0} for keyboard accessibility`
       });
@@ -433,6 +441,7 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
       severity: 'warning',
       message: `Component '${component.name}' may be rendering lists without keys`,
       componentName: component.name,
+      rule: 'performance',
       violationType: 'performance',
       suggestion: 'Add a unique key prop to elements rendered in arrays/lists'
     });
@@ -485,6 +494,7 @@ function checkCircularDependencies(
         file: 'component-dependencies',
         severity: 'warning',
         message: `Circular dependency detected: ${cycle.join(' → ')}`,
+        rule: 'complexity',
         violationType: 'complexity',
         suggestion: 'Refactor components to remove circular dependencies'
       });
@@ -523,6 +533,7 @@ function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViola
         line: 1,
         severity: 'warning',
         message: 'No error boundaries found in the application',
+        rule: 'no-error-boundary',
         violationType: 'no-error-boundary',
         suggestion: 'Add at least one error boundary component to handle unexpected errors gracefully'
       });
@@ -649,6 +660,7 @@ function checkRawElements(
       severity,
       message: `raw \`<${loc.element}>\` — this project uses \`${loc.wrapperName}\` (${loc.wrapperFile})`,
       componentName: loc.componentName,
+      rule: 'raw-element',
       violationType: 'raw-element',
       suggestion: `Replace raw <${loc.element}> with the project's <${loc.wrapperName}> component`
     });

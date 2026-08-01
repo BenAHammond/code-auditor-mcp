@@ -16,10 +16,29 @@
  *   warning and disable the undefined-class detector.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { TailwindProbe, type ProbeInitResult } from './tailwindProbe.js';
-import type { TailwindConfigResult } from './tailwindConfigLoader.js';
+import { findThemeCssFiles, type TailwindConfigResult } from './tailwindConfigLoader.js';
+
+// ---------------------------------------------------------------------------
+// Static bare utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Bare Tailwind utility classes that exist regardless of theme or compiler
+ * version. These are variant markers and structural utilities — they don't
+ * derive from theme values and may not be @apply-able in v4, so the
+ * compile-probe won't validate them.
+ *
+ * Bare prefix-less utilities are a class, not a one-off.
+ */
+const BASE_UTILITIES = new Set([
+  'group',       // parent marker for group-hover: etc.
+  'peer',        // sibling marker for peer-focus: etc.
+  'dark',        // dark mode marker (parent class)
+  'container',   // responsive container
+  'sr-only',     // screen-reader-only
+]);
 
 // ---------------------------------------------------------------------------
 // Structural patterns (regex — NOT enumeration)
@@ -151,30 +170,20 @@ export class TailwindUtilityExpander {
 
   /**
    * Auto-discover project CSS files containing @theme blocks.
-   * Follows the same candidate-path pattern as tryLoadV4Config in
-   * tailwindConfigLoader.ts. Reads and concatenates all matching files
-   * so that Shadcn custom theme properties are available for validation.
+   * Uses findThemeCssFiles() which walks the project tree for .css files
+   * containing @theme — works for any framework (Next.js, Vite, Astro,
+   * Remix, plain Tailwind v4). Concatenates all matching files so that
+   * split-token designs (e.g. Shadcn ui-components.css + global.css) just work.
    */
   private discoverProjectCss(projectRoot: string): string | null {
-    const candidates = [
-      'app/globals.css',
-      'src/app/globals.css',
-      'app.css',
-      'src/styles/globals.css',
-      'styles/globals.css',
-      'globals.css',
-    ];
+    const themeFiles = findThemeCssFiles(projectRoot);
+    if (themeFiles.length === 0) return null;
 
     const parts: string[] = [];
-    for (const candidate of candidates) {
-      const cssPath = join(projectRoot, candidate);
-      if (!existsSync(cssPath)) continue;
+    for (const cssPath of themeFiles) {
       try {
         const content = readFileSync(cssPath, 'utf-8');
-        // Only include files that actually contain @theme blocks
-        if (content.includes('@theme')) {
-          parts.push(content);
-        }
+        parts.push(content);
       } catch {
         // Silently skip unreadable files
       }
@@ -234,6 +243,14 @@ export class TailwindUtilityExpander {
 
     // 2. Check custom (user-supplied) classes
     if (this.customClasses?.has(className)) {
+      return { valid: true, tier: 'probe' };
+    }
+
+    // 2.5. Check static bare utilities (group, peer, dark, container, sr-only)
+    // These exist regardless of theme/compiler and may not be @apply-able in v4.
+    // Variant prefixes (group-hover:, peer-focus:) are already handled by
+    // stripVariantPrefix() in step 6 — group-hover:text-red strips to text-red.
+    if (BASE_UTILITIES.has(className)) {
       return { valid: true, tier: 'probe' };
     }
 

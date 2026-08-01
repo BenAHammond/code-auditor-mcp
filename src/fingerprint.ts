@@ -49,32 +49,11 @@ export function fingerprint(input: FingerprintInput): string {
 /**
  * Build the canonical {analyzer, rule, file, symbol} tuple for a violation.
  *
- * This is the ONE place rule-id resolution happens. If a violation stores its
- * rule identifier in a field not listed here, that violation fingerprints
- * with an empty rule — add the missing field to the chain below.
- *
- * Precedence (first populated wins):
- *   1. `violation.rule`       — universal analyzers, invariants, react (hooks)
- *   2. `violation.principle`   — CrossLanguageSOLID
- *   3. `violation.violationType` — SchemaValidator, reactAnalyzer
- *   4. `violation.contractType` — APIContractAnalyzer
- *   5. `violation.type`         — structural type (rarely a rule id; last-resort)
- *   6. `violation.details?.rule` — nested rule (react)
+ * `rule` is required on Violation — it is the single source of truth for
+ * rule identity. Every analyzer must set `rule` when constructing a violation.
  */
 export function buildFingerprintInput(violation: Violation): FingerprintInput {
-  const rule =
-    (typeof violation.rule === 'string' ? violation.rule : undefined) ??
-    (typeof violation.principle === 'string' ? violation.principle : undefined) ??
-    (typeof violation.violationType === 'string' ? violation.violationType : undefined) ??
-    (typeof violation.contractType === 'string' ? violation.contractType : undefined) ??
-    (typeof violation.type === 'string' ? violation.type : undefined) ??
-    (violation.details &&
-     typeof violation.details === 'object' &&
-     !Array.isArray(violation.details) &&
-     typeof violation.details.rule === 'string'
-      ? violation.details.rule
-      : undefined) ??
-    '';
+  const rule = violation.rule ?? '';
 
   return {
     analyzer: violation.analyzer ?? '',

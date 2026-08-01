@@ -296,15 +296,30 @@ export class CodeIndexDB {
 
   // ── Singleton ───────────────────────────────────────────────────────
 
-  static getInstance(dbPath?: string): CodeIndexDB {
+  /** The project root this singleton was opened for (used for mismatch detection). */
+  private static currentProjectRoot: string | undefined;
+
+  static getInstance(dbPath?: string, projectRoot?: string): CodeIndexDB {
+    let resolved: string;
+    if (dbPath !== undefined && dbPath !== '') {
+      resolved = dbPath === ':memory:' ? ':memory:' : path.resolve(dbPath);
+    } else {
+      resolved = resolvePersistedIndexPath(projectRoot);
+    }
+
     if (!CodeIndexDB.instance) {
-      let resolved: string;
-      if (dbPath !== undefined && dbPath !== '') {
-        resolved = dbPath === ':memory:' ? ':memory:' : path.resolve(dbPath);
-      } else {
-        resolved = resolvePersistedIndexPath();
-      }
       CodeIndexDB.instance = new CodeIndexDB(resolved);
+      CodeIndexDB.currentProjectRoot = projectRoot;
+    } else if (CodeIndexDB.instance.dbPath !== resolved) {
+      // :memory: is a test escape hatch — never replace it with a file path.
+      if (CodeIndexDB.instance.dbPath === ':memory:') {
+        return CodeIndexDB.instance;
+      }
+      // Different project — close old and create new (Bug #4 / Item 1)
+      try { CodeIndexDB.instance.db?.close(); } catch { /* ignore */ }
+      CodeIndexDB.instance = new CodeIndexDB(resolved);
+      CodeIndexDB.instance.isInitialized = false;
+      CodeIndexDB.currentProjectRoot = projectRoot;
     }
     return CodeIndexDB.instance;
   }
@@ -379,19 +394,30 @@ export class CodeIndexDB {
     // Check for LokiJS migration
     const migrationResult = this.maybeMigrateFromLokiJS();
 
-    // Open SQLite database
+    // Open SQLite database (with auto-recovery for corrupted files)
+    let retried = false;
     try {
       this.db = new Database(this.dbPath);
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
     } catch (e: unknown) {
-      const code = getErrnoCode(e);
-      throw new ContextualError(
-        `Failed to open code index database: ${e instanceof Error ? e.message : String(e)}`,
-        { ...(code && { errnoCode: code }), dbPath: this.dbPath,
-          hint: 'The index file may be corrupted, locked, or on a read-only volume. Try a different CODE_AUDITOR_DATA_DIR.' },
-        e instanceof Error ? e : undefined
-      );
+      const msg = e instanceof Error ? e.message : String(e);
+      // Auto-recover from corrupted / non-db files (Bug #4 / Item 1)
+      if (!retried && this.dbPath !== ':memory:' && /(not a database|malformed|corrupt)/i.test(msg)) {
+        retried = true;
+        try { await fs.unlink(this.dbPath); } catch { /* ignore */ }
+        this.db = new Database(this.dbPath);
+        this.db.pragma('journal_mode = WAL');
+        this.db.pragma('foreign_keys = ON');
+      } else {
+        const code = getErrnoCode(e);
+        throw new ContextualError(
+          `Failed to open code index database: ${msg}`,
+          { ...(code && { errnoCode: code }), dbPath: this.dbPath,
+            hint: 'The index file may be corrupted, locked, or on a read-only volume. Try a different CODE_AUDITOR_DATA_DIR.' },
+          e instanceof Error ? e : undefined
+        );
+      }
     }
 
     // Create schema

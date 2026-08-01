@@ -202,7 +202,7 @@ export const DEFAULT_ANALYZERS: Record<string, AnalyzerDefinition> = {
       const analyzer = new UniversalSchemaAnalyzer();
       let schemas: unknown[] = [];
       try {
-        const db = CodeIndexDB.getInstance();
+        const db = CodeIndexDB.getInstance(undefined, (config as any).projectRoot);
         await db.initialize();
         const loadedSchemas = await db.getAllSchemas();
         schemas = loadedSchemas.map((loaded) => {
@@ -394,7 +394,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       });
     } else if (scope === 'changed') {
       // Changed scope: detect modified files
-      const db = CodeIndexDB.getInstance();
+      const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
       await db.initialize();
       const modifiedFiles = mergedOptions.explicitFiles?.length
         ? mergedOptions.explicitFiles
@@ -421,7 +421,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Detect changed functions for non-all scopes
     if (isScoped && files.length > 0) {
       try {
-        const db = CodeIndexDB.getInstance();
+        const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
         await db.initialize();
         const detection = await db.detectChangedFunctions(files);
         changedFunctions = detection.changedFunctions;
@@ -444,7 +444,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let blastRadius: import('./types.js').BlastRadiusImpact | undefined;
     if (isScoped && changedFunctions && changedFunctions.length > 0) {
       try {
-        const db = CodeIndexDB.getInstance();
+        const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
         const rawDb = db.rawDb;
         const functionIds: number[] = [];
         for (const fn of changedFunctions) {
@@ -558,7 +558,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let fullFunctionIndex: FunctionMetadata[] | undefined;
     if (isScoped) {
       try {
-        const db = CodeIndexDB.getInstance();
+        const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
         fullFunctionIndex = await db.getAllFunctions();
         logMcpInfo('analysis', 'loaded full function index for scoped DRY', {
           functionCount: fullFunctionIndex.length
@@ -580,7 +580,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // styles analyzer runs, mirroring the function index sync pattern.
     if (enabledAnalyzers.includes('styles')) {
       try {
-        const styleDb = CodeIndexDB.getInstance();
+        const styleDb = CodeIndexDB.getInstance(undefined, root);
         await styleDb.initialize();
         const styleSyncResult = await syncStyleIndex(
           styleDb.rawDb,
@@ -720,7 +720,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Extracted to runZeroFilesDiagnostics() for testability. Runs against the
     // raw analyzerResults before truthiness filtering so the "no result" pass
     // catches analyzers skipped by the registry, abort, or handoff exceptions.
-    for (const w of runZeroFilesDiagnostics(enabledAnalyzers, analyzerResults)) {
+    const zeroFilesDiagnostics = runZeroFilesDiagnostics(enabledAnalyzers, analyzerResults);
+    for (const w of zeroFilesDiagnostics) {
       console.warn(w.message);
     }
     // Build ordered results — filter to truthy entries so downstream consumers
@@ -746,7 +747,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         similarity: number;
       }> | undefined;
       if (dryPairs && dryPairs.length > 0) {
-        const indexDb = CodeIndexDB.getInstance();
+        const indexDb = CodeIndexDB.getInstance(undefined, root);
         await indexDb.initialize();
         dryPersistRunId = randomUUID();
         const insertStmt = indexDb.rawDb.prepare(`
@@ -820,7 +821,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Attach hotspot scores to violations and reorder within severity tiers.
     // Falls back gracefully when no churn/hotspot data exists.
     try {
-      const indexDb = CodeIndexDB.getInstance();
+      const indexDb = CodeIndexDB.getInstance(undefined, root);
       await indexDb.initialize();
 
       // Build hotspot lookup: target -> score
@@ -905,7 +906,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       const requiredDeclines = divergenceCfg.divergenceRuns ?? 2;
 
       if (threshold > 0) {
-        const indexDb = CodeIndexDB.getInstance();
+        const indexDb = CodeIndexDB.getInstance(undefined, root);
         await indexDb.initialize();
 
         // Get all distinct pair fingerprints
@@ -1007,6 +1008,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         scope: scopeResultType,
         provenanceResolutionMs: provenanceTiming.totalMs,
         ...(blastRadius && { blastRadius }),
+        ...(zeroFilesDiagnostics.length > 0 && { diagnostics: zeroFilesDiagnostics }),
         ...(baselineMetadata && { baseline: baselineMetadata }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
@@ -1032,7 +1034,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Spec 11 R1 — write to findings ledger (non-fatal: ledger is advisory)
     const ledgerRunId = (async () => {
       try {
-        const indexDb = CodeIndexDB.getInstance();
+        const indexDb = CodeIndexDB.getInstance(undefined, root);
         await indexDb.initialize();
         const violations = Object.values(orderedAnalyzerResults).flatMap(ar => ar.violations);
         const scopeStr = Array.isArray(scope) ? `files:${scope.length}` : (scope ?? 'all');

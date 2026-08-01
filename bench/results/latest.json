@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-07-27T19:05:58.828Z",
+  "timestamp": "2026-08-01T01:35:27.107Z",
   "summary": {
-    "totalAnalyzers": 13,
-    "passed": 13,
+    "totalAnalyzers": 14,
+    "passed": 14,
     "failed": 0,
     "totalKnownMisses": 4,
     "microAvgPrecision": 1,
     "microAvgRecall": 1,
     "microAvgF1": 1,
-    "microAvgTrueRecall": 0.9322,
-    "microAvgTrueF1": 0.9649
+    "microAvgTrueRecall": 0.95,
+    "microAvgTrueF1": 0.9744
   },
   "analyzers": {
     "conventions": {
@@ -226,7 +226,7 @@
       "hookContractViolations": 0
     },
     "data-access": {
-      "truePositives": 9,
+      "truePositives": 7,
       "falsePositives": 0,
       "falseNegatives": 0,
       "precision": 1,
@@ -237,19 +237,6 @@
       "knownMisses": 0,
       "recoveredMisses": 0,
       "ruleMetrics": [
-        {
-          "rule": "direct-sql",
-          "truePositives": 2,
-          "falsePositives": 0,
-          "falseNegatives": 0,
-          "precision": 1,
-          "recall": 1,
-          "f1": 1,
-          "knownMisses": 0,
-          "recoveredMisses": 0,
-          "trueRecall": 1,
-          "trueF1": 1
-        },
         {
           "rule": "loop-query",
           "truePositives": 1,
@@ -354,24 +341,6 @@
         },
         {
           "expected": {
-            "file": "src/n-plus-one.ts",
-            "rule": "direct-sql",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/n-plus-one.ts",
-            "line": 1,
-            "column": 1,
-            "severity": "suggestion",
-            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
-            "rule": "direct-sql",
-            "analyzer": "data-access",
-            "functionName": "direct-sql"
-          }
-        },
-        {
-          "expected": {
             "file": "src/clean-queries.ts",
             "rule": "missing-org-filter",
             "severity": "warning"
@@ -440,24 +409,6 @@
             "rule": "unfiltered-query",
             "analyzer": "data-access",
             "functionName": "async function fetchUser(userId: number): Promise<any> {\n  const result = await db.query(\n    'SELECT * FROM users WHERE id = $1',\n    [userId]\n  );\n  return result[0] || null;\n}:query"
-          }
-        },
-        {
-          "expected": {
-            "file": "src/clean-queries.ts",
-            "rule": "direct-sql",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/data-access/src/clean-queries.ts",
-            "line": 1,
-            "column": 1,
-            "severity": "suggestion",
-            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
-            "rule": "direct-sql",
-            "analyzer": "data-access",
-            "functionName": "direct-sql"
           }
         }
       ],
@@ -632,6 +583,125 @@
       "warnings": [],
       "hookContractViolations": 0
     },
+    "go-data-access": {
+      "truePositives": 3,
+      "falsePositives": 0,
+      "falseNegatives": 0,
+      "precision": 1,
+      "recall": 1,
+      "f1": 1,
+      "trueRecall": 1,
+      "trueF1": 1,
+      "knownMisses": 0,
+      "recoveredMisses": 0,
+      "ruleMetrics": [
+        {
+          "rule": "missing-org-filter",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "sql-injection-risk",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "unfiltered-query",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        }
+      ],
+      "nearMissResults": [
+        {
+          "file": "src/no-db.go",
+          "violations": 0,
+          "passed": true
+        }
+      ],
+      "details": [
+        {
+          "expected": {
+            "file": "src/dynamic-sql.go",
+            "rule": "sql-injection-risk",
+            "severity": "error"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/go-data-access/src/dynamic-sql.go",
+            "line": 12,
+            "column": 15,
+            "severity": "suggestion",
+            "message": "Potential SQL injection risk in Query. Use parameterized queries.",
+            "rule": "sql-injection-risk",
+            "analyzer": "data-access",
+            "functionName": "func dynamicSQL(db *sql.DB, tableName string) {\n\trows, err := db.Query(fmt.Sprintf(\"SELECT * FROM %s\", tableName))\n\tif err != nil {\n\t\treturn\n\t}\n\tdefer rows.Close()\n}:Query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/parameterized.go",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/go-data-access/src/parameterized.go",
+            "line": 9,
+            "column": 9,
+            "severity": "warning",
+            "message": "Query on users missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "func parameterizedQuery(db *sql.DB, userID int) (*sql.Rows, error) {\n\treturn db.Query(\"SELECT id, name, email FROM users WHERE id = $1\", userID)\n}:Query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/parameterized.go",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/go-data-access/src/parameterized.go",
+            "line": 9,
+            "column": 9,
+            "severity": "suggestion",
+            "message": "Unfiltered query on users may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "func parameterizedQuery(db *sql.DB, userID int) (*sql.Rows, error) {\n\treturn db.Query(\"SELECT id, name, email FROM users WHERE id = $1\", userID)\n}:Query"
+          }
+        }
+      ],
+      "knownMissDetails": [],
+      "warnings": [],
+      "hookContractViolations": 0
+    },
     "graph": {
       "truePositives": 0,
       "falsePositives": 0,
@@ -711,30 +781,17 @@
       "hookContractViolations": 0
     },
     "non-english": {
-      "truePositives": 22,
+      "truePositives": 18,
       "falsePositives": 0,
       "falseNegatives": 0,
       "precision": 1,
       "recall": 1,
       "f1": 1,
-      "trueRecall": 0.88,
-      "trueF1": 0.9362,
+      "trueRecall": 0.8571,
+      "trueF1": 0.9231,
       "knownMisses": 3,
       "recoveredMisses": 0,
       "ruleMetrics": [
-        {
-          "rule": "direct-sql",
-          "truePositives": 4,
-          "falsePositives": 0,
-          "falseNegatives": 0,
-          "precision": 1,
-          "recall": 1,
-          "f1": 1,
-          "knownMisses": 0,
-          "recoveredMisses": 0,
-          "trueRecall": 1,
-          "trueF1": 1
-        },
         {
           "rule": "loop-query",
           "truePositives": 1,
@@ -855,6 +912,24 @@
         {
           "expected": {
             "file": "src/abfragen.ts",
+            "rule": "missing-org-filter",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
+            "line": 41,
+            "column": 26,
+            "severity": "warning",
+            "message": "Query on users missing organization/tenant filter",
+            "rule": "missing-org-filter",
+            "analyzer": "data-access",
+            "functionName": "async function alleBenutzerAbrufen() {\n  const benutzer = await datenbank.query(\n    'SELECT * FROM users'\n  );\n  return benutzer;\n}:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/abfragen.ts",
             "rule": "unfiltered-query",
             "severity": "suggestion"
           },
@@ -873,24 +948,6 @@
         {
           "expected": {
             "file": "src/abfragen.ts",
-            "rule": "missing-org-filter",
-            "severity": "warning"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
-            "line": 41,
-            "column": 26,
-            "severity": "warning",
-            "message": "Query on users missing organization/tenant filter",
-            "rule": "missing-org-filter",
-            "analyzer": "data-access",
-            "functionName": "async function alleBenutzerAbrufen() {\n  const benutzer = await datenbank.query(\n    'SELECT * FROM users'\n  );\n  return benutzer;\n}:query"
-          }
-        },
-        {
-          "expected": {
-            "file": "src/abfragen.ts",
             "rule": "unfiltered-query",
             "severity": "suggestion"
           },
@@ -908,24 +965,6 @@
         },
         {
           "expected": {
-            "file": "src/abfragen.ts",
-            "rule": "direct-sql",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/abfragen.ts",
-            "line": 1,
-            "column": 1,
-            "severity": "suggestion",
-            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
-            "rule": "direct-sql",
-            "analyzer": "data-access",
-            "functionName": "direct-sql"
-          }
-        },
-        {
-          "expected": {
             "file": "src/consultas.ts",
             "rule": "missing-org-filter",
             "severity": "warning"
@@ -938,24 +977,6 @@
             "severity": "warning",
             "message": "Query on users missing organization/tenant filter",
             "rule": "missing-org-filter",
-            "analyzer": "data-access",
-            "functionName": "async function buscarUsuarios() {\n  const resultado = await banco.query(\n    'SELECT * FROM users WHERE id = 1'\n  );\n  return resultado;\n}:query"
-          }
-        },
-        {
-          "expected": {
-            "file": "src/consultas.ts",
-            "rule": "unfiltered-query",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
-            "line": 18,
-            "column": 27,
-            "severity": "suggestion",
-            "message": "Unfiltered query on users may cause performance issues",
-            "rule": "unfiltered-query",
             "analyzer": "data-access",
             "functionName": "async function buscarUsuarios() {\n  const resultado = await banco.query(\n    'SELECT * FROM users WHERE id = 1'\n  );\n  return resultado;\n}:query"
           }
@@ -987,6 +1008,24 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
+            "line": 18,
+            "column": 27,
+            "severity": "suggestion",
+            "message": "Unfiltered query on users may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "async function buscarUsuarios() {\n  const resultado = await banco.query(\n    'SELECT * FROM users WHERE id = 1'\n  );\n  return resultado;\n}:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/consultas.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
             "line": 26,
             "column": 25,
             "severity": "suggestion",
@@ -994,24 +1033,6 @@
             "rule": "unfiltered-query",
             "analyzer": "data-access",
             "functionName": "async function consultarPedidos() {\n  const pedidos = await banco.query(\n    'SELECT * FROM orders WHERE status = $1',\n    ['ativo']\n  );\n  return pedidos;\n}:query"
-          }
-        },
-        {
-          "expected": {
-            "file": "src/consultas.ts",
-            "rule": "direct-sql",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/consultas.ts",
-            "line": 1,
-            "column": 1,
-            "severity": "suggestion",
-            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
-            "rule": "direct-sql",
-            "analyzer": "data-access",
-            "functionName": "direct-sql"
           }
         },
         {
@@ -1028,24 +1049,6 @@
             "severity": "warning",
             "message": "Query on 注文 missing organization/tenant filter",
             "rule": "missing-org-filter",
-            "analyzer": "data-access",
-            "functionName": "async function 注文を取得(ユーザーID: number) {\n  const 注文 = await データベース.query(\n    'SELECT * FROM 注文 WHERE ユーザーID = $1',\n    [ユーザーID]\n  );\n  return 注文;\n}:query"
-          }
-        },
-        {
-          "expected": {
-            "file": "src/kuesutori.ts",
-            "rule": "unfiltered-query",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
-            "line": 22,
-            "column": 20,
-            "severity": "suggestion",
-            "message": "Unfiltered query on 注文 may cause performance issues",
-            "rule": "unfiltered-query",
             "analyzer": "data-access",
             "functionName": "async function 注文を取得(ユーザーID: number) {\n  const 注文 = await データベース.query(\n    'SELECT * FROM 注文 WHERE ユーザーID = $1',\n    [ユーザーID]\n  );\n  return 注文;\n}:query"
           }
@@ -1077,6 +1080,24 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
+            "line": 22,
+            "column": 20,
+            "severity": "suggestion",
+            "message": "Unfiltered query on 注文 may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "async function 注文を取得(ユーザーID: number) {\n  const 注文 = await データベース.query(\n    'SELECT * FROM 注文 WHERE ユーザーID = $1',\n    [ユーザーID]\n  );\n  return 注文;\n}:query"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/kuesutori.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
             "line": 31,
             "column": 20,
             "severity": "suggestion",
@@ -1084,24 +1105,6 @@
             "rule": "unfiltered-query",
             "analyzer": "data-access",
             "functionName": "async function 全商品を取得() {\n  const 商品 = await データベース.query(\n    'SELECT * FROM 商品'\n  );\n  return 商品;\n}:query"
-          }
-        },
-        {
-          "expected": {
-            "file": "src/kuesutori.ts",
-            "rule": "direct-sql",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/kuesutori.ts",
-            "line": 1,
-            "column": 1,
-            "severity": "suggestion",
-            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
-            "rule": "direct-sql",
-            "analyzer": "data-access",
-            "functionName": "direct-sql"
           }
         },
         {
@@ -1125,24 +1128,6 @@
         {
           "expected": {
             "file": "src/verarbeiten.ts",
-            "rule": "unfiltered-query",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
-            "line": 23,
-            "column": 12,
-            "severity": "suggestion",
-            "message": "Unfiltered query on orders may cause performance issues",
-            "rule": "unfiltered-query",
-            "analyzer": "data-access",
-            "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query"
-          }
-        },
-        {
-          "expected": {
-            "file": "src/verarbeiten.ts",
             "rule": "missing-org-filter",
             "severity": "warning"
           },
@@ -1156,6 +1141,24 @@
             "rule": "missing-org-filter",
             "analyzer": "data-access",
             "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query:2"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/verarbeiten.ts",
+            "rule": "unfiltered-query",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
+            "line": 23,
+            "column": 12,
+            "severity": "suggestion",
+            "message": "Unfiltered query on orders may cause performance issues",
+            "rule": "unfiltered-query",
+            "analyzer": "data-access",
+            "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query"
           }
         },
         {
@@ -1193,24 +1196,6 @@
             "analyzer": "data-access",
             "functionName": "async function verarbeiten(typ: string, daten: unknown) {\n  if (typ === 'bestellung') {\n    // Also triggers data-access violations (missing-org-filter, unfiltered-query)\n    return db.query('SELECT * FROM orders WHERE type = $1', [daten]);\n  } else if (typ === 'benutzer') {\n    return db.query('SELECT * FROM users WHERE role = $1', [daten]);\n  } else if (typ === 'produkt') {\n    return db.query('SELECT * FROM products WHERE category = $1', [daten]);\n  }\n  return null;\n}:query:3"
           }
-        },
-        {
-          "expected": {
-            "file": "src/verarbeiten.ts",
-            "rule": "direct-sql",
-            "severity": "suggestion"
-          },
-          "matched": true,
-          "actualViolation": {
-            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/non-english/src/verarbeiten.ts",
-            "line": 1,
-            "column": 1,
-            "severity": "suggestion",
-            "message": "Direct SQL execution detected. Consider using an ORM or query builder.",
-            "rule": "direct-sql",
-            "analyzer": "data-access",
-            "functionName": "direct-sql"
-          }
         }
       ],
       "knownMissDetails": [
@@ -1243,7 +1228,7 @@
       "hookContractViolations": 0
     },
     "react": {
-      "truePositives": 1,
+      "truePositives": 25,
       "falsePositives": 0,
       "falseNegatives": 0,
       "precision": 1,
@@ -1255,8 +1240,86 @@
       "recoveredMisses": 0,
       "ruleMetrics": [
         {
+          "rule": "accessibility",
+          "truePositives": 3,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
           "rule": "complexity",
           "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "hooks-naming",
+          "truePositives": 1,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "missing-props",
+          "truePositives": 5,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "no-error-boundary",
+          "truePositives": 3,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "performance",
+          "truePositives": 6,
+          "falsePositives": 0,
+          "falseNegatives": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1,
+          "knownMisses": 0,
+          "recoveredMisses": 0,
+          "trueRecall": 1,
+          "trueF1": 1
+        },
+        {
+          "rule": "raw-element",
+          "truePositives": 6,
           "falsePositives": 0,
           "falseNegatives": 0,
           "precision": 1,
@@ -1271,6 +1334,11 @@
       "nearMissResults": [
         {
           "file": "src/good-hook.tsx",
+          "violations": 0,
+          "passed": true
+        },
+        {
+          "file": "src/raw-element-near-miss.tsx",
           "violations": 0,
           "passed": true
         }
@@ -1289,12 +1357,455 @@
             "severity": "warning",
             "message": "Component 'UserProfile' has high complexity (12)",
             "componentName": "UserProfile",
+            "rule": "complexity",
             "violationType": "complexity",
             "details": {
               "currentComplexity": 12,
               "maxComplexity": 10
             },
             "suggestion": "Consider breaking this component into smaller, more focused components"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/bad-hook.tsx",
+            "rule": "no-error-boundary",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/bad-hook.tsx",
+            "line": 16,
+            "severity": "warning",
+            "message": "Complex component 'UserProfile' should be wrapped in an error boundary",
+            "componentName": "UserProfile",
+            "rule": "no-error-boundary",
+            "violationType": "no-error-boundary",
+            "suggestion": "Wrap this component in an error boundary to handle runtime errors gracefully"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/bad-hook.tsx",
+            "rule": "performance",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/bad-hook.tsx",
+            "line": 16,
+            "severity": "suggestion",
+            "message": "Consider memoizing component 'UserProfile' for better performance",
+            "componentName": "UserProfile",
+            "rule": "performance",
+            "violationType": "performance",
+            "details": {
+              "complexity": 12,
+              "componentType": "functional"
+            },
+            "suggestion": "Wrap component with React.memo() or convert to use React.memo"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/hooks-naming.tsx",
+            "rule": "hooks-naming",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/hooks-naming.tsx",
+            "line": 22,
+            "severity": "warning",
+            "message": "Custom hook 'fetchUserData' should start with 'use'",
+            "componentName": "Dashboard",
+            "rule": "hooks-naming",
+            "violationType": "hooks-naming",
+            "details": {
+              "hookName": "fetchUserData"
+            },
+            "suggestion": "Rename to 'useFetchUserData'"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/no-error-boundary.tsx",
+            "rule": "no-error-boundary",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/no-error-boundary.tsx",
+            "line": 9,
+            "severity": "warning",
+            "message": "Complex component 'AsyncWidget' should be wrapped in an error boundary",
+            "componentName": "AsyncWidget",
+            "rule": "no-error-boundary",
+            "violationType": "no-error-boundary",
+            "suggestion": "Wrap this component in an error boundary to handle runtime errors gracefully"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/missing-props.tsx",
+            "rule": "missing-props",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/missing-props.tsx",
+            "line": 6,
+            "severity": "warning",
+            "message": "Component 'AlertBanner' is missing prop type definitions",
+            "componentName": "AlertBanner",
+            "rule": "missing-props",
+            "violationType": "missing-props",
+            "suggestion": "Add TypeScript interface or PropTypes for component props"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/performance.tsx",
+            "rule": "performance",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/performance.tsx",
+            "line": 5,
+            "severity": "suggestion",
+            "message": "Consider memoizing component 'HeavyRenderer' for better performance",
+            "componentName": "HeavyRenderer",
+            "rule": "performance",
+            "violationType": "performance",
+            "details": {
+              "complexity": 6,
+              "componentType": "functional"
+            },
+            "suggestion": "Wrap component with React.memo() or convert to use React.memo"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/performance.tsx",
+            "rule": "performance",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/performance.tsx",
+            "line": 5,
+            "severity": "warning",
+            "message": "Component 'HeavyRenderer' may be rendering lists without keys",
+            "componentName": "HeavyRenderer",
+            "rule": "performance",
+            "violationType": "performance",
+            "suggestion": "Add a unique key prop to elements rendered in arrays/lists"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/accessibility.tsx",
+            "rule": "accessibility",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/accessibility.tsx",
+            "line": 8,
+            "severity": "warning",
+            "message": "Component 'PhotoGallery' may have <img> elements without alt attributes",
+            "componentName": "PhotoGallery",
+            "rule": "accessibility",
+            "violationType": "accessibility",
+            "suggestion": "All <img> elements should have descriptive alt attributes for screen readers"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/accessibility.tsx",
+            "rule": "accessibility",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/accessibility.tsx",
+            "line": 26,
+            "severity": "warning",
+            "message": "Component 'ModalToggle' has onClick on non-interactive element <div>",
+            "componentName": "ModalToggle",
+            "rule": "accessibility",
+            "violationType": "accessibility",
+            "suggestion": "Use a <button> or add role=\"button\" and tabIndex={0} for keyboard accessibility"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/accessibility.tsx",
+            "rule": "performance",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/accessibility.tsx",
+            "line": 26,
+            "severity": "warning",
+            "message": "Component 'ModalToggle' may have inline function props causing unnecessary re-renders",
+            "componentName": "ModalToggle",
+            "rule": "performance",
+            "violationType": "performance",
+            "suggestion": "Use useCallback to memoize event handlers passed as props"
+          }
+        },
+        {
+          "expected": {
+            "file": "app-level",
+            "rule": "no-error-boundary",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "app-level",
+            "line": 1,
+            "severity": "warning",
+            "message": "No error boundaries found in the application",
+            "rule": "no-error-boundary",
+            "violationType": "no-error-boundary",
+            "suggestion": "Add at least one error boundary component to handle unexpected errors gracefully"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/accessibility.tsx",
+            "rule": "raw-element",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/accessibility.tsx",
+            "line": 39,
+            "severity": "suggestion",
+            "message": "raw `<button>` — this project uses `Button` (/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx)",
+            "componentName": "AccessibleGallery",
+            "rule": "raw-element",
+            "violationType": "raw-element",
+            "suggestion": "Replace raw <button> with the project's <Button> component"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/performance.tsx",
+            "rule": "raw-element",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/performance.tsx",
+            "line": 23,
+            "severity": "suggestion",
+            "message": "raw `<button>` — this project uses `Button` (/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx)",
+            "componentName": "InlineClick",
+            "rule": "raw-element",
+            "violationType": "raw-element",
+            "suggestion": "Replace raw <button> with the project's <Button> component"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "performance",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 9,
+            "severity": "warning",
+            "message": "Component 'Button' may have inline function props causing unnecessary re-renders",
+            "componentName": "Button",
+            "rule": "performance",
+            "violationType": "performance",
+            "suggestion": "Use useCallback to memoize event handlers passed as props"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "missing-props",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 22,
+            "severity": "warning",
+            "message": "Component 'LoginForm' is missing prop type definitions",
+            "componentName": "LoginForm",
+            "rule": "missing-props",
+            "violationType": "missing-props",
+            "suggestion": "Add TypeScript interface or PropTypes for component props"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "missing-props",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 31,
+            "severity": "warning",
+            "message": "Component 'SignupForm' is missing prop type definitions",
+            "componentName": "SignupForm",
+            "rule": "missing-props",
+            "violationType": "missing-props",
+            "suggestion": "Add TypeScript interface or PropTypes for component props"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "missing-props",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 39,
+            "severity": "warning",
+            "message": "Component 'DeleteButton' is missing prop type definitions",
+            "componentName": "DeleteButton",
+            "rule": "missing-props",
+            "violationType": "missing-props",
+            "suggestion": "Add TypeScript interface or PropTypes for component props"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "performance",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 39,
+            "severity": "warning",
+            "message": "Component 'DeleteButton' may have inline function props causing unnecessary re-renders",
+            "componentName": "DeleteButton",
+            "rule": "performance",
+            "violationType": "performance",
+            "suggestion": "Use useCallback to memoize event handlers passed as props"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "accessibility",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 39,
+            "severity": "warning",
+            "message": "Component 'DeleteButton' has onClick on non-interactive element <div>",
+            "componentName": "DeleteButton",
+            "rule": "accessibility",
+            "violationType": "accessibility",
+            "suggestion": "Use a <button> or add role=\"button\" and tabIndex={0} for keyboard accessibility"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "missing-props",
+            "severity": "warning"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 47,
+            "severity": "warning",
+            "message": "Component 'NavBar' is missing prop type definitions",
+            "componentName": "NavBar",
+            "rule": "missing-props",
+            "violationType": "missing-props",
+            "suggestion": "Add TypeScript interface or PropTypes for component props"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "raw-element",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 22,
+            "severity": "suggestion",
+            "message": "raw `<button>` — this project uses `Button` (/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx)",
+            "componentName": "LoginForm",
+            "rule": "raw-element",
+            "violationType": "raw-element",
+            "suggestion": "Replace raw <button> with the project's <Button> component"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "raw-element",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 31,
+            "severity": "suggestion",
+            "message": "raw `<button>` — this project uses `Button` (/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx)",
+            "componentName": "SignupForm",
+            "rule": "raw-element",
+            "violationType": "raw-element",
+            "suggestion": "Replace raw <button> with the project's <Button> component"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "raw-element",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 39,
+            "severity": "suggestion",
+            "message": "raw `<button>` — this project uses `Button` (/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx)",
+            "componentName": "DeleteButton",
+            "rule": "raw-element",
+            "violationType": "raw-element",
+            "suggestion": "Replace raw <button> with the project's <Button> component"
+          }
+        },
+        {
+          "expected": {
+            "file": "src/raw-element.tsx",
+            "rule": "raw-element",
+            "severity": "suggestion"
+          },
+          "matched": true,
+          "actualViolation": {
+            "file": "/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx",
+            "line": 47,
+            "severity": "suggestion",
+            "message": "raw `<button>` — this project uses `Button` (/Users/ben/playground/code-auditor/app/bench/corpus/react/src/raw-element.tsx)",
+            "componentName": "NavBar",
+            "rule": "raw-element",
+            "violationType": "raw-element",
+            "suggestion": "Replace raw <button> with the project's <Button> component"
           }
         }
       ],
@@ -1355,7 +1866,7 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
-            "line": 13,
+            "line": 7,
             "column": 27,
             "severity": "suggestion",
             "message": "Reference to unknown table 'inventory' (select)",
@@ -1373,7 +1884,7 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
-            "line": 21,
+            "line": 11,
             "column": 25,
             "severity": "suggestion",
             "message": "Reference to unknown table 'widgets' (select)",
@@ -1391,7 +1902,7 @@
           "matched": true,
           "actualViolation": {
             "file": "/Users/ben/playground/code-auditor/app/bench/corpus/schema/src/unknown-table.ts",
-            "line": 21,
+            "line": 11,
             "column": 18,
             "severity": "suggestion",
             "message": "Reference to unknown table 'widgets' (delete)",
