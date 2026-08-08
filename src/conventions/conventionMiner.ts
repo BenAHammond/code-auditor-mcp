@@ -18,6 +18,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
 import type { Convention, ConventionMiningConfig } from '../types.js';
+import type { ExportInfo } from '../languages/types.js';
 
 // ─── Built-in / stdlib exclusion ──────────────────────────────────────────────
 
@@ -262,10 +263,23 @@ export function parseFileImports(
 }
 
 /**
- * Parse the export form for a specific exported function from its source file.
- * Returns null if we can't determine the form.
+ * Parse the export form for a specific exported function from AST-extracted
+ * export data. Returns null if the function isn't found in the export list.
  */
 export function detectExportForm(
+  functionName: string,
+  exports: ExportInfo[],
+): 'default' | 'named' | null {
+  const match = exports.find(e => e.name === functionName);
+  if (!match) return null;
+  return match.isDefault ? 'default' : 'named';
+}
+
+/**
+ * Parse the export form from raw source text (regex-based fallback for mining
+ * paths that don't have AST data available yet).
+ */
+function _detectExportFormFromSource(
   filePath: string,
   functionName: string,
   sourceCode: string,
@@ -679,6 +693,7 @@ function mineExportShape(
   config: ConventionMiningConfig,
   projectRoot?: string,
   getSource?: (filePath: string) => string | undefined,
+  getExports?: (filePath: string) => ExportInfo[] | undefined,
 ): Convention[] {
   const conventions: Convention[] = [];
 
@@ -700,19 +715,27 @@ function mineExportShape(
   const dirExemplars = new Map<string, { file: string; line: number; form: string }>();
 
   for (const row of rows) {
-    const fullPath = projectRoot ? path.join(projectRoot, row.file_path) : row.file_path;
-    let content: string;
-    const provided = getSource?.(row.file_path) ?? getSource?.(fullPath);
-    if (provided !== undefined) {
-      content = provided;
+    // B2: Use AST-extracted exports when available (pipeline audit path),
+    // fall back to source-code regex parsing for mining runs that lack AST data.
+    const fileExports = getExports?.(row.file_path);
+    let form: 'default' | 'named' | null;
+    if (fileExports) {
+      form = detectExportForm(row.name, fileExports);
     } else {
-      try {
-        content = fs.readFileSync(fullPath, 'utf-8');
-      } catch {
-        continue;
+      const fullPath = projectRoot ? path.join(projectRoot, row.file_path) : row.file_path;
+      let content: string;
+      const provided = getSource?.(row.file_path) ?? getSource?.(fullPath);
+      if (provided !== undefined) {
+        content = provided;
+      } else {
+        try {
+          content = fs.readFileSync(fullPath, 'utf-8');
+        } catch {
+          continue;
+        }
       }
+      form = _detectExportFormFromSource(fullPath, row.name, content);
     }
-    const form = detectExportForm(fullPath, row.name, content);
     if (!form) continue;
 
     const directory = path.dirname(row.file_path) || '.';
@@ -955,6 +978,7 @@ export function mineConventions(
   config: ConventionMiningConfig,
   projectRoot?: string,
   getSource?: (filePath: string) => string | undefined,
+  getExports?: (filePath: string) => ExportInfo[] | undefined,
 ): Convention[] {
   const conventions: Convention[] = [];
 
@@ -967,8 +991,9 @@ export function mineConventions(
   // 3. Error Handling
   conventions.push(...mineErrorHandling(db, config));
 
-  // 4. Export Shape (reads files from disk unless getSource provided)
-  conventions.push(...mineExportShape(db, config, projectRoot, getSource));
+  // 4. Export Shape (reads files from disk unless getSource provided;
+  //    B2: getExports enables AST-based export-form detection via function-index facts)
+  conventions.push(...mineExportShape(db, config, projectRoot, getSource, getExports));
 
   // 5. Naming
   conventions.push(...mineNaming(db, config));

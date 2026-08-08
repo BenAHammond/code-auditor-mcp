@@ -5,9 +5,10 @@
  * Migrated from TypeScript Compiler API to tree-sitter AST patterns.
  */
 
-import type { ASTNode, AST } from '../languages/types.js';
+import type { ASTNode, AST, LanguageAdapter } from '../languages/types.js';
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import { walkAST, getLineAndColumn, isExported as adapterIsExported } from '../languages/adapterBridge.js';
+import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import {
   Violation,
   AnalyzerResult,
@@ -38,60 +39,6 @@ const rawText = (node: ASTNode): string => (node.raw as TreeSitterNode)?.text ??
 const findChild = (node: ASTNode, type: string): ASTNode | undefined =>
   node.children?.find(c => c.type === type);
 
-/**
- * Get preceding comment nodes that are JSDoc-style (/** ... *​/).
- * Looks at siblings in the raw tree-sitter parent, walking backwards from
- * the given node until a non-comment sibling is found.
- */
-function getPrecedingJSDocComments(node: ASTNode): ASTNode[] {
-  const raw = node.raw as TreeSitterNode;
-  if (!raw?.parent) return [];
-
-  const parentRaw = raw.parent;
-  const parentAST = node.parent;
-  if (!parentAST?.children) return [];
-
-  // Find our position in the parent AST children
-  const ourIndex = parentAST.children.findIndex(
-    c => c.range[0] === node.range[0] && c.range[1] === node.range[1]
-  );
-  if (ourIndex < 0) return [];
-
-  // Walk backwards collecting adjacent comment nodes
-  const comments: ASTNode[] = [];
-  for (let i = ourIndex - 1; i >= 0; i--) {
-    const sibling = parentAST.children[i];
-    if (sibling.type === 'comment') {
-      const text = rawText(sibling);
-      if (text.includes('/**')) {
-        comments.unshift(sibling);
-      } else {
-        // Non-JSDoc comment — stop looking
-        break;
-      }
-    } else {
-      break;
-    }
-  }
-
-  return comments;
-}
-
-/**
- * Extract the cleaned JSDoc comment text from preceding comment nodes.
- * Strips leading /**, trailing *​/, and leading * on each line.
- */
-function getJSDocText(node: ASTNode): string | null {
-  const comments = getPrecedingJSDocComments(node);
-  if (comments.length === 0) return null;
-
-  const combined = comments.map(c => rawText(c)).join('\n');
-
-  return combined
-    .replace(/\/\*\*|\*\/|\s*\*\s?/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 /**
  * Parse @param tag details from JSDoc comment text.
@@ -205,14 +152,15 @@ function getFilePurpose(rootNode: ASTNode): string | null {
  * Analyzes JSDoc parameter documentation for a function-like node.
  */
 function analyzeParamDocumentation(
-  node: ASTNode
+  node: ASTNode,
+  adapter: LanguageAdapter,
 ): { totalParams: number; documentedParams: number } {
   const totalParams = countParameters(node);
   if (totalParams === 0) {
     return { totalParams: 0, documentedParams: 0 };
   }
 
-  const jsDocText = getJSDocText(node);
+  const jsDocText = adapter.getDocumentation(node);
   if (!jsDocText) {
     return { totalParams, documentedParams: 0 };
   }
@@ -227,8 +175,8 @@ function analyzeParamDocumentation(
 /**
  * Checks if function has @returns or @return documentation in its JSDoc.
  */
-function hasReturnDocumentation(node: ASTNode): boolean {
-  const jsDocText = getJSDocText(node);
+function hasReturnDocumentation(node: ASTNode, adapter: LanguageAdapter): boolean {
+  const jsDocText = adapter.getDocumentation(node);
   if (!jsDocText) return false;
   return /@returns?\b/i.test(jsDocText);
 }
@@ -256,6 +204,9 @@ function analyzeFileDocumentation(
 } {
   const violations: Violation[] = [];
   const fileName = filePath;
+
+  // B3: Get the language adapter for this file type
+  const adapter = LanguageRegistry.getInstance().getAdapterForFile(filePath);
 
   let totalFunctions = 0;
   let documentedFunctions = 0;
@@ -297,7 +248,7 @@ function analyzeFileDocumentation(
       const shouldCheck = !config.checkExportedOnly || nodeExported;
 
       if (shouldCheck) {
-        const jsDoc = getJSDocText(node);
+        const jsDoc = adapter?.getDocumentation(node) ?? null;
         const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
 
         if (hasGoodDoc) {
@@ -321,7 +272,7 @@ function analyzeFileDocumentation(
 
         // Check parameter documentation
         if (node.type === 'function_declaration' || node.type === 'function_expression') {
-          const paramAnalysis = analyzeParamDocumentation(node);
+          const paramAnalysis = analyzeParamDocumentation(node, adapter!);
           if (paramAnalysis.totalParams > 0) {
             functionsWithParams++;
             if (paramAnalysis.documentedParams === paramAnalysis.totalParams) {
@@ -354,7 +305,7 @@ function analyzeFileDocumentation(
 
           if (hasReturn) {
             functionsWithReturns++;
-            if (hasReturnDocumentation(node)) {
+            if (hasReturnDocumentation(node, adapter!)) {
               returnsDocumented++;
             } else if (config.requireReturnDocs && hasGoodDoc) {
               const functionName = getNodeName(node) || 'function';
@@ -385,7 +336,7 @@ function analyzeFileDocumentation(
       const shouldCheck = !config.checkExportedOnly || componentExported;
 
       if (shouldCheck) {
-        const jsDoc = getJSDocText(node);
+        const jsDoc = adapter?.getDocumentation(node) ?? null;
         const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
 
         if (hasGoodDoc) {

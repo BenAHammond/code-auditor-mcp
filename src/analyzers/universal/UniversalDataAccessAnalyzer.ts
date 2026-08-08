@@ -298,10 +298,29 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     
     for (const node of uniqueNodes) {
               const nodeText = adapter.getNodeText(node, sourceCode);
-      
+
       // Skip if the node text is too short or doesn't contain meaningful content
       if (!nodeText || nodeText.trim().length < 10) continue;
-      
+
+      // When a call_expression like db.prepare(\`...\`) spans multiple lines,
+      // findNodes discovers both the call_expression (via path 1) and the
+      // template_string inside its arguments (via path 2).  The template string
+      // is the more precise target for injection checks, and isDynamicString-
+      // Construction on a call_expression delegates to its template arguments
+      // anyway.  Skip the call_expression here so we don't double-report the
+      // same injection risk.
+      if (this.isFunctionCall(node, adapter)) {
+        const args = adapter.getChildren(node).find(
+          c => adapter.getNodeType(c) === 'arguments',
+        );
+        if (args) {
+          const hasTemplate = adapter.getChildren(args).some(
+            c => this.isTemplateLiteral(c, adapter),
+          );
+          if (hasTemplate) continue;
+        }
+      }
+
       // Determine if this is a database-related call
       const isSqlQuery = this.containsSQLKeywords(nodeText);
       const isOrmCall = this.isOrmPattern(nodeText);
@@ -586,7 +605,352 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
 
     return false;
   }
-  
+
+  /**
+   * Detect that a node sits inside a D1 .prepare() call — the standard safe
+   * pattern for SQL in Cloudflare Workers.
+   *
+   * D1's parameterized API is `db.prepare(sql).bind(a, b, c).first()`.
+   * This method also recognises `.prepare()` WITHOUT a subsequent `.bind()`
+   * as safe: a prepared statement with no bind step has zero runtime
+   * parameters, so template interpolation in the SQL text is query
+   * composition with compile-time constants, not user input.
+   *
+   * Handles these patterns:
+   *   • Direct chain:   `db.prepare(sql).bind(a).all()`
+   *   • Two-statement:  `const stmt = db.prepare(sql); stmt.bind(a).all();`
+   *   • No-param:       `db.prepare(sql).first()`  (no bind needed)
+   *
+   * Entry points:
+   *   - a `template_string` node inside prepare()'s arguments
+   *   - the prepare() call_expression itself
+   */
+  private isInPrepareBindChain(
+    node: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+  ): boolean {
+    // Step 1: Find the prepare call_expression from the node.
+    let prepareCall: ASTNode | null;
+
+    if (adapter.getNodeType(node) === 'template_string') {
+      // Walk up through arguments → call_expression
+      const args = adapter.getParent(node);
+      if (!args || adapter.getNodeType(args) !== 'arguments') return false;
+      prepareCall = adapter.getParent(args);
+    } else if (adapter.getNodeType(node) === 'call_expression') {
+      // Node is the call_expression itself — check if it's a prepare() call.
+      prepareCall = node;
+    } else {
+      return false;
+    }
+
+    if (!prepareCall || adapter.getNodeType(prepareCall) !== 'call_expression') {
+      return false;
+    }
+
+    // Step 2: Verify the call_expression is .prepare() by inspecting its
+    // callee — the first child that is a member_expression, which may be
+    // wrapped inside an await_expression (await db.prepare(sql)).
+    let prepareCallee = adapter.getChildren(prepareCall).find(
+      c => adapter.getNodeType(c) === 'member_expression',
+    );
+    if (!prepareCallee) {
+      const awaitExpr = adapter.getChildren(prepareCall).find(
+        c => adapter.getNodeType(c) === 'await_expression',
+      );
+      if (awaitExpr) {
+        prepareCallee = adapter.getChildren(awaitExpr).find(
+          c => adapter.getNodeType(c) === 'member_expression',
+        );
+      }
+    }
+    if (!prepareCallee) return false;
+
+    const hasPrepareProp = adapter.getChildren(prepareCallee).some(
+      c =>
+        adapter.getNodeType(c) === 'property_identifier' &&
+        adapter.getNodeText(c, sourceCode) === 'prepare',
+    );
+    if (!hasPrepareProp) return false;
+
+    // Step 3: Walk up from the prepare call_expression to find .bind()
+    // chained onto it.  The parent of prepareCall should be a
+    // member_expression whose property is "bind".
+    const memberExpr = adapter.getParent(prepareCall);
+    if (memberExpr && adapter.getNodeType(memberExpr) === 'member_expression') {
+      const hasBindProp = adapter.getChildren(memberExpr).some(
+        c =>
+          adapter.getNodeType(c) === 'property_identifier' &&
+          adapter.getNodeText(c, sourceCode) === 'bind',
+      );
+      if (hasBindProp) {
+        // Step 4: The member_expression's parent must be a call_expression
+        // (the actual .bind() invocation).
+        const bindCall = adapter.getParent(memberExpr);
+        if (bindCall && adapter.getNodeType(bindCall) === 'call_expression') {
+          return true;
+        }
+      }
+    }
+
+    // Step 5 (two-statement pattern): The direct-chain check failed.  Check
+    // whether the prepare() result is assigned to a variable that is later
+    // .bind()'ed in the same function scope.
+    //   Pattern:  const stmt = db.prepare(sql);
+    //             stmt.bind(x).all();
+    if (this.isPrepareAssignedToVariable(prepareCall, adapter, sourceCode)) {
+      return true;
+    }
+
+    // Step 6 (no-param prepare): Node is inside .prepare() with no .bind()
+    // found in the direct chain or local scope.  Without .bind() the query
+    // has no runtime parameterisation at the statement level.  Fall through
+    // to let checkQuerySecurity determine whether template interpolation
+    // makes the query dynamic.
+    return false;
+  }
+
+  /**
+   * Detect that a node sits inside a Durable Object .exec() call —
+   * Cloudflare's internal SQLite interface for Durable Objects.
+   *
+   * `storage.sql.exec(query, ...bindings)` accepts *spread* bind parameters
+   * after the query string.  A call WITH spread binds is fully parameterized
+   * and safe.  A call WITHOUT spread binds has no runtime parameters, so
+   * template interpolation is query-composition-time.
+   *
+   * Entry points: same as isInPrepareBindChain — a template_string inside
+   * the arguments, or the call_expression itself.
+   */
+  private isInExecChain(
+    node: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+  ): boolean {
+    // Step 1: Find the exec call_expression from the node.
+    let execCall: ASTNode | null;
+
+    if (adapter.getNodeType(node) === 'template_string') {
+      const args = adapter.getParent(node);
+      if (!args || adapter.getNodeType(args) !== 'arguments') return false;
+      execCall = adapter.getParent(args);
+    } else if (adapter.getNodeType(node) === 'call_expression') {
+      execCall = node;
+    } else {
+      return false;
+    }
+
+    if (!execCall || adapter.getNodeType(execCall) !== 'call_expression') {
+      return false;
+    }
+
+    // Step 2: Verify the call_expression is .exec() — the member_expression
+    // may be inside an await_expression wrapper (await sql.exec(query)).
+    let execCallee = adapter.getChildren(execCall).find(
+      c => adapter.getNodeType(c) === 'member_expression',
+    );
+    if (!execCallee) {
+      const awaitExpr = adapter.getChildren(execCall).find(
+        c => adapter.getNodeType(c) === 'await_expression',
+      );
+      if (awaitExpr) {
+        execCallee = adapter.getChildren(awaitExpr).find(
+          c => adapter.getNodeType(c) === 'member_expression',
+        );
+      }
+    }
+    if (!execCallee) return false;
+
+    const hasExecProp = adapter.getChildren(execCallee).some(
+      c =>
+        adapter.getNodeType(c) === 'property_identifier' &&
+        adapter.getNodeText(c, sourceCode) === 'exec',
+    );
+    if (!hasExecProp) return false;
+
+    // Step 3: Check for spread bind parameters after the template.
+    // `sql.exec(template, ...binds)` — the spread element in arguments
+    // means values are parameterized.
+    const args = adapter.getChildren(execCall).find(
+      c => adapter.getNodeType(c) === 'arguments',
+    );
+    if (args) {
+      const argChildren = adapter.getChildren(args);
+      const hasSpread = argChildren.some(
+        c => adapter.getNodeType(c) === 'spread_element',
+      );
+      if (hasSpread) {
+        return true; // Parameterized via spread binds
+      }
+    }
+
+    // Step 4: No spread binds — the query has no runtime bind parameters.
+    // Fall through so checkQuerySecurity determines whether template
+    // interpolation makes the query dynamic.  The "in-process SQLite"
+    // argument does not make dynamic interpolation safe — if user-supplied
+    // values reach the SQL text they are still injectable regardless of
+    // whether the DB is remote or in-process.
+    return false;
+  }
+
+  /**
+   * Detect D1's convenience SQL methods — .all(), .first(), .run() —
+   * called with bind parameters as a second argument.
+   *
+   * `db.all(query, ...params)` is shorthand for
+   * `db.prepare(query).bind(...params).all()`.  If there's a second argument
+   * (the bind params), the call is fully parameterized and safe.
+   */
+  private isD1ConvenienceCall(
+    node: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+  ): boolean {
+    const D1_CONVENIENCE = new Set(['all', 'first', 'run']);
+
+    // Find the call_expression.
+    let call: ASTNode | null;
+    if (adapter.getNodeType(node) === 'template_string') {
+      const args = adapter.getParent(node);
+      if (!args || adapter.getNodeType(args) !== 'arguments') return false;
+      call = adapter.getParent(args);
+    } else if (adapter.getNodeType(node) === 'call_expression') {
+      call = node;
+    } else {
+      return false;
+    }
+
+    if (!call || adapter.getNodeType(call) !== 'call_expression') return false;
+
+    // Verify the callee is one of .all / .first / .run — the
+    // member_expression may be inside an await_expression wrapper
+    // (await db.all(query, params)).
+    let callee = adapter.getChildren(call).find(
+      c => adapter.getNodeType(c) === 'member_expression',
+    );
+    if (!callee) {
+      const awaitExpr = adapter.getChildren(call).find(
+        c => adapter.getNodeType(c) === 'await_expression',
+      );
+      if (awaitExpr) {
+        callee = adapter.getChildren(awaitExpr).find(
+          c => adapter.getNodeType(c) === 'member_expression',
+        );
+      }
+    }
+    if (!callee) return false;
+
+    const methodName = adapter.getChildren(callee).find(
+      c =>
+        adapter.getNodeType(c) === 'property_identifier' &&
+        D1_CONVENIENCE.has(adapter.getNodeText(c, sourceCode)),
+    );
+    if (!methodName) return false;
+
+    // Check for bind parameters — must have more than one argument.
+    // The first argument is the query text; any subsequent argument
+    // carries bind values for the ? placeholders.
+    const args = adapter.getChildren(call).find(
+      c => adapter.getNodeType(c) === 'arguments',
+    );
+    if (!args) return false;
+
+    const argChildren = adapter.getChildren(args);
+    // Filter out commas and whitespace; count real argument nodes.
+    const realArgs = argChildren.filter(
+      c => !['(', ')', ',', 'comment'].includes(adapter.getNodeType(c)),
+    );
+    return realArgs.length >= 2;
+  }
+
+  /**
+   * Check the two-statement prepare→bind pattern: db.prepare() is assigned to
+   * a variable whose value is later .bind()'ed in the same function scope.
+   *
+   *   const stmt = db.prepare(sql);
+   *   const result = stmt.bind(x).all();
+   *
+   * The direct-chain check (isInPrepareBindChain Step 3) only catches the
+   * single-expression form `db.prepare(sql).bind(x).all()`.  This method
+   * catches the common idiom where the prepared statement is stored in a local
+   * before being bound.
+   */
+  private isPrepareAssignedToVariable(
+    prepareCall: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+  ): boolean {
+    // The parent of the prepare call_expression reveals how the result is used.
+    const parent = adapter.getParent(prepareCall);
+    if (!parent) return false;
+
+    const parentType = adapter.getNodeType(parent);
+    let varName: string | null = null;
+
+    if (parentType === 'variable_declarator') {
+      // const stmt = db.prepare(sql)
+      const children = adapter.getChildren(parent);
+      const nameChild = children.find(
+        c => adapter.getNodeType(c) === 'identifier',
+      );
+      if (nameChild) {
+        varName = adapter.getNodeText(nameChild, sourceCode);
+      }
+    } else if (parentType === 'assignment_expression') {
+      // stmt = db.prepare(sql)
+      const children = adapter.getChildren(parent);
+      const left = children.find(
+        c =>
+          adapter.getNodeType(c) === 'identifier' ||
+          adapter.getNodeType(c) === 'member_expression',
+      );
+      if (left) {
+        varName = adapter.getNodeText(left, sourceCode);
+      }
+    }
+
+    if (!varName) return false;
+
+    // Scan the enclosing function scope for `.bind()` on this variable.
+    const fnNode = this.findEnclosingFunctionNode(prepareCall, adapter);
+    if (!fnNode) return false;
+
+    const fnText = adapter.getNodeText(fnNode, sourceCode);
+    const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const bindPattern = new RegExp(
+      String.raw`\b${escaped}\.bind\s*\(`,
+      'u',
+    );
+
+    return bindPattern.test(fnText);
+  }
+
+  /**
+   * Walk up the AST to find the enclosing function node (function_declaration,
+   * arrow_function, or method_definition).  Returns null if we reach the
+   * program root.
+   */
+  private findEnclosingFunctionNode(
+    node: ASTNode,
+    adapter: LanguageAdapter,
+  ): ASTNode | null {
+    let current: ASTNode | null = node;
+    while (current) {
+      const type = adapter.getNodeType(current);
+      if (
+        type === 'function_declaration' ||
+        type === 'function_expression' ||
+        type === 'arrow_function' ||
+        type === 'method_definition'
+      ) {
+        return current;
+      }
+      current = adapter.getParent(current);
+    }
+    return null;
+  }
+
   private isOrmPattern(text: string): boolean {
     // Common ORM method patterns
     const ormPatterns = [
@@ -731,6 +1095,28 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     injectionRisk: boolean;
     message?: string;
   } {
+    // Check for D1's .prepare().bind() chain — queries parameterized via
+    // .bind() are safe even when the template literal text doesn't contain
+    // '?' placeholders (the bind args carry the values).  Walk up the AST
+    // from the template-string node to detect the enclosing chain.
+    if (this.isInPrepareBindChain(node, adapter, sourceCode)) {
+      return { parameterized: true, injectionRisk: false };
+    }
+
+    // Check for Durable Objects' .exec() — the internal SQLite interface.
+    // Spread binds (sql.exec(template, ...binds)) mean parameterized; without
+    // binds, template interpolation is query-composition-time, not runtime.
+    if (this.isInExecChain(node, adapter, sourceCode)) {
+      return { parameterized: true, injectionRisk: false };
+    }
+
+    // Check for D1 convenience methods — .all(), .first(), .run() with bind
+    // parameters.  db.all(query, ...params) is shorthand for the full
+    // prepare().bind().all() chain.
+    if (this.isD1ConvenienceCall(node, adapter, sourceCode)) {
+      return { parameterized: true, injectionRisk: false };
+    }
+
     const parameterized = (config.securityPatterns?.parameterizedQueries || []).some(pattern =>
       text.includes(pattern)
     );
@@ -800,7 +1186,62 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     };
   }
 
+  private extractCallExpressionMethod(
+    callExpr: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+  ): string {
+    // Extract the method name from the callee of a call expression.
+    // For `sql.exec(...)` the callee is a member_expression whose
+    // property_identifier is "exec".  Walking the AST avoids picking up SQL
+    // keywords (COUNT, JOIN, WHERE, ...) that appear inside template literals
+    // in the call arguments, which a regex scan of the full call-expression
+    // text would incorrectly match.
+    const children = adapter.getChildren(callExpr);
+    const callee = children.find(c => {
+      const t = adapter.getNodeType(c);
+      return t === 'member_expression' || t === 'identifier';
+    });
+    if (callee) {
+      const calleeType = adapter.getNodeType(callee);
+      if (calleeType === 'member_expression') {
+        const mc = adapter.getChildren(callee);
+        const prop = mc.find(c => adapter.getNodeType(c) === 'property_identifier');
+        if (prop) return adapter.getNodeText(prop, sourceCode);
+      } else {
+        // Bare identifier call (e.g. `exec(...)`)
+        return adapter.getNodeText(callee, sourceCode);
+      }
+    }
+    // Fallback: regex on just the callee portion of the text
+    const callText = adapter.getNodeText(callExpr, sourceCode);
+    const m = callText.match(/\.(\w+)\s*[<(]/);
+    return m ? m[1] : 'unknown';
+  }
+
   private extractMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string {
+    const nodeType = adapter.getNodeType(node);
+
+    // For template literals inside a DB-provenanced call, extract the method
+    // name from the enclosing call expression instead of the template body.
+    if (nodeType === 'template_string' || nodeType === 'template_literal') {
+      const parent = adapter.getParent(node);
+      if (parent && adapter.getNodeType(parent) === 'arguments') {
+        const callExpr = adapter.getParent(parent);
+        if (callExpr && adapter.getNodeType(callExpr) === 'call_expression') {
+          return this.extractCallExpressionMethod(callExpr, adapter, sourceCode);
+        }
+      }
+    }
+
+    // For call expressions themselves, extract from the callee child. The
+    // full node text includes the arguments (which may contain template
+    // literals with SQL keywords), so a naive regex scan of the whole text
+    // can match COUNT, JOIN, WHERE, etc. instead of the real method name.
+    if (nodeType === 'call_expression') {
+      return this.extractCallExpressionMethod(node, adapter, sourceCode);
+    }
+
     const text = adapter.getNodeText(node, sourceCode);
     const match = text.match(/([\p{L}\p{N}_]+)\s*\(/u);
     return match ? match[1] : 'unknown';

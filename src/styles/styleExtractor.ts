@@ -1,8 +1,8 @@
 /**
  * Style declaration extractor — Spec 10.
  *
- * Extracts normalized declarations from all five style mechanisms:
- *   1. CSS/SCSS files — tree-sitter-css parsed rule sets
+ * Extracts normalized declarations from style mechanisms:
+ *   1. SCSS files — regex-based rule set extraction (CSS handled by cssAstExtractor.ts)
  *   2. Tailwind — className/class attributes in JSX/HTML
  *   3. Inline styles — style={{...}} object expressions
  *   4. CSS-in-JS — styled-components / emotion tagged templates
@@ -44,10 +44,11 @@ export function extractDeclarations(
   const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
 
   switch (ext) {
-    case '.css':
-      return extractFromCSS(filePath, sourceCode, 'css');
+    // .css files are handled by the AST pipeline (cssAstExtractor.ts +
+    // createStylesCssVisitor in pipelineAdapters.ts). SCSS stays on the
+    // regex path because tree-sitter-css is not an SCSS grammar.
     case '.scss':
-      return extractFromCSS(filePath, sourceCode, 'scss');
+      return extractRuleSetsFromSCSS(filePath, sourceCode);
     case '.tsx':
     case '.jsx':
     case '.ts':
@@ -71,8 +72,10 @@ export function extractTokens(
   filePath: string,
   sourceCode: string,
 ): StyleToken[] {
+  // .css tokens are extracted via the AST pipeline (extractTokensFromCSSAst).
+  // SCSS stays on the regex path since tree-sitter-css is not an SCSS grammar.
   const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
-  if (ext !== '.css' && ext !== '.scss') return [];
+  if (ext !== '.scss') return [];
 
   const tokens: StyleToken[] = [];
   const varRegex = /--([a-zA-Z0-9_-]+)\s*:\s*([^;};]+)/g;
@@ -109,18 +112,12 @@ export function getOrLoadTailwindTokens(
 // Sub-extractor: CSS / SCSS
 // ---------------------------------------------------------------------------
 
-function extractFromCSS(
+function extractRuleSetsFromSCSS(
   filePath: string,
   sourceCode: string,
-  mechanism: StyleMechanism,
 ): NormalizedDeclaration[] {
   const declarations: NormalizedDeclaration[] = [];
-
-  // Extract rule set contents
-  // We use regex for extraction because the CSS adapter's AST walk is heavy
-  // and we only need declaration extraction, not structural analysis.
-  extractRuleSets(sourceCode, filePath, mechanism, declarations);
-
+  extractRuleSets(sourceCode, filePath, declarations);
   return declarations;
 }
 
@@ -134,7 +131,6 @@ function extractFromCSS(
 function extractRuleSets(
   css: string,
   filePath: string,
-  mechanism: StyleMechanism,
   declarations: NormalizedDeclaration[],
 ): void {
   // Track current context (selector, at-rule)
@@ -145,7 +141,13 @@ function extractRuleSets(
   let atRuleStack: string[] = [];
 
   while (i < css.length) {
-    // Skip whitespace and comments
+    // Skip whitespace
+    while (i < css.length && (css[i] === ' ' || css[i] === '\t' || css[i] === '\n' || css[i] === '\r')) {
+      i++;
+    }
+    if (i >= css.length) break;
+
+    // Skip comments
     if (css[i] === '/' && css[i + 1] === '*') {
       const end = css.indexOf('*/', i + 2);
       if (end === -1) break;
@@ -182,13 +184,28 @@ function extractRuleSets(
       }
     }
 
+    // Handle closing brace of enclosing @-rule before the next opening brace.
+    // Without this, the parser never knows when to exit an @-rule block and
+    // stays inside it forever, corrupting all subsequent selector extraction.
+    const nextClose = css.indexOf('}', i);
+    if (nextClose !== -1) {
+      const nextOpen = css.indexOf('{', i);
+      if (nextOpen === -1 || nextClose < nextOpen) {
+        if (atRuleStack.length > 0) {
+          atRuleStack.pop();
+        }
+        i = nextClose + 1;
+        continue;
+      }
+    }
+
     // Find the start of a rule set: selector { ... }
     const braceOpen = css.indexOf('{', i);
     if (braceOpen === -1) break;
 
     // Extract the selector (everything between last } and {)
     const selectorStart = findSelectorStart(css, braceOpen);
-    const selector = css.slice(selectorStart, braceOpen).trim();
+    const selector = stripAllBlockComments(css.slice(selectorStart, braceOpen)).trim();
 
     if (!selector || selector === '}' || selector.startsWith('@')) {
       i = braceOpen + 1;
@@ -207,7 +224,7 @@ function extractRuleSets(
     extractDeclarationsFromBlock(
       block,
       filePath,
-      mechanism,
+      'scss',
       selector,
       atRuleStack.length > 0 ? atRuleStack.join(', ') : null,
       declarations,
@@ -231,6 +248,16 @@ function findSelectorStart(css: string, braceOpen: number): number {
   let depth = 0;
   while (i >= 0) {
     if (css[i] === '}') {
+      // When we find a } at depth 0, it's the closing brace of the
+      // preceding rule block — the selector starts right after it.
+      if (depth === 0) {
+        // Skip whitespace after the }
+        let j = i + 1;
+        while (j < css.length && (css[j] === ' ' || css[j] === '\t' || css[j] === '\n' || css[j] === '\r')) {
+          j++;
+        }
+        return j;
+      }
       depth++;
       i--;
     } else if (css[i] === '{') {
@@ -333,8 +360,31 @@ export function extractDeclarationsFromBlock(
     // Accumulate the line into the buffer
     if (trimmed) buffer += (buffer ? ' ' : '') + trimmed;
 
+    // Handle @apply directives — collect as synthetic declarations so CSS
+    // selector context is available for class-name discovery. @apply uses no
+    // colon, so it would be silently skipped by the colon-based branch below.
+    if (buffer.startsWith('@apply ')) {
+      const semiIdx = buffer.indexOf(';');
+      if (semiIdx !== -1) {
+        const applyValue = buffer.slice(7, semiIdx).trim();
+        buffer = buffer.slice(semiIdx + 1).trim();
+        if (applyValue && !applyValue.includes('{')) {
+          declarations.push({
+            property: 'apply',
+            rawValue: applyValue,
+            normalizedValue: { type: 'literal', value: applyValue },
+            mechanism,
+            filePath,
+            line: baseLine + lineInBlock,
+            context: selector,
+            variantContext,
+            tokenRef: null,
+          });
+        }
+      }
+    }
     // Check if this buffer contains a complete declaration
-    if (buffer.includes(':')) {
+    else if (buffer.includes(':')) {
       const semiIdx = buffer.indexOf(';');
       if (semiIdx !== -1) {
         const decl = buffer.slice(0, semiIdx).trim();

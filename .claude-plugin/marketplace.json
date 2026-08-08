@@ -10,11 +10,18 @@
       "name": "code-auditor",
       "source": "./plugin",
       "description": "Diff-scoped code quality auditing on every edit. Indexes your codebase, enforces invariants, and feeds violations back to the agent so fixes happen inline.",
-      "version": "3.4.9",
+      "version": "3.4.11",
       "author": {
         "name": "Ben Hammond"
       },
-      "keywords": ["code-quality", "audit", "solid", "linting", "invariants"]
+      "keywords": [
+        "code-quality",
+        "audit",
+        "solid",
+        "linting",
+        "invariants"
+      ]
     }
-  ]
+  ],
+  "version": "3.4.11"
 }

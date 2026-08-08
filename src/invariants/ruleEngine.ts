@@ -56,7 +56,7 @@ function matchesNone(patterns: string[], path: string): boolean {
 
 // ── File-level import extraction ──────────────────────────────────────────
 
-interface FileImport {
+export interface FileImport {
   /** The module specifier (e.g. "lodash", "./foo", "@scope/pkg") */
   moduleSpecifier: string;
   /** Whether this is a static import */
@@ -69,72 +69,6 @@ interface FileImport {
   line: number;
 }
 
-/**
- * Compute 1-based line number from a character offset in source text.
- */
-function lineNumberAt(source: string, offset: number): number {
-  let line = 1;
-  for (let i = 0; i < offset; i++) {
-    if (source[i] === '\n') line++;
-  }
-  return line;
-}
-
-/**
- * Extract all imports from a single source file using regex.
- * Catches: import ... from '...', import('...'), and require('...')
- *
- * Uses regex on raw source text — no parser dependency, works without WASM init.
- */
-function extractImports(filePath: string, sourceMap?: Map<string, string>): FileImport[] {
-  if (!sourceMap?.has(filePath)) return [];
-  const source = sourceMap.get(filePath)!;
-
-  const imports: FileImport[] = [];
-
-  // ── Static imports ──────────────────────────────────────────────────────
-  // Matches: import 'mod', import x from 'mod', import { a } from 'mod',
-  //          import * as ns from 'mod', import type { T } from 'mod',
-  //          import x, { a } from 'mod'
-  // Uses non-greedy match between "import" and the quoted specifier.
-  const staticRe = /^import\b[\s\S]*?['"]([^'"]+)['"]/gm;
-  let m: RegExpExecArray | null;
-  while ((m = staticRe.exec(source)) !== null) {
-    imports.push({
-      moduleSpecifier: m[1],
-      isStatic: true,
-      isDynamic: false,
-      isRequire: false,
-      line: lineNumberAt(source, m.index),
-    });
-  }
-
-  // ── Dynamic import() expressions ────────────────────────────────────────
-  const dynamicRe = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((m = dynamicRe.exec(source)) !== null) {
-    imports.push({
-      moduleSpecifier: m[1],
-      isStatic: false,
-      isDynamic: true,
-      isRequire: false,
-      line: lineNumberAt(source, m.index),
-    });
-  }
-
-  // ── require() calls ─────────────────────────────────────────────────────
-  const requireRe = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((m = requireRe.exec(source)) !== null) {
-    imports.push({
-      moduleSpecifier: m[1],
-      isStatic: false,
-      isDynamic: false,
-      isRequire: true,
-      line: lineNumberAt(source, m.index),
-    });
-  }
-
-  return imports;
-}
 
 // ── import-ban checker ────────────────────────────────────────────────────
 
@@ -586,53 +520,6 @@ function checkNoRawValues(
 
 // ── Exported symbol extraction ────────────────────────────────────────────
 
-/**
- * Extract all exported symbol names from a source file using regex.
- * Handles: export function/class/const/let/var name, export { name1, name2 },
- *          export default function/class name, export default name
- *
- * Uses regex on raw source text — no parser dependency, works without WASM init.
- */
-function extractExportedSymbols(filePath: string, sourceMap?: Map<string, string>): Array<{ name: string; line: number }> {
-  if (!sourceMap?.has(filePath)) return [];
-  const source = sourceMap.get(filePath)!;
-
-  const symbols: Array<{ name: string; line: number }> = [];
-
-  // ── export function|class|const|let|var|type|interface|enum name ────────
-  // Covers: export function foo(), export class Bar {}, export const baz = ...
-  const declRe = /^export\s+(?:(?:default\s+)?(?:function|class)\s+([\p{L}\p{N}_]+)|(?:const|let|var)\s+([\p{L}\p{N}_]+))/gmu;
-  let m: RegExpExecArray | null;
-  while ((m = declRe.exec(source)) !== null) {
-    const name = m[1] || m[2]; // m[1] = function/class name, m[2] = const/let/var name
-    if (name) {
-      symbols.push({ name, line: lineNumberAt(source, m.index) });
-    }
-  }
-
-  // ── export { name1, name2 as alias } ────────────────────────────────────
-  // Capture the local (non-aliased) names inside export { ... }
-  const clauseRe = /^export\s*\{([^}]+)\}/gm;
-  while ((m = clauseRe.exec(source)) !== null) {
-    const body = m[1];
-    // Split on comma, then extract the first identifier (skip "as alias" forms)
-    for (const part of body.split(',')) {
-      const nameMatch = part.match(/^\s*([\p{L}\p{N}_]+)/u);
-      if (nameMatch) {
-        symbols.push({ name: nameMatch[1], line: lineNumberAt(source, m.index) });
-      }
-    }
-  }
-
-  // ── export default <identifier> ─────────────────────────────────────────
-  // e.g. export default MyComponent
-  const defaultIdRe = /^export\s+default\s+([\p{L}\p{N}_]+)\s*[;,\n]/gmu;
-  while ((m = defaultIdRe.exec(source)) !== null) {
-    symbols.push({ name: m[1], line: lineNumberAt(source, m.index) });
-  }
-
-  return symbols;
-}
 
 // ── Main rule checking ────────────────────────────────────────────────────
 
@@ -657,6 +544,11 @@ export interface RuleEngineOptions {
    * calling readFileSync as a file-existence probe.
    */
   knownFiles?: Set<string>;
+  /**
+   * Pre-extracted file data from AST (replaces regex extractImports/extractExportedSymbols).
+   * Keys are repo-relative file paths. When provided, regex extraction is skipped.
+   */
+  fileData?: Map<string, { imports: FileImport[]; exports: Array<{ name: string; line: number }> }>;
 }
 
 /**
@@ -665,7 +557,7 @@ export interface RuleEngineOptions {
  * call-constraint queries the full index for callers.
  */
 export function checkRules(options: RuleEngineOptions): RuleCheckResult {
-  const { rules, files, indexHandle, projectDir, sourceMap, knownFiles } = options;
+  const { rules, files, indexHandle, projectDir, sourceMap, knownFiles, fileData: preExtractedFileData } = options;
   const violations: RuleViolation[] = [];
   const errors: string[] = [];
 
@@ -694,20 +586,22 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   for (const file of files) {
     // Strip any leading './' for consistency
     let normalized = file.replace(/^\.\//, '');
-    const fullPath = file.startsWith('/') ? file : `${projectDir}/${normalized}`;
 
     // Make absolute paths relative to projectDir so glob patterns match
     if (path.isAbsolute(normalized)) {
       normalized = path.relative(projectDir, normalized);
     }
 
-    try {
-      fileDataMap.set(normalized, {
-        imports: extractImports(fullPath, sourceMap),
-        exports: extractExportedSymbols(fullPath, sourceMap),
-      });
-    } catch (err: any) {
-      errors.push(`Error reading ${file}: ${err.message}`);
+    if (preExtractedFileData) {
+      // Use pre-extracted data from AST (B1: replaces regex extraction)
+      const data = preExtractedFileData.get(normalized);
+      if (data) {
+        fileDataMap.set(normalized, data);
+      }
+    } else {
+      // fileData is required (provided by the pipeline via function-index AST extraction).
+      // Standalone callers must populate fileData from AST before calling checkRules.
+      errors.push(`No fileData provided for ${file}. File data must be extracted from AST (not raw source).`);
     }
   }
 

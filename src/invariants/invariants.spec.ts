@@ -9,12 +9,15 @@
  * - except behavior for import-ban, allowFrom/denyFrom for call-constraint
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { validateRulesConfig, hasRules } from './ruleValidator.js';
-import { checkRules, clearMatcherCache, type RuleEngineOptions, type RuleCheckResult } from './ruleEngine.js';
+import { checkRules, clearMatcherCache, type RuleEngineOptions, type RuleCheckResult, type FileImport } from './ruleEngine.js';
+import { initParsers } from '../languages/tree-sitter/parser.js';
+import { initializeLanguages } from '../languages/index.js';
+import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import type {
   InvariantRule,
   ImportBanRule,
@@ -43,34 +46,103 @@ function writeFixture(relativePath: string, content: string): string {
   return relativePath;
 }
 
-type CheckRulesInput = Omit<RuleEngineOptions, 'sourceMap' | 'knownFiles'>;
+type CheckRulesInput = Omit<RuleEngineOptions, 'sourceMap' | 'knownFiles' | 'fileData'>;
 
-/**
- * Wrapper around checkRules that reads test fixture files from disk and builds
- * the sourceMap + knownFiles so the rule engine doesn't need fs access.
- */
-function checkRulesWithSource(opts: CheckRulesInput): RuleCheckResult {
-  const sourceMap = new Map<string, string>();
-  const knownFiles = new Set<string>();
-  // Read all fixture files (not just the ones being checked — module-boundary
-  // rules need to resolve imports referencing other fixtures).
-  for (const file of _allFixtures) {
-    const fullPath = join(opts.projectDir, file);
-    try {
-      sourceMap.set(fullPath, readFileSync(fullPath, 'utf-8'));
-      knownFiles.add(fullPath);
-    } catch {
-      // skip missing files
-    }
-  }
-  return checkRules({ ...opts, sourceMap, knownFiles });
-}
+/** One-time parser initialization for AST-based extraction */
+beforeAll(async () => {
+  initializeLanguages();
+  await initParsers();
+});
 
 beforeEach(() => {
   testDir = fixtureDir();
   _allFixtures = [];
   clearMatcherCache();
 });
+
+/**
+ * Wrapper around checkRules that reads test fixture files from disk, parses them
+ * with the AST adapter, and builds the fileData + sourceMap so the rule engine
+ * doesn't need fs access.
+ */
+async function checkRulesWithSource(opts: CheckRulesInput): Promise<RuleCheckResult> {
+  const fileData = new Map<string, {
+    imports: FileImport[];
+    exports: Array<{ name: string; line: number }>;
+  }>();
+  const sourceMap = new Map<string, string>();
+  const knownFiles = new Set<string>();
+  const registry = LanguageRegistry.getInstance();
+
+  for (const file of _allFixtures) {
+    const fullPath = join(opts.projectDir, file);
+    try {
+      const source = readFileSync(fullPath, 'utf-8');
+      sourceMap.set(fullPath, source);
+      knownFiles.add(fullPath);
+
+      const adapter = registry.getAdapterForFile(file);
+      if (adapter) {
+        const ast = await adapter.parse(file, source);
+
+        // Static imports
+        const staticImportInfos = adapter.extractImports(ast);
+        const imports: FileImport[] = staticImportInfos.map((imp) => ({
+          moduleSpecifier: imp.source,
+          isStatic: true,
+          isDynamic: false,
+          isRequire: false,
+          line: imp.location.start.line,
+        }));
+
+        // Dynamic import() and require()
+        const dynamicCallNodes = adapter.findNodes(ast, {
+          type: 'call_expression',
+          custom: (node: any) => {
+            const raw = (node.raw as any);
+            if (!raw) return false;
+            const fn = raw.firstChild;
+            return (fn?.type === 'import') || (fn?.type === 'identifier' && fn.text === 'require');
+          },
+        });
+
+        for (const node of dynamicCallNodes) {
+          const raw = node.raw as any;
+          if (!raw) continue;
+          const fn = raw.firstChild;
+          const isImport = fn?.type === 'import';
+          const isRequire = !isImport && (fn?.type === 'identifier' && fn.text === 'require');
+          const argsNode = raw.children?.find((c: any) => c.type === 'arguments') as any;
+          const stringNode = argsNode?.children?.find((c: any) => c.type === 'string') as any;
+          if (stringNode) {
+            const text = stringNode.text as string;
+            if (text.length >= 2) {
+              imports.push({
+                moduleSpecifier: text.slice(1, -1),
+                isStatic: false,
+                isDynamic: isImport,
+                isRequire,
+                line: node.location.start.line,
+              });
+            }
+          }
+        }
+
+        // Exports
+        const exportInfos = adapter.extractExports(ast);
+        const exports = exportInfos.map((exp) => ({
+          name: exp.name,
+          line: exp.location.start.line,
+        }));
+
+        fileData.set(file, { imports, exports });
+      }
+    } catch {
+      // skip missing files
+    }
+  }
+  return checkRules({ ...opts, sourceMap, knownFiles, fileData });
+}
 
 afterEach(() => {
   try {
@@ -99,9 +171,9 @@ function makeRule(overrides: Partial<InvariantRule> & { id: string; kind: Invari
 
 // ── R1: Rule Validation ──────────────────────────────────────────────────────
 
-describe('ruleValidator', () => {
-  describe('structural validation', () => {
-    it('accepts a valid rules config', () => {
+describe('ruleValidator', async () => {
+  describe('structural validation', async () => {
+    it('accepts a valid rules config', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -115,19 +187,19 @@ describe('ruleValidator', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('rejects a config without a rules array', () => {
+    it('rejects a config without a rules array', async () => {
       const errors = validateRulesConfig({ notRules: [] });
       expect(errors.length).toBeGreaterThan(0);
     });
 
-    it('rejects a rule with an invalid kind', () => {
+    it('rejects a rule with an invalid kind', async () => {
       const errors = validateRulesConfig({
         rules: [{ id: 'r1', kind: 'bogus-kind', severity: 'critical' }],
       });
       expect(errors.length).toBeGreaterThan(0);
     });
 
-    it('rejects a rule missing required fields', () => {
+    it('rejects a rule missing required fields', async () => {
       const errors = validateRulesConfig({
         rules: [{ id: 'r1', kind: 'import-ban', severity: 'critical' }],
       });
@@ -135,7 +207,7 @@ describe('ruleValidator', () => {
       expect(errors.some(e => e.message.includes('module'))).toBe(true);
     });
 
-    it('rejects duplicate rule IDs', () => {
+    it('rejects duplicate rule IDs', async () => {
       const errors = validateRulesConfig({
         rules: [
           { id: 'dup', kind: 'import-ban', severity: 'critical', module: 'a' },
@@ -145,7 +217,7 @@ describe('ruleValidator', () => {
       expect(errors.some(e => e.ruleId === 'dup' && e.message.includes('Duplicate'))).toBe(true);
     });
 
-    it('rejects call-constraint with both allowFrom and denyFrom', () => {
+    it('rejects call-constraint with both allowFrom and denyFrom', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -161,7 +233,7 @@ describe('ruleValidator', () => {
       expect(errors.some(e => e.message.includes('both'))).toBe(true);
     });
 
-    it('rejects call-constraint with neither allowFrom nor denyFrom', () => {
+    it('rejects call-constraint with neither allowFrom nor denyFrom', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -175,7 +247,7 @@ describe('ruleValidator', () => {
       expect(errors.some(e => e.message.includes('neither'))).toBe(true);
     });
 
-    it('rejects invalid regex in naming exports', () => {
+    it('rejects invalid regex in naming exports', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -190,7 +262,7 @@ describe('ruleValidator', () => {
       expect(errors.some(e => e.message.includes('regex') || e.message.includes('Invalid'))).toBe(true);
     });
 
-    it('rejects unknown fields on a rule', () => {
+    it('rejects unknown fields on a rule', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -205,7 +277,7 @@ describe('ruleValidator', () => {
       expect(errors.some(e => e.message.includes('Unknown field'))).toBe(true);
     });
 
-    it('allows valid call-constraint with allowFrom only', () => {
+    it('allows valid call-constraint with allowFrom only', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -220,7 +292,7 @@ describe('ruleValidator', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('allows valid call-constraint with denyFrom only', () => {
+    it('allows valid call-constraint with denyFrom only', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -235,7 +307,7 @@ describe('ruleValidator', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('validates all five rule kinds in the same config', () => {
+    it('validates all five rule kinds in the same config', async () => {
       const errors = validateRulesConfig({
         rules: [
           { id: 'r1', kind: 'import-ban', severity: 'critical', module: 'lodash' },
@@ -248,7 +320,7 @@ describe('ruleValidator', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('accepts a valid ast-pattern rule', () => {
+    it('accepts a valid ast-pattern rule', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -262,7 +334,7 @@ describe('ruleValidator', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('accepts ast-pattern with optional language', () => {
+    it('accepts ast-pattern with optional language', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -277,7 +349,7 @@ describe('ruleValidator', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('accepts ast-pattern with optional path glob', () => {
+    it('accepts ast-pattern with optional path glob', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -292,7 +364,7 @@ describe('ruleValidator', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('rejects ast-pattern with missing pattern field', () => {
+    it('rejects ast-pattern with missing pattern field', async () => {
       const errors = validateRulesConfig({
         rules: [
           { id: 'r1', kind: 'ast-pattern', severity: 'critical' },
@@ -301,7 +373,7 @@ describe('ruleValidator', () => {
       expect(errors.some(e => e.message.includes('pattern'))).toBe(true);
     });
 
-    it('rejects ast-pattern with empty pattern', () => {
+    it('rejects ast-pattern with empty pattern', async () => {
       const errors = validateRulesConfig({
         rules: [
           { id: 'r1', kind: 'ast-pattern', severity: 'critical', pattern: '' },
@@ -310,7 +382,7 @@ describe('ruleValidator', () => {
       expect(errors.some(e => e.message.includes('pattern'))).toBe(true);
     });
 
-    it('rejects ast-pattern with invalid language', () => {
+    it('rejects ast-pattern with invalid language', async () => {
       const errors = validateRulesConfig({
         rules: [
           {
@@ -326,20 +398,20 @@ describe('ruleValidator', () => {
     });
   });
 
-  describe('hasRules', () => {
-    it('returns true when rules array has items', () => {
+  describe('hasRules', async () => {
+    it('returns true when rules array has items', async () => {
       expect(hasRules({ rules: [{ id: 'r1', kind: 'import-ban', severity: 'critical', module: 'x' }] })).toBe(true);
     });
 
-    it('returns false when rules array is empty', () => {
+    it('returns false when rules array is empty', async () => {
       expect(hasRules({ rules: [] })).toBe(false);
     });
 
-    it('returns false when no rules property', () => {
+    it('returns false when no rules property', async () => {
       expect(hasRules({})).toBe(false);
     });
 
-    it('returns false for non-object', () => {
+    it('returns false for non-object', async () => {
       expect(hasRules(null)).toBe(false);
       expect(hasRules(undefined)).toBe(false);
     });
@@ -348,10 +420,10 @@ describe('ruleValidator', () => {
 
 // ── R2.1: import-ban ─────────────────────────────────────────────────────────
 
-describe('import-ban', () => {
-  it('catches static import of a banned module', () => {
+describe('import-ban', async () => {
+  it('catches static import of a banned module', async () => {
     writeFixture('src/bad.ts', `import { something } from 'banned-lib';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -365,9 +437,9 @@ describe('import-ban', () => {
     expect(result.violations[0].ruleId).toBe('no-banned');
   });
 
-  it('catches dynamic import() of a banned module', () => {
+  it('catches dynamic import() of a banned module', async () => {
     writeFixture('src/bad.ts', `async function load() { const m = await import('banned-lib'); }`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -378,9 +450,9 @@ describe('import-ban', () => {
     expect(result.violations[0].importSpecifier).toBe('banned-lib');
   });
 
-  it('catches require() of a banned module', () => {
+  it('catches require() of a banned module', async () => {
     writeFixture('src/bad.ts', `const x = require('banned-lib');`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -391,9 +463,9 @@ describe('import-ban', () => {
     expect(result.violations[0].importSpecifier).toBe('banned-lib');
   });
 
-  it('allows import when file matches except glob', () => {
+  it('allows import when file matches except glob', async () => {
     writeFixture('src/exempt/special.ts', `import { x } from 'banned-lib';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-banned',
@@ -409,10 +481,10 @@ describe('import-ban', () => {
     expect(result.violations).toHaveLength(0);
   });
 
-  it('still catches import in non-exempt files when except is configured', () => {
+  it('still catches import in non-exempt files when except is configured', async () => {
     writeFixture('src/exempt/special.ts', `import { x } from 'banned-lib';`);
     writeFixture('src/normal.ts', `import { x } from 'banned-lib';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-banned',
@@ -429,9 +501,9 @@ describe('import-ban', () => {
     expect(result.violations[0].file).toBe('src/normal.ts');
   });
 
-  it('matches module glob patterns', () => {
+  it('matches module glob patterns', async () => {
     writeFixture('src/bad.ts', `import { x } from '@ai-sdk/openai';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-ai-sdk',
@@ -446,9 +518,9 @@ describe('import-ban', () => {
     expect(result.violations).toHaveLength(1);
   });
 
-  it('does not flag imports of non-banned modules', () => {
+  it('does not flag imports of non-banned modules', async () => {
     writeFixture('src/good.ts', `import { ok } from 'allowed-lib';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -458,9 +530,9 @@ describe('import-ban', () => {
     expect(result.violations).toHaveLength(0);
   });
 
-  it('includes the user message in violations', () => {
+  it('includes the user message in violations', async () => {
     writeFixture('src/bad.ts', `import { x } from 'banned';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'custom-msg',
@@ -480,11 +552,11 @@ describe('import-ban', () => {
 
 // ── R2.3: module-boundary ────────────────────────────────────────────────────
 
-describe('module-boundary', () => {
-  it('catches an import crossing the from→to boundary', () => {
+describe('module-boundary', async () => {
+  it('catches an import crossing the from→to boundary', async () => {
     writeFixture('src/features/a/index.ts', `export const a = 1;`);
     writeFixture('src/features/b/messy.ts', `import { a } from '../a/index';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-cross-feature',
@@ -502,10 +574,10 @@ describe('module-boundary', () => {
     expect(result.violations[0].importSpecifier).toBe('../a/index');
   });
 
-  it('does not flag imports within the same boundary', () => {
+  it('does not flag imports within the same boundary', async () => {
     writeFixture('src/features/a/index.ts', `export const a = 1;`);
     writeFixture('src/features/a/child.ts', `import { a } from './index';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-cross',
@@ -523,10 +595,10 @@ describe('module-boundary', () => {
     expect(result.violations).toHaveLength(0);
   });
 
-  it('does not flag when from does not match the importing file', () => {
+  it('does not flag when from does not match the importing file', async () => {
     writeFixture('src/lib/utils.ts', `export const util = 1;`);
     writeFixture('src/features/c/consumer.ts', `import { util } from '../../lib/utils';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-cross',
@@ -546,13 +618,13 @@ describe('module-boundary', () => {
 
 // ── R2.4: naming ─────────────────────────────────────────────────────────────
 
-describe('naming', () => {
-  it('catches exported symbol not matching regex', () => {
+describe('naming', async () => {
+  it('catches exported symbol not matching regex', async () => {
     writeFixture('src/components/Button.ts', `
 export function myComponent() {}
 export const helperVar = 42;
 `);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'pascal-components',
@@ -571,12 +643,12 @@ export const helperVar = 42;
     expect(result.violations.some(v => v.symbol === 'myComponent')).toBe(true);
   });
 
-  it('allows exports that match the regex', () => {
+  it('allows exports that match the regex', async () => {
     writeFixture('src/components/NavBar.ts', `
 export function NavBar() {}
 export const AppHeader = () => null;
 `);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'pascal-components',
@@ -593,11 +665,11 @@ export const AppHeader = () => null;
     expect(result.violations).toHaveLength(0);
   });
 
-  it('skips files outside the path glob', () => {
+  it('skips files outside the path glob', async () => {
     writeFixture('src/utils/helpers.ts', `
 export function formatDate() {}
 `);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'pascal-components',
@@ -613,9 +685,9 @@ export function formatDate() {}
     expect(result.violations).toHaveLength(0);
   });
 
-  it('includes user message in violation', () => {
+  it('includes user message in violation', async () => {
     writeFixture('src/components/bad.ts', `export function badOne() {}`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'pascal',
@@ -636,10 +708,10 @@ export function formatDate() {}
 
 // ── R2.2: call-constraint (without DB — the engine still works, uses scoped callers) ──
 
-describe('call-constraint', () => {
-  it('produces no violations when no DB is available (graceful skip)', () => {
+describe('call-constraint', async () => {
+  it('produces no violations when no DB is available (graceful skip)', async () => {
     writeFixture('src/untrusted.ts', `import { secret } from './lib';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-external-call',
@@ -658,10 +730,10 @@ describe('call-constraint', () => {
     expect(result.errors).toHaveLength(0); // no error either — graceful skip
   });
 
-  it('parses callee with path glob', () => {
+  it('parses callee with path glob', async () => {
     // Just verify the parseCallee logic doesn't throw
     writeFixture('src/trusted/caller.ts', `export function doWork() {}`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-external',
@@ -686,7 +758,7 @@ describe('call-constraint', () => {
 // when the call graph is populated — the load-bearing assertion for a rule
 // kind whose whole pitch is "you can trust this to block."
 
-describe('call-constraint enforcement (cold DB)', () => {
+describe('call-constraint enforcement (cold DB)', async () => {
   let dbDir: string;
   let db: any;
 
@@ -755,7 +827,7 @@ export function doUntrustedWork() {
     await db.updateDependencyGraph();
 
     // Now run the rule engine WITH the DB
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-external-call',
@@ -821,7 +893,7 @@ export function doTrustedWork() {
 
     await db.updateDependencyGraph();
 
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-external-call',
@@ -884,7 +956,7 @@ export function renderPage() {
 
     await db.updateDependencyGraph();
 
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         // Don't use makeRule here — it defaults allowFrom which would
         // take precedence over denyFrom in the rule engine.
@@ -910,14 +982,14 @@ export function renderPage() {
 
 // ── Mixed rules ──────────────────────────────────────────────────────────────
 
-describe('multiple rules', () => {
-  it('checks all rule kinds together', () => {
+describe('multiple rules', async () => {
+  it('checks all rule kinds together', async () => {
     writeFixture('src/app.ts', `
 import { old } from 'banned-lib';
 import { helper } from '../shared/helpers';
 export function doThing() {}
 `);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
         makeRule({ id: 'pascal', kind: 'naming', severity: 'warning', path: 'src/**', exports: '^[A-Z]' }),
@@ -932,9 +1004,9 @@ export function doThing() {}
     expect(result.violations.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('returns empty violations when rules array is empty', () => {
+  it('returns empty violations when rules array is empty', async () => {
     writeFixture('src/ok.ts', `export const OK = 1;`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [],
       files: ['src/ok.ts'],
       projectDir: testDir,
@@ -946,9 +1018,9 @@ export function doThing() {}
 
 // ── Edge cases ───────────────────────────────────────────────────────────────
 
-describe('edge cases', () => {
-  it('handles non-existent files gracefully', () => {
-    const result = checkRulesWithSource({
+describe('edge cases', async () => {
+  it('handles non-existent files gracefully', async () => {
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'x', kind: 'import-ban', severity: 'critical', module: 'x' }),
       ],
@@ -959,9 +1031,9 @@ describe('edge cases', () => {
     expect(result.violations).toHaveLength(0);
   });
 
-  it('handles files with syntax errors gracefully', () => {
+  it('handles files with syntax errors gracefully', async () => {
     writeFixture('src/broken.ts', `this is not valid typescript @@@`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'x', kind: 'import-ban', severity: 'critical', module: 'x' }),
       ],
@@ -972,9 +1044,9 @@ describe('edge cases', () => {
     expect(result.errors.length).toBeLessThanOrEqual(1);
   });
 
-  it('normalizes leading ./ in file paths', () => {
+  it('normalizes leading ./ in file paths', async () => {
     writeFixture('src/file.ts', `import { x } from 'banned-lib';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -984,7 +1056,7 @@ describe('edge cases', () => {
     expect(result.violations).toHaveLength(1);
   });
 
-  it('naming violation includes correct line number', () => {
+  it('naming violation includes correct line number', async () => {
     writeFixture('src/Component.ts', `
 import React from 'react';
 
@@ -993,7 +1065,7 @@ export function badCasing() {
   return null;
 }
 `);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'pascal', kind: 'naming', severity: 'warning', path: 'src/**', exports: '^[A-Z]' }),
       ],
@@ -1008,10 +1080,10 @@ export function badCasing() {
 
 // ── R2.5: ast-pattern ──────────────────────────────────────────────────────────
 
-describe('ast-pattern', () => {
-  it('detects a matching AST pattern in source code', () => {
+describe('ast-pattern', async () => {
+  it('detects a matching AST pattern in source code', async () => {
     writeFixture('src/bad.ts', `const fn = new Function("return 1");`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1030,9 +1102,9 @@ describe('ast-pattern', () => {
     expect(result.violations[0].file).toBe('src/bad.ts');
   });
 
-  it('does not flag files with non-matching patterns', () => {
+  it('does not flag files with non-matching patterns', async () => {
     writeFixture('src/good.ts', `const add = (a, b) => a + b;`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1047,9 +1119,9 @@ describe('ast-pattern', () => {
     expect(result.violations).toHaveLength(0);
   });
 
-  it('includes the user message in violations', () => {
+  it('includes the user message in violations', async () => {
     writeFixture('src/bad.ts', `const fn = new Function("return 1");`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-eval',
@@ -1066,9 +1138,9 @@ describe('ast-pattern', () => {
     expect(result.violations[0].message).toBe('new Function() is eval-by-another-name — forbidden in this codebase');
   });
 
-  it('provides line and column location in violation', () => {
+  it('provides line and column location in violation', async () => {
     writeFixture('src/bad.ts', `const fn = new Function("return 1");`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1086,10 +1158,10 @@ describe('ast-pattern', () => {
     expect(result.violations[0].symbol).toBeDefined();
   });
 
-  it('respects path glob filter', () => {
+  it('respects path glob filter', async () => {
     writeFixture('src/features/a/bad.ts', `const fn = new Function("x");`);
     writeFixture('src/lib/good.ts', `const fn = new Function("x");`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-fn-in-features',
@@ -1107,9 +1179,9 @@ describe('ast-pattern', () => {
     expect(result.violations[0].file).toBe('src/features/a/bad.ts');
   });
 
-  it('skips files outside the path glob', () => {
+  it('skips files outside the path glob', async () => {
     writeFixture('src/utils/safe.ts', `const fn = new Function("x");`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-fn-ui',
@@ -1125,10 +1197,10 @@ describe('ast-pattern', () => {
     expect(result.violations).toHaveLength(0);
   });
 
-  it('respects the language setting', () => {
+  it('respects the language setting', async () => {
     // JavaScript source should still be matched when language is typescript
     writeFixture('src/bad.js', `var fn = new Function("x");`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1145,9 +1217,9 @@ describe('ast-pattern', () => {
     expect(result.errors).toHaveLength(0);
   });
 
-  it('handles parse errors gracefully (non-TS content)', () => {
+  it('handles parse errors gracefully (non-TS content)', async () => {
     writeFixture('src/config.json', `{ "key": "value" }`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1163,9 +1235,9 @@ describe('ast-pattern', () => {
     expect(result.errors.length).toBeLessThanOrEqual(2); // one error for parse, or none if it handles it
   });
 
-  it('handles multiple ast-pattern rules together', () => {
+  it('handles multiple ast-pattern rules together', async () => {
     writeFixture('src/bad.ts', `const fn = new Function("x");\nconst arr = eval("42");`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-new-function',
@@ -1187,13 +1259,13 @@ describe('ast-pattern', () => {
     expect(result.violations.map(v => v.ruleId).sort()).toEqual(['no-eval', 'no-new-function']);
   });
 
-  it('works alongside other rule kinds', () => {
+  it('works alongside other rule kinds', async () => {
     writeFixture('src/bad.ts', `
 import { old } from 'banned-lib';
 const fn = new Function("return 1");
 export function doThing() {}
 `);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
         makeRule({ id: 'no-new-fn', kind: 'ast-pattern', severity: 'warning', pattern: 'new Function($$$)' }),
@@ -1208,9 +1280,9 @@ export function doThing() {}
     expect(result.violations.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('allows zero matches for a valid pattern', () => {
+  it('allows zero matches for a valid pattern', async () => {
     writeFixture('src/clean.ts', `const add = (a, b) => a + b;\nconst mul = (a, b) => a * b;`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({
           id: 'no-debugger',
@@ -1228,11 +1300,11 @@ export function doThing() {}
 
 // ── Scope behavior ───────────────────────────────────────────────────────────
 
-describe('scoped audit behavior', () => {
-  it('only checks the specified files', () => {
+describe('scoped audit behavior', async () => {
+  it('only checks the specified files', async () => {
     writeFixture('src/a.ts', `import { x } from 'banned-lib';`);
     writeFixture('src/b.ts', `import { x } from 'banned-lib';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],
@@ -1244,10 +1316,10 @@ describe('scoped audit behavior', () => {
     expect(result.violations[0].file).toBe('src/a.ts');
   });
 
-  it('checks all files when multiple are scoped', () => {
+  it('checks all files when multiple are scoped', async () => {
     writeFixture('src/a.ts', `import { x } from 'banned-lib';`);
     writeFixture('src/b.ts', `import { y } from 'banned-lib';`);
-    const result = checkRulesWithSource({
+    const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
       ],

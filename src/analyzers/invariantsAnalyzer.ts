@@ -120,6 +120,7 @@ export const analyzeInvariants: AnalyzerFunction = async (
     projectDir,
     sourceMap: config.sourceMap,
     knownFiles: config.knownFiles,
+    fileData: config.fileData,
   });
 
   const violations: Violation[] = [

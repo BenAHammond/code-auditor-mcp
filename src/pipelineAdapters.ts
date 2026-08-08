@@ -17,6 +17,7 @@
  */
 
 import { createHash } from 'crypto';
+import path from 'path';
 import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
 import type {
   IndexFactsEntry,
@@ -493,10 +494,89 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
         });
       }
 
-      return { violations: [], facts: {}, indexFacts };
+      // ── Extract imports and exports from AST for downstream consumers ──
+      // B1: Replaces regex-based extractImports()/extractExportedSymbols() in
+      // ruleEngine.ts.  Also consumed by conventions (B2: detectExportForm).
+      const langAdapter = _adapter as LanguageAdapter;
+      const langAst = ast as AST;
+
+      // Static imports via the adapter's canonical extractImports()
+      const staticImportInfos = langAdapter.extractImports(langAst);
+      const staticImports: Array<{
+        moduleSpecifier: string;
+        isStatic: boolean;
+        isDynamic: boolean;
+        isRequire: boolean;
+        line: number;
+      }> = staticImportInfos.map((imp) => ({
+        moduleSpecifier: imp.source,
+        isStatic: true,
+        isDynamic: false,
+        isRequire: false,
+        line: imp.location.start.line,
+      }));
+
+      // Dynamic import() and require() — first attempt with pure NodePattern
+      // Plan note: import keyword is an anonymous tree-sitter node, so
+      // hasChild cannot see it.  We use `custom` with raw node access.
+      const dynamicCallNodes = langAdapter.findNodes(langAst, {
+        type: 'call_expression',
+        custom: (node) => {
+          const raw = (node.raw as any);
+          const fn = raw?.firstChild;
+          return (fn?.type === 'import') ||
+                 (fn?.type === 'identifier' && fn.text === 'require');
+        },
+      });
+
+      const dynamicImports: Array<{
+        moduleSpecifier: string;
+        isStatic: boolean;
+        isDynamic: boolean;
+        isRequire: boolean;
+        line: number;
+      }> = [];
+
+      for (const node of dynamicCallNodes) {
+        const raw = node.raw as any;
+        const fn = raw?.firstChild;
+        const isImport = fn?.type === 'import';
+        const isRequire = !isImport && (fn?.type === 'identifier' && fn.text === 'require');
+
+        // Walk the raw tree to find the string argument
+        const argsNode = raw?.children?.find((c: any) => c.type === 'arguments') as any;
+        const stringNode = argsNode?.children?.find((c: any) => c.type === 'string') as any;
+        if (stringNode) {
+          const text = stringNode.text as string;
+          if (text.length >= 2) {
+            dynamicImports.push({
+              moduleSpecifier: text.slice(1, -1), // strip quotes
+              isStatic: false,
+              isDynamic: isImport,
+              isRequire,
+              line: node.location.start.line,
+            });
+          }
+        }
+      }
+
+      // Exports via the adapter's canonical extractExports()
+      // Returns ExportInfo[] with isDefault — used by both invariants and conventions (B2)
+      const exportInfos = langAdapter.extractExports(langAst);
+
+      return {
+        violations: [],
+        facts: {
+          [filePath]: {
+            imports: [...staticImports, ...dynamicImports],
+            exports: exportInfos,
+          },
+        },
+        indexFacts,
+      };
     },
     defaultConfig: {},
-    description: 'Indexes function definitions for conventions and cross-domain analysis',
+    description: 'Indexes function definitions and extracts imports/exports for downstream analyzers',
     category: 'infrastructure',
   };
 }
@@ -596,10 +676,54 @@ export function createReactVisitor(): ReactVisitorBundle {
 
 // ── Styles reducer (stage 3) ─────────────────────────────────────────────────
 
+// ── Styles CSS visitor (Spec 26 Phase 2) ───────────────────────────────────────
+
+/**
+ * Styles CSS visitor — extracts declarations, tokens, and class usage from
+ * tree-sitter-css parsed ASTs. Replaces the regex-based CSS extraction in
+ * styleExtractor.ts for .css files only.
+ *
+ * tree-sitter-css is NOT an SCSS grammar — .scss files stay on the regex path.
+ */
+export function createStylesCssVisitor(): Stage2Visitor {
+  return {
+    name: 'styles-css',
+    stage: 'visitor',
+    extensions: ['.css'],
+    getRuleIds: () => [],
+    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
+      // Lazy-load to avoid circular dependency issues at module load time
+      const { extractDeclarationsFromCSSAst, extractTokensFromCSSAst, extractClassUsageFromCSSAst } =
+        await import('./styles/cssAstExtractor.js');
+      const cssAst = ast as AST;
+      const cssAdapter = adapter as LanguageAdapter;
+      const filePath = context.filePath;
+
+      return {
+        violations: [],
+        facts: {
+          [filePath]: {
+            declarations: extractDeclarationsFromCSSAst(cssAst, cssAdapter, filePath, sourceCode),
+            tokens: extractTokensFromCSSAst(cssAst, cssAdapter, filePath),
+            classUsage: extractClassUsageFromCSSAst(cssAst, cssAdapter, filePath),
+          },
+        },
+      };
+    },
+    defaultConfig: {},
+    description: 'Extracts CSS declarations from tree-sitter-css ASTs (.css only)',
+    category: 'style',
+  };
+}
+
 /**
  * Styles reducer — runs all style detectors on existing style_* tables.
  * Uses the analyzer.analyze([]) pattern: passes an empty file list so the
  * analyzer skips file iteration and only queries the DB.
+ *
+ * Spec 26 Phase 2: CSS facts from the styles-css visitor are inserted into
+ * the DB before the analyzer runs. For .css files, the AST extraction replaces
+ * the regex-based styleIndexer path (which now skips .css files).
  */
 export function createStylesReducer(): Stage3Reducer {
   return {
@@ -610,6 +734,65 @@ export function createStylesReducer(): Stage3Reducer {
     async reduce(_allFacts: Readonly<Record<string, unknown>>, context: ReducerContext) {
       if (!context.indexHandle) return { violations: [], facts: {} };
       try {
+        // ── Insert CSS visitor facts into style_* tables ──────────────────────
+        const cssFacts = _allFacts['styles-css'] as
+          Record<string, {
+            declarations: Array<{
+              property: string; rawValue: string;
+              normalizedValue: { type: string; value: string };
+              mechanism: string; filePath: string; line: number;
+              context: string; variantContext: string | null;
+              tokenRef: string | null;
+            }>;
+            tokens: Array<{
+              name: string; value: string; filePath: string;
+              mechanism: string;
+            }>;
+            classUsage: Array<{
+              className: string; filePath: string; line: number;
+              mechanism: string; unresolvable: boolean;
+            }>;
+          }> | undefined;
+
+        if (cssFacts) {
+          const run = context.indexHandle.run.bind(context.indexHandle);
+          for (const [filePath, facts] of Object.entries(cssFacts)) {
+            // Delete old entries for this file (replaces the styleIndexer path)
+            run('DELETE FROM style_declarations WHERE file_path = ?', [filePath]);
+            run('DELETE FROM style_tokens WHERE file_path = ?', [filePath]);
+            run('DELETE FROM style_class_usage WHERE file_path = ?', [filePath]);
+
+            // Compute content hash for the file
+            const contentStr = JSON.stringify({ declarations: facts.declarations.length, tokens: facts.tokens.length, classUsage: facts.classUsage.length });
+            const contentHash = createHash('sha256').update(contentStr).digest('hex').slice(0, 16);
+
+            // Insert declarations
+            for (const decl of facts.declarations) {
+              run(
+                'INSERT INTO style_declarations (property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash],
+              );
+            }
+
+            // Insert tokens
+            for (const tok of facts.tokens) {
+              run(
+                'INSERT INTO style_tokens (name, value, file_path, mechanism) VALUES (?, ?, ?, ?)',
+                [tok.name, tok.value, tok.filePath, tok.mechanism],
+              );
+            }
+
+            // Insert class usage
+            for (const cu of facts.classUsage) {
+              run(
+                'INSERT INTO style_class_usage (class_name, file_path, line, mechanism, unresolvable) VALUES (?, ?, ?, ?, ?)',
+                [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0],
+              );
+            }
+          }
+        }
+
+        // ── Run the analyzer (queries the now-populated style_* tables) ───────
         const { UniversalStylesAnalyzer } = await import(
           './analyzers/universal/UniversalStylesAnalyzer.js'
         );
@@ -654,7 +837,19 @@ export function createConventionsReducer(): Stage3Reducer {
         const sourceMap: Map<string, string> | undefined = fileSources
           ? new Map(Object.entries(fileSources))
           : undefined;
-        const config = { ...context.config, indexHandle: context.indexHandle, projectRoot: context.projectRoot, sourceMap };
+
+        // B2: Build exports map from function-index visitor facts (AST-extracted)
+        const functionIndexFacts = _allFacts['function-index'] as
+          Record<string, { exports?: Array<{ name: string; location?: { start: { line: number } }; isDefault: boolean }> }> | undefined;
+        const exportsMap = functionIndexFacts
+          ? new Map(
+              Object.entries(functionIndexFacts)
+                .filter(([, data]) => data?.exports?.length)
+                .map(([filePath, data]) => [filePath, data!.exports!]),
+            )
+          : undefined;
+
+        const config = { ...context.config, indexHandle: context.indexHandle, projectRoot: context.projectRoot, sourceMap, exportsMap };
         const result = await analyzer.analyze([], config);
         const factsConsumed = context.indexHandle.count('conventions');
         return { violations: result.violations ?? [], facts: {}, factsConsumed };
@@ -734,9 +929,46 @@ export function createInvariantsReducer(): Stage3Reducer {
         const knownFiles: Set<string> | undefined = sourceMap
           ? new Set(sourceMap.keys())
           : undefined;
+
+        // B1: Build fileData from the function-index visitor's AST-extracted
+        // imports/exports — replaces regex-based extractImports/extractExportedSymbols
+        const functionIndexFacts = _allFacts['function-index'] as
+          Record<string, { imports?: Array<{ moduleSpecifier: string; isStatic: boolean; isDynamic: boolean; isRequire: boolean; line: number }>; exports?: Array<{ name: string; location?: { start: { line: number } }; isDefault: boolean }> }> | undefined;
+
+        let fileData: Map<string, {
+          imports: Array<{ moduleSpecifier: string; isStatic: boolean; isDynamic: boolean; isRequire: boolean; line: number }>;
+          exports: Array<{ name: string; line: number }>;
+        }> | undefined;
+
+        if (functionIndexFacts) {
+          fileData = new Map();
+          const projectRoot = context.projectRoot;
+          for (const [filePath, data] of Object.entries(functionIndexFacts)) {
+            if (data && (data.imports || data.exports)) {
+              // Normalize absolute paths to project-relative (matching checkRules normalization)
+              const normalized = path.isAbsolute(filePath)
+                ? path.relative(projectRoot, filePath)
+                : filePath;
+              fileData.set(normalized, {
+                imports: (data.imports || []).map((imp) => ({
+                  moduleSpecifier: imp.moduleSpecifier,
+                  isStatic: imp.isStatic,
+                  isDynamic: imp.isDynamic,
+                  isRequire: imp.isRequire,
+                  line: imp.line,
+                })),
+                exports: (data.exports || []).map((exp) => ({
+                  name: exp.name,
+                  line: exp.location?.start?.line ?? 0,
+                })),
+              });
+            }
+          }
+        }
+
         const result = await analyzeInvariants(
           files,
-          { ...context.config, sourceMap, knownFiles },
+          { ...context.config, sourceMap, knownFiles, fileData },
           { projectRoot: context.projectRoot, indexHandle: context.indexHandle } as any,
         );
         return {
@@ -818,6 +1050,23 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         ormTables.push(dm[1]);
       }
 
+      // Extract DDL from sql.exec(...) string literals inside Durable Object classes.
+      // These are CREATE TABLE / DROP TABLE statements at runtime that migration
+      // discovery never sees.  Extracting them completes the authoritative catalog
+      // so unknown-table doesn't false-positive on DO-local tables.
+      const doDDL: string[] = [];
+      const doTemplateDDL = /`([^`]*(?:CREATE|DROP|ALTER)\s+(?:TABLE|VIRTUAL\s+TABLE)\s+[^`]+)`/gis;
+      const doStringDDL = /(["'])((?:\s*(?:CREATE|DROP|ALTER)\s+(?:TABLE|VIRTUAL\s+TABLE)\s+[^"']+))\1/gis;
+      let ddlMatch: RegExpExecArray | null;
+      while ((ddlMatch = doTemplateDDL.exec(sourceCode)) !== null) {
+        const sql = ddlMatch[1].trim();
+        if (sql) doDDL.push(sql);
+      }
+      while ((ddlMatch = doStringDDL.exec(sourceCode)) !== null) {
+        const sql = ddlMatch[2].trim();
+        if (sql) doDDL.push(sql);
+      }
+
       // Build provenance context for this file — defaults from DEFAULT_SCHEMA_CONFIG
       const schemaConfig = (context.config ?? {}) as Record<string, unknown>;
       const detectionMode = ((schemaConfig.detection as any)?.mode as string) ?? ('hybrid' as any);
@@ -830,10 +1079,9 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
 
       // File gate — skip files without DB usage
       if (!a.passesFileGate(context.filePath, sourceCode, schemaConfig, provenanceContext)) {
-        return {
-          violations: [],
-          facts: { [context.filePath]: { tableRefs: [], ormTables } },
-        };
+        const facts: Record<string, unknown> = { [context.filePath]: { tableRefs: [], ormTables } };
+        if (doDDL.length > 0) (facts[context.filePath] as any).ddlSource = doDDL.join(';\n');
+        return { violations: [], facts };
       }
 
       // Build known-tables set from schemas config (pre-pipeline + DB-loaded schemas)
@@ -889,20 +1137,21 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       violations.push(...a.checkSQLInjection(ast as AST, adapter as LanguageAdapter, sourceCode));
 
       // Emit facts for the Stage 3 reducer
+      const fileFacts: Record<string, unknown> = {
+        tableRefs: tableRefs.map((r: { table: string; type: string; location: { line: number; column: number }; context: string }) => ({
+          table: r.table,
+          type: r.type,
+          line: r.location.line,
+          column: r.location.column,
+          context: r.context,
+        })),
+        ormTables,
+      };
+      if (doDDL.length > 0) (fileFacts as any).ddlSource = doDDL.join(';\n');
+
       return {
         violations,
-        facts: {
-          [context.filePath]: {
-            tableRefs: tableRefs.map((r: { table: string; type: string; location: { line: number; column: number }; context: string }) => ({
-              table: r.table,
-              type: r.type,
-              line: r.location.line,
-              column: r.location.column,
-              context: r.context,
-            })),
-            ormTables,
-          },
-        },
+        facts: { [context.filePath]: fileFacts },
         indexFacts: indexFacts.length > 0 ? indexFacts : undefined,
       };
     },
@@ -957,7 +1206,7 @@ export function createSchemaJsonVisitor(): Stage2Visitor {
       }
       return {
         violations: [],
-        facts: { [context.filePath]: { jsonParsed: parsed !== null, jsonRaw: sourceCode } },
+        facts: { [context.filePath]: { jsonParsed: parsed, jsonRaw: sourceCode } },
       };
     },
     defaultConfig: {},
@@ -1045,34 +1294,54 @@ export function createSchemaReducer(): Stage3Reducer {
       }
 
       // ── 2. Unknown-table detection ────────────────────────────────────────
+      //
+      // Fail-open guardrail: we can only accuse when the table catalog is
+      // built from authoritative sources.  Empty catalog → cannot accuse.
+      //
+      // Authoritative sources (independent of query sites, not circular):
+      //   • SQL migration files via schema-sql     (step 1a)
+      //   • ORM model definitions via schema-code  (step 1b)
+      //   • Prisma schemas via schema-prisma       (step 1c)
+      //
+      // External config tables (schemas from CodeIndexDB, wrangler.toml
+      // pre-discovered tables) are added as a bonus but are not required.
+      //
+      // NOT authoritative: tables inferred from query-text alone.  Those
+      // never enter the catalog (table refs are for checking, not building).
 
-      // Collect all table references across all files
-      const allTableRefs: Array<{ file: string; table: string; type: string; line: number; column: number; context: string }> = [];
-      for (const [filePath, fact] of perFile()) {
-        const refs: any[] = (fact as any).tableRefs ?? [];
-        for (const ref of refs) {
-          allTableRefs.push({ file: filePath, ...ref });
+      // Merge external tables from config (bonus, not required).
+      const externalKnownTables: string[] = (schemaConfig.knownTables as string[]) ?? [];
+      for (const t of externalKnownTables) knownTables.add(t);
+
+      if (knownTables.size > 0) {
+        // Collect all table references across all files
+        const allTableRefs: Array<{ file: string; table: string; type: string; line: number; column: number; context: string }> = [];
+        for (const [filePath, fact] of perFile()) {
+          const refs: any[] = (fact as any).tableRefs ?? [];
+          for (const ref of refs) {
+            allTableRefs.push({ file: filePath, ...ref });
+          }
         }
-      }
 
-      // 10:1 fail-open ratio guard
-      const unknownRefs = allTableRefs.filter(ref => !knownTables.has(ref.table));
-      if (knownTables.size > 0 && unknownRefs.length / Math.max(knownTables.size, 1) <= 10) {
-        for (const ref of unknownRefs) {
-          const suggestions = a.getNearestTableSuggestions(ref.table, knownTables, 2);
-          const msg = suggestions.length > 0
-            ? `Reference to unknown table '${ref.table}' (${ref.type}). Did you mean: ${suggestions.join(', ')}?`
-            : `Reference to unknown table '${ref.table}' (${ref.type})`;
-          violations.push({
-            file: ref.file,
-            line: ref.line,
-            column: ref.column,
-            severity: 'suggestion' as const,
-            message: msg,
-            rule: 'unknown-table',
-            analyzer: 'schema',
-            symbol: ref.table,
-          } as Violation);
+        // 10:1 fail-open ratio guard
+        const unknownRefs = allTableRefs.filter(ref => !knownTables.has(ref.table));
+        if (unknownRefs.length / Math.max(knownTables.size, 1) <= 10) {
+          for (const ref of unknownRefs) {
+            const suggestions = a.getNearestTableSuggestions(ref.table, knownTables, 2);
+            const msg = suggestions.length > 0
+              ? `Reference to unknown table '${ref.table}' (${ref.type}). Did you mean: ${suggestions.join(', ')}?`
+              : `Reference to unknown table '${ref.table}' (${ref.type})`;
+            violations.push({
+              file: ref.file,
+              line: ref.line,
+              column: ref.column,
+              severity: 'suggestion' as const,
+              message: msg,
+              rule: 'unknown-table',
+              analyzer: 'schema',
+              symbol: ref.table,
+            } as Violation);
+          }
         }
       }
 
@@ -1082,18 +1351,25 @@ export function createSchemaReducer(): Stage3Reducer {
         try {
           // Build content Map from json facts for the refactored analyzeJsonSchemas
           const jsonContents = new Map<string, { parsed: object | null; raw: string }>();
+          let jsonFactCount = 0;
           for (const [filePath, fact] of perFile()) {
             if ('jsonParsed' in (fact as any)) {
+              jsonFactCount++;
+              const raw = ((fact as any).jsonParsed ?? null);
+              // parsed is the result of JSON.parse: null on failure, or the
+              // deserialized value. Only accept objects as usable parsed content.
+              const parsed: object | null =
+                raw !== null && typeof raw === 'object' ? (raw as object) : null;
               jsonContents.set(filePath, {
-                parsed: ((fact as any).jsonParsed ?? null) as object | null,
+                parsed,
                 raw: ((fact as any).jsonRaw ?? (fact as any).sourceCode ?? '') as string,
               });
             }
           }
           const jsonResult = a.analyzeJsonSchemas(jsonContents, schemaConfig);
           violations.push(...(jsonResult?.violations ?? []));
-        } catch {
-          // JSON schema validation is best-effort
+        } catch (e: any) {
+          // JSON schema validation is best-effort (non-fatal)
         }
       }
 

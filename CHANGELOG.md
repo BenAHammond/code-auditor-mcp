@@ -2,7 +2,74 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [3.4.9] — unreleased
+## [3.4.11] — unreleased
+
+### Spec 26: Consume the ASTs We Already Produce
+
+Stage 1 parses every `.css` file into a tree-sitter AST, but all CSS analysis
+operated via regex on raw source text. Spec 26 converts CSS extraction and
+several TypeScript subsystems to walk the AST via adapter methods — the regex
+only classifies tokens; the AST discovers structure.
+
+#### Phase 2 — CSS AST extraction (`cssAstExtractor.ts`)
+
+CSS declarations, class names, and custom-property tokens are now extracted from
+tree-sitter-css ASTs via three pure functions: `extractDeclarationsFromCSSAst`,
+`extractClassUsageFromCSSAst`, `extractTokensFromCSSAst`. `.scss` files stay on
+the regex path (tree-sitter-css is not an SCSS grammar).
+
+Five parser bugs in the retired regex path are eliminated by AST structure:
+
+- **Bug 1** (whitespace before `@`-rules): `at_rule` nodes are always correct
+- **Bug 2** (`@apply` in rule sets): handled via ERROR/postcss_statement/at_rule children
+- **Bug 3** (nested `@`-rule brace): tree-sitter handles brace matching
+- **Bug 4** (backward-scan boundary): no backward scanning — selectors from `selectors` child
+- **Bug 5** (CSS comments as class names): comment nodes are typed, naturally excluded
+
+The `;` stripping fix in `getPropertyAndValue()` (tree-sitter-css includes the
+trailing semicolon in declaration node text) uncovered 53 legitimate
+cross-mechanism violations previously hidden: 14 token-bypass + 39
+mechanism-fragmentation. Styles total: 119 (was 66).
+
+Also fixed: `extractClassUsageFromCSSAst` filters by parent type `class_selector`
+to exclude pseudo-classes (`:hover`, `:focus`) and pseudo-elements.
+
+#### Phase 1 — TypeScript subsystems
+
+- **Invariants** (`ruleEngine.ts`): `extractImports()` and `extractExportedSymbols()`
+  regex functions deleted. `function-index` visitor now emits `imports`,
+  `dynamicImports`, and `exports` facts per file — invariants reducer consumes
+  them via `fileData` instead of re-extracting from source.
+- **Conventions** (`conventionMiner.ts`): `detectExportForm()` now accepts
+  `ExportInfo[]` from `extractExports(ast)` instead of 6 regexes on raw source.
+  Export-shape detection found one additional legitimate violation
+  (`AdminModerationShell`) the regex path missed.
+- **Documentation** (`documentationAnalyzer.ts`): `getJSDocText()` and
+  `getPrecedingJSDocComments()` replaced by `adapter.getDocumentation()`.
+
+### SQL injection parameterization detection
+
+Four new methods in `UniversalDataAccessAnalyzer.ts` detect safe parameterized
+SQL patterns before the keyword/dynamic-part check:
+
+- `isInPrepareBindChain`: detects `.prepare().bind()` chains including the
+  two-statement pattern (`const stmt = db.prepare(sql); stmt.bind(x).all()`)
+- `isInExecChain`: detects safe DO `.exec()` with spread binds
+- `isD1ConvenienceCall`: detects D1 convenience methods (`.all()`, `.first()`,
+  `.run()`) with bind parameters
+
+18 legitimate `sql-injection-risk` violations remain (down from ~55 false
+positives): 3 DO `.exec()` calls without detectable parameterization, 15
+`prepare()` calls where the bind chain cannot be verified (dynamic table/column
+names not bind-able).
+
+### unknown-table = 8 (all generation_queue)
+
+The DO DDL visitor correctly identifies 8 references to the `generation_queue`
+table in `src/pages/api/admin/generation/queue.ts`. The table was dropped in
+migration 0198 — a dead admin page referencing a removed table.
+
+## [3.4.10] — 2026-07-31
 
 ### Accuracy fix: Phantom cross-domain lifecycle violations from over-broad DB detection defaults
 

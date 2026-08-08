@@ -46,6 +46,7 @@ import {
   createDocumentationVisitor,
   createFunctionIndexVisitor,
   createFileSourcesVisitor,
+  createStylesCssVisitor,
   createReactVisitor,
   createStylesReducer,
   createConventionsReducer,
@@ -423,6 +424,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // can access it without calling readFileSync().
     pipelineVisitors.push(createFileSourcesVisitor());
 
+    // styles-css visitor — AST-extracts .css files into style_* tables (Spec 26 Phase 2)
+    if (enabledAnalyzers.includes('styles')) pipelineVisitors.push(createStylesCssVisitor());
+
     if (enabledAnalyzers.includes('solid')) pipelineVisitors.push(createSolidVisitor());
     if (enabledAnalyzers.includes('dry')) {
       dryBundle = createDryVisitor(fullFunctionIndex);
@@ -490,14 +494,25 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // the reducer builds the known-tables catalog solely from fact data.
       if (enabledAnalyzers.includes('schema')) {
         const scConfig = mergedOptions.analyzerConfigs?.schema ?? {};
-        pipelineAnalyzerConfig['schema'] = {
+        const schemaConfig = {
           ...(pipelineAnalyzerConfig['schema'] ?? {}),
           sqlTagNames: scConfig.sqlTagNames ?? ['sql', 'db'],
           dbReceiverNames: scConfig.dbReceiverNames,
           dbCallMethods: scConfig.dbCallMethods,
           dbBindingNames: scConfig.dbBindingNames ?? ['env.DB'],
           fileGateGlobs: scConfig.fileGateGlobs,
+          // External schema references — the pipeline reducer gates unknown-table
+          // detection on these being non-empty (fail-open law: no external
+          // authority means the rule cannot accuse).
+          schemas: scConfig.schemas,
+          knownTables: scConfig.knownTables,
         };
+        pipelineAnalyzerConfig['schema'] = schemaConfig;
+        // Pipeline resolves config by visitor name (rawConfig[visitor.name]).
+        // The schema-* sub-visitors need the same namespace as the schema reducer.
+        for (const sub of ['schema-code', 'schema-sql', 'schema-prisma', 'schema-json']) {
+          pipelineAnalyzerConfig[sub] = schemaConfig;
+        }
       }
       // Global/infrastructure settings passed to all pipeline stages
       pipelineAnalyzerConfig['_infra'] = {

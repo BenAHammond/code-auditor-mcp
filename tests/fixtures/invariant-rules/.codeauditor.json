@@ -1,0 +1,46 @@
+{
+  "enabledAnalyzers": ["invariants"],
+  "includePaths": ["src/**/*.ts"],
+  "rules": [
+    {
+      "id": "ban-debug-import",
+      "kind": "import-ban",
+      "severity": "critical",
+      "module": "debug-lib"
+    },
+    {
+      "id": "no-services-from-ui",
+      "kind": "module-boundary",
+      "severity": "warning",
+      "from": "src/ui/**",
+      "to": "src/services/**"
+    },
+    {
+      "id": "capital-export-naming",
+      "kind": "naming",
+      "severity": "warning",
+      "path": "src/**",
+      "exports": "^[A-Z]"
+    },
+    {
+      "id": "api-call-constraint",
+      "kind": "call-constraint",
+      "severity": "warning",
+      "callee": "fetchData",
+      "allowFrom": ["src/services/**"]
+    },
+    {
+      "id": "style-mechanism-check",
+      "kind": "style-mechanism",
+      "severity": "warning",
+      "allow": ["css-modules"]
+    },
+    {
+      "id": "no-raw-values-check",
+      "kind": "no-raw-values",
+      "severity": "warning",
+      "properties": ["color", "background-color"],
+      "allowValues": ["inherit", "transparent", "currentColor"]
+    }
+  ]
+}

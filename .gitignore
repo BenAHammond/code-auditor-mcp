@@ -127,3 +127,6 @@ claude.backup-*
 
 .mcpregistry_github_token
 .mcpregistry_registry_token
+
+# Audit output (should not be committed)
+audit-report.json

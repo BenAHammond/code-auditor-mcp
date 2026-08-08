@@ -25,6 +25,7 @@ import {
   parseFileImports,
   hasNonLatinChars,
 } from '../../conventions/conventionMiner.js';
+import type { ExportInfo } from '../../languages/types.js';
 
 // ---------------------------------------------------------------------------
 // Default configuration
@@ -122,9 +123,11 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       };
     }
 
-    // Extract project root and source map from config
+    // Extract project root, source map, and exports map from config
     const projectRoot: string | undefined = config.projectRoot;
     const sourceMap: Map<string, string> | undefined = config.sourceMap;
+    // B2: exportsMap comes from function-index visitor facts (AST-extracted)
+    const exportsMap: Map<string, ExportInfo[]> | undefined = config.exportsMap;
 
     // Group conventions by domain for efficient detection
     const byDomain = new Map<string, ConventionRow[]>();
@@ -152,7 +155,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
           break;
         case 'export-shape':
           violations.push(
-            ...this.detectExportShapeViolations(indexHandle, domainConventions, projectRoot, sourceMap),
+            ...this.detectExportShapeViolations(indexHandle, domainConventions, exportsMap),
           );
           break;
         case 'naming':
@@ -458,8 +461,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   private detectExportShapeViolations(
     indexHandle: IndexHandle,
     conventions: ConventionRow[],
-    projectRoot?: string,
-    sourceMap?: Map<string, string>,
+    exportsMap?: Map<string, ExportInfo[]>,
   ): Violation[] {
     const violations: Violation[] = [];
 
@@ -488,10 +490,10 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       const conv = dirForms.get(directory);
       if (!conv) continue;
 
-      const fullPath = projectRoot ? path.join(projectRoot, row.file_path) : row.file_path;
-      const sourceCode = sourceMap?.get(fullPath);
-      if (sourceCode === undefined) continue;
-      const form = detectExportForm(fullPath, row.name, sourceCode);
+      // B2: Use AST-extracted ExportInfo[] from function-index facts
+      const fileExports = exportsMap?.get(row.file_path);
+      if (!fileExports) continue;
+      const form = detectExportForm(row.name, fileExports);
       if (!form || form === conv.form) continue;
 
       const pct = Math.round(conv.confidence * 100);

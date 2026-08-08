@@ -77,6 +77,10 @@ export async function syncStyleIndex(
 
   // Process each file
   for (const filePath of files) {
+    // Skip .css files — handled by styles-css pipeline visitor (Spec 26 Phase 2).
+    // tree-sitter-css is not an SCSS grammar; .scss stays on this regex path.
+    if (filePath.endsWith('.css')) continue;
+
     try {
       const content = readFileSync(filePath, 'utf-8');
       const contentHash = computeFileHash(content);

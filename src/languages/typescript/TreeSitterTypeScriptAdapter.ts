@@ -1345,35 +1345,79 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
     const idName = sourceCode.slice(identifierNode.range[0], identifierNode.range[1]).trim();
     if (!idName) return null;
 
-    // Find the enclosing function or file scope
+    // Find the enclosing function or file scope.  First search within
+    // the enclosing function; if not found, fall back to the program-level
+    // (module) scope — constants declared at module level are accessible
+    // inside any function in that module.
     const enclosing = this.findEnclosingScope(identifierNode, ast);
     const scopeRoot = enclosing ?? ast.root;
 
-    // Search for declarations within this scope
-    const declNode = this.findDeclarationInScope(scopeRoot, idName);
+    let declNode = this.findDeclarationInScope(scopeRoot, idName);
+    // If the enclosing scope is a function (not the program) and we didn't
+    // find the declaration there, also search the program-level scope.
+    if (!declNode && enclosing && enclosing !== ast.root) {
+      declNode = this.findDeclarationInScope(ast.root, idName);
+    }
     if (!declNode) return null;
 
-    // Extract the declaration components
-    const declText = sourceCode.slice(declNode.range[0], declNode.range[1]);
-    const declMatch = declText.match(
-      /^(?:const|let|var)\s+(\w+)\s*=\s*(.+?);?\s*$|^(\w+)\s*=\s*(.+?);?\s*$/
-    );
-    if (!declMatch) return null;
-
-    const initText = (declMatch[2] ?? declMatch[4]).replace(/;\s*$/, '').trim();
+    // Extract value from AST (handles multiline declarations that the old
+    // regex missed — `.` doesn't match `\n` so `.+?` truncated at newlines).
+    const raw = declNode.raw as TreeSitterNode;
+    const valueNode = (raw as any).childForFieldName?.('value') as TreeSitterNode | null;
     const declLine = declNode.location.start.line;
 
     // Check for reassignment after declaration
     const reassigned = this.hasReassignment(scopeRoot, idName, declLine);
 
-    // Determine if static: contains only placeholder literals ("?", '?') — no
-    // variable references, function calls, or expressions.
-    // Recognized patterns: "?", '?' literals, .map/.join chains, arrow functions.
-    const isStatic = initText === '""' || initText === "''" ||
-      /^["'\s?,\[\]\(\)\.map\(\)\.join\(\)\w=>{};]+$/.test(initText) &&
-      (initText.includes('"?"') || initText.includes("'?'"));
+    // Determine if static by inspecting the value node's AST type.  String
+    // literals and substitution-free template strings are compile-time constants
+    // regardless of whether they contain `?` placeholders — SQL fragment
+    // constants (WHERE clauses, column lists) are just as static as
+    // parameterised query strings.
+    const isStatic = !reassigned && this.isStaticValueNode(valueNode);
 
-    return { initText, isStatic: isStatic && !reassigned, declLine };
+    // Extract init text from the value node; fall back to the full declaration.
+    let initText: string;
+    if (valueNode) {
+      initText = sourceCode.slice(valueNode.startIndex, valueNode.endIndex).trim();
+    } else {
+      // No initializer node — try regex as a last resort.
+      const declText = sourceCode.slice(declNode.range[0], declNode.range[1]);
+      const declMatch = declText.match(
+        /^(?:const|let|var)\s+(\w+)\s*=\s*(.+?);?\s*$|^(\w+)\s*=\s*(.+?);?\s*$/s,
+      );
+      initText = declMatch
+        ? (declMatch[2] ?? declMatch[4]).replace(/;\s*$/, '').trim()
+        : '';
+    }
+
+    return { initText, isStatic, declLine };
+  }
+
+  /** Determine whether a tree-sitter value node represents a static (compile-time
+   *  constant) expression — no variables, function calls, or runtime evaluation. */
+  private isStaticValueNode(node: TreeSitterNode | null): boolean {
+    if (!node) return false;
+
+    const type = node.type;
+
+    // Literals that are trivially compile-time constants.
+    if (type === 'string') return true;
+    if (type === 'number') return true;
+    if (type === 'true' || type === 'false' || type === 'null' || type === 'undefined') return true;
+
+    // Template strings: static only when they contain no ${…} substitutions.
+    if (type === 'template_string') {
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        if (child && child.type === 'template_substitution') return false;
+      }
+      return true;
+    }
+
+    // Everything else (identifiers, call expressions, binary expressions,
+    // array literals, etc.) is conservatively treated as non-static.
+    return false;
   }
 
   /** Walk the parent chain to find the enclosing function scope node. */
