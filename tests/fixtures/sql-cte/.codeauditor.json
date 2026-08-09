@@ -1,0 +1,19 @@
+{
+  "$schema": "https://code-auditor.vercel.app/schemas/config.json",
+  "projectType": "nextjs",
+  "rules": {},
+  "enabledAnalyzers": ["schema"],
+  "analyzerConfigs": {
+    "schema": {
+      "checkMissingReferences": true,
+      "schemas": [
+        {
+          "name": "known",
+          "tables": [
+            { "name": "known_table", "columns": [] }
+          ]
+        }
+      ]
+    }
+  }
+}

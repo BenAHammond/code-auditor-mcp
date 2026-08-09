@@ -1075,6 +1075,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         dbReceiverNames: (schemaConfig.dbReceiverNames as string[]) ?? defaults.dbReceiverNames,
         dbBindingNames: (schemaConfig.dbBindingNames as string[]) ?? defaults.dbBindingNames,
         dbCallMethods: (schemaConfig.dbCallMethods as string[]) ?? defaults.dbCallMethods,
+        dbWrapperNames: (schemaConfig.dbWrapperNames as string[]) ?? defaults.dbWrapperNames,
       });
 
       // File gate — skip files without DB usage
@@ -1312,6 +1313,19 @@ export function createSchemaReducer(): Stage3Reducer {
       // Merge external tables from config (bonus, not required).
       const externalKnownTables: string[] = (schemaConfig.knownTables as string[]) ?? [];
       for (const t of externalKnownTables) knownTables.add(t);
+
+      // Also read the documented schemas config (structured {name, tables} objects).
+      // The standalone UniversalSchemaAnalyzer.analyze() path reads schemas; the
+      // pipeline reducer must read it too, otherwise configuring only schemas
+      // silently triggers fail-open (knownTables.size === 0).
+      const externalSchemas: Array<{
+        name: string; tables: Array<{ name: string; columns: Array<{ name: string; type: string }> }>;
+      }> = (schemaConfig.schemas as any) ?? [];
+      for (const schema of externalSchemas) {
+        for (const table of schema.tables) {
+          knownTables.add(table.name);
+        }
+      }
 
       if (knownTables.size > 0) {
         // Collect all table references across all files

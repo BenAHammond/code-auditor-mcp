@@ -660,8 +660,10 @@ function getMemberExpressionReceiver(
         firstChild.type === 'member_expression' ||
         firstChild.type === 'selector_expression'
       ) {
-        current = firstChild;
-        continue;
+        // Compound receiver: env.DB.prepare → receiver is "env.DB", not "env".
+        // Return the full text of the inner member expression so fallback
+        // entries like dbBindingNames: ['env.DB'] match the provenance check.
+        return adapter.getNodeText(firstChild, sourceCode);
       }
       if (firstChild.type === 'identifier') {
         return adapter.getNodeText(firstChild, sourceCode);
@@ -766,6 +768,16 @@ export interface BuildProvenanceContextOptions {
   dbReceiverNames?: string[];
   dbBindingNames?: string[];
   dbCallMethods?: string[];
+  /**
+   * Known DB wrapper function names — e.g. d1Query, d1Exec.
+   * These are project-specific functions that wrap D1/DB API calls
+   * (e.g. function d1Query(sql) { return d1.prepare(sql).all(); }).
+   * When imported from a local module (not a known DB package), provenance
+   * can't trace through the import chain.  These names provide a hybrid-mode
+   * fallback: any call to an identifier matching this list is treated as
+   * DB-provenanced.
+   */
+  dbWrapperNames?: string[];
   /** Validator package list override (defaults to VALIDATOR_PACKAGES) */
   validatorPackageList?: string[];
 }
@@ -806,6 +818,7 @@ export function buildProvenanceContext(
       sourceCode,
       options.dbReceiverNames ?? [],
       options.dbBindingNames ?? [],
+      options.dbWrapperNames ?? [],
     );
   }
 
@@ -815,6 +828,7 @@ export function buildProvenanceContext(
       sourceCode,
       options.dbReceiverNames ?? [],
       options.dbBindingNames ?? [],
+      options.dbWrapperNames ?? [],
     );
   }
 
@@ -837,6 +851,7 @@ function addNameListFallbacks(
   sourceCode: string,
   dbReceiverNames: string[],
   dbBindingNames: string[],
+  dbWrapperNames: string[],
 ): Map<string, ProvenanceEvidence> {
   const result = new Map(provenanceMap);
 
@@ -880,6 +895,19 @@ function addNameListFallbacks(
     }
   }
 
+  // Scan for DB wrapper function names (e.g. d1Query, d1Exec)
+  for (const name of dbWrapperNames) {
+    if (result.has(name)) continue;
+    if (identifierAppearsInSource(sourceCode, name)) {
+      result.set(name, {
+        identifier: name,
+        reason: 'fallback',
+        source: `name list match: dbWrapperNames contains "${name}"`,
+        chain: [],
+      });
+    }
+  }
+
   return result;
 }
 
@@ -890,12 +918,14 @@ function buildNamesOnlyProvenance(
   sourceCode: string,
   dbReceiverNames: string[],
   dbBindingNames: string[],
+  dbWrapperNames: string[],
 ): Map<string, ProvenanceEvidence> {
   return addNameListFallbacks(
     new Map(),
     sourceCode,
     dbReceiverNames,
     dbBindingNames,
+    dbWrapperNames,
   );
 }
 
@@ -1001,8 +1031,11 @@ function isMemberExpressionDBProvenanced(
       break;
     }
     if (firstChild.type === 'member_expression' || firstChild.type === 'selector_expression') {
-      current = firstChild;
-      continue;
+      // Compound receiver: env.DB.prepare → root is "env.DB", not "env".
+      // Returning the full text of the inner member expression ensures
+      // fallback entries match (e.g. dbBindingNames: ['env.DB']).
+      rootReceiver = adapter.getNodeText(firstChild, sourceCode);
+      break;
     }
     // this.db.prepare → root is a chain on `this`, check `this.xxx`
     if (firstChild.type === 'this' || firstChild.type === 'super') {
@@ -1019,8 +1052,19 @@ function isMemberExpressionDBProvenanced(
     return isDBMethodCall(node, adapter, sourceCode, context, methods);
   }
 
-  // Check if the root receiver is DB-provenanced
-  if (!context.dbProvenanced.has(rootReceiver)) {
+  // Check if the root receiver is DB-provenanced.
+  // Compound receivers (e.g. "db.users" or "env.DB") need to match both
+  // the full text (for bindings like "env.DB") and each sub-identifier
+  // (for receivers like "db.users" where "db" is in dbReceiverNames).
+  const matchesProvenance = (r: string): boolean => {
+    if (context.dbProvenanced.has(r)) return true;
+    for (const part of r.split('.')) {
+      if (context.dbProvenanced.has(part)) return true;
+    }
+    return false;
+  };
+
+  if (!matchesProvenance(rootReceiver)) {
     if (rootReceiver !== 'this') return false;
     // For `this.xxx`, check if the method chain itself suggests DB usage
     return isDBMethodOnThis(node, adapter, sourceCode, context, methods);

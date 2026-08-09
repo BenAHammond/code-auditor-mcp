@@ -1,0 +1,31 @@
+{
+  "gate": "self",
+  "timestamp": "2026-08-04T02:42:40.881Z",
+  "passed": false,
+  "checks": {
+    "analyzers-ran": {
+      "passed": false,
+      "detail": "3 reducer(s) consumed zero facts"
+    },
+    "rules-registered": {
+      "passed": true,
+      "detail": "3044 violations with registered rule IDs"
+    },
+    "paths-resolve": {
+      "passed": true,
+      "detail": "All violation file paths resolve"
+    },
+    "violations-found": {
+      "passed": true,
+      "detail": "Total: 3,044"
+    }
+  },
+  "git": {
+    "commit": "8a35e20d04a6806908555432c24ccd194a17f5a8",
+    "tag": "v3.4.9"
+  },
+  "summary": {
+    "analyzersCount": 9,
+    "totalViolations": 3044
+  }
+}

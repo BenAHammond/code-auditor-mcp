@@ -1,0 +1,11 @@
+{
+  "$schema": "https://code-auditor.vercel.app/schemas/config.json",
+  "projectType": "nextjs",
+  "rules": {},
+  "dataAccess": {
+    "enabled": true,
+    "dbWrapperNames": ["d1Query", "d1Exec", "buildQuery"],
+    "sanitizerNames": ["escapeSql"]
+  },
+  "enabledAnalyzers": ["data-access"]
+}

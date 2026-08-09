@@ -71,6 +71,17 @@ export interface DataAccessAnalyzerConfig {
     sqlInjectionRisks?: string[];
     parameterizedQueries?: string[];
   };
+
+  /** DB wrapper function names that represent parameterized calls (e.g. d1Query, d1Exec).
+   *  These functions accept a SQL template + bind params array — same pattern as
+   *  .prepare().bind() but expressed as a simple function call rather than a method chain.
+   *  @see DEFAULT_SCHEMA_CONFIG.dbWrapperNames */
+  dbWrapperNames?: string[];
+
+  /** SQL sanitizer function names — interpolation wrapped in one of these
+   *  (e.g. escapeSql(x)) is not raw.  Kept in sync with the provenance system's
+   *  dbWrapperNames: any list the detector learns about, the FP guards must also consult. */
+  sanitizerNames?: string[];
 }
 
 export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
@@ -109,7 +120,7 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
       /rightJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,
       /innerJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu
     ],
-    sql: [/FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /JOIN\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /UPDATE\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu],
+    sql: [/INSERT\s+INTO\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /DELETE\s+FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /JOIN\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /UPDATE\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu],
     queryBuilder: [/\.from\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu]
   },
   performanceThresholds: {
@@ -120,7 +131,13 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   securityPatterns: {
     sqlInjectionRisks: ['${', 'concat', 'string interpolation'],
     parameterizedQueries: ['?', ':param', '$1', 'prepared', 'parameterized']
-  }
+  },
+  // DB wrapper functions that accept (sql, params) — same as .prepare().bind()
+  // but expressed as a simple function call.  Must match the provenance system's
+  // dbWrapperNames so the FP guards see the same capability list the detector does.
+  dbWrapperNames: ['d1Query', 'd1Exec'],
+  // SQL sanitizer functions — interpolation via escapeSql(x) is not raw.
+  sanitizerNames: ['escapeSql'],
 };
 
 interface DatabaseCall {
@@ -146,6 +163,7 @@ interface QueryAnalysis {
   performanceRisk: 'low' | 'medium' | 'high';
 }
 
+// ── Diagnostic infrastructure (one-time v3.4.12 adjuciation) ──────────────
 export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   readonly name = 'data-access';
   readonly description = 'Analyzes database access patterns and data layer interactions';
@@ -171,6 +189,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       dbReceiverNames: schemaConfig.dbReceiverNames ?? DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
       dbBindingNames: schemaConfig.dbBindingNames ?? DEFAULT_SCHEMA_CONFIG.dbBindingNames,
       dbCallMethods: schemaConfig.dbCallMethods ?? DEFAULT_SCHEMA_CONFIG.dbCallMethods,
+      dbWrapperNames: schemaConfig.dbWrapperNames ?? DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
     });
     const timingAcc: { totalMs: number } | undefined = schemaConfig._provenanceTiming;
     if (timingAcc) timingAcc.totalMs += performance.now() - p0;
@@ -255,6 +274,12 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         // where they sit (DB-provenanced call arguments), not what their
         // body contains. Content scanning with substring matching is removed.
         if (this.isTemplateLiteral(node, adapter)) {
+          const parent = adapter.getParent(node);
+          // Only capture template literals in call arguments — those are
+          // the ones the provenance gate decides on.
+          if (parent && adapter.getNodeType(parent) === 'arguments') {
+            return this.isTemplateInDBProvenancedCall(node, adapter, sourceCode, provenanceContext);
+          }
           return this.isTemplateInDBProvenancedCall(node, adapter, sourceCode, provenanceContext);
         }
 
@@ -330,7 +355,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         const hasOrgFilter = this.hasOrganizationFilter(nodeText, config);
 
         const security = this.checkQuerySecurity(node, nodeText, ast, adapter, sourceCode, config);
-        
+
         // Determine the type based on imports or patterns
         let callType = 'unknown';
         if (isSqlQuery) {
@@ -865,6 +890,50 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   }
 
   /**
+   * Detect simple-function-call DB wrappers with bind parameters.
+   *
+   * dbWrapperNames (d1Query, d1Exec) are function wrappers that accept
+   * (sqlTemplate, bindParams) — the same pattern as .prepare().bind() but
+   * expressed as a direct function call rather than a method chain.
+   *
+   * `d1Query(\`SELECT ... WHERE x = ?\`, [value])` — bind params as second arg
+   * means the call is fully parameterized, even though the template literal
+   * text contains `${}` interpolation for table/column names.
+   *
+   * Entry point: a template_string inside the wrapper's arguments.
+   */
+  private isWrapperFunctionWithBindParams(
+    node: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    wrapperNames: string[],
+  ): boolean {
+    if (wrapperNames.length === 0) return false;
+    if (adapter.getNodeType(node) !== 'template_string') return false;
+
+    // Walk up from template_string → arguments → call_expression
+    const args = adapter.getParent(node);
+    if (!args || adapter.getNodeType(args) !== 'arguments') return false;
+    const call = adapter.getParent(args);
+    if (!call || adapter.getNodeType(call) !== 'call_expression') return false;
+
+    // Check if the callee is a simple identifier (not member expression)
+    // matching one of the wrapper names.
+    const children = adapter.getChildren(call);
+    const callee = children.find(c => adapter.getNodeType(c) === 'identifier');
+    if (!callee) return false;
+    const calleeName = adapter.getNodeText(callee, sourceCode);
+    if (!wrapperNames.includes(calleeName)) return false;
+
+    // Check for a second argument — the bind params.  A single-arg call
+    // like d1Query(sql) without params has no runtime parameterization.
+    const realArgs = adapter.getChildren(args).filter(
+      c => !['(', ')', ','].includes(adapter.getNodeType(c)),
+    );
+    return realArgs.length >= 2;
+  }
+
+  /**
    * Check the two-statement prepare→bind pattern: db.prepare() is assigned to
    * a variable whose value is later .bind()'ed in the same function scope.
    *
@@ -1117,6 +1186,14 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       return { parameterized: true, injectionRisk: false };
     }
 
+    // Check for DB wrapper functions with bind params — d1Query(sql, params)
+    // sends params as separate JSON field to the D1 REST API, which is true
+    // parameterization (not string interpolation).  Same security guarantee
+    // as .prepare().bind() but expressed as a direct function call.
+    if (this.isWrapperFunctionWithBindParams(node, adapter, sourceCode, config.dbWrapperNames ?? [])) {
+      return { parameterized: true, injectionRisk: false };
+    }
+
     const parameterized = (config.securityPatterns?.parameterizedQueries || []).some(pattern =>
       text.includes(pattern)
     );
@@ -1150,6 +1227,16 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
 
     for (const part of dynamicParts) {
       if (!part.isIdentifier) {
+        // A non-identifier expression — check for known sanitizer wrappers.
+        // escapeSql(x) wraps user input in single-quote escaping and is a
+        // config-driven allowlist.  An interpolation wrapped in a known
+        // sanitizer isn't raw — same pattern as dbWrapperNames for provenance.
+        const normalized = part.text.trim();
+        const sanitized = (config.sanitizerNames ?? []).some(name =>
+          normalized.startsWith(name + '(') || normalized.startsWith(name + ' ('),
+        );
+        if (sanitized) continue; // Sanitizer-wrapped — not raw interpolation
+
         // A non-identifier expression embedded in the string — definitely dynamic.
         unresolved.push(part.text);
         continue;

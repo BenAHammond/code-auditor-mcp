@@ -35,7 +35,7 @@ function cliCommand(args: string): string {
   }
 }
 
-function runCli(args: string, cwd: string): { stdout: string; stderr: string; exitCode: number } {
+export function runCli(args: string, cwd: string): { stdout: string; stderr: string; exitCode: number } {
   const cmd = cliCommand(args);
   try {
     const stdout = execSync(cmd, {
@@ -560,5 +560,96 @@ describe('A2 gate — SKILL.md doc-CLI parity', () => {
   // Sanity: there should be command references to verify
   itIfCli('has command references to verify', () => {
     expect(parsedCommands.length).toBeGreaterThan(0);
+  });
+});
+
+// ── INSERT/DELETE table patterns + dbWrapperNames provenance fixture ──────────
+// Proves two fixes that were previously invisible without a regression guard:
+//   1. INSERT INTO / DELETE FROM regex patterns in extractTables() surfacing
+//      tables that are never SELECTed/JOINed/UPDATEd.
+//   2. Locally-defined DB wrapper functions (d1Exec) recognized by
+//      addNameListFallbacks() when dbWrapperNames is passed to
+//      buildProvenanceContext().
+//
+// The fixture has:
+//   - audit_log: only INSERTed into (invisible without INSERT INTO pattern)
+//   - expired_sessions: only DELETEd from (invisible without DELETE FROM pattern)
+//   - migration_log: INSERTed/DELETEd via locally-defined d1Exec() wrapper
+//                     (invisible without dbWrapperNames provenance fix)
+
+describe('INSERT/DELETE table patterns + provenance fixture', () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), 'ca-insert-delete-'));
+    // Copy fixture tree into temp dir
+    const fixtureDir = join(__dirname, '..', 'tests', 'fixtures', 'insert-delete-tables');
+    execSync(`cp -r "${fixtureDir}/." "${testDir}/"`, { encoding: 'utf-8' });
+  });
+
+  afterEach(() => {
+    try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('surfaces INSERT-only and DELETE-only tables in data-access violations', () => {
+    // Run full audit against the fixture project
+    const runResult = runCli(
+      `audit --path "${testDir}" -f json -o "${testDir}"`,
+      testDir
+    );
+
+    expect(runResult.exitCode).toBe(0);
+
+    // Read the JSON report
+    const reportPath = join(testDir, 'audit-report.json');
+    const reportRaw = execSync(`cat "${reportPath}"`, { encoding: 'utf-8' });
+    const report = JSON.parse(reportRaw);
+
+    // Collect all violation messages from the data-access analyzer
+    const daResult = report.analyzerResults?.['data-access'];
+    const messages: string[] = (daResult?.violations ?? []).map((v: any) => v.message);
+    const allText = messages.join('\n');
+
+    // audit_log — INSERT-only table (proves INSERT INTO pattern fix)
+    expect(allText).toContain('audit_log');
+
+    // expired_sessions — DELETE-only table (proves DELETE FROM pattern fix)
+    expect(allText).toContain('expired_sessions');
+
+    // migration_log — accessed via locally-defined d1Exec() wrapper
+    // (proves dbWrapperNames provenance fix — without it, d1Exec is invisible)
+    expect(allText).toContain('migration_log');
+  });
+
+  it('sanity: d1Exec provenance fix — locally-defined wrapper appears in violation functionName', () => {
+    const runResult = runCli(
+      `audit --path "${testDir}" -f json -o "${testDir}"`,
+      testDir
+    );
+
+    expect(runResult.exitCode).toBe(0);
+
+    const reportPath = join(testDir, 'audit-report.json');
+    const reportRaw = execSync(`cat "${reportPath}"`, { encoding: 'utf-8' });
+    const report = JSON.parse(reportRaw);
+
+    const daResult = report.analyzerResults?.['data-access'];
+    const violations: any[] = daResult?.violations ?? [];
+
+    // d1Exec is a locally-defined DB wrapper function in the fixture.
+    // Without the dbWrapperNames provenance fix in pipelineAdapters.ts,
+    // addNameListFallbacks would never find d1Exec in the source and the
+    // call sites at lines 45-46 would not be attributed as DB operations.
+    // The presence of violations with functionName containing d1Exec proves
+    // the provenance fix works end-to-end.
+    const d1ExecViolations = violations.filter((v: any) =>
+      v.functionName?.includes('d1Exec')
+    );
+    expect(d1ExecViolations.length).toBeGreaterThanOrEqual(2);
+
+    // Both violations should originate from runMigration (the caller)
+    for (const v of d1ExecViolations) {
+      expect(v.functionName).toContain('runMigration');
+    }
   });
 });

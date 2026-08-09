@@ -1,0 +1,9 @@
+{
+  "$schema": "https://code-auditor.vercel.app/schemas/config.json",
+  "projectType": "nextjs",
+  "rules": {},
+  "dataAccess": {
+    "enabled": true
+  },
+  "enabledAnalyzers": ["data-access"]
+}

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://code-auditor.vercel.app/schemas/config.json",
+  "projectType": "nextjs",
+  "rules": {},
+  "enabledAnalyzers": ["conventions"]
+}

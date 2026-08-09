@@ -2,7 +2,80 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [3.4.11] — unreleased
+## [3.4.13] — 2026-08-09
+
+### Accuracy fix — `unknown-table` silently off when configuring `schemas`
+
+The pipeline schema reducer (`createSchemaReducer`) built its known-tables catalog
+from `schemaConfig.knownTables` (a flat `string[]`) only. It did not read
+`schemaConfig.schemas` — the documented, structured `{name, tables}` shape that
+the standalone `UniversalSchemaAnalyzer.analyze()` path uses. A user who configured
+only `schemas` in `.codeauditor.json` got `knownTables.size === 0`, triggering the
+fail-open gate, and `unknown-table` violations silently never fired.
+
+**Fix**: `createSchemaReducer` now flattens `schemaConfig.schemas` into the catalog
+the same way the standalone analyzer does, so both config shapes work in both code
+paths.
+
+### Fixture corpus — 7 known-answer regression guard suites
+
+Systematic fixture corpus: small projects with known-answer inputs and exact
+violation-count assertions. Each suite copies to a temp dir and runs cold
+through the real CLI — no mocks between config and report.
+
+| Suite | Directory | What it guards |
+|-------|-----------|---------------|
+| Invariant rules | `tests/fixtures/invariant-rules/` | All 5 rule kinds: import-ban, naming, call-constraint, module-boundary, ast-pattern |
+| Data-access rules | `tests/fixtures/data-access-rules/` | unfiltered-query, loop-query, missing-org-filter, complex-query; pool.length non-DB receiver guard |
+| SQL FP guards | `tests/fixtures/sql-fp-guards/` | 10 safe-pattern files (prepare-bind, escapeSql, wrapper-bind, etc.) + 1 true positive; 15 documented acknowledged FPs |
+| Conventions | `tests/fixtures/conventions/` | export-shape majority-rule detection (named-majority vs all-named) |
+| Cross-domain | `tests/fixtures/cross-domain/` | written-never-read on INSERT-only table, transaction-boundary on multi-table write |
+| SQL CTE | `tests/fixtures/sql-cte/` | CTE names excluded from table references; inner tables extracted |
+| SQL subquery | `tests/fixtures/sql-subquery-alias/` | Subquery aliases excluded; column alias near-miss guard |
+
+### Other fixes
+- **`dbWrapperNames` passthrough**: schema-code visitor config wasn't forwarding
+  `dbWrapperNames`, so locally-defined wrapper functions weren't recognized in
+  the pipeline path (only the standalone analyzer saw them).
+- **Non-DB `pool` receiver guard**: `pool.length` on array variables is no longer
+  mistaken for a database pool operation.
+- **SQL CTE / subquery-alias parser regression guards** (v3.4.8 regression): CTE
+  names and subquery aliases correctly excluded from table reference extraction.
+  Confirmed via integration tests.
+
+### Open
+- **15 documented `sql-injection-risk` false positives**: each mechanism named
+  in `docs/sql-injection-fp-defect.md`. The FP-guard fixture tests use
+  `toBeLessThanOrEqual(currentCount)` assertions — improvements drop the count
+  without breaking; regressions that spike it are caught.
+
+### Adjudication release — Spec 26 findings confirmed
+
+All Spec 26 findings adjudicated against recall-protocol cold run (119 styles,
+116 conventions, 1256 data-access). No code changes — every finding verified
+individually.
+
+#### Styles (frosted-prism.css delta)
+- 9 token-bypass REAL: `#06131c` vs `--active-ink` (token consumed in 8 selectors)
+- 4 token-bypass RULE BUG: `#fff` vs `--health-base` (cross-file discovery without semantic scoping — `#fff` is universal color used for Discord/YouTube elements unrelated to health bars)
+- 15 declaration-set-similarity REAL: verified every pair (5-11/11 declarations identical)
+- 1 z-index-sprawl REAL: 10 distinct z-index values in one file
+- Failure construct identified: one-liner `@keyframes {...{...}...}` with nested braces immediately followed by `@media {...}` — `{[^}]*}` regex matches first nested `}`, confusing brace-counting state machine
+
+#### SQL injection (18 survivors)
+- 2 REAL: hero-data-agent.ts:232, :241 — `opts.gameMode` (RPC user input) interpolated into `.exec()` SQL with only quote-escaping
+- 1 RULE BUG: store.ts:422 — `table` is fixed internal literal (documented)
+- 15 FALSE POSITIVES: all `.prepare()` calls interpolate compile-time constants (OFFICIAL_HEROES_SQL, EFFECT_FLAGS, CATALOG_SOURCES_SQL, allowlist-guarded values)
+- Zero SQL-keyword receiver false positives (confirmed)
+
+#### Conventions
+- +1 export-shape: AdminModerationShell.tsx uses `export default` in 97%-named directory (AST `extractExports` correctly identified)
+
+#### Recall-protocol tickets
+- generation_queue: 8 unknown-table violations, table dropped in migration 0198
+- hero-data-agent.ts: user-input interpolation into `.exec()` SQL
+
+## [3.4.11] — 2026-08-07
 
 ### Spec 26: Consume the ASTs We Already Produce
 

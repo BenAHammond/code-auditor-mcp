@@ -1,0 +1,12 @@
+{
+  "$schema": "https://code-auditor.vercel.app/schemas/config.json",
+  "projectType": "nextjs",
+  "rules": {},
+  "enabledAnalyzers": ["cross-domain", "schema"],
+  "crossDomain": {
+    "schemaLifecycle": {
+      "enableReadNeverWritten": false,
+      "txnTableMax": 2
+    }
+  }
+}

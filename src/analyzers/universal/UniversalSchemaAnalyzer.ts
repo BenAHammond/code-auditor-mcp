@@ -67,6 +67,7 @@ export interface SchemaAnalyzerConfig {
   dbReceiverNames?: string[];       // @see DEFAULT_SCHEMA_CONFIG
   dbCallMethods?: string[];         // @see DEFAULT_SCHEMA_CONFIG
   dbBindingNames?: string[];        // @see DEFAULT_SCHEMA_CONFIG
+  dbWrapperNames?: string[];        // @see DEFAULT_SCHEMA_CONFIG
   fileGateGlobs?: string[];         // default ['**/*.sql', '**/migrations/**'] — R2.2
   schemaFiles?: string[];           // explicit paths to SQL schema files (e.g., 'snapshots/schema.sql')
 }
@@ -87,6 +88,7 @@ export interface SchemaAnalyzerConfig {
 export const DB_RECEIVER_NAMES = ['db', 'database', 'sql', 'stmt'] as const;
 export const DB_CALL_METHOD_NAMES = ['exec', 'prepare', 'batch', 'run', 'all', 'first'] as const;
 export const DB_BINDING_NAMES = ['env.DB'] as const;
+export const DB_WRAPPER_NAMES = ['d1Query', 'd1Exec'] as const;
 export const SQL_TAG_NAMES = ['sql', 'db'] as const;
 
 export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
@@ -110,6 +112,7 @@ export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   dbReceiverNames: [...DB_RECEIVER_NAMES],
   dbCallMethods: [...DB_CALL_METHOD_NAMES],
   dbBindingNames: [...DB_BINDING_NAMES],
+  dbWrapperNames: [...DB_WRAPPER_NAMES],
   fileGateGlobs: ['**/*.sql', '**/migrations/**'],
   schemaFiles: [],
 };
@@ -282,6 +285,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       dbReceiverNames: finalConfig.dbReceiverNames ?? DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
       dbBindingNames: finalConfig.dbBindingNames ?? DEFAULT_SCHEMA_CONFIG.dbBindingNames,
       dbCallMethods: finalConfig.dbCallMethods ?? DEFAULT_SCHEMA_CONFIG.dbCallMethods,
+      dbWrapperNames: finalConfig.dbWrapperNames ?? DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
     });
 
     // R2.2 — File gate: only analyze files with DB context (Spec 21: provenance-based)

@@ -1,0 +1,34 @@
+{
+  "gate": "self",
+  "timestamp": "2026-08-01T06:26:30.551Z",
+  "passed": false,
+  "checks": {
+    "analyzers-ran": {
+      "passed": false,
+      "detail": "8 analyzer(s) failed to run: solid (unknown reason), dry (unknown reason), react (unknown reason), data-access (unknown reason), documentation (unknown reason), schema (unknown reason), styles (unknown reason), conventions (unknown reason)"
+    },
+    "rules-registered": {
+      "passed": true,
+      "detail": "2923 violations with registered rule IDs"
+    },
+    "paths-resolve": {
+      "passed": false,
+      "detail": "1 file(s) do not exist on disk"
+    },
+    "violations-found": {
+      "passed": true,
+      "detail": "Total: 2,923"
+    }
+  },
+  "git": {
+    "commit": "8a35e20d04a6806908555432c24ccd194a17f5a8",
+    "tag": "v3.4.9"
+  },
+  "summary": {
+    "analyzersCount": 8,
+    "totalViolations": 2923,
+    "disabledAnalyzers": [
+      "cross-domain"
+    ]
+  }
+}

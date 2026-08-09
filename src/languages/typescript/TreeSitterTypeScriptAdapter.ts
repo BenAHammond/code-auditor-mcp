@@ -1351,21 +1351,65 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
     // inside any function in that module.
     const enclosing = this.findEnclosingScope(identifierNode, ast);
     const scopeRoot = enclosing ?? ast.root;
-
     let declNode = this.findDeclarationInScope(scopeRoot, idName);
     // If the enclosing scope is a function (not the program) and we didn't
     // find the declaration there, also search the program-level scope.
     if (!declNode && enclosing && enclosing !== ast.root) {
       declNode = this.findDeclarationInScope(ast.root, idName);
     }
-    if (!declNode) return null;
+    // If still not found in local declarations, check if the identifier
+    // is imported (import { X } from … or import X from …).  Imported
+    // symbols are compile-time constants — they're resolved at link time,
+    // not at runtime, so user input cannot reach them via import bindings.
+    if (!declNode) {
+      const importResult = this.resolveImportConstant(idName, ast);
+      if (importResult) return importResult;
+
+      // tree-sitter-typescript (v0.x) parses both "for…in" and "for…of"
+      // as `for_in_statement`.  The loop variable is a bare `identifier`
+      // child — NOT wrapped in `variable_declarator` / `lexical_declaration`.
+      // Walk up from the identifier to a `for_in_statement` and trace
+      // through the iterable to determine static-ness.
+      //   const TABLES = ["a", "b"];
+      //   for (const table of TABLES) { … `${table}` … }
+      const idRaw = identifierNode.raw as TreeSitterNode;
+      let tsCurrent: TreeSitterNode | null = idRaw.parent;
+      while (tsCurrent) {
+        if (tsCurrent.type === 'for_in_statement') {
+          const left = (tsCurrent as any).childForFieldName?.('left') as TreeSitterNode | null;
+          if (left && left.text === idName) {
+            const right = (tsCurrent as any).childForFieldName?.('right') as TreeSitterNode | null;
+            if (right && right.type === 'identifier') {
+              const iterName = right.text;
+              let iterDecl = this.findDeclarationInScope(scopeRoot, iterName);
+              if (!iterDecl && enclosing && enclosing !== ast.root) {
+                iterDecl = this.findDeclarationInScope(ast.root, iterName);
+              }
+              if (iterDecl) {
+                const iterRaw = iterDecl.raw as TreeSitterNode;
+                const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
+                const iterLine = iterDecl.location.start.line;
+                const iterReassigned = this.hasReassignment(scopeRoot, iterName, iterLine)
+                  || (enclosing && enclosing !== ast.root ? this.hasReassignment(ast.root, iterName, iterLine) : false);
+                if (!iterReassigned && this.isStaticValueNode(iterValue)) {
+                  const initText = iterValue ? sourceCode.slice(iterValue.startIndex, iterValue.endIndex).trim() : '';
+                  return { initText, isStatic: true, declLine: iterDecl.location.start.line };
+                }
+              }
+            }
+          }
+          break;
+        }
+        tsCurrent = tsCurrent.parent;
+      }
+      return null;
+    }
 
     // Extract value from AST (handles multiline declarations that the old
     // regex missed — `.` doesn't match `\n` so `.+?` truncated at newlines).
     const raw = declNode.raw as TreeSitterNode;
     const valueNode = (raw as any).childForFieldName?.('value') as TreeSitterNode | null;
     const declLine = declNode.location.start.line;
-
     // Check for reassignment after declaration
     const reassigned = this.hasReassignment(scopeRoot, idName, declLine);
 
@@ -1374,7 +1418,63 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
     // regardless of whether they contain `?` placeholders — SQL fragment
     // constants (WHERE clauses, column lists) are just as static as
     // parameterised query strings.
-    const isStatic = !reassigned && this.isStaticValueNode(valueNode);
+    let isStatic = !reassigned && this.isStaticValueNode(valueNode);
+
+    // For-of / for-in loop variables: the declarator has no `value` field
+    // (the iterable is on the for-statement's `right` child).  Trace the
+    // iterable to see if all possible loop values are known constants.
+    //   const TABLES = ["a", "b"];
+    //   for (const table of TABLES) { … `${table}` … }
+    if (!isStatic && !valueNode) {
+      const forParent = this.findEnclosingForStatement(declNode);
+      if (forParent) {
+        const forRaw = forParent.raw as TreeSitterNode;
+        const iterable = (forRaw as any).childForFieldName?.('right') as TreeSitterNode | null;
+        if (iterable && iterable.type === 'identifier') {
+          const iterName = iterable.text;
+          let iterDecl = this.findDeclarationInScope(scopeRoot, iterName);
+          if (!iterDecl && enclosing && enclosing !== ast.root) {
+            iterDecl = this.findDeclarationInScope(ast.root, iterName);
+          }
+          if (iterDecl) {
+            const iterRaw = iterDecl.raw as TreeSitterNode;
+            const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
+            const iterLine = iterDecl.location.start.line;
+            const iterReassigned = this.hasReassignment(scopeRoot, iterName, iterLine)
+              || (enclosing && enclosing !== ast.root ? this.hasReassignment(ast.root, iterName, iterLine) : false);
+            if (!iterReassigned && this.isStaticValueNode(iterValue)) {
+              isStatic = true;
+            }
+          }
+        }
+      }
+    }
+
+    // When the value is a simple identifier (e.g. `table` ← `tables`),
+    // trace through to the linked declaration.  This handles patterns like:
+    //   const TABLES = ["a", "b"];
+    //   for (const table of TABLES) { … `${table}` … }
+    // where the variable's value is known at compile time because the
+    // iterable is a constant array.
+    if (!isStatic && valueNode && valueNode.type === 'identifier') {
+      const linkedName = valueNode.text;
+      if (linkedName && linkedName !== idName) {
+        let linkedDecl = this.findDeclarationInScope(scopeRoot, linkedName);
+        if (!linkedDecl && enclosing && enclosing !== ast.root) {
+          linkedDecl = this.findDeclarationInScope(ast.root, linkedName);
+        }
+        if (linkedDecl) {
+          const linkedRaw = linkedDecl.raw as TreeSitterNode;
+          const linkedValue = (linkedRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
+          const linkedLine = linkedDecl.location.start.line;
+          const linkedReassigned = this.hasReassignment(scopeRoot, linkedName, linkedLine)
+            || (enclosing && enclosing !== ast.root ? this.hasReassignment(ast.root, linkedName, linkedLine) : false);
+          if (!linkedReassigned && this.isStaticValueNode(linkedValue)) {
+            isStatic = true;
+          }
+        }
+      }
+    }
 
     // Extract init text from the value node; fall back to the full declaration.
     let initText: string;
@@ -1415,8 +1515,24 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
       return true;
     }
 
+    // Array literals: static when all elements are compile-time constants.
+    // This enables tracing through patterns like:
+    //   const TABLES = ["a", "b"];
+    //   for (const t of TABLES) { … `${t}` … }
+    // where every possible value of `t` is known at compile time.
+    if (type === 'array') {
+      for (let i = 0; i < node.childCount; i++) {
+        const child = node.child(i);
+        // Skip punctuation (commas, brackets) — only inspect value children.
+        if (child && child.type !== ',' && child.type !== '[' && child.type !== ']') {
+          if (!this.isStaticValueNode(child)) return false;
+        }
+      }
+      return true;
+    }
+
     // Everything else (identifiers, call expressions, binary expressions,
-    // array literals, etc.) is conservatively treated as non-static.
+    // object literals, regexes, etc.) is conservatively treated as non-static.
     return false;
   }
 
@@ -1440,6 +1556,26 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
     return ast.root; // fallback to file-level
   }
 
+  /** Walk the parent chain from a variable_declarator to find an enclosing
+   *  for_of_statement or for_in_statement, if any.  Returns the for-statement
+   *  node, or null if the declarator is not a loop variable. */
+  private findEnclosingForStatement(declNode: ASTNode): ASTNode | null {
+    const parent = declNode.parent;
+    if (!parent) return null;
+    const pType = (parent.raw as TreeSitterNode).type;
+    // The declarator's parent is lexical_declaration; the for-statement
+    // is the parent of that.
+    if (pType === 'lexical_declaration' || pType === 'variable_declaration') {
+      const grandparent = parent.parent;
+      if (!grandparent) return null;
+      const gpType = (grandparent.raw as TreeSitterNode).type;
+      if (gpType === 'for_of_statement' || gpType === 'for_in_statement') {
+        return grandparent;
+      }
+    }
+    return null;
+  }
+
   /** Find a variable_declarator node within scopeRoot whose name is targetName. */
   private findDeclarationInScope(scopeRoot: ASTNode, targetName: string): ASTNode | null {
     const results: ASTNode[] = [];
@@ -1447,14 +1583,13 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
       const t = (astNode.raw as TreeSitterNode).type;
       if (t === 'variable_declarator') {
         const raw = astNode.raw as TreeSitterNode;
-        // variable_declarator has name and (optional) value fields
         const nameNode = (raw as any).childForFieldName?.('name') ?? null;
-        if (nameNode && nameNode.text === targetName) {
-          // Make sure it's a top-level declarator in this scope (not nested)
-          const parent = astNode.parent;
-          if (parent) {
-            const pType = (parent.raw as TreeSitterNode).type;
-            if (pType === 'lexical_declaration' || pType === 'variable_declaration') {
+        const name = nameNode ? nameNode.text : '?';
+        const parent = astNode.parent;
+        if (parent) {
+          const pType = (parent.raw as TreeSitterNode).type;
+          if (pType === 'lexical_declaration' || pType === 'variable_declaration') {
+            if (name === targetName) {
               results.push(astNode);
             }
           }
@@ -1462,6 +1597,47 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
       }
     });
     return results.length > 0 ? results[0] : null;
+  }
+
+  /** Resolve an identifier to an imported symbol.  Handles named imports
+   *  (`import { FOO } from …`) and default imports (`import FOO from …`).
+   *  Imported symbols are compile-time constants — they are resolved at link
+   *  time, not at runtime, so user input cannot reach them through import
+   *  bindings (ES module bindings are immutable and live-read-only). */
+  private resolveImportConstant(name: string, ast: AST): ResolvedConstant | null {
+    const results: Array<{ isStatic: true; declLine: number }> = [];
+    this.walk(ast.root, (astNode) => {
+      // Early exit — first match wins.
+      if (results.length > 0) return;
+
+      const raw = astNode.raw as TreeSitterNode;
+      const type = raw.type;
+
+      if (type === 'import_specifier') {
+        // named import: import { X } from …  or  import { X as Y } from …
+        const nameNode = (raw as any).childForFieldName?.('name') as TreeSitterNode | null;
+        const aliasNode = (raw as any).childForFieldName?.('alias') as TreeSitterNode | null;
+        const resolvedName = aliasNode?.text ?? nameNode?.text;
+        if (resolvedName === name) {
+          results.push({ isStatic: true, declLine: astNode.location.start.line });
+        }
+      } else if (type === 'import' && (astNode.parent?.raw as TreeSitterNode)?.type === 'import_clause') {
+        // default import: import X from … — the 'import' node is a child of
+        // 'import_clause', and its text is the local binding name.
+        if (raw.text === name) {
+          results.push({ isStatic: true, declLine: astNode.location.start.line });
+        }
+      }
+    });
+
+    if (results.length === 0) return null;
+
+    const r = results[0];
+    return {
+      initText: '__imported_constant__',
+      isStatic: true,
+      declLine: r.declLine,
+    };
   }
 
   /** Check if identifier targetName is reassigned in scope after declLine. */
