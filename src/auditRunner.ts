@@ -4,7 +4,7 @@
  */
 
 import { promises as fs } from 'fs';
-import { statSync, readFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -19,9 +19,11 @@ import {
   AuditResultScope,
   AuditAbortedError,
   AuditHandoffError,
+  type RuleCoverage,
 } from './types.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { loadConfig } from './config/configLoader.js';
+import { mergePathProfiles } from './config/defaults.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
@@ -33,12 +35,12 @@ import { initializeLanguages } from './languages/index.js';
 import { initializeOrmAdapters } from './analyzers/orm/index.js';
 import { syncStyleIndex } from './styles/styleIndexer.js';
 
-import { hasRules } from './invariants/ruleEngine.js';
+
 import { CodeIndexDB } from './codeIndexDB.js';
 import { writeAuditToLedger, detectRunInput } from './ledger.js';
 
 // Pipeline imports (Spec 25 — pipeline replaces hand-rolled analyzer loop)
-import { runPipeline, writeIndexFactsToDb, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
+import { runPipeline, writeIndexFactsToDb, makeVisitorStatus, getFilesProcessed, isVisitorStatus, buildCoverageReport } from './pipeline.js';
 import {
   createSolidVisitor,
   createDryVisitor,
@@ -118,6 +120,14 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // No config file — proceed with defaults
     }
     const mergedOptions = { ...fileConfig, ...options, ...runOptions };
+
+    // Always merge built-in path profiles — corpus audits and projects without
+    // .codeauditor.json must still get the built-in scripts-and-tests profile.
+    mergedOptions.pathProfiles = mergePathProfiles(
+      mergedOptions.pathProfiles,
+      (mergedOptions as any).builtin
+    );
+
     const startTime = Date.now();
 
     // ── Scope resolution ─────────────────────────────────────────────
@@ -356,6 +366,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Injected into data-access and schema analyzers so they can report
     // per-file buildProvenanceContext() wall time (hook-latency measurement).
     const provenanceTiming = { totalMs: 0 };
+    let pipelineCoverage: RuleCoverage[] | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -603,6 +614,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             });
           }
         }
+
+        // Spec 27 — build per-rule coverage from final analyzer results
+        // (computed AFTER react finalization so cross-component checks are included)
+        pipelineCoverage = buildCoverageReport(analyzerResults, pipelineConfig);
       } catch (error) {
         if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
           throw error;
@@ -933,6 +948,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(blastRadius && { blastRadius }),
         ...(zeroFilesDiagnostics.length > 0 && { diagnostics: zeroFilesDiagnostics }),
         ...(baselineMetadata && { baseline: baselineMetadata }),
+        ...(pipelineCoverage && { coverage: pipelineCoverage }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
           fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)
@@ -1113,20 +1129,8 @@ async function resolveFilesScope(
   return [...result].sort();
 }
 
-/**
- * Check whether a .codeauditor.json at the given directory has invariant rules.
- */
-function hasInvariantRules(projectDir: string): boolean {
-  try {
-    const rulesPath = path.join(projectDir, '.codeauditor.json');
-    if (!statSync(rulesPath).isFile()) return false;
-    const raw = readFileSync(rulesPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed.rules) && parsed.rules.length > 0;
-  } catch {
-    return false;
-  }
-}
+
+
 
 /**
  * Get list of enabled analyzers
@@ -1135,23 +1139,15 @@ function getEnabledAnalyzers(
   options: AuditRunnerOptions,
   registry: Record<string, { name: string }>
 ): string[] {
-  const projectDir = options.projectRoot || process.cwd();
-
   // Explicit array (including empty = run no analyzers, e.g. index-only harness)
   if (options.enabledAnalyzers !== undefined) {
-    // Auto-disable invariants when no rules are configured (Spec 05 R3.1)
-    if (options.enabledAnalyzers.includes('invariants') && !hasRules(options) && !hasInvariantRules(projectDir)) {
-      return options.enabledAnalyzers.filter(a => a !== 'invariants');
-    }
+    // invariants auto-disables at runtime inside the pipeline reducer when no
+    // rules are configured — it stays in the list so coverage can report its
+    // rules as notApplicable (Spec 27 criterion 5).
     return options.enabledAnalyzers;
   }
 
   const allAnalyzers = Object.keys(registry);
-
-  // Auto-disable invariants when no rules are configured (Spec 05 R3.1)
-  if (!hasRules(options) && !hasInvariantRules(projectDir)) {
-    return allAnalyzers.filter(a => a !== 'invariants');
-  }
 
   return allAnalyzers;
 }

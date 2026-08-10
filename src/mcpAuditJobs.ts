@@ -1036,6 +1036,7 @@ export async function getAuditResultsPage(args: any): Promise<Record<string, unk
       cachedPage: true,
     },
     recommendations: auditResult.recommendations || [],
+    coverage: auditResult.metadata?.coverage || [],
     ...(auditResult.functionIndexing && { functionIndexing: auditResult.functionIndexing }),
     ...(auditResult.codeMap && { codeMap: auditResult.codeMap }),
   };

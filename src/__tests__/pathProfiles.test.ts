@@ -486,15 +486,15 @@ export function foo() { return something(); }
     }
   });
 
-  // Test 12: No built-in profile → no cap.
-  // With severityOverrides promoting to critical, a scripts/ file should
-  // stay at critical when there's no built-in profile.
-  it('without built-in profile, scripts violations fire at original severity (Test 12)', async () => {
+  // Test 12: Built-in scripts-and-tests profile is always active by default.
+  // A scripts/ file should be capped to suggestion even without user-defined
+  // pathProfiles, because the built-in profile is always merged.
+  it('built-in profile caps scripts violations to suggestion by default (Test 12)', async () => {
     await mkdir(path.join(testDir, 'scripts'), { recursive: true });
 
     await writeFile(path.join(testDir, 'scripts', 'deploy.ts'), EXPORTED_FN_SRC, 'utf-8');
 
-    // No pathProfiles — no cap applies
+    // No pathProfiles — built-in scripts-and-tests still applies
     const result = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
@@ -505,7 +505,33 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Without any profile, severity stays at critical (from overrides)
+    // Built-in caps to suggestion even when severityOverrides promote to critical
+    for (const v of scriptsV) {
+      expect(v.severity).toBe('suggestion');
+      expect(v.profile).toBe('scripts-and-tests');
+    }
+  });
+
+  // Test 12b: builtin: false disables built-in profiles.
+  // With severityOverrides promoting to critical, a scripts/ file should
+  // stay at critical when built-in profiles are explicitly disabled.
+  it('builtin: false disables built-in scripts-and-tests cap (Test 12b)', async () => {
+    await mkdir(path.join(testDir, 'scripts'), { recursive: true });
+
+    await writeFile(path.join(testDir, 'scripts', 'deploy.ts'), EXPORTED_FN_SRC, 'utf-8');
+
+    const result = await runAudit({
+      projectRoot: testDir,
+      enabledAnalyzers: ['documentation'],
+      severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
+      builtin: false,
+      showProgress: false,
+    });
+
+    const scriptsV = violationsFor(result, 'scripts/deploy.ts');
+    expect(scriptsV.length).toBeGreaterThan(0);
+
+    // Without built-in profile, severity stays at critical (from overrides)
     for (const v of scriptsV) {
       expect(v.severity).toBe('critical');
       expect(v.profile).toBeUndefined();

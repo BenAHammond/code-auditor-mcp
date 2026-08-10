@@ -45,8 +45,8 @@ function loadRules(config: any, _projectDir?: string): { rules: InvariantRule[];
 function toViolation(rv: RuleViolation): Violation {
   return {
     file: rv.file,
-    line: rv.line,
-    column: rv.column,
+    line: rv.line ?? 1,
+    column: rv.column ?? 1,
     severity: rv.severity,
     message: rv.message,
     rule: rv.ruleId,
@@ -88,9 +88,13 @@ export const analyzeInvariants: AnalyzerFunction = async (
 
   const { rules, errors } = ruleData;
 
-  // If there are validation errors, return them as violations
+  // If there are validation errors, return them as violations.
+  // line: 1 anchors file-level errors (no specific line to point at).
+  // Required by validateHookContract: every violation needs file + line ≥ 1.
   const errorViolations: Violation[] = errors.map(err => ({
     file: '.codeauditor.json',
+    line: 1,
+    column: 1,
     severity: 'critical' as const,
     message: err,
     rule: 'config-error',
@@ -128,6 +132,8 @@ export const analyzeInvariants: AnalyzerFunction = async (
     ...result.violations.map(toViolation),
     ...result.errors.map(err => ({
       file: '.codeauditor.json',
+      line: 1,
+      column: 1,
       severity: 'warning' as const,
       message: err,
       rule: 'engine-error',

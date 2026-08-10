@@ -97,6 +97,22 @@ export interface Violation {
 }
 
 /**
+ * Per-rule coverage classification — emitted on every audit.
+ * @see buildCoverageReport() in pipeline.ts
+ */
+export type RuleCoverageState = 'fired' | 'clean' | 'notApplicable' | 'unassessed';
+
+export interface RuleCoverage {
+  ruleId: string;
+  analyzer: string;
+  state: RuleCoverageState;
+  /** Violation count for this rule (0 for notApplicable/unassessed/clean). */
+  count: number;
+  /** For notApplicable: what input was missing. For unassessed: why applicability couldn't be confirmed. */
+  reason?: string;
+}
+
+/**
  * Discriminable status union for pipeline consumers.
  * `visitor-ran` → visitor result with filesProcessed.
  * `reducer-ran` → reducer/derived-reducer result with factsConsumed.
@@ -183,6 +199,10 @@ export interface ReducerResult {
   violations: Violation[];
   facts: Record<string, unknown>;
   factsConsumed?: number;
+  /** When set, the pipeline records this reducer as notRun with this reason
+   *  instead of reducer-ran. Used for runtime auto-disable (e.g. invariants
+   *  with no rules configured). */
+  notRunReason?: string;
 }
 
 /** Per-file visitor — runs on every AST in stage 2. */
@@ -281,6 +301,7 @@ export interface PipelineResult {
     stageTiming: Record<string, number>;
     scoped?: boolean;
     diagnostics?: Array<{ analyzerName: string; kind: string; message: string }>;
+    coverage?: RuleCoverage[];
   };
   indexFacts?: IndexFactsEntry[];
 }
@@ -367,6 +388,7 @@ export interface AuditResult {
       knownCount: number;
       previousKnownCount?: number;
     };
+    coverage?: RuleCoverage[];
   };
 }
 

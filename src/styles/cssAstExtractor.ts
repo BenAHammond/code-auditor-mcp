@@ -1,16 +1,18 @@
 /**
- * CSS AST Extractor — Spec 26 Phase 2.
+ * CSS/SCSS AST Extractor — Spec 26 Phase 2.
  *
- * Replaces regex-based CSS parsing (styleExtractor.ts extractFromCSS) with
- * AST-based extraction using tree-sitter-css parsed structures.
+ * Replaces regex-based CSS/SCSS parsing (styleExtractor.ts) with
+ * AST-based extraction using tree-sitter-css and tree-sitter-scss parsed structures.
  *
  * Three pure functions mirror the output of the regex extractors:
  *   1. extractDeclarationsFromCSSAst — NormalizedDeclaration[]
  *   2. extractTokensFromCSSAst       — StyleToken[]
  *   3. extractClassUsageFromCSSAst   — StyleClassUsage[]
  *
- * SCSS is NOT handled here — tree-sitter-css is not an SCSS grammar.
- * SCSS files stay on the regex path in styleExtractor.ts.
+ * SCSS files are handled via tree-sitter-scss grammar which extends the CSS
+ * grammar. SCSS-specific node types (nesting_selector, _concatenated_identifier,
+ * variable, mixin_statement, include_statement) are present in the AST and
+ * filtered appropriately by each extraction function.
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
@@ -240,6 +242,177 @@ function wrapAsASTNode(raw: TreeSitterNode): ASTNode {
 }
 
 // ---------------------------------------------------------------------------
+// SCSS & Nesting Resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Unresolved nesting count — accumulated during extraction so callers can
+ * report how many `&`-involved selectors could not be resolved.
+ */
+export let unresolvedNestingCount = 0;
+
+/** Reset the global unresolved-nesting counter. Call before extraction. */
+export function resetUnresolvedNestingCount(): void {
+  unresolvedNestingCount = 0;
+}
+
+/**
+ * Walk up from a class_selector to find the nearest *outer* rule_set
+ * (skipping past the rule_set that directly contains this class_selector),
+ * then resolve its class name (handling nested & recursively).
+ *
+ * Uses raw TreeSitterNode.parent to walk up the parse tree, which works
+ * for both adapter-discovered nodes and wrapAsASTNode-created synthetic nodes.
+ *
+ * Returns null when the class_selector has no resolvable parent (e.g. it is at
+ * the top level, or the parent is another &-pattern that itself cannot resolve).
+ */
+function getParentClassName(
+  classSelectorNode: ASTNode,
+): string | null {
+  let raw: TreeSitterNode | null = classSelectorNode.raw as TreeSitterNode;
+
+  // Step 1: walk up to find the containing (inner) rule_set
+  while (raw && raw.type !== 'rule_set') {
+    raw = raw.parent;
+  }
+  if (!raw || raw.type !== 'rule_set') return null;
+
+  // Step 2: walk up FROM the inner rule_set to find the OUTER rule_set
+  raw = raw.parent; // block of outer rule_set, or stylesheet
+  while (raw && raw.type !== 'rule_set') {
+    raw = raw.parent;
+  }
+  if (!raw || raw.type !== 'rule_set') return null;
+
+  // Step 3: find selectors → class_selector of outer rule_set
+  const selectorsRaw = findNamedChild(raw, 'selectors');
+  if (!selectorsRaw) return null;
+
+  const parentCSRaw = findNamedChild(selectorsRaw, 'class_selector');
+  if (!parentCSRaw) return null;
+
+  // Check if parent class_selector also has nesting (multi-level BEM)
+  const hasParentNesting = parentCSRaw.namedChildren.some(
+    (c: any) => c.type === 'nesting_selector',
+  );
+  if (hasParentNesting) {
+    const parentAST = wrapAsASTNode(parentCSRaw);
+    const resolved = resolveNestingSelector(parentAST);
+    if (resolved !== null && resolved.resolvable) {
+      return resolved.className;
+    }
+    return null;
+  }
+
+  // Plain class_selector: grab the class_name text
+  const parentCN = findNamedChild(parentCSRaw, 'class_name');
+  return parentCN ? parentCN.text : null;
+}
+
+/**
+ * Resolve a class_selector node that contains a nesting_selector (&).
+ *
+ * Returns:
+ *   - { className: 'form-group-header', resolvable: true } for &-suffix / &__element / &--modifier
+ *   - { className: 'selected', resolvable: false }     for &.modifier (chained class)
+ *   - { className: 'child', resolvable: false }         for & .descendant
+ *   - null                                               when no nesting_selector is present
+ *
+ * BEM conventions handled (no-separator concatenation):
+ *   - &-suffix     → parent + -suffix    (block modifier)
+ *   - &__element   → parent + __element  (BEM element)
+ *   - &--modifier  → parent + --modifier (BEM modifier)
+ *
+ * Patterns dropped as unresolvable:
+ *   - &.modifier   — chained class, can't register as standalone defined class
+ *   - & .descendant — descendant combinator
+ */
+function resolveNestingSelector(
+  classSelectorNode: ASTNode,
+): { className: string; resolvable: boolean } | null {
+  const children = classSelectorNode.children ?? [];
+  const hasNesting = children.some(c => c.type === 'nesting_selector');
+  if (!hasNesting) return null;
+
+  // Find siblings of nesting_selector
+  const classNames = children.filter(c => c.type === 'class_name');
+  const nestedClassSelectors = children.filter(c => c.type === 'class_selector');
+
+  // Case 1: &-suffix or &__element or &--modifier or &.modifier
+  for (const cn of classNames) {
+    const raw = (cn.raw as TreeSitterNode).text;
+
+    // BEM no-separator concatenation: &-suffix, &__element, &--modifier
+    if (raw.startsWith('-') || raw.startsWith('_')) {
+      const parentName = getParentClassName(classSelectorNode);
+      if (parentName) {
+        return { className: parentName + raw, resolvable: true };
+      }
+      // Parent not resolvable — drop and count
+      unresolvedNestingCount++;
+      return { className: raw, resolvable: false };
+    }
+
+    // &.modifier — chained class, not a standalone definition
+    // The class name alone (e.g. "selected") is a valid class but we can't
+    // register it as defined just because `.parent.selected` exists.
+    if (raw.length > 0) {
+      unresolvedNestingCount++;
+      return { className: raw, resolvable: false };
+    }
+  }
+
+  // Case 2: & .descendant — descendant combinator
+  for (const nestedCS of nestedClassSelectors) {
+    const innerCN = nestedCS.children?.find(c => c.type === 'class_name');
+    if (innerCN) {
+      const raw = (innerCN.raw as TreeSitterNode).text;
+      unresolvedNestingCount++;
+      return { className: raw, resolvable: false };
+    }
+  }
+
+  // Unknown nesting pattern — drop and count
+  unresolvedNestingCount++;
+  return null;
+}
+
+/**
+ * Resolve `&` nesting in selector context text.
+ *
+ * When a rule_set's selectors contain nesting_selector patterns (SCSS),
+ * replace raw &-suffix text with the resolved parent class concatenation.
+ * This ensures declaration context strings are meaningful.
+ *
+ * e.g. "&-header" inside ".form-group" → "form-group-header"
+ *      "&.selected" inside ".btn" stays "&.selected" (unresolvable chained class)
+ */
+function resolveSelectorContext(
+  selectorsNode: ASTNode,
+  rawText: string,
+): string {
+  const classSelectors = selectorsNode.children?.filter(
+    c => c.type === 'class_selector',
+  ) ?? [];
+  const hasNesting = classSelectors.some(cs =>
+    (cs.children ?? []).some(cc => cc.type === 'nesting_selector'),
+  );
+  if (!hasNesting) return rawText;
+
+  let resolvedText = rawText;
+  for (const cs of classSelectors) {
+    const resolved = resolveNestingSelector(cs);
+    if (resolved !== null && resolved.resolvable) {
+      const csRaw = (cs.raw as TreeSitterNode).text;
+      resolvedText = resolvedText.replace(csRaw, '.' + resolved.className);
+    }
+  }
+
+  return resolvedText;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -274,8 +447,11 @@ export function extractDeclarationsFromCSSAst(
     if (!selectorsRaw) continue;
 
     const selectorsAst = wrapAsASTNode(selectorsRaw);
-    const selector = getSelectorText(selectorsAst, sourceCode);
+    let selector = getSelectorText(selectorsAst, sourceCode);
     if (!selector) continue;
+
+    // SCSS: resolve & nesting in selector context (Bug 2 fix)
+    selector = resolveSelectorContext(selectorsAst, selector);
 
     // Get variant context from at_rule ancestors
     const variantContext = getVariantContext(ruleSet, adapter, sourceCode);
@@ -285,6 +461,15 @@ export function extractDeclarationsFromCSSAst(
     const declNodes = adapter.findNodes(subAST, { type: 'declaration' });
 
     for (const decl of declNodes) {
+      // Skip declarations from nested rule_sets (SCSS nesting):
+      // findNodes recurses into descendant rule_sets, so outer .card
+      // would see declarations from inner &-header — producing wrong context.
+      let declAncestor: ASTNode | null = adapter.getParent(decl);
+      while (declAncestor && declAncestor.type !== 'rule_set') {
+        declAncestor = adapter.getParent(declAncestor);
+      }
+      if (declAncestor && (declAncestor.raw as TreeSitterNode).id !== rawNode.id) continue;
+
       const raw = decl.raw as TreeSitterNode;
       const pv = getPropertyAndValue(raw);
       if (!pv) continue;
@@ -467,6 +652,12 @@ export function extractTokensFromCSSAst(
  * Replaces the regex-based class name extraction from selectors for .css files.
  * Finds class_name nodes anywhere in the AST — each represents one CSS class
  * definition. comment nodes are typed and naturally excluded (Bug 5 fix).
+ *
+ * For SCSS: resolves &-suffix / &__element / &--modifier (BEM no-separator
+ * concatenation) by walking up to the parent rule_set's class_selector.
+ * &.modifier (chained class) and & .descendant patterns are tracked as
+ * unresolvable rather than registered as standalone classes — registering
+ * them would produce false negatives in the undefined-class detector.
  */
 export function extractClassUsageFromCSSAst(
   ast: AST,
@@ -488,10 +679,25 @@ export function extractClassUsageFromCSSAst(
     if (!parent || parent.type !== 'class_selector') continue;
 
     const raw = node.raw as TreeSitterNode;
-    const className = raw.text;
-    if (className) {
+    const rawName = raw.text;
+    if (!rawName) continue;
+
+    // SCSS nesting resolution: check if parent class_selector has a nesting_selector
+    const resolved = resolveNestingSelector(parent);
+
+    if (resolved !== null) {
+      // &-pattern: register the resolved or dropped class name
       usage.push({
-        className,
+        className: resolved.className,
+        filePath,
+        line: node.location.start.line,
+        mechanism: 'class',
+        unresolvable: !resolved.resolvable,
+      });
+    } else {
+      // Plain class_selector (no &), or at-rule top-level
+      usage.push({
+        className: rawName,
         filePath,
         line: node.location.start.line,
         mechanism: 'class',

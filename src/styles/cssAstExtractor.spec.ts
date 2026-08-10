@@ -17,6 +17,8 @@ import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import {
   extractDeclarationsFromCSSAst,
   extractClassUsageFromCSSAst,
+  resetUnresolvedNestingCount,
+  unresolvedNestingCount,
 } from './cssAstExtractor.js';
 import type { NormalizedDeclaration, StyleClassUsage } from './types.js';
 
@@ -242,5 +244,190 @@ describe('Bug 5 — CSS comments as class names', () => {
     expect(names.length).toBe(2); // two .btn selectors
     expect(names).not.toContain('hover');
     expect(names).not.toContain('focus');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 6 — SCSS comment phantom class usage (Task #166 Bug 1)
+// ---------------------------------------------------------------------------
+// The regex-based extractClassUsage() in styleIndexer.ts ran against raw
+// SCSS source without comment stripping, producing phantom class usages
+// from class="..." strings inside comments. The SCSS AST pipeline naturally
+// filters comment nodes — class_name nodes don't appear inside comments.
+
+describe('Bug 6 — SCSS comment phantom class usage', () => {
+  it('does not extract class names from SCSS line comments', async () => {
+    const scss = `
+      // This is a comment with class="phantom-class"
+      .real-class {
+        color: red;
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    const names = classes.map(c => c.className);
+    expect(names).toContain('real-class');
+    expect(names).not.toContain('phantom-class');
+  });
+
+  it('does not extract class names from SCSS block comments', async () => {
+    const scss = `
+      /* Another comment with class="also-phantom" */
+      .real-button {
+        background: blue;
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    const names = classes.map(c => c.className);
+    expect(names).toContain('real-button');
+    expect(names).not.toContain('also-phantom');
+  });
+
+  it('extracts real classes while ignoring comment noise in SCSS', async () => {
+    const scss = `
+      // classic comment style with .commented-out
+      .btn-primary {
+        @apply px-4 py-2;
+        /* .draft-style */
+        color: white;
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    const names = classes.map(c => c.className);
+    expect(names).toContain('btn-primary');
+    expect(names).not.toContain('commented-out');
+    expect(names).not.toContain('draft-style');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 7 — SCSS &-suffix nesting resolution (Task #166 Bug 2)
+// ---------------------------------------------------------------------------
+// The regex parser registered raw &-suffix as a class name instead of
+// resolving it to the parent selector + suffix. The SCSS AST pipeline
+// resolves &-suffix, &__element, and &--modifier by walking up to the
+// nearest ancestor rule_set and concatenating the parent class name.
+
+describe('Bug 7 — SCSS &-suffix nesting resolution', () => {
+  beforeEach(() => {
+    resetUnresolvedNestingCount();
+  });
+
+  it('resolves &-suffix to parent-suffix (BEM block-element concatenation)', async () => {
+    const scss = `
+      .form-group {
+        color: black;
+        &-header {
+          font-weight: bold;
+        }
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    const names = classes.map(c => c.className);
+    expect(names).toContain('form-group');
+    expect(names).toContain('form-group-header');
+    expect(names).not.toContain('&-header');
+  });
+
+  it('resolves &__element BEM pattern', async () => {
+    const scss = `
+      .block {
+        &__element {
+          color: red;
+        }
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    const names = classes.map(c => c.className);
+    expect(names).toContain('block');
+    expect(names).toContain('block__element');
+  });
+
+  it('resolves &--modifier BEM pattern', async () => {
+    const scss = `
+      .btn {
+        &--large {
+          font-size: 20px;
+        }
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    const names = classes.map(c => c.className);
+    expect(names).toContain('btn');
+    expect(names).toContain('btn--large');
+  });
+
+  it('resolves multi-level &-suffix nesting', async () => {
+    const scss = `
+      .block {
+        &__element {
+          &--modifier {
+            color: red;
+          }
+        }
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    const names = classes.map(c => c.className);
+    expect(names).toContain('block');
+    expect(names).toContain('block__element');
+    expect(names).toContain('block__element--modifier');
+  });
+
+  it('drops &-suffix without parent rule_set (unresolvable)', async () => {
+    const scss = `
+      &-orphan {
+        color: red;
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    const names = classes.map(c => c.className);
+    // &-orphan without a parent should be registered as unresolvable
+    const orphan = classes.find(c => c.className === '-orphan');
+    expect(orphan).toBeDefined();
+    expect(orphan!.unresolvable).toBe(true);
+    expect(unresolvedNestingCount).toBeGreaterThan(0);
+  });
+
+  it('drops &.modifier as unresolvable garbage', async () => {
+    const scss = `
+      .btn {
+        &.primary {
+          background: blue;
+        }
+        &.disabled {
+          opacity: 0.5;
+        }
+      }
+    `;
+    const classes = await extractClasses(scss, 'test.scss');
+    // .btn should be extracted normally
+    expect(classes.some(c => c.className === 'btn' && !c.unresolvable)).toBe(true);
+    // &.primary and &.disabled should be unresolvable (not registered as literal "primary")
+    const primary = classes.filter(c => c.className === 'primary');
+    for (const p of primary) {
+      expect(p.unresolvable).toBe(true);
+    }
+    expect(unresolvedNestingCount).toBeGreaterThan(0);
+  });
+
+  it('resolves selector context in declarations for SCSS nesting', async () => {
+    const scss = `
+      .card {
+        background: white;
+        &-header {
+          font-weight: bold;
+          color: red;
+        }
+      }
+    `;
+    // Use extractDeclarations instead of extractClasses — the helper
+    // dispatches to extractDeclarationsFromCSSAst for .scss
+    const adapter = registry.getAdapterForFile('test.scss');
+    const ast = await adapter.parse('test.scss', scss);
+    const decls = extractDeclarationsFromCSSAst(ast, adapter, 'test.scss', scss);
+    const headerColor = decls.find(d => d.property === 'color');
+    expect(headerColor).toBeDefined();
+    // Selector context should resolve to card-header, not raw &-header
+    expect(headerColor!.context).toContain('card-header');
   });
 });

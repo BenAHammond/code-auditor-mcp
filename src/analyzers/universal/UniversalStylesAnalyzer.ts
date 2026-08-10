@@ -597,7 +597,15 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
       // Skip unresolvable individual class usages
       if (u.unresolvable) continue;
 
-      // Skip known classes from CSS definitions
+      // Skip CSS class SELECTORS (definitions, not usages).
+      // CSS/SCSS files: mechanism 'class' = class_selector node = ".some-class { }"
+      // These DEFINE a class — they are not usages of one. Only usages through
+      // other mechanisms (className, apply, class in HTML) signal consumption.
+      // Without this guard, every CSS selector without a direct declaration
+      // (SCSS @include-only blocks, nested rule_sets) is falsely flagged.
+      if (u.mechanism === 'class' && /\.(css|scss)$/i.test(u.file_path)) continue;
+
+      // Skip known classes from CSS declarations
       if (definedClasses.has(u.class_name)) continue;
 
       // Skip PascalCase — likely a component

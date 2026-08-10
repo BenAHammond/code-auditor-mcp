@@ -680,16 +680,14 @@ export function createReactVisitor(): ReactVisitorBundle {
 
 /**
  * Styles CSS visitor — extracts declarations, tokens, and class usage from
- * tree-sitter-css parsed ASTs. Replaces the regex-based CSS extraction in
- * styleExtractor.ts for .css files only.
- *
- * tree-sitter-css is NOT an SCSS grammar — .scss files stay on the regex path.
+ * tree-sitter-css and tree-sitter-scss parsed ASTs. Replaces the regex-based
+ * CSS/SCSS extraction in styleExtractor.ts for .css and .scss files.
  */
 export function createStylesCssVisitor(): Stage2Visitor {
   return {
     name: 'styles-css',
     stage: 'visitor',
-    extensions: ['.css'],
+    extensions: ['.css', '.scss'],
     getRuleIds: () => [],
     async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
       // Lazy-load to avoid circular dependency issues at module load time
@@ -711,7 +709,7 @@ export function createStylesCssVisitor(): Stage2Visitor {
       };
     },
     defaultConfig: {},
-    description: 'Extracts CSS declarations from tree-sitter-css ASTs (.css only)',
+    description: 'Extracts CSS declarations from tree-sitter ASTs (.css and .scss)',
     category: 'style',
   };
 }
@@ -916,6 +914,18 @@ export function createInvariantsReducer(): Stage3Reducer {
     getRuleIds: () => getRuleIdsFor('invariants'),
     async reduce(_allFacts: Readonly<Record<string, unknown>>, context: ReducerContext) {
       try {
+        // Auto-disable when no rules are configured — signal notRun to the
+        // pipeline so coverage reports invariants rules as notApplicable with
+        // an accurate reason (Spec 05 R3.1, Spec 27 criterion 5).
+        const rules = (context.config as any).rules;
+        if (!rules || (Array.isArray(rules) && rules.length === 0)) {
+          return {
+            violations: [],
+            facts: {},
+            notRunReason: 'invariants disabled — no rules configured',
+          };
+        }
+
         const { analyzeInvariants } = await import(
           './analyzers/invariantsAnalyzer.js'
         );

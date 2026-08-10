@@ -29,6 +29,7 @@ const GRAMMAR_FILES: Record<string, string> = {
   javascript: 'tree-sitter-javascript.wasm',
   go: 'tree-sitter-go.wasm',
   css: 'tree-sitter-css.wasm',
+  scss: 'tree-sitter-scss.wasm',
 };
 
 /**
@@ -40,6 +41,7 @@ const LANGUAGE_GRAMMAR_MAP: Record<string, string> = {
   javascript: 'javascript',
   go: 'go',
   css: 'css',
+  scss: 'scss',
 };
 
 // ---------------------------------------------------------------------------

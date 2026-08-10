@@ -1,14 +1,14 @@
 /**
- * CSS/SCSS language adapter using tree-sitter-css WASM parser.
+ * CSS/SCSS language adapter using tree-sitter-css and tree-sitter-scss WASM parsers.
  *
  * CSS and SCSS files have no functions, classes, imports, or exports —
  * those methods return empty arrays. The adapter exists to enable AST-based
  * style declaration extraction for the style intelligence system (Spec 10).
  *
- * SCSS files are parsed with the CSS grammar. SCSS is a superset of CSS;
- * SCSS-specific constructs ($variables, @mixin, @include, @each, @for, @if)
- * will appear as parse errors but basic CSS declarations within rule sets
- * parse correctly.
+ * .css files are parsed with tree-sitter-css; .scss files are parsed with
+ * tree-sitter-scss. The SCSS grammar extends the CSS grammar and preserves
+ * the same node type names (rule_set, declaration, class_name, class_selector,
+ * selectors, block).
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
@@ -53,18 +53,20 @@ export class TreeSitterCssAdapter implements LanguageAdapter {
   // -- Parsing --------------------------------------------------------------
 
   async parse(filePath: string, content: string): Promise<AST> {
-    const parser = getParser('css');
+    const isScss = filePath.endsWith('.scss');
+    const lang = isScss ? 'scss' : 'css';
+    const parser = getParser(lang);
     const tree = parser.parse(content);
-    if (!tree) throw new Error(`Failed to parse CSS/SCSS file: ${filePath}`);
+    if (!tree) throw new Error(`Failed to parse ${lang.toUpperCase()} file: ${filePath}`);
 
     const errors: ParseError[] = [];
     this.collectErrors(tree.rootNode, errors);
 
-    const root = toASTNode(tree.rootNode, undefined, 'css');
+    const root = toASTNode(tree.rootNode, undefined, lang);
 
     const ast: AST = {
       root,
-      language: 'css',
+      language: lang,
       filePath,
       errors,
     };

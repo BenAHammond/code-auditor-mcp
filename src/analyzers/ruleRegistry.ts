@@ -27,6 +27,14 @@ export interface RuleRegistryEntry {
   analyzer: string;
   /** The field on the Violation object that holds this ID. */
   field: 'rule' | 'principle' | 'violationType' | 'type' | 'contractType' | 'ruleId' | 'special';
+  /**
+   * Optional dot-separated path to a config boolean within the analyzer's namespace.
+   * When the config value is `false`, the rule is `notApplicable` (explicitly disabled).
+   *
+   * Example: `checkStructuralSimilarity` → looked up as config.config.dry.checkStructuralSimilarity.
+   * The path is relative to the analyzer namespace (config.config[analyzer]).
+   */
+  configGate?: string;
 }
 
 /**
@@ -48,9 +56,9 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── dry (UniversalDRYAnalyzer) ──────────────────────────────────────────
   'dry/duplicate':             { analyzer: 'dry',               field: 'rule' },
-  'dry/structural-similarity': { analyzer: 'dry',               field: 'rule' },
-  'duplicate-string-literal':  { analyzer: 'dry',               field: 'rule' },
-  'duplicate-import':          { analyzer: 'dry',               field: 'rule' },
+  'dry/structural-similarity': { analyzer: 'dry',               field: 'rule', configGate: 'checkStructuralSimilarity' },
+  'duplicate-string-literal':  { analyzer: 'dry',               field: 'rule', configGate: 'checkStrings' },
+  'duplicate-import':          { analyzer: 'dry',               field: 'rule', configGate: 'checkImports' },
 
   // ── data-access (UniversalDataAccessAnalyzer) ───────────────────────────
   'sql-injection-risk':        { analyzer: 'data-access',       field: 'rule' },
@@ -93,9 +101,9 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // ── react (reactAnalyzer) ───────────────────────────────────────────────
   'hooks-naming':              { analyzer: 'react',             field: 'rule' },
   'complexity':                { analyzer: 'react',             field: 'rule' },
-  'missing-props':             { analyzer: 'react',             field: 'rule' },
+  'missing-props':             { analyzer: 'react',             field: 'rule', configGate: 'requirePropTypes' },
   'no-error-boundary':         { analyzer: 'react',             field: 'rule' },
-  'performance':               { analyzer: 'react',             field: 'rule' },
+  'performance':               { analyzer: 'react',             field: 'rule', configGate: 'requireMemoization' },
   'accessibility':             { analyzer: 'react',             field: 'rule' },
   'raw-element':               { analyzer: 'react',             field: 'rule' },
 
@@ -140,4 +148,30 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'split-responsibilities':    { analyzer: 'dependency-graph',  field: 'type' },
   'orphaned-nodes':            { analyzer: 'dependency-graph',  field: 'type' },
   'review-orphans':            { analyzer: 'dependency-graph',  field: 'type' },
+
+  // ── styles (UniversalStylesAnalyzer) ─────────────────────────────────────
+  'styles/value-drift':              { analyzer: 'styles',       field: 'rule' },
+  'styles/off-scale':                { analyzer: 'styles',       field: 'rule' },
+  'styles/undefined-class':          { analyzer: 'styles',       field: 'rule' },
+  'styles/undefined-class-disabled': { analyzer: 'styles',       field: 'rule' },
+  'styles/token-bypass':             { analyzer: 'styles',       field: 'rule' },
+  'styles/mechanism-fragmentation':  { analyzer: 'styles',       field: 'rule' },
+  'styles/mechanism-mixing':         { analyzer: 'styles',       field: 'rule' },
+  'styles/declaration-set-similarity': { analyzer: 'styles',     field: 'rule' },
+  'styles/z-index-sprawl':           { analyzer: 'styles',       field: 'rule' },
+  'styles/z-index-singleton':        { analyzer: 'styles',       field: 'rule' },
+
+  // ── conventions (UniversalConventionsAnalyzer) ───────────────────────────
+  'conventions/usage-pair':     { analyzer: 'conventions',       field: 'rule' },
+  'conventions/import-form':    { analyzer: 'conventions',       field: 'rule' },
+  'conventions/error-handling': { analyzer: 'conventions',       field: 'rule' },
+  'conventions/export-shape':   { analyzer: 'conventions',       field: 'rule' },
+  'conventions/naming':         { analyzer: 'conventions',       field: 'rule' },
+
+  // ── cross-domain (CrossDomainAnalyzer) ────────────────────────────────────
+  'cross-domain/written-never-read':   { analyzer: 'cross-domain', field: 'rule' },
+  'cross-domain/read-never-written':   { analyzer: 'cross-domain', field: 'rule' },
+  'cross-domain/transaction-boundary': { analyzer: 'cross-domain', field: 'rule' },
+  'cross-domain/validation-bypass':    { analyzer: 'cross-domain', field: 'rule' },
+  'cross-domain/uncovered-risk':       { analyzer: 'cross-domain', field: 'rule' },
 };

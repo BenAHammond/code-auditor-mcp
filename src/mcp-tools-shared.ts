@@ -674,6 +674,7 @@ export class ToolHandlers {
       },
       violations: ToolHandlers.getAllViolations(auditResult).slice(0, 100), // Limit to first 100
       recommendations: auditResult.recommendations,
+      coverage: auditResult.metadata.coverage || [],
       ...(indexingResult && { functionIndexing: indexingResult }),
       ...(codeMapResult && { codeMap: codeMapResult }),
     };

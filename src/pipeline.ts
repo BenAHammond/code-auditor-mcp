@@ -16,6 +16,7 @@ import { performance } from 'perf_hooks';
 import {
   AuditAbortedError,
   type AuditResultScope,
+  type AnalyzerNotRunStatus,
   type AnalyzerResult,
   type AnalyzerStatus,
   type FileASTTuple,
@@ -23,12 +24,14 @@ import {
   type IndexHandle,
   type PipelineConfig,
   type PipelineResult,
+  type RuleCoverage,
   type Stage2Visitor,
   type Stage3Reducer,
   type Stage4Reducer,
   type Severity,
   type Violation,
 } from './types.js';
+import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
 import { LanguageRegistry } from './languages/LanguageRegistry.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { resolvePathProfile, type PathProfile } from './config/pathProfiles.js';
@@ -398,15 +401,26 @@ async function runStage3(
       const result = await reducer.reduce(factsObj, reducerContext);
       const rMs = performance.now() - r0;
 
-      reducerResults.set(reducer.name, {
-        violations: result.violations,
-        status: { status: 'reducer-ran', factsConsumed: result.factsConsumed ?? factsConsumed },
-        executionTime: rMs,
-        analyzerName: reducer.name,
-      });
+      // Allow reducers to signal notRun (e.g. invariants auto-disabled when no
+      // rules are configured). The reducer sets notRunReason in its result.
+      if (result.notRunReason) {
+        reducerResults.set(reducer.name, {
+          violations: [],
+          status: { status: 'notRun', reason: result.notRunReason },
+          executionTime: rMs,
+          analyzerName: reducer.name,
+        });
+      } else {
+        reducerResults.set(reducer.name, {
+          violations: result.violations,
+          status: { status: 'reducer-ran', factsConsumed: result.factsConsumed ?? factsConsumed },
+          executionTime: rMs,
+          analyzerName: reducer.name,
+        });
 
-      if (result.facts && Object.keys(result.facts).length > 0) {
-        reducerFacts.set(reducer.name, result.facts);
+        if (result.facts && Object.keys(result.facts).length > 0) {
+          reducerFacts.set(reducer.name, result.facts);
+        }
       }
     } catch (err: any) {
       reducerResults.set(reducer.name, {
@@ -467,12 +481,22 @@ async function runStage4(
       const result = await dr.reduce(allFacts, reducerContext);
       const rMs = performance.now() - r0;
 
-      derivedResults.set(dr.name, {
-        violations: result.violations,
-        status: { status: 'reducer-ran', factsConsumed: result.factsConsumed ?? factsConsumed },
-        executionTime: rMs,
-        analyzerName: dr.name,
-      });
+      // Allow derived reducers to signal notRun (same mechanism as Stage 3)
+      if (result.notRunReason) {
+        derivedResults.set(dr.name, {
+          violations: [],
+          status: { status: 'notRun', reason: result.notRunReason },
+          executionTime: rMs,
+          analyzerName: dr.name,
+        });
+      } else {
+        derivedResults.set(dr.name, {
+          violations: result.violations,
+          status: { status: 'reducer-ran', factsConsumed: result.factsConsumed ?? factsConsumed },
+          executionTime: rMs,
+          analyzerName: dr.name,
+        });
+      }
     } catch (err: any) {
       derivedResults.set(dr.name, {
         violations: [],
@@ -618,6 +642,9 @@ export async function runPipeline(
     }
   }
 
+  // Spec 27 — build per-rule coverage from completed pipeline results
+  const coverage = buildCoverageReport(analyzerResults, config);
+
   const totalDuration = performance.now() - totalT0;
 
   return {
@@ -628,6 +655,7 @@ export async function runPipeline(
       stageTiming,
       scoped: config.isScoped,
       diagnostics,
+      coverage,
     },
     indexFacts: stage2.indexFacts,
   };
@@ -757,4 +785,132 @@ export function isVisitorStatus(status: AnalyzerStatus): boolean {
  */
 export function isReducerStatus(status: AnalyzerStatus): boolean {
   return status.status === 'reducer-ran';
+}
+
+// ── Coverage reporting (Spec 27) ────────────────────────────────────────────
+
+/**
+ * Build a per-rule coverage report from completed pipeline results.
+ *
+ * Iterates every rule in the canonical {@link RULE_REGISTRY}, cross-references
+ * with the analyzer-results map to derive a {@link RuleCoverageState} per rule:
+ *
+ * | Analyzer status                        | Rule state      | Reason                          |
+ * |----------------------------------------|-----------------|---------------------------------|
+ * | notRun                                 | `notApplicable` | `notRun.reason`                 |
+ * | visitor-ran, filesProcessed === 0      | `notApplicable` | "no matching source files"      |
+ * | reducer-ran, factsConsumed === 0       | `notApplicable` | "no facts consumed from upstream visitors" |
+ * | analyzer ran with input, count > 0     | `fired`         | (none)                          |
+ * | analyzer ran with input, count === 0   | `unassessed`    | per-rule input mapping NYI      |
+ *
+ * `clean` is never emitted in v1 — it requires per-rule input mapping to
+ * confirm that a rule's specific input was present and checked.
+ *
+ * Rules whose analyzer was not enabled in `config` are omitted entirely
+ * (they were not part of this run — distinct from `notRun`).
+ */
+export function buildCoverageReport(
+  analyzerResults: Record<string, AnalyzerResult>,
+  config: PipelineConfig,
+): RuleCoverage[] {
+  const coverage: RuleCoverage[] = [];
+
+  for (const [ruleId, entry] of Object.entries(RULE_REGISTRY)) {
+    const { analyzer: analyzerName, field } = entry;
+
+    // Skip rules whose analyzer wasn't configured for this run
+    if (!(analyzerName in (config.config ?? {}))) {
+      continue;
+    }
+
+    const result = analyzerResults[analyzerName];
+
+    // Analyzer not in results → notRun-equivalent
+    if (!result) {
+      coverage.push({
+        ruleId,
+        analyzer: analyzerName,
+        state: 'notApplicable',
+        count: 0,
+        reason: `analyzer "${analyzerName}" not in results`,
+      });
+      continue;
+    }
+
+    const status = result.status;
+
+    // notRun: all rules notApplicable
+    if (status.status !== 'visitor-ran' && status.status !== 'reducer-ran') {
+      const reason = (status as AnalyzerNotRunStatus).reason;
+      coverage.push({
+        ruleId,
+        analyzer: analyzerName,
+        state: 'notApplicable',
+        count: 0,
+        reason,
+      });
+      continue;
+    }
+
+    // Visitor with zero input files
+    if (isVisitorStatus(status) && getFilesProcessed(status) === 0) {
+      coverage.push({
+        ruleId,
+        analyzer: analyzerName,
+        state: 'notApplicable',
+        count: 0,
+        reason: 'no matching source files',
+      });
+      continue;
+    }
+
+    // Reducer with zero facts consumed
+    if (isReducerStatus(status) && getFactsConsumed(status) === 0) {
+      coverage.push({
+        ruleId,
+        analyzer: analyzerName,
+        state: 'notApplicable',
+        count: 0,
+        reason: 'no facts consumed from upstream visitors',
+      });
+      continue;
+    }
+
+    // Check per-rule config gate (explicitly disabled by config)
+    if (entry.configGate) {
+      const analyzerNs = (config.config ?? {})[analyzerName];
+      const gateValue = (analyzerNs as Record<string, unknown> | undefined)?.[entry.configGate];
+      if (gateValue === false) {
+        coverage.push({
+          ruleId,
+          analyzer: analyzerName,
+          state: 'notApplicable',
+          count: 0,
+          reason: `disabled by config (${analyzerName}.${entry.configGate}: false)`,
+        });
+        continue;
+      }
+    }
+
+    // Analyzer ran with input — count violations for this rule
+    const violations = (result.violations ?? []).filter((v: Violation) => {
+      if (field === 'type') return (v as any).type === ruleId;
+      if (field === 'contractType') return (v as any).contractType === ruleId;
+      if (field === 'principle') return (v as any).principle === ruleId;
+      if (field === 'violationType') return (v as any).violationType === ruleId;
+      if (field === 'ruleId') return (v as any).ruleId === ruleId;
+      return v.rule === ruleId;
+    });
+
+    const count = violations.length;
+    coverage.push({
+      ruleId,
+      analyzer: analyzerName,
+      state: count > 0 ? 'fired' : 'unassessed',
+      count,
+      reason: count === 0 ? 'applicability not assessed (per-rule input mapping NYI)' : undefined,
+    });
+  }
+
+  return coverage;
 }

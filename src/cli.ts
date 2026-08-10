@@ -176,6 +176,44 @@ program
           console.log(chalk.gray(`\n── Pipeline Stages ──────────────────────────`));
           console.log(analyzerFiles.join('\n'));
         }
+
+        // ── Coverage (Spec 27) ──────────────────────────────────────────
+        const coverage = result.metadata?.coverage;
+        if (coverage && coverage.length > 0) {
+          const fired = coverage.filter(c => c.state === 'fired');
+          const clean = coverage.filter(c => c.state === 'clean');
+          const unassessed = coverage.filter(c => c.state === 'unassessed');
+          const notApplicable = coverage.filter(c => c.state === 'notApplicable');
+          const firedCount = fired.reduce((s, c) => s + c.count, 0);
+
+          console.log(chalk.gray(`\n── Coverage ─────────────────────────────────`));
+          console.log(
+            `  ${fired.length} fired (${firedCount.toLocaleString()} violations), ` +
+            `${clean.length} clean, ` +
+            `${unassessed.length} unassessed, ` +
+            `${notApplicable.length} notApplicable ` +
+            `(${coverage.length} rules registered)`
+          );
+
+          if (notApplicable.length > 0) {
+            console.log(chalk.gray(`  ── Not Applicable ──`));
+            for (const c of notApplicable) {
+              console.log(`    ${c.ruleId}: ${c.reason ?? 'unknown'}`);
+            }
+          }
+          if (clean.length > 0) {
+            console.log(chalk.gray(`  ── Clean ──`));
+            for (const c of clean) {
+              console.log(`    ${c.ruleId} (0)`);
+            }
+          }
+          if (unassessed.length > 0) {
+            console.log(chalk.gray(`  ── Unassessed (zero findings, applicability unknown) ──`));
+            for (const c of unassessed) {
+              console.log(`    ${c.ruleId} (0)`);
+            }
+          }
+        }
       }
 
       // Spec-20 R4: built-in profile visibility — silent behavior changes
