@@ -9,7 +9,7 @@ import { AuditConfig, PathProfile } from '../types.js';
  */
 export function getDefaultConfig(): AuditConfig {
   return {
-    includePaths: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.css', '**/*.scss'],
+    includePaths: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.css', '**/*.scss', '**/*.sql', '**/*.prisma'],
     excludePaths: [
       '**/node_modules/**',
       '**/.next/**',
@@ -230,6 +230,13 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     validatorPackageList: [
       'zod', 'joi', 'ajv', 'valibot', 'yup', 'superstruct', 'arktype',
       '@sinclair/typebox', 'class-validator',
+    ],
+    // Spec 29: Declarative table-source registry — Tier 2 (ORM detection).
+    // Adding an ORM becomes a config entry, not code.
+    tableSources: [
+      { kind: 'callee', name: 'pgTable', arg: 0, description: 'Drizzle PostgreSQL table' },
+      { kind: 'callee', name: 'mysqlTable', arg: 0, description: 'Drizzle MySQL table' },
+      { kind: 'callee', name: 'sqliteTable', arg: 0, description: 'Drizzle SQLite table' },
     ],
   },
 

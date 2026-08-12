@@ -1052,12 +1052,29 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       const violations: Violation[] = [];
       const indexFacts: IndexFactsEntry[] = [];
 
-      // Extract ORM table names (Drizzle) from source
+      // Pipeline config for this analyzer (moved before table extraction, needed
+      // by the table-source registry and provenance context).
+      const schemaConfig = (context.config ?? {}) as Record<string, unknown>;
+
+      // Spec 29 R2: Extract ORM table names via declarative table-source registry.
+      // Adding an ORM is now a config entry, not code.  Falls back to Drizzle
+      // entries when no user-specified tableSources are configured.
       const ormTables: string[] = [];
-      const drizzleRe = /(?:pgTable|mysqlTable|sqliteTable)\s*\(\s*['"]([^'"]+)['"]/g;
-      let dm: RegExpExecArray | null;
-      while ((dm = drizzleRe.exec(sourceCode)) !== null) {
-        ormTables.push(dm[1]);
+      const tableProvenances: Array<{ table: string; source: any }> = [];
+      const tableSources = (schemaConfig.tableSources as any[]) ?? [
+        { kind: 'callee', name: 'pgTable', arg: 0, description: 'Drizzle PostgreSQL table' },
+        { kind: 'callee', name: 'mysqlTable', arg: 0, description: 'Drizzle MySQL table' },
+        { kind: 'callee', name: 'sqliteTable', arg: 0, description: 'Drizzle SQLite table' },
+      ];
+      if (tableSources.length > 0) {
+        const registered = a.extractTablesFromRegistry(
+          ast as AST, adapter as LanguageAdapter, sourceCode,
+          tableSources, context.filePath
+        );
+        for (const { table, source } of registered) {
+          ormTables.push(table);
+          tableProvenances.push({ table, source });
+        }
       }
 
       // Extract DDL from sql.exec(...) string literals inside Durable Object classes.
@@ -1078,7 +1095,6 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       }
 
       // Build provenance context for this file — defaults from DEFAULT_SCHEMA_CONFIG
-      const schemaConfig = (context.config ?? {}) as Record<string, unknown>;
       const detectionMode = ((schemaConfig.detection as any)?.mode as string) ?? ('hybrid' as any);
       const provenanceContext = pm.buildProvenanceContext(ast as AST, adapter as LanguageAdapter, sourceCode, {
         mode: detectionMode,
@@ -1090,7 +1106,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
 
       // File gate — skip files without DB usage
       if (!a.passesFileGate(context.filePath, sourceCode, schemaConfig, provenanceContext)) {
-        const facts: Record<string, unknown> = { [context.filePath]: { tableRefs: [], ormTables } };
+        const facts: Record<string, unknown> = { [context.filePath]: { tableRefs: [], ormTables, tableProvenance: tableProvenances } };
         if (doDDL.length > 0) (facts[context.filePath] as any).ddlSource = doDDL.join(';\n');
         return { violations: [], facts };
       }
@@ -1157,6 +1173,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
           context: r.context,
         })),
         ormTables,
+        tableProvenance: tableProvenances,
       };
       if (doDDL.length > 0) (fileFacts as any).ddlSource = doDDL.join(';\n');
 
@@ -1186,7 +1203,21 @@ export function createSchemaPrismaVisitor(): Stage2Visitor {
       const modelRe = /model\s+(\w+)\s*\{/g;
       let m: RegExpExecArray | null;
       while ((m = modelRe.exec(sourceCode)) !== null) {
-        models.push(m[1]);
+        const modelName = m[1];
+        // Scope @@map to this model's block by matching braces.
+        // Depth starts at 1 for the opening { already consumed by the regex.
+        const blockStart = m.index + m[0].length;
+        let depth = 1;
+        let blockEnd = blockStart;
+        for (; blockEnd < sourceCode.length && depth > 0; blockEnd++) {
+          if (sourceCode[blockEnd] === '{') depth++;
+          else if (sourceCode[blockEnd] === '}') depth--;
+        }
+        const blockContent = sourceCode.slice(blockStart, blockEnd - 1);
+        // @@map (block-level, double @) renames the table. @map (single @)
+        // is field-level — column rename — and must not be treated as a table name.
+        const mapMatch = blockContent.match(/@@map\s*\(\s*"([^"]+)"\s*\)/);
+        models.push(mapMatch ? mapMatch[1] : modelName);
       }
       return {
         violations: [],
@@ -1267,6 +1298,7 @@ export function createSchemaReducer(): Stage3Reducer {
       // ── 1. Build known-tables catalog ──────────────────────────────────────
 
       const knownTables = new Set<string>();
+      const tableProvenances = new Map<string, any[]>(); // table name → origins
 
       // 1a. SQL DDL replay — collect all .sql file facts, sort by numeric prefix, replay
       const sqlFiles: Array<{ filePath: string; source: string }> = [];
@@ -1289,19 +1321,40 @@ export function createSchemaReducer(): Stage3Reducer {
         return a.filePath.localeCompare(b.filePath);
       });
       for (const sqlFile of sqlFiles) {
+        const before = new Set(knownTables);
         a.processMigrationSource(sqlFile.source, knownTables);
+        // Record provenance for newly created tables
+        for (const table of knownTables) {
+          if (!before.has(table)) {
+            const sources = tableProvenances.get(table) ?? [];
+            sources.push({ table, tier: 'sql-migration', sourceFile: sqlFile.filePath, description: 'SQL migration' });
+            tableProvenances.set(table, sources);
+          }
+        }
       }
 
-      // 1b. ORM tables from code files
-      for (const [, fact] of perFile()) {
+      // 1b. ORM tables from code files — with provenance from the table-source registry
+      for (const [filePath, fact] of perFile()) {
         const ormTables: string[] = (fact as any).ormTables ?? [];
         for (const t of ormTables) knownTables.add(t);
+
+        const provenances: any[] = (fact as any).tableProvenance ?? [];
+        for (const p of provenances) {
+          const sources = tableProvenances.get(p.table) ?? [];
+          sources.push(p.source);
+          tableProvenances.set(p.table, sources);
+        }
       }
 
       // 1c. Prisma models
-      for (const [, fact] of perFile()) {
+      for (const [filePath, fact] of perFile()) {
         const prismaModels: string[] = (fact as any).prismaModels ?? [];
-        for (const m of prismaModels) knownTables.add(m);
+        for (const m of prismaModels) {
+          knownTables.add(m);
+          const sources = tableProvenances.get(m) ?? [];
+          sources.push({ table: m, tier: 'prisma-model', sourceFile: filePath, description: 'Prisma model' });
+          tableProvenances.set(m, sources);
+        }
       }
 
       // ── 2. Unknown-table detection ────────────────────────────────────────
@@ -1322,7 +1375,12 @@ export function createSchemaReducer(): Stage3Reducer {
 
       // Merge external tables from config (bonus, not required).
       const externalKnownTables: string[] = (schemaConfig.knownTables as string[]) ?? [];
-      for (const t of externalKnownTables) knownTables.add(t);
+      for (const t of externalKnownTables) {
+        knownTables.add(t);
+        const sources = tableProvenances.get(t) ?? [];
+        sources.push({ table: t, tier: 'external-config', description: 'External configuration' });
+        tableProvenances.set(t, sources);
+      }
 
       // Also read the documented schemas config (structured {name, tables} objects).
       // The standalone UniversalSchemaAnalyzer.analyze() path reads schemas; the
@@ -1334,6 +1392,9 @@ export function createSchemaReducer(): Stage3Reducer {
       for (const schema of externalSchemas) {
         for (const table of schema.tables) {
           knownTables.add(table.name);
+          const sources = tableProvenances.get(table.name) ?? [];
+          sources.push({ table: table.name, tier: 'external-config', description: `Schema: ${schema.name}` });
+          tableProvenances.set(table.name, sources);
         }
       }
 
@@ -1397,9 +1458,16 @@ export function createSchemaReducer(): Stage3Reducer {
         }
       }
 
+      // ── 4. Build table catalog for metadata ───────────────────────────────
+
+      const catalogEntries: Array<{ table: string; sources: any[] }> = [];
+      for (const [table, sources] of tableProvenances) {
+        catalogEntries.push({ table, sources });
+      }
+
       return {
         violations,
-        facts: {},
+        facts: { tableCatalog: catalogEntries },
         factsConsumed: [...perFile()].length,
       };
     },

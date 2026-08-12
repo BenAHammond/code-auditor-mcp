@@ -302,6 +302,8 @@ export interface PipelineResult {
     scoped?: boolean;
     diagnostics?: Array<{ analyzerName: string; kind: string; message: string }>;
     coverage?: RuleCoverage[];
+    /** Spec 29: Per-table provenance catalog from schema reducer */
+    tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
   };
   indexFacts?: IndexFactsEntry[];
 }
@@ -389,6 +391,8 @@ export interface AuditResult {
       previousKnownCount?: number;
     };
     coverage?: RuleCoverage[];
+    /** Spec 29: Per-table provenance catalog from schema reducer */
+    tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
   };
 }
 
@@ -554,6 +558,8 @@ export interface AuditMetadata {
   analyzersRun: string[];
   configUsed?: AuditOptions;
   reports?: string[];
+  /** Spec 29: Per-table provenance catalog from the schema reducer */
+  tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
 }
 
 export interface BaseAnalyzerOptions {

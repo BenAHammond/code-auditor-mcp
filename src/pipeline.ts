@@ -645,6 +645,10 @@ export async function runPipeline(
   // Spec 27 — build per-rule coverage from completed pipeline results
   const coverage = buildCoverageReport(analyzerResults, config);
 
+  // Spec 29: Extract table catalog from schema reducer facts for metadata
+  const schemaFacts = combinedFacts['schema'] as Record<string, unknown> | undefined;
+  const tableCatalog = schemaFacts?.tableCatalog as Array<{ table: string; sources: any[] }> | undefined;
+
   const totalDuration = performance.now() - totalT0;
 
   return {
@@ -656,6 +660,7 @@ export async function runPipeline(
       scoped: config.isScoped,
       diagnostics,
       coverage,
+      tableCatalog,
     },
     indexFacts: stage2.indexFacts,
   };

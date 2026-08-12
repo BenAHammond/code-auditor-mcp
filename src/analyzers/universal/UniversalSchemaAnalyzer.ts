@@ -13,7 +13,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
-import type { AST, LanguageAdapter, ASTNode, NodePattern } from '../../languages/types.js';
+import type { AST, LanguageAdapter, ASTNode, NodePattern, ImportInfo } from '../../languages/types.js';
 import picomatch from 'picomatch';
 import {
   buildProvenanceContext,
@@ -70,6 +70,9 @@ export interface SchemaAnalyzerConfig {
   dbWrapperNames?: string[];        // @see DEFAULT_SCHEMA_CONFIG
   fileGateGlobs?: string[];         // default ['**/*.sql', '**/migrations/**'] — R2.2
   schemaFiles?: string[];           // explicit paths to SQL schema files (e.g., 'snapshots/schema.sql')
+
+  /** Spec 29: Declarative table-source registry for Tier 2 ORM detection */
+  tableSources?: TableSourceEntry[];
 }
 
 /**
@@ -115,6 +118,7 @@ export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   dbWrapperNames: [...DB_WRAPPER_NAMES],
   fileGateGlobs: ['**/*.sql', '**/migrations/**'],
   schemaFiles: [],
+  tableSources: [],
 };
 
 export interface TableReference {
@@ -122,6 +126,51 @@ export interface TableReference {
   type: 'select' | 'insert' | 'update' | 'delete' | 'create' | 'reference';
   location: { line: number; column: number };
   context: string;
+}
+
+// ---------------------------------------------------------------------------
+// Spec 29 — Table Catalog Providers (Phases 2-4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Registry entry for declarative table-source detection.
+ * Adding an ORM becomes a config entry, not code.
+ */
+export interface TableSourceEntry {
+  /** Type discriminator for the match shape */
+  kind: 'callee' | 'decorator';
+  /** The function/method/decorator name to match */
+  name: string;
+  /** Which argument (0-indexed) holds the table name as a string literal */
+  arg: number;
+  /** Human-readable description for provenance display */
+  description?: string;
+  /**
+   * Optional: required module path. When set, the call/decorator is only
+   * considered if the identifier originates from an import matching this
+   * specifier. Example: 'knex' prevents matching a local function also
+   * named createTable.
+   */
+  module?: string;
+}
+
+/**
+ * Per-table origin record — tracks which tier and source file contributed
+ * a table to the catalog.
+ */
+export interface TableProvenance {
+  table: string;
+  tier: 'sql-migration' | 'orm-registry' | 'prisma-model' | 'external-config';
+  sourceFile?: string;
+  description?: string;
+}
+
+/**
+ * A complete catalog entry: one table name with all its known sources.
+ */
+export interface TableCatalogEntry {
+  table: string;
+  sources: TableProvenance[];
 }
 
 
@@ -1209,6 +1258,275 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       }
     }
     return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Spec 29 — Table-source registry (Tier 2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Spec 29 R2: Extract table names from call expressions and decorators
+   * using the declarative table-source registry.
+   *
+   * Adding an ORM is now a config entry, not code — supports Drizzle, Knex,
+   * TypeORM, and any other ORM with call/decorator table-definition shapes.
+   *
+   * @returns Array of { table, source } for each match found. Caller is
+   * responsible for deduplication across multiple files or entries.
+   */
+  public extractTablesFromRegistry(
+    ast: AST,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    tableSources: TableSourceEntry[],
+    filePath: string
+  ): Array<{ table: string; source: TableProvenance }> {
+    if (!ast || !tableSources || tableSources.length === 0) return [];
+
+    const results: Array<{ table: string; source: TableProvenance }> = [];
+    const importMap = this.resolveImportMap(ast, adapter, sourceCode);
+
+    for (const entry of tableSources) {
+      if (entry.kind === 'callee') {
+        this._extractCalleeTables(ast, adapter, sourceCode, entry, filePath, importMap, results);
+      } else if (entry.kind === 'decorator') {
+        this._extractDecoratorTables(ast, adapter, sourceCode, entry, filePath, importMap, results);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Build a map of module-source → imported identifiers from the AST.
+   * Covers default imports, namespace imports, and named imports.
+   */
+  /**
+   * Resolve import statements to a module → (importedName → localName) map.
+   *
+   * For non-aliased imports (`import { pgTable } from 'x'`) the imported and
+   * local names are identical.  For aliased imports (`import { pgTable as table }`)
+   * the map records `pgTable → table`, so the callee-extraction logic can trace
+   * the call-site identifier back to the original export name.
+   */
+  private resolveImportMap(
+    ast: AST,
+    adapter: LanguageAdapter,
+    _sourceCode: string
+  ): Map<string, Map<string, string>> {
+    const map = new Map<string, Map<string, string>>();
+    try {
+      const imports: ImportInfo[] = adapter.extractImports(ast);
+      for (const imp of imports) {
+        if (!map.has(imp.source)) {
+          map.set(imp.source, new Map());
+        }
+        const nameMap = map.get(imp.source)!;
+        for (const spec of imp.specifiers) {
+          const localName = spec.alias || spec.name;
+          if (spec.isDefault || spec.isNamespace) {
+            // `import knex from 'knex'` or `import * as knex from 'knex'`
+            // Key is the module specifier; value is the local binding.
+            nameMap.set(spec.name, localName);
+          } else {
+            // `import { pgTable as table } from 'x'`
+            // Key is the original export name; value is the local alias.
+            nameMap.set(spec.name, localName);
+          }
+        }
+      }
+    } catch {
+      // Gracefully handle adapters that don't support extractImports
+    }
+    return map;
+  }
+
+  /**
+   * Extract the string literal at a specific argument position from a
+   * call_expression node. Counts string/template arguments in order;
+   * skips non-string children (like `(` / `,` / `)` delimiters and
+   * non-string argument expressions).
+   */
+  private getArgStringLiteral(
+    node: ASTNode,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    argIndex: number
+  ): string | null {
+    if (!node.children) return null;
+    for (const child of node.children) {
+      const type = adapter.getNodeType(child);
+      if (type === 'arguments' && child.children) {
+        let stringCount = 0;
+        for (const arg of child.children) {
+          const argType = adapter.getNodeType(arg);
+          if (
+            argType === 'string' ||
+            argType === 'template_string' ||
+            argType === 'template_literal'
+          ) {
+            if (stringCount === argIndex) {
+              const text = adapter.getNodeText(arg, sourceCode).trim();
+              if (
+                (text.startsWith("'") && text.endsWith("'")) ||
+                (text.startsWith('"') && text.endsWith('"')) ||
+                (text.startsWith('`') && text.endsWith('`'))
+              ) {
+                return text.slice(1, -1);
+              }
+              return text;
+            }
+            stringCount++;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Walk call_expression nodes for callee-shaped table-source entries.
+   */
+  private _extractCalleeTables(
+    ast: AST,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    entry: TableSourceEntry,
+    filePath: string,
+    importMap: Map<string, Map<string, string>>,
+    results: Array<{ table: string; source: TableProvenance }>
+  ): void {
+    const nodes = adapter.findNodes(ast, {
+      custom: (n: ASTNode) => adapter.getNodeType(n) === 'call_expression',
+    });
+
+    for (const node of nodes) {
+      const callee = this.getCallee(node, adapter, sourceCode);
+      if (!callee) continue;
+
+      const rootId = callee.split('.')[0];
+
+      // Determine the name to match against entry.name.
+      // When no module filter is set, match the call-site callee literally.
+      // When a module filter IS set, resolve the root identifier through
+      // the import map to find the original imported name — this handles
+      // aliased imports (e.g. `import { pgTable as table }`) and default
+      // imports used as method receivers (e.g. `knex.schema.createTable`).
+      let calleeNameToMatch: string;
+      if (entry.module) {
+        const nameMap = importMap.get(entry.module);
+        if (!nameMap) continue;
+
+        // Resolve rootId → imported name through the import map
+        let importedName: string | null = null;
+        for (const [name, local] of nameMap) {
+          if (local === rootId) {
+            importedName = name;
+            break;
+          }
+        }
+        if (!importedName) continue;
+
+        // Reconstruct the callee with the imported name replacing the local.
+        // For simple calls: `table(...)` where rootId='table', importedName='pgTable'
+        //   → calleeNameToMatch = 'pgTable'
+        // For member calls: `knex.schema.createTable(...)` where rootId='knex'
+        //   → calleeNameToMatch = 'knex.schema.createTable' (unchanged, root=imported)
+        calleeNameToMatch = importedName + callee.substring(rootId.length);
+      } else {
+        calleeNameToMatch = callee;
+      }
+
+      const matches = calleeNameToMatch === entry.name ||
+                      calleeNameToMatch.endsWith('.' + entry.name);
+      if (!matches) continue;
+
+      const table = this.getArgStringLiteral(node, adapter, sourceCode, entry.arg);
+      if (!table) continue;
+
+      results.push({
+        table,
+        source: {
+          table,
+          tier: 'orm-registry',
+          sourceFile: filePath,
+          description: entry.description || `ORM: ${entry.name}`,
+        },
+      });
+    }
+  }
+
+  /**
+   * Walk decorator nodes for decorator-shaped table-source entries.
+   * Handles both argument-bearing decorators (@Entity('table')) and
+   * bare decorators (skipped — no table name to extract).
+   */
+  private _extractDecoratorTables(
+    ast: AST,
+    adapter: LanguageAdapter,
+    sourceCode: string,
+    entry: TableSourceEntry,
+    filePath: string,
+    importMap: Map<string, Map<string, string>>,
+    results: Array<{ table: string; source: TableProvenance }>
+  ): void {
+    const nodes = adapter.findNodes(ast, {
+      custom: (n: ASTNode) => adapter.getNodeType(n) === 'decorator',
+    });
+
+    for (const node of nodes) {
+      if (!node.children) continue;
+
+      // Find the call_expression child (decorator with args, e.g. @Entity('tbl'))
+      let callExpr: ASTNode | null = null;
+      for (const child of node.children) {
+        if (adapter.getNodeType(child) === 'call_expression') {
+          callExpr = child;
+          break;
+        }
+      }
+      if (!callExpr) continue; // bare decorator — no args to extract
+
+      const callee = this.getCallee(callExpr, adapter, sourceCode);
+      if (!callee) continue;
+
+      const rootId = callee.split('.')[0];
+
+      let calleeNameToMatch: string;
+      if (entry.module) {
+        const nameMap = importMap.get(entry.module);
+        if (!nameMap) continue;
+
+        let importedName: string | null = null;
+        for (const [name, local] of nameMap) {
+          if (local === rootId) {
+            importedName = name;
+            break;
+          }
+        }
+        if (!importedName) continue;
+
+        calleeNameToMatch = importedName + callee.substring(rootId.length);
+      } else {
+        calleeNameToMatch = callee;
+      }
+
+      const matches = calleeNameToMatch === entry.name ||
+                      calleeNameToMatch.endsWith('.' + entry.name);
+      if (!matches) continue;
+      const table = this.getArgStringLiteral(callExpr, adapter, sourceCode, entry.arg);
+      if (!table) continue;
+
+      results.push({
+        table,
+        source: {
+          table,
+          tier: 'orm-registry',
+          sourceFile: filePath,
+          description: entry.description || `Decorator: ${entry.name}`,
+        },
+      });
+    }
   }
 
   /**

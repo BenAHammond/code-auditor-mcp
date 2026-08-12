@@ -202,3 +202,149 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
     expect(result3.metadata.baseline!.newCount, 'Step 3: newCount — one new function, one new violation').toBe(1);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Spec 28 Part B — Report-shape contract assertions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const VALID_COVERAGE_STATES = new Set(['fired', 'clean', 'notApplicable', 'unassessed']);
+const VALID_STATUS_DISCRIMINANTS = new Set(['visitor-ran', 'reducer-ran', 'notRun']);
+
+describe('Spec 28 — report-shape contract (real audit result)', () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), 'ca-contract-'));
+    await mkdir(join(testDir, 'src'), { recursive: true });
+  });
+
+  afterEach(() => {
+    try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  vitestTest('B1 — root keys: timestamp, summary, analyzerResults, recommendations, metadata', { timeout: 30_000 }, async () => {
+    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
+    await writeConfig(testDir);
+
+    const result = await runAudit({
+      projectRoot: testDir,
+      indexFunctions: false,
+      showProgress: false,
+      scope: 'all',
+    });
+
+    // Root-level keys contract
+    expect(result, 'AuditResult must be an object').toBeTypeOf('object');
+    const rootKeys = Object.keys(result);
+    expect(rootKeys, 'root keys').toContain('timestamp');
+    expect(rootKeys, 'root keys').toContain('summary');
+    expect(rootKeys, 'root keys').toContain('analyzerResults');
+    expect(rootKeys, 'root keys').toContain('recommendations');
+    expect(rootKeys, 'root keys').toContain('metadata');
+
+    // Type checks for root values
+    expect(result.timestamp, 'timestamp must be a Date').toBeInstanceOf(Date);
+    expect(result.summary, 'summary must be an object').toBeTypeOf('object');
+    expect(result.analyzerResults, 'analyzerResults must be an object').toBeTypeOf('object');
+    expect(Array.isArray(result.recommendations), 'recommendations must be an array').toBe(true);
+    expect(result.metadata, 'metadata must be an object').toBeTypeOf('object');
+  });
+
+  vitestTest('B2 — summary.totalViolations equals sum of per-analyzer violation counts', { timeout: 30_000 }, async () => {
+    await writeFile(join(testDir, 'src', 'lib.ts'), TWO_UNDOCUMENTED);
+    await writeConfig(testDir);
+
+    const result = await runAudit({
+      projectRoot: testDir,
+      indexFunctions: false,
+      showProgress: false,
+      scope: 'all',
+    });
+
+    const perAnalyzerSum = Object.values(result.analyzerResults).reduce(
+      (sum, ar) => sum + ar.violations.length,
+      0,
+    );
+
+    expect(
+      result.summary.totalViolations,
+      `summary.totalViolations (${result.summary.totalViolations}) must equal sum of per-analyzer violations (${perAnalyzerSum})`,
+    ).toBe(perAnalyzerSum);
+  });
+
+  vitestTest('B3 — metadata.coverage present with required fields', { timeout: 30_000 }, async () => {
+    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
+    await writeConfig(testDir);
+
+    const result = await runAudit({
+      projectRoot: testDir,
+      indexFunctions: false,
+      showProgress: false,
+      scope: 'all',
+    });
+
+    const coverage = result.metadata.coverage;
+    expect(coverage, 'metadata.coverage must be present').toBeDefined();
+    expect(Array.isArray(coverage), 'metadata.coverage must be an array').toBe(true);
+    expect(coverage!.length, 'metadata.coverage must be non-empty when analyzers are configured').toBeGreaterThan(0);
+
+    for (const entry of coverage!) {
+      expect(entry, 'each coverage entry must be an object').toBeTypeOf('object');
+      expect(entry.ruleId, `ruleId required on coverage entry`).toBeTypeOf('string');
+      expect(entry.analyzer, `analyzer required on coverage entry`).toBeTypeOf('string');
+      expect(entry.state, `state required on coverage entry (${entry.ruleId ?? '<missing>'})`).toBeTypeOf('string');
+      expect(typeof entry.count, `count required on coverage entry (${entry.ruleId ?? '<missing>'})`).toBe('number');
+    }
+  });
+
+  vitestTest('B4 — every coverage state is a valid value', { timeout: 30_000 }, async () => {
+    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
+    await writeConfig(testDir);
+
+    const result = await runAudit({
+      projectRoot: testDir,
+      indexFunctions: false,
+      showProgress: false,
+      scope: 'all',
+    });
+
+    const coverage = result.metadata.coverage ?? [];
+
+    for (const entry of coverage) {
+      expect(
+        VALID_COVERAGE_STATES.has(entry.state),
+        `invalid coverage state "${entry.state}" for ${entry.ruleId} — must be one of: ${[...VALID_COVERAGE_STATES].join(', ')}`,
+      ).toBe(true);
+    }
+  });
+
+  vitestTest('B5 — each analyzer result has a valid status discriminant', { timeout: 30_000 }, async () => {
+    await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
+    await writeConfig(testDir);
+
+    const result = await runAudit({
+      projectRoot: testDir,
+      indexFunctions: false,
+      showProgress: false,
+      scope: 'all',
+    });
+
+    for (const [analyzerName, analyzerResult] of Object.entries(result.analyzerResults)) {
+      expect(analyzerResult.status, `${analyzerName} must have a status`).toBeDefined();
+      expect(analyzerResult.status, `${analyzerName} status must be an object`).toBeTypeOf('object');
+      expect(
+        VALID_STATUS_DISCRIMINANTS.has(analyzerResult.status.status),
+        `${analyzerName}: invalid status discriminant "${analyzerResult.status.status}" — must be one of: ${[...VALID_STATUS_DISCRIMINANTS].join(', ')}`,
+      ).toBe(true);
+
+      // Discriminant-specific fields
+      if (analyzerResult.status.status === 'visitor-ran') {
+        expect(typeof analyzerResult.status.filesProcessed, `${analyzerName}: visitor-ran must have filesProcessed`).toBe('number');
+      } else if (analyzerResult.status.status === 'reducer-ran') {
+        expect(typeof analyzerResult.status.factsConsumed, `${analyzerName}: reducer-ran must have factsConsumed`).toBe('number');
+      } else if (analyzerResult.status.status === 'notRun') {
+        expect(analyzerResult.status.reason, `${analyzerName}: notRun must have a reason string`).toBeTypeOf('string');
+      }
+    }
+  });
+});

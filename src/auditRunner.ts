@@ -367,6 +367,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // per-file buildProvenanceContext() wall time (hook-latency measurement).
     const provenanceTiming = { totalMs: 0 };
     let pipelineCoverage: RuleCoverage[] | undefined;
+    let pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -618,6 +619,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         // Spec 27 — build per-rule coverage from final analyzer results
         // (computed AFTER react finalization so cross-component checks are included)
         pipelineCoverage = buildCoverageReport(analyzerResults, pipelineConfig);
+
+        // Spec 29: extract table catalog from pipeline metadata for audit report
+        pipelineTableCatalog = pipelineResult.metadata?.tableCatalog as Array<{ table: string; sources: any[] }> | undefined;
       } catch (error) {
         if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
           throw error;
@@ -949,6 +953,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(zeroFilesDiagnostics.length > 0 && { diagnostics: zeroFilesDiagnostics }),
         ...(baselineMetadata && { baseline: baselineMetadata }),
         ...(pipelineCoverage && { coverage: pipelineCoverage }),
+        ...(pipelineTableCatalog && { tableCatalog: pipelineTableCatalog }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
           fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)

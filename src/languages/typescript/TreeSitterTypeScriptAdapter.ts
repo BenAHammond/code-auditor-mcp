@@ -928,15 +928,20 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
             isNamespace: true,
           });
         }
-      } else if (child.type === 'import') {
-        // default import: `import foo from '...'`
-        const nameNode = node.childForFieldName?.('name');
-        if (nameNode) {
-          specifiers.push({
-            name: nameNode.text,
-            isDefault: true,
-            isNamespace: false,
-          });
+      } else if (child.type === 'import_clause') {
+        // Default import: `import foo from '...'`
+        // import_clause children include an identifier for the default binding
+        // and optionally named_imports for mixed imports (`import foo, { bar }`)
+        for (const grandchild of child.namedChildren) {
+          if (grandchild.type === 'identifier') {
+            specifiers.push({
+              name: grandchild.text,
+              isDefault: true,
+              isNamespace: false,
+            });
+          } else {
+            collectSpecifiers(grandchild);
+          }
         }
       } else {
         // Recurse into containers: import_clause, named_imports
