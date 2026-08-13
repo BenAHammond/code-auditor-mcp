@@ -10,11 +10,13 @@
  * Stage position IS the dependency declaration — no topological sort needed.
  */
 
-import { readFile } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
+import { readFileSync } from 'fs';
 import path from 'path';
 import { performance } from 'perf_hooks';
 import {
   AuditAbortedError,
+  MAX_ORPHAN_SOURCE_BYTES,
   type AuditResultScope,
   type AnalyzerNotRunStatus,
   type AnalyzerResult,
@@ -39,144 +41,182 @@ import { validateFactsDependencies, buildFactsMap } from './pipelineTypes.js';
 
 // ── Stage 1: Traverse + Parse ──────────────────────────────────────────────
 
-async function runStage1(config: PipelineConfig): Promise<{
-  tuples: FileASTTuple[];
+/**
+ * Stream files one-at-a-time into stage 2 so per-file memory can be freed
+ * before the next file is parsed.
+ *
+ * File discovery is eager (separate from parsing) so the total count is
+ * available for progress reporting throughout the parse + visit loop.
+ *
+ * @returns generator (yields tuples), total file count, and a closure to
+ *          retrieve aggregate parse/read timing after the generator completes.
+ */
+function runStage1(config: PipelineConfig): {
+  generator: AsyncGenerator<FileASTTuple, void, undefined>;
   fileCount: number;
-  parseDurationMs: number;
-  readDurationMs: number;
-}> {
-  const t0 = performance.now();
-  let readMs = 0;
-  let parseMs = 0;
-
-  // Discover files (or use explicit)
+  getTiming: () => { parseDurationMs: number; readDurationMs: number };
+  getUnparsedFiles: () => Array<{ filePath: string; reason: string }>;
+} {
+  // ── Eager discovery (same as before) ─────────────────────────────────
   const projectRoot = config.projectRoot;
   let files: string[];
   if (config.explicitFiles !== undefined) {
     files = config.explicitFiles;
   } else {
-    files = await discoverFiles(projectRoot, {
-      excludeDirs: ['node_modules', '.next', 'dist', 'build', '.git', 'coverage', '.turbo'],
-    });
+    // discovery runs lazily inside the generator below
   }
 
   // Group by language adapter
   const registry = LanguageRegistry.getInstance();
-  const groups = new Map<any, string[]>();
-  const orphans: string[] = [];
-
-  for (const file of files) {
-    const adapter = registry.getAdapterForFile(file);
-    if (adapter) {
-      const list = groups.get(adapter) ?? [];
-      list.push(file);
-      groups.set(adapter, list);
-    } else {
-      orphans.push(file);
-    }
-  }
-
-  // Parse each file once
-  const tuples: FileASTTuple[] = [];
+  let total: number;
   let parsed = 0;
+  let readMs = 0;
+  let parseMs = 0;
+  // Spec 32 — files that failed to parse (or be read) during stage 1, with the
+  // reason. A non-empty list means the audit was incomplete; surfaced in coverage
+  // and forces a non-zero exit so a plausible-but-wrong report is never silent.
+  const unparsedFiles: Array<{ filePath: string; reason: string }> = [];
 
-  for (const [adapter, adapterFiles] of groups) {
-    for (const file of adapterFiles) {
-      // Check abort
-      if (config.abortSignal?.aborted) {
-        throw new AuditAbortedError('Audit aborted during stage 1');
+  async function* generate(): AsyncGenerator<FileASTTuple, void, undefined> {
+    // Lazy file discovery (only if not explicit)
+    const fileList: string[] = files ?? await discoverFiles(projectRoot, {
+      excludeDirs: ['node_modules', '.next', 'dist', 'build', '.git', 'coverage', '.turbo'],
+    });
+    total = fileList.length;
+
+    const groups = new Map<any, string[]>();
+    const orphans: string[] = [];
+
+    for (const file of fileList) {
+      const adapter = registry.getAdapterForFile(file);
+      if (adapter) {
+        const list = groups.get(adapter) ?? [];
+        list.push(file);
+        groups.set(adapter, list);
+      } else {
+        orphans.push(file);
       }
+    }
 
+    // Parse each file and yield immediately
+    for (const [adapter, adapterFiles] of groups) {
+      for (const file of adapterFiles) {
+        if (config.abortSignal?.aborted) {
+          throw new AuditAbortedError('Audit aborted during stage 1');
+        }
+
+        try {
+          const r0 = performance.now();
+          const content = await readFile(file, 'utf-8');
+          readMs += performance.now() - r0;
+
+          const p0 = performance.now();
+          const ast = await adapter.parse(file, content);
+          parseMs += performance.now() - p0;
+
+          parsed++;
+          yield {
+            kind: 'parsed',
+            file,
+            ast,
+            adapter,
+            sourceCode: content,
+          };
+        } catch (err: any) {
+          // Spec 32 — a parse failure (including a WASM abort that survived
+          // parseWithRecovery) must never be silent: record it so it lands in
+          // coverage and forces a non-zero exit.
+          unparsedFiles.push({ filePath: file, reason: err?.message ?? String(err) });
+          if (config.progressCallback) {
+            config.progressCallback({
+              current: parsed,
+              total,
+              analyzer: 'pipeline',
+              phase: 'stage1',
+              file,
+              message: `Skipped: ${err.message}`,
+            });
+          }
+        }
+      }
+    }
+
+    // Orphan files (no LanguageAdapter)
+    for (const file of orphans) {
       try {
+        // Spec 31 — oversized orphan .sql dumps are not materialized into a
+        // source string; the schema-sql visitor streams them on demand (and
+        // skips them entirely when they contain no DDL). Restricted to .sql:
+        // JSON/CSS orphans must still be materialized — their visitors parse
+        // the content, and an empty source would silently change behavior for
+        // large-but-valid files (e.g. a multi-MB audit-report.json).
+        const st = await stat(file);
+        if (file.endsWith('.sql') && st.size > MAX_ORPHAN_SOURCE_BYTES) {
+          parsed++;
+          yield {
+            kind: 'raw',
+            file,
+            ast: null,
+            adapter: null,
+            sourceCode: '',
+          };
+          continue;
+        }
+
         const r0 = performance.now();
         const content = await readFile(file, 'utf-8');
         readMs += performance.now() - r0;
 
-        const p0 = performance.now();
-        const ast = await adapter.parse(file, content);
-        parseMs += performance.now() - p0;
-
-        tuples.push({
-          kind: 'parsed',
-          file,
-          ast,
-          adapter,
-          sourceCode: content,
-        });
         parsed++;
+        yield {
+          kind: 'raw',
+          file,
+          ast: null,
+          adapter: null,
+          sourceCode: content,
+        };
       } catch (err: any) {
-        // File read/parse errors — skip this file
-        // Individual files that fail to parse don't abort the entire run
+        unparsedFiles.push({ filePath: file, reason: `read error: ${err?.message ?? String(err)}` });
         if (config.progressCallback) {
           config.progressCallback({
-            current: parsed,
-            total: files.length,
+            current: orphans.indexOf(file),
+            total: orphans.length,
             analyzer: 'pipeline',
             phase: 'stage1',
             file,
-            message: `Skipped: ${err.message}`,
+            message: `Raw file skipped (read error): ${err.message}`,
           });
         }
       }
     }
-  }
 
-  // Include orphan files as raw tuples — no LanguageAdapter available,
-  // but visitors that consume raw files can read sourceCode directly.
-  for (const file of orphans) {
-    try {
-      const r0 = performance.now();
-      const content = await readFile(file, 'utf-8');
-      readMs += performance.now() - r0;
-
-      tuples.push({
-        kind: 'raw',
-        file,
-        ast: null,
-        adapter: null,
-        sourceCode: content,
+    const orphanIncluded = fileList.filter(f => !registry.getAdapterForFile(f)).length;
+    if (orphanIncluded > 0 && config.progressCallback) {
+      config.progressCallback({
+        current: orphanIncluded,
+        total: orphanIncluded,
+        analyzer: 'pipeline',
+        phase: 'stage1',
+        message: `${orphanIncluded} file(s) included as raw (no language adapter)`,
       });
-    } catch (err: any) {
-      if (config.progressCallback) {
-        config.progressCallback({
-          current: orphans.indexOf(file),
-          total: orphans.length,
-          analyzer: 'pipeline',
-          phase: 'stage1',
-          file,
-          message: `Raw file skipped (read error): ${err.message}`,
-        });
-      }
     }
   }
 
-  const orphanIncluded = tuples.filter(t => t.kind === 'raw').length;
-  if (orphanIncluded > 0 && config.progressCallback) {
-    config.progressCallback({
-      current: orphanIncluded,
-      total: orphanIncluded,
-      analyzer: 'pipeline',
-      phase: 'stage1',
-      message: `${orphanIncluded} file(s) included as raw (no language adapter)`,
-    });
-  }
-
-  const duration = performance.now() - t0;
-
   return {
-    tuples,
-    fileCount: tuples.length,
-    parseDurationMs: duration,
-    readDurationMs: readMs,
+    generator: generate(),
+    get fileCount() { return total; },
+    getUnparsedFiles: () => unparsedFiles,
+    getTiming: () => ({ parseDurationMs: parseMs, readDurationMs: readMs }),
   };
 }
 
 // ── Stage 2: Per-file visitors ─────────────────────────────────────────────
 
 async function runStage2(
-  tuples: FileASTTuple[],
+  tuples: AsyncIterable<FileASTTuple>,
   visitors: Stage2Visitor[],
   config: PipelineConfig,
+  totalFiles: number,
 ): Promise<{
   visitorResults: Map<string, AnalyzerResult>;
   allFacts: Map<string, Record<string, unknown>>;
@@ -210,116 +250,126 @@ async function runStage2(
   const pathProfiles: PathProfile[] | undefined = infra['pathProfiles'] as PathProfile[] | undefined;
   const severityOverrides: Record<string, string> = (infra['severityOverrides'] as Record<string, string>) ?? {};
 
-  // Iterate tuples
-  for (let i = 0; i < tuples.length; i++) {
-    const tuple = tuples[i];
-
+  // Stream tuples from stage 1
+  let i = 0;
+  for await (const tuple of tuples) {
     // Check abort
     if (config.abortSignal?.aborted) {
       throw new AuditAbortedError('Audit aborted during stage 2');
     }
 
-    // Progress
-    if (config.progressCallback && i % 10 === 0) {
-      config.progressCallback({
-        current: i,
-        total: tuples.length,
-        analyzer: 'pipeline',
-        phase: 'stage2',
-        file: tuple.file,
-      });
-    }
-
-    // Resolve path profiles for this file (non-analyzer-specific)
-    let fileInfra = infra;
-    let fileProfileNames: string[] = [];
-    let fileSeverityCap: string | undefined;
-    if (pathProfiles && pathProfiles.length > 0) {
-      const resolved = resolvePathProfile(tuple.file, projectRoot, pathProfiles);
-      if (Object.keys(resolved.overrides).length > 0) {
-        fileInfra = { ...infra, ...resolved.overrides };
-      }
-      fileProfileNames = resolved.matchedProfileNames;
-      fileSeverityCap = resolved.severityCap;
-    }
-
-    // Fan out to all visitors for this file — filter by declared extensions
-    const fileExt = path.extname(tuple.file);
-    for (const visitor of visitors) {
-      // Dispatch check: backward-compat visitors see only parsed tuples.
-      // Visitors that declare extensions see only tuples whose extension they consume.
-      if (visitor.extensions) {
-        if (!visitor.extensions.includes(fileExt)) continue;
-      } else {
-        // No extensions declared → parsed tuples only (backward compat)
-        if (tuple.kind !== 'parsed') continue;
+    try {
+      // Progress
+      if (config.progressCallback && i % 10 === 0) {
+        config.progressCallback({
+          current: i,
+          total: totalFiles,
+          analyzer: 'pipeline',
+          phase: 'stage2',
+          file: tuple.file,
+        });
       }
 
-      const visitorConfig = { ...(rawConfig[visitor.name] ?? {}), ...fileInfra };
-      const visitorContext = {
-        projectRoot,
-        filePath: tuple.file,
-        config: visitorConfig,
-        abortSignal: config.abortSignal,
-      };
+      // Resolve path profiles for this file (non-analyzer-specific)
+      let fileInfra = infra;
+      let fileProfileNames: string[] = [];
+      let fileSeverityCap: string | undefined;
+      if (pathProfiles && pathProfiles.length > 0) {
+        const resolved = resolvePathProfile(tuple.file, projectRoot, pathProfiles);
+        if (Object.keys(resolved.overrides).length > 0) {
+          fileInfra = { ...infra, ...resolved.overrides };
+        }
+        fileProfileNames = resolved.matchedProfileNames;
+        fileSeverityCap = resolved.severityCap;
+      }
 
-      try {
-        const v0 = performance.now();
-        const result = await visitor.visit(tuple.ast, tuple.adapter, visitorContext, tuple.sourceCode);
-        const vMs = performance.now() - v0;
+      // Fan out to all visitors for this file — filter by declared extensions
+      const fileExt = path.extname(tuple.file);
+      for (const visitor of visitors) {
+        // Dispatch check: backward-compat visitors see only parsed tuples.
+        // Visitors that declare extensions see only tuples whose extension they consume.
+        if (visitor.extensions) {
+          if (!visitor.extensions.includes(fileExt)) continue;
+        } else {
+          // No extensions declared → parsed tuples only (backward compat)
+          if (tuple.kind !== 'parsed') continue;
+        }
 
-        // Accumulate timing
-        timingMap.set(visitor.name, (timingMap.get(visitor.name) ?? 0) + vMs);
-
-        // Attach profile, severity overrides, analyzer name
-        const severityOrder = ['suggestion', 'warning', 'critical'] as const;
-        const processedViolations = result.violations
-          .map((v) => ({
-            ...v,
-            profile: fileProfileNames.length > 0
-              ? fileProfileNames[fileProfileNames.length - 1]
-              : v.profile,
-            severity: (severityOverrides[v.rule] ?? v.severity) as Severity,
-          }))
-          // Filter out violations whose severity was overridden to 'off' (Spec-11 R5)
-          .filter((v) => v.severity !== 'off')
-          // Apply severity cap from path profiles (Spec-20)
-          // Applied AFTER severityOverrides so path-level caps beat global promotions
-          .map((v) => {
-            if (fileSeverityCap) {
-              const capIndex = severityOrder.indexOf(fileSeverityCap as typeof severityOrder[number]);
-              if (capIndex >= 0 && severityOrder.indexOf(v.severity as typeof severityOrder[number]) > capIndex) {
-                return { ...v, severity: fileSeverityCap as 'suggestion' | 'warning' | 'critical' };
-              }
-            }
-            return v;
-          });
-
-        // Accumulate violations
-        const ar = visitorResults.get(visitor.name)!;
-        ar.violations.push(...processedViolations);
-        const prevFiles = ar.status.status === 'visitor-ran' ? ar.status.filesProcessed : 0;
-        ar.status = {
-          status: 'visitor-ran',
-          filesProcessed: prevFiles + 1,
+        const visitorConfig = { ...(rawConfig[visitor.name] ?? {}), ...fileInfra };
+        const visitorContext = {
+          projectRoot,
+          filePath: tuple.file,
+          config: visitorConfig,
+          abortSignal: config.abortSignal,
         };
 
-        // Accumulate facts
-        if (result.facts && Object.keys(result.facts).length > 0) {
-          const existing = allFacts.get(visitor.name) ?? {};
-          allFacts.set(visitor.name, { ...existing, ...result.facts });
-        }
+        try {
+          const v0 = performance.now();
+          const result = await visitor.visit(tuple.ast, tuple.adapter, visitorContext, tuple.sourceCode);
+          const vMs = performance.now() - v0;
 
-        // Collect index facts
-        if (result.indexFacts && result.indexFacts.length > 0) {
-          indexFacts.push(...result.indexFacts);
+          // Accumulate timing
+          timingMap.set(visitor.name, (timingMap.get(visitor.name) ?? 0) + vMs);
+
+          // Attach profile, severity overrides, analyzer name
+          const severityOrder = ['suggestion', 'warning', 'critical'] as const;
+          const processedViolations = result.violations
+            .map((v) => ({
+              ...v,
+              profile: fileProfileNames.length > 0
+                ? fileProfileNames[fileProfileNames.length - 1]
+                : v.profile,
+              severity: (severityOverrides[v.rule] ?? v.severity) as Severity,
+            }))
+            // Filter out violations whose severity was overridden to 'off' (Spec-11 R5)
+            .filter((v) => v.severity !== 'off')
+            // Apply severity cap from path profiles (Spec-20)
+            // Applied AFTER severityOverrides so path-level caps beat global promotions
+            .map((v) => {
+              if (fileSeverityCap) {
+                const capIndex = severityOrder.indexOf(fileSeverityCap as typeof severityOrder[number]);
+                if (capIndex >= 0 && severityOrder.indexOf(v.severity as typeof severityOrder[number]) > capIndex) {
+                  return { ...v, severity: fileSeverityCap as 'suggestion' | 'warning' | 'critical' };
+                }
+              }
+              return v;
+            });
+
+          // Accumulate violations
+          const ar = visitorResults.get(visitor.name)!;
+          ar.violations.push(...processedViolations);
+          const prevFiles = ar.status.status === 'visitor-ran' ? ar.status.filesProcessed : 0;
+          ar.status = {
+            status: 'visitor-ran',
+            filesProcessed: prevFiles + 1,
+          };
+
+          // Accumulate facts
+          if (result.facts && Object.keys(result.facts).length > 0) {
+            const existing = allFacts.get(visitor.name) ?? {};
+            allFacts.set(visitor.name, { ...existing, ...result.facts });
+          }
+
+          // Collect index facts
+          if (result.indexFacts && result.indexFacts.length > 0) {
+            indexFacts.push(...result.indexFacts);
+          }
+        } catch (err: any) {
+          // Visitor error on this file — collect but don't abort
+          const errs = errors.get(visitor.name)!;
+          errs.push({ file: tuple.file, error: err.message });
         }
-      } catch (err: any) {
-        // Visitor error on this file — collect but don't abort
-        const errs = errors.get(visitor.name)!;
-        errs.push({ file: tuple.file, error: err.message });
       }
+    } finally {
+      // Free per-file memory on every exit path (Spec 32 Fix 3): reclaim the WASM
+      // tree + drop the source string, even if a visitor or path-profile resolve
+      // throws. A leaked tree keeps the Emscripten arena pinned at its high-water
+      // mark and is the trigger for the Aborted() ceiling.
+      const ast = tuple.ast as { dispose?: () => void } | null;
+      ast?.dispose?.();
+      tuple.sourceCode = '';
     }
+    i++;
   }
 
   // Finalize results
@@ -356,7 +406,7 @@ async function runStage2(
     allFacts,
     indexFacts,
     visitorDurationMs: timingMap,
-    fileCount: tuples.length,
+    fileCount: i,
   };
 }
 
@@ -389,11 +439,21 @@ async function runStage3(
 
     // Per-reducer namespaced config: analyzer namespace + infrastructure
     const reducerConfig = { ...(rawConfig[reducer.name] ?? {}), ...infra };
+    // On-demand source reader: reducers pull file text lazily via readFileSync
+    // instead of retaining every file's source as a fact through stage 4.
+    const readSource = (filePath: string): string | undefined => {
+      try {
+        return readFileSync(filePath, 'utf-8');
+      } catch {
+        return undefined;
+      }
+    };
     const reducerContext = {
       projectRoot: config.projectRoot,
       config: reducerConfig,
       indexHandle,
       abortSignal: config.abortSignal,
+      readSource,
     };
 
     try {
@@ -526,6 +586,7 @@ async function runStage4(
  * @param indexHandle Optional DB handle for reducers (in-memory overlay for scoped runs).
  * @returns PipelineResult with analyzerResults and metadata.
  */
+
 export async function runPipeline(
   config: PipelineConfig,
   indexHandle?: IndexHandle,
@@ -544,23 +605,32 @@ export async function runPipeline(
     );
   }
 
-  // ── Stage 1: Traverse + Parse ────────────────────────────────────────────
-  const stage1 = await runStage1(config);
-  stageTiming['stage1-parse'] = stage1.parseDurationMs;
-
+  // ── Stage 1 setup: eager file discovery, lazy parse stream ──────────────
+  const s1 = runStage1(config);
   if (config.progressCallback) {
     config.progressCallback({
-      current: stage1.fileCount,
-      total: stage1.fileCount,
+      current: 0,
+      total: s1.fileCount,
       analyzer: 'pipeline',
       phase: 'stage1-complete',
-      message: `${stage1.fileCount} files parsed in ${stage1.parseDurationMs.toFixed(0)}ms`,
+      message: `${s1.fileCount} files discovered`,
     });
   }
 
-  // ── Stage 2: Per-file visitors ───────────────────────────────────────────
-  const stage2 = await runStage2(stage1.tuples, visitors, config);
-  stageTiming['stage2-visitors'] = performance.now() - totalT0 - stage1.parseDurationMs;
+  // ── Stage 2: Stream parse + per-file visitors ────────────────────────────
+  // The generator lazily reads/parses files as stage 2 consumes them.
+  // Stage 1 parse time is accumulated inside the generator closure and
+  // retrieved via getTiming() after the stream exhausts.
+  const streamT0 = performance.now();
+  const stage2 = await runStage2(s1.generator, visitors, config, s1.fileCount);
+  const { parseDurationMs, readDurationMs } = s1.getTiming();
+  // Streaming interleaves parse + visit per file, so there is no clean
+  // "stage 1 then stage 2" wall-clock split. Report honest figures instead:
+  // two CPU accumulators (measured inside the generator) plus one combined
+  // wall-clock for the whole parse+visit stream.
+  stageTiming['parse-cpu'] = parseDurationMs;
+  stageTiming['read-cpu'] = readDurationMs;
+  stageTiming['stream-parse-visit'] = performance.now() - streamT0;
 
   if (config.progressCallback) {
     config.progressCallback({
@@ -649,18 +719,40 @@ export async function runPipeline(
   const schemaFacts = combinedFacts['schema'] as Record<string, unknown> | undefined;
   const tableCatalog = schemaFacts?.tableCatalog as Array<{ table: string; sources: any[] }> | undefined;
 
+  // Spec 31: surface oversized orphan files skipped by stage-1 streaming.
+  // The schema-sql visitor marks them with `skipped: true`; here they are lifted
+  // into metadata so a skipped file is visible in coverage without adding a
+  // violation (which would break the exact baseline counts).
+  const schemaSqlFacts = stage2.allFacts.get('schema-sql') as Record<string, unknown> | undefined;
+  const skippedFiles: Array<{ filePath: string; bytes: number; reason: string }> = [];
+  if (schemaSqlFacts) {
+    for (const [filePath, fact] of Object.entries(schemaSqlFacts)) {
+      const f = fact as { skipped?: boolean; bytes?: number };
+      if (f.skipped) {
+        skippedFiles.push({ filePath, bytes: f.bytes ?? 0, reason: 'oversized-orphan-no-ddl' });
+      }
+    }
+  }
+
   const totalDuration = performance.now() - totalT0;
+
+  // Spec 32: files that failed to parse (or be read) in stage 1. Surfaced in
+  // coverage and used by the CLI to force a non-zero exit — a run that silently
+  // skipped files must never report as clean.
+  const unparsedFiles = s1.getUnparsedFiles();
 
   return {
     analyzerResults,
     metadata: {
       auditDuration: totalDuration,
-      filesAnalyzed: stage1.fileCount,
+      filesAnalyzed: s1.fileCount,
       stageTiming,
       scoped: config.isScoped,
       diagnostics,
       coverage,
       tableCatalog,
+      ...(skippedFiles.length > 0 && { skippedFiles }),
+      ...(unparsedFiles.length > 0 && { unparsedFiles }),
     },
     indexFacts: stage2.indexFacts,
   };

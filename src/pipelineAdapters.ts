@@ -29,6 +29,7 @@ import type {
   ReducerContext,
 } from './types.js';
 import type { AST, LanguageAdapter } from './languages/types.js';
+import type { MigrationOp } from './analyzers/universal/UniversalSchemaAnalyzer.js';
 import {
   walkAST,
   isExported,
@@ -47,7 +48,6 @@ import {
   detectComponentType,
   getComponentName,
 } from './utils/reactDetection.js';
-import { ALL_EXTENSIONS } from './utils/fileDiscovery.js';
 
 // ── Rule ID helpers ──────────────────────────────────────────────────────────
 
@@ -64,31 +64,6 @@ function lazySingleton<T>(loader: () => Promise<T>): () => Promise<T> {
   return () => {
     if (!promise) promise = loader();
     return promise;
-  };
-}
-
-// ── File-sources infrastructure visitor ──────────────────────────────────────
-
-/**
- * Infrastructure visitor that records every file's source code so Stage 3
- * reducers can access it without calling readFileSync(). Always registered;
- * declares all known extensions so it covers both parsed and raw tuples.
- */
-export function createFileSourcesVisitor(): Stage2Visitor {
-  return {
-    name: 'file-sources',
-    stage: 'visitor',
-    extensions: ALL_EXTENSIONS,
-    getRuleIds: () => [],
-    async visit(_ast: unknown, _adapter: unknown, context: VisitorContext, sourceCode: string) {
-      return {
-        violations: [],
-        facts: { [context.filePath]: sourceCode },
-      };
-    },
-    defaultConfig: {},
-    description: 'Records every file source for Stage 3 reducers (infrastructure)',
-    category: 'infrastructure',
   };
 }
 
@@ -830,11 +805,6 @@ export function createConventionsReducer(): Stage3Reducer {
           './analyzers/universal/UniversalConventionsAnalyzer.js'
         );
         const analyzer = new UniversalConventionsAnalyzer();
-        // Extract per-file source map from the file-sources infrastructure visitor
-        const fileSources = _allFacts['file-sources'] as Record<string, string> | undefined;
-        const sourceMap: Map<string, string> | undefined = fileSources
-          ? new Map(Object.entries(fileSources))
-          : undefined;
 
         // B2: Build exports map from function-index visitor facts (AST-extracted)
         const functionIndexFacts = _allFacts['function-index'] as
@@ -847,7 +817,7 @@ export function createConventionsReducer(): Stage3Reducer {
             )
           : undefined;
 
-        const config = { ...context.config, indexHandle: context.indexHandle, projectRoot: context.projectRoot, sourceMap, exportsMap };
+        const config = { ...context.config, indexHandle: context.indexHandle, projectRoot: context.projectRoot, readSource: context.readSource, exportsMap };
         const result = await analyzer.analyze([], config);
         const factsConsumed = context.indexHandle.count('conventions');
         return { violations: result.violations ?? [], facts: {}, factsConsumed };
@@ -931,14 +901,8 @@ export function createInvariantsReducer(): Stage3Reducer {
         );
         // Full file list is in _infra.files (merged into context.config via pipeline)
         const files = (context.config as any).files as string[] ?? [];
-        // Extract per-file source map from the file-sources infrastructure visitor
-        const fileSources = _allFacts['file-sources'] as Record<string, string> | undefined;
-        const sourceMap: Map<string, string> | undefined = fileSources
-          ? new Map(Object.entries(fileSources))
-          : undefined;
-        const knownFiles: Set<string> | undefined = sourceMap
-          ? new Set(sourceMap.keys())
-          : undefined;
+        // Absolute paths — format-equivalent to the old sourceMap.keys().
+        const knownFiles: Set<string> = new Set(files);
 
         // B1: Build fileData from the function-index visitor's AST-extracted
         // imports/exports — replaces regex-based extractImports/extractExportedSymbols
@@ -978,7 +942,7 @@ export function createInvariantsReducer(): Stage3Reducer {
 
         const result = await analyzeInvariants(
           files,
-          { ...context.config, sourceMap, knownFiles, fileData },
+          { ...context.config, readSource: context.readSource, knownFiles, fileData },
           { projectRoot: context.projectRoot, indexHandle: context.indexHandle } as any,
         );
         return {
@@ -1008,23 +972,35 @@ async function _getProvenanceModule() {
 }
 
 /**
- * Schema SQL visitor (.sql files) — extracts raw DDL source for the Stage 3
- * reducer to replay into the known-tables catalog.
+ * Schema SQL visitor (.sql files) — extracts ordered DDL operations for the
+ * Stage 3 reducer to replay into the known-tables catalog. Emits the parsed
+ * ops, not raw source, so the reducer retains only state transitions.
  */
 export function createSchemaSqlVisitor(): Stage2Visitor {
+  const getMigrationExtractor = lazySingleton(() =>
+    import('./analyzers/universal/UniversalSchemaAnalyzer.js'),
+  );
+
   return {
     name: 'schema-sql',
     stage: 'visitor',
     extensions: ['.sql'],
     getRuleIds: () => [],
     async visit(_ast: unknown, _adapter: unknown, context: VisitorContext, sourceCode: string) {
+      const { extractMigrationOpsFromFile } = await getMigrationExtractor();
+      const { ops, skipped, bytes } = await extractMigrationOpsFromFile(context.filePath, sourceCode);
       return {
         violations: [],
-        facts: { [context.filePath]: { ddlSource: sourceCode } },
+        facts: {
+          [context.filePath]: {
+            ddlOps: ops,
+            ...(skipped && { skipped: true, bytes }),
+          },
+        },
       };
     },
     defaultConfig: {},
-    description: 'Captures SQL DDL source for known-table catalog',
+    description: 'Extracts SQL DDL operations for known-table catalog',
     category: 'database',
   };
 }
@@ -1038,6 +1014,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
     import('./analyzers/universal/UniversalSchemaAnalyzer.js').then((m) => ({
       analyzer: new m.UniversalSchemaAnalyzer(),
       defaults: m.DEFAULT_SCHEMA_CONFIG,
+      parseMigrationOps: m.parseMigrationOps,
     })),
   );
 
@@ -1047,7 +1024,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
     extensions: ['.ts', '.tsx', '.js', '.jsx'],
     getRuleIds: () => getRuleIdsFor('schema'),
     async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const { analyzer: a, defaults } = await getAnalyzer();
+      const { analyzer: a, defaults, parseMigrationOps } = await getAnalyzer();
       const pm = await _getProvenanceModule();
       const violations: Violation[] = [];
       const indexFacts: IndexFactsEntry[] = [];
@@ -1107,7 +1084,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       // File gate — skip files without DB usage
       if (!a.passesFileGate(context.filePath, sourceCode, schemaConfig, provenanceContext)) {
         const facts: Record<string, unknown> = { [context.filePath]: { tableRefs: [], ormTables, tableProvenance: tableProvenances } };
-        if (doDDL.length > 0) (facts[context.filePath] as any).ddlSource = doDDL.join(';\n');
+        if (doDDL.length > 0) (facts[context.filePath] as any).ddlOps = parseMigrationOps(doDDL.join(';\n'));
         return { violations: [], facts };
       }
 
@@ -1175,7 +1152,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         ormTables,
         tableProvenance: tableProvenances,
       };
-      if (doDDL.length > 0) (fileFacts as any).ddlSource = doDDL.join(';\n');
+      if (doDDL.length > 0) (fileFacts as any).ddlOps = parseMigrationOps(doDDL.join(';\n'));
 
       return {
         violations,
@@ -1239,16 +1216,13 @@ export function createSchemaJsonVisitor(): Stage2Visitor {
     stage: 'visitor',
     extensions: ['.json'],
     getRuleIds: () => [],
-    async visit(_ast: unknown, _adapter: unknown, context: VisitorContext, sourceCode: string) {
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(sourceCode);
-      } catch {
-        // Invalid JSON — skip
-      }
+    async visit(_ast: unknown, _adapter: unknown, context: VisitorContext, _sourceCode: string) {
+      // Emit only a lightweight marker — the Stage 3 reducer reads and parses
+      // each JSON file on demand via context.readSource, so parsed objects are
+      // transient rather than retained in allFacts through stage 4.
       return {
         violations: [],
-        facts: { [context.filePath]: { jsonParsed: parsed, jsonRaw: sourceCode } },
+        facts: { [context.filePath]: { isJson: true } },
       };
     },
     defaultConfig: {},
@@ -1300,11 +1274,11 @@ export function createSchemaReducer(): Stage3Reducer {
       const knownTables = new Set<string>();
       const tableProvenances = new Map<string, any[]>(); // table name → origins
 
-      // 1a. SQL DDL replay — collect all .sql file facts, sort by numeric prefix, replay
-      const sqlFiles: Array<{ filePath: string; source: string }> = [];
+      // 1a. SQL DDL replay — collect all DDL facts, sort by numeric prefix, replay
+      const sqlFiles: Array<{ filePath: string; ops: MigrationOp[] }> = [];
       for (const [filePath, fact] of perFile()) {
-        if ('ddlSource' in fact) {
-          sqlFiles.push({ filePath, source: fact.ddlSource as string });
+        if ('ddlOps' in fact) {
+          sqlFiles.push({ filePath, ops: fact.ddlOps as MigrationOp[] });
         }
       }
       // Sort by numeric prefix in basename: "009_something" < "0010_rename"
@@ -1322,7 +1296,7 @@ export function createSchemaReducer(): Stage3Reducer {
       });
       for (const sqlFile of sqlFiles) {
         const before = new Set(knownTables);
-        a.processMigrationSource(sqlFile.source, knownTables);
+        a.applyMigrationOps(sqlFile.ops, knownTables);
         // Record provenance for newly created tables
         for (const table of knownTables) {
           if (!before.has(table)) {
@@ -1434,24 +1408,25 @@ export function createSchemaReducer(): Stage3Reducer {
 
       if (schemaConfig.validateJsonSchemas !== false) {
         try {
-          // Build content Map from json facts for the refactored analyzeJsonSchemas
-          const jsonContents = new Map<string, { parsed: object | null; raw: string }>();
-          let jsonFactCount = 0;
+          // Collect JSON file paths from the lightweight visitor markers, then
+          // parse each on demand so parsed objects never survive past this loop.
+          const jsonFiles: string[] = [];
           for (const [filePath, fact] of perFile()) {
-            if ('jsonParsed' in (fact as any)) {
-              jsonFactCount++;
-              const raw = ((fact as any).jsonParsed ?? null);
-              // parsed is the result of JSON.parse: null on failure, or the
-              // deserialized value. Only accept objects as usable parsed content.
-              const parsed: object | null =
-                raw !== null && typeof raw === 'object' ? (raw as object) : null;
-              jsonContents.set(filePath, {
-                parsed,
-                raw: ((fact as any).jsonRaw ?? (fact as any).sourceCode ?? '') as string,
-              });
+            if ('isJson' in (fact as any)) {
+              jsonFiles.push(filePath);
             }
           }
-          const jsonResult = a.analyzeJsonSchemas(jsonContents, schemaConfig);
+          const readJson = (filePath: string): object | null => {
+            const raw = context.readSource?.(filePath);
+            if (raw === undefined) return null;
+            try {
+              const parsed = JSON.parse(raw);
+              return parsed !== null && typeof parsed === 'object' ? (parsed as object) : null;
+            } catch {
+              return null;
+            }
+          };
+          const jsonResult = a.analyzeJsonSchemas(jsonFiles, readJson, schemaConfig);
           violations.push(...(jsonResult?.violations ?? []));
         } catch (e: any) {
           // JSON schema validation is best-effort (non-fatal)

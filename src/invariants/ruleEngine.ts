@@ -533,11 +533,10 @@ export interface RuleEngineOptions {
   /** Base project directory for resolving absolute paths */
   projectDir: string;
   /**
-   * Optional map of absolute file path → source text.
-   * When provided, extractImports/extractExportedSymbols/ast-pattern use
-   * this instead of calling readFileSync.
+   * Optional on-demand reader of absolute file path → source text.
+   * When provided, ast-pattern uses this instead of calling readFileSync.
    */
-  sourceMap?: Map<string, string>;
+  readSource?: (filePath: string) => string | undefined;
   /**
    * Optional set of known absolute file paths (for existence checks).
    * When provided, resolveImportPath checks membership here instead of
@@ -557,7 +556,7 @@ export interface RuleEngineOptions {
  * call-constraint queries the full index for callers.
  */
 export function checkRules(options: RuleEngineOptions): RuleCheckResult {
-  const { rules, files, indexHandle, projectDir, sourceMap, knownFiles, fileData: preExtractedFileData } = options;
+  const { rules, files, indexHandle, projectDir, readSource, knownFiles, fileData: preExtractedFileData } = options;
   const violations: RuleViolation[] = [];
   const errors: string[] = [];
 
@@ -647,7 +646,7 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
         const normalized = file.replace(/^\.\//, '');
         const fullPath = file.startsWith('/') ? file : `${projectDir}/${normalized}`;
         try {
-          const source = sourceMap?.get(fullPath);
+          const source = readSource?.(fullPath);
           if (!source) continue;
           violations.push(...checkAstPattern(rule, normalized, source));
         } catch (err: any) {

@@ -10,8 +10,10 @@
  */
 
 import fs from 'fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
+import { MAX_ORPHAN_SOURCE_BYTES } from '../../types.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, NodePattern, ImportInfo } from '../../languages/types.js';
 import picomatch from 'picomatch';
@@ -176,6 +178,105 @@ export interface TableCatalogEntry {
 
 import type { Violation as BaseViolation, AnalyzerResult, SchemaUsage } from '../../types.js';
 
+/** A single DDL state transition parsed from migration SQL. */
+export type MigrationOp = {
+  op: 'CREATE' | 'DROP' | 'RENAME';
+  table: string;
+  newTable?: string;
+};
+
+/**
+ * The DDL state-machine regex shared by the standalone analyze() path and the
+ * pipeline's schema-sql visitor. Single ordered pass — applies CREATE/DROP/
+ * RENAME in statement order within each migration file (fixes the rename-replay
+ * bug where CREATE after RENAME in the same file was silently dropped).
+ */
+const DDL_RE = /(CREATE)\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)|(DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)|(ALTER)\s+TABLE\s+(`[^`]+`|"[^"]+"|\w+)\s+RENAME\s+TO\s+(`[^`]+`|"[^"]+"|\w+)/gi;
+
+/**
+ * Extract ordered DDL operations from migration SQL text. Emitted by the
+ * schema-sql visitor instead of raw source so the reducer only retains the
+ * extracted state transitions, not the full file text.
+ */
+export function parseMigrationOps(source: string): MigrationOp[] {
+  const ops: MigrationOp[] = [];
+  let match: RegExpExecArray | null;
+  DDL_RE.lastIndex = 0;
+  while ((match = DDL_RE.exec(source)) !== null) {
+    const op = match[1] || match[3] || match[5];
+    if (op === 'CREATE') {
+      ops.push({ op: 'CREATE', table: match[2] });
+    } else if (op === 'DROP') {
+      ops.push({ op: 'DROP', table: match[4] });
+    } else if (op === 'ALTER') {
+      ops.push({ op: 'RENAME', table: match[6], newTable: match[7] });
+    }
+  }
+  return ops;
+}
+
+/** Lightweight DDL presence marker — detection only, no capture groups. */
+const DDL_PRESENCE_RE = /(?:CREATE|DROP|ALTER)\s+(?:VIRTUAL\s+)?TABLE/i;
+
+/**
+ * Detect whether an SQL file contains any DDL statement without materializing
+ * the whole file. Streams in 1 MB chunks, carrying a small tail across chunk
+ * boundaries so a marker split at "CREATE TA/BLE" is still caught. Used by the
+ * schema-sql visitor for oversized orphans yielded with empty source by stage 1.
+ */
+export async function sqlFileHasDdl(filePath: string): Promise<boolean> {
+  const CHUNK = 1024 * 1024; // 1 MB
+  const CARRY = 32; // "ALTER VIRTUAL TABLE IF NOT EXISTS" — enough to bridge a boundary
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(CHUNK);
+    let carry = '';
+    let pos = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, CHUNK, pos);
+      if (bytesRead === 0) break;
+      const text = carry + buffer.toString('utf8', 0, bytesRead);
+      if (DDL_PRESENCE_RE.test(text)) return true;
+      carry = text.slice(-CARRY);
+      pos += bytesRead;
+    }
+    return false;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Extract migration ops from an SQL file, honoring stage-1 streaming: when
+ * `sourceCode` is empty the file was too large to materialize, so DDL presence
+ * is detected by streaming; only a real oversized migration is read in full
+ * (rare). Returns a `skipped` flag so the pipeline can surface the skip in
+ * coverage without emitting a violation.
+ */
+export async function extractMigrationOpsFromFile(
+  filePath: string,
+  sourceCode: string,
+): Promise<{ ops: MigrationOp[]; skipped: boolean; bytes: number }> {
+  if (sourceCode !== '') {
+    return { ops: parseMigrationOps(sourceCode), skipped: false, bytes: Buffer.byteLength(sourceCode) };
+  }
+  let size = 0;
+  try {
+    size = (await fs.stat(filePath)).size;
+  } catch {
+    size = 0;
+  }
+  if (size <= MAX_ORPHAN_SOURCE_BYTES) {
+    // Empty or small file whose read produced an empty string — nothing to do.
+    return { ops: [], skipped: false, bytes: size };
+  }
+  if (!(await sqlFileHasDdl(filePath))) {
+    return { ops: [], skipped: true, bytes: size };
+  }
+  const full = await fs.readFile(filePath, 'utf-8');
+  return { ops: parseMigrationOps(full), skipped: false, bytes: size };
+}
+
 export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   readonly name = 'schema';
   readonly description = 'Analyzes code against database schemas and validates JSON schemas';
@@ -211,21 +312,24 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     source: string,
     tables: Set<string>,
   ): void {
-    // Sequential state machine: apply CREATE/DROP/RENAME in statement order
-    // within each migration file. Fixes the rename-replay bug where CREATE
-    // after RENAME in the same file was silently deleted by the old three-pass
-    // approach (all CREATE then all DROP then all RENAME).
-    const ddlRe = /(CREATE)\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)|(DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)|(ALTER)\s+TABLE\s+(`[^`]+`|"[^"]+"|\w+)\s+RENAME\s+TO\s+(`[^`]+`|"[^"]+"|\w+)/gi;
-    let match: RegExpExecArray | null;
-    while ((match = ddlRe.exec(source)) !== null) {
-      const op = match[1] || match[3] || match[5];
+    this.applyMigrationOps(parseMigrationOps(source), tables);
+  }
+
+  /**
+   * Apply pre-extracted DDL operations to a table set in migration order.
+   * Strips identifier delimiters (backticks/quotes) and performs the
+   * CREATE/DROP/RENAME state transitions. Callable from the schema reducer
+   * without re-parsing raw SQL.
+   */
+  public applyMigrationOps(ops: MigrationOp[], tables: Set<string>): void {
+    for (const { op, table, newTable } of ops) {
       if (op === 'CREATE') {
-        tables.add(this.stripIdentifier(match[2]));
+        tables.add(this.stripIdentifier(table));
       } else if (op === 'DROP') {
-        tables.delete(this.stripIdentifier(match[4]));
-      } else if (op === 'ALTER') {
-        tables.delete(this.stripIdentifier(match[6]));
-        tables.add(this.stripIdentifier(match[7]));
+        tables.delete(this.stripIdentifier(table));
+      } else {
+        tables.delete(this.stripIdentifier(table));
+        tables.add(this.stripIdentifier(newTable!));
       }
     }
   }
@@ -280,7 +384,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       filesProcessed: 0,
     };
 
-    // Adapt JSON handling to the pipeline-style analyzeJsonSchemas(Map) signature.
+    // Adapt JSON handling to the pipeline-style analyzeJsonSchemas(files, readJson) signature.
     let jsonResult: AnalyzerResult = {
       violations: [],
       executionTime: 0,
@@ -290,18 +394,16 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       filesProcessed: 0,
     };
     if (jsonFiles.length > 0) {
-      const jsonContents = new Map<string, { parsed: object | null; raw: string }>();
-      for (const file of jsonFiles) {
+      const readJson = (file: string): object | null => {
         try {
-          const raw = await fs.readFile(file, 'utf8');
-          let parsed: object | null = null;
-          try { parsed = JSON.parse(raw); } catch { /* not valid JSON */ }
-          jsonContents.set(file, { parsed, raw });
+          const raw = readFileSync(file, 'utf8');
+          const parsed = JSON.parse(raw);
+          return parsed !== null && typeof parsed === 'object' ? (parsed as object) : null;
         } catch {
-          // Skip unreadable files
+          return null;
         }
-      }
-      jsonResult = this.analyzeJsonSchemas(jsonContents, config);
+      };
+      jsonResult = this.analyzeJsonSchemas(jsonFiles, readJson, config);
     }
 
     return {
@@ -1761,14 +1863,18 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   /**
    * Analyze JSON schemas and validate data files against them.
    *
-   * Pipeline-refactored: accepts a Map of pre-loaded JSON contents instead of
-   * reading from the filesystem, so this can run inside a Stage 3 reducer.
+   * Pipeline-refactored: accepts a list of JSON file paths plus an on-demand
+   * parser so parsed objects are transient (one file at a time) rather than
+   * retained in memory for the whole Stage 3 reducer run.
    *
-   * @param jsonContents Map from filePath → { parsed: pre-parsed object or null, raw: string }
+   * @param files JSON file paths to validate
+   * @param readJson on-demand parser: returns the parsed object, or null when
+   *   the file failed to parse (invalid JSON) or was absent.
    * @param config Schema analyzer configuration
    */
   public analyzeJsonSchemas(
-    jsonContents: Map<string, { parsed: object | null; raw: string }>,
+    files: string[],
+    readJson: (filePath: string) => object | null,
     config: SchemaAnalyzerConfig
   ): AnalyzerResult {
     const violations: BaseViolation[] = [];
@@ -1782,38 +1888,14 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       return { violations, errors, status: makeVisitorStatus(filesProcessed), executionTime: 0, analyzerName: this.name };
     }
 
-    const files = Array.from(jsonContents.keys());
     const schemaFiles = this.identifySchemaFiles(files, finalConfig);
     const dataFiles = this.identifyDataFiles(files, finalConfig);
     const unknownJsonFiles = files.filter(f => !schemaFiles.includes(f) && !dataFiles.includes(f));
 
-    // Helper: parse from Map content (with fallback)
-    const getParsed = (filePath: string): object | null => {
-      const entry = jsonContents.get(filePath);
-      if (!entry) return null;
-      if (entry.parsed !== null) return entry.parsed;
-      try { return JSON.parse(entry.raw); } catch { return null; }
-    };
-
     const schemas = new Map<string, any>();
     for (const file of schemaFiles) {
       try {
-        const entry = jsonContents.get(file);
-        const content = entry?.raw;
-        if (!content) {
-          violations.push({
-            file,
-            line: 1,
-            column: 1,
-            severity: 'warning',
-            message: `Content not available for schema file`,
-            rule: 'file-error',
-            analyzer: 'schema'
-          });
-          filesProcessed++;
-          continue;
-        }
-        const schema = entry.parsed ?? (() => { try { return JSON.parse(content); } catch { return null; } })();
+        const schema = readJson(file);
         if (schema === null) throw new SyntaxError('JSON parse failed');
         schemas.set(file, schema);
 
@@ -1844,12 +1926,12 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
 
     if (finalConfig.schemaDataPairs) {
       for (const pair of finalConfig.schemaDataPairs) {
-        const schema = schemas.get(pair.schema) ?? getParsed(pair.schema);
+        const schema = schemas.get(pair.schema) ?? readJson(pair.schema);
         if (schema) {
           const dataFiles = Array.isArray(pair.data) ? pair.data : [pair.data];
           for (const dataFile of dataFiles) {
             if (files.includes(dataFile)) {
-              const parsed = getParsed(dataFile);
+              const parsed = readJson(dataFile);
               if (parsed !== null) {
                 const dataViolations: BaseViolation[] = [];
                 this.validateAgainstSchema(parsed, schema, dataFile, dataViolations, finalConfig);
@@ -1874,14 +1956,14 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       for (const dataFile of [...dataFiles, ...unknownJsonFiles]) {
         const matchedSchema = this.findMatchingSchema(dataFile, schemas, finalConfig);
         if (matchedSchema) {
-          const parsed = getParsed(dataFile);
+          const parsed = readJson(dataFile);
           if (parsed !== null) {
             const dataViolations: BaseViolation[] = [];
             this.validateAgainstSchema(parsed, matchedSchema, dataFile, dataViolations, finalConfig);
             violations.push(...dataViolations);
           }
         } else if (unknownJsonFiles.includes(dataFile)) {
-          const parsed = getParsed(dataFile);
+          const parsed = readJson(dataFile);
           if (parsed === null) {
             violations.push({
               file: dataFile,

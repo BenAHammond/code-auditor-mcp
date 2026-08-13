@@ -185,6 +185,9 @@ export interface ReducerContext {
   config: Record<string, unknown>;
   indexHandle?: IndexHandle;
   abortSignal?: AbortSignal;
+  /** On-demand source reader — lets reducers pull file text lazily instead of
+   *  retaining every file's full source as a fact through stage 4. */
+  readSource?: (filePath: string) => string | undefined;
 }
 
 /** Return type from stage-2 visitor visit(). */
@@ -292,6 +295,15 @@ export interface PipelineConfig {
   isScoped?: boolean;
 }
 
+/**
+ * Spec 31 — orphan files (no language adapter, e.g. `.sql` data dumps) larger
+ * than this are not materialized into a `sourceCode` string during stage 1.
+ * The consuming visitor streams them on demand instead, avoiding OOM on e.g. a
+ * 257 MB `snapshots/data.sql`. Real migrations/schemas are orders of magnitude
+ * below this; only data dumps cross it.
+ */
+export const MAX_ORPHAN_SOURCE_BYTES = 8 * 1024 * 1024; // 8 MB
+
 /** Pipeline output — merged results from all four stages. */
 export interface PipelineResult {
   analyzerResults: Record<string, AnalyzerResult>;
@@ -304,6 +316,14 @@ export interface PipelineResult {
     coverage?: RuleCoverage[];
     /** Spec 29: Per-table provenance catalog from schema reducer */
     tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
+    /** Spec 31: oversized orphan files skipped by stage-1 streaming. Surfaced in
+     *  metadata (not violations) so baseline counts are preserved. */
+    skippedFiles?: Array<{ filePath: string; bytes: number; reason: string }>;
+    /** Spec 32: files that failed to parse (or to be read) during stage 1, with
+     *  the reason. A non-empty list means the audit was incomplete — consumers
+     *  must surface it and exit non-zero rather than report a plausible-but-wrong
+     *  result. */
+    unparsedFiles?: Array<{ filePath: string; reason: string }>;
   };
   indexFacts?: IndexFactsEntry[];
 }
@@ -393,6 +413,11 @@ export interface AuditResult {
     coverage?: RuleCoverage[];
     /** Spec 29: Per-table provenance catalog from schema reducer */
     tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
+    /** Spec 31: oversized orphan files skipped by stage-1 streaming. */
+    skippedFiles?: Array<{ filePath: string; bytes: number; reason: string }>;
+    /** Spec 32: files that failed to parse (or to be read) during stage 1, with
+     *  the reason. Non-empty means the audit was incomplete. */
+    unparsedFiles?: Array<{ filePath: string; reason: string }>;
   };
 }
 
@@ -560,6 +585,8 @@ export interface AuditMetadata {
   reports?: string[];
   /** Spec 29: Per-table provenance catalog from the schema reducer */
   tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
+  /** Spec 30: Per-stage wall-clock timing for the streaming pipeline */
+  stageTiming?: Record<string, number>;
 }
 
 export interface BaseAnalyzerOptions {

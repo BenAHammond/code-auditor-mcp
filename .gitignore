@@ -122,6 +122,9 @@ all-configs/
 custom-server/
 bug-reports/
 
+# Local validation corpora (large, contain nested .git — never commit)
+corpus-expansion/
+
 .claude/
 claude.backup-*
 

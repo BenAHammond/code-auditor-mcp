@@ -499,7 +499,10 @@ function mineImportForm(
     if (seen.has(row.file_path)) continue;
     seen.add(row.file_path);
 
-    const fullPath = projectRoot ? path.join(projectRoot, row.file_path) : row.file_path;
+    const fullPath =
+      projectRoot && !path.isAbsolute(row.file_path)
+        ? path.join(projectRoot, row.file_path)
+        : row.file_path;
     let content: string;
     const provided = getSource?.(row.file_path) ?? getSource?.(fullPath);
     if (provided !== undefined) {
@@ -722,7 +725,10 @@ function mineExportShape(
     if (fileExports) {
       form = detectExportForm(row.name, fileExports);
     } else {
-      const fullPath = projectRoot ? path.join(projectRoot, row.file_path) : row.file_path;
+      const fullPath =
+        projectRoot && !path.isAbsolute(row.file_path)
+          ? path.join(projectRoot, row.file_path)
+          : row.file_path;
       let content: string;
       const provided = getSource?.(row.file_path) ?? getSource?.(fullPath);
       if (provided !== undefined) {

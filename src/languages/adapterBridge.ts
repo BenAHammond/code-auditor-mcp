@@ -66,7 +66,7 @@ function parseWithTreeSitter(filePath: string, content: string): AST | null {
   const errors: Array<{ message: string; location: SourceLocation; severity: 'error' | 'warning' }> = [];
   collectErrors(tree.rootNode, errors);
 
-  return { root, language: lang, filePath, errors };
+  return { root, language: lang, filePath, errors, dispose: () => tree.delete() };
 }
 
 function collectErrors(node: TreeSitterNode, errors: AST['errors']): void {

@@ -6,7 +6,7 @@
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { getParser } from '../tree-sitter/parser.js';
+import { getParser, parseWithRecovery } from '../tree-sitter/parser.js';
 import { toASTNode, toSourceLocation } from '../tree-sitter/converter.js';
 import type {
   AST,
@@ -57,8 +57,7 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
     const isTsx = filePath.endsWith('.tsx') || filePath.endsWith('.jsx');
     const lang = isTsx ? 'tsx' : filePath.endsWith('.go') ? 'go' : 'typescript';
 
-    const parser = getParser(lang, isTsx);
-    const tree = parser.parse(content);
+    const tree = await parseWithRecovery(lang, isTsx, content);
     if (!tree) throw new Error(`Failed to parse file: ${filePath}`);
 
     const errors: ParseError[] = [];
@@ -73,6 +72,7 @@ export class TreeSitterTypeScriptAdapter implements LanguageAdapter {
       language: lang,
       filePath,
       errors,
+      dispose: () => tree.delete(),
     };
 
     sourceCodeMap.set(ast, content);

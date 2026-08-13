@@ -123,9 +123,9 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       };
     }
 
-    // Extract project root, source map, and exports map from config
+    // Extract project root, on-demand source reader, and exports map from config
     const projectRoot: string | undefined = config.projectRoot;
-    const sourceMap: Map<string, string> | undefined = config.sourceMap;
+    const readSource: ((filePath: string) => string | undefined) | undefined = config.readSource;
     // B2: exportsMap comes from function-index visitor facts (AST-extracted)
     const exportsMap: Map<string, ExportInfo[]> | undefined = config.exportsMap;
 
@@ -145,7 +145,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
           break;
         case 'import-form':
           violations.push(
-            ...this.detectImportFormViolations(indexHandle, domainConventions, projectRoot, sourceMap),
+            ...this.detectImportFormViolations(indexHandle, domainConventions, projectRoot, readSource),
           );
           break;
         case 'error-handling':
@@ -288,7 +288,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     indexHandle: IndexHandle,
     conventions: ConventionRow[],
     projectRoot?: string,
-    sourceMap?: Map<string, string>,
+    readSource?: (filePath: string) => string | undefined,
   ): Violation[] {
     const violations: Violation[] = [];
 
@@ -337,7 +337,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       if (!importConvs) continue;
 
       const fullPath = projectRoot ? path.join(projectRoot, fp) : fp;
-      let content: string | undefined = sourceMap?.get(fullPath);
+      let content: string | undefined = readSource?.(fullPath);
       if (content === undefined) continue;
 
       const imports = parseFileImports(content);

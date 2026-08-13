@@ -47,7 +47,6 @@ import {
   createDataAccessVisitor,
   createDocumentationVisitor,
   createFunctionIndexVisitor,
-  createFileSourcesVisitor,
   createStylesCssVisitor,
   createReactVisitor,
   createStylesReducer,
@@ -368,6 +367,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     const provenanceTiming = { totalMs: 0 };
     let pipelineCoverage: RuleCoverage[] | undefined;
     let pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
+    let pipelineStageTiming: Record<string, number> | undefined;
+    let pipelineSkippedFiles: Array<{ filePath: string; bytes: number; reason: string }> | undefined;
+    let pipelineUnparsedFiles: Array<{ filePath: string; reason: string }> | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -432,9 +434,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // `functions` table so conventions + cross-domain reducers have data
     // even on a cold run with no prior index sync.
     pipelineVisitors.push(createFunctionIndexVisitor());
-    // file-sources visitor records per-file source code so Stage 3 reducers
-    // can access it without calling readFileSync().
-    pipelineVisitors.push(createFileSourcesVisitor());
 
     // styles-css visitor — AST-extracts .css files into style_* tables (Spec 26 Phase 2)
     if (enabledAnalyzers.includes('styles')) pipelineVisitors.push(createStylesCssVisitor());
@@ -560,13 +559,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               });
             }
             try {
-              // Build a source provider from the file-sources infrastructure
-              // visitor fact — avoids readFileSync inside the pipeline.
-              const fileSources = ctx?.allFacts.get('file-sources') as Record<string, string> | undefined;
-              const getSource = fileSources
-                ? (filePath: string) => fileSources[filePath]
-                : undefined;
-              auditIndex.mineAllConventions(root, getSource);
+              // Convention mining reads source on demand via readFileSync
+              // (mineImportForm/mineExportShape have an internal fallback).
+              auditIndex.mineAllConventions(root);
             } catch (err) {
               logMcpInfo('analysis', 'convention mining failed (non-fatal)', {
                 error: err instanceof Error ? err.message : String(err)
@@ -622,6 +617,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
         // Spec 29: extract table catalog from pipeline metadata for audit report
         pipelineTableCatalog = pipelineResult.metadata?.tableCatalog as Array<{ table: string; sources: any[] }> | undefined;
+        pipelineStageTiming = pipelineResult.metadata?.stageTiming;
+        pipelineSkippedFiles = pipelineResult.metadata?.skippedFiles;
+        pipelineUnparsedFiles = pipelineResult.metadata?.unparsedFiles;
       } catch (error) {
         if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
           throw error;
@@ -954,6 +952,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(baselineMetadata && { baseline: baselineMetadata }),
         ...(pipelineCoverage && { coverage: pipelineCoverage }),
         ...(pipelineTableCatalog && { tableCatalog: pipelineTableCatalog }),
+        ...(pipelineStageTiming && { stageTiming: pipelineStageTiming }),
+        ...(pipelineSkippedFiles && pipelineSkippedFiles.length > 0 && { skippedFiles: pipelineSkippedFiles }),
+        ...(pipelineUnparsedFiles && pipelineUnparsedFiles.length > 0 && { unparsedFiles: pipelineUnparsedFiles }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
           fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)

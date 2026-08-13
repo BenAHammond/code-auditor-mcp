@@ -10,6 +10,8 @@ export interface AST {
   language: string;
   filePath: string;
   errors: ParseError[];
+  /** Called by the pipeline after all visitors process a file to reclaim WASM tree memory. */
+  dispose?: () => void;
 }
 
 /**

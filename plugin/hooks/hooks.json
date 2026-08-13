@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-audit.sh"
+            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then echo '[code-auditor] CLAUDE_PLUGIN_ROOT is unset; audit hook did not run' >&2; exit 1; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-audit.sh"
           }
         ]
       }

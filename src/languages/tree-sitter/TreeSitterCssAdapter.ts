@@ -12,7 +12,7 @@
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { getParser } from './parser.js';
+import { getParser, parseWithRecovery } from './parser.js';
 import { toASTNode, toSourceLocation } from './converter.js';
 import type {
   AST,
@@ -55,8 +55,7 @@ export class TreeSitterCssAdapter implements LanguageAdapter {
   async parse(filePath: string, content: string): Promise<AST> {
     const isScss = filePath.endsWith('.scss');
     const lang = isScss ? 'scss' : 'css';
-    const parser = getParser(lang);
-    const tree = parser.parse(content);
+    const tree = await parseWithRecovery(lang, false, content);
     if (!tree) throw new Error(`Failed to parse ${lang.toUpperCase()} file: ${filePath}`);
 
     const errors: ParseError[] = [];
@@ -69,6 +68,7 @@ export class TreeSitterCssAdapter implements LanguageAdapter {
       language: lang,
       filePath,
       errors,
+      dispose: () => tree.delete(),
     };
 
     sourceCodeMap.set(ast, content);

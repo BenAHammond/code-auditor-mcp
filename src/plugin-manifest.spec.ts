@@ -154,6 +154,18 @@ describe('Hooks manifest (hooks.json)', () => {
     const inner = hooks.hooks.PostToolUse[0].hooks[0];
     expect(inner.command).toContain('${CLAUDE_PLUGIN_ROOT}');
   });
+
+  it('command guards against an unset CLAUDE_PLUGIN_ROOT (fails loudly, not silently)', () => {
+    const inner = hooks.hooks.PostToolUse[0].hooks[0];
+    expect(inner.command).toContain('CLAUDE_PLUGIN_ROOT is unset');
+    expect(inner.command).toContain('exit 1');
+    // The guard must precede the script invocation so a missing plugin root
+    // can never resolve to an absolute `/scripts/hook-audit.sh` that silently
+    // fails to be found.
+    expect(inner.command.indexOf('is unset')).toBeLessThan(
+      inner.command.indexOf('hook-audit.sh'),
+    );
+  });
 });
 
 describe('MCP server config — deliberately no .mcp.json', () => {

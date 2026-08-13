@@ -46,7 +46,7 @@ function writeFixture(relativePath: string, content: string): string {
   return relativePath;
 }
 
-type CheckRulesInput = Omit<RuleEngineOptions, 'sourceMap' | 'knownFiles' | 'fileData'>;
+type CheckRulesInput = Omit<RuleEngineOptions, 'readSource' | 'knownFiles' | 'fileData'>;
 
 /** One-time parser initialization for AST-based extraction */
 beforeAll(async () => {
@@ -62,15 +62,22 @@ beforeEach(() => {
 
 /**
  * Wrapper around checkRules that reads test fixture files from disk, parses them
- * with the AST adapter, and builds the fileData + sourceMap so the rule engine
- * doesn't need fs access.
+ * with the AST adapter, and builds the fileData + knownFiles so the rule engine
+ * doesn't need fs access for AST extraction; a readSource handle re-reads source
+ * on demand (mirrors the pipeline's readFileSync-backed handle).
  */
 async function checkRulesWithSource(opts: CheckRulesInput): Promise<RuleCheckResult> {
   const fileData = new Map<string, {
     imports: FileImport[];
     exports: Array<{ name: string; line: number }>;
   }>();
-  const sourceMap = new Map<string, string>();
+  const readSource = (filePath: string): string | undefined => {
+    try {
+      return readFileSync(filePath, 'utf-8');
+    } catch {
+      return undefined;
+    }
+  };
   const knownFiles = new Set<string>();
   const registry = LanguageRegistry.getInstance();
 
@@ -78,7 +85,6 @@ async function checkRulesWithSource(opts: CheckRulesInput): Promise<RuleCheckRes
     const fullPath = join(opts.projectDir, file);
     try {
       const source = readFileSync(fullPath, 'utf-8');
-      sourceMap.set(fullPath, source);
       knownFiles.add(fullPath);
 
       const adapter = registry.getAdapterForFile(file);
@@ -141,7 +147,7 @@ async function checkRulesWithSource(opts: CheckRulesInput): Promise<RuleCheckRes
       // skip missing files
     }
   }
-  return checkRules({ ...opts, sourceMap, knownFiles, fileData });
+  return checkRules({ ...opts, readSource, knownFiles, fileData });
 }
 
 afterEach(() => {

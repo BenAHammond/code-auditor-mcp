@@ -122,7 +122,7 @@ export const analyzeInvariants: AnalyzerFunction = async (
     files,
     indexHandle,
     projectDir,
-    sourceMap: config.sourceMap,
+    readSource: config.readSource,
     knownFiles: config.knownFiles,
     fileData: config.fileData,
   });

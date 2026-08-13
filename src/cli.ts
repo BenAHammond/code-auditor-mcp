@@ -158,6 +158,19 @@ program
         console.log(`Suggestions: ${result.summary.suggestions}`);
       }
 
+      // Spec 32 — unparsed files are never silent. A run where any file failed
+      // to parse (WASM abort, read error, …) must surface the count + reasons.
+      const unparsedFiles = result.metadata?.unparsedFiles ?? [];
+      if (unparsedFiles.length > 0) {
+        console.error(chalk.red(`\n⚠️  ${unparsedFiles.length} file${unparsedFiles.length !== 1 ? 's' : ''} failed to parse:`));
+        for (const u of unparsedFiles.slice(0, 20)) {
+          console.error(`    ${u.filePath} — ${u.reason}`);
+        }
+        if (unparsedFiles.length > 20) {
+          console.error(`    … and ${unparsedFiles.length - 20} more`);
+        }
+      }
+
       // Per-analyzer activity (read from result data, not serialized summary)
       // — surfaces zero-scan failures that would otherwise be invisible.
       if (!options.json) {
@@ -238,6 +251,7 @@ program
         const outputDir = options.output || process.cwd();
         const ext = options.format === 'sarif' ? 'sarif' : options.format;
         const reportPath = join(outputDir, `audit-report.${ext}`);
+        await fs.mkdir(dirname(reportPath), { recursive: true });
         await fs.writeFile(reportPath, report, 'utf-8');
         console.log(chalk.green(`\nReport written to ${reportPath}`));
       }
@@ -263,6 +277,17 @@ program
         if (zeroFileWarnings.length > 0) {
           const names = zeroFileWarnings.map((d: any) => d.analyzerName ?? d.analyzer).join(', ');
           console.error(`Zero-files failure: ${zeroFileWarnings.length} analyzer(s) matched zero source files (${names})`);
+          process.exit(2);
+        }
+      }
+
+      // Spec 32 — a run where any file failed to parse is incomplete and must
+      // not exit 0. This mirrors the zero-files gate: a silent dark-analyzer
+      // failure at file granularity is a hard failure.
+      {
+        const unparsedFiles = result.metadata?.unparsedFiles ?? [];
+        if (unparsedFiles.length > 0) {
+          console.error(`Parse-failure: ${unparsedFiles.length} file(s) could not be parsed; analysis is incomplete.`);
           process.exit(2);
         }
       }

@@ -6,7 +6,7 @@
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { getParser } from '../tree-sitter/parser.js';
+import { getParser, parseWithRecovery } from '../tree-sitter/parser.js';
 import { toASTNode, toSourceLocation } from '../tree-sitter/converter.js';
 import type {
   AST,
@@ -50,8 +50,7 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
   // -- Parsing --------------------------------------------------------------
 
   async parse(filePath: string, content: string): Promise<AST> {
-    const parser = getParser('go');
-    const tree = parser.parse(content);
+    const tree = await parseWithRecovery('go', false, content);
     if (!tree) throw new Error(`Failed to parse Go file: ${filePath}`);
 
     const errors: ParseError[] = [];
@@ -64,6 +63,7 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
       language: 'go',
       filePath,
       errors,
+      dispose: () => tree.delete(),
     };
 
     sourceCodeMap.set(ast, content);
