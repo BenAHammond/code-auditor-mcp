@@ -137,6 +137,10 @@ export function extractReExports(source: string): ReExport[] {
  * Resolve a relative module specifier to a file on disk, trying common source
  * extensions and index files.  Returns the resolved path (absolute or relative
  * to the importing file's directory) or null when the file cannot be found.
+ *
+ * @param fromFile The importing file (its directory is the resolution base).
+ * @param specifier The relative module specifier to resolve.
+ * @returns The resolved file path, or null when not found.
  */
 export function resolveBarrelModulePath(fromFile: string, specifier: string): string | null {
   const fromDir = path.dirname(fromFile);
@@ -160,7 +164,13 @@ export function resolveBarrelModulePath(fromFile: string, specifier: string): st
   return null;
 }
 
-/** Default barrel reader — resolves the specifier relative to `fromFile` on disk. */
+/**
+ * Default barrel reader — resolves the specifier relative to `fromFile` on disk.
+ *
+ * @param fromFile The importing file (its directory is the resolution base).
+ * @param specifier The relative module specifier to read.
+ * @returns The resolved file's source text, or null when unreadable.
+ */
 export function readModuleFromDisk(fromFile: string, specifier: string): string | null {
   const resolved = resolveBarrelModulePath(fromFile, specifier);
   if (!resolved) return null;

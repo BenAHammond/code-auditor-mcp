@@ -11,6 +11,14 @@ import type { Violation } from '../../../types.js';
  * Module-level equivalent of `UniversalAnalyzer.createViolation`. `rule`
  * identity is preserved exactly; `location` and optional `symbol` are kept,
  * while `analyzer` is hardcoded to `'schema'` instead of `this.name`.
+ *
+ * @param file The file the violation occurred in.
+ * @param location The 1-based line/column of the violation.
+ * @param message The human-readable violation message.
+ * @param severity The violation severity.
+ * @param rule The rule identifier.
+ * @param symbol Optional symbol (recorded as `functionName`).
+ * @returns A schema analyzer violation.
  */
 export function createSchemaViolation(
   file: string,
@@ -38,6 +46,12 @@ export function createSchemaViolation(
 /**
  * Single-line JSON validation violation — hardcoded `line: 1` / `column: 1`
  * (JSON files have no AST positions). Used by the JSON-schema helpers.
+ *
+ * @param file The JSON file the violation occurred in.
+ * @param severity The violation severity.
+ * @param message The human-readable violation message.
+ * @param rule The rule identifier.
+ * @returns A schema analyzer violation anchored at 1:1.
  */
 export function emitViolation(
   file: string,

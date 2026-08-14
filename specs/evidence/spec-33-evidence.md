@@ -22,7 +22,7 @@ The 15 items, in the board's fixed order:
 | 12 | Hook guard republish | **met** |
 | 13 | Config namespacing | **met** |
 | 14 | Per-rule input mapping | **met** |
-| 15 | Self-audit to zero | **not met — in progress (461 remaining)** |
+| 15 | Self-audit to zero | **met — 0 scoped violations** |
 
 ---
 
@@ -433,32 +433,47 @@ extraction epoch, not a gap in the current pipeline: every one of the 2,320 raw
 declaration is silently dropped. The threshold math above holds regardless of which
 count one uses — the answer to "why zero" is the thresholds, not missing data.
 
-### Secondary finding (data quality, not the cause)
+### Secondary finding (data quality, not the cause) — fixed this changeset
 
-`resolveSelectorContext` (`src/styles/cssAstExtractor.ts`, lines 391–413) only resolves
-`&` when the nesting selector is wrapped in a `class_selector` (e.g. `&-header`,
+`resolveSelectorContext` (`src/styles/cssAstExtractor.ts`, lines 391–413) only resolved
+`&` when the nesting selector was wrapped in a `class_selector` (e.g. `&-header`,
 `&.modifier`). A bare `&` in a pseudo-class (`&:not(:focus-visible)`, `&:hover`,
-`&[aria-selected]`) is a top-level `nesting_selector` node, so the selector text is
+`&[aria-selected]`) is a top-level `nesting_selector` node, so the selector text was
 stored **unresolved**. Every `.btn`-family variant that nests a `&:focus { &:not(:focus-
-visible) { outline: …; box-shadow: …; } }` block therefore collapses into the single
+visible) { outline: …; box-shadow: …; } }` block therefore collapsed into the single
 context key `button.scss::&:not(:focus-visible)`.
 
-This is why the reported finding says "share 2 of 2" while the block's `declCount` is
+This was why the reported finding said "share 2 of 2" while the block's `declCount` was
 **6** (three button variants × two declarations, all with the identical `&:not(:focus-
-visible)` literal context). It is a *coarsening* of context — it over-aggregates and can
-only inflate similarity, so it does not explain "returns zero". It is recorded here as a
-known context-resolution gap, out of item 7's "find cause" scope.
+visible)` literal context). It was a *coarsening* of context — it over-aggregates and can
+only inflate similarity, so it did not explain "returns zero"; it was recorded as a known
+context-resolution gap, out of item 7's "find cause" scope.
 
-### Latent bug documented (out of item-7 scope, for the record)
+**Fixed in this changeset.** `resolveSelectorContext` now unwinds a bare `&` nesting
+selector to its nearest ancestor rule set, so `&:not(:focus-visible)` under `.btn` resolves
+to `.btn:not(:focus-visible)` and `&:hover` resolves to `.btn:hover`, including through a
+nested `&` chain (`&:focus { &:not(:focus-visible) { … } }` → `.btn:not(:focus-visible)`).
+Locked in by new tests in `cssAstExtractor.spec.ts` ("resolves a bare & pseudo-class
+selector to the parent class", "resolves a bare & through a nested & chain"). The coarsening
+no longer over-aggregates sibling variants; the declaration-set-similarity finding now
+carries its true, resolved context.
 
-`parseFile` / `parseWithTreeSitter` (`src/languages/adapterBridge.ts`) route `.css` and
+### Latent bug documented (out of item-7 scope, for the record) — fixed this changeset
+
+`parseFile` / `parseWithTreeSitter` (`src/languages/adapterBridge.ts`) routed `.css` and
 `.scss` to the **TypeScript** grammar rather than the CSS/SCSS grammar — `.css`/`.scss`
-parse through `parseFile` produce ~170 ERROR nodes and 0 `rule_set` nodes. This does
+parse through `parseFile` produced ~170 ERROR nodes and 0 `rule_set` nodes. This did
 **not** affect the pipeline (Stage 1 calls `adapter.parse` directly), but any test or
-caller using `parseFile` on stylesheets gets empty results. It was discovered while
+caller using `parseFile` on stylesheets got empty results. It was discovered while
 probing item 7 (an early diagnostic used `parseFile`, which misleadingly returned 0
-declarations) and is a real bug warranting its own fix, noted here for the board rather
+declarations) and was a real bug warranting its own fix, noted here for the board rather
 than silently folded into item 7.
+
+**Fixed in this changeset.** `parseWithTreeSitter` now routes `.css` → css grammar and
+`.scss` → scss grammar (instead of TypeScript), so `parseFile` on a stylesheet yields real
+`rule_set`/`declaration` nodes rather than ~170 ERROR nodes. The pipeline's Stage 1 path
+was already correct (it calls `adapter.parse` directly); this only closes the `parseFile`
+side door that misled the item-7 diagnostic.
 
 ---
 
@@ -789,13 +804,22 @@ narrow and all in suggestion/warning severity:
    `*.spec.ts` / `*.integration-spec.ts` files asserting on hardcoded connection strings.
    Severity suggestion; test-only.
 
-5. **`data-access/sql-injection-risk` (1 in Directus) — residual method-name FP.** One finding
-   survives the Item-6 taint fix: `use-alias-fields.ts:126` flags
+5. **`data-access/sql-injection-risk` (1 in Directus) — residual method-name FP, fixed this
+   changeset.** One finding survived the Item-6 taint fix: `use-alias-fields.ts:126` flagged
    `get(item, \`${aliasInfo.fieldAlias}.${...}\`)`. `get` here is `@directus/utils`'s
    lodash-style object-path accessor, **not** a SQL query method — but the rule's query-method
-   name set treats bare `get(...)` with an unsafe-looking interpolation as a query. This is a
-   **false positive** in the Item-6-fixed rule (1 finding, Directus only); it does not reopen
-   Item 6 (which reduced recall-protocol 15→1) but is recorded honestly.
+   name set treated bare `get(...)` with an unsafe-looking interpolation as a query. This was a
+   **false positive** in the Item-6-fixed rule (1 finding, Directus only); it did not reopen
+   Item 6 (which reduced recall-protocol 15→1) but was recorded honestly.
+
+   **Fixed in this changeset.** `DB_CALL_METHODS` (`src/analyzers/provenance.ts`) dropped the
+   FP-prone non-DB names `get`, `each`, and `values` (11 → 8 entries), keeping `query` and
+   `raw` as the genuine query-execution methods. The bare-identifier hybrid fallback in
+   `isDBProvenanced` no longer matches a lodash `get(...)` accessor (or a jQuery/iterator
+   `each(...)`, or a `Map`/WebSocket `.values()` call) against the DB call-method set. Locked
+   in by `s33-item11-method-name-fp.test.ts`: lodash `get` → 0 findings, bare `values()` → 0
+   findings, and the `db.raw()` control → still 1 finding (the raw-SQL entry point stays
+   flagged). This closes the Directus `use-alias-fields.ts:126` FP without reopening Item 6.
 
 ### Zero-rule classification (present-but-clean vs absent)
 
@@ -817,10 +841,11 @@ files, so `schema-sql` is legitimately absent there rather than silently broken.
 
 All three corpora run to completion with 0 fatal errors and no crash. The only false
 positives are the five narrow categories above — three of which are detector-gap artifacts
-(test-stub CSS index, JSONC-vs-JSON, method-name `get`), one is a trusted-DDL interpolation
+(test-stub CSS index, JSONC-vs-JSON), one is a trusted-DDL interpolation
 on the legacy suggestion-severity heuristic, and one is test-only hardcoded-connection
-strings. No fired rule is producing mass false positives; the counts are reproducible and
-defensible.
+strings. Of the five, the method-name `get` FP (category 5) is now **fixed this changeset**
+(see above); the remaining four are documented detector gaps, not mass over-firing. No fired
+rule is producing mass false positives; the counts are reproducible and defensible.
 
 ---
 
@@ -1017,48 +1042,78 @@ The distinction is now machine-derived from input presence, not asserted in a do
 
 ## Item 15 — Self-audit to zero
 
-**not met — in progress (461 scoped violations remaining).**
+**met — 0 scoped violations.**
 
-The self-audit gate exists and runs; the count is not yet zero, so this item stays open.
-There is no baseline and no ratchet: every finding resolves one of exactly three ways —
-fix the code, fix the rule, or calibrate the threshold with a recorded rationale.
+The self-audit gate exists, runs, and now reports **zero** scoped production violations. The
+zero-violations assertion is live and wired into `verify:close`
+(`npm run test && npm run test:integration && npm run verify:dist && npm run verify:self`),
+so a regression in `src/analyzers/` or `src/languages/` fails the release gate — not just
+this item. The count is a hard, machine-checked invariant, not a one-time milestone.
 
 ### The gate
 
-`scripts/verify-self.mjs` (new, wired as `npm run verify:self` in `package.json:34`) runs the
+`scripts/verify-self.mjs` (wired as `npm run verify:self` in `package.json`) runs the
 analyzer against its own production source and asserts zero scoped violations. It runs
 `node --expose-gc dist/cli.js audit --path src -f json -o <tmpdir>`, reads
 `audit-report.json`, and applies the production filter — files under `src/analyzers/` or
 `src/languages/`, excluding tests/specs/fixtures — before aggregating by rule and analyzer.
-Exit 0 iff zero scoped; exit 1 otherwise with a per-rule/per-analyzer breakdown. The
-zero-violations assertion goes live the moment the scoped count reaches zero, turning the
-"self-audit to zero" target into a hard, machine-checked invariant.
+Exit 0 iff zero scoped; exit 1 otherwise with a per-rule/per-analyzer breakdown.
 
-### Current state (cold run)
+### How 461 became 0
 
-Scoped production count = **461**, split:
+The 461 scoped findings (documentation 333, solid `single-responsibility` 124, solid
+`class-size` 4) resolved to zero across two commits, each move one of the three sanctioned
+ways — fix the code, fix the rule, or add documentation. No threshold was recalibrated to
+hide a finding.
 
-| Analyzer | Rule | Count |
-|----------|------|-------|
-| documentation | parameter-documentation | 177 |
-| documentation | return-documentation | 78 |
-| documentation | class-documentation | 57 |
-| documentation | method-documentation | 17 |
-| documentation | function-documentation | 4 |
-| solid | single-responsibility | 124 |
-| solid | class-size | 4 |
+- **`9e93c21` (Spec 33/34 schema split)** carried the bulk. The documentation 333 cleared by
+  adding the missing JSDoc one-liners and `@param`/`@returns` blocks across the analyzer
+  sources (count-neutral to the validation corpora — comments only). The solid 128 cleared by
+  the split itself: extracting the 2,275-line `UniversalSchemaAnalyzer` god-class into the
+  `schema/` submodules (`codeAnalysis.ts`, `discovery.ts`, `migrations.ts`, `violations.ts`,
+  `jsonSchema.ts`, `types.ts`, `config.ts`) plus free functions — the same ISP/god-class split
+  Items 8/9 wanted.
+- **the zero-changeset (this commit)** cleared the residual schema-analyzer documentation
+  findings — `@param`/`@returns` blocks on `createSchemaViolation`/`emitViolation` and the
+  `discovery.ts`/`migrations.ts` helpers — and the Item 7/Item 11 fixes (`adapterBridge.ts`
+  css/scss routing, `cssAstExtractor.ts` bare-`&` resolution, `provenance.ts`
+  `get`/`each`/`values` removal), which are documented in their own sections above.
 
-### Resolution plan
+### Current state (fresh cold run)
 
-- **documentation (333)** — the cleanest zero-risk batch: add the missing JSDoc one-liners
-  (class/method/function first), then `@param`/`@returns` blocks. Purely additive; provably
-  count-neutral to the validation corpora because it only touches comments.
-- **solid single-responsibility (124)** — long-function / many-parameter refactors. Higher
-  risk; done after documentation, re-running `verify:self` and the recall-protocol baseline
-  after each batch to prove count-neutrality.
-- **solid class-size (4)** — the ISP/god-class split (two analyzer god-classes and two
-  adapter god-classes); the long pole that Items 8/9 also want.
+```
+$ npm run build && npm run verify:self
+verify:self — scoped production violations (analyzers/ + languages/)
+  total: 0
 
-Progress to date: the gate itself is implemented and verified (it reports the accurate 461),
-and the documentation batch is underway. This item is not closable until the scoped count is
-zero.
+  by analyzer:
+
+  by rule:
+
+PASS — zero scoped violations.
+EXIT: 0
+```
+
+### Forced-failure transcript (Spec 34 acceptance)
+
+Spec 34's acceptance required proof the zero-assertion is *live*, not vacuous: reintroduce a
+violation, confirm `verify:close` fails, then restore. Done deterministically by removing the
+`@returns` line from `createSchemaViolation`
+(`src/analyzers/universal/schema/violations.ts`), which reintroduces exactly one
+`return-documentation` finding:
+
+```
+$ npm run verify:self
+verify:self — scoped production violations (analyzers/ + languages/)
+  total: 1
+  by analyzer:
+    documentation    1
+  by rule:
+    return-documentation             1
+FAIL — 1 scoped violation(s) remaining. The zero-violations assertion is live: fix the above and re-run.
+EXIT: 1
+```
+
+Restoring the `@returns` line returns the gate to `total: 0`, `PASS`, `EXIT: 0` — the state
+committed here. The assertion trips on a single reintroduced violation, so a future edit that
+re-wins a finding fails the release gate instead of passing silently.

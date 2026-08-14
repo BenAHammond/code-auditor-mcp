@@ -32,7 +32,7 @@
     "test:watch": "vitest watch",
     "verify:dist": "bash scripts/verify-dist.sh",
     "verify:self": "node scripts/verify-self.mjs",
-    "verify:close": "npm run test && npm run test:integration && npm run verify:dist"
+    "verify:close": "npm run test && npm run test:integration && npm run verify:dist && npm run verify:self"
   },
   "keywords": [
     "mcp",

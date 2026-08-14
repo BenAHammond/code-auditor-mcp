@@ -72,7 +72,26 @@ export const DB_TYPES: ReadonlySet<string> = new Set([
   'BetterSQLite3Database',
 ]);
 
-/** DB call methods — the fixed API surface (language-invariant) */
+/**
+ * DB call methods — the fixed API surface (language-invariant).
+ *
+ * Spec 33 Item 11 FP category 5: the bare-identifier hybrid fallback in
+ * `isDBProvenanced` treated any `get(...)` / `each(...)` / `values(...)` call
+ * as a DB query, flagging lodash-style object accessors (e.g.
+ * `@directus/utils`'s `get(item, ...)`) as sql-injection. Those three names
+ * are also common non-DB methods (lodash `get`, jQuery/iterator
+ * `each`, Map/WebSocket `.values()`), so they are removed from the fallback —
+ * mirroring the `get`/`each` trim in CHANGELOG 3.4.9 (DB_CALL_METHOD_NAMES).
+ *
+ * `query` is deliberately RETAINED: it is a genuine query-execution method on
+ * mysql2, pg, node-postgres, D1 and Planetscale (`.query(...)`), and the
+ * spec-19 data-access fixtures exercise it as a canonical DB entry point.
+ * Removing it would turn real SQL-injection positives into false negatives.
+ *
+ * `raw` is deliberately retained: it is a genuine raw-execution method on
+ * D1 prepared statements, Knex, and Kysely, and the Item-6 taint-tracking
+ * fixtures exercise it as the canonical raw-SQL entry point.
+ */
 export const DB_CALL_METHODS: ReadonlySet<string> = new Set([
   'exec',
   'prepare',
@@ -81,10 +100,7 @@ export const DB_CALL_METHODS: ReadonlySet<string> = new Set([
   'all',
   'first',
   'query',
-  'get',
-  'each',
   'raw',
-  'values',
 ]);
 
 /** ORM method patterns — fixed API surface for ORM recognition (Spec 21 R1) */

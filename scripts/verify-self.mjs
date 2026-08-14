@@ -6,9 +6,8 @@
  *
  * This is the ratchet that makes the Spec 33 board's "self-audit to zero"
  * target a hard, machine-checked invariant instead of a claim in an evidence
- * file. The zero-violations assertion goes live the moment the scoped count
- * reaches zero: from then on any regression that reintroduces a finding fails
- * this script (and, once wired in, `verify:close`).
+ * file. The zero-violations assertion is live: any regression that reintroduces
+ * a finding fails this script, and it is wired into `verify:close`.
  *
  * The scoped filter mirrors the board's production scope exactly: only files
  * under `analyzers/` or `languages/`, excluding tests, specs, and fixtures.
@@ -103,6 +102,6 @@ if (total === 0) {
   console.log('PASS — zero scoped violations.');
   process.exit(0);
 } else {
-  console.log(`FAIL — ${total} scoped violation(s) remaining. The zero-violations assertion is not yet live.`);
+  console.log(`FAIL — ${total} scoped violation(s) remaining. The zero-violations assertion is live: fix the above and re-run.`);
   process.exit(1);
 }

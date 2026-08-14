@@ -430,4 +430,49 @@ describe('Bug 7 — SCSS &-suffix nesting resolution', () => {
     // Selector context should resolve to card-header, not raw &-header
     expect(headerColor!.context).toContain('card-header');
   });
+
+  it('resolves a bare & pseudo-class selector to the parent class (Spec 33 Item 7)', async () => {
+    const scss = `
+      .btn {
+        &:not(:focus-visible) {
+          outline: 2px solid;
+        }
+        &:hover {
+          color: red;
+        }
+      }
+    `;
+    const adapter = registry.getAdapterForFile('test.scss');
+    const ast = await adapter.parse('test.scss', scss);
+    const decls = extractDeclarationsFromCSSAst(ast, adapter, 'test.scss', scss);
+
+    const outline = findDecl(decls, 'outline');
+    const color = findDecl(decls, 'color');
+    expect(outline).toBeDefined();
+    expect(color).toBeDefined();
+    // Both bare `&` variants resolve to their parent class instead of
+    // collapsing into the literal `&:…` context.
+    expect(outline!.context).toContain('btn:not(:focus-visible)');
+    expect(color!.context).toContain('btn:hover');
+  });
+
+  it('resolves a bare & through a nested & chain', async () => {
+    const scss = `
+      .btn {
+        &:focus {
+          &:not(:focus-visible) {
+            outline: 2px solid;
+          }
+        }
+      }
+    `;
+    const adapter = registry.getAdapterForFile('test.scss');
+    const ast = await adapter.parse('test.scss', scss);
+    const decls = extractDeclarationsFromCSSAst(ast, adapter, 'test.scss', scss);
+
+    const outline = findDecl(decls, 'outline');
+    expect(outline).toBeDefined();
+    // Two levels of `&` unwinding resolves to `.btn`, not `.btn:focus`.
+    expect(outline!.context).toContain('btn:not(:focus-visible)');
+  });
 });

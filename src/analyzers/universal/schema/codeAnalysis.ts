@@ -22,6 +22,14 @@ import { createSchemaViolation } from './violations.js';
  *
  * Four extraction strategies: (1) tagged-template SQL, (2) DB-call string
  * arguments, (3) full-source scan for `.sql` files, (4) ORM adapter extraction.
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param config Schema analyzer configuration (tag names, DB receiver/method sets).
+ * @param provenanceContext Provenance-based DB-call detection context (Spec 21).
+ * @param allTables Known-table catalog used to filter short CTE/alias identifiers.
+ * @returns Table references extracted via all four strategies.
  */
 export function findTableReferences(
   ast: AST,
@@ -121,6 +129,12 @@ export function findTableReferences(
 /**
  * Parse SQL table names from a SQL text string.
  * R2.3: Template expressions (${...}) resolve portions to wildcards.
+ *
+ * @param sqlText The SQL text to scan.
+ * @param baseLocation The line/column of the SQL text's start in `sourceCode`.
+ * @param sourceCode The full source text (for offset-to-location mapping).
+ * @param allTables Known-table catalog used to keep short CTE/alias identifiers.
+ * @returns Table references found in the SQL text.
  */
 export function parseSqlTables(
   sqlText: string,
@@ -209,6 +223,9 @@ export function parseSqlTables(
  * so they can be filtered from table-references in parseSqlTables().
  * Without this, "JOIN t.posts" captures t via the JOIN regex when t is
  * an alias for the real table x.
+ *
+ * @param sqlText The SQL text to scan for alias identifiers.
+ * @returns Lowercased alias identifiers to filter from table references.
  */
 export function extractAliasIdentifiers(sqlText: string): Set<string> {
   const aliases = new Set<string>();
@@ -276,6 +293,11 @@ export function resolveTemplateExpressions(text: string): string {
 
 /**
  * Return known table names within edit distance ≤ maxDist.
+ *
+ * @param name The candidate table name to match.
+ * @param knownTables The known-table catalog.
+ * @param maxDist Maximum Levenshtein edit distance to include.
+ * @returns Up to three known tables within the distance, quoted, nearest first.
  */
 export function getNearestTableSuggestions(
   name: string,
@@ -295,7 +317,11 @@ export function getNearestTableSuggestions(
 }
 
 /**
- * Levenshtein distance.
+ * Levenshtein edit distance between two strings.
+ *
+ * @param a First string.
+ * @param b Second string.
+ * @returns The edit distance, or Infinity when length difference exceeds 3.
  */
 export function levenshteinDistance(a: string, b: string): number {
   const m = a.length;
@@ -320,7 +346,11 @@ export function levenshteinDistance(a: string, b: string): number {
 }
 
 /**
- * Check naming conventions.
+ * Check table naming conventions against references.
+ *
+ * @param references Table references extracted from the file.
+ * @param filePath The file under analysis.
+ * @returns Naming-convention and reserved-word violations.
  */
 export function checkNamingConventions(
   references: TableReference[],
@@ -357,7 +387,13 @@ export function checkNamingConventions(
 }
 
 /**
- * Check query patterns.
+ * Check query patterns (per-function query-count ceiling).
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param config Schema analyzer configuration (maxQueriesPerFunction ceiling).
+ * @returns Too-many-queries violations.
  */
 export function checkQueryPatterns(
   ast: AST,
@@ -395,7 +431,12 @@ export function checkQueryPatterns(
 }
 
 /**
- * Check sql injection.
+ * Detect potential SQL injection in query/execute calls.
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @returns SQL-injection violations.
  */
 export function checkSQLInjection(
   ast: AST,
@@ -429,6 +470,19 @@ export function checkSQLInjection(
 
       // Find enclosing function from the AST at this position
       const node = findClosestNodeAt(ast.root, location, adapter);
+
+      // Taint-aware safety check (Spec 33 Item 11a): clear the finding when the
+      // query argument's dynamic parts are all provably safe. The naive regex
+      // cannot tell trusted-DDL interpolation (`query(\`CREATE TABLE ${name}...\`)`
+      // with a constant/sanitized name) from raw-input interpolation, so the
+      // distinction is delegated to the adapter's dynamic-string safety analysis
+      // (isSafeInterpolation / resolveLocalConstant) — the same signal the
+      // data-access analyzer already trusts for sql-injection-risk.
+      const callNode = findEnclosingCallExpression(node, adapter);
+      if (callNode && isAllDynamicPartsSafe(callNode, ast, adapter, sourceCode)) {
+        continue;
+      }
+
       const enclosingFn = node ? findEnclosingFunctionName(node, adapter) : 'top-level';
 
       const baseSymbol = `${enclosingFn}:sql-injection`;
@@ -448,6 +502,70 @@ export function checkSQLInjection(
   }
 
   return violations;
+}
+
+/**
+ * Walk up from a node to the enclosing call_expression, if any.  Used by
+ * checkSQLInjection to map a regex match location back to the query(...)/
+ * execute(...) call whose string argument is under test.
+ */
+function findEnclosingCallExpression(
+  node: ASTNode | null,
+  adapter: LanguageAdapter
+): ASTNode | null {
+  let current = node;
+  while (current) {
+    if (adapter.getNodeType(current) === 'call_expression') return current;
+    current = adapter.getParent(current);
+  }
+  return null;
+}
+
+/**
+ * True when a dynamic query/execute string argument is provably safe to embed
+ * in SQL — every interpolated sub-part is a compile-time constant, quote-escaped
+ * sanitizer, safe ternary/array-join, or guard-validated parameter.  Mirrors
+ * UniversalDataAccessAnalyzer.isSafeDynamicPart (minus its config-driven
+ * sanitizer allowlist, which checkSQLInjection has no config for); used to
+ * clear trusted-DDL false positives (Spec 33 Item 11a).
+ */
+function isAllDynamicPartsSafe(
+  callNode: ASTNode,
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string
+): boolean {
+  // No dynamic-string capability → cannot prove safety → keep the legacy hit.
+  if (!adapter.isDynamicStringConstruction || !adapter.getDynamicParts) {
+    return false;
+  }
+  // A non-dynamic argument (plain string literal) has no interpolation.
+  if (!adapter.isDynamicStringConstruction(callNode)) return true;
+
+  const parts = adapter.getDynamicParts(callNode, sourceCode);
+  if (parts.length === 0) return true;
+
+  for (const part of parts) {
+    // Prefer the adapter's cross-function safety analysis — it clears quote-escape
+    // sanitizers, safe ternaries/array-joins, safe local helper calls, and
+    // guard-validated parameters, and subsumes the static-constant check.
+    if (part.node && adapter.isSafeInterpolation) {
+      if (!adapter.isSafeInterpolation(part.node, ast, sourceCode)) return false;
+      continue;
+    }
+    // Fallback for adapters without isSafeInterpolation: resolve identifiers
+    // to compile-time constants only.
+    if (part.isIdentifier) {
+      const resolved = part.node && adapter.resolveLocalConstant
+        ? adapter.resolveLocalConstant(part.node, ast, sourceCode)
+        : null;
+      if (!(resolved && resolved.isStatic)) return false;
+      continue;
+    }
+    // Non-identifier expression with no safety analysis → cannot prove safe.
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -501,6 +619,11 @@ export function checkMissingReferences(
 
 /**
  * Extract the callee text from a call_expression node.
+ *
+ * @param node The call_expression node.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @returns The callee text (e.g. "db.exec"), or null when absent.
  */
 export function getCallee(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string | null {
   // For db.exec() → callee is "db.exec"
@@ -519,7 +642,11 @@ export function getCallee(node: ASTNode, adapter: LanguageAdapter, sourceCode: s
 }
 
 /**
- * Check if call_expression has a template string argument.
+ * Check whether a call_expression has a template string argument.
+ *
+ * @param node The call_expression node.
+ * @param adapter The language adapter for the file's syntax.
+ * @returns True when a template-string argument is present.
  */
 export function hasTemplateArgument(node: ASTNode, adapter: LanguageAdapter): boolean {
   if (!node.children) return false;
@@ -534,6 +661,11 @@ export function hasTemplateArgument(node: ASTNode, adapter: LanguageAdapter): bo
 
 /**
  * Get the text of the first template string argument.
+ *
+ * @param node The call_expression node.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @returns The trimmed template text, or null when absent.
  */
 export function getTemplateText(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string | null {
   if (!node.children) return null;
@@ -548,6 +680,11 @@ export function getTemplateText(node: ASTNode, adapter: LanguageAdapter, sourceC
 
 /**
  * Get the first string/template argument from a call expression.
+ *
+ * @param node The call_expression node.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @returns The unquoted string/template argument, or null when absent.
  */
 export function getFirstStringArgument(
   node: ASTNode,
@@ -585,6 +722,14 @@ export function getFirstStringArgument(
 
 /**
  * Check if a callee is a DB member call like db.exec, database.query, etc.
+ *
+ * @param node The call_expression node.
+ * @param calleeText The callee text (e.g. "db.exec").
+ * @param methods The allowed DB call method names.
+ * @param receivers The allowed DB receiver names.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @returns True when the callee is a permitted receiver.method DB call.
  */
 export function isDbMemberCall(
   node: ASTNode,
@@ -604,6 +749,9 @@ export function isDbMemberCall(
 
 /**
  * Get the line/column location of the call expression.
+ *
+ * @param node The call_expression node.
+ * @returns The node's start line/column.
  */
 export function getCallLocation(node: ASTNode): { line: number; column: number } {
   return node.location.start;
@@ -611,6 +759,11 @@ export function getCallLocation(node: ASTNode): { line: number; column: number }
 
 /**
  * Convert a character offset to a line/column location.
+ *
+ * @param sourceCode The source text the offset is relative to.
+ * @param offset The character offset.
+ * @param base Fallback location returned when offset is out of range.
+ * @returns The 1-based line/column for the offset.
  */
 export function offsetToLocation(
   sourceCode: string,
@@ -629,6 +782,9 @@ export function offsetToLocation(
 
 /**
  * True when `table` is a well-known system table/schema name.
+ *
+ * @param table The candidate table name.
+ * @returns True for system schemas/tables (information_schema, pg_catalog, …).
  */
 export function isSystemTable(table: string): boolean {
   const systemTables = [
@@ -653,6 +809,9 @@ export function isSystemTable(table: string): boolean {
  * (unnest/generate_series/json_array_elements/...) set, plus DuckDB's
  * read_csv/read_parquet/parquet_scan families. Not exhaustive by design:
  * these are the function names that appear in real SELECT ... FROM fn(...).
+ *
+ * @param name The candidate identifier.
+ * @returns True when `name` is a known table-valued function.
  */
 export function isTableValuedFunction(name: string): boolean {
   const tvfs = new Set([
@@ -674,6 +833,9 @@ export function isTableValuedFunction(name: string): boolean {
 
 /**
  * Common SQL keywords and identifiers that are not real table names.
+ *
+ * @param word The candidate identifier.
+ * @returns True when `word` is a SQL keyword/reserved identifier.
  */
 export function isSqlKeyword(word: string): boolean {
   const keywords = new Set([
@@ -706,6 +868,10 @@ export function isSqlKeyword(word: string): boolean {
  * unambiguous — and only checking the introducer at a line/`;` boundary
  * avoids misreading a SQL comment (`-- import data`) or a table named
  * `import_log` as a module statement.
+ *
+ * @param sqlText The source text being scanned for a FROM introducer.
+ * @param fromIndex The character index of the `from` keyword within `sqlText`.
+ * @returns True when the introducer preceding `fromIndex` is an import/export.
  */
 export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean {
   let start = fromIndex;
@@ -722,30 +888,73 @@ export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean 
 }
 
 /**
- * Count query invocations (not SQL keywords) in a function body.
+ * Count the number of DB queries a function body issues.
+ *
+ * A `query`/`execute` method call is one query; each standalone SQL keyword
+ * (SELECT, INSERT INTO, UPDATE, DELETE FROM) outside such a call is also one
+ * query. SQL keywords inside a call's argument are not counted separately —
+ * otherwise a single `query('SELECT ...')` call is counted twice (once for the
+ * call, once for the SQL it carries).
+ *
+ * @param text The function body text.
+ * @returns The number of DB queries the function issues.
  */
 export function countQueries(text: string): number {
-  const patterns = [
-    /\.query\s*\(/g,
-    /\.execute\s*\(/g,
+  const callCount = (text.match(/\.(?:query|execute)\s*\(/g) || []).length;
+
+  const bodyless = stripQueryCallBodies(text);
+  const sqlPatterns = [
     /SELECT\s+/gi,
     /INSERT\s+INTO/gi,
     /UPDATE\s+/gi,
     /DELETE\s+FROM/gi,
   ];
-
-  let count = 0;
-  for (const pattern of patterns) {
-    const matches = text.match(pattern);
-    if (matches) count += matches.length;
+  let sqlCount = 0;
+  for (const pattern of sqlPatterns) {
+    const matches = bodyless.match(pattern);
+    if (matches) sqlCount += matches.length;
   }
 
-  return count;
+  return callCount + sqlCount;
+}
+
+/**
+ * Blank out the bodies of `query(...)`/`execute(...)` calls (balanced-paren
+ * aware) so SQL keywords inside their arguments are not double-counted.
+ *
+ * @param text The function body text.
+ * @returns The text with `query`/`execute` call bodies replaced by spaces.
+ */
+function stripQueryCallBodies(text: string): string {
+  const re = /\.(?:query|execute)\s*\(/g;
+  let result = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const openParen = m.index + m[0].length;
+    let depth = 1;
+    let i = openParen;
+    while (i < text.length && depth > 0) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')') depth--;
+      i++;
+    }
+    result += text.slice(last, openParen);
+    result += ' '.repeat(Math.max(0, i - openParen));
+    last = i;
+    re.lastIndex = i;
+  }
+  result += text.slice(last);
+  return result;
 }
 
 /**
  * Breadth-first search for the AST node whose start location exactly matches
  * the given line/column.
+ *
+ * @param root The AST root node.
+ * @param location The target line/column.
+ * @returns The matching node, or null when absent.
  */
 export function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
   const queue: ASTNode[] = [root];
@@ -769,6 +978,11 @@ export function findNodeByLocation(root: ASTNode, location: { line: number; colu
 /**
  * Find the nearest AST node at a source location — walks the tree looking
  * for the deepest node that contains the given line/column.
+ *
+ * @param root The AST root node.
+ * @param location The target line/column.
+ * @param adapter The language adapter for the file's syntax.
+ * @returns The deepest node containing the location, or null.
  */
 export function findClosestNodeAt(
   root: ASTNode,
@@ -808,6 +1022,10 @@ export function findClosestNodeAt(
 /**
  * Walk up the AST from a node to find the enclosing function or method name.
  * Matches the same scheme as UniversalDataAccessAnalyzer.findEnclosingFunctionName.
+ *
+ * @param node The node to start the walk from.
+ * @param adapter The language adapter for the file's syntax.
+ * @returns The enclosing function/method name, or "top-level".
  */
 export function findEnclosingFunctionName(node: ASTNode, adapter: LanguageAdapter): string {
   let current: ASTNode | null = node;
@@ -836,6 +1054,10 @@ export function findEnclosingFunctionName(node: ASTNode, adapter: LanguageAdapte
 /**
  * Extract a human-readable name from an AST node.
  * Matches the same scheme as UniversalDataAccessAnalyzer.getNodeName.
+ *
+ * @param node The AST node.
+ * @param adapter The language adapter for the file's syntax.
+ * @returns The node's name, or "" when none is found.
  */
 export function getNodeName(node: ASTNode, adapter: LanguageAdapter): string {
   // Try explicit name/text on the converted ASTNode (some adapters set it)

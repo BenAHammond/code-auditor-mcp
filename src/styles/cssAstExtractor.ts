@@ -285,29 +285,55 @@ function getParentClassName(
   }
   if (!raw || raw.type !== 'rule_set') return null;
 
-  // Step 3: find selectors → class_selector of outer rule_set
-  const selectorsRaw = findNamedChild(raw, 'selectors');
+  // Step 3: resolve the outer rule_set's concrete class name (unwinding any
+  // nested `&` chains — see resolveRuleSetClassName).
+  return resolveRuleSetClassName(raw);
+}
+
+/**
+ * Resolve a rule_set's selectors to a concrete parent class name, unwinding
+ * nested `&` chains recursively.
+ *
+ * - A plain `.btn` selector resolves to `btn`.
+ * - A `&-header` selector resolves to `parent + -header` via resolveNestingSelector.
+ * - A bare `&` pseudo/attribute selector (`&:focus`, `&:not(...)`, `&[aria-…]`)
+ *   has no class name of its own, so the walk continues one level up to the
+ *   enclosing rule_set.
+ *
+ * Returns null when no concrete parent class exists at or above this rule_set.
+ */
+function resolveRuleSetClassName(ruleSetRaw: TreeSitterNode): string | null {
+  const selectorsRaw = findNamedChild(ruleSetRaw, 'selectors');
   if (!selectorsRaw) return null;
 
-  const parentCSRaw = findNamedChild(selectorsRaw, 'class_selector');
-  if (!parentCSRaw) return null;
-
-  // Check if parent class_selector also has nesting (multi-level BEM)
-  const hasParentNesting = parentCSRaw.namedChildren.some(
-    (c: any) => c.type === 'nesting_selector',
-  );
-  if (hasParentNesting) {
-    const parentAST = wrapAsASTNode(parentCSRaw);
-    const resolved = resolveNestingSelector(parentAST);
-    if (resolved !== null && resolved.resolvable) {
-      return resolved.className;
+  // Plain or BEM-nested class_selector.
+  const classSelector = findNamedChild(selectorsRaw, 'class_selector');
+  if (classSelector) {
+    const hasNesting = classSelector.namedChildren.some(
+      (c: any) => c.type === 'nesting_selector',
+    );
+    if (hasNesting) {
+      const resolved = resolveNestingSelector(wrapAsASTNode(classSelector));
+      if (resolved !== null && resolved.resolvable) return resolved.className;
+      return null;
     }
-    return null;
+    const cn = findNamedChild(classSelector, 'class_name');
+    if (cn) return cn.text;
   }
 
-  // Plain class_selector: grab the class_name text
-  const parentCN = findNamedChild(parentCSRaw, 'class_name');
-  return parentCN ? parentCN.text : null;
+  // Bare `&` in a pseudo_class_selector / attribute_selector — no class name at
+  // this level; unwind one more rule_set.
+  const hasBareNesting = selectorsRaw.namedChildren.some(c =>
+    (c.type === 'pseudo_class_selector' || c.type === 'attribute_selector')
+    && c.namedChildren.some((cc: any) => cc.type === 'nesting_selector'),
+  );
+  if (hasBareNesting) {
+    let outer: TreeSitterNode | null = ruleSetRaw.parent;
+    while (outer && outer.type !== 'rule_set') outer = outer.parent;
+    if (outer && outer.type === 'rule_set') return resolveRuleSetClassName(outer);
+  }
+
+  return null;
 }
 
 /**
@@ -392,13 +418,22 @@ function resolveSelectorContext(
   selectorsNode: ASTNode,
   rawText: string,
 ): string {
-  const classSelectors = selectorsNode.children?.filter(
-    c => c.type === 'class_selector',
-  ) ?? [];
+  const children = selectorsNode.children ?? [];
+  const classSelectors = children.filter(c => c.type === 'class_selector');
   const hasNesting = classSelectors.some(cs =>
     (cs.children ?? []).some(cc => cc.type === 'nesting_selector'),
   );
-  if (!hasNesting) return rawText;
+
+  // Bare `&` selectors — a pseudo_class_selector / attribute_selector whose
+  // children include a nesting_selector (`&:focus`, `&:not(...)`, `&[aria-…]`).
+  // These were previously left unresolved, collapsing every nested variant into
+  // one raw `&…` context key.
+  const bareNestingSelectors = children.filter(c =>
+    (c.type === 'pseudo_class_selector' || c.type === 'attribute_selector')
+    && (c.children ?? []).some(cc => cc.type === 'nesting_selector'),
+  );
+
+  if (!hasNesting && bareNestingSelectors.length === 0) return rawText;
 
   let resolvedText = rawText;
   for (const cs of classSelectors) {
@@ -409,7 +444,34 @@ function resolveSelectorContext(
     }
   }
 
+  for (const bs of bareNestingSelectors) {
+    const parentName = getParentClassNameFromSelectors(selectorsNode);
+    const ns = (bs.children ?? []).find(cc => cc.type === 'nesting_selector');
+    if (parentName && ns) {
+      const nsRaw = (ns.raw as TreeSitterNode).text; // '&'
+      resolvedText = resolvedText.replace(nsRaw, '.' + parentName);
+    } else {
+      unresolvedNestingCount++;
+    }
+  }
+
   return resolvedText;
+}
+
+/**
+ * Resolve the parent class name for a bare `&` nesting selector, starting from
+ * the rule_set's `selectors` node (whose parent is the rule_set itself).
+ */
+function getParentClassNameFromSelectors(selectorsNode: ASTNode): string | null {
+  const raw = selectorsNode.raw as TreeSitterNode;
+  const innerRuleSet = raw?.parent;
+  if (!innerRuleSet || innerRuleSet.type !== 'rule_set') return null;
+
+  let outer: TreeSitterNode | null = innerRuleSet.parent;
+  while (outer && outer.type !== 'rule_set') outer = outer.parent;
+  if (!outer || outer.type !== 'rule_set') return null;
+
+  return resolveRuleSetClassName(outer);
 }
 
 // ---------------------------------------------------------------------------

@@ -36,6 +36,10 @@ import { getCallee } from './codeAnalysis.js';
 /**
  * Walk project root recursively, returning files matching any of the given
  * picomatch globs. Skips node_modules and dot-directories.
+ *
+ * @param root The directory to walk.
+ * @param globs Picomatch globs to match relative paths against.
+ * @returns Absolute paths of matching files, sorted-deterministic per directory.
  */
 export async function walkFiles(root: string, globs: string[]): Promise<string[]> {
   const results: string[] = [];
@@ -75,6 +79,13 @@ export async function walkFiles(root: string, globs: string[]): Promise<string[]
   return results;
 }
 
+/**
+ * Discover tables by replaying DDL from migration files under the project root.
+ *
+ * @param projectRoot The project directory to search.
+ * @param config Schema analyzer configuration (fileGateGlobs for migration files).
+ * @returns The set of table names discovered from migration DDL.
+ */
 export async function discoverTablesFromMigrations(
   projectRoot: string,
   config: SchemaAnalyzerConfig,
@@ -96,6 +107,12 @@ export async function discoverTablesFromMigrations(
   return tables;
 }
 
+/**
+ * Discover tables from a Cloudflare D1 `wrangler.toml` migration directory.
+ *
+ * @param projectRoot The project directory containing wrangler.toml.
+ * @returns The set of table names discovered from D1 migration files.
+ */
 export async function discoverTablesFromWrangler(
   projectRoot: string,
 ): Promise<Set<string>> {
@@ -156,6 +173,13 @@ export async function discoverTablesFromWrangler(
   return tables;
 }
 
+/**
+ * Discover tables by scanning explicit schema files for CREATE TABLE DDL.
+ *
+ * @param schemaFiles Relative paths of schema files to scan.
+ * @param projectRoot The project directory the paths resolve against.
+ * @returns The set of table names discovered from schema-file DDL.
+ */
 export async function discoverTablesFromSchemaFiles(
   schemaFiles: string[],
   projectRoot: string,
@@ -179,6 +203,12 @@ export async function discoverTablesFromSchemaFiles(
   return tables;
 }
 
+/**
+ * Discover tables from ORM schema artifacts (Drizzle builders, Prisma models).
+ *
+ * @param files Candidate file paths to scan for ORM schema definitions.
+ * @returns The set of table names discovered from ORM schemas.
+ */
 export async function discoverTablesFromOrmSchemas(
   files: string[],
 ): Promise<Set<string>> {
@@ -222,6 +252,12 @@ export async function discoverTablesFromOrmSchemas(
 /**
  * Pre-filter: only analyze files that show DB usage.
  * Checks: .sql/migration glob, D1/SQL imports, env-binding patterns, DB calls.
+ *
+ * @param filePath The file under consideration.
+ * @param sourceCode The raw source text.
+ * @param config Schema analyzer configuration (globs, DB names, tag names).
+ * @param provenanceContext Provenance-based DB detection context (Spec 21).
+ * @returns True when the file shows DB usage and should be analyzed.
  */
 export function passesFileGate(
   filePath: string,
@@ -293,6 +329,14 @@ export function passesFileGate(
 /**
  * Extract table references from registry-shaped table sources (callee + decorator).
  * R2.1: Only tagged template SQL and DB-call patterns produce candidates.
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param tableSources Registry entries (callee/decorator) to match.
+ * @param filePath The file under analysis.
+ * @param readModule Resolves a module specifier to source text (barrel tracing).
+ * @returns Extracted table names with ORM-registry provenance.
  */
 export function extractTablesFromRegistry(
   ast: AST,
@@ -329,6 +373,11 @@ export function extractTablesFromRegistry(
  * local names are identical.  For aliased imports (`import { pgTable as table }`)
  * the map records `pgTable → table`, so the callee-extraction logic can trace
  * the call-site identifier back to the original export name.
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param _sourceCode The raw source text (unused; kept for signature parity).
+ * @returns A module → (imported name → local name) map.
  */
 export function resolveImportMap(
   ast: AST,
@@ -373,7 +422,12 @@ export function resolveImportMap(
  *      re-export).  Only ONE hop is traced; a barrel that re-exports from
  *      another local module is treated as unresolved.
  *
- * Returns null when the identifier does not originate from `module`.
+ * @param importMap The import map from resolveImportMap.
+ * @param moduleFilter The required originating module.
+ * @param rootId The call-site root identifier.
+ * @param filePath The file under analysis (for resolving local barrels).
+ * @param readModule Resolves a module specifier to source text.
+ * @returns The original export name, or null when unresolved.
  */
 export function resolveImportedName(
   importMap: Map<string, Map<string, string>>,
@@ -430,6 +484,12 @@ export function resolveImportedName(
  * call_expression node. Counts string/template arguments in order;
  * skips non-string children (like `(` / `,` / `)` delimiters and
  * non-string argument expressions).
+ *
+ * @param node The call_expression node.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param argIndex The 0-based string-argument position to extract.
+ * @returns The unquoted string at that position, or null when absent.
  */
 export function getArgStringLiteral(
   node: ASTNode,
@@ -470,6 +530,13 @@ export function getArgStringLiteral(
 
 /**
  * Walk call_expression nodes for callee-shaped table-source entries.
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param entry The callee-shaped registry entry to match.
+ * @param ctx Shared extraction context (import map, file path, reader).
+ * @param results Accumulator for extracted table references.
  */
 export function extractCalleeTables(
   ast: AST,
@@ -536,6 +603,13 @@ export function extractCalleeTables(
  * Walk decorator nodes for decorator-shaped table-source entries.
  * Handles both argument-bearing decorators (@Entity('table')) and
  * bare decorators (skipped — no table name to extract).
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param entry The decorator-shaped registry entry to match.
+ * @param ctx Shared extraction context (import map, file path, reader).
+ * @param results Accumulator for extracted table references.
  */
 export function extractDecoratorTables(
   ast: AST,

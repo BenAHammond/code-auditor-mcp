@@ -57,8 +57,14 @@ export function parseFile(filePath: string, content: string): AST | null {
 function parseWithTreeSitter(filePath: string, content: string): AST | null {
   const isTsx = filePath.endsWith('.tsx') || filePath.endsWith('.jsx');
   const isGo = filePath.endsWith('.go');
-  const lang = isGo ? 'go' : isTsx ? 'tsx' : 'typescript';
-  const grammarKey = isGo ? 'go' : isTsx ? 'tsx' : 'typescript';
+  const isCss = filePath.endsWith('.css');
+  const isScss = filePath.endsWith('.scss');
+  const lang = isGo ? 'go'
+    : isTsx ? 'tsx'
+    : isCss ? 'css'
+    : isScss ? 'scss'
+    : 'typescript';
+  const grammarKey = lang;
 
   const parser = getParser(grammarKey, isTsx && !isGo);
   const tree = parser.parse(content);
