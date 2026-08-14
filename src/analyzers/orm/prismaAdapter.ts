@@ -37,10 +37,22 @@ const PRISMA_OPERATIONS: Record<string, OrmTableReference['type']> = {
 // Adapter
 // ---------------------------------------------------------------------------
 
+/**
+ * Prisma adapter.
+ */
 export class PrismaAdapter implements OrmAdapter {
   readonly name = 'prisma';
   readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx', '.prisma'];
 
+  /**
+   * Supports file.
+   * @param filePath
+   * @returns
+   * @param adapter
+   * @param ast
+   * @param sourceCode
+   * @returns
+   */
   supportsFile(filePath: string): boolean {
     const base = filePath.split('/').pop() ?? filePath;
     // Content-based detection for schema files
@@ -53,6 +65,13 @@ export class PrismaAdapter implements OrmAdapter {
 
   // ── Table references from Prisma client calls ───────────────────────────
 
+  /**
+   * Extract table references.
+   * @param ast
+   * @param adapter
+   * @param sourceCode
+   * @returns
+   */
   extractTableReferences(
     ast: AST,
     adapter: LanguageAdapter,
@@ -75,6 +94,10 @@ export class PrismaAdapter implements OrmAdapter {
 
   /**
    * Extract table + operation from prisma.modelName.operation() calls.
+   * @param adapter
+   * @param ast
+   * @param sourceCode
+   * @returns
    */
   private extractPrismaCall(
     node: any,
@@ -104,6 +127,13 @@ export class PrismaAdapter implements OrmAdapter {
 
   // ── Schema definitions from schema.prisma ───────────────────────────────
 
+  /**
+   * Extract schema definitions.
+   * @param ast
+   * @param adapter
+   * @param sourceCode
+   * @returns
+   */
   extractSchemaDefinitions(
     ast: AST,
     adapter: LanguageAdapter,

@@ -110,6 +110,13 @@ print publish commands, do not treat an auth prompt as a step for Ben —
 publishing happens only when Ben independently decides to publish.
 Attempting publish and being blocked by 2FA still counts as a violation.
 
+`verify:close` = test + integration + `verify:dist`. `verify:dist` runs
+`npm pack` first to build a throwaway tarball fixture — that is REQUIRED on
+every release commit, not a publishing act. A packed `.tgz` is not a
+deliverable; delete it after the check passes. Never skip `verify:dist`
+over tarball reluctance: it is the only check that proves native binaries
+and WASM grammars survive packaging.
+
 ## Repository boundary — hard constraint
 The ONLY repository you may modify is this one (code-auditor). All other
 directories on this machine — including recall-protocol and any project

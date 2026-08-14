@@ -21,7 +21,6 @@ import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { DEFAULT_SERVER_URL } from './constants.js';
 import { CodeIndexDB } from './codeIndexDB.js';
-import { SchemaParser } from './services/SchemaParser.js';
 
 import path from 'node:path';
 import fs from 'node:fs/promises';

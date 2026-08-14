@@ -43,6 +43,12 @@ export type ProgressReporter = (current: number, total: number, file: string) =>
 /**
  * Standard file processing function
  * Handles file reading, parsing, error handling, and progress reporting
+ * @param analyzeFile
+ * @param analyzerName
+ * @param config
+ * @param files
+ * @param progressReporter
+ * @returns
  */
 export async function processFiles(
   files: string[],
@@ -100,6 +106,8 @@ export async function processFiles(
 
 /**
  * Create a violation object with defaults
+ * @param data
+ * @returns
  */
 export function createViolation(
   data: Violation
@@ -109,6 +117,8 @@ export function createViolation(
 
 /**
  * Get line and column from an ASTNode
+ * @param node
+ * @returns
  */
 export function getNodePosition(
   node: ASTNode
@@ -133,6 +143,9 @@ export function getNodeName(node: ASTNode): string | undefined {
 
 /**
  * Count specific node types in a subtree
+ * @param node
+ * @param predicate
+ * @returns
  */
 export function countNodesOfType(
   node: ASTNode,
@@ -147,6 +160,9 @@ export function countNodesOfType(
 
 /**
  * Find all nodes of a specific type
+ * @param node
+ * @param predicate
+ * @returns
  */
 export function findNodesOfType(
   node: ASTNode,
@@ -161,6 +177,8 @@ export function findNodesOfType(
 
 /**
  * Traverse AST with a visitor function
+ * @param node
+ * @param visitor
  */
 export function traverseAST(
   node: ASTNode,
@@ -171,6 +189,9 @@ export function traverseAST(
 
 /**
  * Filter violations by severity
+ * @param minSeverity
+ * @param violations
+ * @returns
  */
 export function filterViolationsBySeverity(
   violations: Violation[],
@@ -190,6 +211,8 @@ export function filterViolationsBySeverity(
 
 /**
  * Sort violations by severity, file, and line
+ * @param violations
+ * @returns
  */
 export function sortViolations(violations: Violation[]): Violation[] {
   return violations.sort((a, b) => {
@@ -216,6 +239,9 @@ export function calculateComplexity(node: ASTNode): number {
 
 /**
  * Create a standard analyzer function
+ * @param defaultConfig
+ * @param fileAnalyzer
+ * @param name
  */
 export function createAnalyzer(
   name: string,

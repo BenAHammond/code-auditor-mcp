@@ -16,6 +16,10 @@ import type { ASTNode, SourceLocation } from '../types.js';
  * Convert a tree-sitter TreeSitterNode to an ASTNode.
  * The raw TreeSitterNode reference is preserved so adapters can access
  * tree-sitter-specific properties when needed.
+  * @param language
+  * @param node
+  * @param parent
+  * @returns
  */
 export function toASTNode(
   node: TreeSitterNode,
@@ -55,6 +59,8 @@ export function toASTNode(
  * This is the single conversion point for the adapter boundary. All downstream
  * consumers (violation display, DB index, churn mapping, SARIF export, hook
  * contract validation) receive 1-based positions from this function.
+  * @param node
+  * @returns
  */
 export function toSourceLocation(node: TreeSitterNode): SourceLocation {
   return {
@@ -75,6 +81,8 @@ export function toSourceLocation(node: TreeSitterNode): SourceLocation {
 
 /**
  * Check if a S-expression type string represents a function-like node.
+  * @param type
+  * @returns
  */
 export function isFunctionType(type: string): boolean {
   switch (type) {
@@ -92,6 +100,8 @@ export function isFunctionType(type: string): boolean {
 
 /**
  * Check if a S-expression type string represents a class-like node.
+  * @param type
+  * @returns
  */
 export function isClassType(type: string): boolean {
   switch (type) {
@@ -105,6 +115,8 @@ export function isClassType(type: string): boolean {
 
 /**
  * Check if a S-expression type string represents an import statement.
+  * @param type
+  * @returns
  */
 export function isImportType(type: string): boolean {
   switch (type) {
@@ -118,6 +130,8 @@ export function isImportType(type: string): boolean {
 
 /**
  * Check if a S-expression type string represents an export statement.
+  * @param type
+  * @returns
  */
 export function isExportType(type: string): boolean {
   switch (type) {
@@ -130,6 +144,8 @@ export function isExportType(type: string): boolean {
 
 /**
  * Check if a S-expression type string represents a loop node.
+  * @param type
+  * @returns
  */
 export function isLoopType(type: string): boolean {
   switch (type) {
@@ -145,6 +161,8 @@ export function isLoopType(type: string): boolean {
 
 /**
  * Check if a S-expression type string represents a conditional.
+  * @param type
+  * @returns
  */
 export function isConditionalType(type: string): boolean {
   switch (type) {

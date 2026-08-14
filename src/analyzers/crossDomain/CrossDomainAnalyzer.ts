@@ -47,9 +47,109 @@ interface FilePathClause {
 
 
 // ---------------------------------------------------------------------------
+// Call-graph helpers — pure functions with no `this` state, kept off the
+// analyzer class to bound its aggregate cyclomatic complexity.
+// ---------------------------------------------------------------------------
+
+/**
+ * BFS through the call graph (graph_cache) up to maxDepth to check if
+ * any path from startFuncId reaches a validator function ID.
+ */
+function bfsReachesValidator(
+  indexHandle: IndexHandle,
+  startFuncId: number,
+  validatorIds: Set<number>,
+  maxDepth: number,
+): boolean {
+  const visited = new Set<number>();
+  let currentLevel = [startFuncId];
+
+  for (let d = 0; d < maxDepth; d++) {
+    const nextLevel: number[] = [];
+
+    for (const funcId of currentLevel) {
+      if (validatorIds.has(funcId)) return true;
+      if (visited.has(funcId)) continue;
+      visited.add(funcId);
+
+      // Get callees from graph_cache call edges
+      const callees = indexHandle
+        .query(`SELECT neighbor_key FROM graph_cache
+           WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
+
+      for (const callee of callees) {
+        const calleeId = parseInt(callee.neighbor_key, 10);
+        if (!isNaN(calleeId) && !visited.has(calleeId)) {
+          nextLevel.push(calleeId);
+        }
+      }
+    }
+
+    currentLevel = nextLevel;
+  }
+
+  // Check any remaining nodes at the final level
+  for (const funcId of currentLevel) {
+    if (validatorIds.has(funcId)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Expand a writer's directly-written table set with the tables written by
+ * functions it calls (depth-1 callee expansion via graph_cache). Requires the
+ * call-graph infrastructure (graph_cache + functions tables, populated by
+ * code-audit index sync); without it, returns the direct write set unchanged.
+ */
+function expandWrittenTables(
+  indexHandle: IndexHandle,
+  key: string,
+  initialTables: Set<string>,
+  fnIdLookup: Map<string, number> | null,
+  hasGraphData: boolean,
+): Set<string> {
+  const allTables = new Set(initialTables);
+
+  if (!fnIdLookup || !hasGraphData) return allTables;
+
+  const funcId = fnIdLookup.get(key);
+  if (funcId === undefined) return allTables;
+
+  const calleeRows = indexHandle
+    .query(`SELECT neighbor_key FROM graph_cache
+       WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
+
+  for (const callee of calleeRows) {
+    const calleeFuncs = indexHandle
+      .query(`SELECT name, file_path FROM functions WHERE id = ?`, [parseInt(callee.neighbor_key, 10)]) as Array<{
+      name: string;
+      file_path: string;
+    }>;
+
+    for (const cf of calleeFuncs) {
+      const calleeTables = indexHandle
+        .query(`SELECT DISTINCT table_name FROM schema_usage
+           WHERE usage_type IN ('insert', 'update', 'delete', 'create')
+             AND function_name = ? AND file_path = ?`, [cf.name, cf.file_path]) as Array<{ table_name: string }>;
+
+      for (const ct of calleeTables) {
+        allTables.add(ct.table_name);
+      }
+    }
+  }
+
+  return allTables;
+}
+
+
+// ---------------------------------------------------------------------------
 // Analyzer
 // ---------------------------------------------------------------------------
 
+/**
+ * Cross domain analyzer.
+ */
 export class CrossDomainAnalyzer extends UniversalAnalyzer {
   readonly name = 'cross-domain';
   readonly description =
@@ -60,6 +160,10 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
    * Full override: query the code index DB for cross-domain findings.
    * The base-class per-file AST loop is bypassed — all detection is
    * post-analysis across the indexed data.
+   * @param config
+   * @param files
+   * @param options
+   * @returns
    */
   async analyze(
     files: string[],
@@ -304,66 +408,13 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     //    graph_cache tables are empty/missing, we fall back to reporting on
     //    direct writes only — the basic signal is still useful without the
     //    call-graph context.
-    const hasGraphData: boolean = (() => {
-      try {
-        const row = indexHandle.query("SELECT COUNT(*) AS n FROM graph_cache WHERE graph_type = 'call'",
-        ) as Array<{ n: number }>;
-        const cnt = row[0] as { n: number } | undefined;
-        return (cnt?.n ?? 0) > 0;
-      } catch {
-        return false;
-      }
-    })();
-
-    // Build a lookup of function IDs from the functions table (only if it
-    // has data — i.e., deepSync has been run).
-    let fnIdLookup: Map<string, number> | null = null;
-    if (hasGraphData) {
-      try {
-        const fnRows = indexHandle.query('SELECT id, name, file_path FROM functions',) as Array<{ id: number; name: string; file_path: string }>;
-        if (fnRows.length > 0) {
-          fnIdLookup = new Map();
-          for (const r of fnRows) {
-            fnIdLookup.set(`${r.file_path}::${r.name}`, r.id);
-          }
-        }
-      } catch {
-        // functions table might not exist or be unpopulated
-      }
-    }
+    const { hasGraphData, fnIdLookup } = this.resolveCallGraphContext(indexHandle);
 
     for (const [key, funcData] of funcWrites) {
-      const allTables = new Set(funcData.tables);
-
-      // Depth-1 callee expansion: only when graph_cache and functions tables
-      // are both populated. Without deepSync, this is skipped gracefully.
-      if (fnIdLookup && hasGraphData) {
-        const funcId = fnIdLookup.get(key);
-        if (funcId !== undefined) {
-          const calleeRows = indexHandle
-            .query(`SELECT neighbor_key FROM graph_cache
-               WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
-
-          for (const callee of calleeRows) {
-            const calleeFuncs = indexHandle
-              .query(`SELECT name, file_path FROM functions WHERE id = ?`, [parseInt(callee.neighbor_key, 10)]) as Array<{
-              name: string;
-              file_path: string;
-            }>;
-
-            for (const cf of calleeFuncs) {
-              const calleeTables = indexHandle
-                .query(`SELECT DISTINCT table_name FROM schema_usage
-                   WHERE usage_type IN ('insert', 'update', 'delete', 'create')
-                     AND function_name = ? AND file_path = ?`, [cf.name, cf.file_path]) as Array<{ table_name: string }>;
-
-              for (const ct of calleeTables) {
-                allTables.add(ct.table_name);
-              }
-            }
-          }
-        }
-      }
+      // Depth-1 callee expansion (see expandWrittenTables) augments the direct
+      // write set with tables written by called functions, when the call-graph
+      // infrastructure is populated.
+      const allTables = expandWrittenTables(indexHandle, key, funcData.tables, fnIdLookup, hasGraphData);
 
       if (allTables.size >= txnTableMax) {
         const tableList = [...allTables].sort().join(', ');
@@ -381,6 +432,44 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     }
 
     return violations;
+  }
+
+  /**
+   * Resolve the call-graph infrastructure available for callee expansion:
+   * whether graph_cache has any 'call' edges, and a function key → id lookup
+   * built from the functions table (populated only by deepSync). Any failure
+   * degrades gracefully to direct-write-only detection.
+   */
+  private resolveCallGraphContext(indexHandle: IndexHandle): {
+    hasGraphData: boolean;
+    fnIdLookup: Map<string, number> | null;
+  } {
+    let hasGraphData = false;
+    try {
+      const row = indexHandle.query("SELECT COUNT(*) AS n FROM graph_cache WHERE graph_type = 'call'",
+      ) as Array<{ n: number }>;
+      const cnt = row[0] as { n: number } | undefined;
+      hasGraphData = (cnt?.n ?? 0) > 0;
+    } catch {
+      hasGraphData = false;
+    }
+
+    let fnIdLookup: Map<string, number> | null = null;
+    if (hasGraphData) {
+      try {
+        const fnRows = indexHandle.query('SELECT id, name, file_path FROM functions',) as Array<{ id: number; name: string; file_path: string }>;
+        if (fnRows.length > 0) {
+          fnIdLookup = new Map();
+          for (const r of fnRows) {
+            fnIdLookup.set(`${r.file_path}::${r.name}`, r.id);
+          }
+        }
+      } catch {
+        // functions table might not exist or be unpopulated
+      }
+    }
+
+    return { hasGraphData, fnIdLookup };
   }
 
   // ── R3: Validation-Bypass ────────────────────────────────────────────────
@@ -409,7 +498,73 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     } = config;
 
     // ── 1. Build the validator function ID set ─────────────────────────────
+    const validatorIds = this.buildValidatorIds(indexHandle, userValidators);
 
+    if (validatorIds.size === 0) return violations;
+
+    // ── 2. Find all writer functions from schema_usage ─────────────────────
+
+    const fpAliasWhere = filePath
+      ? `AND su.${filePath.clause.slice(4)}`
+      : '';
+
+    const writers = indexHandle
+      .query(`SELECT DISTINCT su.function_name, su.file_path, su.line, f.id as function_id
+         FROM schema_usage su
+         JOIN functions f ON f.name = su.function_name
+                          AND f.file_path = su.file_path
+         WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
+         ${fpAliasWhere}
+         ORDER BY su.file_path, su.function_name`, (filePath ? [filePath.param] : [])) as Array<{
+      function_name: string;
+      file_path: string;
+      line: number;
+      function_id: number;
+    }>;
+
+    if (writers.length === 0) return violations;
+
+    // ── 3. BFS from each writer to check validator reach ───────────────────
+
+    interface WriterCoverage {
+      covered: boolean;
+      line: number;
+      funcName: string;
+    }
+    const writerCoverage = new Map<string, WriterCoverage>();
+
+    for (const w of writers) {
+      const key = `${w.file_path}::${w.function_name}`;
+      if (writerCoverage.has(key)) continue; // deduplicate
+      const covered = bfsReachesValidator(
+        indexHandle,
+        w.function_id,
+        validatorIds,
+        depth,
+      );
+      writerCoverage.set(key, {
+        covered,
+        line: w.line,
+        funcName: w.function_name,
+      });
+    }
+
+    // ── 4-5. Group writers by directory and flag uncovered writers in
+    //    validator-dense directories.
+    violations.push(
+      ...this.flagUncoveredWriters(writers, writerCoverage, minCorpus, modeShare, depth),
+    );
+
+    return violations;
+  }
+
+  /**
+   * Build the validator function ID set in priority order: user-configured
+   * validators, then provenanced validators (exported functions whose own
+   * used_imports includes a validator package), then a name-based heuristic
+   * fallback only when both prior sources are silent.
+   */
+  private buildValidatorIds(indexHandle: IndexHandle, userValidators: string[]): Set<number> {
     const validatorIds = new Set<number>();
 
     // 1a. User-configured validators (format: "funcName" or "path#funcName")
@@ -454,56 +609,21 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       for (const f of heuristicFuncs) validatorIds.add(f.id);
     }
 
-    if (validatorIds.size === 0) return violations;
+    return validatorIds;
+  }
 
-    // ── 2. Find all writer functions from schema_usage ─────────────────────
-
-    const fpAliasWhere = filePath
-      ? `AND su.${filePath.clause.slice(4)}`
-      : '';
-
-    const writers = indexHandle
-      .query(`SELECT DISTINCT su.function_name, su.file_path, su.line, f.id as function_id
-         FROM schema_usage su
-         JOIN functions f ON f.name = su.function_name
-                          AND f.file_path = su.file_path
-         WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
-         ${fpAliasWhere}
-         ORDER BY su.file_path, su.function_name`, (filePath ? [filePath.param] : [])) as Array<{
-      function_name: string;
-      file_path: string;
-      line: number;
-      function_id: number;
-    }>;
-
-    if (writers.length === 0) return violations;
-
-    // ── 3. BFS from each writer to check validator reach ───────────────────
-
-    interface WriterCoverage {
-      covered: boolean;
-      line: number;
-      funcName: string;
-    }
-    const writerCoverage = new Map<string, WriterCoverage>();
-
-    for (const w of writers) {
-      const key = `${w.file_path}::${w.function_name}`;
-      if (writerCoverage.has(key)) continue; // deduplicate
-      const covered = this.bfsReachesValidator(
-        indexHandle,
-        w.function_id,
-        validatorIds,
-        depth,
-      );
-      writerCoverage.set(key, {
-        covered,
-        line: w.line,
-        funcName: w.function_name,
-      });
-    }
-
-    // ── 4. Group writers by directory ──────────────────────────────────────
+  /**
+   * Group writers by directory, then flag uncovered writers only in
+   * directories where a mode-share of peers reach a validator.
+   */
+  private flagUncoveredWriters(
+    writers: Array<{ function_name: string; file_path: string; line: number; function_id: number }>,
+    writerCoverage: Map<string, { covered: boolean; line: number; funcName: string }>,
+    minCorpus: number,
+    modeShare: number,
+    depth: number,
+  ): Violation[] {
+    const violations: Violation[] = [];
 
     interface DirWriter {
       key: string;
@@ -533,8 +653,6 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
         filePath: w.file_path,
       });
     }
-
-    // ── 5. Flag uncovered writers in validator-dense directories ───────────
 
     for (const [dir, dirWriterList] of dirWriters) {
       if (dirWriterList.length < minCorpus) continue;
@@ -582,8 +700,6 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     coverage: CoverageConfig,
     filePath?: FilePathClause,
   ): Violation[] {
-    const violations: Violation[] = [];
-
     const topRiskDecile = coverage.topRiskDecile ?? 0.1;
 
     // Check if any measured coverage exists
@@ -593,159 +709,125 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     ).cnt;
 
     if (measuredCount > 0) {
-      // Use measured coverage data from lcov/istanbul imports
-      const untested = indexHandle.getUntestedTopDecile(topRiskDecile) as Array<{
-        functionName: string; filePath: string; lineNumber: number | null;
-        riskScore: number; basis: string;
-      }>;
+      return this.detectMeasuredUncovered(indexHandle, topRiskDecile);
+    }
+    return this.detectStaticReachUncovered(indexHandle, coverage, filePath);
+  }
 
-      // Determine source format from existing coverage entries
-      const sourceRow = indexHandle
-        .query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1",)[0] as { source: string | null; imported_at: string | null } | undefined;
-      const sourceFormat = sourceRow?.source ?? 'unknown';
-      const importedAt = sourceRow?.imported_at ?? null;
+  /**
+   * Flag exported high-risk functions with no measured test coverage, using
+   * lcov/istanbul-imported data with stale-import detection.
+   */
+  private detectMeasuredUncovered(indexHandle: IndexHandle, topRiskDecile: number): Violation[] {
+    const violations: Violation[] = [];
 
-      // Stale-import detection: measured coverage predates last full index sync
-      let staleWarning: string | null = null;
-      if (importedAt) {
-        const lastSync = indexHandle.getMeta?.('last_full_sync_timestamp') ?? null;
-        if (lastSync && importedAt < lastSync) {
-          staleWarning =
-            ` — WARNING: this coverage data may be stale (imported ${importedAt}, ` +
-            `last index sync was ${lastSync}). ` +
-            `Re-import with 'code-audit coverage --import <path>' for accurate results.`;
-        }
+    const untested = indexHandle.getUntestedTopDecile(topRiskDecile) as Array<{
+      functionName: string; filePath: string; lineNumber: number | null;
+      riskScore: number; basis: string;
+    }>;
+
+    // Determine source format from existing coverage entries
+    const sourceRow = indexHandle
+      .query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1",)[0] as { source: string | null; imported_at: string | null } | undefined;
+    const sourceFormat = sourceRow?.source ?? 'unknown';
+    const importedAt = sourceRow?.imported_at ?? null;
+
+    // Stale-import detection: measured coverage predates last full index sync
+    let staleWarning: string | null = null;
+    if (importedAt) {
+      const lastSync = indexHandle.getMeta?.('last_full_sync_timestamp') ?? null;
+      if (lastSync && importedAt < lastSync) {
+        staleWarning =
+          ` — WARNING: this coverage data may be stale (imported ${importedAt}, ` +
+          `last index sync was ${lastSync}). ` +
+          `Re-import with 'code-audit coverage --import <path>' for accurate results.`;
       }
+    }
 
-      for (const fn of untested) {
+    for (const fn of untested) {
+      violations.push({
+        file: fn.filePath,
+        line: fn.lineNumber ?? 1,
+        column: 0,
+        severity: 'suggestion',
+        message:
+          `Exported function '${fn.functionName}' (risk ${fn.riskScore.toFixed(3)}) has no measured test coverage. ` +
+          `Top imported functions should have test coverage. Import coverage data with 'code-audit coverage --import <path>'.` +
+          (staleWarning ?? ''),
+        rule: 'cross-domain/uncovered-risk',
+        analyzer: this.name,
+        functionName: fn.functionName,
+        basis: fn.basis,
+        sourceFormat,
+        ...(staleWarning ? { staleImport: true } : {}),
+      });
+    }
+
+    return violations;
+  }
+
+  /**
+   * Static-reach fallback: flag exported high-risk functions that are not
+   * reachable from known test files via BFS through the call graph.
+   */
+  private detectStaticReachUncovered(
+    indexHandle: IndexHandle,
+    coverage: CoverageConfig,
+    filePath?: FilePathClause,
+  ): Violation[] {
+    const violations: Violation[] = [];
+    const topRiskDecile = coverage.topRiskDecile ?? 0.1;
+
+    const fpWhere = filePath ? 'AND f.file_path LIKE ?' : '';
+    const params: any[] = [topRiskDecile];
+    if (filePath) params.push(filePath.param);
+
+    const highRiskFns = indexHandle.query(
+        `WITH ranked AS (
+          SELECT
+            f.name,
+            f.file_path,
+            f.line_number,
+            f.id,
+            COALESCE(hs.score, 0.0) as risk_score,
+            PERCENT_RANK() OVER (ORDER BY COALESCE(hs.score, 0.0) DESC) as pct
+          FROM functions f
+          LEFT JOIN hotspot_scores hs ON hs.target = (f.file_path || ':' || f.name)
+            AND hs.type = 'function'
+          WHERE f.is_exported = 1
+            ${fpWhere}
+        )
+        SELECT id, name, file_path, line_number, risk_score
+        FROM ranked
+        WHERE pct <= ?
+        ORDER BY risk_score DESC`, params) as Array<{
+      id: number;
+      name: string;
+      file_path: string;
+      line_number: number;
+      risk_score: number;
+    }>;
+
+    if (highRiskFns.length === 0) return violations;
+
+    const reachableIds = this.computeTestReachableIds(indexHandle, coverage);
+
+    // Flag high-risk functions not in the reachable set
+    for (const fn of highRiskFns) {
+      if (!reachableIds.has(fn.id)) {
         violations.push({
-          file: fn.filePath,
-          line: fn.lineNumber ?? 1,
+          file: fn.file_path,
+          line: fn.line_number,
           column: 0,
           severity: 'suggestion',
           message:
-            `Exported function '${fn.functionName}' (risk ${fn.riskScore.toFixed(3)}) has no measured test coverage. ` +
-            `Top imported functions should have test coverage. Import coverage data with 'code-audit coverage --import <path>'.` +
-            (staleWarning ?? ''),
+            `Exported function '${fn.name}' (risk ${fn.risk_score.toFixed(3)}) is not reachable from known test files. ` +
+            `Add test coverage or import measured coverage with 'code-audit coverage --import <path>'.`,
           rule: 'cross-domain/uncovered-risk',
           analyzer: this.name,
-          functionName: fn.functionName,
-          basis: fn.basis,
-          sourceFormat,
-          ...(staleWarning ? { staleImport: true } : {}),
+          functionName: fn.name,
+          basis: 'static-reach',
         });
-      }
-    } else {
-      // Static-reach fallback: use the call graph to determine which
-      // exported high-risk functions are reachable from test files
-      const fpWhere = filePath ? 'AND f.file_path LIKE ?' : '';
-      const params: any[] = [topRiskDecile];
-      if (filePath) params.push(filePath.param);
-
-      const highRiskFns = indexHandle.query(
-          `WITH ranked AS (
-            SELECT
-              f.name,
-              f.file_path,
-              f.line_number,
-              f.id,
-              COALESCE(hs.score, 0.0) as risk_score,
-              PERCENT_RANK() OVER (ORDER BY COALESCE(hs.score, 0.0) DESC) as pct
-            FROM functions f
-            LEFT JOIN hotspot_scores hs ON hs.target = (f.file_path || ':' || f.name)
-              AND hs.type = 'function'
-            WHERE f.is_exported = 1
-              ${fpWhere}
-          )
-          SELECT id, name, file_path, line_number, risk_score
-          FROM ranked
-          WHERE pct <= ?
-          ORDER BY risk_score DESC`, params) as Array<{
-        id: number;
-        name: string;
-        file_path: string;
-        line_number: number;
-        risk_score: number;
-      }>;
-
-      if (highRiskFns.length === 0) return violations;
-
-      // Find test-file functions to use as BFS starting points.
-      const testGlobs = coverage.testGlobs ?? ['**/*.test.*', '**/*.spec.*', '**/__tests__/**'];
-      const testGlobPatterns = testGlobs.map((g: string) =>
-        g.replace(/\*\*/g, '%').replace(/\*/g, '%'),
-      );
-
-      let testFileClause = '';
-      const testFileParams: string[] = [];
-      if (testGlobPatterns.length > 0) {
-        testFileClause = testGlobPatterns
-          .map((_p: string, i: number) => `file_path LIKE ?`)
-          .join(' OR ');
-        for (const p of testGlobPatterns) testFileParams.push(p);
-      }
-
-      const testFuncIds = new Set<number>();
-      if (testFileClause) {
-        const testFunctions = indexHandle
-          .query(`SELECT id FROM functions WHERE ${testFileClause}`, testFileParams) as Array<{ id: number }>;
-        for (const tf of testFunctions) testFuncIds.add(tf.id);
-      }
-
-      // BFS from each test-file function through call graph (reverse: test
-      // calls code under test). We traverse the call edges: if testFunc → X,
-      // then X is reachable.
-      const reachableIds = new Set<number>();
-      const maxDepth = coverage.staticReachDepth ?? 2;
-
-      if (testFuncIds.size > 0) {
-        for (const startId of testFuncIds) {
-          const visited = new Set<number>();
-          let currentLevel = [startId];
-
-          for (let d = 0; d < maxDepth; d++) {
-            const nextLevel: number[] = [];
-            for (const funcId of currentLevel) {
-              if (visited.has(funcId)) continue;
-              visited.add(funcId);
-              reachableIds.add(funcId);
-
-              const callees = indexHandle
-                .query(`SELECT neighbor_key FROM graph_cache
-                   WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
-              for (const callee of callees) {
-                const calleeId = parseInt(callee.neighbor_key, 10);
-                if (!isNaN(calleeId) && !visited.has(calleeId)) {
-                  nextLevel.push(calleeId);
-                }
-              }
-            }
-            currentLevel = nextLevel;
-          }
-          // Check last level
-          for (const funcId of currentLevel) {
-            if (!reachableIds.has(funcId)) reachableIds.add(funcId);
-          }
-        }
-      }
-
-      // Flag high-risk functions not in the reachable set
-      for (const fn of highRiskFns) {
-        if (!reachableIds.has(fn.id)) {
-          violations.push({
-            file: fn.file_path,
-            line: fn.line_number,
-            column: 0,
-            severity: 'suggestion',
-            message:
-              `Exported function '${fn.name}' (risk ${fn.risk_score.toFixed(3)}) is not reachable from known test files. ` +
-              `Add test coverage or import measured coverage with 'code-audit coverage --import <path>'.`,
-            rule: 'cross-domain/uncovered-risk',
-            analyzer: this.name,
-            functionName: fn.name,
-            basis: 'static-reach',
-          });
-        }
       }
     }
 
@@ -753,47 +835,67 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * BFS through the call graph (graph_cache) up to maxDepth to check if
-   * any path from startFuncId reaches a validator function ID.
+   * Compute the set of function IDs reachable from test-file functions via
+   * BFS through the call graph (reverse direction: test → code under test).
    */
-  private bfsReachesValidator(
-    indexHandle: IndexHandle,
-    startFuncId: number,
-    validatorIds: Set<number>,
-    maxDepth: number,
-  ): boolean {
-    const visited = new Set<number>();
-    let currentLevel = [startFuncId];
+  private computeTestReachableIds(indexHandle: IndexHandle, coverage: CoverageConfig): Set<number> {
+    const reachableIds = new Set<number>();
 
-    for (let d = 0; d < maxDepth; d++) {
-      const nextLevel: number[] = [];
+    // Find test-file functions to use as BFS starting points.
+    const testGlobs = coverage.testGlobs ?? ['**/*.test.*', '**/*.spec.*', '**/__tests__/**'];
+    const testGlobPatterns = testGlobs.map((g: string) =>
+      g.replace(/\*\*/g, '%').replace(/\*/g, '%'),
+    );
 
-      for (const funcId of currentLevel) {
-        if (validatorIds.has(funcId)) return true;
-        if (visited.has(funcId)) continue;
-        visited.add(funcId);
+    let testFileClause = '';
+    const testFileParams: string[] = [];
+    if (testGlobPatterns.length > 0) {
+      testFileClause = testGlobPatterns
+        .map((_p: string, i: number) => `file_path LIKE ?`)
+        .join(' OR ');
+      for (const p of testGlobPatterns) testFileParams.push(p);
+    }
 
-        // Get callees from graph_cache call edges
-        const callees = indexHandle
-          .query(`SELECT neighbor_key FROM graph_cache
-             WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
+    const testFuncIds = new Set<number>();
+    if (testFileClause) {
+      const testFunctions = indexHandle
+        .query(`SELECT id FROM functions WHERE ${testFileClause}`, testFileParams) as Array<{ id: number }>;
+      for (const tf of testFunctions) testFuncIds.add(tf.id);
+    }
 
-        for (const callee of callees) {
-          const calleeId = parseInt(callee.neighbor_key, 10);
-          if (!isNaN(calleeId) && !visited.has(calleeId)) {
-            nextLevel.push(calleeId);
+    const maxDepth = coverage.staticReachDepth ?? 2;
+
+    if (testFuncIds.size > 0) {
+      for (const startId of testFuncIds) {
+        const visited = new Set<number>();
+        let currentLevel = [startId];
+
+        for (let d = 0; d < maxDepth; d++) {
+          const nextLevel: number[] = [];
+          for (const funcId of currentLevel) {
+            if (visited.has(funcId)) continue;
+            visited.add(funcId);
+            reachableIds.add(funcId);
+
+            const callees = indexHandle
+              .query(`SELECT neighbor_key FROM graph_cache
+                 WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
+            for (const callee of callees) {
+              const calleeId = parseInt(callee.neighbor_key, 10);
+              if (!isNaN(calleeId) && !visited.has(calleeId)) {
+                nextLevel.push(calleeId);
+              }
+            }
           }
+          currentLevel = nextLevel;
+        }
+        // Check last level
+        for (const funcId of currentLevel) {
+          if (!reachableIds.has(funcId)) reachableIds.add(funcId);
         }
       }
-
-      currentLevel = nextLevel;
     }
 
-    // Check any remaining nodes at the final level
-    for (const funcId of currentLevel) {
-      if (validatorIds.has(funcId)) return true;
-    }
-
-    return false;
+    return reachableIds;
   }
 }

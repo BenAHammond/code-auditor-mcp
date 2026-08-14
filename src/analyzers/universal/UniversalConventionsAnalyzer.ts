@@ -77,6 +77,9 @@ interface FunctionCallRow {
 // Analyzer
 // ---------------------------------------------------------------------------
 
+/**
+ * Universal conventions analyzer.
+ */
 export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   readonly name = 'conventions';
   readonly description =
@@ -86,6 +89,10 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   /**
    * Full override: query conventions from the DB and emit violations per domain.
    * The base-class per-file AST loop is bypassed.
+   * @param config
+   * @param files
+   * @param options
+   * @returns
    */
   async analyze(
     files: string[],
@@ -138,33 +145,15 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     }
 
     // Detect violations per domain
-    for (const [domain, domainConventions] of byDomain) {
-      switch (domain) {
-        case 'usage-pair':
-          violations.push(...this.detectUsagePairViolations(indexHandle, domainConventions));
-          break;
-        case 'import-form':
-          violations.push(
-            ...this.detectImportFormViolations(indexHandle, domainConventions, projectRoot, readSource),
-          );
-          break;
-        case 'error-handling':
-          violations.push(
-            ...this.detectErrorHandlingViolations(indexHandle, domainConventions),
-          );
-          break;
-        case 'export-shape':
-          violations.push(
-            ...this.detectExportShapeViolations(indexHandle, domainConventions, exportsMap),
-          );
-          break;
-        case 'naming':
-          violations.push(
-            ...this.detectNamingViolations(indexHandle, domainConventions),
-          );
-          break;
-      }
-    }
+    violations.push(
+      ...this.detectPerDomain(
+        byDomain,
+        indexHandle,
+        projectRoot,
+        readSource,
+        exportsMap,
+      ),
+    );
 
     // Count unique files that conventions apply to (from the function index)
     const resolvedProjectRoot = projectRoot ? path.resolve(projectRoot) : undefined;
@@ -193,6 +182,47 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   /** No-op — all detection is DB-based. */
   async analyzeAST(): Promise<any[]> {
     return [];
+  }
+
+  /**
+   * Dispatch each convention domain to its detector.
+   */
+  private detectPerDomain(
+    byDomain: Map<string, ConventionRow[]>,
+    indexHandle: IndexHandle,
+    projectRoot: string | undefined,
+    readSource: ((filePath: string) => string | undefined) | undefined,
+    exportsMap: Map<string, ExportInfo[]> | undefined,
+  ): Violation[] {
+    const violations: Violation[] = [];
+    for (const [domain, domainConventions] of byDomain) {
+      switch (domain) {
+        case 'usage-pair':
+          violations.push(...this.detectUsagePairViolations(indexHandle, domainConventions));
+          break;
+        case 'import-form':
+          violations.push(
+            ...this.detectImportFormViolations(indexHandle, domainConventions, projectRoot, readSource),
+          );
+          break;
+        case 'error-handling':
+          violations.push(
+            ...this.detectErrorHandlingViolations(indexHandle, domainConventions),
+          );
+          break;
+        case 'export-shape':
+          violations.push(
+            ...this.detectExportShapeViolations(indexHandle, domainConventions, exportsMap),
+          );
+          break;
+        case 'naming':
+          violations.push(
+            ...this.detectNamingViolations(indexHandle, domainConventions),
+          );
+          break;
+      }
+    }
+    return violations;
   }
 
   // ── Usage-Pair Detection ──────────────────────────────────────────────

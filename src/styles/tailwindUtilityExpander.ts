@@ -157,11 +157,24 @@ export class TailwindUtilityExpander {
       const projectCss = config.projectCss ?? this.discoverProjectCss(config.projectRoot);
       if (projectCss) {
         this.probe.setProjectCss(projectCss);
+
+        // Tailwind v4 declares itself CSS-first — `@import "tailwindcss"` and/or
+        // `@theme` blocks in the project's own CSS — with no tailwind.config.js
+        // and not necessarily with tailwindcss in node_modules (e.g. a corpus
+        // checked out without installing dependencies). Treat that marker as
+        // "Tailwind is present" so the fail-open guard in the caller disables
+        // undefined-class detection when the compile-probe can't validate.
+        // Without this, a v4 project with no installed tailwindcss silently
+        // falls through to CSS-only detection and flags every utility class
+        // as undefined.
+        if (/@import\s+["']tailwindcss["']/.test(projectCss) || projectCss.includes('@theme')) {
+          this._hasTailwindConfig = true;
+        }
       }
 
       const result = await this.probe.init(config.projectRoot);
 
-      this._hasTailwindConfig = result.tailwindFound;
+      this._hasTailwindConfig = this._hasTailwindConfig || result.tailwindFound;
 
       if (!result.ok) {
         this._configFailed = true;

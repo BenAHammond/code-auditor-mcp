@@ -5,6 +5,9 @@
 import type { LanguageAdapter } from './types.js';
 import path from 'path';
 
+/**
+ * Language registry.
+ */
 export class LanguageRegistry {
   private static instance: LanguageRegistry;
   private adapters = new Map<string, LanguageAdapter>();
@@ -14,6 +17,7 @@ export class LanguageRegistry {
   
   /**
    * Get singleton instance
+    * @returns
    */
   static getInstance(): LanguageRegistry {
     if (!LanguageRegistry.instance) {
@@ -24,6 +28,7 @@ export class LanguageRegistry {
   
   /**
    * Register a language adapter
+    * @param adapter
    */
   registerAdapter(adapter: LanguageAdapter): void {
     this.adapters.set(adapter.name, adapter);
@@ -36,6 +41,7 @@ export class LanguageRegistry {
   
   /**
    * Unregister a language adapter
+    * @param name
    */
   unregisterAdapter(name: string): void {
     const adapter = this.adapters.get(name);
@@ -57,6 +63,8 @@ export class LanguageRegistry {
   
   /**
    * Get adapter for a file based on its extension
+    * @param filePath
+    * @returns
    */
   getAdapterForFile(filePath: string): LanguageAdapter | null {
     const ext = path.extname(filePath).toLowerCase();

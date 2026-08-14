@@ -81,13 +81,363 @@ interface CodeBlock {
   lineCount: number;
 }
 
-interface CodeIndex {
-  blocks: CodeBlock[];
-  hashMap: Map<string, CodeBlock[]>;
-  stringLiterals: Map<string, Array<{ file: string; line: number; column: number }>>;
-  imports: Map<string, string[]>; // import path -> files
+/** Bundle of inputs threaded through the block-extraction free functions. */
+interface BlockContext {
+  ast: AST;
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  config: DRYAnalyzerConfig;
 }
 
+// ── R3.1: Span-overlap helpers ──────────────────────────────────────
+
+/**
+ * Returns true if the two blocks share code spans (same file + overlapping lines).
+ */
+function spansOverlap(a: CodeBlock, b: CodeBlock): boolean {
+  if (a.file !== b.file) return false;
+  return !(a.end.line < b.start.line || b.end.line < a.start.line);
+}
+
+/**
+ * Sort comparator: earliest file+line first.
+ */
+function byFileAndLine(a: CodeBlock, b: CodeBlock): number {
+  if (a.file !== b.file) return a.file.localeCompare(b.file);
+  return a.start.line - b.start.line;
+}
+
+/**
+ * R3.1: Deduplicate overlapping blocks. Prefers the innermost block when
+ * one block fully contains another (nesting), and the earliest block when
+ * blocks only partially overlap.
+ *
+ * This ensures that blocks nested inside functions/classes (e.g. for-loops
+ * inside a function body) surface for duplicate detection instead of being
+ * silently deduplicated by their outer container.
+ */
+function deduplicateBlocks(blocks: CodeBlock[]): CodeBlock[] {
+  if (blocks.length <= 1) return blocks;
+
+  // Sort by (file, startLine)
+  const sorted = [...blocks].sort(byFileAndLine);
+  const result: CodeBlock[] = [];
+  let last: CodeBlock | null = null;
+
+  for (const block of sorted) {
+    if (last && last.file === block.file) {
+      // Same file — check for overlap
+
+      // Case 1: `last` fully contains `block` (nesting: last is outer, block is inner)
+      // Replace outer with inner — the inner block is more specific.
+      if (last.start.line <= block.start.line && last.end.line >= block.end.line) {
+        result.pop();
+        result.push(block);
+        last = block;
+        continue;
+      }
+
+      // Case 2: `block` fully contains `last` (nesting: block is outer, last is inner)
+      // Keep `last` (already inner in result), skip the outer block.
+      if (block.start.line <= last.start.line && block.end.line >= last.end.line) {
+        continue;
+      }
+
+      // Case 3: Partial overlap (neither fully contains the other)
+      // Keep the earlier block.
+      if (!(last.end.line < block.start.line)) {
+        continue;
+      }
+    }
+    result.push(block);
+    last = block;
+  }
+  return result;
+}
+
+// ── R3.3: Structural similarity helpers ──────────────────────────────
+
+/**
+ * Group blocks by a key field into a map of key→blocks[].
+ */
+function groupByHash(
+  blocks: CodeBlock[],
+  key: 'hash' | 'structuralHash'
+): Map<string, CodeBlock[]> {
+  const map = new Map<string, CodeBlock[]>();
+  for (const block of blocks) {
+    const hash = block[key];
+    const existing = map.get(hash) || [];
+    existing.push(block);
+    map.set(hash, existing);
+  }
+  return map;
+}
+
+/**
+ * R3.3: Normalize code to its token-kind sequence.
+ * Identifiers → ID, string/number/regex literals → LIT.
+ */
+function normalizeStructure(code: string): string {
+  let normalized = code;
+
+  // Template expressions: strip dynamic parts for structural matching
+  normalized = normalized.replace(/\$\{[^}]*\}/g, 'ID');
+
+  // String literals (single, double, backtick) → LIT
+  normalized = normalized.replace(/(['"`])\1/g, 'LIT'); // empty strings
+  normalized = normalized.replace(/`[^`]*`/g, 'LIT');
+  normalized = normalized.replace(/'[^']*'/g, 'LIT');
+  normalized = normalized.replace(/"[^"]*"/g, 'LIT');
+
+  // Numeric literals → LIT
+  normalized = normalized.replace(/\b\d+\.?\d*\b/g, 'LIT');
+
+  // Regex literals → LIT (approximate — /pattern/flags)
+  normalized = normalized.replace(/\/[^/*][^/]*\/[gimsuy]*/g, 'LIT');
+
+  // Boolean/null literals
+  normalized = normalized.replace(/\b(true|false|null|undefined)\b/g, 'LIT');
+
+  // Identifiers → ID (after literals so we don't replace inside strings)
+  // Match camelCase, PascalCase, snake_case, dollar-prefixed, underscore-prefixed
+  normalized = normalized.replace(/\b[a-zA-Z_$][a-zA-Z0-9_$]*\b/g, (match) => {
+    // Keep keywords intact
+    const keywords = new Set([
+      'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
+      'return', 'throw', 'try', 'catch', 'finally', 'new', 'delete', 'typeof',
+      'instanceof', 'in', 'of', 'class', 'extends', 'super', 'this', 'function',
+      'const', 'let', 'var', 'async', 'await', 'yield', 'import', 'export',
+      'default', 'from', 'as', 'static', 'get', 'set', 'enum', 'type', 'interface',
+      'implements', 'abstract', 'public', 'private', 'protected', 'readonly',
+      'ID', 'LIT',
+    ]);
+    if (keywords.has(match)) return match;
+    return 'ID';
+  });
+
+  return normalized;
+}
+
+/**
+ * Normalize code for comparison
+ */
+function normalizeCode(code: string, config: DRYAnalyzerConfig): string {
+  let normalized = code;
+
+  if (config.ignoreWhitespace) {
+    // Normalize whitespace but preserve structure
+    normalized = normalized
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .join('\n');
+  }
+
+  if (config.ignoreComments) {
+    // Remove single-line comments
+    normalized = normalized.replace(/\/\/.*$/gm, '');
+    // Remove multi-line comments
+    normalized = normalized.replace(/\/\*[\s\S]*?\*\//g, '');
+  }
+
+  return normalized;
+}
+
+/**
+ * R3.3: Normalize code for structural comparison.
+ * First applies standard normalization (whitespace/comments), then
+ * replaces identifiers and literals with placeholders.
+ */
+function normalizeCodeForStructure(code: string, config: DRYAnalyzerConfig): string {
+  const normalized = normalizeCode(code, config);
+  return normalizeStructure(normalized);
+}
+
+/**
+ * Hash code for comparison
+ */
+function hashCode(text: string): string {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+/**
+ * Count lines in text
+ */
+function countLines(text: string): number {
+  return text.split('\n').filter(line => line.trim().length > 0).length;
+}
+
+/**
+ * Check if block is large enough to be considered
+ */
+function isBlockLargeEnough(block: CodeBlock, config: DRYAnalyzerConfig): boolean {
+  return block.lineCount >= (config.minLineThreshold || 5);
+}
+
+/**
+ * Compute the Jaccard similarity index between two tokenized strings.
+ * Jaccard = |intersection| / |union|. Range [0, 1].
+ */
+function computeJaccardSimilarity(text1: string, text2: string): number {
+  const tokens1 = new Set(text1.split(/\s+/).filter(Boolean));
+  const tokens2 = new Set(text2.split(/\s+/).filter(Boolean));
+
+  let intersection = 0;
+  for (const t of tokens1) {
+    if (tokens2.has(t)) intersection++;
+  }
+
+  const union = tokens1.size + tokens2.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Compute an order-independent pair fingerprint from two code blocks.
+ * Uses SHA256(sorted(a, b).join('||')) so the same pair has the same
+ * fingerprint regardless of argument order.
+ */
+function computePairFingerprint(original: CodeBlock, block: CodeBlock): string {
+  const id1 = `${original.file}|${original.nodeType}|${original.start.line}`;
+  const id2 = `${block.file}|${block.nodeType}|${block.start.line}`;
+  const sorted = [id1, id2].sort();
+  return crypto.createHash('sha256').update(sorted.join('||')).digest('hex');
+}
+
+/**
+ * Find a node by its location via BFS.
+ */
+function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
+  const queue: ASTNode[] = [root];
+
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+
+    if (node.location.start.line === location.line &&
+        node.location.start.column === location.column) {
+      return node;
+    }
+
+    if (node.children) {
+      queue.push(...node.children);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check whether a file path matches any of the given glob-ish exclude patterns.
+ */
+function isExcluded(filePath: string, patterns: string[]): boolean {
+  return patterns.some(pattern => {
+    const regex = new RegExp(pattern.replace(/\*/g, '.*'));
+    return regex.test(filePath);
+  });
+}
+
+/**
+ * Walk the AST depth-first, invoking the callback on every node.
+ */
+function walkAST(node: ASTNode, callback: (node: ASTNode) => void): void {
+  callback(node);
+  if (node.children) {
+    for (const child of node.children) {
+      walkAST(child, callback);
+    }
+  }
+}
+
+/**
+ * Check whether a node type is a block-like structure (if, for, while, etc.).
+ * Pure check on the tree-sitter node type.
+ */
+function isSignificantBlockType(type: string): boolean {
+  const blockTypes = new Set([
+    'if_statement', 'for_statement', 'for_in_statement',
+    'while_statement', 'do_statement', 'switch_statement', 'try_statement',
+  ]);
+  return blockTypes.has(type);
+}
+
+/**
+ * Build a code block from a node, given the extraction context.
+ */
+function createCodeBlock(ctx: BlockContext, node: ASTNode): CodeBlock | null {
+  const text = ctx.adapter.getNodeText(node, ctx.sourceCode);
+  if (!text) return null;
+
+  const normalizedText = normalizeCode(text, ctx.config);
+  const lineCount = countLines(text);
+
+  // R3.3: Compute structural hash from token-kind sequence
+  const structuralHash = hashCode(normalizeCodeForStructure(text, ctx.config));
+
+  return {
+    file: ctx.ast.filePath,
+    start: node.location.start,
+    end: node.location.end,
+    text,
+    normalizedText,
+    hash: hashCode(normalizedText),
+    structuralHash,
+    nodeType: node.type,
+    lineCount
+  };
+}
+
+/**
+ * Locate the node at `location`, build its block, and append it if large enough.
+ */
+function collectBlock(
+  ctx: BlockContext,
+  location: { line: number; column: number },
+  blocks: CodeBlock[]
+): void {
+  const node = findNodeByLocation(ctx.ast.root, location);
+  if (!node) return;
+  const block = createCodeBlock(ctx, node);
+  if (block && isBlockLargeEnough(block, ctx.config)) {
+    blocks.push(block);
+  }
+}
+
+/**
+ * Extract all code blocks from an AST: functions, classes + methods, and
+ * significant control-flow blocks (loops/conditionals/etc.).
+ */
+function extractCodeBlocks(ctx: BlockContext): CodeBlock[] {
+  const blocks: CodeBlock[] = [];
+
+  for (const func of ctx.adapter.extractFunctions(ctx.ast)) {
+    collectBlock(ctx, func.location.start, blocks);
+  }
+
+  const classes = ctx.adapter.extractClasses(ctx.ast);
+  for (const cls of classes) {
+    collectBlock(ctx, cls.location.start, blocks);
+    for (const method of cls.methods) {
+      collectBlock(ctx, method.location.start, blocks);
+    }
+  }
+
+  walkAST(ctx.ast.root, node => {
+    if (isSignificantBlockType(node.type)) {
+      collectBlock(ctx, node.location.start, blocks);
+    }
+  });
+
+  return blocks;
+}
+
+/**
+ * Detects duplicate and structurally-similar code blocks across a codebase.
+ *
+ * Emits `dry/duplicate` (warning) for exact token matches and, when enabled,
+ * `dry/structural-similarity` (suggestion) for token-kind matches. During
+ * analysis it seeds {@link DryPairSeed} records for Spec-13 diverging-clone
+ * tracking.
+ */
 export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   readonly name = 'dry';
   readonly description = 'Detects code duplication across the codebase';
@@ -103,7 +453,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   get dryPairs(): DryPairSeed[] {
     return this._dryPairs;
   }
-  
+
   protected async analyzeAST(
     ast: AST,
     adapter: LanguageAdapter,
@@ -117,149 +467,30 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     this._dryPairsForFile = [];
 
     // Skip if file matches exclude patterns
-    if (this.isExcluded(ast.filePath, finalConfig.excludePatterns || [])) {
+    if (isExcluded(ast.filePath, finalConfig.excludePatterns || [])) {
       return violations;
     }
 
-    // Extract code blocks from this file
-    const blocks = this.extractCodeBlocks(ast, adapter, sourceCode, finalConfig);
+    const ctx: BlockContext = { ast, adapter, sourceCode, config: finalConfig };
+    const blocks = extractCodeBlocks(ctx);
 
     // R3.1: Deduplicate blocks — sort by (file, startLine) and merge overlapping spans
-    const deduped = this.deduplicateBlocks(blocks);
+    const deduped = deduplicateBlocks(blocks);
 
-    // ── R3.3: dry/duplicate — exact token-identical match (warning) ─────
-    const exactHashmap = this.groupByHash(deduped, 'hash');
-
-    for (const [, group] of exactHashmap) {
-      if (group.length < 2) continue;
-
-      // R3.1: Find earliest occurrence as "original" — sort by (file, startLine)
-      const sorted = [...group].sort(this.byFileAndLine);
-      const original = sorted[0];
-
-      for (let i = 1; i < sorted.length; i++) {
-        const block = sorted[i];
-
-        // R3.1: Span-overlap check — skip if block overlaps with original
-        if (this.spansOverlap(original, block)) continue;
-
-        violations.push(this.createViolation(
-          block.file,
-          block.start,
-          `Duplicate code block detected (${block.lineCount} lines). ` +
-          `First occurrence at ${original.file}:${original.start.line}`,
-          'warning',                                         // R7
-          'dry/duplicate',
-          {
-            oldText: block.text,
-            newText: `// Consider extracting to a shared function`
-          },
-          block.hash
-        ));
-
-        // Spec 13 R5 — seed pair for diverging-clone tracking
-        this.seedPair(original, block, 1.0, 'dry/duplicate');
-      }
-    }
-
-    // ── R3.3: dry/structural-similarity — token-kind match (suggestion) ─
-    // R4.2: gated behind checkStructuralSimilarity (default off)
+    this.reportExactDuplicates(deduped, violations);
     if (finalConfig.checkStructuralSimilarity) {
-      const structuralHashmap = this.groupByHash(deduped, 'structuralHash');
-
-      for (const [, group] of structuralHashmap) {
-        if (group.length < 2) continue;
-
-        const sorted = [...group].sort(this.byFileAndLine);
-        const original = sorted[0];
-
-        for (let i = 1; i < sorted.length; i++) {
-          const block = sorted[i];
-
-          // Skip if these are already exact duplicates (reported above)
-          if (original.hash === block.hash) continue;
-
-          // R3.1: Span-overlap check
-          if (this.spansOverlap(original, block)) continue;
-
-          violations.push(this.createViolation(
-            block.file,
-            block.start,
-            `Structurally similar code block detected (${block.lineCount} lines). ` +
-            `First occurrence at ${original.file}:${original.start.line}`,
-            'suggestion',                                      // R7
-            'dry/structural-similarity',
-            {
-              oldText: block.text,
-              newText: `// Consider extracting to a shared function`
-            },
-            block.hash
-          ));
-
-          // Spec 13 R5 — seed pair for diverging-clone tracking
-          const jaccardSim = this.computeJaccardSimilarity(
-            original.normalizedText, block.normalizedText
-          );
-          this.seedPair(original, block, jaccardSim, 'dry/structural-similarity');
-        }
-      }
+      this.reportStructuralDuplicates(deduped, violations);
     }
-
-    // ── Cross-file duplicate detection (scoped audit) ──────────────────
-    if (finalConfig.fullFunctionIndex && finalConfig.fullFunctionIndex.length > 0) {
-      const fullHashmap = new Map<string, { file: string; name: string; line: number }>();
-
-      for (const func of finalConfig.fullFunctionIndex) {
-        const body = (func as any).body ?? (func as any).metadata?.body;
-        if (!body) continue;
-
-        try {
-          const normalized = this.normalizeCode(body, finalConfig);
-          const hash = this.hashCode(normalized);
-          if (!fullHashmap.has(hash)) {
-            fullHashmap.set(hash, {
-              file: func.filePath,
-              name: func.name,
-              line: func.startLine ?? func.lineNumber ?? 0
-            });
-          }
-        } catch {
-          // Skip functions whose body can't be normalized
-        }
-      }
-
-      for (const block of blocks) {
-        if (!this.isBlockLargeEnough(block, finalConfig)) continue;
-
-        const fullMatch = fullHashmap.get(block.hash);
-        if (fullMatch && fullMatch.file !== block.file) {
-          violations.push(this.createViolation(
-            block.file,
-            block.start,
-            `Duplicate code block detected (${block.lineCount} lines). ` +
-            `First occurrence in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name})`,
-            'warning',
-            'dry/duplicate',
-            {
-              oldText: block.text,
-              newText: `// Consider extracting to a shared function`
-            },
-            block.hash
-          ));
-        }
-      }
-    }
+    this.reportCrossFileDuplicates(blocks, finalConfig, violations);
 
     // Check for duplicate string literals if enabled
     if (finalConfig.checkStrings) {
-      const stringViolations = this.checkDuplicateStrings(ast, adapter, sourceCode);
-      violations.push(...stringViolations);
+      violations.push(...this.checkDuplicateStrings(ast, adapter, sourceCode));
     }
 
     // Check for duplicate imports if enabled
     if (finalConfig.checkImports) {
-      const importViolations = this.checkDuplicateImports(ast, adapter);
-      violations.push(...importViolations);
+      violations.push(...this.checkDuplicateImports(ast, adapter));
     }
 
     // Merge per-file pair accumulator into global accumulator for diverging-clone tracking
@@ -268,330 +499,156 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     return violations;
   }
 
-  // ── R3.1: Span-overlap helpers ──────────────────────────────────────
-
   /**
-   * Returns true if the two blocks share code spans (same file + overlapping lines).
+   * Report exact token-identical duplicates (dry/duplicate, warning).
    */
-  private spansOverlap(a: CodeBlock, b: CodeBlock): boolean {
-    if (a.file !== b.file) return false;
-    return !(a.end.line < b.start.line || b.end.line < a.start.line);
-  }
+  private reportExactDuplicates(deduped: CodeBlock[], violations: Violation[]): void {
+    const exactHashmap = groupByHash(deduped, 'hash');
 
-  /**
-   * Sort comparator: earliest file+line first.
-   */
-  private byFileAndLine(a: CodeBlock, b: CodeBlock): number {
-    if (a.file !== b.file) return a.file.localeCompare(b.file);
-    return a.start.line - b.start.line;
-  }
+    for (const [, group] of exactHashmap) {
+      if (group.length < 2) continue;
 
-  /**
-   * R3.1: Deduplicate overlapping blocks. Prefers the innermost block when
-   * one block fully contains another (nesting), and the earliest block when
-   * blocks only partially overlap.
-   *
-   * This ensures that blocks nested inside functions/classes (e.g. for-loops
-   * inside a function body) surface for duplicate detection instead of being
-   * silently deduplicated by their outer container.
-   */
-  private deduplicateBlocks(blocks: CodeBlock[]): CodeBlock[] {
-    if (blocks.length <= 1) return blocks;
+      const sorted = [...group].sort(byFileAndLine);
+      const original = sorted[0];
 
-    // Sort by (file, startLine)
-    const sorted = [...blocks].sort(this.byFileAndLine);
-    const result: CodeBlock[] = [];
-    let last: CodeBlock | null = null;
+      for (let i = 1; i < sorted.length; i++) {
+        const block = sorted[i];
 
-    for (const block of sorted) {
-      if (last && last.file === block.file) {
-        // Same file — check for overlap
+        // R3.1: Span-overlap check — skip if block overlaps with original
+        if (spansOverlap(original, block)) continue;
 
-        // Case 1: `last` fully contains `block` (nesting: last is outer, block is inner)
-        // Replace outer with inner — the inner block is more specific.
-        if (last.start.line <= block.start.line && last.end.line >= block.end.line) {
-          result.pop();
-          result.push(block);
-          last = block;
-          continue;
-        }
+        const violation = this.createViolation(
+          block.file,
+          block.start,
+          `Duplicate code block detected (${block.lineCount} lines). ` +
+          `First occurrence at ${original.file}:${original.start.line}`,
+          'warning',                                         // R7
+          'dry/duplicate',
+          block.hash
+        );
+        violation.fix = {
+          oldText: block.text,
+          newText: `// Consider extracting to a shared function`
+        };
+        violations.push(violation);
 
-        // Case 2: `block` fully contains `last` (nesting: block is outer, last is inner)
-        // Keep `last` (already inner in result), skip the outer block.
-        if (block.start.line <= last.start.line && block.end.line >= last.end.line) {
-          continue;
-        }
-
-        // Case 3: Partial overlap (neither fully contains the other)
-        // Keep the earlier block.
-        if (!(last.end.line < block.start.line)) {
-          continue;
-        }
+        // Spec 13 R5 — seed pair for diverging-clone tracking
+        this.seedPair(original, block, 1.0, 'dry/duplicate');
       }
-      result.push(block);
-      last = block;
     }
-    return result;
   }
 
-  // ── R3.3: Structural similarity helpers ──────────────────────────────
+  /**
+   * Report token-kind-identical duplicates (dry/structural-similarity, suggestion).
+   */
+  private reportStructuralDuplicates(deduped: CodeBlock[], violations: Violation[]): void {
+    const structuralHashmap = groupByHash(deduped, 'structuralHash');
+
+    for (const [, group] of structuralHashmap) {
+      if (group.length < 2) continue;
+
+      const sorted = [...group].sort(byFileAndLine);
+      const original = sorted[0];
+
+      for (let i = 1; i < sorted.length; i++) {
+        const block = sorted[i];
+
+        // Skip if these are already exact duplicates (reported above)
+        if (original.hash === block.hash) continue;
+
+        // R3.1: Span-overlap check
+        if (spansOverlap(original, block)) continue;
+
+        const violation = this.createViolation(
+          block.file,
+          block.start,
+          `Structurally similar code block detected (${block.lineCount} lines). ` +
+          `First occurrence at ${original.file}:${original.start.line}`,
+          'suggestion',                                      // R7
+          'dry/structural-similarity',
+          block.hash
+        );
+        violation.fix = {
+          oldText: block.text,
+          newText: `// Consider extracting to a shared function`
+        };
+        violations.push(violation);
+
+        // Spec 13 R5 — seed pair for diverging-clone tracking
+        const jaccardSim = computeJaccardSimilarity(
+          original.normalizedText, block.normalizedText
+        );
+        this.seedPair(original, block, jaccardSim, 'dry/structural-similarity');
+      }
+    }
+  }
 
   /**
-   * Group blocks by a key field into a map of key→blocks[].
+   * Report blocks that duplicate a function body from the full codebase index.
+   * Only used in scoped (changed-file) audits.
    */
-  private groupByHash(
+  private reportCrossFileDuplicates(
     blocks: CodeBlock[],
-    key: 'hash' | 'structuralHash'
-  ): Map<string, CodeBlock[]> {
-    const map = new Map<string, CodeBlock[]>();
+    config: DRYAnalyzerConfig,
+    violations: Violation[]
+  ): void {
+    if (!config.fullFunctionIndex || config.fullFunctionIndex.length === 0) return;
+
+    const fullHashmap = this.buildFullFunctionHashmap(config);
+
     for (const block of blocks) {
-      const hash = block[key];
-      const existing = map.get(hash) || [];
-      existing.push(block);
-      map.set(hash, existing);
+      if (!isBlockLargeEnough(block, config)) continue;
+
+      const fullMatch = fullHashmap.get(block.hash);
+      if (fullMatch && fullMatch.file !== block.file) {
+        const violation = this.createViolation(
+          block.file,
+          block.start,
+          `Duplicate code block detected (${block.lineCount} lines). ` +
+          `First occurrence in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name})`,
+          'warning',
+          'dry/duplicate',
+          block.hash
+        );
+        violation.fix = {
+          oldText: block.text,
+          newText: `// Consider extracting to a shared function`
+        };
+        violations.push(violation);
+      }
     }
-    return map;
   }
 
   /**
-   * R3.3: Normalize code to its token-kind sequence.
-   * Identifiers → ID, string/number/regex literals → LIT.
+   * Build a hash→location map of every function body in the full codebase index.
    */
-  private normalizeStructure(code: string): string {
-    let normalized = code;
-
-    // Template expressions: strip dynamic parts for structural matching
-    normalized = normalized.replace(/\$\{[^}]*\}/g, 'ID');
-
-    // String literals (single, double, backtick) → LIT
-    normalized = normalized.replace(/(['"`])\1/g, 'LIT'); // empty strings
-    normalized = normalized.replace(/`[^`]*`/g, 'LIT');
-    normalized = normalized.replace(/'[^']*'/g, 'LIT');
-    normalized = normalized.replace(/"[^"]*"/g, 'LIT');
-
-    // Numeric literals → LIT
-    normalized = normalized.replace(/\b\d+\.?\d*\b/g, 'LIT');
-
-    // Regex literals → LIT (approximate — /pattern/flags)
-    normalized = normalized.replace(/\/[^/*][^/]*\/[gimsuy]*/g, 'LIT');
-
-    // Boolean/null literals
-    normalized = normalized.replace(/\b(true|false|null|undefined)\b/g, 'LIT');
-
-    // Identifiers → ID (after literals so we don't replace inside strings)
-    // Match camelCase, PascalCase, snake_case, dollar-prefixed, underscore-prefixed
-    normalized = normalized.replace(/\b[a-zA-Z_$][a-zA-Z0-9_$]*\b/g, (match) => {
-      // Keep keywords intact
-      const keywords = new Set([
-        'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
-        'return', 'throw', 'try', 'catch', 'finally', 'new', 'delete', 'typeof',
-        'instanceof', 'in', 'of', 'class', 'extends', 'super', 'this', 'function',
-        'const', 'let', 'var', 'async', 'await', 'yield', 'import', 'export',
-        'default', 'from', 'as', 'static', 'get', 'set', 'enum', 'type', 'interface',
-        'implements', 'abstract', 'public', 'private', 'protected', 'readonly',
-        'ID', 'LIT',
-      ]);
-      if (keywords.has(match)) return match;
-      return 'ID';
-    });
-
-    return normalized;
-  }
-  
-  /**
-   * Extract code blocks from AST
-   */
-  private extractCodeBlocks(
-    ast: AST,
-    adapter: LanguageAdapter,
-    sourceCode: string,
+  private buildFullFunctionHashmap(
     config: DRYAnalyzerConfig
-  ): CodeBlock[] {
-    const blocks: CodeBlock[] = [];
-    
-    // Extract functions
-    const functions = adapter.extractFunctions(ast);
-    for (const func of functions) {
-      const node = this.findNodeByLocation(ast.root, func.location.start);
-      if (node) {
-        const block = this.createCodeBlock(
-          ast.filePath,
-          node,
-          adapter,
-          sourceCode,
-          config
-        );
-        if (block && this.isBlockLargeEnough(block, config)) {
-          blocks.push(block);
+  ): Map<string, { file: string; name: string; line: number }> {
+    const fullHashmap = new Map<string, { file: string; name: string; line: number }>();
+
+    for (const func of config.fullFunctionIndex || []) {
+      const body = (func as any).body ?? (func as any).metadata?.body;
+      if (!body) continue;
+
+      try {
+        const normalized = normalizeCode(body, config);
+        const hash = hashCode(normalized);
+        if (!fullHashmap.has(hash)) {
+          fullHashmap.set(hash, {
+            file: func.filePath,
+            name: func.name,
+            line: func.startLine ?? func.lineNumber ?? 0
+          });
         }
+      } catch {
+        // Skip functions whose body can't be normalized
       }
     }
-    
-    // Extract classes and their methods
-    const classes = adapter.extractClasses(ast);
-    for (const cls of classes) {
-      // Add the class itself
-      const classNode = this.findNodeByLocation(ast.root, cls.location.start);
-      if (classNode) {
-        const block = this.createCodeBlock(
-          ast.filePath,
-          classNode,
-          adapter,
-          sourceCode,
-          config
-        );
-        if (block && this.isBlockLargeEnough(block, config)) {
-          blocks.push(block);
-        }
-      }
-      
-      // Add methods
-      for (const method of cls.methods) {
-        const methodNode = this.findNodeByLocation(ast.root, method.location.start);
-        if (methodNode) {
-          const block = this.createCodeBlock(
-            ast.filePath,
-            methodNode,
-            adapter,
-            sourceCode,
-            config
-          );
-          if (block && this.isBlockLargeEnough(block, config)) {
-            blocks.push(block);
-          }
-        }
-      }
-    }
-    
-    // Extract significant code blocks (loops, conditionals, etc.)
-    this.walkAST(ast.root, node => {
-      if (this.isSignificantBlock(node, adapter)) {
-        const block = this.createCodeBlock(
-          ast.filePath,
-          node,
-          adapter,
-          sourceCode,
-          config
-        );
-        if (block && this.isBlockLargeEnough(block, config)) {
-          blocks.push(block);
-        }
-      }
-    });
-    
-    return blocks;
-  }
-  
-  /**
-   * Create a code block from an AST node
-   */
-  private createCodeBlock(
-    filePath: string,
-    node: ASTNode,
-    adapter: LanguageAdapter,
-    sourceCode: string,
-    config: DRYAnalyzerConfig
-  ): CodeBlock | null {
-    const text = adapter.getNodeText(node, sourceCode);
-    if (!text) return null;
 
-    const normalizedText = this.normalizeCode(text, config);
-    const lineCount = this.countLines(text);
-
-    // R3.3: Compute structural hash from token-kind sequence
-    const structuralNormalized = this.normalizeCodeForStructure(text, config);
-    const structuralHash = this.hashCode(structuralNormalized);
-
-    return {
-      file: filePath,
-      start: node.location.start,
-      end: node.location.end,
-      text,
-      normalizedText,
-      hash: this.hashCode(normalizedText),
-      structuralHash,
-      nodeType: node.type,
-      lineCount
-    };
+    return fullHashmap;
   }
 
-  /**
-   * R3.3: Normalize code for structural comparison.
-   * First applies standard normalization (whitespace/comments), then
-   * replaces identifiers and literals with placeholders.
-   */
-  private normalizeCodeForStructure(code: string, config: DRYAnalyzerConfig): string {
-    const normalized = this.normalizeCode(code, config);
-    return this.normalizeStructure(normalized);
-  }
-  
-  /**
-   * Normalize code for comparison
-   */
-  private normalizeCode(code: string, config: DRYAnalyzerConfig): string {
-    let normalized = code;
-    
-    if (config.ignoreWhitespace) {
-      // Normalize whitespace but preserve structure
-      normalized = normalized
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .join('\n');
-    }
-    
-    if (config.ignoreComments) {
-      // Remove single-line comments
-      normalized = normalized.replace(/\/\/.*$/gm, '');
-      // Remove multi-line comments
-      normalized = normalized.replace(/\/\*[\s\S]*?\*\//g, '');
-    }
-    
-    return normalized;
-  }
-  
-  /**
-   * Hash code for comparison
-   */
-  private hashCode(text: string): string {
-    return crypto.createHash('sha256').update(text).digest('hex');
-  }
-  
-  /**
-   * Count lines in text
-   */
-  private countLines(text: string): number {
-    return text.split('\n').filter(line => line.trim().length > 0).length;
-  }
-  
-  /**
-   * Check if block is large enough to be considered
-   */
-  private isBlockLargeEnough(block: CodeBlock, config: DRYAnalyzerConfig): boolean {
-    return block.lineCount >= (config.minLineThreshold || 5);
-  }
-  
-  /**
-   * Build local index for duplicate detection
-   */
-  private buildLocalIndex(blocks: CodeBlock[]): CodeIndex {
-    const index: CodeIndex = {
-      blocks,
-      hashMap: new Map(),
-      stringLiterals: new Map(),
-      imports: new Map()
-    };
-    
-    // Group blocks by hash
-    for (const block of blocks) {
-      const existing = index.hashMap.get(block.hash) || [];
-      existing.push(block);
-      index.hashMap.set(block.hash, existing);
-    }
-    
-    return index;
-  }
-  
   /**
    * Check for duplicate string literals
    */
@@ -602,12 +659,12 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   ): Violation[] {
     const violations: Violation[] = [];
     const stringMap = new Map<string, Array<{ line: number; column: number }>>();
-    
+
     // Find all string literals
     const stringNodes = adapter.findNodes(ast, {
       custom: (node) => this.isStringLiteral(node, adapter)
     });
-    
+
     for (const node of stringNodes) {
       const value = adapter.getNodeText(node, sourceCode);
       if (value && value.length > 10) { // Only consider non-trivial strings
@@ -616,28 +673,29 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
         stringMap.set(value, locations);
       }
     }
-    
+
     // Report duplicates
     for (const [value, locations] of stringMap) {
       if (locations.length > 2) { // More than 2 occurrences
-        violations.push(this.createViolation(
+        const violation = this.createViolation(
           ast.filePath,
           locations[0],
           `String literal "${value.substring(0, 30)}..." is duplicated ${locations.length} times`,
           'suggestion',
           'duplicate-string-literal',
-          {
-            oldText: value,
-            newText: '// Consider extracting to a constant'
-          },
           value.substring(0, 50)
-        ));
+        );
+        violation.fix = {
+          oldText: value,
+          newText: '// Consider extracting to a constant'
+        };
+        violations.push(violation);
       }
     }
-    
+
     return violations;
   }
-  
+
   /**
    * Check for duplicate imports
    */
@@ -647,15 +705,15 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   ): Violation[] {
     const violations: Violation[] = [];
     const importMap = new Map<string, number>();
-    
+
     // Find all import statements
     const imports = adapter.extractImports(ast);
-    
+
     for (const imp of imports) {
       const count = importMap.get(imp.source) || 0;
       importMap.set(imp.source, count + 1);
     }
-    
+
     // Report duplicates
     for (const [source, count] of importMap) {
       if (count > 1) {
@@ -665,99 +723,26 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           `Module "${source}" is imported ${count} times`,
           'warning',
           'duplicate-import',
-          undefined,
           source
         ));
       }
     }
-    
+
     return violations;
   }
-  
+
   /**
-   * Helper methods
+   * Check if this is a block-like structure (if, for, while, etc.).
    */
-  private isExcluded(filePath: string, patterns: string[]): boolean {
-    return patterns.some(pattern => {
-      const regex = new RegExp(pattern.replace(/\*/g, '.*'));
-      return regex.test(filePath);
-    });
-  }
-  
-  private findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
-    const queue: ASTNode[] = [root];
-    
-    while (queue.length > 0) {
-      const node = queue.shift()!;
-      
-      if (node.location.start.line === location.line &&
-          node.location.start.column === location.column) {
-        return node;
-      }
-      
-      if (node.children) {
-        queue.push(...node.children);
-      }
-    }
-    
-    return null;
-  }
-  
-  private walkAST(node: ASTNode, callback: (node: ASTNode) => void): void {
-    callback(node);
-    if (node.children) {
-      for (const child of node.children) {
-        this.walkAST(child, callback);
-      }
-    }
-  }
-  
   private isSignificantBlock(node: ASTNode, adapter: LanguageAdapter): boolean {
-    // Check if this is a block-like structure (if, for, while, etc.)
-    // Uses exact snake_case matches against tree-sitter node types.
-    const blockTypes = new Set([
-      'if_statement', 'for_statement', 'for_in_statement',
-      'while_statement', 'do_statement', 'switch_statement', 'try_statement',
-    ]);
-    return blockTypes.has(node.type);
+    return isSignificantBlockType(node.type);
   }
 
+  /**
+   * Check if a node is a string or template-string literal.
+   */
   private isStringLiteral(node: ASTNode, adapter: LanguageAdapter): boolean {
     return node.type === 'string' || node.type === 'template_string';
-  }
-
-  // ── Spec 13 R5: Diverging-clone seed helpers ──────────────────────────
-
-  /**
-   * Compute the Jaccard similarity index between two tokenized strings.
-   * Jaccard = |intersection| / |union|. Range [0, 1].
-   */
-  private computeJaccardSimilarity(text1: string, text2: string): number {
-    const tokens1 = new Set(text1.split(/\s+/).filter(Boolean));
-    const tokens2 = new Set(text2.split(/\s+/).filter(Boolean));
-
-    let intersection = 0;
-    for (const t of tokens1) {
-      if (tokens2.has(t)) intersection++;
-    }
-
-    const union = tokens1.size + tokens2.size - intersection;
-    return union === 0 ? 0 : intersection / union;
-  }
-
-  /**
-   * Compute an order-independent pair fingerprint from file + line + nodeType.
-   * Uses SHA256(sorted(a, b).join('||')) so the same pair has the same
-   * fingerprint regardless of argument order.
-   */
-  private computePairFingerprint(
-    file1: string, line1: number, nodeType1: string,
-    file2: string, line2: number, nodeType2: string,
-  ): string {
-    const id1 = `${file1}|${nodeType1}|${line1}`;
-    const id2 = `${file2}|${nodeType2}|${line2}`;
-    const sorted = [id1, id2].sort();
-    return crypto.createHash('sha256').update(sorted.join('||')).digest('hex');
   }
 
   /**
@@ -771,10 +756,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     similarity: number,
     rule: string,
   ): void {
-    const pairFingerprint = this.computePairFingerprint(
-      original.file, original.start.line, original.nodeType,
-      block.file, block.start.line, block.nodeType,
-    );
+    const pairFingerprint = computePairFingerprint(original, block);
     this._dryPairsForFile.push({
       pairFingerprint,
       file1: original.file,
@@ -791,7 +773,12 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * Override analyze() to attach seeded pairs to the AnalyzerResult.
+   * Run DRY analysis and attach the seeded pair list to the result.
+   *
+   * @param files List of file paths to analyze.
+   * @param config Analyzer configuration merged over {@link DEFAULT_DRY_CONFIG}.
+   * @param options Additional analyzer options (unused by DRY).
+   * @returns The analyzer result, with `dryPairs` attached for diverging-clone tracking.
    */
   async analyze(
     files: string[],

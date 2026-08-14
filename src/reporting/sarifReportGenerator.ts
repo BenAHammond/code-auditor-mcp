@@ -93,7 +93,6 @@ function normalizeAnalyzerName(name: string): string {
     'universal-schema-analyzer': 'universal-schema',
     'invariants-analyzer': 'invariants',
     'dependency-graph-analyzer': 'dependency-graph',
-    'cross-language-solid-analyzer': 'solid',
     'solid': 'solid',
     'dry': 'dry',
     'react': 'react',
@@ -103,7 +102,6 @@ function normalizeAnalyzerName(name: string): string {
     'universal-schema': 'universal-schema',
     'invariants': 'invariants',
     'dependency-graph': 'dependency-graph',
-    'cross-language-solid': 'solid',
   };
   return mapping[name] ?? name.replace(/[^a-z0-9-]/g, '-').toLowerCase();
 }

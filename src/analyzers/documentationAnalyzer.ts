@@ -185,13 +185,169 @@ function hasReturnDocumentation(node: ASTNode, adapter: LanguageAdapter): boolea
 // File-level analysis
 // ---------------------------------------------------------------------------
 
+/** Mutable per-file documentation counters, threaded through the node checks. */
+interface DocCounters {
+  documentedFunctions: number;
+  documentedComponents: number;
+  functionsWithParams: number;
+  paramsDocumented: number;
+  functionsWithReturns: number;
+  returnsDocumented: number;
+}
+
+/** True for nodes the analyzer treats as "function-like" documentation targets. */
+function isFunctionLikeNode(node: ASTNode): boolean {
+  return node.type === 'function_declaration' ||
+    node.type === 'function_expression' ||
+    node.type === 'arrow_function' ||
+    node.type === 'method_definition';
+}
+
+/**
+ * Check function-documentation quality for a single function-like node,
+ * mutating counters and appending violations.
+ */
+function checkFunctionDocumentation(
+  node: ASTNode,
+  adapter: LanguageAdapter | null,
+  config: DocumentationAnalyzerConfig,
+  fileName: string,
+  violations: Violation[],
+  counters: DocCounters,
+): void {
+  const nodeExported = adapterIsExported(node);
+  const shouldCheck = !config.checkExportedOnly || nodeExported;
+
+  if (!shouldCheck) return;
+
+  const jsDoc = adapter?.getDocumentation(node) ?? null;
+  const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
+
+  if (hasGoodDoc) {
+    counters.documentedFunctions++;
+  } else if (config.requireFunctionDocs) {
+    const functionName = getNodeName(node) || 'anonymous function';
+    const position = getNodePosition(node);
+
+    violations.push({
+      file: fileName,
+      line: position.line,
+      column: position.column,
+      severity: 'suggestion',
+      rule: 'function-documentation',
+      message: `Function '${functionName}' lacks documentation`,
+      details: 'Functions should have JSDoc comments describing their purpose',
+      suggestion: 'Add JSDoc comment with function description and parameter/return documentation',
+      functionName
+    });
+  }
+
+  // Parameter and return documentation only apply to declarations/expressions.
+  if (node.type !== 'function_declaration' && node.type !== 'function_expression') {
+    return;
+  }
+
+  // Check parameter documentation
+  const paramAnalysis = analyzeParamDocumentation(node, adapter!);
+  if (paramAnalysis.totalParams > 0) {
+    counters.functionsWithParams++;
+    if (paramAnalysis.documentedParams === paramAnalysis.totalParams) {
+      counters.paramsDocumented++;
+    } else if (config.requireParamDocs && hasGoodDoc) {
+      const functionName = getNodeName(node) || 'function';
+      const position = getNodePosition(node);
+
+      violations.push({
+        file: fileName,
+        line: position.line,
+        column: position.column,
+        severity: 'suggestion',
+        rule: 'parameter-documentation',
+        message: `Function '${functionName}' has undocumented parameters`,
+        details: `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
+        suggestion: 'Add @param tags for all function parameters',
+        functionName
+      });
+    }
+  }
+
+  // Check return documentation
+  const hasReturnType = !!findChild(node, 'type_annotation');
+  const body = findChild(node, 'statement_block');
+  const hasReturnStatements = body
+    ? findNodesOfType(body, (n: ASTNode) => n.type === 'return_statement').length > 0
+    : false;
+  const hasReturn = hasReturnType || hasReturnStatements;
+
+  if (hasReturn) {
+    counters.functionsWithReturns++;
+    if (hasReturnDocumentation(node, adapter!)) {
+      counters.returnsDocumented++;
+    } else if (config.requireReturnDocs && hasGoodDoc) {
+      const functionName = getNodeName(node) || 'function';
+      const position = getNodePosition(node);
+
+      violations.push({
+        file: fileName,
+        line: position.line,
+        column: position.column,
+        severity: 'suggestion',
+        rule: 'return-documentation',
+        message: `Function '${functionName}' missing return documentation`,
+        details: 'Functions with return values should document what they return',
+        suggestion: 'Add @returns tag describing the return value',
+        functionName
+      });
+    }
+  }
+}
+
+/**
+ * Check documentation quality for a single React component node.
+ */
+function checkComponentDocumentation(
+  node: ASTNode,
+  adapter: LanguageAdapter | null,
+  config: DocumentationAnalyzerConfig,
+  fileName: string,
+  violations: Violation[],
+  counters: DocCounters,
+): void {
+  const componentExported = adapterIsExported(node);
+  const shouldCheck = !config.checkExportedOnly || componentExported;
+
+  if (!shouldCheck) return;
+
+  const jsDoc = adapter?.getDocumentation(node) ?? null;
+  const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
+
+  if (hasGoodDoc) {
+    counters.documentedComponents++;
+  } else if (config.requireComponentDocs) {
+    const componentName = getComponentName(node) || 'Component';
+    const position = getNodePosition(node);
+
+    violations.push({
+      file: fileName,
+      line: position.line,
+      column: position.column,
+      severity: 'suggestion',
+      rule: 'class-documentation',
+      message: `Component '${componentName}' lacks documentation`,
+      details: 'React components should have JSDoc comments describing their purpose and props',
+      suggestion: 'Add JSDoc comment with component description and @param tags for props',
+      componentName
+    });
+  }
+}
+
 /**
  * Analyzes a single file for documentation quality.
  *
- * @param ast - The root ASTNode for the file
- * @param filePath - Path to the source file
- * @param sourceCode - Full source text of the file
- * @param config - Documentation analyzer configuration
+* @param ast - The root ASTNode for the file
+* @param filePath - Path to the source file
+* @param sourceCode - Full source text of the file
+* @param config - Documentation analyzer configuration
  */
 function analyzeFileDocumentation(
   ast: ASTNode,
@@ -209,13 +365,15 @@ function analyzeFileDocumentation(
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(filePath);
 
   let totalFunctions = 0;
-  let documentedFunctions = 0;
   let totalComponents = 0;
-  let documentedComponents = 0;
-  let functionsWithParams = 0;
-  let paramsDocumented = 0;
-  let functionsWithReturns = 0;
-  let returnsDocumented = 0;
+  const counters: DocCounters = {
+    documentedFunctions: 0,
+    documentedComponents: 0,
+    functionsWithParams: 0,
+    paramsDocumented: 0,
+    functionsWithReturns: 0,
+    returnsDocumented: 0,
+  };
 
   // Check file-level documentation
   const filePurpose = getFilePurpose(ast);
@@ -236,128 +394,13 @@ function analyzeFileDocumentation(
 
   // Walk the AST to find function-like nodes and React components
   walkAST(ast, (node: ASTNode) => {
-    // --- Function-like nodes ---
-    if (node.type === 'function_declaration' ||
-        node.type === 'function_expression' ||
-        node.type === 'arrow_function' ||
-        node.type === 'method_definition') {
-
+    if (isFunctionLikeNode(node)) {
       totalFunctions++;
-
-      const nodeExported = adapterIsExported(node);
-      const shouldCheck = !config.checkExportedOnly || nodeExported;
-
-      if (shouldCheck) {
-        const jsDoc = adapter?.getDocumentation(node) ?? null;
-        const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
-
-        if (hasGoodDoc) {
-          documentedFunctions++;
-        } else if (config.requireFunctionDocs) {
-          const functionName = getNodeName(node) || 'anonymous function';
-          const position = getNodePosition(node);
-
-          violations.push({
-            file: fileName,
-            line: position.line,
-            column: position.column,
-            severity: 'suggestion',
-            rule: 'function-documentation',
-            message: `Function '${functionName}' lacks documentation`,
-            details: 'Functions should have JSDoc comments describing their purpose',
-            suggestion: 'Add JSDoc comment with function description and parameter/return documentation',
-            functionName
-          });
-        }
-
-        // Check parameter documentation
-        if (node.type === 'function_declaration' || node.type === 'function_expression') {
-          const paramAnalysis = analyzeParamDocumentation(node, adapter!);
-          if (paramAnalysis.totalParams > 0) {
-            functionsWithParams++;
-            if (paramAnalysis.documentedParams === paramAnalysis.totalParams) {
-              paramsDocumented++;
-            } else if (config.requireParamDocs && hasGoodDoc) {
-              const functionName = getNodeName(node) || 'function';
-              const position = getNodePosition(node);
-
-              violations.push({
-                file: fileName,
-                line: position.line,
-                column: position.column,
-                severity: 'suggestion',
-                rule: 'parameter-documentation',
-                message: `Function '${functionName}' has undocumented parameters`,
-                details: `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
-                suggestion: 'Add @param tags for all function parameters',
-                functionName
-              });
-            }
-          }
-
-          // Check return documentation
-          const hasReturnType = !!findChild(node, 'type_annotation');
-          const body = findChild(node, 'statement_block');
-          const hasReturnStatements = body
-            ? findNodesOfType(body, (n: ASTNode) => n.type === 'return_statement').length > 0
-            : false;
-          const hasReturn = hasReturnType || hasReturnStatements;
-
-          if (hasReturn) {
-            functionsWithReturns++;
-            if (hasReturnDocumentation(node, adapter!)) {
-              returnsDocumented++;
-            } else if (config.requireReturnDocs && hasGoodDoc) {
-              const functionName = getNodeName(node) || 'function';
-              const position = getNodePosition(node);
-
-              violations.push({
-                file: fileName,
-                line: position.line,
-                column: position.column,
-                severity: 'suggestion',
-                rule: 'return-documentation',
-                message: `Function '${functionName}' missing return documentation`,
-                details: 'Functions with return values should document what they return',
-                suggestion: 'Add @returns tag describing the return value',
-                functionName
-              });
-            }
-          }
-        }
-      }
+      checkFunctionDocumentation(node, adapter, config, fileName, violations, counters);
     }
-
-    // --- React components ---
     if (isReactComponent(node)) {
       totalComponents++;
-
-      const componentExported = adapterIsExported(node);
-      const shouldCheck = !config.checkExportedOnly || componentExported;
-
-      if (shouldCheck) {
-        const jsDoc = adapter?.getDocumentation(node) ?? null;
-        const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
-
-        if (hasGoodDoc) {
-          documentedComponents++;
-        } else if (config.requireComponentDocs) {
-          const componentName = getComponentName(node) || 'Component';
-          const position = getNodePosition(node);
-
-          violations.push({
-            file: fileName,
-            line: position.line,
-            column: position.column,
-            severity: 'suggestion',
-            rule: 'class-documentation',
-            message: `Component '${componentName}' lacks documentation`,
-            details: 'React components should have JSDoc comments describing their purpose and props',
-            suggestion: 'Add JSDoc comment with component description and @param tags for props',
-            componentName
-          });
-        }
-      }
+      checkComponentDocumentation(node, adapter, config, fileName, violations, counters);
     }
   });
 
@@ -365,13 +408,8 @@ function analyzeFileDocumentation(
     violations,
     metrics: {
       totalFunctions,
-      documentedFunctions,
       totalComponents,
-      documentedComponents,
-      functionsWithParams,
-      paramsDocumented,
-      functionsWithReturns,
-      returnsDocumented,
+      ...counters,
       totalFiles: 1,
       filesWithPurpose: hasFileDocs ? 1 : 0
     }
@@ -383,57 +421,13 @@ function analyzeFileDocumentation(
 // ---------------------------------------------------------------------------
 
 /**
- * Main documentation analyzer function.
- * Runs across all provided files and aggregates results.
+ * Aggregate per-file documentation metrics into a single corpus-level result,
+ * computing coverage score and classifying well/poorly documented files.
  */
-export async function analyzeDocumentation(
-  files: string[],
-  config: Partial<DocumentationAnalyzerConfig> = {},
-  options: AuditOptions = {},
-  progressCallback?: ProgressCallback
-): Promise<AnalyzerResult> {
-  const finalConfig = { ...DEFAULT_DOCUMENTATION_CONFIG, ...config };
-  const startTime = Date.now();
-
-  // Filter out exempt files
-  const filteredFiles = files.filter(file => {
-    return !finalConfig.exemptPatterns.some(pattern =>
-      new RegExp(pattern, 'i').test(file)
-    );
-  });
-
-  const progressReporter = progressCallback ? (current: number, total: number, file: string) => {
-    progressCallback({ current, total, analyzer: 'documentation', file });
-  } : undefined;
-
-  // Collect per-file metrics in a closure so we only parse each file once
-  const allMetrics: Partial<DocumentationMetrics>[] = [];
-
-  const perFileAnalyzer = (
-    filePath: string,
-    ast: AST,
-    _config: any,
-    sourceCode?: string
-  ): Violation[] => {
-    const analysis = analyzeFileDocumentation(
-      ast.root,
-      filePath,
-      sourceCode ?? '',
-      finalConfig
-    );
-    allMetrics.push(analysis.metrics);
-    return analysis.violations;
-  };
-
-  const result = await processFiles(
-    filteredFiles,
-    perFileAnalyzer,
-    'documentation',
-    finalConfig,
-    progressReporter
-  );
-
-  // Aggregate metrics from all files (single pass — no re-parsing)
+function aggregateDocumentationMetrics(
+  allMetrics: Partial<DocumentationMetrics>[],
+  filteredFiles: string[]
+): DocumentationMetrics {
   const aggregatedMetrics: DocumentationMetrics = {
     totalFunctions: 0,
     documentedFunctions: 0,
@@ -495,6 +489,68 @@ export async function analyzeDocumentation(
   aggregatedMetrics.coverageScore = totalItems > 0
     ? Math.round((documentedItems / totalItems) * 100)
     : 100;
+
+  return aggregatedMetrics;
+}
+
+/**
+ * Main documentation analyzer function.
+ * Runs across all provided files and aggregates results.
+ * @param config
+ * @param files
+ * @param options
+ * @param progressCallback
+ * @returns
+ */
+export async function analyzeDocumentation(
+  files: string[],
+  config: Partial<DocumentationAnalyzerConfig> = {},
+  options: AuditOptions = {},
+  progressCallback?: ProgressCallback
+): Promise<AnalyzerResult> {
+  const finalConfig = { ...DEFAULT_DOCUMENTATION_CONFIG, ...config };
+  const startTime = Date.now();
+
+  // Filter out exempt files
+  const filteredFiles = files.filter(file => {
+    return !finalConfig.exemptPatterns.some(pattern =>
+      new RegExp(pattern, 'i').test(file)
+    );
+  });
+
+  const progressReporter = progressCallback ? (current: number, total: number, file: string) => {
+    progressCallback({ current, total, analyzer: 'documentation', file });
+  } : undefined;
+
+  // Collect per-file metrics in a closure so we only parse each file once
+  const allMetrics: Partial<DocumentationMetrics>[] = [];
+
+  const perFileAnalyzer = (
+    filePath: string,
+    ast: AST,
+    _config: any,
+    sourceCode?: string
+  ): Violation[] => {
+    const analysis = analyzeFileDocumentation(
+      ast.root,
+      filePath,
+      sourceCode ?? '',
+      finalConfig
+    );
+    allMetrics.push(analysis.metrics);
+    return analysis.violations;
+  };
+
+  const result = await processFiles(
+    filteredFiles,
+    perFileAnalyzer,
+    'documentation',
+    finalConfig,
+    progressReporter
+  );
+
+  // Aggregate metrics from all files (single pass — no re-parsing)
+  const aggregatedMetrics = aggregateDocumentationMetrics(allMetrics, filteredFiles);
 
   return {
     violations: result.violations,

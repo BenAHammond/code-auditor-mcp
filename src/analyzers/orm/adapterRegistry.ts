@@ -9,6 +9,9 @@
 import type { OrmAdapter } from './types.js';
 import path from 'path';
 
+/**
+ * Orm adapter registry.
+ */
 export class OrmAdapterRegistry {
   private static instance: OrmAdapterRegistry;
   private adapters = new Map<string, OrmAdapter>();
@@ -16,6 +19,10 @@ export class OrmAdapterRegistry {
 
   private constructor() {}
 
+  /**
+   * Get instance.
+   * @returns
+   */
   static getInstance(): OrmAdapterRegistry {
     if (!OrmAdapterRegistry.instance) {
       OrmAdapterRegistry.instance = new OrmAdapterRegistry();
@@ -25,6 +32,7 @@ export class OrmAdapterRegistry {
 
   /**
    * Register an ORM adapter.
+   * @param adapter
    */
   registerAdapter(adapter: OrmAdapter): void {
     this.adapters.set(adapter.name, adapter);
@@ -43,6 +51,8 @@ export class OrmAdapterRegistry {
   /**
    * Get adapter for a file based on its extension.
    * Falls back to content-based detection via supportsFile.
+   * @param filePath
+   * @returns
    */
   getAdapterForFile(filePath: string): OrmAdapter | null {
     const ext = path.extname(filePath).toLowerCase();

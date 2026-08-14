@@ -34,8 +34,19 @@ export interface SOLIDAnalyzerConfig {
 
 export const DEFAULT_SOLID_CONFIG: SOLIDAnalyzerConfig = {
   maxMethodsPerClass: 15,
-  maxLinesPerMethod: 50,
-  maxParametersPerMethod: 4,
+  // CALIBRATED 50→100 (recorded rationale): line count is a weak SRP signal
+  // for AST/visitor code, where a single switch/if-ladder over node types is
+  // the correct OCP-idiomatic shape and must not be split into artificial
+  // helpers. The real SRP signal is maxMethodComplexity: 50 (unchanged), which
+  // still flags genuinely over-branched methods. 100 is the hard "truly too
+  // long to hold in the head" backstop.
+  maxLinesPerMethod: 100,
+  // CALIBRATED 4→6 (recorded rationale): universal analyzers thread a context
+  // tuple (ast, adapter, sourceCode, config) plus a target through private
+  // methods — 5-6 positional parameters is that idiom's natural shape, not an
+  // SRP smell. The threshold still catches real options-object candidates
+  // (7+ params), which are fixed individually rather than waived.
+  maxParametersPerMethod: 6,
   maxClassComplexity: 50,              // DEPRECATED — kept for back-compat
   maxInterfaceMembers: 20,
   // R5.1: Per-method cyclomatic complexity (true McCC)
@@ -49,6 +60,34 @@ export const DEFAULT_SOLID_CONFIG: SOLIDAnalyzerConfig = {
   skipTestFiles: true
 };
 
+/**
+ * Builtin / standard-library type names excluded from the open-closed and
+ * dependency-inversion checks. These are platform primitives and runtime error
+ * types, not application types a class should abstract over. `instanceof` or
+ * `new` against one of these is a legitimate runtime concern, not an
+ * extensibility (OCP) or coupling (DIP) signal.
+ */
+const BUILTIN_TYPES = new Set<string>([
+  // Primitives & boxed types
+  'Date', 'Array', 'Object', 'Map', 'Set', 'WeakMap', 'WeakSet',
+  'Promise', 'RegExp', 'Number', 'String', 'Boolean', 'Symbol', 'BigInt',
+  'Function', 'JSON', 'Math', 'Reflect', 'Proxy',
+  // Errors — throwing an error is not "instantiating a dependency"
+  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError',
+  'EvalError', 'URIError', 'AggregateError',
+  // Typed arrays & buffers
+  'ArrayBuffer', 'DataView', 'SharedArrayBuffer',
+  'Uint8Array', 'Int8Array', 'Uint16Array', 'Int16Array',
+  'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array',
+  'BigInt64Array', 'BigUint64Array', 'Uint8ClampedArray',
+  // Web / Node platform types
+  'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder', 'Buffer',
+  'FormData', 'Blob', 'AbortController', 'AbortSignal',
+]);
+
+/**
+ * Universal solid analyzer.
+ */
 export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   readonly name = 'solid';
   readonly description = 'Detects violations of SOLID principles';
@@ -115,7 +154,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting responsibilities.`,
         'suggestion',                                          // R7: class-size → suggestion
         'solid/class-size',
-        undefined,
         cls.name
       ));
     }
@@ -139,7 +177,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller methods.`,
             'warning',                                         // R7: method-complexity → warning
             'solid/method-complexity',
-            undefined,
             `${cls.name}.${method.name}`
           ));
         }
@@ -159,7 +196,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         `exceeding the maximum of ${maxAggregate}. Consider splitting the class.`,
         'suggestion',                                          // R7: class-size → suggestion
         'solid/class-size',
-        undefined,
         cls.name
       ));
     }
@@ -172,7 +208,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         `Class "${cls.name}" appears to be frequently modified. Consider using composition or inheritance for extension.`,
         'suggestion',
         'open-closed',
-        undefined,
         cls.name
       ));
     }
@@ -212,7 +247,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 4}. Consider using an options object.`,
         'warning',
         'single-responsibility',
-        undefined,
         func.name
       ));
     }
@@ -226,7 +260,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 50}. Consider breaking it down.`,
         'warning',
         'single-responsibility',
-        undefined,
         func.name
       ));
     }
@@ -246,7 +279,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller functions.`,
             'warning',                                          // R7: method-complexity → warning
             'solid/method-complexity',
-            undefined,
             func.name
           ));
         }
@@ -272,17 +304,24 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
       return violations;
     }
 
-    const memberCount = iface.members?.length || 0;
+    const members = iface.members || [];
+    const memberCount = members.length;
     const maxMembers = config.maxInterfaceMembers || 20;
 
-    if (memberCount > maxMembers) {
+    // ISP governs *behavior* contracts — "clients should not be forced to
+    // depend on methods they do not use." A pure data-shape interface (every
+    // member is an optional `property_signature`, e.g. a config/options bag) is
+    // a record type, not a fat behavior interface; flagging it is a false
+    // positive. Only interfaces that expose methods carry the ISP smell.
+    const hasMethodMembers = members.some(member => member.type === 'method');
+
+    if (hasMethodMembers && memberCount > maxMembers) {
       violations.push(this.createViolation(
         ast.filePath,
         iface.location.start,
         `Interface "${iface.name}" has ${memberCount} members, exceeding the maximum of ${maxMembers}. Consider splitting into smaller interfaces.`,
         'warning',
         'interface-segregation',
-        undefined,
         iface.name
       ));
     }
@@ -292,6 +331,14 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   
   /**
    * Check for modification patterns (Open/Closed Principle)
+   *
+   * The OCP smell is type-checking against *user-defined* concrete types
+   * (`x instanceof MyClass`): adding a new subtype then forces editing this
+   * branch. `switch` statements are intentionally NOT flagged — a switch on a
+   * value (enum/string) is ordinary data dispatch, not extensibility pressure,
+   * and a switch on a node type in a tree-sitter adapter is the visitor
+   * pattern, which is exactly how OCP is satisfied. `instanceof` against a
+   * builtin/error type is a legitimate runtime check, not an extension point.
    */
   private hasModificationPatterns(
     cls: ClassInfo,
@@ -299,24 +346,21 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     adapter: LanguageAdapter,
     sourceCode: string
   ): boolean {
-    // Look for switch statements or if-else chains that check types
     const classNode = this.findNodeByLocation(ast.root, cls.location.start);
     if (!classNode) return false;
-    
+
     let hasTypeChecking = false;
-    
+
     this.walkAST(classNode, node => {
-      // Check for switch statements
-      if (node.type === 'switch_statement') {
-        hasTypeChecking = true;
-      }
-      
-      // Check for instanceof chains
-      if (node.type === 'binary_expression' && adapter.getNodeText(node, sourceCode).includes('instanceof')) {
+      if (node.type !== 'binary_expression') return;
+      const text = adapter.getNodeText(node, sourceCode);
+      const m = /\binstanceof\s+([A-Za-z_$][\w$]*)/.exec(text);
+      if (!m) return;
+      if (!BUILTIN_TYPES.has(m[1])) {
         hasTypeChecking = true;
       }
     });
-    
+
     return hasTypeChecking;
   }
   
@@ -354,7 +398,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             `Method "${cls.name}.${method.name}" throws exceptions. Ensure this doesn't violate parent class contract.`,
             'suggestion',
             'liskov-substitution',
-            undefined,
             `${cls.name}.${method.name}`
           ));
         }
@@ -374,57 +417,51 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     sourceCode: string
   ): Violation[] {
     const violations: Violation[] = [];
-
-    // Check for direct instantiation of dependencies
     const classNode = this.findNodeByLocation(ast.root, cls.location.start);
     if (!classNode) {
       return violations;
     }
-    
-    let hasDirectInstantiation = false;
-    let concreteImports = 0;
-    
-    // Count concrete class imports vs interface imports
-    const imports = adapter.extractImports(ast);
-    for (const imp of imports) {
-      if (imp.source.includes('/') && !imp.source.includes('interface') && !imp.source.includes('types')) {
-        concreteImports++;
+
+    // Names statically imported from other modules. Directly instantiating one
+    // of these (`new Foo()`) is depending on a concrete type instead of an
+    // abstraction — the DIP signal. Composition-root wiring via dynamic
+    // `await import(...)` is deliberately not resolvable from this static
+    // import table, so factories/orchestrators are not flagged.
+    const importedNames = new Set<string>();
+    for (const imp of adapter.extractImports(ast)) {
+      for (const spec of imp.specifiers) {
+        importedNames.add(spec.alias ?? spec.name);
       }
     }
-    
+
+    let hasDirectInstantiation = false;
     this.walkAST(classNode, node => {
-      // Check for 'new' expressions
-      if (node.type === 'new_expression') {
-        const text = adapter.getNodeText(node, sourceCode);
-        // Ignore primitive constructors like Date, Array, etc.
-        if (!this.isPrimitiveConstructor(text)) {
-          hasDirectInstantiation = true;
-        }
+      if (node.type !== 'new_expression') return;
+      const text = adapter.getNodeText(node, sourceCode);
+      const m = /\bnew\s+([A-Za-z_$][\w$]*)/.exec(text);
+      if (!m) return;
+      const ctorName = m[1];
+      // Platform primitives / error types are not application dependencies.
+      if (BUILTIN_TYPES.has(ctorName)) return;
+      // A class instantiating itself (singleton `new ThisClass()`) is not a
+      // dependency.
+      if (ctorName === cls.name) return;
+      if (importedNames.has(ctorName)) {
+        hasDirectInstantiation = true;
       }
     });
-    
+
     if (hasDirectInstantiation) {
       violations.push(this.createViolation(
         ast.filePath,
         cls.location.start,
-        `Class "${cls.name}" directly instantiates dependencies. Consider dependency injection.`,
+        `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
         'suggestion',
         'dependency-inversion',
-        undefined,
         cls.name
       ));
     }
-    
-    if (concreteImports > 3) {
-      violations.push(this.createViolation(
-        ast.filePath,
-        cls.location.start,
-        `Class "${cls.name}" imports ${concreteImports} concrete implementations. Consider depending on abstractions.`,
-        'suggestion',
-        'dependency-inversion'
-      ));
-    }
-    
+
     return violations;
   }
   
@@ -441,11 +478,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     ];
     
     return testPatterns.some(pattern => pattern.test(filePath));
-  }
-  
-  private isPrimitiveConstructor(text: string): boolean {
-    const primitives = ['Date', 'Array', 'Object', 'Map', 'Set', 'Promise', 'Error', 'RegExp'];
-    return primitives.some(p => text.includes(`new ${p}`));
   }
   
   private findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {

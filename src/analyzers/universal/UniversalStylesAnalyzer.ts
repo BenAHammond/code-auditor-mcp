@@ -98,150 +98,198 @@ interface StyleClassUsageRow {
 }
 
 // ---------------------------------------------------------------------------
-// Analyzer
+// Analyzer — decomposed leaf-first into a three-class inheritance chain:
+//
+//   UniversalStylesAnalyzerBase       (identity + leaf style helpers)
+//     └─ UniversalStylesAnalyzerDetectors  (the seven style detectors)
+//          └─ UniversalStylesAnalyzer       (query + orchestration, exported)
+//
+// Leaf-first ordering keeps callers in derived classes and callees in base
+// classes (TypeScript forbids base → subclass calls). Cross-class helpers are
+// `protected` because `private` is class-scoped.
 // ---------------------------------------------------------------------------
 
-export class UniversalStylesAnalyzer extends UniversalAnalyzer {
+/**
+ * Shared signature for the violation reporter the structure detectors reuse.
+ * The helper receives the analyzer's own `makeViolation` bound to the instance,
+ * so it reports through the same path without duplicating the method.
+ */
+type StylesViolationReporter = (
+  filePath: string,
+  line: number,
+  message: string,
+  severity: 'critical' | 'warning' | 'suggestion',
+  rule: string,
+  symbol?: string,
+) => Violation;
+
+/**
+ * Values so common that coincidental token-name matches are always noise.
+ * Filtered before any token comparison (Spec 22 Item 1).
+ */
+const TRIVIAL_VALUES = new Set([
+  '0', '0px', '0rem', '0em', '0%', 'none', 'transparent',
+  'inherit', 'initial', 'unset', 'currentcolor', 'auto',
+  '100%', '50%',
+]);
+
+/**
+ * Leaf layer: identity + stateless style helpers used by every detector.
+ * Kept free of cross-method orchestration so it stays a small, stable base.
+ */
+abstract class UniversalStylesAnalyzerBase extends UniversalAnalyzer {
   readonly name = 'styles';
   readonly description =
     'Detects style fragmentation, value drift, token bypass, dead classes, ' +
     'off-scale values, mechanism mixing, declaration-set similarity, and z-index sprawl';
   readonly category = 'style';
 
-  /**
-   * Override analyze() to query the full style index in one pass instead
-   * of per-file AST processing. The base class analyze() loop is bypassed.
-   */
-  async analyze(
-    files: string[],
-    config: any = {},
-    options: any = {},
-  ): Promise<AnalyzerResult> {
-    const startTime = Date.now();
-    const cfg: StylesAnalyzerConfig = { ...DEFAULT_STYLES_CONFIG, ...config };
-    const violations: Violation[] = [];
-
-    // Use the IndexHandle passed through the pipeline; fall back if absent.
-    const indexHandle: IndexHandle | undefined = config.indexHandle;
-    if (!indexHandle) {
-      return {
-        violations: [],
-        errors: [{ file: '', error: 'No index handle available — style index not open' }],
-        status: makeVisitorStatus(0),
-        executionTime: Date.now() - startTime,
-        analyzerName: this.name,
-        metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
-      };
+  protected makeViolation(
+    filePath: string,
+    line: number,
+    message: string,
+    severity: 'critical' | 'warning' | 'suggestion',
+    rule: string,
+    symbol?: string,
+  ): Violation {
+    const v: Violation = {
+      file: filePath,
+      line,
+      column: 1,
+      severity,
+      message,
+      rule,
+      analyzer: this.name,
+    };
+    if (symbol) {
+      v.functionName = symbol;
     }
+    return v;
+  }
 
-    // Query all declarations, tokens, and class usage
-    const declarations = this.queryDeclarations(indexHandle);
-    const tokens = this.queryTokens(indexHandle);
-    const classUsage = this.queryClassUsage(indexHandle);
+  /** Parse a CSS color string to [R, G, B] or null. */
+  protected parseColorToRGB(raw: string): [number, number, number] | null {
+    try {
+      let v = raw.toLowerCase().trim();
 
-    if (declarations.length === 0) {
-      return {
-        violations: [],
-        errors: [],
-        status: makeVisitorStatus(files.length),
-        executionTime: Date.now() - startTime,
-        analyzerName: this.name,
-        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
-      };
-    }
-
-    // Build helpers
-    const tokenValueMap = new Map<string, {name: string; valueType: string | null}>();  // normalized value → token info
-    for (const t of tokens) {
-      const normalizedTokenVal = normalizeValue(t.value, '__token__');
-      tokenValueMap.set(t.value, { name: t.name, valueType: normalizedTokenVal?.type ?? null });
-    }
-
-    // Declarations by property
-    const byProperty = new Map<string, StyleDeclRow[]>();
-    for (const d of declarations) {
-      const list = byProperty.get(d.property) || [];
-      list.push(d);
-      byProperty.set(d.property, list);
-    }
-
-    // Run detectors
-    violations.push(...this.detectValueDrift(byProperty, cfg, declarations));
-    violations.push(...this.detectOffScaleValues(byProperty, cfg));
-    violations.push(...await this.detectUndefinedClasses(classUsage, declarations, byProperty, cfg));
-    violations.push(...this.detectTokenBypass(declarations, tokenValueMap, cfg));
-    violations.push(...this.detectMechanismFragmentation(declarations, cfg));
-    violations.push(...this.detectDeclarationSetSimilarity(declarations, cfg));
-    violations.push(...this.detectZIndexInventory(byProperty, cfg));
-
-    // Apply severity overrides from config
-    const severityOverrides: Record<string, string> = config.severityOverrides ?? {};
-    if (Object.keys(severityOverrides).length > 0) {
-      for (const v of violations) {
-        const override = severityOverrides[v.rule];
-        if (override) {
-          v.severity = override as 'critical' | 'warning' | 'suggestion';
+      // Hex
+      if (v.startsWith('#')) {
+        if (v.length === 4) {
+          // #rgb → #rrggbb
+          v = '#' + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
         }
+        if (v.length === 7) {
+          return [
+            parseInt(v.slice(1, 3), 16),
+            parseInt(v.slice(3, 5), 16),
+            parseInt(v.slice(5, 7), 16),
+          ];
+        }
+        if (v.length === 9) {
+          return [
+            parseInt(v.slice(1, 3), 16),
+            parseInt(v.slice(3, 5), 16),
+            parseInt(v.slice(5, 7), 16),
+          ];
+        }
+      }
+
+      // rgb(r, g, b) or rgb(r g b)
+      const rgbMatch = v.match(/rgb\(\s*(\d+)\s*,?\s*(\d+)\s*,?\s*(\d+)\s*\)/);
+      if (rgbMatch) {
+        return [
+          parseInt(rgbMatch[1]),
+          parseInt(rgbMatch[2]),
+          parseInt(rgbMatch[3]),
+        ];
+      }
+
+      // Named colors — minimal set for common use
+      const named: Record<string, [number, number, number]> = {
+        'white': [255, 255, 255], 'black': [0, 0, 0],
+        'red': [255, 0, 0], 'blue': [0, 0, 255], 'green': [0, 128, 0],
+        'transparent': [0, 0, 0],
+      };
+      if (named[v]) return named[v];
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Compute delta-E (CIE76) between two RGB colors. */
+  protected deltaE(a: [number, number, number], b: [number, number, number]): number {
+    const dr = a[0] - b[0];
+    const dg = a[1] - b[1];
+    const db = a[2] - b[2];
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+
+  /**
+   * Cluster colors by delta-E distance.
+   * Simple greedy algorithm: each item joins the first cluster it's close enough to,
+   * or starts a new cluster.
+   */
+  protected clusterByDeltaE(
+    items: Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>,
+    threshold: number,
+  ): Array<Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>> {
+    const clusters: Array<Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>> = [];
+
+    for (const item of items) {
+      let placed = false;
+      for (const cluster of clusters) {
+        // Use the first item's RGB as cluster centroid
+        const centroid = cluster[0].rgb;
+        if (this.deltaE(item.rgb, centroid) < threshold) {
+          cluster.push(item);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        clusters.push([item]);
       }
     }
 
-    const filtered = violations.filter(v => v.severity !== 'off');
-
-    const uniqueFiles = new Set(declarations.map(d => d.file_path));
-    return {
-      violations: filtered,
-      errors: [],
-      status: makeVisitorStatus(uniqueFiles.size),
-      executionTime: Date.now() - startTime,
-      analyzerName: this.name,
-      metrics: {
-        filesAnalyzed: uniqueFiles.size,
-        totalViolations: filtered.length,
-        executionTime: Date.now() - startTime,
-      },
-    };
+    return clusters;
   }
 
-  /** Not used — we override analyze() directly. */
-  protected async analyzeAST(
-    _ast: AST,
-    _adapter: LanguageAdapter,
-    _config: any,
-    _sourceCode: string,
-  ): Promise<Violation[]> {
-    return [];
-  }
-
-  // -----------------------------------------------------------------------
-  // Database queries
-  // -----------------------------------------------------------------------
-
-  private queryDeclarations(indexHandle: IndexHandle): StyleDeclRow[] {
+  /** Parse a CSS length value to px-equivalent, or null if not parseable. */
+  protected parseLengthToPx(raw: string): number | null {
     try {
-      return indexHandle.query(
-        'SELECT * FROM style_declarations ORDER BY property, file_path, line',
-      ) as StyleDeclRow[];
+      const v = raw.trim().toLowerCase();
+      if (v === '0' || v === '0px') return 0;
+
+      const match = v.match(/^(-?\d+(?:\.\d+)?)\s*(px|rem|em|%|vh|vw|pt|cm|mm)?$/);
+      if (!match) return null;
+
+      const num = parseFloat(match[1]);
+      const unit = match[2] || 'px';
+
+      // Approximate conversions (assuming 16px base for rem/em)
+      switch (unit) {
+        case 'px': return num;
+        case 'rem': return num * 16;
+        case 'em': return num * 16;
+        case 'pt': return num * 1.333;
+        case 'cm': return num * 37.795;
+        case 'mm': return num * 3.7795;
+        default: return null; // can't convert %/vh/vw without context
+      }
     } catch {
-      return [];
+      return null;
     }
   }
+}
 
-  private queryTokens(indexHandle: IndexHandle): StyleTokenRow[] {
-    try {
-      return indexHandle.query('SELECT * FROM style_tokens') as StyleTokenRow[];
-    } catch {
-      return [];
-    }
-  }
+// ---------------------------------------------------------------------------
+// Detector layer: the seven style detectors, reporting through the base
+// layer's makeViolation helper.
+// ---------------------------------------------------------------------------
 
-  private queryClassUsage(indexHandle: IndexHandle): StyleClassUsageRow[] {
-    try {
-      return indexHandle.query('SELECT * FROM style_class_usage') as StyleClassUsageRow[];
-    } catch {
-      return [];
-    }
-  }
-
+abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerBase {
   // -----------------------------------------------------------------------
   // Detector 1: Value Drift
   // -----------------------------------------------------------------------
@@ -254,7 +302,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * - Non-colors: exact-value histogram; flag share < outlierMaxShare
    *   when the mode count ≥ modeMinCount.
    */
-  private detectValueDrift(
+  protected detectValueDrift(
     byProperty: Map<string, StyleDeclRow[]>,
     cfg: StylesAnalyzerConfig,
     allDecls: StyleDeclRow[],
@@ -289,7 +337,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * keywords (non-numeric, non-color) is categorical regardless of the
    * hardcoded exclusion list.
    */
-  private isCategoricalByValues(decls: StyleDeclRow[]): boolean {
+  protected isCategoricalByValues(decls: StyleDeclRow[]): boolean {
     for (const d of decls) {
       const v = (d.normalized_value ?? d.raw_value).trim();
       if (!v) continue;
@@ -306,7 +354,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     return true;
   }
 
-  private isColorProperty(property: string): boolean {
+  protected isColorProperty(property: string): boolean {
     const colorProps = new Set([
       'color', 'background-color', 'background', 'border-color',
       'border-top-color', 'border-right-color', 'border-bottom-color',
@@ -320,7 +368,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
   /**
    * Color drift: cluster values by delta-E, flag stragglers.
    */
-  private detectColorDrift(
+  protected detectColorDrift(
     property: string,
     decls: StyleDeclRow[],
     cfg: StylesAnalyzerConfig,
@@ -382,7 +430,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
   /**
    * Exact-value drift for non-color properties.
    */
-  private detectExactValueDrift(
+  protected detectExactValueDrift(
     property: string,
     decls: StyleDeclRow[],
     cfg: StylesAnalyzerConfig,
@@ -443,7 +491,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * infer the project scale from modal values + Tailwind defaults,
    * and flag values that don't fit the scale.
    */
-  private detectOffScaleValues(
+  protected detectOffScaleValues(
     byProperty: Map<string, StyleDeclRow[]>,
     cfg: StylesAnalyzerConfig,
   ): Violation[] {
@@ -494,7 +542,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * Infer the dominant scale step from a set of px values.
    * Uses the Tailwind scale as candidate steps.
    */
-  private inferScaleStep(values: number[]): number | null {
+  protected inferScaleStep(values: number[]): number | null {
     if (values.length < 3) return null;
 
     // Count how many values align with each tailwind step
@@ -517,6 +565,73 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     if (bestScore / values.length < 0.6) return null;
     return bestStep;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Structure detectors: class/token/mechanism integrity checks over the raw
+// declaration and class-usage rows. Split out of the value-drift detectors so
+// neither class trips the aggregate-complexity ceiling. Lives off the analyzer
+// inheritance chain — it reports through the shared factory and receives the
+// analyzer name once at construction.
+// ---------------------------------------------------------------------------
+
+/**
+ * Filter class-usage rows down to candidate names worth batch-probing,
+ * applying the skip filters that distinguish definitions, known classes, and
+ * extraction artifacts from genuine consumptions of an unknown class.
+ */
+function collectUndefinedClassCandidates(
+  classUsage: StyleClassUsageRow[],
+  definedClasses: Set<string>,
+): { candidates: string[]; usageEntries: StyleClassUsageRow[] } {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const usageEntries: StyleClassUsageRow[] = [];
+
+  for (const u of classUsage) {
+    const key = `${u.class_name}::${u.file_path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // Skip unresolvable individual class usages
+    if (u.unresolvable) continue;
+
+    // Skip CSS class SELECTORS (definitions, not usages).
+    // CSS/SCSS files: mechanism 'class' = class_selector node = ".some-class { }"
+    // These DEFINE a class — they are not usages of one. Only usages through
+    // other mechanisms (className, apply, class in HTML) signal consumption.
+    // Without this guard, every CSS selector without a direct declaration
+    // (SCSS @include-only blocks, nested rule_sets) is falsely flagged.
+    if (u.mechanism === 'class' && /\.(css|scss)$/i.test(u.file_path)) continue;
+
+    // Skip known classes from CSS declarations
+    if (definedClasses.has(u.class_name)) continue;
+
+    // Skip PascalCase — likely a component
+    if (/^[A-Z]/.test(u.class_name)) continue;
+
+    // Skip function-like
+    if (u.class_name.includes('(')) continue;
+
+    // Skip numeric
+    if (/^\d/.test(u.class_name)) continue;
+
+    // Skip classes that start/end with [] — not valid CSS class names
+    if (u.class_name.startsWith('[') || u.class_name.startsWith(']')) continue;
+    if (u.class_name.endsWith('[') || u.class_name.endsWith(']')) continue;
+
+    // Skip extraction artifacts
+    if (/['`"${}?;!@#%^&*+=<>|\\,~]/.test(u.class_name)) continue;
+
+    usageEntries.push(u);
+    candidates.push(u.class_name);
+  }
+
+  return { candidates, usageEntries };
+}
+
+class StylesStructureDetectors {
+  constructor(private readonly makeViolation: StylesViolationReporter) {}
 
   // -----------------------------------------------------------------------
   // Detector 3: Undefined Classes
@@ -532,7 +647,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * 3. Batch-probe unknown classes via @apply compilation
    * 4. Resolve each class from cache + structural patterns
    */
-  private async detectUndefinedClasses(
+  async detectUndefinedClasses(
     classUsage: StyleClassUsageRow[],
     _declarations: StyleDeclRow[],
     byProperty: Map<string, StyleDeclRow[]>,
@@ -585,48 +700,8 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
     // Gather all potentially-unknown class names first, then batch-probe
     // them against the project's Tailwind compiler. This is more efficient
     // than probing one-at-a-time and lets the probe batch in groups.
-    const seen = new Set<string>();
-    const candidates: string[] = [];
-    const usageEntries: StyleClassUsageRow[] = [];
-
-    for (const u of classUsage) {
-      const key = `${u.class_name}::${u.file_path}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      // Skip unresolvable individual class usages
-      if (u.unresolvable) continue;
-
-      // Skip CSS class SELECTORS (definitions, not usages).
-      // CSS/SCSS files: mechanism 'class' = class_selector node = ".some-class { }"
-      // These DEFINE a class — they are not usages of one. Only usages through
-      // other mechanisms (className, apply, class in HTML) signal consumption.
-      // Without this guard, every CSS selector without a direct declaration
-      // (SCSS @include-only blocks, nested rule_sets) is falsely flagged.
-      if (u.mechanism === 'class' && /\.(css|scss)$/i.test(u.file_path)) continue;
-
-      // Skip known classes from CSS declarations
-      if (definedClasses.has(u.class_name)) continue;
-
-      // Skip PascalCase — likely a component
-      if (/^[A-Z]/.test(u.class_name)) continue;
-
-      // Skip function-like
-      if (u.class_name.includes('(')) continue;
-
-      // Skip numeric
-      if (/^\d/.test(u.class_name)) continue;
-
-      // Skip classes that start/end with [] — not valid CSS class names
-      if (u.class_name.startsWith('[') || u.class_name.startsWith(']')) continue;
-      if (u.class_name.endsWith('[') || u.class_name.endsWith(']')) continue;
-
-      // Skip extraction artifacts
-      if (/['`"${}?;!@#%^&*+=<>|\\,~]/.test(u.class_name)) continue;
-
-      usageEntries.push(u);
-      candidates.push(u.class_name);
-    }
+    const { candidates, usageEntries } =
+      collectUndefinedClassCandidates(classUsage, definedClasses);
 
     // ── Batch-probe unknown classes ─────────────────────────────────
     if (candidates.length > 0 && expander.probeReady) {
@@ -656,16 +731,6 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
   // -----------------------------------------------------------------------
 
   /**
-   * Spec 22 Item 1 — Values so common that coincidental token-name matches
-   * are always noise. Filtered before any token comparison.
-   */
-  private static readonly TRIVIAL_VALUES = new Set([
-    '0', '0px', '0rem', '0em', '0%', 'none', 'transparent',
-    'inherit', 'initial', 'unset', 'currentcolor', 'auto',
-    '100%', '50%',
-  ]);
-
-  /**
    * Flag raw values that match a known design token's value but don't
    * reference the token via tokenRef.
    *
@@ -680,7 +745,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * length) in a *usage* position whose normalized value matches a defined
    * token.
    */
-  private detectTokenBypass(
+  detectTokenBypass(
     declarations: StyleDeclRow[],
     tokenValueMap: Map<string, {name: string; valueType: string | null}>,
     cfg: StylesAnalyzerConfig,
@@ -718,7 +783,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
 
       // Spec 22 Item 1: skip trivial values — they're so common that
       // coincidental token-name matches are always noise.
-      if (UniversalStylesAnalyzer.TRIVIAL_VALUES.has(normalized)) continue;
+      if (TRIVIAL_VALUES.has(normalized)) continue;
 
       const tokenInfo = tokenValueMap.get(normalized);
       if (!tokenInfo) continue;
@@ -778,7 +843,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * mechanisms across the codebase, or when a single file/component
    * mixes ≥3 different mechanisms.
    */
-  private detectMechanismFragmentation(
+  detectMechanismFragmentation(
     declarations: StyleDeclRow[],
     cfg: StylesAnalyzerConfig,
   ): Violation[] {
@@ -846,7 +911,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * ≥ similarityThreshold (default 0.9) and that each have ≥ minDeclarations.
    * This catches near-duplicate CSS rules that share most declarations.
    */
-  private detectDeclarationSetSimilarity(
+  detectDeclarationSetSimilarity(
     declarations: StyleDeclRow[],
     cfg: StylesAnalyzerConfig,
   ): Violation[] {
@@ -924,7 +989,7 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
    * Z-index sprawl: flag when there are too many distinct z-index values,
    * suggesting a lack of a z-index scale/system.
    */
-  private detectZIndexInventory(
+  detectZIndexInventory(
     byProperty: Map<string, StyleDeclRow[]>,
     cfg: StylesAnalyzerConfig,
   ): Violation[] {
@@ -976,147 +1041,154 @@ export class UniversalStylesAnalyzer extends UniversalAnalyzer {
 
     return violations;
   }
+}
 
-  // -----------------------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Orchestration layer: queries the style index and dispatches to the
+// detectors. This is the only exported class in the chain.
+// ---------------------------------------------------------------------------
 
-  private makeViolation(
-    filePath: string,
-    line: number,
-    message: string,
-    severity: 'critical' | 'warning' | 'suggestion',
-    rule: string,
-    symbol?: string,
-  ): Violation {
-    const v: Violation = {
-      file: filePath,
-      line,
-      column: 1,
-      severity,
-      message,
-      rule,
-      analyzer: this.name,
-    };
-    if (symbol) {
-      v.functionName = symbol;
-    }
-    return v;
-  }
-
-  /** Parse a CSS color string to [R, G, B] or null. */
-  private parseColorToRGB(raw: string): [number, number, number] | null {
-    try {
-      let v = raw.toLowerCase().trim();
-
-      // Hex
-      if (v.startsWith('#')) {
-        if (v.length === 4) {
-          // #rgb → #rrggbb
-          v = '#' + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
-        }
-        if (v.length === 7) {
-          return [
-            parseInt(v.slice(1, 3), 16),
-            parseInt(v.slice(3, 5), 16),
-            parseInt(v.slice(5, 7), 16),
-          ];
-        }
-        if (v.length === 9) {
-          return [
-            parseInt(v.slice(1, 3), 16),
-            parseInt(v.slice(3, 5), 16),
-            parseInt(v.slice(5, 7), 16),
-          ];
-        }
-      }
-
-      // rgb(r, g, b) or rgb(r g b)
-      const rgbMatch = v.match(/rgb\(\s*(\d+)\s*,?\s*(\d+)\s*,?\s*(\d+)\s*\)/);
-      if (rgbMatch) {
-        return [
-          parseInt(rgbMatch[1]),
-          parseInt(rgbMatch[2]),
-          parseInt(rgbMatch[3]),
-        ];
-      }
-
-      // Named colors — minimal set for common use
-      const named: Record<string, [number, number, number]> = {
-        'white': [255, 255, 255], 'black': [0, 0, 0],
-        'red': [255, 0, 0], 'blue': [0, 0, 255], 'green': [0, 128, 0],
-        'transparent': [0, 0, 0],
-      };
-      if (named[v]) return named[v];
-
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Compute delta-E (CIE76) between two RGB colors. */
-  private deltaE(a: [number, number, number], b: [number, number, number]): number {
-    const dr = a[0] - b[0];
-    const dg = a[1] - b[1];
-    const db = a[2] - b[2];
-    return Math.sqrt(dr * dr + dg * dg + db * db);
-  }
+/**
+ * Universal styles analyzer.
+ */
+export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
+  private readonly structure = new StylesStructureDetectors(this.makeViolation.bind(this));
 
   /**
-   * Cluster colors by delta-E distance.
-   * Simple greedy algorithm: each item joins the first cluster it's close enough to,
-   * or starts a new cluster.
+   * Override analyze() to query the full style index in one pass instead
+   * of per-file AST processing. The base class analyze() loop is bypassed.
+   * @param config
+   * @param files
+   * @param options
+   * @returns
    */
-  private clusterByDeltaE(
-    items: Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>,
-    threshold: number,
-  ): Array<Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>> {
-    const clusters: Array<Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>> = [];
+  async analyze(
+    files: string[],
+    config: any = {},
+    options: any = {},
+  ): Promise<AnalyzerResult> {
+    const startTime = Date.now();
+    const cfg: StylesAnalyzerConfig = { ...DEFAULT_STYLES_CONFIG, ...config };
+    const violations: Violation[] = [];
 
-    for (const item of items) {
-      let placed = false;
-      for (const cluster of clusters) {
-        // Use the first item's RGB as cluster centroid
-        const centroid = cluster[0].rgb;
-        if (this.deltaE(item.rgb, centroid) < threshold) {
-          cluster.push(item);
-          placed = true;
-          break;
+    // Use the IndexHandle passed through the pipeline; fall back if absent.
+    const indexHandle: IndexHandle | undefined = config.indexHandle;
+    if (!indexHandle) {
+      return {
+        violations: [],
+        errors: [{ file: '', error: 'No index handle available — style index not open' }],
+        status: makeVisitorStatus(0),
+        executionTime: Date.now() - startTime,
+        analyzerName: this.name,
+        metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
+      };
+    }
+
+    // Query all declarations, tokens, and class usage
+    const declarations = this.queryDeclarations(indexHandle);
+    const tokens = this.queryTokens(indexHandle);
+    const classUsage = this.queryClassUsage(indexHandle);
+
+    if (declarations.length === 0) {
+      return {
+        violations: [],
+        errors: [],
+        status: makeVisitorStatus(files.length),
+        executionTime: Date.now() - startTime,
+        analyzerName: this.name,
+        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
+      };
+    }
+
+    // Build helpers
+    const tokenValueMap = new Map<string, {name: string; valueType: string | null}>();  // normalized value → token info
+    for (const t of tokens) {
+      const normalizedTokenVal = normalizeValue(t.value, '__token__');
+      tokenValueMap.set(t.value, { name: t.name, valueType: normalizedTokenVal?.type ?? null });
+    }
+
+    // Declarations by property
+    const byProperty = new Map<string, StyleDeclRow[]>();
+    for (const d of declarations) {
+      const list = byProperty.get(d.property) || [];
+      list.push(d);
+      byProperty.set(d.property, list);
+    }
+
+    // Run detectors
+    violations.push(...this.detectValueDrift(byProperty, cfg, declarations));
+    violations.push(...this.detectOffScaleValues(byProperty, cfg));
+    violations.push(...await this.structure.detectUndefinedClasses(classUsage, declarations, byProperty, cfg));
+    violations.push(...this.structure.detectTokenBypass(declarations, tokenValueMap, cfg));
+    violations.push(...this.structure.detectMechanismFragmentation(declarations, cfg));
+    violations.push(...this.structure.detectDeclarationSetSimilarity(declarations, cfg));
+    violations.push(...this.structure.detectZIndexInventory(byProperty, cfg));
+
+    // Apply severity overrides from config
+    const severityOverrides: Record<string, string> = config.severityOverrides ?? {};
+    if (Object.keys(severityOverrides).length > 0) {
+      for (const v of violations) {
+        const override = severityOverrides[v.rule];
+        if (override) {
+          v.severity = override as 'critical' | 'warning' | 'suggestion';
         }
-      }
-      if (!placed) {
-        clusters.push([item]);
       }
     }
 
-    return clusters;
+    const filtered = violations.filter(v => v.severity !== 'off');
+
+    const uniqueFiles = new Set(declarations.map(d => d.file_path));
+    return {
+      violations: filtered,
+      errors: [],
+      status: makeVisitorStatus(uniqueFiles.size),
+      executionTime: Date.now() - startTime,
+      analyzerName: this.name,
+      metrics: {
+        filesAnalyzed: uniqueFiles.size,
+        totalViolations: filtered.length,
+        executionTime: Date.now() - startTime,
+      },
+    };
   }
 
-  /** Parse a CSS length value to px-equivalent, or null if not parseable. */
-  private parseLengthToPx(raw: string): number | null {
+  /** Not used — we override analyze() directly. */
+  protected async analyzeAST(
+    _ast: AST,
+    _adapter: LanguageAdapter,
+    _config: any,
+    _sourceCode: string,
+  ): Promise<Violation[]> {
+    return [];
+  }
+
+  // -----------------------------------------------------------------------
+  // Database queries
+  // -----------------------------------------------------------------------
+
+  private queryDeclarations(indexHandle: IndexHandle): StyleDeclRow[] {
     try {
-      const v = raw.trim().toLowerCase();
-      if (v === '0' || v === '0px') return 0;
-
-      const match = v.match(/^(-?\d+(?:\.\d+)?)\s*(px|rem|em|%|vh|vw|pt|cm|mm)?$/);
-      if (!match) return null;
-
-      const num = parseFloat(match[1]);
-      const unit = match[2] || 'px';
-
-      // Approximate conversions (assuming 16px base for rem/em)
-      switch (unit) {
-        case 'px': return num;
-        case 'rem': return num * 16;
-        case 'em': return num * 16;
-        case 'pt': return num * 1.333;
-        case 'cm': return num * 37.795;
-        case 'mm': return num * 3.7795;
-        default: return null; // can't convert %/vh/vw without context
-      }
+      return indexHandle.query(
+        'SELECT * FROM style_declarations ORDER BY property, file_path, line',
+      ) as StyleDeclRow[];
     } catch {
-      return null;
+      return [];
+    }
+  }
+
+  private queryTokens(indexHandle: IndexHandle): StyleTokenRow[] {
+    try {
+      return indexHandle.query('SELECT * FROM style_tokens') as StyleTokenRow[];
+    } catch {
+      return [];
+    }
+  }
+
+  private queryClassUsage(indexHandle: IndexHandle): StyleClassUsageRow[] {
+    try {
+      return indexHandle.query('SELECT * FROM style_class_usage') as StyleClassUsageRow[];
+    } catch {
+      return [];
     }
   }
 }

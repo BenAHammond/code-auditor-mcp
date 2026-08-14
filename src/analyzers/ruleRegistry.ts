@@ -35,6 +35,22 @@ export interface RuleRegistryEntry {
    * The path is relative to the analyzer namespace (config.config[analyzer]).
    */
   configGate?: string;
+  /**
+   * Spec 33 Item 14 — the input sources this rule consumes, used to promote a
+   * zero-violation rule from `unassessed` to `clean` (≥1 input present) or
+   * `notApplicable` (all inputs absent). Each entry is one of:
+   *   - `'files'` — the analyzer ran on ≥1 parsed source file (always present at
+   *     the zero-violation branch, since earlier checks already excluded the
+   *     empty-input cases);
+   *   - a fact-key — a visitor/reducer name (e.g. `'schema-json'`, `'function-index'`)
+   *     whose per-file facts were non-empty this run;
+   *   - an index table — a table name (e.g. `'schema_usage'`, `'functions'`) that
+   *     held ≥1 row at coverage-build time.
+   *
+   * Omitted for non-pipeline analyzers (schema-validator, api-contract,
+   * dependency-graph), whose rules stay `unassessed`.
+   */
+  input?: string[];
 }
 
 /**
@@ -46,77 +62,72 @@ export interface RuleRegistryEntry {
  */
 export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // ── solid (UniversalSOLIDAnalyzer) ──────────────────────────────────────
-  'solid/class-size':          { analyzer: 'solid',             field: 'rule' },
-  'solid/method-complexity':   { analyzer: 'solid',             field: 'rule' },
-  'open-closed':               { analyzer: 'solid',             field: 'rule' },
-  'single-responsibility':     { analyzer: 'solid',             field: 'rule' },
-  'interface-segregation':     { analyzer: 'solid',             field: 'rule' },
-  'liskov-substitution':       { analyzer: 'solid',             field: 'rule' },
-  'dependency-inversion':      { analyzer: 'solid',             field: 'rule' },
+  'solid/class-size':          { analyzer: 'solid',             field: 'rule', input: ['files'] },
+  'solid/method-complexity':   { analyzer: 'solid',             field: 'rule', input: ['files'] },
+  'open-closed':               { analyzer: 'solid',             field: 'rule', input: ['files'] },
+  'single-responsibility':     { analyzer: 'solid',             field: 'rule', input: ['files'] },
+  'interface-segregation':     { analyzer: 'solid',             field: 'rule', input: ['files'] },
+  'liskov-substitution':       { analyzer: 'solid',             field: 'rule', input: ['files'] },
+  'dependency-inversion':      { analyzer: 'solid',             field: 'rule', input: ['files'] },
 
   // ── dry (UniversalDRYAnalyzer) ──────────────────────────────────────────
-  'dry/duplicate':             { analyzer: 'dry',               field: 'rule' },
-  'dry/structural-similarity': { analyzer: 'dry',               field: 'rule', configGate: 'checkStructuralSimilarity' },
-  'duplicate-string-literal':  { analyzer: 'dry',               field: 'rule', configGate: 'checkStrings' },
-  'duplicate-import':          { analyzer: 'dry',               field: 'rule', configGate: 'checkImports' },
+  'dry/duplicate':             { analyzer: 'dry',               field: 'rule', input: ['files'] },
+  'dry/structural-similarity': { analyzer: 'dry',               field: 'rule', configGate: 'checkStructuralSimilarity', input: ['files'] },
+  'duplicate-string-literal':  { analyzer: 'dry',               field: 'rule', configGate: 'checkStrings', input: ['files'] },
+  'duplicate-import':          { analyzer: 'dry',               field: 'rule', configGate: 'checkImports', input: ['files'] },
 
   // ── data-access (UniversalDataAccessAnalyzer) ───────────────────────────
-  'sql-injection-risk':        { analyzer: 'data-access',       field: 'rule' },
-  'missing-org-filter':        { analyzer: 'data-access',       field: 'rule' },
-  'complex-query':             { analyzer: 'data-access',       field: 'rule' },
-  'unfiltered-query':          { analyzer: 'data-access',       field: 'rule' },
-  'hardcoded-connection':      { analyzer: 'data-access',       field: 'rule' },
+  'sql-injection-risk':        { analyzer: 'data-access',       field: 'rule', input: ['files'] },
+  'missing-org-filter':        { analyzer: 'data-access',       field: 'rule', input: ['files'] },
+  'complex-query':             { analyzer: 'data-access',       field: 'rule', input: ['files'] },
+  'unfiltered-query':          { analyzer: 'data-access',       field: 'rule', input: ['files'] },
+  'hardcoded-connection':      { analyzer: 'data-access',       field: 'rule', input: ['files'] },
 
-  'loop-query':                { analyzer: 'data-access',       field: 'rule' },
+  'loop-query':                { analyzer: 'data-access',       field: 'rule', input: ['files'] },
 
   // ── documentation (UniversalDocumentationAnalyzer) ─────────────────────
-  'file-documentation':        { analyzer: 'documentation',     field: 'rule' },
-  'function-documentation':    { analyzer: 'documentation',     field: 'rule' },
-  'parameter-documentation':   { analyzer: 'documentation',     field: 'rule' },
-  'return-documentation':      { analyzer: 'documentation',     field: 'rule' },
-  'class-documentation':       { analyzer: 'documentation',     field: 'rule' },
-  'method-documentation':      { analyzer: 'documentation',     field: 'rule' },
+  'file-documentation':        { analyzer: 'documentation',     field: 'rule', input: ['files'] },
+  'function-documentation':    { analyzer: 'documentation',     field: 'rule', input: ['files'] },
+  'parameter-documentation':   { analyzer: 'documentation',     field: 'rule', input: ['files'] },
+  'return-documentation':      { analyzer: 'documentation',     field: 'rule', input: ['files'] },
+  'class-documentation':       { analyzer: 'documentation',     field: 'rule', input: ['files'] },
+  'method-documentation':      { analyzer: 'documentation',     field: 'rule', input: ['files'] },
 
   // ── schema (UniversalSchemaAnalyzer) ────────────────────────────────────
-  'invalid-json':              { analyzer: 'schema',            field: 'rule' },
-  'missing-schema-declaration':{ analyzer: 'schema',            field: 'rule' },
-  'undefined-required-field':  { analyzer: 'schema',            field: 'rule' },
-  'invalid-type':              { analyzer: 'schema',            field: 'rule' },
-  'invalid-range':             { analyzer: 'schema',            field: 'rule' },
-  'file-error':                { analyzer: 'schema',            field: 'rule' },
-  'type-mismatch':             { analyzer: 'schema',            field: 'rule' },
-  'string-too-short':          { analyzer: 'schema',            field: 'rule' },
-  'string-too-long':           { analyzer: 'schema',            field: 'rule' },
-  'pattern-mismatch':          { analyzer: 'schema',            field: 'rule' },
-  'invalid-format':            { analyzer: 'schema',            field: 'rule' },
-  'below-minimum':             { analyzer: 'schema',            field: 'rule' },
-  'above-maximum':             { analyzer: 'schema',            field: 'rule' },
-  'too-few-items':             { analyzer: 'schema',            field: 'rule' },
-  'too-many-items':            { analyzer: 'schema',            field: 'rule' },
-  'missing-required-field':    { analyzer: 'schema',            field: 'rule' },
-  'unexpected-property':       { analyzer: 'schema',            field: 'rule' },
-  'enum-mismatch':             { analyzer: 'schema',            field: 'rule' },
-  'sql-injection':             { analyzer: 'schema',            field: 'rule' },
+  // JSON validation rules → emitted by the schema-json visitor path.
+  'invalid-json':              { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'missing-schema-declaration':{ analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'undefined-required-field':  { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'invalid-type':              { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'invalid-range':             { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'file-error':                { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'type-mismatch':             { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'string-too-short':          { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'string-too-long':           { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'pattern-mismatch':          { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'invalid-format':            { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'below-minimum':             { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'above-maximum':             { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'too-few-items':             { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'too-many-items':            { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'missing-required-field':    { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'unexpected-property':       { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  'enum-mismatch':             { analyzer: 'schema',            field: 'rule', input: ['schema-json'] },
+  // SQL-injection → emitted by the schema-code visitor over TS/JS source.
+  'sql-injection':             { analyzer: 'schema',            field: 'rule', input: ['schema-code'] },
 
   // ── react (reactAnalyzer) ───────────────────────────────────────────────
-  'hooks-naming':              { analyzer: 'react',             field: 'rule' },
-  'complexity':                { analyzer: 'react',             field: 'rule' },
-  'missing-props':             { analyzer: 'react',             field: 'rule', configGate: 'requirePropTypes' },
-  'no-error-boundary':         { analyzer: 'react',             field: 'rule' },
-  'performance':               { analyzer: 'react',             field: 'rule', configGate: 'requireMemoization' },
-  'accessibility':             { analyzer: 'react',             field: 'rule' },
-  'raw-element':               { analyzer: 'react',             field: 'rule' },
+  'hooks-naming':              { analyzer: 'react',             field: 'rule', input: ['files'] },
+  'complexity':                { analyzer: 'react',             field: 'rule', input: ['files'] },
+  'missing-props':             { analyzer: 'react',             field: 'rule', configGate: 'requirePropTypes', input: ['files'] },
+  'no-error-boundary':         { analyzer: 'react',             field: 'rule', input: ['files'] },
+  'performance':               { analyzer: 'react',             field: 'rule', configGate: 'requireMemoization', input: ['files'] },
+  'accessibility':             { analyzer: 'react',             field: 'rule', input: ['files'] },
+  'raw-element':               { analyzer: 'react',             field: 'rule', input: ['files'] },
 
   // ── invariants (invariantsAnalyzer) — fixed internal IDs only ──────────
-  'config-error':              { analyzer: 'invariants',        field: 'rule' },
-  'engine-error':              { analyzer: 'invariants',        field: 'rule' },
-
-  // ── cross-language-solid (CrossLanguageSOLIDAnalyzer) ───────────────────
-  'SRP':                       { analyzer: 'cross-language-solid', field: 'rule' },
-  'OCP':                       { analyzer: 'cross-language-solid', field: 'rule' },
-  'ISP':                       { analyzer: 'cross-language-solid', field: 'rule' },
-  'DIP':                       { analyzer: 'cross-language-solid', field: 'rule' },
-  'LSP':                       { analyzer: 'cross-language-solid', field: 'rule' },
+  'config-error':              { analyzer: 'invariants',        field: 'rule', input: ['files'] },
+  'engine-error':              { analyzer: 'invariants',        field: 'rule', input: ['files'] },
 
   // ── schema-validator (SchemaValidator) ──────────────────────────────────
   'field-mismatch':            { analyzer: 'schema-validator',  field: 'rule' },
@@ -134,11 +145,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'method-mismatch':           { analyzer: 'api-contract',      field: 'rule' },
   'auth-mismatch':             { analyzer: 'api-contract',      field: 'rule' },
 
-  // ── schema-parser (SchemaParser) ────────────────────────────────────────
-  'naming-convention':         { analyzer: 'schema-parser',     field: 'rule' },
-  'missing-index':             { analyzer: 'schema-parser',     field: 'rule' },
-  'missing-reference':         { analyzer: 'schema-parser',     field: 'rule' },
-
   // ── dependency-graph (DependencyGraphBuilder) ───────────────────────────
   'circular-dependency':       { analyzer: 'dependency-graph',  field: 'type' },
   'break-cycles':              { analyzer: 'dependency-graph',  field: 'type' },
@@ -150,28 +156,28 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'review-orphans':            { analyzer: 'dependency-graph',  field: 'type' },
 
   // ── styles (UniversalStylesAnalyzer) ─────────────────────────────────────
-  'styles/value-drift':              { analyzer: 'styles',       field: 'rule' },
-  'styles/off-scale':                { analyzer: 'styles',       field: 'rule' },
-  'styles/undefined-class':          { analyzer: 'styles',       field: 'rule' },
-  'styles/undefined-class-disabled': { analyzer: 'styles',       field: 'rule' },
-  'styles/token-bypass':             { analyzer: 'styles',       field: 'rule' },
-  'styles/mechanism-fragmentation':  { analyzer: 'styles',       field: 'rule' },
-  'styles/mechanism-mixing':         { analyzer: 'styles',       field: 'rule' },
-  'styles/declaration-set-similarity': { analyzer: 'styles',     field: 'rule' },
-  'styles/z-index-sprawl':           { analyzer: 'styles',       field: 'rule' },
-  'styles/z-index-singleton':        { analyzer: 'styles',       field: 'rule' },
+  'styles/value-drift':              { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
+  'styles/off-scale':                { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
+  'styles/undefined-class':          { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
+  'styles/undefined-class-disabled': { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
+  'styles/token-bypass':             { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
+  'styles/mechanism-fragmentation':  { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
+  'styles/mechanism-mixing':         { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
+  'styles/declaration-set-similarity': { analyzer: 'styles',     field: 'rule', input: ['styles-css'] },
+  'styles/z-index-sprawl':           { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
+  'styles/z-index-singleton':        { analyzer: 'styles',       field: 'rule', input: ['styles-css'] },
 
   // ── conventions (UniversalConventionsAnalyzer) ───────────────────────────
-  'conventions/usage-pair':     { analyzer: 'conventions',       field: 'rule' },
-  'conventions/import-form':    { analyzer: 'conventions',       field: 'rule' },
-  'conventions/error-handling': { analyzer: 'conventions',       field: 'rule' },
-  'conventions/export-shape':   { analyzer: 'conventions',       field: 'rule' },
-  'conventions/naming':         { analyzer: 'conventions',       field: 'rule' },
+  'conventions/usage-pair':     { analyzer: 'conventions',       field: 'rule', input: ['function-index'] },
+  'conventions/import-form':    { analyzer: 'conventions',       field: 'rule', input: ['function-index'] },
+  'conventions/error-handling': { analyzer: 'conventions',       field: 'rule', input: ['function-index'] },
+  'conventions/export-shape':   { analyzer: 'conventions',       field: 'rule', input: ['function-index'] },
+  'conventions/naming':         { analyzer: 'conventions',       field: 'rule', input: ['function-index'] },
 
   // ── cross-domain (CrossDomainAnalyzer) ────────────────────────────────────
-  'cross-domain/written-never-read':   { analyzer: 'cross-domain', field: 'rule' },
-  'cross-domain/read-never-written':   { analyzer: 'cross-domain', field: 'rule' },
-  'cross-domain/transaction-boundary': { analyzer: 'cross-domain', field: 'rule' },
-  'cross-domain/validation-bypass':    { analyzer: 'cross-domain', field: 'rule' },
-  'cross-domain/uncovered-risk':       { analyzer: 'cross-domain', field: 'rule' },
+  'cross-domain/written-never-read':   { analyzer: 'cross-domain', field: 'rule', input: ['schema_usage', 'functions'] },
+  'cross-domain/read-never-written':   { analyzer: 'cross-domain', field: 'rule', input: ['schema_usage', 'functions'] },
+  'cross-domain/transaction-boundary': { analyzer: 'cross-domain', field: 'rule', input: ['schema_usage', 'functions'] },
+  'cross-domain/validation-bypass':    { analyzer: 'cross-domain', field: 'rule', input: ['schema_usage', 'functions'] },
+  'cross-domain/uncovered-risk':       { analyzer: 'cross-domain', field: 'rule', input: ['schema_usage', 'functions'] },
 };

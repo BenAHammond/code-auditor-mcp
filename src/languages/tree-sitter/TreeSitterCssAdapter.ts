@@ -9,6 +9,10 @@
  * tree-sitter-scss. The SCSS grammar extends the CSS grammar and preserves
  * the same node type names (rule_set, declaration, class_name, class_selector,
  * selectors, block).
+ *
+ * The class is split across a small inheritance chain (Spec-33
+ * interface-segregation): each link contributes a cohesive slice of the
+ * adapter so no single class exceeds the SOLID class-size threshold.
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
@@ -37,10 +41,10 @@ import type {
 const sourceCodeMap = new WeakMap<AST, string>();
 
 // ---------------------------------------------------------------------------
-// Adapter
+// Parsing slice
 // ---------------------------------------------------------------------------
 
-export class TreeSitterCssAdapter implements LanguageAdapter {
+class CssParserCore {
   readonly name = 'css';
   readonly fileExtensions = ['.css', '.scss'];
 
@@ -75,6 +79,25 @@ export class TreeSitterCssAdapter implements LanguageAdapter {
     return ast;
   }
 
+  private collectErrors(node: TreeSitterNode, errors: ParseError[]): void {
+    if (node.type === 'ERROR' || node.isError) {
+      errors.push({
+        message: `Parse error near "${node.text.slice(0, 50)}"`,
+        location: toSourceLocation(node),
+        severity: 'error',
+      });
+    }
+    for (const child of node.children) {
+      this.collectErrors(child, errors);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AST navigation + node information slice
+// ---------------------------------------------------------------------------
+
+class CssAstSupport extends CssParserCore {
   // -- AST Navigation -------------------------------------------------------
 
   findNodes(ast: AST, pattern: NodePattern): ASTNode[] {
@@ -143,6 +166,58 @@ export class TreeSitterCssAdapter implements LanguageAdapter {
     return node.location;
   }
 
+  private walk(node: ASTNode, visitor: (node: ASTNode) => void): void {
+    visitor(node);
+    if (node.children) {
+      for (const child of node.children) {
+        this.walk(child, visitor);
+      }
+    }
+  }
+
+  private matchesPattern(node: ASTNode, pattern: NodePattern): boolean {
+    const syntaxNode = node.raw as TreeSitterNode;
+
+    if (pattern.type !== undefined) {
+      const types = Array.isArray(pattern.type) ? pattern.type : [pattern.type];
+      if (!types.includes(syntaxNode.type)) return false;
+    }
+
+    if (pattern.name !== undefined) {
+      const nodeName = this.getNodeName(node);
+      if (nodeName === null) return false;
+      if (typeof pattern.name === 'string') {
+        if (nodeName !== pattern.name) return false;
+      } else if (pattern.name instanceof RegExp) {
+        if (!pattern.name.test(nodeName)) return false;
+      }
+    }
+
+    if (pattern.hasChild !== undefined) {
+      const childNodes = node.children ?? [];
+      if (!childNodes.some((c) => this.matchesPattern(c, pattern.hasChild!))) {
+        return false;
+      }
+    }
+
+    if (pattern.hasParent !== undefined) {
+      if (!node.parent) return false;
+      if (!this.matchesPattern(node.parent, pattern.hasParent)) return false;
+    }
+
+    if (pattern.custom !== undefined) {
+      if (!pattern.custom(node)) return false;
+    }
+
+    return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Extraction + predicates slice (all stubs for CSS/SCSS)
+// ---------------------------------------------------------------------------
+
+class CssLanguageSupport extends CssAstSupport {
   // -- Language-Specific Extraction -----------------------------------------
   // CSS/SCSS has no functions, classes, imports, or exports.
 
@@ -212,19 +287,42 @@ export class TreeSitterCssAdapter implements LanguageAdapter {
     // in a way that maps cleanly to "documentation for this node".
     return null;
   }
+}
 
+// ---------------------------------------------------------------------------
+// Adapter (composes the slices above)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tree sitter css adapter.
+ */
+export class TreeSitterCssAdapter extends CssLanguageSupport implements LanguageAdapter {
+  // -- Advanced Features (cont.) --------------------------------------------
+
+  /**
+   * Get complexity.
+   */
   getComplexity(_node: ASTNode): number {
     return 0;
   }
 
   // -- Optional: Interfaces -------------------------------------------------
 
+  /**
+   * Extract interfaces.
+   */
   extractInterfaces(_ast: AST): InterfaceInfo[] {
     return [];
   }
 
   // -- Optional: Raw imports ------------------------------------------------
 
+  /**
+   * Extract raw imports.
+   * @param _content
+   * @param _filePath
+   * @returns
+   */
   extractRawImports(
     _filePath: string,
     _content: string,
@@ -240,70 +338,10 @@ export class TreeSitterCssAdapter implements LanguageAdapter {
 
   // -- Optional: Exported symbols -------------------------------------------
 
+  /**
+   * Extract exported symbols.
+   */
   extractExportedSymbols(_ast: AST): Array<{ name: string; line: number }> {
     return [];
-  }
-
-  // ---------------------------------------------------------------------------
-  // Internal helpers
-  // ---------------------------------------------------------------------------
-
-  private walk(node: ASTNode, visitor: (node: ASTNode) => void): void {
-    visitor(node);
-    if (node.children) {
-      for (const child of node.children) {
-        this.walk(child, visitor);
-      }
-    }
-  }
-
-  private collectErrors(node: TreeSitterNode, errors: ParseError[]): void {
-    if (node.type === 'ERROR' || node.isError) {
-      errors.push({
-        message: `Parse error near "${node.text.slice(0, 50)}"`,
-        location: toSourceLocation(node),
-        severity: 'error',
-      });
-    }
-    for (const child of node.children) {
-      this.collectErrors(child, errors);
-    }
-  }
-
-  private matchesPattern(node: ASTNode, pattern: NodePattern): boolean {
-    const syntaxNode = node.raw as TreeSitterNode;
-
-    if (pattern.type !== undefined) {
-      const types = Array.isArray(pattern.type) ? pattern.type : [pattern.type];
-      if (!types.includes(syntaxNode.type)) return false;
-    }
-
-    if (pattern.name !== undefined) {
-      const nodeName = this.getNodeName(node);
-      if (nodeName === null) return false;
-      if (typeof pattern.name === 'string') {
-        if (nodeName !== pattern.name) return false;
-      } else if (pattern.name instanceof RegExp) {
-        if (!pattern.name.test(nodeName)) return false;
-      }
-    }
-
-    if (pattern.hasChild !== undefined) {
-      const childNodes = node.children ?? [];
-      if (!childNodes.some((c) => this.matchesPattern(c, pattern.hasChild!))) {
-        return false;
-      }
-    }
-
-    if (pattern.hasParent !== undefined) {
-      if (!node.parent) return false;
-      if (!this.matchesPattern(node.parent, pattern.hasParent)) return false;
-    }
-
-    if (pattern.custom !== undefined) {
-      if (!pattern.custom(node)) return false;
-    }
-
-    return true;
   }
 }

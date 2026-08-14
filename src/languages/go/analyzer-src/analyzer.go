@@ -40,25 +40,7 @@ func (a *Analyzer) Analyze(files []string) (*AnalysisResult, error) {
 	}
 
 	// Run enabled analyzers
-	for _, analyzerName := range a.options.Analyzers {
-		switch analyzerName {
-		case "solid":
-			violations := a.runSOLIDAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		case "imports":
-			violations := a.runImportAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		case "errors":
-			violations := a.runErrorAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		case "goroutines":
-			violations := a.runGoroutineAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		case "channels":
-			violations := a.runChannelAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		}
-	}
+	a.runEnabledAnalyzers(result)
 
 	// Generate index entries
 	indexer := NewIndexer(a.parser)
@@ -71,6 +53,25 @@ func (a *Analyzer) Analyze(files []string) (*AnalysisResult, error) {
 	result.Metrics.ExecutionTime = time.Since(startTime).Milliseconds()
 
 	return result, nil
+}
+
+// runEnabledAnalyzers runs each enabled analyzer and appends its violations to
+// the result. Shared by Analyze and AnalyzeContent to avoid duplicated dispatch.
+func (a *Analyzer) runEnabledAnalyzers(result *AnalysisResult) {
+	for _, analyzerName := range a.options.Analyzers {
+		switch analyzerName {
+		case "solid":
+			result.Violations = append(result.Violations, a.runSOLIDAnalysis()...)
+		case "imports":
+			result.Violations = append(result.Violations, a.runImportAnalysis()...)
+		case "errors":
+			result.Violations = append(result.Violations, a.runErrorAnalysis()...)
+		case "goroutines":
+			result.Violations = append(result.Violations, a.runGoroutineAnalysis()...)
+		case "channels":
+			result.Violations = append(result.Violations, a.runChannelAnalysis()...)
+		}
+	}
 }
 
 // AnalyzeContent performs analysis of Go content from a string
@@ -93,25 +94,7 @@ func (a *Analyzer) AnalyzeContent(filePath, content string) (*AnalysisResult, er
 	}
 
 	// Run enabled analyzers
-	for _, analyzerName := range a.options.Analyzers {
-		switch analyzerName {
-		case "solid":
-			violations := a.runSOLIDAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		case "imports":
-			violations := a.runImportAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		case "errors":
-			violations := a.runErrorAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		case "goroutines":
-			violations := a.runGoroutineAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		case "channels":
-			violations := a.runChannelAnalysis()
-			result.Violations = append(result.Violations, violations...)
-		}
-	}
+	a.runEnabledAnalyzers(result)
 
 	// Generate index entries
 	indexer := NewIndexer(a.parser)

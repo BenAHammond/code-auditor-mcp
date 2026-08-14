@@ -136,7 +136,13 @@ export interface CrossReference {
   confidence: number;
 }
 
+/**
+ * Language orchestrator.
+ */
 export class LanguageOrchestrator {
+  /**
+   * Constructor.
+   */
   constructor(
     private runtimeManager: RuntimeManager,
     private codeIndex: CodeIndexDB
@@ -144,6 +150,9 @@ export class LanguageOrchestrator {
 
   /**
    * Analyze a polyglot project
+   * @param options
+   * @param projectPath
+   * @returns
    */
   async analyzePolyglotProject(
     projectPath: string, 
@@ -448,10 +457,10 @@ export class LanguageOrchestrator {
     
     // Import and run API contract analysis
     try {
-      const { APIContractAnalyzer } = await import('../analyzers/cross-language/APIContractAnalyzer.js');
-      
-      const endpoints = APIContractAnalyzer.extractEndpoints(allEntities);
-      const apiCalls = APIContractAnalyzer.extractAPICalls(allEntities);
+      const { APIContractAnalyzer, extractEndpoints, extractAPICalls } = await import('../analyzers/cross-language/APIContractAnalyzer.js');
+
+      const endpoints = extractEndpoints(allEntities);
+      const apiCalls = extractAPICalls(allEntities);
       
       if (endpoints.length > 0 || apiCalls.length > 0) {
         const contractAnalyzer = new APIContractAnalyzer();
@@ -476,9 +485,9 @@ export class LanguageOrchestrator {
     
     // Import and run schema validation
     try {
-      const { SchemaValidator } = await import('../analyzers/cross-language/SchemaValidator.js');
-      
-      const schemas = SchemaValidator.extractSchemas(allEntities);
+      const { SchemaValidator, extractSchemas } = await import('../analyzers/cross-language/SchemaValidator.js');
+
+      const schemas = extractSchemas(allEntities);
       
       if (schemas.length > 0) {
         const schemaValidator = new SchemaValidator();

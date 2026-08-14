@@ -43,15 +43,21 @@ export interface ContractViolation extends Violation {
   extraFields?: string[];
 }
 
+/**
+ * Api contract analyzer.
+ */
 export class APIContractAnalyzer {
   private endpoints: APIEndpoint[] = [];
   private calls: APICall[] = [];
 
   /**
    * Analyze API contracts and find violations
+    * @param calls
+    * @param endpoints
+    * @returns
    */
   async analyzeContracts(
-    endpoints: APIEndpoint[], 
+    endpoints: APIEndpoint[],
     calls: APICall[]
   ): Promise<ContractViolation[]> {
     this.endpoints = endpoints;
@@ -72,58 +78,6 @@ export class APIContractAnalyzer {
     violations.push(...await this.validateAuthentication());
 
     return violations;
-  }
-
-  /**
-   * Extract API endpoints from code entities
-   */
-  static extractEndpoints(entities: any[]): APIEndpoint[] {
-    const endpoints: APIEndpoint[] = [];
-
-    for (const entity of entities) {
-      // Go endpoints (Gin, Echo, etc.)
-      if (entity.language === 'go' && entity.type === 'function') {
-        const endpoint = this.extractGoEndpoint(entity);
-        if (endpoint) endpoints.push(endpoint);
-      }
-
-      // TypeScript endpoints (Express, Fastify, etc.)
-      if (entity.language === 'typescript' && entity.type === 'function') {
-        const endpoint = this.extractTypeScriptEndpoint(entity);
-        if (endpoint) endpoints.push(endpoint);
-      }
-
-      // Python endpoints (FastAPI, Flask, etc.)
-      if (entity.language === 'python' && entity.type === 'function') {
-        const endpoint = this.extractPythonEndpoint(entity);
-        if (endpoint) endpoints.push(endpoint);
-      }
-    }
-
-    return endpoints;
-  }
-
-  /**
-   * Extract API calls from code entities
-   */
-  static extractAPICalls(entities: any[]): APICall[] {
-    const calls: APICall[] = [];
-
-    for (const entity of entities) {
-      // TypeScript/JavaScript API calls (fetch, axios, etc.)
-      if ((entity.language === 'typescript' || entity.language === 'javascript') && entity.type === 'function') {
-        const call = this.extractTypeScriptAPICall(entity);
-        if (call) calls.push(call);
-      }
-
-      // Go API calls (http.Client, etc.)
-      if (entity.language === 'go' && entity.type === 'function') {
-        const call = this.extractGoAPICall(entity);
-        if (call) calls.push(call);
-      }
-    }
-
-    return calls;
   }
 
   /**
@@ -275,7 +229,7 @@ export class APIContractAnalyzer {
    */
   private findMatchingEndpoint(call: APICall): APIEndpoint | null {
     for (const endpoint of this.endpoints) {
-      if (this.pathsMatch(endpoint.path, call.url) && 
+      if (this.pathsMatch(endpoint.path, call.url) &&
           endpoint.method === call.method.toUpperCase()) {
         return endpoint;
       }
@@ -289,29 +243,29 @@ export class APIContractAnalyzer {
   private pathsMatch(endpointPath: string, callUrl: string): boolean {
     // Simple path matching - in practice would need more sophisticated logic
     // Handle path parameters like /users/:id matching /users/123
-    
+
     const endpointParts = endpointPath.split('/');
     const callParts = callUrl.split('/').map(part => part.split('?')[0]); // Remove query params
-    
+
     if (endpointParts.length !== callParts.length) {
       return false;
     }
-    
+
     for (let i = 0; i < endpointParts.length; i++) {
       const endpointPart = endpointParts[i];
       const callPart = callParts[i];
-      
+
       // Skip parameter parts (starting with : or {})
-      if (endpointPart.startsWith(':') || 
+      if (endpointPart.startsWith(':') ||
           (endpointPart.startsWith('{') && endpointPart.endsWith('}'))) {
         continue;
       }
-      
+
       if (endpointPart !== callPart) {
         return false;
       }
     }
-    
+
     return true;
   }
 
@@ -357,183 +311,241 @@ export class APIContractAnalyzer {
    */
   private callHasAuthentication(call: APICall): boolean {
     // Simplified check - would analyze the actual code for auth headers/tokens
-    return call.file.includes('auth') || 
+    return call.file.includes('auth') ||
            call.id.toLowerCase().includes('token') ||
            call.id.toLowerCase().includes('bearer');
   }
+}
 
-  // Static methods for extracting endpoints and calls from entities
+// ---------------------------------------------------------------------------
+// Endpoint/call extraction (pure functions — no analyzer state)
+// ---------------------------------------------------------------------------
 
-  private static extractGoEndpoint(entity: any): APIEndpoint | null {
-    // Look for HTTP handler patterns in Go
-    if (entity.signature?.includes('gin.Context') || 
-        entity.signature?.includes('echo.Context') ||
-        entity.signature?.includes('http.ResponseWriter')) {
-      
-      // Extract method and path from function name or comments
-      const method = this.extractMethodFromGo(entity);
-      const path = this.extractPathFromGo(entity);
-      
-      if (method && path) {
-        return {
-          id: entity.id,
-          method: method as any,
-          path,
-          language: 'go',
-          file: entity.file,
-          line: entity.startLine || 0,
-          // Would extract schemas from struct tags or comments
-        };
-      }
+/**
+ * Extract API endpoints from code entities
+  * @param entities
+  * @returns
+ */
+export function extractEndpoints(entities: any[]): APIEndpoint[] {
+  const endpoints: APIEndpoint[] = [];
+
+  for (const entity of entities) {
+    // Go endpoints (Gin, Echo, etc.)
+    if (entity.language === 'go' && entity.type === 'function') {
+      const endpoint = extractGoEndpoint(entity);
+      if (endpoint) endpoints.push(endpoint);
     }
-    return null;
-  }
 
-  private static extractTypeScriptEndpoint(entity: any): APIEndpoint | null {
-    // Look for Express/Fastify handler patterns
-    if (entity.signature?.includes('Request') && entity.signature?.includes('Response')) {
-      const method = this.extractMethodFromTypeScript(entity);
-      const path = this.extractPathFromTypeScript(entity);
-      
-      if (method && path) {
-        return {
-          id: entity.id,
-          method: method as any,
-          path,
-          language: 'typescript',
-          file: entity.file,
-          line: entity.startLine || 0,
-        };
-      }
+    // TypeScript endpoints (Express, Fastify, etc.)
+    if (entity.language === 'typescript' && entity.type === 'function') {
+      const endpoint = extractTypeScriptEndpoint(entity);
+      if (endpoint) endpoints.push(endpoint);
     }
-    return null;
-  }
 
-  private static extractPythonEndpoint(entity: any): APIEndpoint | null {
-    // Look for FastAPI/Flask patterns
-    if (entity.metadata?.decorators?.some((d: string) => 
-        d.includes('@app.') || d.includes('@router.'))) {
-      
-      const method = this.extractMethodFromPython(entity);
-      const path = this.extractPathFromPython(entity);
-      
-      if (method && path) {
-        return {
-          id: entity.id,
-          method: method as any,
-          path,
-          language: 'python',
-          file: entity.file,
-          line: entity.startLine || 0,
-        };
-      }
+    // Python endpoints (FastAPI, Flask, etc.)
+    if (entity.language === 'python' && entity.type === 'function') {
+      const endpoint = extractPythonEndpoint(entity);
+      if (endpoint) endpoints.push(endpoint);
     }
-    return null;
   }
 
-  private static extractTypeScriptAPICall(entity: any): APICall | null {
-    // Look for fetch/axios patterns
-    if (entity.purpose?.includes('fetch') || 
-        entity.purpose?.includes('axios') ||
-        entity.name.toLowerCase().includes('api') ||
-        entity.name.toLowerCase().includes('request')) {
-      
-      const method = this.extractCallMethodFromTypeScript(entity);
-      const url = this.extractUrlFromTypeScript(entity);
-      
-      if (method && url) {
-        return {
-          id: entity.id,
-          method,
-          url,
-          language: 'typescript',
-          file: entity.file,
-          line: entity.startLine || 0,
-        };
-      }
+  return endpoints;
+}
+
+/**
+ * Extract API calls from code entities
+  * @param entities
+  * @returns
+ */
+export function extractAPICalls(entities: any[]): APICall[] {
+  const calls: APICall[] = [];
+
+  for (const entity of entities) {
+    // TypeScript/JavaScript API calls (fetch, axios, etc.)
+    if ((entity.language === 'typescript' || entity.language === 'javascript') && entity.type === 'function') {
+      const call = extractTypeScriptAPICall(entity);
+      if (call) calls.push(call);
     }
-    return null;
-  }
 
-  private static extractGoAPICall(entity: any): APICall | null {
-    // Look for http.Client patterns
-    if (entity.signature?.includes('http.Client') ||
-        entity.purpose?.includes('HTTP') ||
-        entity.name.toLowerCase().includes('request')) {
-      
-      const method = this.extractCallMethodFromGo(entity);
-      const url = this.extractUrlFromGo(entity);
-      
-      if (method && url) {
-        return {
-          id: entity.id,
-          method,
-          url,
-          language: 'go',
-          file: entity.file,
-          line: entity.startLine || 0,
-        };
-      }
+    // Go API calls (http.Client, etc.)
+    if (entity.language === 'go' && entity.type === 'function') {
+      const call = extractGoAPICall(entity);
+      if (call) calls.push(call);
     }
-    return null;
   }
 
-  // Helper methods for extracting HTTP info from code patterns
+  return calls;
+}
 
-  private static extractMethodFromGo(entity: any): string | null {
-    const name = entity.name.toLowerCase();
-    if (name.includes('get')) return 'GET';
-    if (name.includes('post')) return 'POST';
-    if (name.includes('put')) return 'PUT';
-    if (name.includes('delete')) return 'DELETE';
-    if (name.includes('patch')) return 'PATCH';
-    return null;
-  }
+function extractGoEndpoint(entity: any): APIEndpoint | null {
+  // Look for HTTP handler patterns in Go
+  if (entity.signature?.includes('gin.Context') ||
+      entity.signature?.includes('echo.Context') ||
+      entity.signature?.includes('http.ResponseWriter')) {
 
-  private static extractPathFromGo(entity: any): string | null {
-    // Extract from function name like GetUserByID -> /user/:id
-    const name = entity.name;
-    if (name.startsWith('Get') && name.includes('By')) {
-      const resource = name.substring(3).split('By')[0].toLowerCase();
-      return `/${resource}/:id`;
+    // Extract method and path from function name or comments
+    const method = extractMethodFromGo(entity);
+    const path = extractPathFromGo(entity);
+
+    if (method && path) {
+      return {
+        id: entity.id,
+        method: method as any,
+        path,
+        language: 'go',
+        file: entity.file,
+        line: entity.startLine || 0,
+        // Would extract schemas from struct tags or comments
+      };
     }
-    if (name.startsWith('List')) {
-      const resource = name.substring(4).toLowerCase() + 's';
-      return `/${resource}`;
+  }
+  return null;
+}
+
+function extractTypeScriptEndpoint(entity: any): APIEndpoint | null {
+  // Look for Express/Fastify handler patterns
+  if (entity.signature?.includes('Request') && entity.signature?.includes('Response')) {
+    const method = extractMethodFromTypeScript(entity);
+    const path = extractPathFromTypeScript(entity);
+
+    if (method && path) {
+      return {
+        id: entity.id,
+        method: method as any,
+        path,
+        language: 'typescript',
+        file: entity.file,
+        line: entity.startLine || 0,
+      };
     }
-    return '/api/' + name.toLowerCase();
   }
+  return null;
+}
 
-  private static extractMethodFromTypeScript(entity: any): string | null {
-    return this.extractMethodFromGo(entity); // Same logic
-  }
+function extractPythonEndpoint(entity: any): APIEndpoint | null {
+  // Look for FastAPI/Flask patterns
+  if (entity.metadata?.decorators?.some((d: string) =>
+      d.includes('@app.') || d.includes('@router.'))) {
 
-  private static extractPathFromTypeScript(entity: any): string | null {
-    return this.extractPathFromGo(entity); // Same logic
-  }
+    const method = extractMethodFromPython(entity);
+    const path = extractPathFromPython(entity);
 
-  private static extractMethodFromPython(entity: any): string | null {
-    return this.extractMethodFromGo(entity); // Same logic
+    if (method && path) {
+      return {
+        id: entity.id,
+        method: method as any,
+        path,
+        language: 'python',
+        file: entity.file,
+        line: entity.startLine || 0,
+      };
+    }
   }
+  return null;
+}
 
-  private static extractPathFromPython(entity: any): string | null {
-    return this.extractPathFromGo(entity); // Same logic
-  }
+function extractTypeScriptAPICall(entity: any): APICall | null {
+  // Look for fetch/axios patterns
+  if (entity.purpose?.includes('fetch') ||
+      entity.purpose?.includes('axios') ||
+      entity.name.toLowerCase().includes('api') ||
+      entity.name.toLowerCase().includes('request')) {
 
-  private static extractCallMethodFromTypeScript(entity: any): string | null {
-    return this.extractMethodFromGo(entity); // Same logic
-  }
+    const method = extractCallMethodFromTypeScript(entity);
+    const url = extractUrlFromTypeScript(entity);
 
-  private static extractUrlFromTypeScript(entity: any): string | null {
-    // Extract from function name or purpose
-    return this.extractPathFromGo(entity);
+    if (method && url) {
+      return {
+        id: entity.id,
+        method,
+        url,
+        language: 'typescript',
+        file: entity.file,
+        line: entity.startLine || 0,
+      };
+    }
   }
+  return null;
+}
 
-  private static extractCallMethodFromGo(entity: any): string | null {
-    return this.extractMethodFromGo(entity); // Same logic
-  }
+function extractGoAPICall(entity: any): APICall | null {
+  // Look for http.Client patterns
+  if (entity.signature?.includes('http.Client') ||
+      entity.purpose?.includes('HTTP') ||
+      entity.name.toLowerCase().includes('request')) {
 
-  private static extractUrlFromGo(entity: any): string | null {
-    return this.extractPathFromGo(entity); // Same logic
+    const method = extractCallMethodFromGo(entity);
+    const url = extractUrlFromGo(entity);
+
+    if (method && url) {
+      return {
+        id: entity.id,
+        method,
+        url,
+        language: 'go',
+        file: entity.file,
+        line: entity.startLine || 0,
+      };
+    }
   }
+  return null;
+}
+
+// Helper functions for extracting HTTP info from code patterns
+
+function extractMethodFromGo(entity: any): string | null {
+  const name = entity.name.toLowerCase();
+  if (name.includes('get')) return 'GET';
+  if (name.includes('post')) return 'POST';
+  if (name.includes('put')) return 'PUT';
+  if (name.includes('delete')) return 'DELETE';
+  if (name.includes('patch')) return 'PATCH';
+  return null;
+}
+
+function extractPathFromGo(entity: any): string | null {
+  // Extract from function name like GetUserByID -> /user/:id
+  const name = entity.name;
+  if (name.startsWith('Get') && name.includes('By')) {
+    const resource = name.substring(3).split('By')[0].toLowerCase();
+    return `/${resource}/:id`;
+  }
+  if (name.startsWith('List')) {
+    const resource = name.substring(4).toLowerCase() + 's';
+    return `/${resource}`;
+  }
+  return '/api/' + name.toLowerCase();
+}
+
+function extractMethodFromTypeScript(entity: any): string | null {
+  return extractMethodFromGo(entity); // Same logic
+}
+
+function extractPathFromTypeScript(entity: any): string | null {
+  return extractPathFromGo(entity); // Same logic
+}
+
+function extractMethodFromPython(entity: any): string | null {
+  return extractMethodFromGo(entity); // Same logic
+}
+
+function extractPathFromPython(entity: any): string | null {
+  return extractPathFromGo(entity); // Same logic
+}
+
+function extractCallMethodFromTypeScript(entity: any): string | null {
+  return extractMethodFromGo(entity); // Same logic
+}
+
+function extractUrlFromTypeScript(entity: any): string | null {
+  // Extract from function name or purpose
+  return extractPathFromGo(entity);
+}
+
+function extractCallMethodFromGo(entity: any): string | null {
+  return extractMethodFromGo(entity); // Same logic
+}
+
+function extractUrlFromGo(entity: any): string | null {
+  return extractPathFromGo(entity); // Same logic
 }

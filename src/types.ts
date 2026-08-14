@@ -113,6 +113,24 @@ export interface RuleCoverage {
 }
 
 /**
+ * Spec 33 Item 14 — per-rule input presence, computed once per pipeline run.
+ *
+ * A rule's `input` (see {@link RuleRegistryEntry.input}) names one or more input
+ * sources: the literal `'files'` (the analyzer ran on ≥1 parsed source file), a
+ * fact-key (a visitor/reducer name whose per-file facts were non-empty this run),
+ * or an index table (a table that held ≥1 row when coverage was built).
+ *
+ * `buildCoverageReport` uses this to promote a zero-violation rule from
+ * `unassessed` to `clean` (input present) or `notApplicable` (all inputs absent).
+ */
+export interface InputPresence {
+  /** Fact-keys (visitor/reducer names) that emitted ≥1 non-empty per-file fact this run. */
+  factKeys: string[];
+  /** Index tables that contained ≥1 row at coverage-build time. */
+  indexTables: string[];
+}
+
+/**
  * Discriminable status union for pipeline consumers.
  * `visitor-ran` → visitor result with filesProcessed.
  * `reducer-ran` → reducer/derived-reducer result with factsConsumed.
@@ -324,6 +342,10 @@ export interface PipelineResult {
      *  must surface it and exit non-zero rather than report a plausible-but-wrong
      *  result. */
     unparsedFiles?: Array<{ filePath: string; reason: string }>;
+    /** Spec 33 Item 14: per-rule input presence snapshot consumed by
+     *  buildCoverageReport to promote zero-violation rules from `unassessed` to
+     *  `clean` (input present) or `notApplicable` (all inputs absent). */
+    inputPresence?: InputPresence;
   };
   indexFacts?: IndexFactsEntry[];
 }
@@ -418,6 +440,10 @@ export interface AuditResult {
     /** Spec 32: files that failed to parse (or to be read) during stage 1, with
      *  the reason. Non-empty means the audit was incomplete. */
     unparsedFiles?: Array<{ filePath: string; reason: string }>;
+    /** Spec 33 Item 14: per-rule input presence snapshot consumed by
+     *  buildCoverageReport to promote zero-violation rules from `unassessed` to
+     *  `clean` (input present) or `notApplicable` (all inputs absent). */
+    inputPresence?: InputPresence;
   };
 }
 

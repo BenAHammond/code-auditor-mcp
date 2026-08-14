@@ -62,6 +62,7 @@ const GRAMMAR_FILES: Record<string, string> = {
  */
 const LANGUAGE_GRAMMAR_MAP: Record<string, string> = {
   typescript: 'typescript',
+  tsx: 'tsx',
   javascript: 'javascript',
   go: 'go',
   css: 'css',
@@ -79,6 +80,7 @@ const LANGUAGE_GRAMMAR_MAP: Record<string, string> = {
  * WASM paths are resolved relative to this module's location via import.meta.url,
  * NOT process.cwd(). This ensures the grammars are found regardless of the
  * working directory at runtime (critical for npx-invoked hooks).
+  * @returns
  */
 export async function initParsers(): Promise<void> {
   if (initialized) return;
@@ -143,6 +145,7 @@ function detectAbort(err: unknown): boolean {
  * Reinstantiate the tree-sitter runtime after an abort. Dynamically re-imports
  * a fresh `web-tree-sitter` module instance (cache-busted) so the dead shared
  * WASM singleton is replaced, then rebuilds all grammars and parsers from it.
+  * @returns
  */
 export async function recoverParsers(): Promise<void> {
   recoveryGeneration++;
@@ -190,6 +193,7 @@ export async function parseWithRecovery(
  *
  * @param lang - Language identifier ('typescript', 'javascript', 'go')
  * @param isTsx - If true and lang is 'typescript', use the TSX grammar
+  * @returns
  */
 export function getParser(lang: string, isTsx: boolean = false): typeof Parser.prototype {
   if (!initialized) {
@@ -199,19 +203,10 @@ export function getParser(lang: string, isTsx: boolean = false): typeof Parser.p
   }
 
   const key = isTsx ? 'tsx' : lang;
-  // tsx is handled separately — it shares the TypeScript adapter
-  if (isTsx && languages.has('tsx')) {
-    // Return a one-off parser with TSX grammar
-    const tsxLang = languages.get('tsx')!;
-    const p = new Parser();
-    p.setLanguage(tsxLang);
-    return p;
-  }
-
-  const parser = parsers.get(lang);
+  const parser = parsers.get(key);
   if (!parser) {
     throw new Error(
-      `No tree-sitter parser for language "${lang}". ` +
+      `No tree-sitter parser for language "${key}". ` +
       `Supported: ${[...parsers.keys()].join(', ')}`
     );
   }

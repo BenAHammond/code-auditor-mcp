@@ -7,6 +7,9 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { UniversalStylesAnalyzer } from './UniversalStylesAnalyzer.js';
 import { CodeIndexDB } from '../../codeIndexDB.js';
 import { resetTailwindExpander } from '../../styles/tailwindUtilityExpander.js';
@@ -513,6 +516,36 @@ describe('Detector 3 — Undefined Classes', () => {
     expect(names.some((m: string) => m.includes('undefined-class-name'))).toBe(true);
     // btn-primary is defined in beforeEach CSS, so it should NOT be in undef
     expect(names.some((m: string) => m.includes('btn-primary'))).toBe(false);
+  });
+
+  it('disables undefined-class detection for Tailwind v4 CSS-first projects without node_modules', async () => {
+    // Tailwind v4 declares itself in CSS (@import "tailwindcss" / @theme), not
+    // in a tailwind.config.js — and a corpus may be checked out without
+    // node_modules installed. The @theme marker must count as "Tailwind is
+    // present" so the fail-open guard disables the detector instead of
+    // flagging every utility class as undefined.
+    const dir = mkdtempSync(join(tmpdir(), 'tw-v4-fixture-'));
+    try {
+      writeFileSync(join(dir, 'global.css'), '@theme { --color-primary: #000000; }');
+
+      insertClassUsage('bg-primary', 'src/component.tsx', 5, 'className');
+      insertClassUsage('flex', 'src/component.tsx', 6, 'className');
+      insertClassUsage('undefined-class-name', 'src/component.tsx', 7, 'className');
+
+      const violations = await runAnalyzer({
+        projectRoot: dir,
+        // No tailwindClasses — simulates a v4 project with no custom Tailwind classes
+      });
+
+      const disabled = findViolations(violations, 'styles/undefined-class-disabled');
+      expect(disabled.length).toBe(1);
+      expect(disabled[0].message).toContain('skipped');
+
+      const undef = findViolations(violations, 'styles/undefined-class');
+      expect(undef.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   afterEach(() => {

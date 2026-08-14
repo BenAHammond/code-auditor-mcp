@@ -165,41 +165,57 @@ export interface ResolvedConstant {
 }
 
 /**
- * Language adapter interface - must be implemented for each language
+ * Parser role: file detection and AST production.
  */
-export interface LanguageAdapter {
+export interface LanguageParser {
   readonly name: string;
   readonly fileExtensions: string[];
-  
+
   /**
    * Parse a file into an AST
    */
   parse(filePath: string, content: string): Promise<AST>;
-  
+
   /**
    * Check if this adapter supports a file
    */
   supportsFile(filePath: string): boolean;
-  
-  // AST Navigation
+}
+
+/**
+ * AST navigation role: structural traversal of the parsed tree.
+ */
+export interface AstNavigation {
   findNodes(ast: AST, pattern: NodePattern): ASTNode[];
   getParent(node: ASTNode): ASTNode | null;
   getChildren(node: ASTNode): ASTNode[];
   getSiblings(node: ASTNode): ASTNode[];
-  
-  // Node Information
+}
+
+/**
+ * Node information role: reading type/text/name/location off a node.
+ */
+export interface NodeIntrospection {
   getNodeType(node: ASTNode): string;
   getNodeText(node: ASTNode, sourceCode: string): string;
   getNodeName(node: ASTNode): string | null;
   getNodeLocation(node: ASTNode): SourceLocation;
-  
-  // Language-Specific Extraction
+}
+
+/**
+ * Language-specific extraction role: pull structured entities out of an AST.
+ */
+export interface LanguageExtraction {
   extractFunctions(ast: AST): FunctionInfo[];
   extractClasses(ast: AST): ClassInfo[];
   extractImports(ast: AST): ImportInfo[];
   extractExports(ast: AST): ExportInfo[];
-  
-  // Pattern Matching Helpers
+}
+
+/**
+ * Node predicate role: classify AST nodes by kind.
+ */
+export interface NodePredicates {
   isClass(node: ASTNode): boolean;
   isFunction(node: ASTNode): boolean;
   isMethod(node: ASTNode): boolean;
@@ -209,16 +225,32 @@ export interface LanguageAdapter {
   isLoop(node: ASTNode): boolean;
   isConditional(node: ASTNode): boolean;
   isVariableDeclaration(node: ASTNode): boolean;
-  
-  // Advanced Features
+}
+
+/**
+ * Advanced analysis role: type info, documentation, and complexity.
+ */
+export interface AdvancedAnalysis {
   getTypeInfo(node: ASTNode): string | null;
   getDocumentation(node: ASTNode): string | null;
   getComplexity(node: ASTNode): number;
-  
-  // Optional: Extract interfaces (for languages that support them)
+}
+
+/**
+ * Optional capabilities a language may or may not provide.
+ *
+ * String-construction capabilities replace text-pattern heuristics for SQL
+ * injection detection with AST-level knowledge of how each host language
+ * constructs dynamic strings. When a language adapter does not implement
+ * these, the caller falls back to the legacy text-pattern approach (Legacy
+ * check disabled in v3.4.7 — if no adapter capability is present, no
+ * injection risk is flagged).
+ */
+export interface OptionalCapabilities {
+  /** Extract interfaces (for languages that support them). */
   extractInterfaces?(ast: AST): InterfaceInfo[];
 
-  // Optional: Extract raw import info including dynamic/require forms
+  /** Extract raw import info including dynamic/require forms. */
   extractRawImports?(filePath: string, content: string): Array<{
     moduleSpecifier: string;
     isStatic: boolean;
@@ -227,16 +259,8 @@ export interface LanguageAdapter {
     line: number;
   }>;
 
-  // Optional: Extract exported symbol names from an AST
+  /** Extract exported symbol names from an AST. */
   extractExportedSymbols?(ast: AST): Array<{ name: string; line: number }>;
-
-  // Optional: String construction capabilities for SQL injection detection.
-  // These replace text-pattern heuristics with AST-level knowledge of how
-  // each host language constructs dynamic strings.
-  //
-  // When a language adapter does not implement these, the caller falls back
-  // to the legacy text-pattern approach (Legacy check disabled in v3.4.7 —
-  // if no adapter capability is present, no injection risk is flagged).
 
   /**
    * Returns true if the node is a dynamically-constructed string —
@@ -266,7 +290,38 @@ export interface LanguageAdapter {
    * @param sourceCode - The source text
    */
   resolveLocalConstant?(identifierNode: ASTNode, ast: AST, sourceCode: string): ResolvedConstant | null;
+
+  /**
+   * Returns true if an interpolated expression is provably safe to embed in a
+   * SQL string — a compile-time constant, quote-escaped sanitizer, ternary of
+   * safe branches, static-array `.map().join()`, local function call with a
+   * safe body and safe call sites, or a guard-validated parameter.  Used to
+   * clear cross-function false positives without weakening raw-input detection.
+   *
+   * @param node - The expression node inside a ${…} substitution (or operand).
+   * @param ast - The full AST for scope traversal.
+   * @param sourceCode - The source text.
+   */
+  isSafeInterpolation?(node: ASTNode, ast: AST, sourceCode: string): boolean;
 }
+
+/**
+ * Language adapter interface - must be implemented for each language.
+ *
+ * Composed from role interfaces (Spec-33 interface-segregation): a single
+ * 35-member interface once forced every adapter to implement all members at
+ * once, bloating each adapter class (the TypeScript adapter grew to 78
+ * methods, Go to 53). Splitting into roles lets adapters implement the
+ * capabilities they support and compose them back into a full adapter.
+ */
+export interface LanguageAdapter
+  extends LanguageParser,
+    AstNavigation,
+    NodeIntrospection,
+    LanguageExtraction,
+    NodePredicates,
+    AdvancedAnalysis,
+    OptionalCapabilities {}
 
 /**
  * Interface information extracted from AST

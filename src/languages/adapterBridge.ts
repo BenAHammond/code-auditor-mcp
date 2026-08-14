@@ -35,6 +35,9 @@ function assertInitialized(): void {
 /**
  * Parse a file synchronously into an AST.
  * Returns null on failure (no exceptions for parse errors).
+ * @param content
+ * @param filePath
+ * @returns
  */
 export function parseFile(filePath: string, content: string): AST | null {
   assertInitialized();
@@ -92,6 +95,9 @@ function collectErrors(node: TreeSitterNode, errors: AST['errors']): void {
 
 /**
  * Walk an AST depth-first, calling visitor for each node.
+ * @param depth
+ * @param root
+ * @param visitor
  */
 export function walkAST(
   root: ASTNode,
@@ -108,6 +114,8 @@ export function walkAST(
 
 /**
  * Walk a raw TreeSitterNode depth-first.
+ * @param node
+ * @param visitor
  */
 export function walkRaw(
   node: TreeSitterNode,
@@ -125,6 +133,9 @@ export function walkRaw(
 
 /**
  * Find all ASTNode matching a predicate.
+ * @param ast
+ * @param predicate
+ * @returns
  */
 export function findNodes(
   ast: ASTNode,
@@ -139,6 +150,9 @@ export function findNodes(
 
 /**
  * Find all TreeSitterNode matching a predicate.
+ * @param node
+ * @param predicate
+ * @returns
  */
 export function findRawNodes(
   node: TreeSitterNode,
@@ -171,6 +185,8 @@ export function getNodeText(node: ASTNode, sourceCode: string): string {
  * toSourceLocation() already converts tree-sitter 0-based positions to 1-based,
  * so no additional +1 compensation is needed here. Adding one would produce
  * 2-based values (a double compensation).
+ * @param node
+ * @returns
  */
 export function getLineAndColumn(node: ASTNode): { line: number; column: number } {
   return {
@@ -182,6 +198,9 @@ export function getLineAndColumn(node: ASTNode): { line: number; column: number 
 /**
  * Get line and column from a byte position in source.
  * This is a fallback for when you don't have an ASTNode.
+ * @param position
+ * @param sourceCode
+ * @returns
  */
 export function positionToLineColumn(
   sourceCode: string,
@@ -254,6 +273,9 @@ const MODIFIER_KEYWORDS = new Set([
 /**
  * Check if an ASTNode has a specific keyword modifier.
  * In tree-sitter, modifiers appear as anonymous child nodes.
+ * @param modifier
+ * @param node
+ * @returns
  */
 export function hasModifier(node: ASTNode, modifier: string): boolean {
   const raw = node.raw as TreeSitterNode;
@@ -267,6 +289,8 @@ export function hasModifier(node: ASTNode, modifier: string): boolean {
 
 /**
  * Check if a node is exported.
+ * @param node
+ * @returns
  */
 export function isExported(node: ASTNode): boolean {
   // Check for `export` keyword among the node's own modifiers
@@ -301,6 +325,8 @@ export function isAsync(node: ASTNode): boolean {
  * Get the name of an ASTNode if it has one.
  * For tree-sitter, looks for a `name` property on the raw node,
  * or finds the first named child that looks like an identifier.
+ * @param node
+ * @returns
  */
 export function getNodeName(node: ASTNode): string | null {
   const raw = node.raw as TreeSitterNode;
@@ -328,6 +354,8 @@ export function getNodeName(node: ASTNode): string | null {
 
 /**
  * Count parameters of a function-like node.
+ * @param node
+ * @returns
  */
 export function getParameterCount(node: ASTNode): number {
   const raw = node.raw as TreeSitterNode;
@@ -350,6 +378,8 @@ export function getParameterCount(node: ASTNode): number {
 
 /**
  * Calculate cyclomatic complexity by counting decision points.
+ * @param node
+ * @returns
  */
 export function calculateComplexity(node: ASTNode): number {
   let complexity = 1;
@@ -387,6 +417,9 @@ export function calculateComplexity(node: ASTNode): number {
 
 /**
  * Get the body text of a function-like node.
+ * @param node
+ * @param sourceCode
+ * @returns
  */
 export function getFunctionBody(node: ASTNode, sourceCode: string): string | undefined {
   const raw = node.raw as TreeSitterNode;
@@ -409,6 +442,9 @@ export function getFunctionBody(node: ASTNode, sourceCode: string): string | und
 /**
  * Extract import info from source content.
  * Uses tree-sitter directly to find import statements.
+ * @param content
+ * @param filePath
+ * @returns
  */
 export function extractImports(
   filePath: string,

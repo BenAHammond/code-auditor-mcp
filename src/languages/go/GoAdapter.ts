@@ -3,6 +3,12 @@
  *
  * Provides real AST-based analysis for Go source files. Replaces the previous
  * regex-based stub that returned empty arrays for most queries.
+ *
+ * The class is split across a small inheritance chain (Spec-33
+ * interface-segregation): each link contributes a cohesive slice of the
+ * adapter so no single class exceeds the SOLID class-size threshold. The
+ * chain is ordered leaf-first (traversal/name/doc/build helpers) so every
+ * method's callee lives in an ancestor class.
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
@@ -34,10 +40,419 @@ import type {
 const sourceCodeMap = new WeakMap<AST, string>();
 
 // ---------------------------------------------------------------------------
-// Adapter
+// Traversal + name/documentation + Go-specific helpers slice (leaf helpers,
+// called across later chunks, so they form the base of the chain)
 // ---------------------------------------------------------------------------
 
-export class TreeSitterGoAdapter implements LanguageAdapter {
+class GoTraversalHelpers {
+  // -- Tree traversal helpers ------------------------------------------------
+
+  protected walk(node: ASTNode, visitor: (node: ASTNode) => void): void {
+    visitor(node);
+    if (node.children) {
+      for (const child of node.children) {
+        this.walk(child, visitor);
+      }
+    }
+  }
+
+  protected walkRaw(node: TreeSitterNode, visitor: (node: TreeSitterNode) => void): void {
+    visitor(node);
+    for (const child of node.children) {
+      this.walkRaw(child, visitor);
+    }
+  }
+
+  protected collectErrors(node: TreeSitterNode, errors: ParseError[]): void {
+    if (node.type === 'ERROR' || node.isError) {
+      errors.push({
+        message: `Parse error near "${node.text.slice(0, 50)}"`,
+        location: toSourceLocation(node),
+        severity: 'error',
+      });
+    }
+    for (const child of node.children) {
+      this.collectErrors(child, errors);
+    }
+  }
+
+  protected extractName(node: TreeSitterNode): string | null {
+    switch (node.type) {
+      case 'function_declaration':
+      case 'type_spec':
+      case 'field_declaration':
+      case 'method_spec': {
+        const nameNode = node.childForFieldName?.('name');
+        if (nameNode) return nameNode.text;
+        return null;
+      }
+
+      case 'import_spec': {
+        const nameNode = node.childForFieldName?.('name');
+        if (nameNode) return nameNode.text;
+        for (const child of node.namedChildren) {
+          if (
+            child.type === 'interpreted_string_literal' ||
+            child.type === 'raw_string_literal'
+          ) {
+            return child.text.slice(1, -1);
+          }
+        }
+        return null;
+      }
+
+      case 'package_identifier':
+      case 'identifier':
+        return node.text;
+
+      default:
+        return null;
+    }
+  }
+
+  protected cleanCommentText(comment: string): string {
+    if (comment.startsWith('/*')) {
+      let inner = comment.slice(2, -2);
+      inner = inner
+        .split('\n')
+        .map((line) => line.replace(/^\s*\*\s?/, ''))
+        .join('\n');
+      return inner.trim();
+    }
+    if (comment.startsWith('//')) {
+      return comment.replace(/^\/\/\s*/, '').trim();
+    }
+    return comment.trim();
+  }
+
+  protected getOperator(node: TreeSitterNode): string | null {
+    for (const child of node.children) {
+      if (
+        !child.isNamed &&
+        ['&&', '||', '+', '-', '*', '/', '%', '==', '!='].includes(child.type)
+      ) {
+        return child.type;
+      }
+    }
+    return null;
+  }
+
+  // -- Go-specific helpers ---------------------------------------------------
+
+  protected isExportedGo(name: string): boolean {
+    return name.length > 0 && name[0] === name[0].toUpperCase();
+  }
+
+  protected getReceiverType(node: TreeSitterNode): string | undefined {
+    const receiver = node.childForFieldName?.('receiver');
+    if (!receiver) return undefined;
+
+    for (const child of receiver.namedChildren) {
+      if (child.type === 'parameter_declaration') {
+        const typeNode = child.childForFieldName?.('type');
+        if (typeNode) return typeNode.text;
+      }
+    }
+
+    return undefined;
+  }
+
+  protected getReturnType(node: TreeSitterNode): string | null {
+    if (node.type !== 'function_declaration') return null;
+    const result = node.childForFieldName?.('result');
+    if (result) return result.text.trim();
+    return null;
+  }
+
+  protected extractParameters(
+    node: TreeSitterNode,
+    _sourceCode: string
+  ): ParameterInfo[] {
+    const params: ParameterInfo[] = [];
+    const paramList = node.childForFieldName?.('parameters');
+
+    if (!paramList) return params;
+
+    for (const child of paramList.namedChildren) {
+      if (child.type === 'parameter_declaration') {
+        const nameNode = child.childForFieldName?.('name');
+        const typeNode = child.childForFieldName?.('type');
+        const name = nameNode?.text ?? typeNode?.text ?? child.text;
+
+        params.push({
+          name: name || '<unknown>',
+          type: typeNode?.text,
+          optional: false,
+        });
+      }
+    }
+
+    return params;
+  }
+
+  protected findNamedChildren(node: TreeSitterNode, type: string): TreeSitterNode[] {
+    return node.namedChildren.filter((c: TreeSitterNode) => c.type === type);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pattern matching + documentation/complexity + build helpers slice
+// ---------------------------------------------------------------------------
+
+class GoAnalysis extends GoTraversalHelpers {
+  protected matchesPattern(node: ASTNode, pattern: NodePattern): boolean {
+    const syntaxNode = node.raw as TreeSitterNode;
+
+    if (pattern.type !== undefined) {
+      const types = Array.isArray(pattern.type) ? pattern.type : [pattern.type];
+      if (!types.includes(syntaxNode.type)) return false;
+    }
+
+    if (pattern.name !== undefined) {
+      const nodeName = this.extractName(syntaxNode);
+      if (nodeName === null) return false;
+      if (typeof pattern.name === 'string') {
+        if (nodeName !== pattern.name) return false;
+      } else if (pattern.name instanceof RegExp) {
+        if (!pattern.name.test(nodeName)) return false;
+      }
+    }
+
+    if (pattern.hasChild !== undefined) {
+      const childNodes = node.children ?? [];
+      if (!childNodes.some((c) => this.matchesPattern(c, pattern.hasChild!))) {
+        return false;
+      }
+    }
+
+    if (pattern.hasParent !== undefined) {
+      if (!node.parent) return false;
+      if (!this.matchesPattern(node.parent, pattern.hasParent)) return false;
+    }
+
+    if (pattern.custom !== undefined) {
+      if (!pattern.custom(node)) return false;
+    }
+
+    return true;
+  }
+
+  protected extractDocumentation(node: TreeSitterNode): string | null {
+    const parent = node.parent;
+    if (!parent) return null;
+
+    const siblings = parent.children;
+    let myIndex = -1;
+    for (let i = 0; i < siblings.length; i++) {
+      if (siblings[i].equals(node)) {
+        myIndex = i;
+        break;
+      }
+    }
+
+    if (myIndex === -1) return null;
+
+    const comments: string[] = [];
+    for (let i = myIndex - 1; i >= 0; i--) {
+      const sibling = siblings[i];
+      if (sibling.type === 'comment') {
+        comments.unshift(sibling.text);
+      } else if (sibling.isNamed) {
+        break;
+      }
+    }
+
+    if (comments.length === 0) return null;
+
+    return this.cleanCommentText(comments.join('\n').trim());
+  }
+
+  protected calculateComplexity(node: TreeSitterNode): number {
+    let complexity = 1;
+
+    this.walkRaw(node, (child) => {
+      if (child === node) return;
+
+      switch (child.type) {
+        case 'if_statement':
+        case 'for_statement':
+        case 'switch_statement':
+        case 'expression_switch_statement':
+        case 'type_switch_statement':
+        case 'select_statement':
+        case 'type_case_clause':
+        case 'expression_case_clause':
+        case 'default_case':
+        case 'communication_case':
+          complexity++;
+          break;
+        case 'binary_expression': {
+          const op = this.getOperator(child);
+          if (op === '&&' || op === '||') complexity++;
+          break;
+        }
+      }
+    });
+
+    return complexity;
+  }
+
+  // -- Build helpers ---------------------------------------------------------
+
+  protected buildFunctionInfo(
+    node: TreeSitterNode,
+    sourceCode: string
+  ): FunctionInfo | null {
+    const name = this.extractName(node);
+    const isMethod = node.childForFieldName?.('receiver') != null;
+    const isExported = name ? this.isExportedGo(name) : false;
+    const className = isMethod ? this.getReceiverType(node) : undefined;
+    const returnType = this.getReturnType(node);
+    const jsDoc = this.extractDocumentation(node);
+    const parameters = this.extractParameters(node, sourceCode);
+
+    return {
+      name: name ?? '<anonymous>',
+      location: toSourceLocation(node),
+      parameters,
+      returnType: returnType ?? undefined,
+      isAsync: false,
+      isExported,
+      isMethod,
+      className,
+      jsDoc: jsDoc ?? undefined,
+    };
+  }
+
+  protected buildStructAsClass(
+    _typeSpec: TreeSitterNode,
+    nameNode: TreeSitterNode,
+    typeNode: TreeSitterNode,
+    allFunctions: FunctionInfo[],
+    _sourceCode: string
+  ): ClassInfo | null {
+    const name = nameNode.text;
+    const isExported = this.isExportedGo(name);
+    // A single `type Foo struct { ... }` declaration carries its doc comment
+    // as a sibling of the enclosing `type_declaration`; a grouped
+    // `type ( ... )` declaration carries it as a sibling of the `type_spec`.
+    // Try the `type_spec` level first, then fall back to the `type_declaration`.
+    let jsDoc = this.extractDocumentation(_typeSpec);
+    if (!jsDoc && _typeSpec.parent?.type === 'type_declaration') {
+      jsDoc = this.extractDocumentation(_typeSpec.parent);
+    }
+
+    // Collect fields as properties
+    const properties: PropertyInfo[] = [];
+    for (const field of this.findNamedChildren(typeNode, 'field_declaration')) {
+      const propName = this.extractName(field);
+      const typeNode_ = field.childForFieldName?.('type');
+      if (propName) {
+        properties.push({
+          name: propName,
+          type: typeNode_?.text,
+          visibility: this.isExportedGo(propName) ? 'public' : 'private',
+          isStatic: false,
+          isReadonly: false,
+        });
+      }
+    }
+
+    // Match methods with this receiver type
+    const methods: FunctionInfo[] = allFunctions.filter(
+      (fn) => fn.className === name || fn.className === `*${name}`
+    );
+
+    return {
+      name,
+      location: toSourceLocation(nameNode),
+      methods,
+      properties,
+      isAbstract: false,
+      isExported,
+      jsDoc: jsDoc ?? undefined,
+    };
+  }
+
+  protected buildImportInfo(spec: TreeSitterNode): ImportInfo | null {
+    let source = '';
+    let alias: string | undefined;
+
+    for (const child of spec.namedChildren) {
+      if (
+        child.type === 'interpreted_string_literal' ||
+        child.type === 'raw_string_literal'
+      ) {
+        source = child.text.slice(1, -1);
+      } else if (
+        child.type === 'package_identifier' ||
+        child.type === 'identifier'
+      ) {
+        alias = child.text;
+      }
+    }
+
+    if (!source) return null;
+
+    return {
+      source,
+      specifiers: [
+        {
+          name: source,
+          alias,
+          isDefault: false,
+          isNamespace: false,
+        },
+      ],
+      location: toSourceLocation(spec),
+    };
+  }
+
+  protected buildInterfaceInfo(
+    nameNode: TreeSitterNode,
+    typeNode: TreeSitterNode
+  ): InterfaceInfo | null {
+    const name = nameNode.text;
+    const isExported = this.isExportedGo(name);
+    const members: InterfaceInfo['members'] = [];
+
+    for (const member of typeNode.namedChildren) {
+      if (member.type === 'method_spec') {
+        const memberNameNode = member.childForFieldName?.('name');
+        if (memberNameNode) {
+          members.push({
+            name: memberNameNode.text,
+            type: 'method' as const,
+            location: toSourceLocation(member),
+          });
+        }
+      } else if (member.type === 'type_elem') {
+        const embeddedName =
+          member.childForFieldName?.('name')?.text ?? member.text;
+        if (embeddedName) {
+          members.push({
+            name: embeddedName,
+            type: 'property' as const,
+            location: toSourceLocation(member),
+          });
+        }
+      }
+    }
+
+    return {
+      name,
+      location: toSourceLocation(nameNode),
+      members,
+      isExported,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parsing + AST navigation slice
+// ---------------------------------------------------------------------------
+
+class GoParserCore extends GoAnalysis {
   readonly name = 'go';
   readonly fileExtensions = ['.go'];
 
@@ -112,9 +527,13 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
   getNodeLocation(node: ASTNode): SourceLocation {
     return node.location;
   }
+}
 
-  // -- Language-Specific Extraction -----------------------------------------
+// ---------------------------------------------------------------------------
+// Language-specific extraction slice
+// ---------------------------------------------------------------------------
 
+class GoExtraction extends GoParserCore {
   extractFunctions(ast: AST): FunctionInfo[] {
     const sourceCode = sourceCodeMap.get(ast) ?? '';
     const functions: FunctionInfo[] = [];
@@ -223,9 +642,13 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
 
     return exports;
   }
+}
 
-  // -- Pattern Matching Helpers ---------------------------------------------
+// ---------------------------------------------------------------------------
+// Predicates + advanced-features slice
+// ---------------------------------------------------------------------------
 
+class GoPredicates extends GoExtraction {
   isClass(node: ASTNode): boolean {
     const n = node.raw as TreeSitterNode;
     if (n.type === 'type_spec') {
@@ -316,9 +739,13 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
   getComplexity(node: ASTNode): number {
     return this.calculateComplexity(node.raw as TreeSitterNode);
   }
+}
 
-  // -- Optional: Interfaces -------------------------------------------------
+// ---------------------------------------------------------------------------
+// Optional capabilities slice
+// ---------------------------------------------------------------------------
 
+class GoOptionalCapabilities extends GoPredicates {
   extractInterfaces(ast: AST): InterfaceInfo[] {
     const interfaces: InterfaceInfo[] = [];
 
@@ -399,400 +826,16 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
       line: e.location.start.line,
     }));
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // Internal helpers
-  // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Adapter (composes the slices above)
+// ---------------------------------------------------------------------------
 
-  private walk(node: ASTNode, visitor: (node: ASTNode) => void): void {
-    visitor(node);
-    if (node.children) {
-      for (const child of node.children) {
-        this.walk(child, visitor);
-      }
-    }
-  }
-
-  private walkRaw(node: TreeSitterNode, visitor: (node: TreeSitterNode) => void): void {
-    visitor(node);
-    for (const child of node.children) {
-      this.walkRaw(child, visitor);
-    }
-  }
-
-  private collectErrors(node: TreeSitterNode, errors: ParseError[]): void {
-    if (node.type === 'ERROR' || node.isError) {
-      errors.push({
-        message: `Parse error near "${node.text.slice(0, 50)}"`,
-        location: toSourceLocation(node),
-        severity: 'error',
-      });
-    }
-    for (const child of node.children) {
-      this.collectErrors(child, errors);
-    }
-  }
-
-  private matchesPattern(node: ASTNode, pattern: NodePattern): boolean {
-    const syntaxNode = node.raw as TreeSitterNode;
-
-    if (pattern.type !== undefined) {
-      const types = Array.isArray(pattern.type) ? pattern.type : [pattern.type];
-      if (!types.includes(syntaxNode.type)) return false;
-    }
-
-    if (pattern.name !== undefined) {
-      const nodeName = this.extractName(syntaxNode);
-      if (nodeName === null) return false;
-      if (typeof pattern.name === 'string') {
-        if (nodeName !== pattern.name) return false;
-      } else if (pattern.name instanceof RegExp) {
-        if (!pattern.name.test(nodeName)) return false;
-      }
-    }
-
-    if (pattern.hasChild !== undefined) {
-      const childNodes = node.children ?? [];
-      if (!childNodes.some((c) => this.matchesPattern(c, pattern.hasChild!))) {
-        return false;
-      }
-    }
-
-    if (pattern.hasParent !== undefined) {
-      if (!node.parent) return false;
-      if (!this.matchesPattern(node.parent, pattern.hasParent)) return false;
-    }
-
-    if (pattern.custom !== undefined) {
-      if (!pattern.custom(node)) return false;
-    }
-
-    return true;
-  }
-
-  private extractName(node: TreeSitterNode): string | null {
-    switch (node.type) {
-      case 'function_declaration':
-      case 'type_spec':
-      case 'field_declaration':
-      case 'method_spec': {
-        const nameNode = node.childForFieldName?.('name');
-        if (nameNode) return nameNode.text;
-        return null;
-      }
-
-      case 'import_spec': {
-        const nameNode = node.childForFieldName?.('name');
-        if (nameNode) return nameNode.text;
-        for (const child of node.namedChildren) {
-          if (
-            child.type === 'interpreted_string_literal' ||
-            child.type === 'raw_string_literal'
-          ) {
-            return child.text.slice(1, -1);
-          }
-        }
-        return null;
-      }
-
-      case 'package_identifier':
-      case 'identifier':
-        return node.text;
-
-      default:
-        return null;
-    }
-  }
-
-  private extractDocumentation(node: TreeSitterNode): string | null {
-    const parent = node.parent;
-    if (!parent) return null;
-
-    const siblings = parent.namedChildren;
-    let myIndex = -1;
-    for (let i = 0; i < siblings.length; i++) {
-      if (siblings[i] === node) {
-        myIndex = i;
-        break;
-      }
-    }
-
-    if (myIndex === -1) return null;
-
-    const comments: string[] = [];
-    for (let i = myIndex - 1; i >= 0; i--) {
-      const sibling = siblings[i];
-      if (sibling.type === 'comment') {
-        comments.unshift(sibling.text);
-      } else {
-        break;
-      }
-    }
-
-    if (comments.length === 0) return null;
-
-    return this.cleanCommentText(comments.join('\n').trim());
-  }
-
-  private cleanCommentText(comment: string): string {
-    if (comment.startsWith('/*')) {
-      let inner = comment.slice(2, -2);
-      inner = inner
-        .split('\n')
-        .map((line) => line.replace(/^\s*\*\s?/, ''))
-        .join('\n');
-      return inner.trim();
-    }
-    if (comment.startsWith('//')) {
-      return comment.replace(/^\/\/\s*/, '').trim();
-    }
-    return comment.trim();
-  }
-
-  private calculateComplexity(node: TreeSitterNode): number {
-    let complexity = 1;
-
-    this.walkRaw(node, (child) => {
-      if (child === node) return;
-
-      switch (child.type) {
-        case 'if_statement':
-        case 'for_statement':
-        case 'switch_statement':
-        case 'expression_switch_statement':
-        case 'type_switch_statement':
-        case 'select_statement':
-        case 'type_case_clause':
-        case 'expression_case_clause':
-        case 'default_case':
-        case 'communication_case':
-          complexity++;
-          break;
-        case 'binary_expression': {
-          const op = this.getOperator(child);
-          if (op === '&&' || op === '||') complexity++;
-          break;
-        }
-      }
-    });
-
-    return complexity;
-  }
-
-  private getOperator(node: TreeSitterNode): string | null {
-    for (const child of node.children) {
-      if (
-        !child.isNamed &&
-        ['&&', '||', '+', '-', '*', '/', '%', '==', '!='].includes(child.type)
-      ) {
-        return child.type;
-      }
-    }
-    return null;
-  }
-
-  // -- Build helpers ---------------------------------------------------------
-
-  private buildFunctionInfo(
-    node: TreeSitterNode,
-    sourceCode: string
-  ): FunctionInfo | null {
-    const name = this.extractName(node);
-    const isMethod = node.childForFieldName?.('receiver') != null;
-    const isExported = name ? this.isExportedGo(name) : false;
-    const className = isMethod ? this.getReceiverType(node) : undefined;
-    const returnType = this.getReturnType(node);
-    const jsDoc = this.extractDocumentation(node);
-    const parameters = this.extractParameters(node, sourceCode);
-
-    return {
-      name: name ?? '<anonymous>',
-      location: toSourceLocation(node),
-      parameters,
-      returnType: returnType ?? undefined,
-      isAsync: false,
-      isExported,
-      isMethod,
-      className,
-      jsDoc: jsDoc ?? undefined,
-    };
-  }
-
-  private buildStructAsClass(
-    _typeSpec: TreeSitterNode,
-    nameNode: TreeSitterNode,
-    typeNode: TreeSitterNode,
-    allFunctions: FunctionInfo[],
-    _sourceCode: string
-  ): ClassInfo | null {
-    const name = nameNode.text;
-    const isExported = this.isExportedGo(name);
-    const jsDoc = this.extractDocumentation(_typeSpec);
-
-    // Collect fields as properties
-    const properties: PropertyInfo[] = [];
-    for (const field of this.findNamedChildren(typeNode, 'field_declaration')) {
-      const propName = this.extractName(field);
-      const typeNode_ = field.childForFieldName?.('type');
-      if (propName) {
-        properties.push({
-          name: propName,
-          type: typeNode_?.text,
-          visibility: this.isExportedGo(propName) ? 'public' : 'private',
-          isStatic: false,
-          isReadonly: false,
-        });
-      }
-    }
-
-    // Match methods with this receiver type
-    const methods: FunctionInfo[] = allFunctions.filter(
-      (fn) => fn.className === name || fn.className === `*${name}`
-    );
-
-    return {
-      name,
-      location: toSourceLocation(nameNode),
-      methods,
-      properties,
-      isAbstract: false,
-      isExported,
-      jsDoc: jsDoc ?? undefined,
-    };
-  }
-
-  private buildImportInfo(spec: TreeSitterNode): ImportInfo | null {
-    let source = '';
-    let alias: string | undefined;
-
-    for (const child of spec.namedChildren) {
-      if (
-        child.type === 'interpreted_string_literal' ||
-        child.type === 'raw_string_literal'
-      ) {
-        source = child.text.slice(1, -1);
-      } else if (
-        child.type === 'package_identifier' ||
-        child.type === 'identifier'
-      ) {
-        alias = child.text;
-      }
-    }
-
-    if (!source) return null;
-
-    return {
-      source,
-      specifiers: [
-        {
-          name: source,
-          alias,
-          isDefault: false,
-          isNamespace: false,
-        },
-      ],
-      location: toSourceLocation(spec),
-    };
-  }
-
-  private buildInterfaceInfo(
-    nameNode: TreeSitterNode,
-    typeNode: TreeSitterNode
-  ): InterfaceInfo | null {
-    const name = nameNode.text;
-    const isExported = this.isExportedGo(name);
-    const members: InterfaceInfo['members'] = [];
-
-    for (const member of typeNode.namedChildren) {
-      if (member.type === 'method_spec') {
-        const memberNameNode = member.childForFieldName?.('name');
-        if (memberNameNode) {
-          members.push({
-            name: memberNameNode.text,
-            type: 'method' as const,
-            location: toSourceLocation(member),
-          });
-        }
-      } else if (member.type === 'type_elem') {
-        const embeddedName =
-          member.childForFieldName?.('name')?.text ?? member.text;
-        if (embeddedName) {
-          members.push({
-            name: embeddedName,
-            type: 'property' as const,
-            location: toSourceLocation(member),
-          });
-        }
-      }
-    }
-
-    return {
-      name,
-      location: toSourceLocation(nameNode),
-      members,
-      isExported,
-    };
-  }
-
-  private extractParameters(
-    node: TreeSitterNode,
-    _sourceCode: string
-  ): ParameterInfo[] {
-    const params: ParameterInfo[] = [];
-    const paramList = node.childForFieldName?.('parameters');
-
-    if (!paramList) return params;
-
-    for (const child of paramList.namedChildren) {
-      if (child.type === 'parameter_declaration') {
-        const nameNode = child.childForFieldName?.('name');
-        const typeNode = child.childForFieldName?.('type');
-        const name = nameNode?.text ?? typeNode?.text ?? child.text;
-
-        params.push({
-          name: name || '<unknown>',
-          type: typeNode?.text,
-          optional: false,
-        });
-      }
-    }
-
-    return params;
-  }
-
-  // -- Go-specific helpers ---------------------------------------------------
-
-  private isExportedGo(name: string): boolean {
-    return name.length > 0 && name[0] === name[0].toUpperCase();
-  }
-
-  private getReceiverType(node: TreeSitterNode): string | undefined {
-    const receiver = node.childForFieldName?.('receiver');
-    if (!receiver) return undefined;
-
-    for (const child of receiver.namedChildren) {
-      if (child.type === 'parameter_declaration') {
-        const typeNode = child.childForFieldName?.('type');
-        if (typeNode) return typeNode.text;
-      }
-    }
-
-    return undefined;
-  }
-
-  private getReturnType(node: TreeSitterNode): string | null {
-    if (node.type !== 'function_declaration') return null;
-    const result = node.childForFieldName?.('result');
-    if (result) return result.text.trim();
-    return null;
-  }
-
-  // -- Tree traversal helpers ------------------------------------------------
-
-  private findNamedChildren(node: TreeSitterNode, type: string): TreeSitterNode[] {
-    return node.namedChildren.filter((c: TreeSitterNode) => c.type === type);
-  }
-
+/**
+ * Tree sitter go adapter.
+ */
+export class TreeSitterGoAdapter extends GoOptionalCapabilities implements LanguageAdapter {
   // -- String Construction Capabilities (v3.4.7) ----------------------------
 
   /**
@@ -801,6 +844,8 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
    * - binary_expression with + operator (string concatenation)
    * Plain string literals (interpreted_string_literal, raw_string_literal)
    * are never dynamic.
+   * @param node
+   * @returns
    */
   isDynamicStringConstruction(node: ASTNode): boolean {
     const raw = node.raw as TreeSitterNode;
@@ -867,6 +912,9 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
    * - For fmt.Sprintf: args after the format string are dynamic
    * - For binary +: non-literal operands are dynamic
    * - For strings.Join: the parts slice is dynamic
+   * @param node
+   * @param sourceCode
+   * @returns
    */
   getDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
     const raw = node.raw as TreeSitterNode;
@@ -947,6 +995,10 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
    * Resolves a Go local constant declaration for an identifier node.
    * Searches within the enclosing function scope for var/const/:=
    * declarations. Returns null for unresolvable identifiers.
+   * @param ast
+   * @param identifierNode
+   * @param sourceCode
+   * @returns
    */
   resolveLocalConstant(identifierNode: ASTNode, ast: AST, sourceCode: string): ResolvedConstant | null {
     const idName = sourceCode.slice(identifierNode.range[0], identifierNode.range[1]).trim();
@@ -1000,7 +1052,7 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
   }
 
   /** Walk parent chain to find enclosing function scope in Go. */
-  private findEnclosingScopeGo(node: ASTNode): ASTNode | null {
+  protected findEnclosingScopeGo(node: ASTNode): ASTNode | null {
     let current: ASTNode | null = node;
     while (current) {
       const t = (current.raw as TreeSitterNode).type;
@@ -1014,7 +1066,7 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
   }
 
   /** Find declaration of targetName within scopeRoot. */
-  private findDeclInScopeGo(scopeRoot: ASTNode, targetName: string): ASTNode | null {
+  protected findDeclInScopeGo(scopeRoot: ASTNode, targetName: string): ASTNode | null {
     let result: ASTNode | null = null;
     this.walk(scopeRoot, (astNode) => {
       if (result) return;
@@ -1038,7 +1090,7 @@ export class TreeSitterGoAdapter implements LanguageAdapter {
   }
 
   /** Check for reassignment (bare = without :=) of targetName after declLine. */
-  private hasReassignmentGo(scopeRoot: ASTNode, targetName: string, declLine: number): boolean {
+  protected hasReassignmentGo(scopeRoot: ASTNode, targetName: string, declLine: number): boolean {
     let found = false;
     this.walk(scopeRoot, (astNode) => {
       if (found) return;

@@ -20,6 +20,7 @@ import {
   AuditAbortedError,
   AuditHandoffError,
   type RuleCoverage,
+  type InputPresence,
 } from './types.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { loadConfig } from './config/configLoader.js';
@@ -370,6 +371,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let pipelineStageTiming: Record<string, number> | undefined;
     let pipelineSkippedFiles: Array<{ filePath: string; bytes: number; reason: string }> | undefined;
     let pipelineUnparsedFiles: Array<{ filePath: string; reason: string }> | undefined;
+    let pipelineInputPresence: InputPresence | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -612,14 +614,21 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         }
 
         // Spec 27 — build per-rule coverage from final analyzer results
-        // (computed AFTER react finalization so cross-component checks are included)
-        pipelineCoverage = buildCoverageReport(analyzerResults, pipelineConfig);
+        // (computed AFTER react finalization so cross-component checks are included).
+        // Spec 33 Item 14 — thread the pipeline's input-presence snapshot so
+        // zero-violation rules promote from `unassessed` to `clean`/`notApplicable`.
+        pipelineCoverage = buildCoverageReport(
+          analyzerResults,
+          pipelineConfig,
+          pipelineResult.metadata?.inputPresence,
+        );
 
         // Spec 29: extract table catalog from pipeline metadata for audit report
         pipelineTableCatalog = pipelineResult.metadata?.tableCatalog as Array<{ table: string; sources: any[] }> | undefined;
         pipelineStageTiming = pipelineResult.metadata?.stageTiming;
         pipelineSkippedFiles = pipelineResult.metadata?.skippedFiles;
         pipelineUnparsedFiles = pipelineResult.metadata?.unparsedFiles;
+        pipelineInputPresence = pipelineResult.metadata?.inputPresence;
       } catch (error) {
         if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
           throw error;
@@ -955,6 +964,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(pipelineStageTiming && { stageTiming: pipelineStageTiming }),
         ...(pipelineSkippedFiles && pipelineSkippedFiles.length > 0 && { skippedFiles: pipelineSkippedFiles }),
         ...(pipelineUnparsedFiles && pipelineUnparsedFiles.length > 0 && { unparsedFiles: pipelineUnparsedFiles }),
+        ...(pipelineInputPresence && { inputPresence: pipelineInputPresence }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
           fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)

@@ -9,8 +9,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../../languages/index.js';
 import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
-import { UniversalSchemaAnalyzer } from './UniversalSchemaAnalyzer.js';
-import type { TableSourceEntry, TableProvenance } from './UniversalSchemaAnalyzer.js';
+import { extractTablesFromRegistry } from './schema/discovery.js';
+import { parseSqlTables } from './schema/codeAnalysis.js';
+import type { TableSourceEntry, TableProvenance } from './schema/types.js';
 import type { LanguageAdapter, AST } from '../../languages/types.js';
 
 // ── Module-level setup ──────────────────────────────────────────────────────
@@ -37,10 +38,19 @@ function extract(
   ast: AST,
   sourceCode: string,
   entries: TableSourceEntry[],
-  filePath = 'test.ts'
+  filePath = 'test.ts',
+  readModule?: (fromFile: string, specifier: string) => string | null
 ): Array<{ table: string; source: TableProvenance }> {
-  const analyzer = new UniversalSchemaAnalyzer();
-  return analyzer.extractTablesFromRegistry(ast, getAdapter(), sourceCode, entries, filePath);
+  return extractTablesFromRegistry(ast, getAdapter(), sourceCode, entries, filePath, readModule);
+}
+
+/**
+ * Builds a readModule callback that answers from a `specifier → module source`
+ * map. Mirrors the on-disk resolver signature so tests can inject barrel
+ * contents without touching the filesystem.
+ */
+function makeReadModule(files: Record<string, string>): (fromFile: string, specifier: string) => string | null {
+  return (_fromFile: string, specifier: string) => files[specifier] ?? null;
 }
 
 // ── Fixture 1: Drizzle pgTable ──────────────────────────────────────────────
@@ -308,17 +318,104 @@ export const users = pgTable('users', { id: serial('id') });`;
     expect(result[0].table).toBe('users');
   });
 
-  it('misses barrel re-export when module filter requires the original package', async () => {
+  it('resolves one-hop barrel re-export when module filter requires the original package', async () => {
     const entries: TableSourceEntry[] = [
       { kind: 'callee', name: 'pgTable', arg: 0, module: 'drizzle-orm/pg-core' },
     ];
     const source = `import { pgTable } from './db';
 export const users = pgTable('users', { id: serial('id') });`;
     const ast = await parseSource(source);
-    const result = extract(ast, source, entries);
+    const readModule = makeReadModule({
+      './db': `export * from 'drizzle-orm/pg-core';\n`,
+    });
+    const result = extract(ast, source, entries, 'test.ts', readModule);
 
-    // module filter checks the import source ('./db'), not the original package.
-    // The barrel re-export breaks the chain — this is a known limitation.
+    // The barrel (`./db`) star re-exports from drizzle-orm/pg-core, so one hop
+    // of resolution recovers the original `pgTable` name and the module filter
+    // matches.
+    expect(result).toHaveLength(1);
+    expect(result[0].table).toBe('users');
+  });
+
+  it('resolves a named re-export through a local barrel', async () => {
+    const entries: TableSourceEntry[] = [
+      { kind: 'callee', name: 'pgTable', arg: 0, module: 'drizzle-orm/pg-core' },
+    ];
+    const source = `import { table } from './db';
+export const users = table('users', { id: serial('id') });`;
+    const ast = await parseSource(source);
+    const readModule = makeReadModule({
+      './db': `export { pgTable as table } from 'drizzle-orm/pg-core';\n`,
+    });
+    const result = extract(ast, source, entries, 'test.ts', readModule);
+
+    // `./db` renames pgTable → table; the import binds `table`, and the named
+    // re-export maps it back to the original `pgTable`.
+    expect(result).toHaveLength(1);
+    expect(result[0].table).toBe('users');
+  });
+
+  it('leaves a two-hop barrel (barrel re-exporting from another local module) unresolved', async () => {
+    const entries: TableSourceEntry[] = [
+      { kind: 'callee', name: 'pgTable', arg: 0, module: 'drizzle-orm/pg-core' },
+    ];
+    const source = `import { pgTable } from './db';
+export const users = pgTable('users', { id: serial('id') });`;
+    const ast = await parseSource(source);
+    // Depth limit is one hop: ./db re-exports from ./inner, which is where the
+    // original package lives. That second hop is NOT traced.
+    const readModule = makeReadModule({
+      './db': `export * from './inner';\n`,
+      './inner': `export * from 'drizzle-orm/pg-core';\n`,
+    });
+    const result = extract(ast, source, entries, 'test.ts', readModule);
+
     expect(result).toHaveLength(0);
+  });
+});
+
+// ── Spec 33 Item 11 — unknown-table false-positive guards ─────────────────
+
+describe('parseSqlTables — table-valued function and module-import guards', () => {
+  function tables(sql: string, allTables: Set<string> = new Set()): string[] {
+    return parseSqlTables(sql, { line: 1, column: 1 }, sql, allTables)
+      .map(r => r.table);
+  }
+
+  it('still extracts a genuine table reference', () => {
+    expect(tables('SELECT * FROM users')).toEqual(['users']);
+  });
+
+  it('does not flag SQLite json_each table-valued function', () => {
+    expect(tables("SELECT * FROM json_each('[1,2]')")).toEqual([]);
+  });
+
+  it('does not flag PostgreSQL generate_series table-valued function', () => {
+    expect(tables('SELECT * FROM generate_series(1, 10)')).toEqual([]);
+  });
+
+  it('does not flag a JS import specifier as an unknown table', () => {
+    expect(tables("import { type QueryRunner } from 'typeorm';")).toEqual([]);
+  });
+
+  it('does not flag a default import specifier as an unknown table', () => {
+    expect(tables("import path from 'path';")).toEqual([]);
+  });
+
+  it('does not flag a named import specifier as an unknown table', () => {
+    expect(tables("import { config } from 'dotenv';")).toEqual([]);
+  });
+
+  it('does not flag a re-export specifier as an unknown table', () => {
+    expect(tables("export { pgTable } from 'drizzle-orm/pg-core';")).toEqual([]);
+  });
+
+  it('still extracts a table after a module import in the same source', () => {
+    expect(tables("import { config } from 'dotenv';\nSELECT * FROM users")).toEqual(['users']);
+  });
+
+  it('does not suppress a table named after a SQL comment mentioning import', () => {
+    // The `-- import data` comment must not be read as a module statement.
+    expect(tables('SELECT * FROM users\n-- import data')).toEqual(['users']);
   });
 });

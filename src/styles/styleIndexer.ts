@@ -175,7 +175,15 @@ async function extractForFile(
     if (adapter) {
       try {
         const ast = await adapter.parse(filePath, sourceCode);
-        return extractDeclarations(filePath, adapter, sourceCode, ast, tailwindTokens);
+        try {
+          return extractDeclarations(filePath, adapter, sourceCode, ast, tailwindTokens);
+        } finally {
+          // Free the WASM tree. The style index parses every TS/JS file to pull
+          // out class/style declarations; without this the tree (and, for TSX/JSX,
+          // the one-off parser) leaks in the shared Emscripten arena and exhausts
+          // the 2 GB wasm ceiling — the trigger for Aborted() on large corpora.
+          ast.dispose?.();
+        }
       } catch {
         // Parse error — skip
       }

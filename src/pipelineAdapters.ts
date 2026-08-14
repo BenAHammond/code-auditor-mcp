@@ -48,6 +48,18 @@ import {
   detectComponentType,
   getComponentName,
 } from './utils/reactDetection.js';
+import {
+  findTableReferences,
+  checkNamingConventions,
+  checkQueryPatterns,
+  checkSQLInjection,
+  getNearestTableSuggestions,
+} from './analyzers/universal/schema/codeAnalysis.js';
+import {
+  passesFileGate,
+  extractTablesFromRegistry,
+} from './analyzers/universal/schema/discovery.js';
+import { applyMigrationOps } from './analyzers/universal/schema/migrations.js';
 
 // ── Rule ID helpers ──────────────────────────────────────────────────────────
 
@@ -1044,7 +1056,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         { kind: 'callee', name: 'sqliteTable', arg: 0, description: 'Drizzle SQLite table' },
       ];
       if (tableSources.length > 0) {
-        const registered = a.extractTablesFromRegistry(
+        const registered = extractTablesFromRegistry(
           ast as AST, adapter as LanguageAdapter, sourceCode,
           tableSources, context.filePath
         );
@@ -1082,7 +1094,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       });
 
       // File gate — skip files without DB usage
-      if (!a.passesFileGate(context.filePath, sourceCode, schemaConfig, provenanceContext)) {
+      if (!passesFileGate(context.filePath, sourceCode, schemaConfig, provenanceContext)) {
         const facts: Record<string, unknown> = { [context.filePath]: { tableRefs: [], ormTables, tableProvenance: tableProvenances } };
         if (doDDL.length > 0) (facts[context.filePath] as any).ddlOps = parseMigrationOps(doDDL.join(';\n'));
         return { violations: [], facts };
@@ -1100,7 +1112,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       }
 
       // Find table references (per-file, uses allTables for short-id false-positive filtering)
-      const tableRefs = a.findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, schemaConfig, provenanceContext, allTables);
+      const tableRefs = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, schemaConfig, provenanceContext, allTables);
 
       // Record schema usage → emit as indexFacts via the shared instance
       a.recordTableUsage(ast as AST, adapter as LanguageAdapter, context.filePath, tableRefs);
@@ -1129,16 +1141,16 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
 
       // Check naming conventions
       if (schemaConfig.checkNamingConventions !== false) {
-        violations.push(...a.checkNamingConventions(tableRefs, context.filePath));
+        violations.push(...checkNamingConventions(tableRefs, context.filePath));
       }
 
       // Check query patterns
       if (schemaConfig.validateQueryPatterns !== false) {
-        violations.push(...a.checkQueryPatterns(ast as AST, adapter as LanguageAdapter, sourceCode, schemaConfig));
+        violations.push(...checkQueryPatterns(ast as AST, adapter as LanguageAdapter, sourceCode, schemaConfig));
       }
 
       // Check SQL injection
-      violations.push(...a.checkSQLInjection(ast as AST, adapter as LanguageAdapter, sourceCode));
+      violations.push(...checkSQLInjection(ast as AST, adapter as LanguageAdapter, sourceCode));
 
       // Emit facts for the Stage 3 reducer
       const fileFacts: Record<string, unknown> = {
@@ -1242,6 +1254,7 @@ export function createSchemaReducer(): Stage3Reducer {
     import('./analyzers/universal/UniversalSchemaAnalyzer.js').then((m) => ({
       analyzer: new m.UniversalSchemaAnalyzer(),
       defaults: m.DEFAULT_SCHEMA_CONFIG,
+      analyzeJsonSchemas: m.analyzeJsonSchemas,
     })),
   );
 
@@ -1251,7 +1264,7 @@ export function createSchemaReducer(): Stage3Reducer {
     consumes: [],
     getRuleIds: () => getRuleIdsFor('schema'),
     async reduce(allFacts: Readonly<Record<string, unknown>>, context: ReducerContext) {
-      const { analyzer: a } = await getAnalyzer();
+      const { analyzer: a, analyzeJsonSchemas } = await getAnalyzer();
       const violations: Violation[] = [];
       const schemaConfig = (context.config ?? {}) as Record<string, unknown>;
 
@@ -1296,7 +1309,7 @@ export function createSchemaReducer(): Stage3Reducer {
       });
       for (const sqlFile of sqlFiles) {
         const before = new Set(knownTables);
-        a.applyMigrationOps(sqlFile.ops, knownTables);
+        applyMigrationOps(sqlFile.ops, knownTables);
         // Record provenance for newly created tables
         for (const table of knownTables) {
           if (!before.has(table)) {
@@ -1386,7 +1399,7 @@ export function createSchemaReducer(): Stage3Reducer {
         const unknownRefs = allTableRefs.filter(ref => !knownTables.has(ref.table));
         if (unknownRefs.length / Math.max(knownTables.size, 1) <= 10) {
           for (const ref of unknownRefs) {
-            const suggestions = a.getNearestTableSuggestions(ref.table, knownTables, 2);
+            const suggestions = getNearestTableSuggestions(ref.table, knownTables, 2);
             const msg = suggestions.length > 0
               ? `Reference to unknown table '${ref.table}' (${ref.type}). Did you mean: ${suggestions.join(', ')}?`
               : `Reference to unknown table '${ref.table}' (${ref.type})`;
@@ -1426,7 +1439,7 @@ export function createSchemaReducer(): Stage3Reducer {
               return null;
             }
           };
-          const jsonResult = a.analyzeJsonSchemas(jsonFiles, readJson, schemaConfig);
+          const jsonResult = analyzeJsonSchemas(jsonFiles, readJson, schemaConfig);
           violations.push(...(jsonResult?.violations ?? []));
         } catch (e: any) {
           // JSON schema validation is best-effort (non-fatal)

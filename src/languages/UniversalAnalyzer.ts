@@ -22,6 +22,9 @@ export interface UniversalAnalyzerOptions {
  */
 export type SeverityOverrides = Record<string, 'critical' | 'warning' | 'suggestion'>;
 
+/**
+ * Universal analyzer.
+ */
 export abstract class UniversalAnalyzer {
   abstract readonly name: string;
   abstract readonly description: string;
@@ -29,14 +32,16 @@ export abstract class UniversalAnalyzer {
   
   /**
    * Main entry point - processes files and returns violations
+   * @param config
+   * @param files
+   * @param options
+   * @returns
    */
   async analyze(
     files: string[],
     config: any = {},
     options: UniversalAnalyzerOptions = {}
   ): Promise<AnalyzerResult> {
-    const violations: Violation[] = [];
-    const errors: Array<{ file: string; error: string }> = [];
     const startTime = Date.now();
 
     // Extract severityOverrides from config before passing to analyzers.
@@ -54,19 +59,53 @@ export abstract class UniversalAnalyzer {
     delete configWithoutOverrides.pathProfiles;
     delete configWithoutOverrides.projectRoot;
 
-    // Group files by language
     const filesByAdapter = this.groupFilesByAdapter(files);
-    
+    const { violations, errors, filesProcessed } = await this.processFiles(
+      filesByAdapter,
+      configWithoutOverrides,
+      pathProfiles,
+      projectRoot,
+      options,
+      files.length
+    );
+
+    const filteredViolations = this.applySeverityPipeline(violations, severityOverrides);
+
+    return {
+      violations: filteredViolations,
+      errors,
+      status: makeVisitorStatus(filesProcessed),
+      executionTime: Date.now() - startTime,
+      analyzerName: this.name,
+      metrics: {
+        filesAnalyzed: filesProcessed,
+        totalViolations: violations.length,
+        executionTime: Date.now() - startTime
+      }
+    };
+  }
+
+  /**
+   * Parse and analyze each file, resolving per-file path profiles (Spec-20).
+   */
+  private async processFiles(
+    filesByAdapter: Map<LanguageAdapter, string[]>,
+    configWithoutOverrides: any,
+    pathProfiles: any,
+    projectRoot: string | undefined,
+    options: UniversalAnalyzerOptions,
+    totalFiles: number
+  ): Promise<{ violations: Violation[]; errors: Array<{ file: string; error: string }>; filesProcessed: number }> {
+    const violations: Violation[] = [];
+    const errors: Array<{ file: string; error: string }> = [];
     let filesProcessed = 0;
-    const totalFiles = files.length;
-    
-    // Process each language group
+
     for (const [adapter, adapterFiles] of filesByAdapter) {
       for (const file of adapterFiles) {
         try {
           const content = await fs.readFile(file, 'utf8');
           const ast = await adapter.parse(file, content);
-          
+
           if (ast.errors.length > 0) {
             // Record parse errors but continue
             errors.push(...ast.errors.map(e => ({
@@ -74,7 +113,7 @@ export abstract class UniversalAnalyzer {
               error: `Parse error: ${e.message}`
             })));
           }
-          
+
           // Resolve path profiles for this file (Spec-20)
           let fileConfig = configWithoutOverrides;
           let fileSeverityCap: string | undefined;
@@ -113,7 +152,7 @@ export abstract class UniversalAnalyzer {
           }
 
           violations.push(...fileViolations);
-          
+
           filesProcessed++;
           if (options.progressCallback) {
             options.progressCallback(filesProcessed / totalFiles);
@@ -127,8 +166,16 @@ export abstract class UniversalAnalyzer {
         }
       }
     }
-    
-    // Apply severity overrides to all violations
+
+    return { violations, errors, filesProcessed };
+  }
+
+  /**
+   * Apply severity overrides, filter 'off' severities, then apply path-profile
+   * severity caps (Spec-11 R5, Spec-20). Order is intentional and tested:
+   * caps run AFTER overrides so path-level caps beat global per-rule promotions.
+   */
+  private applySeverityPipeline(violations: Violation[], severityOverrides: SeverityOverrides): Violation[] {
     if (Object.keys(severityOverrides).length > 0) {
       for (const v of violations) {
         const override = severityOverrides[v.rule];
@@ -142,11 +189,6 @@ export abstract class UniversalAnalyzer {
     // Must happen before severity caps so 'off' violations are removed entirely.
     const filteredViolations = violations.filter(v => v.severity !== 'off');
 
-    // Apply severity caps from path profiles (Spec-20).
-    // Applied AFTER severityOverrides so path-level caps beat global
-    // per-rule promotions. A user who promotes a rule to "critical"
-    // in severityOverrides still gets it capped in lenient paths.
-    // This interaction is intentional, documented, and tested.
     const severityOrder = ['suggestion', 'warning', 'critical'];
     for (const v of filteredViolations) {
       const cap = (v as any)._severityCap as string | undefined;
@@ -159,18 +201,7 @@ export abstract class UniversalAnalyzer {
       }
     }
 
-    return {
-      violations: filteredViolations,
-      errors,
-      status: makeVisitorStatus(filesProcessed),
-      executionTime: Date.now() - startTime,
-      analyzerName: this.name,
-      metrics: {
-        filesAnalyzed: filesProcessed,
-        totalViolations: violations.length,
-        executionTime: Date.now() - startTime
-      }
-    };
+    return filteredViolations;
   }
   
   /**
@@ -203,7 +234,12 @@ export abstract class UniversalAnalyzer {
   }
   
   /**
-   * Helper method to create a violation
+   * Helper method to create a violation.
+   *
+   * The optional `symbol` is set as the violation's functionName (used for
+   * diff-scoped detection). Callers that need a structured fix patch attach
+   * `v.fix` to the returned object — `fix` was folded out of this signature to
+   * keep the arity honest (the only two callers that set it are in DRY).
    */
   protected createViolation(
     file: string,
@@ -211,7 +247,6 @@ export abstract class UniversalAnalyzer {
     message: string,
     severity: 'critical' | 'warning' | 'suggestion',
     rule: string,
-    fix?: { oldText: string; newText: string },
     symbol?: string
   ): Violation {
     // Tree-sitter uses 0-based line numbers. Convert to 1-based for all
@@ -223,8 +258,7 @@ export abstract class UniversalAnalyzer {
       severity,
       message,
       rule,
-      analyzer: this.name,
-      fix
+      analyzer: this.name
     };
     if (symbol) {
       v.functionName = symbol;

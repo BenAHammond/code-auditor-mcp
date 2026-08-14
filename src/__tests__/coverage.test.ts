@@ -9,29 +9,6 @@ function makeNotRunStatus(reason: string): AnalyzerNotRunStatus {
   return { status: 'notRun', reason };
 }
 
-function makeEmptyConfig(): PipelineConfig {
-  return {
-    projectRoot: '/test',
-    config: {
-      solid: {},
-      dry: {},
-      'data-access': {},
-      documentation: {},
-      schema: {},
-      react: {},
-      invariants: {},
-      'cross-language-solid': {},
-      'schema-validator': {},
-      'api-contract': {},
-      'schema-parser': {},
-      'dependency-graph': {},
-      styles: {},
-      conventions: {},
-      'cross-domain': {},
-    },
-  };
-}
-
 function makeConfigWith(names: string[]): PipelineConfig {
   const config: Record<string, Record<string, unknown>> = {};
   for (const name of names) config[name] = {};
@@ -172,13 +149,13 @@ describe('buildCoverageReport', () => {
     expect(methodComplexity!.state).toBe('fired');
     expect(methodComplexity!.count).toBe(1);
 
-    // Rules with no violations should be unassessed
+    // Rules with no violations but `files` input present should be clean
     const ocp = coverage.find(c => c.ruleId === 'open-closed');
     expect(ocp).toBeDefined();
-    expect(ocp!.state).toBe('unassessed');
+    expect(ocp!.state).toBe('clean');
   });
 
-  it('reports unassessed when analyzer ran with input but zero violations', () => {
+  it('reports clean when analyzer ran with files input but zero violations', () => {
     const results: Record<string, AnalyzerResult> = {
       solid: {
         violations: [],
@@ -196,9 +173,8 @@ describe('buildCoverageReport', () => {
     const solidRules = coverage.filter(c => c.analyzer === 'solid');
     expect(solidRules.length).toBeGreaterThan(0);
     for (const c of solidRules) {
-      expect(c.state).toBe('unassessed');
+      expect(c.state).toBe('clean');
       expect(c.count).toBe(0);
-      expect(c.reason).toContain('per-rule input mapping NYI');
     }
   });
 
@@ -234,8 +210,8 @@ describe('buildCoverageReport', () => {
     expect(classSize!.state).toBe('fired');
     expect(classSize!.count).toBe(1);
 
-    // unassessed (dry ran with files but no violations)
-    const duplicates = coverage.filter(c => c.analyzer === 'dry' && c.state === 'unassessed');
+    // clean (dry ran with files but no violations)
+    const duplicates = coverage.filter(c => c.analyzer === 'dry' && c.state === 'clean');
     expect(duplicates.length).toBeGreaterThan(0);
 
     // notApplicable (react notRun)
@@ -367,20 +343,20 @@ describe('buildCoverageReport', () => {
     expect(dupImport!.state).toBe('notApplicable');
     expect(dupImport!.reason).toContain('checkImports');
 
-    // checkStrings: true → not config-gated → unassessed (no violations)
+    // checkStrings: true → not config-gated → clean (files input present, no violations)
     const dupString = coverage.find(c => c.ruleId === 'duplicate-string-literal');
-    expect(dupString!.state).toBe('unassessed');
+    expect(dupString!.state).toBe('clean');
 
-    // dry/duplicate has no configGate → unassessed
+    // dry/duplicate has no configGate → clean
     const dryDup = coverage.find(c => c.ruleId === 'dry/duplicate');
-    expect(dryDup!.state).toBe('unassessed');
+    expect(dryDup!.state).toBe('clean');
 
-    // requirePropTypes: true → not config-gated → unassessed
+    // requirePropTypes: true → not config-gated → clean
     const missingProps = coverage.find(c => c.ruleId === 'missing-props');
-    expect(missingProps!.state).toBe('unassessed');
+    expect(missingProps!.state).toBe('clean');
   });
 
-  it('clean state is never emitted in v1', () => {
+  it('emits clean when a rule mapped to files input has zero violations', () => {
     const results: Record<string, AnalyzerResult> = {
       solid: {
         violations: [],
@@ -396,6 +372,83 @@ describe('buildCoverageReport', () => {
     );
 
     const cleanEntries = coverage.filter(c => c.state === 'clean');
-    expect(cleanEntries).toHaveLength(0);
+    expect(cleanEntries.length).toBeGreaterThan(0);
+    for (const c of coverage) {
+      expect(c.state).toBe('clean');
+    }
+  });
+
+  it('promotes a fact-key rule to clean when its input is present', () => {
+    const results: Record<string, AnalyzerResult> = {
+      schema: {
+        violations: [],
+        executionTime: 0,
+        analyzerName: 'schema',
+        status: makeReducerStatus(3),
+      },
+    };
+
+    // schema-code fact key present → sql-injection rule should be clean
+    const coverage = buildCoverageReport(
+      results,
+      makeConfigWith(['schema']),
+      { factKeys: ['schema-code'], indexTables: [] },
+    );
+
+    const sqlInjection = coverage.find(c => c.ruleId === 'sql-injection');
+    expect(sqlInjection!.state).toBe('clean');
+
+    // JSON rules have schema-json input, which is absent → notApplicable
+    const invalidJson = coverage.find(c => c.ruleId === 'invalid-json');
+    expect(invalidJson!.state).toBe('notApplicable');
+    expect(invalidJson!.reason).toContain('schema-json');
+  });
+
+  it('promotes an index-table rule to clean only when its table has rows', () => {
+    const results: Record<string, AnalyzerResult> = {
+      'cross-domain': {
+        violations: [],
+        executionTime: 0,
+        analyzerName: 'cross-domain',
+        status: makeReducerStatus(10),
+      },
+    };
+
+    const absent = buildCoverageReport(
+      results,
+      makeConfigWith(['cross-domain']),
+      { factKeys: [], indexTables: [] },
+    );
+    const uncoveredAbsent = absent.find(c => c.ruleId === 'cross-domain/uncovered-risk');
+    expect(uncoveredAbsent!.state).toBe('notApplicable');
+
+    const present = buildCoverageReport(
+      results,
+      makeConfigWith(['cross-domain']),
+      { factKeys: [], indexTables: ['schema_usage'] },
+    );
+    const uncoveredPresent = present.find(c => c.ruleId === 'cross-domain/uncovered-risk');
+    expect(uncoveredPresent!.state).toBe('clean');
+  });
+
+  it('keeps rules with no input mapping as unassessed', () => {
+    const results: Record<string, AnalyzerResult> = {
+      'schema-validator': {
+        violations: [],
+        executionTime: 0,
+        analyzerName: 'schema-validator',
+        status: makeReducerStatus(1),
+      },
+    };
+
+    const coverage = buildCoverageReport(
+      results,
+      makeConfigWith(['schema-validator']),
+      { factKeys: [], indexTables: [] },
+    );
+
+    for (const c of coverage) {
+      expect(c.state).toBe('unassessed');
+    }
   });
 });

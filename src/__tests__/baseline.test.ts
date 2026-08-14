@@ -948,25 +948,6 @@ describe('Spec-18 — Audit pipeline integration', () => {
         } as any,
         expectedRule: 'sql-injection-risk',
       },
-      // ── CrossLanguageSOLID: rule = SRP (previously used principle field) ─
-      {
-        label: 'CrossLanguageSOLID: rule = SRP',
-        violation: {
-          file: 'src/f.ts', line: 25, column: 1, severity: 'warning',
-          message: 'multiple responsibilities', analyzer: 'cross-language-solid',
-          rule: 'SRP', functionName: 'doEverything',
-        } as any,
-        expectedRule: 'SRP',
-      },
-      {
-        label: 'CrossLanguageSOLID: rule field works when set',
-        violation: {
-          file: 'src/f.ts', line: 26, column: 1, severity: 'warning',
-          message: 'bad SRP', analyzer: 'cross-language-solid',
-          rule: 'solid/srp-explicit', functionName: 'doEverything',
-        } as any,
-        expectedRule: 'solid/srp-explicit',
-      },
       // ── SchemaValidator: rule = field-mismatch (previously used violationType field) ─
       {
         label: 'SchemaValidator: rule = field-mismatch',
@@ -1055,16 +1036,6 @@ describe('Spec-18 — Audit pipeline integration', () => {
           functionName: 'unlabeledFn',
         } as any,
         expectedRule: '',
-      },
-      // ── CrossLanguageSOLID: rule = OCP (previously used principle field) ─
-      {
-        label: 'CrossLanguageSOLID: rule = OCP',
-        violation: {
-          file: 'src/k.ts', line: 65, column: 1, severity: 'warning',
-          message: 'open-closed violation', analyzer: 'cross-language-solid',
-          rule: 'OCP', functionName: 'ShapeRenderer',
-        } as any,
-        expectedRule: 'OCP',
       },
     ];
 
@@ -1418,20 +1389,41 @@ describe('Rule Registry', () => {
   it('has entries for every known analyzer', () => {
     const analyzers = new Set(Object.values(RULE_REGISTRY).map((e) => e.analyzer));
 
-    // Core analyzers (from auditRunner pipeline)
-    expect(analyzers.has('solid'), 'solid analyzer must be registered').toBe(true);
-    expect(analyzers.has('dry'), 'dry analyzer must be registered').toBe(true);
-    expect(analyzers.has('data-access'), 'data-access analyzer must be registered').toBe(true);
-    expect(analyzers.has('react'), 'react analyzer must be registered').toBe(true);
-    expect(analyzers.has('documentation'), 'documentation analyzer must be registered').toBe(true);
-    expect(analyzers.has('schema'), 'schema analyzer must be registered').toBe(true);
-    expect(analyzers.has('invariants'), 'invariants analyzer must be registered').toBe(true);
+    // CLI pipeline analyzers (auditRunner analyzerRegistry)
+    for (const name of [
+      'solid', 'dry', 'data-access', 'react', 'documentation',
+      'invariants', 'schema', 'styles', 'conventions', 'cross-domain',
+    ]) {
+      expect(analyzers.has(name), `${name} analyzer must be registered`).toBe(true);
+    }
 
-    // Cross-language analyzers
+    // MCP polyglot-path analyzers (LanguageOrchestrator)
     expect(analyzers.has('schema-validator'), 'schema-validator must be registered').toBe(true);
-    expect(analyzers.has('cross-language-solid'), 'cross-language-solid must be registered').toBe(true);
     expect(analyzers.has('api-contract'), 'api-contract must be registered').toBe(true);
     expect(analyzers.has('dependency-graph'), 'dependency-graph must be registered').toBe(true);
+  });
+
+  it('maps every rule ID to a reachable analyzer — no dead registry entries', () => {
+    // The canonical set of analyzers with a production run path. Every value in
+    // RULE_REGISTRY must be one of these, or its rule IDs are *claimed* but never
+    // *emitted* — the "files handed to nobody" class of loss that Spec 33 Item 8
+    // flagged. If you add an analyzer to RULE_REGISTRY, wire it into one of these
+    // two paths (auditRunner analyzerRegistry, or MCP LanguageOrchestrator) or
+    // this test fails.
+    const reachableAnalyzers = new Set([
+      // CLI pipeline (auditRunner analyzerRegistry)
+      'solid', 'dry', 'data-access', 'react', 'documentation',
+      'invariants', 'schema', 'styles', 'conventions', 'cross-domain',
+      // MCP polyglot path (LanguageOrchestrator instantiates these)
+      'schema-validator', 'api-contract', 'dependency-graph',
+    ]);
+
+    for (const [id, entry] of Object.entries(RULE_REGISTRY)) {
+      expect(
+        reachableAnalyzers.has(entry.analyzer),
+        `Rule ID "${id}" maps to analyzer "${entry.analyzer}", which has no production run path — wire it through or remove the entry`,
+      ).toBe(true);
+    }
   });
 
   it('has no empty or whitespace-only rule IDs', () => {

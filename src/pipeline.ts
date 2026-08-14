@@ -24,6 +24,7 @@ import {
   type FileASTTuple,
   type IndexFactsEntry,
   type IndexHandle,
+  type InputPresence,
   type PipelineConfig,
   type PipelineResult,
   type RuleCoverage,
@@ -712,8 +713,12 @@ export async function runPipeline(
     }
   }
 
+  // Spec 33 Item 14 — per-rule input presence, computed once from the merged
+  // facts + index tables, then used to promote zero-violation rules.
+  const inputPresence = computeInputPresence(combinedFacts, indexHandle);
+
   // Spec 27 — build per-rule coverage from completed pipeline results
-  const coverage = buildCoverageReport(analyzerResults, config);
+  const coverage = buildCoverageReport(analyzerResults, config, inputPresence);
 
   // Spec 29: Extract table catalog from schema reducer facts for metadata
   const schemaFacts = combinedFacts['schema'] as Record<string, unknown> | undefined;
@@ -750,6 +755,7 @@ export async function runPipeline(
       scoped: config.isScoped,
       diagnostics,
       coverage,
+      inputPresence,
       tableCatalog,
       ...(skippedFiles.length > 0 && { skippedFiles }),
       ...(unparsedFiles.length > 0 && { unparsedFiles }),
@@ -887,6 +893,46 @@ export function isReducerStatus(status: AnalyzerStatus): boolean {
 // ── Coverage reporting (Spec 27) ────────────────────────────────────────────
 
 /**
+ * Spec 33 Item 14 — snapshot which rule-input sources are present this run.
+ *
+ *   - `factKeys`: visitor/reducer names whose merged facts (stage 2 + stage 3)
+ *     are non-empty. A reducer reading e.g. `function-index` facts has input
+ *     only when that key is present.
+ *   - `indexTables`: index tables (referenced by a rule's `input`) that held
+ *     ≥1 row when coverage was built. Non-existent tables are skipped.
+ */
+function computeInputPresence(
+  combinedFacts: Record<string, unknown>,
+  indexHandle?: IndexHandle,
+): InputPresence {
+  const factKeys: string[] = [];
+  for (const [name, facts] of Object.entries(combinedFacts)) {
+    if (facts && typeof facts === 'object' && Object.keys(facts as object).length > 0) {
+      factKeys.push(name);
+    }
+  }
+
+  const indexTables: string[] = [];
+  if (indexHandle) {
+    const candidates = new Set<string>();
+    for (const entry of Object.values(RULE_REGISTRY)) {
+      for (const source of entry.input ?? []) {
+        if (source !== 'files') candidates.add(source);
+      }
+    }
+    for (const table of candidates) {
+      try {
+        if (indexHandle.tableHasRows(table)) indexTables.push(table);
+      } catch {
+        // Table doesn't exist (e.g. a fact-key name) — not an index table.
+      }
+    }
+  }
+
+  return { factKeys, indexTables };
+}
+
+/**
  * Build a per-rule coverage report from completed pipeline results.
  *
  * Iterates every rule in the canonical {@link RULE_REGISTRY}, cross-references
@@ -898,10 +944,11 @@ export function isReducerStatus(status: AnalyzerStatus): boolean {
  * | visitor-ran, filesProcessed === 0      | `notApplicable` | "no matching source files"      |
  * | reducer-ran, factsConsumed === 0       | `notApplicable` | "no facts consumed from upstream visitors" |
  * | analyzer ran with input, count > 0     | `fired`         | (none)                          |
- * | analyzer ran with input, count === 0   | `unassessed`    | per-rule input mapping NYI      |
+ * | analyzer ran with input, count === 0   | `clean`/`notApplicable` | per-rule input mapping    |
  *
- * `clean` is never emitted in v1 — it requires per-rule input mapping to
- * confirm that a rule's specific input was present and checked.
+ * Spec 33 Item 14: zero-violation rules are promoted from `unassessed` to
+ * `clean` (mapped input present) or `notApplicable` (mapped input absent). Only
+ * rules with no `input` mapping (non-pipeline analyzers) remain `unassessed`.
  *
  * Rules whose analyzer was not enabled in `config` are omitted entirely
  * (they were not part of this run — distinct from `notRun`).
@@ -909,6 +956,7 @@ export function isReducerStatus(status: AnalyzerStatus): boolean {
 export function buildCoverageReport(
   analyzerResults: Record<string, AnalyzerResult>,
   config: PipelineConfig,
+  inputPresence?: InputPresence,
 ): RuleCoverage[] {
   const coverage: RuleCoverage[] = [];
 
@@ -1000,14 +1048,73 @@ export function buildCoverageReport(
     });
 
     const count = violations.length;
-    coverage.push({
-      ruleId,
-      analyzer: analyzerName,
-      state: count > 0 ? 'fired' : 'unassessed',
-      count,
-      reason: count === 0 ? 'applicability not assessed (per-rule input mapping NYI)' : undefined,
-    });
+    if (count > 0) {
+      coverage.push({
+        ruleId,
+        analyzer: analyzerName,
+        state: 'fired',
+        count,
+      });
+      continue;
+    }
+
+    // Spec 33 Item 14 — zero-violation rules are now promoted from `unassessed`
+    // to `clean`/`notApplicable` based on whether the rule's mapped input was
+    // present this run. Rules with no mapping (non-pipeline analyzers) stay
+    // `unassessed`.
+    coverage.push(resolveZeroViolationState(ruleId, analyzerName, entry.input, inputPresence));
   }
 
   return coverage;
+}
+
+/**
+ * Spec 33 Item 14 — classify a zero-violation rule by its declared input.
+ *
+ *   - No `input` mapping → `unassessed` (input provenance unknown; non-pipeline
+ *     analyzers only).
+ *   - Any input source present → `clean` (the analyzer ran over the rule's real
+ *     input and found nothing to flag).
+ *   - All input sources absent → `notApplicable` (the input this rule reads was
+ *     never produced this run).
+ *
+ * An input source is "present" when it is the literal `'files'` (always present
+ * at this branch — earlier checks already excluded empty-input analyzers), a
+ * fact-key in {@link InputPresence.factKeys}, or an index table in
+ * {@link InputPresence.indexTables}.
+ */
+function resolveZeroViolationState(
+  ruleId: string,
+  analyzerName: string,
+  input: readonly string[] | undefined,
+  inputPresence: InputPresence | undefined,
+): RuleCoverage {
+  if (!input || input.length === 0) {
+    return {
+      ruleId,
+      analyzer: analyzerName,
+      state: 'unassessed',
+      count: 0,
+      reason: 'applicability not assessed (no per-rule input mapping)',
+    };
+  }
+
+  const factKeys = new Set(inputPresence?.factKeys ?? []);
+  const indexTables = new Set(inputPresence?.indexTables ?? []);
+
+  const anyPresent = input.some(
+    (source) => source === 'files' || factKeys.has(source) || indexTables.has(source),
+  );
+
+  if (anyPresent) {
+    return { ruleId, analyzer: analyzerName, state: 'clean', count: 0 };
+  }
+
+  return {
+    ruleId,
+    analyzer: analyzerName,
+    state: 'notApplicable',
+    count: 0,
+    reason: `rule input absent (none of: ${input.join(', ')})`,
+  };
 }

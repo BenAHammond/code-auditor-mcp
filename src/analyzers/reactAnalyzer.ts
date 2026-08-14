@@ -43,6 +43,10 @@ export const DEFAULT_REACT_CONFIG: ReactAnalyzerConfig = {
 
 /**
  * Analyze a single component for violations
+ * @param component
+ * @param config
+ * @param scanResult
+ * @returns
  */
 export function analyzeComponent(
   component: ComponentMetadata,
@@ -304,6 +308,8 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
 
 /**
  * Check for circular dependencies between components
+ * @param componentTree
+ * @returns
  */
 export function checkCircularDependencies(
   componentTree: Map<string, Set<string>>
@@ -361,6 +367,8 @@ export function checkCircularDependencies(
 
 /**
  * Check for proper error boundary usage
+ * @param scanResults
+ * @returns
  */
 export function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViolation[] {
   const violations: ReactViolation[] = [];
@@ -395,27 +403,34 @@ export function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): Rea
   return violations;
 }
 
+/** Intrinsic element → wrapper component descriptor. */
+interface RawElementWrapper {
+  wrapperName: string;
+  wrapperFile: string;
+}
+
+/** A raw intrinsic-element usage awaiting threshold/violation emission. */
+interface RawUsageLocation {
+  element: string;
+  componentName: string;
+  filePath: string;
+  line: number;
+  wrapperName: string;
+  wrapperFile: string;
+}
+
 /**
- * Check for raw intrinsic element usage when project-defined wrappers exist (Spec 10 R4).
- *
- * Auto-detects wrapper components (exported components whose rendered root is a single
- * intrinsic element from the watch list) and flags raw usages of that element outside
- * the wrapper's definition. A {@link ReactAnalyzerConfig.componentMap} overrides
- * auto-detection, making every raw usage a warning.
+ * Build the intrinsic-element → wrapper map, either from the user-provided
+ * {@link ReactAnalyzerConfig.componentMap} or by auto-detecting exported
+ * components whose rendered root is a single watch-list intrinsic element.
  */
-export function checkRawElements(
+function buildRawElementWrapperMap(
   scanResults: ComponentScanResult[],
-  config: ReactAnalyzerConfig
-): ReactViolation[] {
-  const violations: ReactViolation[] = [];
+  config: ReactAnalyzerConfig,
+  watchSet: Set<string>,
+): Map<string, RawElementWrapper> {
+  const wrapperMap = new Map<string, RawElementWrapper>();
 
-  const watchList = config.rawElementWatchList ?? ['button', 'input', 'select', 'textarea', 'table'];
-  const watchSet = new Set(watchList);
-
-  // Map: intrinsic element → { wrapperName, wrapperFile }
-  const wrapperMap = new Map<string, { wrapperName: string; wrapperFile: string }>();
-
-  // ── Phase 1: Build wrapper map ─────────────────────────────────────────
   if (config.componentMap) {
     // User-provided overrides — trust them unconditionally
     for (const [element, wrapperName] of Object.entries(config.componentMap)) {
@@ -427,48 +442,51 @@ export function checkRawElements(
       }
       wrapperMap.set(element, { wrapperName, wrapperFile });
     }
-  } else {
-    // Auto-detect: an exported component whose jsxElements contains exactly one
-    // watch-list intrinsic element (the thing being wrapped).
-    for (const result of scanResults) {
-      for (const component of result.components) {
-        if (!component.isExported) continue;
-        if (!component.jsxElements || component.jsxElements.length === 0) continue;
+    return wrapperMap;
+  }
 
-        // Filter to intrinsic elements (lowercase-first-character tag names)
-        const intrinsicElements = component.jsxElements.filter(el => {
-          const firstChar = el.charAt(0);
-          return firstChar === firstChar.toLowerCase() && firstChar !== firstChar.toUpperCase();
-        });
+  // Auto-detect: an exported component whose jsxElements contains exactly one
+  // watch-list intrinsic element (the thing being wrapped).
+  for (const result of scanResults) {
+    for (const component of result.components) {
+      if (!component.isExported) continue;
+      if (!component.jsxElements || component.jsxElements.length === 0) continue;
 
-        // A single intrinsic from the watch list → wrapper candidate
-        if (intrinsicElements.length === 1 && watchSet.has(intrinsicElements[0])) {
-          const element = intrinsicElements[0];
-          // Pick the shortest-name wrapper when multiple candidates exist
-          const existing = wrapperMap.get(element);
-          if (!existing || component.name.length < existing.wrapperName.length) {
-            wrapperMap.set(element, {
-              wrapperName: component.name,
-              wrapperFile: result.filePath
-            });
-          }
+      // Filter to intrinsic elements (lowercase-first-character tag names)
+      const intrinsicElements = component.jsxElements.filter(el => {
+        const firstChar = el.charAt(0);
+        return firstChar === firstChar.toLowerCase() && firstChar !== firstChar.toUpperCase();
+      });
+
+      // A single intrinsic from the watch list → wrapper candidate
+      if (intrinsicElements.length === 1 && watchSet.has(intrinsicElements[0])) {
+        const element = intrinsicElements[0];
+        // Pick the shortest-name wrapper when multiple candidates exist
+        const existing = wrapperMap.get(element);
+        if (!existing || component.name.length < existing.wrapperName.length) {
+          wrapperMap.set(element, {
+            wrapperName: component.name,
+            wrapperFile: result.filePath
+          });
         }
       }
     }
   }
 
-  if (wrapperMap.size === 0) return violations;
+  return wrapperMap;
+}
 
-  // ── Phase 2: Count raw usages and collect locations ────────────────────
+/**
+ * Count raw intrinsic-element usages across components and collect their
+ * locations, skipping the wrapper component's own definition.
+ */
+function collectRawElementUsages(
+  scanResults: ComponentScanResult[],
+  watchSet: Set<string>,
+  wrapperMap: Map<string, RawElementWrapper>,
+): { rawUsageCounts: Map<string, number>; rawUsageLocations: RawUsageLocation[] } {
   const rawUsageCounts = new Map<string, number>();
-  const rawUsageLocations: Array<{
-    element: string;
-    componentName: string;
-    filePath: string;
-    line: number;
-    wrapperName: string;
-    wrapperFile: string;
-  }> = [];
+  const rawUsageLocations: RawUsageLocation[] = [];
 
   for (const result of scanResults) {
     for (const component of result.components) {
@@ -497,6 +515,37 @@ export function checkRawElements(
       }
     }
   }
+
+  return { rawUsageCounts, rawUsageLocations };
+}
+
+/**
+ * Check for raw intrinsic element usage when project-defined wrappers exist (Spec 10 R4).
+ *
+ * Auto-detects wrapper components (exported components whose rendered root is a single
+ * intrinsic element from the watch list) and flags raw usages of that element outside
+ * the wrapper's definition. A {@link ReactAnalyzerConfig.componentMap} overrides
+ * auto-detection, making every raw usage a warning.
+ * @param config
+ * @param scanResults
+ * @returns
+ */
+export function checkRawElements(
+  scanResults: ComponentScanResult[],
+  config: ReactAnalyzerConfig
+): ReactViolation[] {
+  const violations: ReactViolation[] = [];
+
+  const watchList = config.rawElementWatchList ?? ['button', 'input', 'select', 'textarea', 'table'];
+  const watchSet = new Set(watchList);
+
+  // ── Phase 1: Build wrapper map ─────────────────────────────────────────
+  const wrapperMap = buildRawElementWrapperMap(scanResults, config, watchSet);
+  if (wrapperMap.size === 0) return violations;
+
+  // ── Phase 2: Count raw usages and collect locations ────────────────────
+  const { rawUsageCounts, rawUsageLocations } =
+    collectRawElementUsages(scanResults, watchSet, wrapperMap);
 
   // ── Phase 3: Emit violations ──────────────────────────────────────────
   const minUsages = config.wrapperMinUsages ?? 5;

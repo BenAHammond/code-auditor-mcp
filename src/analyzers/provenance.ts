@@ -180,6 +180,9 @@ function matchesValidatorPackage(specifier: string): boolean {
  *
  * An import like `import Database from 'better-sqlite3'` produces
  * `Database` as DB-provenanced with reason "package".
+ * @param adapter
+ * @param ast
+ * @returns
  */
 export function extractDBProvenancedImports(
   ast: AST,
@@ -218,6 +221,9 @@ export function extractDBProvenancedImports(
 /**
  * Extract all validator-provenanced identifiers from a file's imports.
  * Same pattern as extractDBProvenancedImports but for validator packages.
+ * @param adapter
+ * @param ast
+ * @returns
  */
 export function extractValidatorProvenancedImports(
   ast: AST,
@@ -257,6 +263,189 @@ export function extractValidatorProvenancedImports(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * Propagate provenance through a variable declaration (rules 1-3, 8).
+ * Returns true if any new identifier was added.
+ */
+function propagateVariableDeclaration(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceMap: Map<string, ProvenanceEvidence>,
+): boolean {
+  const { nameNode, valueNode, typeAnnotationNode } =
+    splitVariableDeclarator(node, adapter);
+
+  if (!nameNode) return false;
+
+  let mutated = false;
+
+  // Rule 8: type annotation — let x: D1Database
+  if (typeAnnotationNode && nameNode.type === 'identifier') {
+    const typeText = adapter.getNodeText(typeAnnotationNode, sourceCode).trim();
+    if (DB_TYPES.has(typeText)) {
+      const name = adapter.getNodeText(nameNode, sourceCode);
+      if (!provenanceMap.has(name)) {
+        provenanceMap.set(name, {
+          identifier: name,
+          reason: 'type',
+          source: `type annotation ${typeText}`,
+          chain: [],
+        });
+        mutated = true;
+      }
+      // Type-provenanced names count as DB-provenanced for further propagation
+    }
+  }
+
+  if (valueNode) {
+    const propagated = tryPropagateFromExpression(
+      valueNode,
+      adapter,
+      sourceCode,
+      provenanceMap,
+    );
+
+    if (propagated) {
+      // Extract the variable name(s) from the name node
+      const varNames = extractPatternNames(nameNode, adapter, sourceCode);
+      for (const varName of varNames) {
+        if (!provenanceMap.has(varName)) {
+          provenanceMap.set(varName, {
+            identifier: varName,
+            reason: 'propagation',
+            source: propagated.source,
+            chain: [...propagated.chain, propagated.identifier],
+          });
+          mutated = true;
+        }
+      }
+    }
+  }
+  return mutated;
+}
+
+/**
+ * Propagate provenance through a default parameter (rule 6).
+ * Returns true if a new identifier was added.
+ */
+function propagateDefaultParameter(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceMap: Map<string, ProvenanceEvidence>,
+): boolean {
+  const children = adapter.getChildren(node);
+  // assignment_pattern has [left, right]
+  if (children.length < 2) return false;
+
+  const leftNode = children[0];
+  const rightNode = children[1];
+
+  if (leftNode.type !== 'identifier') return false;
+
+  const paramName = adapter.getNodeText(leftNode, sourceCode);
+  const propagated = tryPropagateFromExpression(
+    rightNode,
+    adapter,
+    sourceCode,
+    provenanceMap,
+  );
+  if (propagated && !provenanceMap.has(paramName)) {
+    provenanceMap.set(paramName, {
+      identifier: paramName,
+      reason: 'propagation',
+      source: `default parameter = ${propagated.source}`,
+      chain: [...propagated.chain, propagated.identifier],
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Propagate provenance through a class field initialization (rule 7).
+ * Returns true if a new identifier was added.
+ */
+function propagateClassField(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceMap: Map<string, ProvenanceEvidence>,
+): boolean {
+  const children = adapter.getChildren(node);
+  // Typically [name, value] or [decorators..., name, value]
+  const nameChild = children.find(
+    (c) => c.type === 'property_identifier',
+  );
+  const valueChild = children.find(
+    (c) =>
+      c.type !== 'property_identifier' &&
+      c.type !== 'decorator' &&
+      c.type !== 'private' &&
+      c.type !== 'public' &&
+      c.type !== 'protected' &&
+      c.type !== 'static' &&
+      c.type !== 'readonly' &&
+      c.type !== 'abstract',
+  );
+
+  if (nameChild && valueChild) {
+    const fieldName = adapter.getNodeText(nameChild, sourceCode);
+    const propagated = tryPropagateFromExpression(
+      valueChild,
+      adapter,
+      sourceCode,
+      provenanceMap,
+    );
+    if (propagated && !provenanceMap.has(fieldName)) {
+      provenanceMap.set(fieldName, {
+        identifier: fieldName,
+        reason: 'propagation',
+        source: `class field initialized from ${propagated.source}`,
+        chain: [...propagated.chain, propagated.identifier],
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Apply the single-file propagation rules for one AST node, mutating the
+ * provided provenance map. Returns true if any new identifier was added.
+ *
+ * Rules 1-8 (spec R1): variable declarations (1-3, 8), default parameters
+ * (6), and class field initialization (7).
+ */
+function applyPropagationRule(
+  node: ASTNode,
+  parent: ASTNode | null,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceMap: Map<string, ProvenanceEvidence>,
+): boolean {
+  if (node.type === 'variable_declarator') {
+    return propagateVariableDeclaration(node, adapter, sourceCode, provenanceMap);
+  }
+
+  if (
+    node.type === 'assignment_pattern' &&
+    parent?.type === 'formal_parameters'
+  ) {
+    return propagateDefaultParameter(node, adapter, sourceCode, provenanceMap);
+  }
+
+  if (
+    node.type === 'public_field_definition' ||
+    node.type === 'field_definition'
+  ) {
+    return propagateClassField(node, adapter, sourceCode, provenanceMap);
+  }
+
+  return false;
+}
+
+/**
  * Propagate provenance through assignments, destructuring, parameters,
  * class fields, and type annotations within a single file.
  *
@@ -269,6 +458,11 @@ export function extractValidatorProvenancedImports(
  *   6. default parameter with DB value
  *   7. class field initialized with DB value
  *   8. type annotation with known DB type
+ * @param adapter
+ * @param ast
+ * @param seedMap
+ * @param sourceCode
+ * @returns
  */
 export function propagateProvenance(
   ast: AST,
@@ -288,132 +482,8 @@ export function propagateProvenance(
     iterations++;
 
     walkAST(ast.root, (node, parent) => {
-      // ── Rule 1 & 2 & 3 & 8: variable declarations ──
-      if (node.type === 'variable_declarator') {
-        const { nameNode, valueNode, typeAnnotationNode } =
-          splitVariableDeclarator(node, adapter);
-
-        if (!nameNode) return;
-
-        // Rule 8: type annotation — let x: D1Database
-        if (typeAnnotationNode && nameNode.type === 'identifier') {
-          const typeText = adapter.getNodeText(typeAnnotationNode, sourceCode).trim();
-          if (DB_TYPES.has(typeText)) {
-            const name = adapter.getNodeText(nameNode, sourceCode);
-            if (!provenanceMap.has(name)) {
-              provenanceMap.set(name, {
-                identifier: name,
-                reason: 'type',
-                source: `type annotation ${typeText}`,
-                chain: [],
-              });
-              changed = true;
-            }
-            // Type-provenanced names count as DB-provenanced for further propagation
-          }
-        }
-
-        if (valueNode) {
-          const propagated = tryPropagateFromExpression(
-            valueNode,
-            adapter,
-            sourceCode,
-            provenanceMap,
-          );
-
-          if (propagated) {
-            // Extract the variable name(s) from the name node
-            const varNames = extractPatternNames(nameNode, adapter, sourceCode);
-            for (const varName of varNames) {
-              if (!provenanceMap.has(varName)) {
-                provenanceMap.set(varName, {
-                  identifier: varName,
-                  reason: 'propagation',
-                  source: propagated.source,
-                  chain: [...propagated.chain, propagated.identifier],
-                });
-                changed = true;
-              }
-            }
-          }
-        }
-        return;
-      }
-
-      // ── Rule 6: default parameters ──
-      if (
-        node.type === 'assignment_pattern' &&
-        parent?.type === 'formal_parameters'
-      ) {
-        const children = adapter.getChildren(node);
-        // assignment_pattern has [left, right]
-        if (children.length >= 2) {
-          const leftNode = children[0];
-          const rightNode = children[1];
-
-          if (leftNode.type === 'identifier') {
-            const paramName = adapter.getNodeText(leftNode, sourceCode);
-            const propagated = tryPropagateFromExpression(
-              rightNode,
-              adapter,
-              sourceCode,
-              provenanceMap,
-            );
-            if (propagated && !provenanceMap.has(paramName)) {
-              provenanceMap.set(paramName, {
-                identifier: paramName,
-                reason: 'propagation',
-                source: `default parameter = ${propagated.source}`,
-                chain: [...propagated.chain, propagated.identifier],
-              });
-              changed = true;
-            }
-          }
-        }
-        return;
-      }
-
-      // ── Rule 7: class field initialization ──
-      if (
-        node.type === 'public_field_definition' ||
-        node.type === 'field_definition'
-      ) {
-        const children = adapter.getChildren(node);
-        // Typically [name, value] or [decorators..., name, value]
-        const nameChild = children.find(
-          (c) => c.type === 'property_identifier',
-        );
-        const valueChild = children.find(
-          (c) =>
-            c.type !== 'property_identifier' &&
-            c.type !== 'decorator' &&
-            c.type !== 'private' &&
-            c.type !== 'public' &&
-            c.type !== 'protected' &&
-            c.type !== 'static' &&
-            c.type !== 'readonly' &&
-            c.type !== 'abstract',
-        );
-
-        if (nameChild && valueChild) {
-          const fieldName = adapter.getNodeText(nameChild, sourceCode);
-          const propagated = tryPropagateFromExpression(
-            valueChild,
-            adapter,
-            sourceCode,
-            provenanceMap,
-          );
-          if (propagated && !provenanceMap.has(fieldName)) {
-            provenanceMap.set(fieldName, {
-              identifier: fieldName,
-              reason: 'propagation',
-              source: `class field initialized from ${propagated.source}`,
-              chain: [...propagated.chain, propagated.identifier],
-            });
-            changed = true;
-          }
-        }
-        return;
+      if (applyPropagationRule(node, parent, adapter, sourceCode, provenanceMap)) {
+        changed = true;
       }
     });
   }
@@ -787,6 +857,11 @@ export interface BuildProvenanceContextOptions {
  *
  * This is the main entry point — call once per file before analysis.
  * Combines import extraction, propagation, and mode-based fallback.
+ * @param adapter
+ * @param ast
+ * @param options
+ * @param sourceCode
+ * @returns
  */
 export function buildProvenanceContext(
   ast: AST,
@@ -958,6 +1033,12 @@ function escapeRegex(s: string): string {
  *   2. Member expression call → is the receiver DB-provenanced AND is the
  *      method in the DB call method set?
  *   3. ORM patterns → receiver is DB-provenanced and method matches ORM API
+ * @param adapter
+ * @param context
+ * @param dbCallMethods
+ * @param node
+ * @param sourceCode
+ * @returns
  */
 export function isDBProvenanced(
   node: ASTNode,
@@ -1166,6 +1247,9 @@ function isDBMethodOnThis(
  * Check if an identifier is validator-provenanced (R4 infrastructure).
  *
  * This will be consumed by Spec 15's validator-bypass detection.
+ * @param context
+ * @param identifier
+ * @returns
  */
 export function isValidatorProvenanced(
   identifier: string,
@@ -1187,6 +1271,11 @@ export function isValidatorProvenanced(
  * (b) can be traced back to a provenanced source through assignments.
  *
  * Deferred: full implementation in R2 step.
+ * @param adapter
+ * @param fileAst
+ * @param provenancedSet
+ * @param sourceCode
+ * @returns
  */
 export function inferReceivers(
   provenancedSet: Map<string, ProvenanceEvidence>,

@@ -36,10 +36,16 @@ const QUERY_METHODS: Record<string, OrmTableReference['type']> = {
 // Adapter
 // ---------------------------------------------------------------------------
 
+/**
+ * Drizzle adapter.
+ */
 export class DrizzleAdapter implements OrmAdapter {
   readonly name = 'drizzle';
   readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx'];
 
+  /**
+   * Supports file.
+   */
   supportsFile(filePath: string): boolean {
     const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
     return this.fileExtensions.includes(`.${ext}`);
@@ -47,6 +53,13 @@ export class DrizzleAdapter implements OrmAdapter {
 
   // ── Table references from query operations ──────────────────────────────
 
+  /**
+   * Extract table references.
+   * @param adapter
+   * @param ast
+   * @param sourceCode
+   * @returns
+   */
   extractTableReferences(
     ast: AST,
     adapter: LanguageAdapter,
@@ -165,6 +178,13 @@ export class DrizzleAdapter implements OrmAdapter {
 
   // ── Schema definitions from table builders ──────────────────────────────
 
+  /**
+   * Extract schema definitions.
+   * @param ast
+   * @param adapter
+   * @param sourceCode
+   * @returns
+   */
   extractSchemaDefinitions(
     ast: AST,
     adapter: LanguageAdapter,
