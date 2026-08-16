@@ -55,6 +55,20 @@ export interface SchemaValidationOptions {
 }
 
 /**
+ * A single field compared across two language implementations of a schema.
+ * Bundles the field name, the reference/current field definitions, and the
+ * two schema definitions so the comparison helpers take one context object
+ * rather than five positional arguments.
+ */
+interface FieldComparison {
+  fieldName: string;
+  refField: SchemaField;
+  curField: SchemaField;
+  reference: SchemaDefinition;
+  current: SchemaDefinition;
+}
+
+/**
  * Schema validator.
  */
 export class SchemaValidator {
@@ -138,56 +152,97 @@ export class SchemaValidator {
     const refFields = new Map(reference.fields.map(f => [f.name, f]));
     const curFields = new Map(current.fields.map(f => [f.name, f]));
 
-    // Check for missing required fields
+    violations.push(...this.checkMissingFields(refFields, curFields, reference, current));
+    violations.push(...this.checkExtraFields(refFields, curFields, reference, current));
+    violations.push(...this.checkFieldTypes(refFields, curFields, reference, current));
+
+    return violations;
+  }
+
+  /**
+   * Check for required fields missing from the current schema.
+   */
+  private checkMissingFields(
+    refFields: Map<string, SchemaField>,
+    curFields: Map<string, SchemaField>,
+    reference: SchemaDefinition,
+    current: SchemaDefinition
+  ): SchemaViolation[] {
+    const violations: SchemaViolation[] = [];
+
     for (const [fieldName, refField] of refFields) {
-      if (refField.required && !curFields.has(fieldName)) {
-        violations.push({
-          file: current.file,
-          line: current.line,
-          severity: 'warning',
-          message: `Missing required field '${fieldName}' in ${current.type} ${current.name}`,
-          rule: "missing-field",
-          violationType: 'missing-field',
-          schemas: [reference, current],
-          fieldName,
-          suggestion: `Add field '${fieldName}: ${refField.type}' to ${current.name}`,
-          analyzer: 'schema-validator',
-          category: 'cross-language-schema'
-        });
-      }
+      if (!refField.required || curFields.has(fieldName)) continue;
+      violations.push({
+        file: current.file,
+        line: current.line,
+        severity: 'warning',
+        message: `Missing required field '${fieldName}' in ${current.type} ${current.name}`,
+        rule: "missing-field",
+        violationType: 'missing-field',
+        schemas: [reference, current],
+        fieldName,
+        suggestion: `Add field '${fieldName}: ${refField.type}' to ${current.name}`,
+        analyzer: 'schema-validator',
+        category: 'cross-language-schema'
+      });
     }
 
-    // Check for extra fields (if not allowed)
-    if (!this.options.allowAdditionalFields) {
-      for (const [fieldName, curField] of curFields) {
-        if (!refFields.has(fieldName)) {
-          violations.push({
-            file: current.file,
-            line: current.line,
-            severity: 'warning',
-            message: `Extra field '${fieldName}' in ${current.type} ${current.name}`,
-            rule: 'extra-field',
-            violationType: 'extra-field',
-            schemas: [reference, current],
-            fieldName,
-            suggestion: `Remove field '${fieldName}' or add it to the reference schema`,
-            analyzer: 'schema-validator',
-            category: 'cross-language-schema'
-          });
-        }
-      }
+    return violations;
+  }
+
+  /**
+   * Check for fields present in the current schema but missing from the reference.
+   */
+  private checkExtraFields(
+    refFields: Map<string, SchemaField>,
+    curFields: Map<string, SchemaField>,
+    reference: SchemaDefinition,
+    current: SchemaDefinition
+  ): SchemaViolation[] {
+    const violations: SchemaViolation[] = [];
+
+    if (this.options.allowAdditionalFields) return violations;
+
+    for (const [fieldName] of curFields) {
+      if (refFields.has(fieldName)) continue;
+      violations.push({
+        file: current.file,
+        line: current.line,
+        severity: 'warning',
+        message: `Extra field '${fieldName}' in ${current.type} ${current.name}`,
+        rule: 'extra-field',
+        violationType: 'extra-field',
+        schemas: [reference, current],
+        fieldName,
+        suggestion: `Remove field '${fieldName}' or add it to the reference schema`,
+        analyzer: 'schema-validator',
+        category: 'cross-language-schema'
+      });
     }
 
-    // Check field type compatibility
+    return violations;
+  }
+
+  /**
+   * Check type/constraint compatibility for fields present in both schemas.
+   */
+  private checkFieldTypes(
+    refFields: Map<string, SchemaField>,
+    curFields: Map<string, SchemaField>,
+    reference: SchemaDefinition,
+    current: SchemaDefinition
+  ): SchemaViolation[] {
+    const violations: SchemaViolation[] = [];
+
     for (const [fieldName, refField] of refFields) {
       const curField = curFields.get(fieldName);
-      if (curField) {
-        const typeViolation = this.compareFieldTypes(fieldName, refField, curField, reference, current);
-        if (typeViolation) violations.push(typeViolation);
+      if (!curField) continue;
 
-        const constraintViolations = this.compareFieldConstraints(fieldName, refField, curField, reference, current);
-        violations.push(...constraintViolations);
-      }
+      const cmp: FieldComparison = { fieldName, refField, curField, reference, current };
+      const typeViolation = this.compareFieldTypes(cmp);
+      if (typeViolation) violations.push(typeViolation);
+
+      violations.push(...this.compareFieldConstraints(cmp));
     }
 
     return violations;
@@ -260,13 +315,8 @@ export class SchemaValidator {
   /**
    * Compare field types between schemas
    */
-  private compareFieldTypes(
-    fieldName: string,
-    refField: SchemaField,
-    curField: SchemaField,
-    refSchema: SchemaDefinition,
-    curSchema: SchemaDefinition
-  ): SchemaViolation | null {
+  private compareFieldTypes(cmp: FieldComparison): SchemaViolation | null {
+    const { fieldName, refField, curField, reference: refSchema, current: curSchema } = cmp;
     const normalizedRefType = normalizeType(refField.type, refSchema.language);
     const normalizedCurType = normalizeType(curField.type, curSchema.language);
 
@@ -315,13 +365,8 @@ export class SchemaValidator {
   /**
    * Compare field constraints
    */
-  private compareFieldConstraints(
-    fieldName: string,
-    refField: SchemaField,
-    curField: SchemaField,
-    refSchema: SchemaDefinition,
-    curSchema: SchemaDefinition
-  ): SchemaViolation[] {
+  private compareFieldConstraints(cmp: FieldComparison): SchemaViolation[] {
+    const { fieldName, refField, curField, reference: refSchema, current: curSchema } = cmp;
     const violations: SchemaViolation[] = [];
 
     if (!refField.constraints || !curField.constraints) return violations;

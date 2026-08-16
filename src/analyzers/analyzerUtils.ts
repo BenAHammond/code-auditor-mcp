@@ -41,52 +41,48 @@ export type FileAnalyzerFunction = (
 export type ProgressReporter = (current: number, total: number, file: string) => void;
 
 /**
+ * Bundled optional inputs for processFiles: `config` and the progress reporter
+ * travel together so the exported signature stays under the parameter cap.
+ */
+export interface ProcessFilesOptions {
+  config?: any;
+  progressReporter?: ProgressReporter;
+}
+
+/**
  * Standard file processing function
  * Handles file reading, parsing, error handling, and progress reporting
+ * @param files
  * @param analyzeFile
  * @param analyzerName
- * @param config
- * @param files
- * @param progressReporter
+ * @param options
  * @returns
  */
 export async function processFiles(
   files: string[],
   analyzeFile: FileAnalyzerFunction,
   analyzerName: string,
-  config: any = {},
-  progressReporter?: ProgressReporter
+  options: ProcessFilesOptions = {}
 ): Promise<AnalyzerResult> {
+  const { config = {}, progressReporter } = options;
   const violations: Violation[] = [];
   const errors: Array<{ file: string; error: string }> = [];
   let processedFiles = 0;
   const startTime = Date.now();
 
   for (const file of files) {
-    try {
-      // Report progress
-      if (progressReporter) {
-        progressReporter(processedFiles, files.length, file);
-      }
+    // Report progress
+    if (progressReporter) {
+      progressReporter(processedFiles, files.length, file);
+    }
 
-      // Read and parse file
-      const { parseTypeScriptFile: parse } = await import('../utils/astParser.js');
-      const content = await fs.readFile(file, 'utf-8');
-      const { ast, errors: parseErrors } = await parse(file);
-
-      if (parseErrors.length > 0) {
-        throw new Error(`Parse errors: ${parseErrors.map(e => e.message).join(', ')}`);
-      }
-
-      // Run analyzer-specific logic (pass source code for text extraction)
-      const fileViolations = await analyzeFile(file, ast, config, content);
-      violations.push(...fileViolations);
-
+    const outcome = await processOneFile(file, analyzeFile, config);
+    violations.push(...outcome.violations);
+    if (outcome.error) {
+      errors.push(outcome.error);
+    }
+    if (outcome.processed) {
       processedFiles++;
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      errors.push({ file, error: errorMessage });
-      console.error(`Error analyzing ${file}:`, error);
     }
   }
 
@@ -102,6 +98,35 @@ export async function processFiles(
   }
 
   return result;
+}
+
+/**
+ * Read, parse, and run the analyzer over a single file. Failures are captured
+ * as an `error` entry rather than thrown so one bad file never aborts the run.
+ */
+async function processOneFile(
+  file: string,
+  analyzeFile: FileAnalyzerFunction,
+  config: any
+): Promise<{ violations: Violation[]; error?: { file: string; error: string }; processed: boolean }> {
+  try {
+    // Read and parse file
+    const { parseTypeScriptFile: parse } = await import('../utils/astParser.js');
+    const content = await fs.readFile(file, 'utf-8');
+    const { ast, errors: parseErrors } = await parse(file);
+
+    if (parseErrors.length > 0) {
+      throw new Error(`Parse errors: ${parseErrors.map(e => e.message).join(', ')}`);
+    }
+
+    // Run analyzer-specific logic (pass source code for text extraction)
+    const fileViolations = await analyzeFile(file, ast, config, content);
+    return { violations: fileViolations, processed: true };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`Error analyzing ${file}:`, error);
+    return { violations: [], error: { file, error: errorMessage }, processed: false };
+  }
 }
 
 /**
@@ -250,7 +275,7 @@ export function createAnalyzer(
 ) {
   return async (files: string[], config: Record<string, unknown>, options?: { minSeverity?: string }) => {
     const mergedConfig = { ...defaultConfig, ...config };
-    const result = await processFiles(files, fileAnalyzer, name, mergedConfig);
+    const result = await processFiles(files, fileAnalyzer, name, { config: mergedConfig });
 
     // Apply filtering and sorting
     result.violations = sortViolations(

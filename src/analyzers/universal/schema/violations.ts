@@ -8,6 +8,17 @@
 import type { Violation } from '../../../types.js';
 
 /**
+ * Bundled classification for a schema violation — `severity`, `rule`, and an
+ * optional `symbol` travel together so `createSchemaViolation` stays a 4-arg
+ * call rather than a 6-arg one.
+ */
+export interface SchemaViolationClassification {
+  severity: 'critical' | 'warning' | 'suggestion';
+  rule: string;
+  symbol?: string;
+}
+
+/**
  * Module-level equivalent of `UniversalAnalyzer.createViolation`. `rule`
  * identity is preserved exactly; `location` and optional `symbol` are kept,
  * while `analyzer` is hardcoded to `'schema'` instead of `this.name`.
@@ -15,30 +26,26 @@ import type { Violation } from '../../../types.js';
  * @param file The file the violation occurred in.
  * @param location The 1-based line/column of the violation.
  * @param message The human-readable violation message.
- * @param severity The violation severity.
- * @param rule The rule identifier.
- * @param symbol Optional symbol (recorded as `functionName`).
+ * @param classification Bundled severity/rule/symbol classification.
  * @returns A schema analyzer violation.
  */
 export function createSchemaViolation(
   file: string,
   location: { line: number; column: number },
   message: string,
-  severity: 'critical' | 'warning' | 'suggestion',
-  rule: string,
-  symbol?: string
+  classification: SchemaViolationClassification
 ): Violation {
   const v: Violation = {
     file,
     line: location.line,
     column: location.column,
-    severity,
+    severity: classification.severity,
     message,
-    rule,
+    rule: classification.rule,
     analyzer: 'schema'
   };
-  if (symbol) {
-    v.functionName = symbol;
+  if (classification.symbol) {
+    v.functionName = classification.symbol;
   }
   return v;
 }

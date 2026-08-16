@@ -290,16 +290,16 @@ describe('Oracle: Data-access true positives', () => {
     expect(r.loopQuery[0].severity).toBe('warning');
   });
 
-  it('item 4: SQL injection via string concatenation → sql-injection-risk fires at suggestion', async () => {
+  it('item 4: SQL injection via string concatenation → sql-injection-risk fires at warning', async () => {
     const r = await runDataAccessAnalyzer(fixturePath('item-04-real-sql-injection.ts'));
     expect(r.sqlInjection.length, 'Item 4: concatenated user input — sql-injection-risk MUST fire').toBeGreaterThan(0);
-    expect(r.sqlInjection[0].severity).toBe('suggestion');
+    expect(r.sqlInjection[0].severity).toBe('warning');
   });
 
-  it('item 7: template literal injection → sql-injection-risk fires at suggestion', async () => {
+  it('item 7: template literal injection → sql-injection-risk fires at warning', async () => {
     const r = await runDataAccessAnalyzer(fixturePath('item-07-real-template-injection.ts'));
     expect(r.sqlInjection.length, 'Item 7: template literal with ${filter} — sql-injection-risk MUST fire').toBeGreaterThan(0);
-    expect(r.sqlInjection[0].severity).toBe('suggestion');
+    expect(r.sqlInjection[0].severity).toBe('warning');
   });
 
   it('item 8: nested N+1 (outer + per-row child queries) → loop-query fires at warning', async () => {

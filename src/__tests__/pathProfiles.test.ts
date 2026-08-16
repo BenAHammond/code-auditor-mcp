@@ -24,12 +24,12 @@ describe('resolvePathProfile', () => {
     {
       name: 'scripts-lenient',
       paths: ['scripts/**'],
-      overrides: { severityCap: 'suggestion', requireFunctionDocs: true },
+      overrides: { excludeFromGate: true, requireFunctionDocs: true },
     },
     {
       name: 'tests-override',
       paths: ['src/__tests__/**'],
-      overrides: { severityCap: 'warning', maxLinesPerMethod: 100 },
+      overrides: { excludeFromGate: true, maxLinesPerMethod: 100 },
     },
   ];
 
@@ -41,7 +41,7 @@ describe('resolvePathProfile', () => {
       profiles,
     );
     expect(result.overrides).toEqual({ requireFunctionDocs: true, maxLinesPerMethod: 50 });
-    expect(result.severityCap).toBeUndefined();
+    expect(result.excludeFromGate).toBe(false);
     expect(result.matchedProfileNames).toEqual(['source-strict']);
   });
 
@@ -53,7 +53,7 @@ describe('resolvePathProfile', () => {
       profiles,
     );
     expect(result.overrides).toEqual({});
-    expect(result.severityCap).toBeUndefined();
+    expect(result.excludeFromGate).toBe(false);
     expect(result.matchedProfileNames).toEqual([]);
   });
 
@@ -66,8 +66,8 @@ describe('resolvePathProfile', () => {
     );
     // source-strict sets maxLinesPerMethod: 50, tests-override sets maxLinesPerMethod: 100
     expect(result.overrides.maxLinesPerMethod).toBe(100);
-    // severityCap comes from tests-override (later wins over source-strict which had none)
-    expect(result.severityCap).toBe('warning');
+    // excludeFromGate comes from tests-override (later wins over source-strict which had none)
+    expect(result.excludeFromGate).toBe(true);
     // requireFunctionDocs is set by source-strict, also set by scripts-lenient (but
     // scripts-lenient doesn't match), so source-strict's value persists
     expect(result.overrides.requireFunctionDocs).toBe(true);
@@ -75,18 +75,18 @@ describe('resolvePathProfile', () => {
     expect(result.matchedProfileNames).toEqual(['source-strict', 'tests-override']);
   });
 
-  // Test 4: severityCap extracted, not in overrides
-  it('extracts severityCap separately, not in overrides', () => {
+  // Test 4: excludeFromGate extracted, not in overrides
+  it('extracts excludeFromGate separately, not in overrides', () => {
     const result = resolvePathProfile(
       `${PROJECT_ROOT}/scripts/deploy.ts`,
       PROJECT_ROOT,
       [
-        { name: 'scripts', paths: ['scripts/**'], overrides: { severityCap: 'suggestion', requireFunctionDocs: true } },
+        { name: 'scripts', paths: ['scripts/**'], overrides: { excludeFromGate: true, requireFunctionDocs: true } },
       ],
     );
-    expect(result.severityCap).toBe('suggestion');
+    expect(result.excludeFromGate).toBe(true);
     expect(result.overrides).toEqual({ requireFunctionDocs: true });
-    expect('severityCap' in result.overrides).toBe(false);
+    expect('excludeFromGate' in result.overrides).toBe(false);
   });
 
   // Test 5: Glob patterns work via picomatch
@@ -142,25 +142,38 @@ describe('validateConfig — pathProfiles', () => {
     showProgress: false,
   };
 
-  // Test 15: Invalid severityCap value
-  it('rejects invalid severityCap values', () => {
+  // Test 15: severityCap has been removed (Spec-36 R4)
+  it('rejects the removed severityCap key (Spec-36 R4)', () => {
     const config: AuditConfig = {
       ...baseConfig,
       pathProfiles: [
-        { name: 'bad', paths: ['src/**'], overrides: { severityCap: 'sugession' } },
+        { name: 'bad', paths: ['src/**'], overrides: { severityCap: 'suggestion' } },
       ],
     };
     const errors = validateConfig(config);
     const capErrors = errors.filter(e => e.includes('severityCap'));
     expect(capErrors.length).toBeGreaterThan(0);
-    expect(capErrors[0]).toContain('sugession');
+    expect(capErrors[0]).toContain('removed');
   });
 
-  it('accepts valid severityCap values', () => {
+  it('rejects non-boolean excludeFromGate values', () => {
     const config: AuditConfig = {
       ...baseConfig,
       pathProfiles: [
-        { name: 'good', paths: ['src/**'], overrides: { severityCap: 'warning' } },
+        { name: 'bad', paths: ['src/**'], overrides: { excludeFromGate: 'yes' } },
+      ],
+    };
+    const errors = validateConfig(config);
+    const gateErrors = errors.filter(e => e.includes('excludeFromGate'));
+    expect(gateErrors.length).toBeGreaterThan(0);
+    expect(gateErrors[0]).toContain('yes');
+  });
+
+  it('accepts boolean excludeFromGate values', () => {
+    const config: AuditConfig = {
+      ...baseConfig,
+      pathProfiles: [
+        { name: 'good', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
     };
     const errors = validateConfig(config);
@@ -238,13 +251,13 @@ describe('mergePathProfiles', () => {
 
   it('replaces built-in profile when user profile has same name with builtin: false', () => {
     const userProfiles: PathProfile[] = [
-      { name: 'scripts-and-tests', paths: ['custom/**'], overrides: { severityCap: 'critical' }, builtin: false },
+      { name: 'scripts-and-tests', paths: ['custom/**'], overrides: { excludeFromGate: true }, builtin: false },
     ];
     const result = mergePathProfiles(userProfiles, undefined);
     // Should have the user's scripts-and-tests, not the built-in
     const profile = result?.find(p => p.name === 'scripts-and-tests');
     expect(profile?.paths).toEqual(['custom/**']);
-    expect(profile?.overrides).toEqual({ severityCap: 'critical' });
+    expect(profile?.overrides).toEqual({ excludeFromGate: true });
     // Should not have any built-in profiles
     expect(result?.length).toBe(1);
   });
@@ -277,7 +290,9 @@ export function undocumentedFn(items: number[]): number {
 
 /**
  * Helper: pass a promodoc override to elevate documentation violations
- * above the default 'suggestion' so severityCap is observable.
+ * above the default 'suggestion' so gate exclusion is observable without
+ * conflating it with a severity change. Gate exclusion must leave severity
+ * untouched — so a gate-excluded file still reports 'critical'.
  */
 const PROMOTE_DOCS_TO_CRITICAL = { 'function-documentation': 'critical' as const };
 
@@ -304,10 +319,11 @@ describe('pathProfiles — integration', () => {
       .filter((v: any) => v.file.includes(filePattern));
   }
 
-  // Test 7: Different severity per directory.
-  // src/ gets a doc-required profile (no cap); scripts/ gets a cap to
-  // suggestion.  We promote docs violations globally to critical so the
-  // cap is observable: src → critical, scripts → suggestion.
+  // Test 7: Different gate exclusion per directory.
+  // src/ gets a doc-required profile (no exclusion); scripts/ is excluded
+  // from the gate.  We promote docs violations globally to critical so the
+  // "severity unchanged" property is observable: src → critical, scripts →
+  // critical (gate-excluded, but severity untouched).
   it('applies per-directory profile overrides during audit (Test 7)', async () => {
     const srcDir = path.join(testDir, 'src');
     const scriptsDir = path.join(testDir, 'scripts');
@@ -323,7 +339,7 @@ describe('pathProfiles — integration', () => {
       severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       pathProfiles: [
         { name: 'source-strict', paths: ['src/**'], overrides: { requireFunctionDocs: true } },
-        { name: 'scripts-lenient', paths: ['scripts/**'], overrides: { severityCap: 'suggestion' } },
+        { name: 'scripts-lenient', paths: ['scripts/**'], overrides: { excludeFromGate: true } },
       ],
       showProgress: false,
     });
@@ -334,22 +350,25 @@ describe('pathProfiles — integration', () => {
     expect(srcV.length).toBeGreaterThan(0);
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // src has no cap → critical (from severityOverrides)
+    // src has no gate exclusion → critical (from severityOverrides), not excluded
     for (const v of srcV) {
       expect(v.severity).toBe('critical');
       expect(v.profile).toBe('source-strict');
+      expect(v.gateExcluded).toBeUndefined();
     }
-    // scripts is capped to suggestion
+    // scripts is gate-excluded, but severity is untouched (still critical)
     for (const v of scriptsV) {
-      expect(v.severity).toBe('suggestion');
+      expect(v.severity).toBe('critical');
       expect(v.profile).toBe('scripts-lenient');
+      expect(v.gateExcluded).toBe(true);
     }
   });
 
-  // Test 8: Invariant violation immune to profile cap.
+  // Test 8: Invariant violation immune to profile gate exclusion.
   // invariants analyzer never receives pathProfiles, so its violations
-  // are never capped — they keep their declared severity.
-  it('invariant violations are immune to severityCap (Test 8)', async () => {
+  // are never gate-excluded — they keep their declared severity and
+  // remain part of the blocking gate.
+  it('invariant violations are immune to gate exclusion (Test 8)', async () => {
     await mkdir(path.join(testDir, 'src'), { recursive: true });
 
     await writeFile(path.join(testDir, 'src', 'banned-import.ts'), `
@@ -386,13 +405,16 @@ export function foo() { return something(); }
       expect(v.severity).toBe('critical');
       // Profile must NOT be set (invariants never receive profiles)
       expect(v.profile).toBeUndefined();
+      // Gate exclusion must NOT be set (invariants never receive profiles)
+      expect(v.gateExcluded).toBeUndefined();
     }
   });
 
-  // Test 9: severityCap beats severityOverrides.
+  // Test 9: gate exclusion leaves severity untouched.
   // Global severityOverrides promotes function-documentation to critical,
-  // but path profile caps src/** to suggestion.  Cap must win.
-  it('severityCap after severityOverrides — cap wins (Test 9)', async () => {
+  // and path profile excludes src/** from the gate.  Severity must remain
+  // critical — exclusion never softens a finding (Spec-36 R4).
+  it('gate exclusion after severityOverrides — severity untouched (Test 9)', async () => {
     await mkdir(path.join(testDir, 'src'), { recursive: true });
 
     await writeFile(path.join(testDir, 'src', 'module.ts'), EXPORTED_FN_SRC, 'utf-8');
@@ -402,7 +424,7 @@ export function foo() { return something(); }
       enabledAnalyzers: ['documentation'],
       severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       pathProfiles: [
-        { name: 'capped', paths: ['src/**'], overrides: { severityCap: 'suggestion' } },
+        { name: 'excluded', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
       showProgress: false,
     });
@@ -410,24 +432,26 @@ export function foo() { return something(); }
     const docsV = violationsFor(result, 'src/module.ts');
     expect(docsV.length).toBeGreaterThan(0);
 
-    // Cap must win — severity is suggestion, not critical
+    // Exclusion must NOT soften — severity stays critical, only gateExcluded set
     for (const v of docsV) {
-      expect(v.severity).toBe('suggestion');
-      expect(v.profile).toBe('capped');
+      expect(v.severity).toBe('critical');
+      expect(v.profile).toBe('excluded');
+      expect(v.gateExcluded).toBe(true);
     }
   });
 
-  // Test 10: Baseline fingerprint stable under profile severity cap.
-  // severity overrides promote to "critical" → first run sees "critical";
-  // second run adds a profile severityCap: "suggestion" → severity drops
-  // to "suggestion".  The fingerprint (symbol) MUST stay identical because
-  // it is intentionally severity-free.
-  it('baseline fingerprint is stable under profile severity cap (Test 10)', async () => {
+  // Test 10: Baseline fingerprint stable under gate exclusion.
+  // severity overrides promote to "critical" → first run sees "critical",
+  // no gate exclusion; second run adds a profile excludeFromGate: true →
+  // severity stays "critical", only gateExcluded flips.  The fingerprint
+  // (symbol) MUST stay identical because it is intentionally
+  // severity-free AND gate-free.
+  it('baseline fingerprint is stable under gate exclusion (Test 10)', async () => {
     await mkdir(path.join(testDir, 'src'), { recursive: true });
 
     await writeFile(path.join(testDir, 'src', 'module.ts'), EXPORTED_FN_SRC, 'utf-8');
 
-    // Audit 1: promoted to critical, no cap
+    // Audit 1: promoted to critical, no exclusion
     const result1 = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
@@ -437,32 +461,34 @@ export function foo() { return something(); }
     const v1 = violationsFor(result1, 'src/module.ts');
     expect(v1.length).toBeGreaterThan(0);
     expect(v1[0].severity).toBe('critical');
+    expect(v1[0].gateExcluded).toBeUndefined();
 
-    // Audit 2: same promotion, but profile caps to suggestion
+    // Audit 2: same promotion, but profile excludes from gate
     const result2 = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
       severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       pathProfiles: [
-        { name: 'capped', paths: ['src/**'], overrides: { severityCap: 'suggestion' } },
+        { name: 'excluded', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
       showProgress: false,
     });
     const v2 = violationsFor(result2, 'src/module.ts');
     expect(v2.length).toBeGreaterThan(0);
-    expect(v2[0].severity).toBe('suggestion');
+    expect(v2[0].severity).toBe('critical');
+    expect(v2[0].gateExcluded).toBe(true);
 
-    // Severities differ
-    expect(v1.map((v: any) => v.severity)).not.toEqual(v2.map((v: any) => v.severity));
+    // Gate exclusion differs
+    expect(v1.map((v: any) => v.gateExcluded)).not.toEqual(v2.map((v: any) => v.gateExcluded));
 
-    // Fingerprints (symbol field) must be identical — severity-free
+    // Fingerprints (symbol field) must be identical — gate-free
     expect(v1.map((v: any) => v.symbol).sort())
       .toEqual(v2.map((v: any) => v.symbol).sort());
   });
 
   // Test 11: Built-in scripts-and-tests profile activates.
-  // A file in scripts/ matches the built-in profile and is capped.
-  it('built-in scripts-and-tests profile caps to suggestion (Test 11)', async () => {
+  // A file in scripts/ matches the built-in profile and is gate-excluded.
+  it('built-in scripts-and-tests profile excludes from gate (Test 11)', async () => {
     await mkdir(path.join(testDir, 'scripts'), { recursive: true });
 
     await writeFile(path.join(testDir, 'scripts', 'deploy.ts'), EXPORTED_FN_SRC, 'utf-8');
@@ -479,17 +505,18 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Built-in caps to suggestion
+    // Built-in excludes from gate; severity stays critical
     for (const v of scriptsV) {
-      expect(v.severity).toBe('suggestion');
+      expect(v.severity).toBe('critical');
       expect(v.profile).toBe('scripts-and-tests');
+      expect(v.gateExcluded).toBe(true);
     }
   });
 
   // Test 12: Built-in scripts-and-tests profile is always active by default.
-  // A scripts/ file should be capped to suggestion even without user-defined
+  // A scripts/ file should be gate-excluded even without user-defined
   // pathProfiles, because the built-in profile is always merged.
-  it('built-in profile caps scripts violations to suggestion by default (Test 12)', async () => {
+  it('built-in profile excludes scripts violations from gate by default (Test 12)', async () => {
     await mkdir(path.join(testDir, 'scripts'), { recursive: true });
 
     await writeFile(path.join(testDir, 'scripts', 'deploy.ts'), EXPORTED_FN_SRC, 'utf-8');
@@ -505,17 +532,18 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Built-in caps to suggestion even when severityOverrides promote to critical
+    // Built-in excludes from gate even when severityOverrides promote to critical
     for (const v of scriptsV) {
-      expect(v.severity).toBe('suggestion');
+      expect(v.severity).toBe('critical');
       expect(v.profile).toBe('scripts-and-tests');
+      expect(v.gateExcluded).toBe(true);
     }
   });
 
   // Test 12b: builtin: false disables built-in profiles.
   // With severityOverrides promoting to critical, a scripts/ file should
-  // stay at critical when built-in profiles are explicitly disabled.
-  it('builtin: false disables built-in scripts-and-tests cap (Test 12b)', async () => {
+  // NOT be gate-excluded when built-in profiles are explicitly disabled.
+  it('builtin: false disables built-in scripts-and-tests exclusion (Test 12b)', async () => {
     await mkdir(path.join(testDir, 'scripts'), { recursive: true });
 
     await writeFile(path.join(testDir, 'scripts', 'deploy.ts'), EXPORTED_FN_SRC, 'utf-8');
@@ -532,9 +560,11 @@ export function foo() { return something(); }
     expect(scriptsV.length).toBeGreaterThan(0);
 
     // Without built-in profile, severity stays at critical (from overrides)
+    // and the file is NOT gate-excluded.
     for (const v of scriptsV) {
       expect(v.severity).toBe('critical');
       expect(v.profile).toBeUndefined();
+      expect(v.gateExcluded).toBeUndefined();
     }
   });
 
@@ -567,7 +597,7 @@ export function foo() { return something(); }
   it('resolves profiles for a specific file path (Test 14)', async () => {
     const profiles: PathProfile[] = [
       { name: 'source-strict', paths: ['src/**'], overrides: { requireFunctionDocs: true } },
-      { name: 'scripts-lenient', paths: ['scripts/**'], overrides: { severityCap: 'suggestion' } },
+      { name: 'scripts-lenient', paths: ['scripts/**'], overrides: { excludeFromGate: true } },
     ];
 
     const resolved = resolvePathProfile(
@@ -578,6 +608,6 @@ export function foo() { return something(); }
 
     expect(resolved.matchedProfileNames).toEqual(['source-strict']);
     expect(resolved.overrides).toEqual({ requireFunctionDocs: true });
-    expect(resolved.severityCap).toBeUndefined();
+    expect(resolved.excludeFromGate).toBe(false);
   });
 });

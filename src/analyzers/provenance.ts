@@ -284,57 +284,67 @@ export function extractValidatorProvenancedImports(
  */
 function propagateVariableDeclaration(
   node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  provenanceMap: Map<string, ProvenanceEvidence>,
+  ctx: PropagationContext,
 ): boolean {
   const { nameNode, valueNode, typeAnnotationNode } =
-    splitVariableDeclarator(node, adapter);
+    splitVariableDeclarator(node, ctx.adapter);
 
   if (!nameNode) return false;
 
   let mutated = false;
 
   // Rule 8: type annotation — let x: D1Database
-  if (typeAnnotationNode && nameNode.type === 'identifier') {
-    const typeText = adapter.getNodeText(typeAnnotationNode, sourceCode).trim();
-    if (DB_TYPES.has(typeText)) {
-      const name = adapter.getNodeText(nameNode, sourceCode);
-      if (!provenanceMap.has(name)) {
-        provenanceMap.set(name, {
-          identifier: name,
-          reason: 'type',
-          source: `type annotation ${typeText}`,
-          chain: [],
-        });
-        mutated = true;
-      }
-      // Type-provenanced names count as DB-provenanced for further propagation
-    }
+  if (typeAnnotationNode) {
+    mutated = propagateFromTypeAnnotation(nameNode, typeAnnotationNode, ctx);
   }
 
   if (valueNode) {
-    const propagated = tryPropagateFromExpression(
-      valueNode,
-      adapter,
-      sourceCode,
-      provenanceMap,
-    );
+    mutated = propagateFromValue(nameNode, valueNode, ctx) || mutated;
+  }
 
-    if (propagated) {
-      // Extract the variable name(s) from the name node
-      const varNames = extractPatternNames(nameNode, adapter, sourceCode);
-      for (const varName of varNames) {
-        if (!provenanceMap.has(varName)) {
-          provenanceMap.set(varName, {
-            identifier: varName,
-            reason: 'propagation',
-            source: propagated.source,
-            chain: [...propagated.chain, propagated.identifier],
-          });
-          mutated = true;
-        }
-      }
+  return mutated;
+}
+
+/** Rule 8: type annotation — `let x: D1Database`. */
+function propagateFromTypeAnnotation(
+  nameNode: ASTNode,
+  typeAnnotationNode: ASTNode,
+  ctx: PropagationContext,
+): boolean {
+  if (nameNode.type !== 'identifier') return false;
+  const typeText = ctx.adapter.getNodeText(typeAnnotationNode, ctx.sourceCode).trim();
+  if (!DB_TYPES.has(typeText)) return false;
+  const name = ctx.adapter.getNodeText(nameNode, ctx.sourceCode);
+  if (ctx.provenanceMap.has(name)) return false;
+  ctx.provenanceMap.set(name, {
+    identifier: name,
+    reason: 'type',
+    source: `type annotation ${typeText}`,
+    chain: [],
+  });
+  return true;
+}
+
+/** Propagate provenance from a declarator's value expression into its names. */
+function propagateFromValue(
+  nameNode: ASTNode,
+  valueNode: ASTNode,
+  ctx: PropagationContext,
+): boolean {
+  const propagated = tryPropagateFromExpression(
+    valueNode, ctx.adapter, ctx.sourceCode, ctx.provenanceMap,
+  );
+  if (!propagated) return false;
+  let mutated = false;
+  for (const varName of extractPatternNames(nameNode, ctx.adapter, ctx.sourceCode)) {
+    if (!ctx.provenanceMap.has(varName)) {
+      ctx.provenanceMap.set(varName, {
+        identifier: varName,
+        reason: 'propagation',
+        source: propagated.source,
+        chain: [...propagated.chain, propagated.identifier],
+      });
+      mutated = true;
     }
   }
   return mutated;
@@ -433,15 +443,25 @@ function propagateClassField(
  * Rules 1-8 (spec R1): variable declarations (1-3, 8), default parameters
  * (6), and class field initialization (7).
  */
+/**
+ * Single-file propagation scan context — bundles the adapter, source text,
+ * and the mutable provenance map so the rule dispatcher takes one context
+ * object rather than three trailing positional arguments.
+ */
+interface PropagationContext {
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  provenanceMap: Map<string, ProvenanceEvidence>;
+}
+
 function applyPropagationRule(
   node: ASTNode,
   parent: ASTNode | null,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  provenanceMap: Map<string, ProvenanceEvidence>,
+  ctx: PropagationContext,
 ): boolean {
+  const { adapter, sourceCode, provenanceMap } = ctx;
   if (node.type === 'variable_declarator') {
-    return propagateVariableDeclaration(node, adapter, sourceCode, provenanceMap);
+    return propagateVariableDeclaration(node, ctx);
   }
 
   if (
@@ -488,6 +508,7 @@ export function propagateProvenance(
 ): Map<string, ProvenanceEvidence> {
   // Work on a copy so we can add newly-provenanced identifiers during the walk
   const provenanceMap = new Map(seedMap);
+  const ctx: PropagationContext = { adapter, sourceCode, provenanceMap };
   // Keep iterating until no new identifiers are discovered (handles chains)
   let changed = true;
   let iterations = 0;
@@ -498,7 +519,7 @@ export function propagateProvenance(
     iterations++;
 
     walkAST(ast.root, (node, parent) => {
-      if (applyPropagationRule(node, parent, adapter, sourceCode, provenanceMap)) {
+      if (applyPropagationRule(node, parent, ctx)) {
         changed = true;
       }
     });
@@ -538,28 +559,8 @@ function tryPropagateFromExpression(
   // ── Rule 2: drizzle(env.DB) — call where callee is DB-provenanced ──
   // ── Rule 3: db.prepare(sql) — member expression call on DB receiver ──
   if (node.type === 'call_expression') {
-    // Walk children before arguments to get the callee
-    const calleeNode = getCallExpressionCallee(node, adapter);
-    if (calleeNode) {
-      // Case: simple identifier call — drizzle(...)
-      if (calleeNode.type === 'identifier') {
-        const name = adapter.getNodeText(calleeNode, sourceCode);
-        if (name && provenanceMap.has(name)) {
-          return provenanceMap.get(name)!;
-        }
-      }
-      // Case: member expression — db.prepare(...)
-      if (calleeNode.type === 'member_expression') {
-        const receiver = getMemberExpressionReceiver(
-          calleeNode,
-          adapter,
-          sourceCode,
-        );
-        if (receiver && provenanceMap.has(receiver)) {
-          return provenanceMap.get(receiver)!;
-        }
-      }
-    }
+    const viaCall = tryCallProvenance(node, adapter, sourceCode, provenanceMap);
+    if (viaCall) return viaCall;
   }
 
   // ── Simple identifier reference (for destructuring sources) ──
@@ -573,6 +574,41 @@ function tryPropagateFromExpression(
   // ── Member expression on DB-provenanced source (for non-call uses) ──
   if (node.type === 'member_expression') {
     const receiver = getMemberExpressionReceiver(node, adapter, sourceCode);
+    if (receiver && provenanceMap.has(receiver)) {
+      return provenanceMap.get(receiver)!;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Rule 2/3: check a call_expression whose callee is either a DB-provenanced
+ * identifier (e.g. `drizzle(...)`) or a member expression on a DB receiver
+ * (e.g. `db.prepare(sql)`).
+ */
+function tryCallProvenance(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceMap: Map<string, ProvenanceEvidence>,
+): ProvenanceEvidence | null {
+  const calleeNode = getCallExpressionCallee(node, adapter);
+  if (!calleeNode) return null;
+
+  // Case: simple identifier call — drizzle(...)
+  if (calleeNode.type === 'identifier') {
+    const name = adapter.getNodeText(calleeNode, sourceCode);
+    if (name && provenanceMap.has(name)) {
+      return provenanceMap.get(name)!;
+    }
+  }
+
+  // Case: member expression — db.prepare(...)
+  if (calleeNode.type === 'member_expression') {
+    const receiver = getMemberExpressionReceiver(
+      calleeNode, adapter, sourceCode,
+    );
     if (receiver && provenanceMap.has(receiver)) {
       return provenanceMap.get(receiver)!;
     }
@@ -648,55 +684,59 @@ function extractPatternNames(
   sourceCode: string,
 ): string[] {
   const names: string[] = [];
+  collectPatternNames(node, adapter, sourceCode, names);
+  return names;
+}
 
-  function collect(node: ASTNode): void {
-    if (node.type === 'identifier') {
-      const name = adapter.getNodeText(node, sourceCode);
-      if (name) names.push(name);
-    } else if (node.type === 'object_pattern') {
-      // Each child is a shorthand_property_identifier, pair_pattern, or rest_pattern
-      for (const child of adapter.getChildren(node)) {
-        if (
-          child.type === '{' ||
-          child.type === '}' ||
-          child.type === ','
-        ) {
-          continue;
-        }
-        if (child.type === 'shorthand_property_identifier') {
-          const name = adapter.getNodeText(child, sourceCode);
-          if (name) names.push(name);
-        } else if (child.type === 'pair_pattern') {
-          // pair_pattern children: [property, value]
-          // Extract from the value side (which might be an identifier or nested pattern)
-          const pairChildren = adapter.getChildren(child);
-          if (pairChildren.length >= 2) {
-            collect(pairChildren[1]);
-          }
-        } else if (child.type === 'rest_pattern') {
-          collectChildren(child, adapter, sourceCode, names);
-        } else {
-          collect(child);
-        }
-      }
-    } else if (node.type === 'array_pattern') {
-      for (const child of adapter.getChildren(node)) {
-        if (child.type === '[' || child.type === ']' || child.type === ',') {
-          continue;
-        }
-        collect(child);
-      }
-    } else if (node.type === 'assignment_pattern') {
-      // Default value in destructuring — collect from the left side
-      const children = adapter.getChildren(node);
-      if (children.length >= 1) {
-        collect(children[0]);
-      }
-    }
+/** Recursively collect identifier names from a destructuring pattern node. */
+function collectPatternNames(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  names: string[],
+): void {
+  if (node.type === 'identifier') {
+    const name = adapter.getNodeText(node, sourceCode);
+    if (name) names.push(name);
+    return;
   }
 
-  collect(node);
-  return names;
+  if (node.type === 'object_pattern') {
+    for (const child of adapter.getChildren(node)) {
+      if (child.type === '{' || child.type === '}' || child.type === ',') continue;
+      if (child.type === 'shorthand_property_identifier') {
+        const name = adapter.getNodeText(child, sourceCode);
+        if (name) names.push(name);
+      } else if (child.type === 'pair_pattern') {
+        // pair_pattern children: [property, value] — collect from value side
+        const pairChildren = adapter.getChildren(child);
+        if (pairChildren.length >= 2) {
+          collectPatternNames(pairChildren[1], adapter, sourceCode, names);
+        }
+      } else if (child.type === 'rest_pattern') {
+        collectChildren(child, adapter, sourceCode, names);
+      } else {
+        collectPatternNames(child, adapter, sourceCode, names);
+      }
+    }
+    return;
+  }
+
+  if (node.type === 'array_pattern') {
+    for (const child of adapter.getChildren(node)) {
+      if (child.type === '[' || child.type === ']' || child.type === ',') continue;
+      collectPatternNames(child, adapter, sourceCode, names);
+    }
+    return;
+  }
+
+  // assignment_pattern — default value in destructuring, collect from left side
+  if (node.type === 'assignment_pattern') {
+    const children = adapter.getChildren(node);
+    if (children.length >= 1) {
+      collectPatternNames(children[0], adapter, sourceCode, names);
+    }
+  }
 }
 
 function collectChildren(
@@ -904,13 +944,11 @@ export function buildProvenanceContext(
   // 3. Fallback: in hybrid mode, add identifiers that match name lists
   //    but weren't caught by provenance (R3)
   if (mode === 'hybrid') {
-    dbProvenanced = addNameListFallbacks(
-      dbProvenanced,
-      sourceCode,
-      options.dbReceiverNames ?? [],
-      options.dbBindingNames ?? [],
-      options.dbWrapperNames ?? [],
-    );
+    dbProvenanced = addNameListFallbacks(dbProvenanced, sourceCode, {
+      dbReceiverNames: options.dbReceiverNames ?? [],
+      dbBindingNames: options.dbBindingNames ?? [],
+      dbWrapperNames: options.dbWrapperNames ?? [],
+    });
   }
 
   // 4. In names mode, use ONLY name lists
@@ -937,69 +975,79 @@ export function buildProvenanceContext(
  * These entries carry `reason: 'fallback'` — visible in config detection
  * so users can audit and tighten their chains.
  */
+/**
+ * Name-list inputs for fallback provenance. Bundles the three configured name
+ * lists so the fallback builder takes a single name-lists object rather than
+ * three trailing positional arrays.
+ */
+interface NameLists {
+  dbReceiverNames: string[];
+  dbBindingNames: string[];
+  dbWrapperNames: string[];
+}
+
 function addNameListFallbacks(
   provenanceMap: Map<string, ProvenanceEvidence>,
   sourceCode: string,
-  dbReceiverNames: string[],
-  dbBindingNames: string[],
-  dbWrapperNames: string[],
+  nameLists: NameLists,
 ): Map<string, ProvenanceEvidence> {
+  const { dbReceiverNames, dbBindingNames, dbWrapperNames } = nameLists;
   const result = new Map(provenanceMap);
 
-  // Scan for DB receiver names used as identifiers
-  for (const name of dbReceiverNames) {
-    if (result.has(name)) continue; // already provenanced — provenance wins
-    // Check if this name appears as an identifier in the source
-    if (identifierAppearsInSource(sourceCode, name)) {
-      result.set(name, {
-        identifier: name,
-        reason: 'fallback',
-        source: `name list match: dbReceiverNames contains "${name}"`,
-        chain: [],
-      });
-    }
-  }
-
-  // Scan for binding names like env.DB
-  for (const binding of dbBindingNames) {
-    if (sourceCode.includes(binding)) {
-      // Extract the property after the dot, e.g. "DB" from "env.DB"
-      const dotIdx = binding.lastIndexOf('.');
-      const shortName = dotIdx >= 0 ? binding.substring(dotIdx + 1) : binding;
-      // Also add the full binding path
-      if (!result.has(binding)) {
-        result.set(binding, {
-          identifier: binding,
-          reason: 'fallback',
-          source: `name list match: dbBindingNames contains "${binding}"`,
-          chain: [],
-        });
-      }
-      if (shortName !== binding && !result.has(shortName)) {
-        result.set(shortName, {
-          identifier: shortName,
-          reason: 'fallback',
-          source: `from binding ${binding}`,
-          chain: [],
-        });
-      }
-    }
-  }
-
-  // Scan for DB wrapper function names (e.g. d1Query, d1Exec)
-  for (const name of dbWrapperNames) {
-    if (result.has(name)) continue;
-    if (identifierAppearsInSource(sourceCode, name)) {
-      result.set(name, {
-        identifier: name,
-        reason: 'fallback',
-        source: `name list match: dbWrapperNames contains "${name}"`,
-        chain: [],
-      });
-    }
-  }
+  addIdentifierFallbacks(result, sourceCode, dbReceiverNames, 'dbReceiverNames');
+  addBindingFallbacks(result, sourceCode, dbBindingNames);
+  addIdentifierFallbacks(result, sourceCode, dbWrapperNames, 'dbWrapperNames');
 
   return result;
+}
+
+/** Add fallback entries for identifiers that appear in source but lack provenance. */
+function addIdentifierFallbacks(
+  result: Map<string, ProvenanceEvidence>,
+  sourceCode: string,
+  names: string[],
+  label: string,
+): void {
+  for (const name of names) {
+    if (result.has(name)) continue; // already provenanced — provenance wins
+    if (identifierAppearsInSource(sourceCode, name)) {
+      result.set(name, {
+        identifier: name,
+        reason: 'fallback',
+        source: `name list match: ${label} contains "${name}"`,
+        chain: [],
+      });
+    }
+  }
+}
+
+/** Add fallback entries for binding names like `env.DB` (plus their short forms). */
+function addBindingFallbacks(
+  result: Map<string, ProvenanceEvidence>,
+  sourceCode: string,
+  bindings: string[],
+): void {
+  for (const binding of bindings) {
+    if (!sourceCode.includes(binding)) continue;
+    const dotIdx = binding.lastIndexOf('.');
+    const shortName = dotIdx >= 0 ? binding.substring(dotIdx + 1) : binding;
+    if (!result.has(binding)) {
+      result.set(binding, {
+        identifier: binding,
+        reason: 'fallback',
+        source: `name list match: dbBindingNames contains "${binding}"`,
+        chain: [],
+      });
+    }
+    if (shortName !== binding && !result.has(shortName)) {
+      result.set(shortName, {
+        identifier: shortName,
+        reason: 'fallback',
+        source: `from binding ${binding}`,
+        chain: [],
+      });
+    }
+  }
 }
 
 /**
@@ -1011,13 +1059,11 @@ function buildNamesOnlyProvenance(
   dbBindingNames: string[],
   dbWrapperNames: string[],
 ): Map<string, ProvenanceEvidence> {
-  return addNameListFallbacks(
-    new Map(),
-    sourceCode,
+  return addNameListFallbacks(new Map(), sourceCode, {
     dbReceiverNames,
     dbBindingNames,
     dbWrapperNames,
-  );
+  });
 }
 
 /** Check if an identifier name appears as a standalone identifier in source. */
@@ -1039,6 +1085,19 @@ function escapeRegex(s: string): string {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * Bundled inputs for the DB-provenance decision helpers: the adapter and
+ * source needed to read node text, the resolved provenance context, and the
+ * (already defaulted) set of DB call methods.  Collapses the five positional
+ * parameters the `isDB*` family used to thread through every call into one.
+ */
+interface DBProvenanceQuery {
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  context: ProvenanceContext;
+  methods: ReadonlySet<string>;
+}
+
+/**
  * Determine if a call-expression node's callee is DB-provenanced.
  *
  * This replaces the old `isDBCallee()` / `isDbCallNode()` name-based
@@ -1049,23 +1108,15 @@ function escapeRegex(s: string): string {
  *   2. Member expression call → is the receiver DB-provenanced AND is the
  *      method in the DB call method set?
  *   3. ORM patterns → receiver is DB-provenanced and method matches ORM API
- * @param adapter
- * @param context
- * @param dbCallMethods
- * @param node
- * @param sourceCode
- * @returns
+ *
+ * @param node  the call-expression node whose callee is under test
+ * @param query  bundled adapter, source, provenance context, and DB methods
+ * @returns  true if the call's callee resolves to a DB-provenanced target
  */
-export function isDBProvenanced(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  context: ProvenanceContext,
-  dbCallMethods?: ReadonlySet<string>,
-): boolean {
+export function isDBProvenanced(node: ASTNode, query: DBProvenanceQuery): boolean {
   if (node.type !== 'call_expression') return false;
 
-  const methods = dbCallMethods ?? DB_CALL_METHODS;
+  const { adapter, sourceCode, context, methods } = query;
   const calleeNode = getCallExpressionCallee(node, adapter);
   if (!calleeNode) return false;
 
@@ -1088,13 +1139,7 @@ export function isDBProvenanced(
 
   // Case 2: Member expression — e.g. db.prepare(...)
   if (calleeNode.type === 'member_expression' || calleeNode.type === 'selector_expression') {
-    return isMemberExpressionDBProvenanced(
-      calleeNode,
-      adapter,
-      sourceCode,
-      context,
-      methods,
-    );
+    return isMemberExpressionDBProvenanced(calleeNode, query);
   }
 
   return false;
@@ -1107,46 +1152,14 @@ export function isDBProvenanced(
  * checks if it's in the provenance context, and verifies
  * the method matches the DB call/ORM API.
  */
-function isMemberExpressionDBProvenanced(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  context: ProvenanceContext,
-  methods: ReadonlySet<string>,
-): boolean {
-  // Walk the member expression chain to find the root
-  let rootReceiver: string | null = null;
-  let current: ASTNode = node;
-
-  while (current.type === 'member_expression' || current.type === 'selector_expression') {
-    const children = adapter.getChildren(current);
-    const firstChild = children[0];
-    if (!firstChild) break;
-
-    if (firstChild.type === 'identifier') {
-      rootReceiver = adapter.getNodeText(firstChild, sourceCode);
-      break;
-    }
-    if (firstChild.type === 'member_expression' || firstChild.type === 'selector_expression') {
-      // Compound receiver: env.DB.prepare → root is "env.DB", not "env".
-      // Returning the full text of the inner member expression ensures
-      // fallback entries match (e.g. dbBindingNames: ['env.DB']).
-      rootReceiver = adapter.getNodeText(firstChild, sourceCode);
-      break;
-    }
-    // this.db.prepare → root is a chain on `this`, check `this.xxx`
-    if (firstChild.type === 'this' || firstChild.type === 'super') {
-      rootReceiver = 'this';
-      break;
-    }
-    break;
-  }
-
+function isMemberExpressionDBProvenanced(node: ASTNode, query: DBProvenanceQuery): boolean {
+  const { adapter, sourceCode, context } = query;
+  const rootReceiver = findRootReceiver(node, adapter, sourceCode);
   if (!rootReceiver) return false;
 
   // In names mode, check the method name directly
   if (context.mode === 'names') {
-    return isDBMethodCall(node, adapter, sourceCode, context, methods);
+    return isDBMethodCall(node, query);
   }
 
   // Check if the root receiver is DB-provenanced.
@@ -1164,24 +1177,54 @@ function isMemberExpressionDBProvenanced(
   if (!matchesProvenance(rootReceiver)) {
     if (rootReceiver !== 'this') return false;
     // For `this.xxx`, check if the method chain itself suggests DB usage
-    return isDBMethodOnThis(node, adapter, sourceCode, context, methods);
+    return isDBMethodOnThis(node, query);
   }
 
   // Check that the method is in the DB call/ORM API
-  return isDBMethodCall(node, adapter, sourceCode, context, methods);
+  return isDBMethodCall(node, query);
+}
+
+/**
+ * Walk a member/selector expression chain to its root receiver text.
+ * Returns `'this'` for `this.xxx` chains and `null` when no root is found.
+ */
+function findRootReceiver(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  let current: ASTNode = node;
+
+  while (current.type === 'member_expression' || current.type === 'selector_expression') {
+    const children = adapter.getChildren(current);
+    const firstChild = children[0];
+    if (!firstChild) break;
+
+    if (firstChild.type === 'identifier') {
+      return adapter.getNodeText(firstChild, sourceCode);
+    }
+    if (firstChild.type === 'member_expression' || firstChild.type === 'selector_expression') {
+      // Compound receiver: env.DB.prepare → root is "env.DB", not "env".
+      // Returning the full text of the inner member expression ensures
+      // fallback entries match (e.g. dbBindingNames: ['env.DB']).
+      return adapter.getNodeText(firstChild, sourceCode);
+    }
+    // this.db.prepare → root is a chain on `this`, check `this.xxx`
+    if (firstChild.type === 'this' || firstChild.type === 'super') {
+      return 'this';
+    }
+    break;
+  }
+
+  return null;
 }
 
 /**
  * Check if a call through a member expression uses a DB method
  * (exec, prepare, all, etc.) or an ORM method (find, insert, etc.).
  */
-function isDBMethodCall(
-  node: ASTNode,
-  _adapter: LanguageAdapter,
-  _sourceCode: string,
-  _context: ProvenanceContext,
-  methods: ReadonlySet<string>,
-): boolean {
+function isDBMethodCall(node: ASTNode, query: DBProvenanceQuery): boolean {
+  const { adapter, sourceCode, methods } = query;
   // Walk the member expression chain and check each property
   let current: ASTNode = node;
   while (
@@ -1195,7 +1238,7 @@ function isDBMethodCall(
         child.type === 'property_identifier' ||
         child.type === 'field_identifier'
       ) {
-        const propName = _adapter.getNodeText(child, _sourceCode);
+        const propName = adapter.getNodeText(child, sourceCode);
         const lower = propName.toLowerCase();
         if (methods.has(lower) || ORM_METHODS.has(lower)) {
           return true;
@@ -1220,13 +1263,8 @@ function isDBMethodCall(
  * For `this.xxx.method()` calls — check if the method chain suggests
  * DB access. Used when the receiver is `this` (not directly DB-provenanced).
  */
-function isDBMethodOnThis(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  _context: ProvenanceContext,
-  methods: ReadonlySet<string>,
-): boolean {
+function isDBMethodOnThis(node: ASTNode, query: DBProvenanceQuery): boolean {
+  const { adapter, sourceCode, methods } = query;
   // Walk the chain: this.db.prepare → check if any property matches DB methods
   let current: ASTNode = node;
   while (
@@ -1305,50 +1343,61 @@ export function inferReceivers(
   // Step 1: Build an assignment graph — name → source text of initializer
   const assignmentGraph = buildAssignmentGraph(fileAst, adapter, sourceCode);
 
+  const ctx: InferReceiverContext = {
+    adapter, sourceCode, provenancedSet, assignmentGraph, seen, inferred,
+  };
+
   // Step 2: Walk all call expressions whose callee is a member expression
-  walkAST(fileAst.root, (node) => {
-    if (node.type !== 'call_expression') return;
-
-    const callee = getCallExpressionCallee(node, adapter);
-    if (!callee || (callee.type !== 'member_expression' && callee.type !== 'selector_expression')) return;
-
-    // Extract method name (the property being called)
-    const methodName = extractMemberExpressionProperty(
-      callee,
-      adapter,
-      sourceCode,
-    );
-    if (!methodName || !DB_CALL_METHODS.has(methodName.toLowerCase())) return;
-
-    // Get the receiver identifier
-    const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode);
-    if (!receiver) return;
-
-    // Already in the provenanced set → skip (already first-class, not inferred)
-    if (provenancedSet.has(receiver)) return;
-
-    // Already added to inferred
-    if (seen.has(receiver)) return;
-
-    // Step 3: Trace receiver through assignment chain to see if it reaches
-    // a provenanced source
-    const traced = traceAssignmentChain(
-      receiver,
-      assignmentGraph,
-      provenancedSet,
-    );
-
-    if (traced.found) {
-      seen.add(receiver);
-      inferred.identifiers.push(receiver);
-      inferred.evidence.push({
-        identifier: receiver,
-        reason: `calls .${methodName}() traced to ${traced.chains[0]} — ${traced.reason}`,
-      });
-    }
-  });
+  walkAST(fileAst.root, (node) => inferReceiverFromCall(node, ctx));
 
   return inferred;
+}
+
+/** Shared context threaded through the per-call receiver-inference walk. */
+interface InferReceiverContext {
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  provenancedSet: Map<string, ProvenanceEvidence>;
+  assignmentGraph: Map<string, string>;
+  seen: Set<string>;
+  inferred: InferredReceiverSet;
+}
+
+/** Infer a receiver from a single call_expression node, if it qualifies. */
+function inferReceiverFromCall(node: ASTNode, ctx: InferReceiverContext): void {
+  const { adapter, sourceCode, provenancedSet, assignmentGraph, seen, inferred } = ctx;
+  if (node.type !== 'call_expression') return;
+
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee || (callee.type !== 'member_expression' && callee.type !== 'selector_expression')) return;
+
+  const methodName = extractMemberExpressionProperty(callee, adapter, sourceCode);
+  if (!methodName || !DB_CALL_METHODS.has(methodName.toLowerCase())) return;
+
+  const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode);
+  if (!receiver) return;
+
+  // Already provenanced → first-class, not inferred; already added → skip
+  if (provenancedSet.has(receiver) || seen.has(receiver)) return;
+
+  // Step 3: Trace receiver through assignment chain to a provenanced source
+  const traced = traceAssignmentChain(receiver, assignmentGraph, provenancedSet);
+
+  if (traced.found) {
+    seen.add(receiver);
+    inferred.identifiers.push(receiver);
+    inferred.evidence.push({
+      identifier: receiver,
+      reason: `calls .${methodName}() traced to ${traced.chains[0]} — ${traced.reason}`,
+    });
+  }
+}
+
+/** Bundled state for the reverse assignment-graph builders. */
+interface AssignmentGraphContext {
+  graph: Map<string, string>;
+  adapter: LanguageAdapter;
+  sourceCode: string;
 }
 
 /**
@@ -1361,71 +1410,84 @@ function buildAssignmentGraph(
   adapter: LanguageAdapter,
   sourceCode: string,
 ): Map<string, string> {
-  const graph = new Map<string, string>();
+  const ctx: AssignmentGraphContext = {
+    graph: new Map<string, string>(),
+    adapter,
+    sourceCode,
+  };
 
   walkAST(ast.root, (node, parent) => {
-    // const/let/var x = <expr>
-    if (node.type === 'variable_declarator') {
-      const { nameNode, valueNode } = splitVariableDeclarator(node, adapter);
-      if (nameNode && valueNode) {
-        const names = extractPatternNames(nameNode, adapter, sourceCode);
-        const valueText = adapter.getNodeText(valueNode, sourceCode);
-        for (const name of names) {
-          if (!graph.has(name)) graph.set(name, valueText);
-        }
-      }
-      return;
-    }
-
-    // Parameter defaults: function foo(x = <expr>)
-    if (
-      node.type === 'assignment_pattern' &&
-      parent?.type === 'formal_parameters'
-    ) {
-      const children = adapter.getChildren(node);
-      if (children.length >= 2) {
-        const leftNode = children[0];
-        const rightNode = children[1];
-        if (leftNode.type === 'identifier') {
-          const paramName = adapter.getNodeText(leftNode, sourceCode);
-          const valueText = adapter.getNodeText(rightNode, sourceCode);
-          if (!graph.has(paramName)) graph.set(paramName, valueText);
-        }
-      }
-      return;
-    }
-
-    // Class field: fieldName = <expr>
-    if (
-      node.type === 'public_field_definition' ||
-      node.type === 'field_definition'
-    ) {
-      const children = adapter.getChildren(node);
-      const nameChild = children.find(
-        (c) => c.type === 'property_identifier',
-      );
-      const valueChild = children.find(
-        (c) =>
-          c.type !== 'property_identifier' &&
-          c.type !== 'decorator' &&
-          c.type !== 'private' &&
-          c.type !== 'public' &&
-          c.type !== 'protected' &&
-          c.type !== 'static' &&
-          c.type !== 'readonly' &&
-          c.type !== 'abstract' &&
-          c.type !== '=',
-      );
-      if (nameChild && valueChild) {
-        const fieldName = adapter.getNodeText(nameChild, sourceCode);
-        const valueText = adapter.getNodeText(valueChild, sourceCode);
-        if (!graph.has(fieldName)) graph.set(fieldName, valueText);
-      }
-      return;
-    }
+    recordVariableDeclarator(node, ctx);
+    recordParameterDefault(node, parent, ctx);
+    recordClassField(node, ctx);
   });
 
-  return graph;
+  return ctx.graph;
+}
+
+/** Record `const/let/var x = <expr>` into the assignment graph. */
+function recordVariableDeclarator(
+  node: ASTNode,
+  ctx: AssignmentGraphContext,
+): void {
+  if (node.type !== 'variable_declarator') return;
+  const { nameNode, valueNode } = splitVariableDeclarator(node, ctx.adapter);
+  if (!nameNode || !valueNode) return;
+  const names = extractPatternNames(nameNode, ctx.adapter, ctx.sourceCode);
+  const valueText = ctx.adapter.getNodeText(valueNode, ctx.sourceCode);
+  for (const name of names) {
+    if (!ctx.graph.has(name)) ctx.graph.set(name, valueText);
+  }
+}
+
+/** Record parameter defaults (`function foo(x = <expr>)`) into the graph. */
+function recordParameterDefault(
+  node: ASTNode,
+  parent: ASTNode | null,
+  ctx: AssignmentGraphContext,
+): void {
+  if (node.type !== 'assignment_pattern' || parent?.type !== 'formal_parameters') {
+    return;
+  }
+  const children = ctx.adapter.getChildren(node);
+  if (children.length < 2) return;
+  const leftNode = children[0];
+  const rightNode = children[1];
+  if (leftNode.type !== 'identifier') return;
+  const paramName = ctx.adapter.getNodeText(leftNode, ctx.sourceCode);
+  const valueText = ctx.adapter.getNodeText(rightNode, ctx.sourceCode);
+  if (!ctx.graph.has(paramName)) ctx.graph.set(paramName, valueText);
+}
+
+/** Record class-field initializers (`fieldName = <expr>`) into the graph. */
+function recordClassField(
+  node: ASTNode,
+  ctx: AssignmentGraphContext,
+): void {
+  if (
+    node.type !== 'public_field_definition' &&
+    node.type !== 'field_definition'
+  ) {
+    return;
+  }
+  const children = ctx.adapter.getChildren(node);
+  const nameChild = children.find((c) => c.type === 'property_identifier');
+  const valueChild = children.find(
+    (c) =>
+      c.type !== 'property_identifier' &&
+      c.type !== 'decorator' &&
+      c.type !== 'private' &&
+      c.type !== 'public' &&
+      c.type !== 'protected' &&
+      c.type !== 'static' &&
+      c.type !== 'readonly' &&
+      c.type !== 'abstract' &&
+      c.type !== '=',
+  );
+  if (!nameChild || !valueChild) return;
+  const fieldName = ctx.adapter.getNodeText(nameChild, ctx.sourceCode);
+  const valueText = ctx.adapter.getNodeText(valueChild, ctx.sourceCode);
+  if (!ctx.graph.has(fieldName)) ctx.graph.set(fieldName, valueText);
 }
 
 /**
@@ -1453,10 +1515,8 @@ function traceAssignmentChain(
       };
     }
 
-    // Also check if any identifier in the initializer text matches a provenanced source
     const initText = assignmentGraph.get(current);
     if (initText) {
-      // Extract identifiers from the initializer text and check against provenanced set
       const idents = extractTopLevelIdentifiers(initText);
       for (const ident of idents) {
         if (provenancedSet.has(ident)) {
@@ -1470,26 +1530,32 @@ function traceAssignmentChain(
       }
     }
 
-    // Move to the next link in the chain
     if (!initText || visited.has(initText)) break;
     visited.add(initText);
 
-    // Try to find a next identifier to trace
-    const idents = extractTopLevelIdentifiers(initText);
-    let foundNext = false;
-    for (const ident of idents) {
-      if (assignmentGraph.has(ident) && !visited.has(ident)) {
-        chain.push(ident);
-        current = ident;
-        foundNext = true;
-        break;
-      }
-    }
-    if (!foundNext) break;
+    const next = findNextTraceIdentifier(initText, assignmentGraph, visited);
+    if (!next) break;
+    chain.push(next);
+    current = next;
     depth++;
   }
 
   return { found: false, chains: [], reason: '' };
+}
+
+/** Find the next assignment-graph identifier to trace, if any. */
+function findNextTraceIdentifier(
+  initText: string,
+  assignmentGraph: Map<string, string>,
+  visited: Set<string>,
+): string | null {
+  const idents = extractTopLevelIdentifiers(initText);
+  for (const ident of idents) {
+    if (assignmentGraph.has(ident) && !visited.has(ident)) {
+      return ident;
+    }
+  }
+  return null;
 }
 
 /**

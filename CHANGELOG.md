@@ -2,7 +2,52 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [3.4.13] — 2026-08-09
+## [3.4.13] — 2026-08-16
+
+### Memory — streaming pipeline + `tree.delete()` (Spec 30/31/32)
+- Streaming parse pipeline with per-file `tree.delete()`: peak heapUsed
+  2.6 GB → 1.2 GB on the recall-protocol corpus.
+- Three raw-content facts (file-sources / schema-sql / schema-json) eliminated —
+  the arena no longer retains full source text.
+- Oversized-SQL skip and WASM abort recovery.
+- Post-`gc()` RSS on twenty (23,649 files): 2,423 MB → 1,285 MB; heapUsed after
+  `gc()` flat at 71 MB (no JS-object leak).
+
+### Schema precision fixes (Spec 33/34)
+- `UniversalSchemaAnalyzer` split into `schema/` submodules; table-catalog
+  registry (Tier 2) with provenance tracking.
+- Taint-aware `sql-injection` (`isAllDynamicPartsSafe`) + parameterized-query skip.
+- `interface-segregation` `hasMethodMembers` guard — data-shape records (GraphQL
+  types, `HTMLElementTagNameMap`, config/DTO bags) no longer flagged.
+- `open-closed` `BUILTIN_TYPES` expansion.
+- Documentation de-dup: public methods reported once as `method-documentation`,
+  no longer double-reported as `function-documentation`.
+- `dependency-inversion` import-count signal removed (importing ≠ instantiating);
+  the "directly instantiates" signal is retained.
+
+### Self-audit to zero + pipeline hardening (Spec 35)
+- `verify:self` gate on the production scope (`analyzers/` + `languages/`) at
+  zero scoped violations, with a live zero-assertion.
+- `isSafe*` parameter cluster collapsed into a `SafetyContext` object.
+- A2: tree dispose runs on the throw path (`finally`), fault-injection tested.
+- A3: every `catch` in the parse→loop span enumerated; none swallow silently.
+- `verify:dist` self-contained (`npm pack` first); hook unset-variable guard.
+
+### Enforcement + finding contract (Spec 36/37)
+- Rules carry a resolution (the next action), not just a problem; rule metadata
+  as a contract; rules ship with their tests.
+- Binary gate: new findings block, existing ones don't; suppressions decay.
+- `verify:gate-budget` enforces a 300 ms gate wall-clock budget.
+
+### Operations (Spec 38)
+- `--print-config`; per-rule timing; shareable presets (d1, drizzle, typeorm,
+  prisma, plain-pg, knex); rule-ID alias map.
+
+### Release verification
+- Twenty 26,987 → 19,353 decomposed exactly (five named precision fixes, zero
+  residual); knex re-pinned at 434, blitz at 917.
+
+## [3.4.12] — 2026-08-10
 
 ### Accuracy fix — `unknown-table` silently off when configuring `schemas`
 

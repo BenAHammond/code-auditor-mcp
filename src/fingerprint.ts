@@ -21,6 +21,7 @@
 import { createHash } from 'node:crypto';
 import type { Violation } from './types.js';
 import { extractSymbol } from './symbols.js';
+import { canonicalRuleId } from './ruleAliases.js';
 
 export interface FingerprintInput {
   analyzer: string;
@@ -53,7 +54,9 @@ export function fingerprint(input: FingerprintInput): string {
  * rule identity. Every analyzer must set `rule` when constructing a violation.
  */
 export function buildFingerprintInput(violation: Violation): FingerprintInput {
-  const rule = violation.rule ?? '';
+  // Canonicalize through the rule-alias map (Spec 38 R5) so a rename does not
+  // change a violation's identity — an existing baseline survives a rename.
+  const rule = canonicalRuleId(violation.rule ?? '');
 
   return {
     analyzer: violation.analyzer ?? '',

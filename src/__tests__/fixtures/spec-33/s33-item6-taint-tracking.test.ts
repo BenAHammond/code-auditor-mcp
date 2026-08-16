@@ -2,10 +2,13 @@
  * Spec 33 Item 6 — sql-injection FP: taint tracking
  *
  * Locks in cross-function taint tracking via the adapter's `isSafeInterpolation`
- * capability.  Seven false-positive mechanisms are cleared (quote-escape
- * sanitizer, safe ternary, safe local helper call, call-site-provenanced
- * parameter, static-array `.map().join()`, guard-validated parameter), and two
- * genuinely-raw inputs stay flagged (raw parameter, member-expression access).
+ * capability.  Six false-positive mechanisms are cleared (safe ternary, safe
+ * local helper call, call-site-provenanced parameter, static-array
+ * `.map().join()`, guard-validated parameter), and three genuinely-raw inputs
+ * stay flagged (raw parameter, member-expression access, manual
+ * quote-escaping).  Manual `.replace(/'/g, "''")` is deliberately NOT a
+ * sanitizer — it covers only the single-quote case and would bless a real
+ * vulnerability (Spec 33/34 re-escalation).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -21,7 +24,8 @@ const fixtureDir = join(tmpdir(), 'spec33-item6-' + Date.now());
 
 // ── Fixture sources ──────────────────────────────────────────────────
 
-/** Quote-escape sanitizer — `.replace(/'/g, "''")` returns an escaped literal. */
+/** Manual quote-escaping — `.replace(/'/g, "''")` is NOT sanitization; it must
+ *  stay flagged as a potential injection (single-quote doubling only). */
 const QUOTE_ESCAPE_SANITIZER = `
 import { db } from './db';
 async function f(name: string) {
@@ -110,7 +114,7 @@ async function f(req: { name: string }) {
 type TestCase = { name: string; code: string; expectedCount: number };
 
 const TEST_CASES: TestCase[] = [
-  { name: 'quote-escape sanitizer — NOT flagged', code: QUOTE_ESCAPE_SANITIZER, expectedCount: 0 },
+  { name: 'manual quote-escaping — flagged (not sanitization)', code: QUOTE_ESCAPE_SANITIZER, expectedCount: 1 },
   { name: 'safe ternary — NOT flagged', code: SAFE_TERNARY, expectedCount: 0 },
   { name: 'safe local helper call — NOT flagged', code: SAFE_LOCAL_HELPER, expectedCount: 0 },
   { name: 'param safe at all call sites — NOT flagged', code: PARAM_SAFE_AT_CALL_SITES, expectedCount: 0 },

@@ -11,7 +11,8 @@
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
-import type { AnalyzerResult, IndexHandle, Violation } from '../../types.js';
+import { withRuleTiming } from '../ruleTiming.js';
+import type { AnalyzerResult, IndexHandle, Violation, Resolution } from '../../types.js';
 import type { AST, LanguageAdapter } from '../../languages/types.js';
 import { makeVisitorStatus } from '../../pipeline.js';
 import type {
@@ -110,6 +111,19 @@ interface StyleClassUsageRow {
 // ---------------------------------------------------------------------------
 
 /**
+ * Bundled classification for a style violation — `severity`, `rule`, and an
+ * optional `symbol` travel together so the reporter stays a 4-arg call rather
+ * than a 6-arg one (Spec 34 param-count bundling).
+ */
+interface StyleViolationClassification {
+  severity: 'critical' | 'warning' | 'suggestion';
+  rule: string;
+  symbol?: string;
+  /** Spec 37 R1 — structured next action carried on gating findings. */
+  resolution?: Resolution;
+}
+
+/**
  * Shared signature for the violation reporter the structure detectors reuse.
  * The helper receives the analyzer's own `makeViolation` bound to the instance,
  * so it reports through the same path without duplicating the method.
@@ -118,9 +132,7 @@ type StylesViolationReporter = (
   filePath: string,
   line: number,
   message: string,
-  severity: 'critical' | 'warning' | 'suggestion',
-  rule: string,
-  symbol?: string,
+  classification: StyleViolationClassification,
 ) => Violation;
 
 /**
@@ -148,21 +160,22 @@ abstract class UniversalStylesAnalyzerBase extends UniversalAnalyzer {
     filePath: string,
     line: number,
     message: string,
-    severity: 'critical' | 'warning' | 'suggestion',
-    rule: string,
-    symbol?: string,
+    classification: StyleViolationClassification,
   ): Violation {
     const v: Violation = {
       file: filePath,
       line,
       column: 1,
-      severity,
+      severity: classification.severity,
       message,
-      rule,
+      rule: classification.rule,
       analyzer: this.name,
     };
-    if (symbol) {
-      v.functionName = symbol;
+    if (classification.symbol) {
+      v.functionName = classification.symbol;
+    }
+    if (classification.resolution) {
+      v.resolution = classification.resolution;
     }
     return v;
   }
@@ -386,44 +399,13 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
 
     if (colors.length < cfg.minCorpus) return violations;
 
-    // Cluster by delta-E
+    // Cluster by delta-E, then flag stragglers in non-dominant clusters.
     const clusters = this.clusterByDeltaE(colors, cfg.colorDeltaE);
-
-    // Find the dominant cluster (largest)
     clusters.sort((a, b) => b.length - a.length);
     const dominant = clusters[0];
     if (!dominant || dominant.length < cfg.modeMinCount) return violations;
 
-    const dominantSize = dominant.length;
-
-    // Flag stragglers in non-dominant clusters
-    for (let i = 1; i < clusters.length; i++) {
-      const cluster = clusters[i];
-      const share = cluster.length / colors.length;
-
-      if (share < cfg.outlierMaxShare && dominantSize >= cfg.modeMinCount) {
-        // Report once per distinct color value in the straggler cluster
-        const seenValues = new Set<string>();
-        for (const item of cluster) {
-          const normVal = item.decl.raw_value.toLowerCase();
-          if (seenValues.has(normVal)) continue;
-          seenValues.add(normVal);
-
-          violations.push(this.makeViolation(
-            item.decl.file_path,
-            item.decl.line,
-            `Color drift in "${property}": "${item.decl.raw_value}" is a rare value ` +
-            `(used ${cluster.length} time${cluster.length === 1 ? '' : 's'}, ` +
-            `${(share * 100).toFixed(1)}% of ${colors.length} usages). ` +
-            `Dominant cluster has ${dominantSize} values. Consider using a design token.`,
-            'warning',
-            'styles/value-drift',
-            'color',
-          ));
-        }
-      }
-    }
-
+    violations.push(...flagColorDriftStragglers(clusters, property, cfg, this.makeViolation.bind(this)));
     return violations;
   }
 
@@ -472,9 +454,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
           `(${list.length} of ${total} usages, ${(share * 100).toFixed(1)}%). ` +
           `The dominant value "${modeKey}" is used ${modeCount} times. ` +
           `Consider using a consistent value or design token.`,
-          'warning',
-          'styles/value-drift',
-          'exact',
+          { severity: 'warning', rule: 'styles/value-drift', symbol: 'exact' },
         ));
       }
     }
@@ -528,8 +508,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
             `does not align with the inferred ${step}px scale step. ` +
             `Nearby scale values: ${Math.floor(px / step) * step}px or ` +
             `${Math.ceil(px / step) * step}px.`,
-            'warning',
-            'styles/off-scale',
+            { severity: 'warning', rule: 'styles/off-scale' },
           ));
         }
       }
@@ -630,6 +609,436 @@ function collectUndefinedClassCandidates(
   return { candidates, usageEntries };
 }
 
+// ---------------------------------------------------------------------------
+// Detector leaf helpers (module level, ≤4 params each)
+// ---------------------------------------------------------------------------
+
+interface StyleDetectorInputs {
+  byProperty: Map<string, StyleDeclRow[]>;
+  cfg: StylesAnalyzerConfig;
+  declarations: StyleDeclRow[];
+  classUsage: StyleClassUsageRow[];
+  tokenValueMap: Map<string, { name: string; valueType: string | null }>;
+}
+
+interface StylesResultSpec {
+  violations: Violation[];
+  errors?: Array<{ file: string; error: string }>;
+  fileCount: number;
+  startTime: number;
+  name: string;
+}
+
+interface DeclarationBlock {
+  key: string;
+  filePath: string;
+  context: string;
+  line: number;
+  declCount: number;
+  valueSet: Set<string>;
+}
+
+type ColorCluster = Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>;
+
+function flagColorDriftStragglers(
+  clusters: ColorCluster[],
+  property: string,
+  cfg: StylesAnalyzerConfig,
+  report: StylesViolationReporter,
+): Violation[] {
+  const violations: Violation[] = [];
+  const dominant = clusters[0];
+  const dominantSize = dominant.length;
+  const total = clusters.reduce((sum, c) => sum + c.length, 0);
+
+  for (let i = 1; i < clusters.length; i++) {
+    const cluster = clusters[i];
+    const share = cluster.length / total;
+    if (share >= cfg.outlierMaxShare) continue;
+
+    // Report once per distinct color value in the straggler cluster
+    const seenValues = new Set<string>();
+    for (const item of cluster) {
+      const normVal = item.decl.raw_value.toLowerCase();
+      if (seenValues.has(normVal)) continue;
+      seenValues.add(normVal);
+
+      violations.push(report(
+        item.decl.file_path,
+        item.decl.line,
+        `Color drift in "${property}": "${item.decl.raw_value}" is a rare value ` +
+        `(used ${cluster.length} time${cluster.length === 1 ? '' : 's'}, ` +
+        `${(share * 100).toFixed(1)}% of ${total} usages). ` +
+        `Dominant cluster has ${dominantSize} values. Consider using a design token.`,
+        { severity: 'warning', rule: 'styles/value-drift', symbol: 'color' },
+      ));
+    }
+  }
+
+  return violations;
+}
+
+interface DefinedClassCatalog {
+  names: Set<string>;
+  locations: Map<string, string>;
+}
+
+/**
+ * Collect the set of defined class names and the stylesheet that first defines
+ * each, in a single pass over the declarations. Bundled as one catalog so the
+ * undefined-class detector (Spec 37 R1: "nearest defined class by edit
+ * distance, and which stylesheet defines it") takes a single context object
+ * rather than threading the name set and location map as two separate
+ * parameters.
+ */
+function collectDefinedClassCatalog(byProperty: Map<string, StyleDeclRow[]>): DefinedClassCatalog {
+  const names = new Set<string>();
+  const locations = new Map<string, string>();
+  for (const [, decls] of byProperty) {
+    for (const d of decls) {
+      const ctx = d.context;
+      if (!ctx) continue;
+      const matches = ctx.matchAll(/\.([a-zA-Z0-9_-]+)/g);
+      for (const m of matches) {
+        names.add(m[1]);
+        if (!locations.has(m[1])) locations.set(m[1], d.file_path);
+      }
+    }
+  }
+  return { names, locations };
+}
+
+/**
+ * Levenshtein edit distance between two class names, capping the DP width so a
+ * large stylesheet catalog stays cheap. Returns Infinity when the length gap
+ * alone exceeds the match ceiling (mirrors schema/codeAnalysis.ts).
+ */
+function levenshteinDistance(a: string, b: string, maxDist: number): number {
+  if (Math.abs(a.length - b.length) > maxDist) return Infinity;
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Nearest defined class within a bounded edit distance, or null when no known
+ * class is close enough to be a credible suggestion.
+ */
+function nearestDefinedClass(name: string, definedClasses: Set<string>): string | null {
+  let best: string | null = null;
+  let bestDist = Infinity;
+  for (const known of definedClasses) {
+    const dist = levenshteinDistance(name.toLowerCase(), known.toLowerCase(), 3);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = known;
+    }
+  }
+  return best;
+}
+
+async function initTailwindProbe(
+  expander: TailwindUtilityExpander,
+  cfg: (StylesAnalyzerConfig & { projectRoot?: string }) | undefined,
+  report: StylesViolationReporter,
+): Promise<Violation[] | null> {
+  await expander.init({
+    projectRoot: cfg?.projectRoot,
+    useProjectConfig: true,
+    customClasses: cfg?.tailwindClasses ? new Set(cfg.tailwindClasses) : undefined,
+  });
+
+  // Fail-open rule (Spec 22 R1.3): if the probe fails and Tailwind IS
+  // present, disable the undefined-class detector.
+  if (expander.configFailed && expander.hasTailwindConfig) {
+    return [report(
+      '', 0,
+      `Tailwind probe unavailable (${expander.configFailureReason ?? 'unknown error'}) — ` +
+      `undefined-class detection skipped. Classes defined only in Tailwind ` +
+      `config will not be checked. Install tailwindcss in the project ` +
+      `for full class validation.`,
+      { severity: 'suggestion', rule: 'styles/undefined-class-disabled' },
+    )];
+  }
+
+  return null;
+}
+
+function flagUnresolvedClasses(
+  usageEntries: StyleClassUsageRow[],
+  expander: TailwindUtilityExpander,
+  report: StylesViolationReporter,
+  catalog: DefinedClassCatalog,
+): Violation[] {
+  return withRuleTiming('styles/undefined-class', () => {
+    const { names: definedClasses, locations: definedClassLocations } = catalog;
+    const violations: Violation[] = [];
+    for (const u of usageEntries) {
+      const resolved = expander.resolve(u.class_name);
+      if (resolved.valid) continue;
+
+      const nearest = nearestDefinedClass(u.class_name, definedClasses);
+      const nearestFile = nearest ? definedClassLocations.get(nearest) : undefined;
+
+      violations.push(report(
+        u.file_path,
+        u.line,
+        `Undefined CSS class: "${u.class_name}" has no matching definition ` +
+        `in any stylesheet, Tailwind utility set, or project config.`,
+        {
+          severity: 'warning',
+          rule: 'styles/undefined-class',
+          resolution: {
+            action: nearest ? 'use-defined-class' : 'define-or-remove-class',
+            summary: nearest
+              ? `Rename "${u.class_name}" to the defined class "${nearest}"${nearestFile ? ` (defined in ${nearestFile})` : ''}.`
+              : `Define the class "${u.class_name}" in a stylesheet, or remove the usage.`,
+            symbols: nearest ? [nearest] : [u.class_name],
+            files: nearestFile ? [u.file_path, nearestFile] : [u.file_path],
+            lines: [u.line],
+          },
+        },
+      ));
+    }
+    return violations;
+  });
+}
+
+function normalizeForTokenMatch(raw: string): string {
+  let v = raw.toLowerCase().trim();
+  v = v.replace(/,\s+/g, ',');
+  if (/^#[0-9a-f]{3}$/.test(v)) {
+    v = '#' + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+  }
+  return v;
+}
+
+function parseNormalizedValueType(normalizedValue: string | null): string | null {
+  if (!normalizedValue) return null;
+  try {
+    const nv = JSON.parse(normalizedValue) as NormalizedValue;
+    return nv.type;
+  } catch {
+    return null;
+  }
+}
+
+function matchBypassToken(
+  d: StyleDeclRow,
+  tokenValueMap: Map<string, { name: string; valueType: string | null }>,
+  categoricalExclusions: Set<string>,
+  scaleProps: Set<string>,
+): { name: string; valueType: string | null } | null {
+  if (d.token_ref) return null;
+  if (d.property.startsWith('--') || d.property.startsWith('$')) return null;
+  if (categoricalExclusions.has(d.property)) return null;
+  if (scaleProps.has(d.property)) return null;
+
+  const normalized = normalizeForTokenMatch(d.raw_value);
+  if (TRIVIAL_VALUES.has(normalized)) return null;
+
+  const tokenInfo = tokenValueMap.get(normalized);
+  if (!tokenInfo) return null;
+
+  if (tokenInfo.valueType !== null) {
+    const declType = parseNormalizedValueType(d.normalized_value);
+    if (declType !== null && declType !== tokenInfo.valueType) return null;
+  }
+
+  if (tokenInfo.valueType !== 'color') return null;
+
+  return tokenInfo;
+}
+
+function flagPropertyValueFragmentation(
+  declarations: StyleDeclRow[],
+  minMechanisms: number,
+  report: StylesViolationReporter,
+): Violation[] {
+  const violations: Violation[] = [];
+  const pvMap = new Map<string, Set<string>>();
+  const pvSample = new Map<string, StyleDeclRow>();
+
+  for (const d of declarations) {
+    const key = `${d.property}::${d.normalized_value ?? d.raw_value}`;
+    const mechs = pvMap.get(key) || new Set();
+    mechs.add(d.mechanism);
+    pvMap.set(key, mechs);
+    if (!pvSample.has(key)) {
+      pvSample.set(key, d);
+    }
+  }
+
+  for (const [key, mechs] of pvMap) {
+    if (mechs.size < minMechanisms) continue;
+    const sample = pvSample.get(key)!;
+    const [prop, value] = key.split('::');
+    violations.push(report(
+      sample.file_path,
+      sample.line,
+      `Mechanism fragmentation: "${prop}: ${value}" is applied via ` +
+      `${mechs.size} different mechanisms (${[...mechs].sort().join(', ')}). ` +
+      `Consolidate to a single mechanism or design token.`,
+      { severity: 'warning', rule: 'styles/mechanism-fragmentation' },
+    ));
+  }
+
+  return violations;
+}
+
+function flagFileMechanismMixing(
+  declarations: StyleDeclRow[],
+  minMechanisms: number,
+  report: StylesViolationReporter,
+): Violation[] {
+  const violations: Violation[] = [];
+  const fileMechs = new Map<string, Set<string>>();
+  for (const d of declarations) {
+    const mechs = fileMechs.get(d.file_path) || new Set();
+    mechs.add(d.mechanism);
+    fileMechs.set(d.file_path, mechs);
+  }
+
+  for (const [file, mechs] of fileMechs) {
+    if (mechs.size < minMechanisms) continue;
+    violations.push(report(
+      file,
+      1,
+      `Mechanism mixing: ${file} uses ${mechs.size} different style ` +
+      `mechanisms (${[...mechs].sort().join(', ')}). ` +
+      `Consolidate to fewer mechanisms for maintainability.`,
+      { severity: 'suggestion', rule: 'styles/mechanism-mixing' },
+    ));
+  }
+
+  return violations;
+}
+
+function buildDeclarationBlocks(
+  declarations: StyleDeclRow[],
+  minDeclarations: number,
+): DeclarationBlock[] {
+  const blocks = new Map<string, StyleDeclRow[]>();
+  for (const d of declarations) {
+    if (!d.context) continue;
+    const key = `${d.file_path}::${d.context}`;
+    const list = blocks.get(key) || [];
+    list.push(d);
+    blocks.set(key, list);
+  }
+
+  return [...blocks.entries()]
+    .map(([key, decls]) => {
+      const valueSet = new Set(decls.map(d => `${d.property}:${d.normalized_value ?? d.raw_value}`));
+      return {
+        key,
+        filePath: decls[0].file_path,
+        context: decls[0].context!,
+        line: decls[0].line,
+        declCount: decls.length,
+        valueSet,
+      };
+    })
+    .filter(b => b.declCount >= minDeclarations);
+}
+
+function flagSimilarBlockPairs(
+  blockEntries: DeclarationBlock[],
+  threshold: number,
+  report: StylesViolationReporter,
+): Violation[] {
+  const violations: Violation[] = [];
+  if (blockEntries.length < 2) return violations;
+
+  const reported = new Set<string>();
+  for (let i = 0; i < blockEntries.length; i++) {
+    for (let j = i + 1; j < blockEntries.length; j++) {
+      const a = blockEntries[i];
+      const b = blockEntries[j];
+      if (a.key === b.key) continue;
+
+      const pairKey = [a.key, b.key].sort().join('::');
+      if (reported.has(pairKey)) continue;
+      reported.add(pairKey);
+
+      const intersection = new Set([...a.valueSet].filter(x => b.valueSet.has(x)));
+      const union = new Set([...a.valueSet, ...b.valueSet]);
+      const similarity = intersection.size / union.size;
+
+      if (similarity >= threshold) {
+        violations.push(report(
+          a.filePath,
+          a.line,
+          `Declaration-set similarity: "${a.context}" and "${b.context}" ` +
+          `in ${b.filePath} share ${intersection.size} of ${union.size} ` +
+          `declarations (${(similarity * 100).toFixed(0)}%). ` +
+          `Consider consolidating these rules or extracting a shared mixin.`,
+          { severity: 'suggestion', rule: 'styles/declaration-set-similarity' },
+        ));
+      }
+    }
+  }
+
+  return violations;
+}
+
+function buildTokenValueMap(
+  tokens: StyleTokenRow[],
+): Map<string, { name: string; valueType: string | null }> {
+  const tokenValueMap = new Map<string, { name: string; valueType: string | null }>();
+  for (const t of tokens) {
+    const normalizedTokenVal = normalizeValue(t.value, '__token__');
+    tokenValueMap.set(t.value, { name: t.name, valueType: normalizedTokenVal?.type ?? null });
+  }
+  return tokenValueMap;
+}
+
+function groupDeclarationsByProperty(declarations: StyleDeclRow[]): Map<string, StyleDeclRow[]> {
+  const byProperty = new Map<string, StyleDeclRow[]>();
+  for (const d of declarations) {
+    const list = byProperty.get(d.property) || [];
+    list.push(d);
+    byProperty.set(d.property, list);
+  }
+  return byProperty;
+}
+
+function applySeverityOverrides(violations: Violation[], config: any): void {
+  const severityOverrides: Record<string, string> = config.severityOverrides ?? {};
+  if (Object.keys(severityOverrides).length === 0) return;
+  for (const v of violations) {
+    const override = severityOverrides[v.rule];
+    if (override) {
+      v.severity = override as 'critical' | 'warning' | 'suggestion';
+    }
+  }
+}
+
+function buildStylesResult(spec: StylesResultSpec): AnalyzerResult {
+  return {
+    violations: spec.violations,
+    errors: spec.errors ?? [],
+    status: makeVisitorStatus(spec.fileCount),
+    executionTime: Date.now() - spec.startTime,
+    analyzerName: spec.name,
+    metrics: {
+      filesAnalyzed: spec.fileCount,
+      totalViolations: spec.violations.length,
+      executionTime: Date.now() - spec.startTime,
+    },
+  };
+}
+
 class StylesStructureDetectors {
   constructor(private readonly makeViolation: StylesViolationReporter) {}
 
@@ -655,74 +1064,23 @@ class StylesStructureDetectors {
   ): Promise<Violation[]> {
     const violations: Violation[] = [];
 
-    // Collect all defined class names from CSS declarations
-    const definedClasses = new Set<string>();
-    for (const [, decls] of byProperty) {
-      for (const d of decls) {
-        const ctx = d.context;
-        if (!ctx) continue;
-        const matches = ctx.matchAll(/\.([a-zA-Z0-9_-]+)/g);
-        for (const m of matches) {
-          definedClasses.add(m[1]);
-        }
-      }
-    }
-
-    // ── Init compile-probe (async) ─────────────────────────────────
+    const definedClassCatalog = collectDefinedClassCatalog(byProperty);
     const expander = getTailwindExpander();
-    await expander.init({
-      projectRoot: cfg?.projectRoot,
-      useProjectConfig: true,
-      customClasses: cfg?.tailwindClasses ? new Set(cfg.tailwindClasses) : undefined,
-    });
 
     // Fail-open rule (Spec 22 R1.3): if the probe fails and Tailwind IS
-    // present, disable the undefined-class detector. Without a working probe
-    // there is no way to validate Tailwind utility classes — flagging every
-    // utility would produce ~875 false positives.
-    //
-    // When Tailwind is absent (no tailwindcss in node_modules), the probe
-    // never runs and CSS-only detection is the correct fallback.
-    if (expander.configFailed && expander.hasTailwindConfig) {
-      violations.push(this.makeViolation(
-        '', 0,
-        `Tailwind probe unavailable (${expander.configFailureReason ?? 'unknown error'}) — ` +
-        `undefined-class detection skipped. Classes defined only in Tailwind ` +
-        `config will not be checked. Install tailwindcss in the project ` +
-        `for full class validation.`,
-        'suggestion',
-        'styles/undefined-class-disabled',
-      ));
-      return violations;
-    }
+    // present, disable the undefined-class detector.
+    const failOpen = await initTailwindProbe(expander, cfg, this.makeViolation.bind(this));
+    if (failOpen) return failOpen;
 
-    // ── Collect candidate class names for batch probing ─────────────
-    // Gather all potentially-unknown class names first, then batch-probe
-    // them against the project's Tailwind compiler. This is more efficient
-    // than probing one-at-a-time and lets the probe batch in groups.
+    // Gather all potentially-unknown class names first, then batch-probe.
     const { candidates, usageEntries } =
-      collectUndefinedClassCandidates(classUsage, definedClasses);
+      collectUndefinedClassCandidates(classUsage, definedClassCatalog.names);
 
-    // ── Batch-probe unknown classes ─────────────────────────────────
     if (candidates.length > 0 && expander.probeReady) {
       await expander.validateBatch(candidates);
     }
 
-    // ── Resolve each class from cache + structural patterns ─────────
-    for (const u of usageEntries) {
-      const resolved = expander.resolve(u.class_name);
-      if (resolved.valid) continue;
-
-      violations.push(this.makeViolation(
-        u.file_path,
-        u.line,
-        `Undefined CSS class: "${u.class_name}" has no matching definition ` +
-        `in any stylesheet, Tailwind utility set, or project config.`,
-        'warning',
-        'styles/undefined-class',
-      ));
-    }
-
+    violations.push(...flagUnresolvedClasses(usageEntries, expander, this.makeViolation.bind(this), definedClassCatalog));
     return violations;
   }
 
@@ -757,56 +1115,8 @@ class StylesStructureDetectors {
     const scaleProps = new Set(cfg.scaleProperties ?? []);
 
     for (const d of declarations) {
-      // Skip if already referencing a token (var(--...) reference)
-      if (d.token_ref) continue;
-
-      // Skip CSS custom-property definition sites — these define
-      // token values, so literals are expected (Spec 22 R2.1).
-      if (d.property.startsWith('--')) continue;
-
-      // Skip SCSS variable definitions — these define token values
-      // so literals are expected (Spec 22 R2.1).
-      if (d.property.startsWith('$')) continue;
-
-      // Spec 22 R2.2: skip categorical properties — they have a small set
-      // of valid keyword values (display, position, etc.) and coincidental
-      // token-value matches are noise.
-      if (categoricalExclusions.has(d.property)) continue;
-
-      // Spec 22 R2.3: skip scale properties — values naturally vary along
-      // a scale (font-size, margin, padding, etc.) and raw values at
-      // different scale points are expected, not token bypasses.
-      if (scaleProps.has(d.property)) continue;
-
-      // Normalize the raw value for comparison
-      const normalized = this.normalizeForTokenMatch(d.raw_value);
-
-      // Spec 22 Item 1: skip trivial values — they're so common that
-      // coincidental token-name matches are always noise.
-      if (TRIVIAL_VALUES.has(normalized)) continue;
-
-      const tokenInfo = tokenValueMap.get(normalized);
+      const tokenInfo = matchBypassToken(d, tokenValueMap, categoricalExclusions, scaleProps);
       if (!tokenInfo) continue;
-
-      // Spec 22 Item 1: value-type equality gate — a token only
-      // matches declarations whose normalized value type is the same.
-      // E.g., --border-radius-lg: 8px (length) should not flag
-      // max-width: 8px because the normalizer types them the same, but
-      // --color-red: #22d3ee (color) should flag color: #22d3ee.
-      if (tokenInfo.valueType !== null) {
-        let declType: string | null = null;
-        if (d.normalized_value) {
-          try {
-            const nv = JSON.parse(d.normalized_value) as NormalizedValue;
-            declType = nv.type;
-          } catch { /* invalid JSON — proceed neutrally */ }
-        }
-        if (declType !== null && declType !== tokenInfo.valueType) continue;
-      }
-
-      // Only color-typed tokens are specific enough to flag;
-      // lengths collide by nature (e.g., 6px matching border-radius tokens).
-      if (tokenInfo.valueType !== 'color') continue;
 
       violations.push(this.makeViolation(
         d.file_path,
@@ -814,24 +1124,11 @@ class StylesStructureDetectors {
         `Token bypass: "${d.raw_value}" for "${d.property}" matches design ` +
         `token "${tokenInfo.name}" but was used as a raw value. ` +
         `Use the token reference instead to keep styles consistent.`,
-        'warning',
-        'styles/token-bypass',
+        { severity: 'warning', rule: 'styles/token-bypass' },
       ));
     }
 
     return violations;
-  }
-
-  /** Normalize a raw value for token-value comparison. */
-  private normalizeForTokenMatch(raw: string): string {
-    let v = raw.toLowerCase().trim();
-    // Remove spaces after commas in functional notation
-    v = v.replace(/,\s+/g, ',');
-    // Expand shorthand hex: #fff → #ffffff
-    if (/^#[0-9a-f]{3}$/.test(v)) {
-      v = '#' + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
-    }
-    return v;
   }
 
   // -----------------------------------------------------------------------
@@ -848,57 +1145,11 @@ class StylesStructureDetectors {
     cfg: StylesAnalyzerConfig,
   ): Violation[] {
     const violations: Violation[] = [];
+    const report = this.makeViolation.bind(this);
+    const minMechanisms = cfg.mechanismFragmentationMinMechanisms;
 
-    // (A) Cross-file: same (property, raw_value) via ≥3 mechanisms
-    const pvMap = new Map<string, Set<string>>(); // "property::value" → set of mechanisms
-    const pvSample = new Map<string, StyleDeclRow>(); // keep one sample for reporting
-
-    for (const d of declarations) {
-      const key = `${d.property}::${d.normalized_value ?? d.raw_value}`;
-      const mechs = pvMap.get(key) || new Set();
-      mechs.add(d.mechanism);
-      pvMap.set(key, mechs);
-      if (!pvSample.has(key)) {
-        pvSample.set(key, d);
-      }
-    }
-
-    for (const [key, mechs] of pvMap) {
-      if (mechs.size < cfg.mechanismFragmentationMinMechanisms) continue;
-      const sample = pvSample.get(key)!;
-      const [prop, value] = key.split('::');
-      violations.push(this.makeViolation(
-        sample.file_path,
-        sample.line,
-        `Mechanism fragmentation: "${prop}: ${value}" is applied via ` +
-        `${mechs.size} different mechanisms (${[...mechs].sort().join(', ')}). ` +
-        `Consolidate to a single mechanism or design token.`,
-        'warning',
-        'styles/mechanism-fragmentation',
-      ));
-    }
-
-    // (B) Per-file: a single file mixing ≥3 mechanisms
-    const fileMechs = new Map<string, Set<string>>();
-    for (const d of declarations) {
-      const mechs = fileMechs.get(d.file_path) || new Set();
-      mechs.add(d.mechanism);
-      fileMechs.set(d.file_path, mechs);
-    }
-
-    for (const [file, mechs] of fileMechs) {
-      if (mechs.size < cfg.mechanismFragmentationMinMechanisms) continue;
-      violations.push(this.makeViolation(
-        file,
-        1,
-        `Mechanism mixing: ${file} uses ${mechs.size} different style ` +
-        `mechanisms (${[...mechs].sort().join(', ')}). ` +
-        `Consolidate to fewer mechanisms for maintainability.`,
-        'suggestion',
-        'styles/mechanism-mixing',
-      ));
-    }
-
+    violations.push(...flagPropertyValueFragmentation(declarations, minMechanisms, report));
+    violations.push(...flagFileMechanismMixing(declarations, minMechanisms, report));
     return violations;
   }
 
@@ -915,70 +1166,8 @@ class StylesStructureDetectors {
     declarations: StyleDeclRow[],
     cfg: StylesAnalyzerConfig,
   ): Violation[] {
-    const violations: Violation[] = [];
-
-    // Group declarations by (file, context) to form rule blocks
-    const blocks = new Map<string, StyleDeclRow[]>();
-    for (const d of declarations) {
-      if (!d.context) continue;
-      const key = `${d.file_path}::${d.context}`;
-      const list = blocks.get(key) || [];
-      list.push(d);
-      blocks.set(key, list);
-    }
-
-    // Convert blocks to declaration-value sets
-    const blockEntries = [...blocks.entries()]
-      .map(([key, decls]) => {
-        const valueSet = new Set(decls.map(d => `${d.property}:${d.normalized_value ?? d.raw_value}`));
-        return {
-          key,
-          filePath: decls[0].file_path,
-          context: decls[0].context!,
-          line: decls[0].line,
-          declCount: decls.length,
-          valueSet,
-        };
-      })
-      .filter(b => b.declCount >= cfg.declarationSetMinDeclarations);
-
-    if (blockEntries.length < 2) return violations;
-
-    // Compare pairs
-    const reported = new Set<string>(); // "keyA::keyB"
-    for (let i = 0; i < blockEntries.length; i++) {
-      for (let j = i + 1; j < blockEntries.length; j++) {
-        const a = blockEntries[i];
-        const b = blockEntries[j];
-
-        // Skip same-file same-context (already the same block) or same key
-        if (a.key === b.key) continue;
-
-        const pairKey = [a.key, b.key].sort().join('::');
-        if (reported.has(pairKey)) continue;
-        reported.add(pairKey);
-
-        // Compute Jaccard similarity
-        const intersection = new Set([...a.valueSet].filter(x => b.valueSet.has(x)));
-        const union = new Set([...a.valueSet, ...b.valueSet]);
-        const similarity = intersection.size / union.size;
-
-        if (similarity >= cfg.declarationSetSimilarityThreshold) {
-          violations.push(this.makeViolation(
-            a.filePath,
-            a.line,
-            `Declaration-set similarity: "${a.context}" and "${b.context}" ` +
-            `in ${b.filePath} share ${intersection.size} of ${union.size} ` +
-            `declarations (${(similarity * 100).toFixed(0)}%). ` +
-            `Consider consolidating these rules or extracting a shared mixin.`,
-            'suggestion',
-            'styles/declaration-set-similarity',
-          ));
-        }
-      }
-    }
-
-    return violations;
+    const blockEntries = buildDeclarationBlocks(declarations, cfg.declarationSetMinDeclarations);
+    return flagSimilarBlockPairs(blockEntries, cfg.declarationSetSimilarityThreshold, this.makeViolation.bind(this));
   }
 
   // -----------------------------------------------------------------------
@@ -1019,8 +1208,7 @@ class StylesStructureDetectors {
         `Z-index sprawl: ${values.size} distinct z-index values ` +
         `(${sortedVals.join(', ')}). Consider defining a z-index scale ` +
         `(e.g., $z-layers: (dropdown: 100, modal: 200, toast: 300)).`,
-        'warning',
-        'styles/z-index-sprawl',
+        { severity: 'warning', rule: 'styles/z-index-sprawl' },
       ));
     }
 
@@ -1033,8 +1221,7 @@ class StylesStructureDetectors {
           d.line,
           `Singleton z-index: z-index: ${val} is used only once. ` +
           `Consider whether this value belongs in a shared z-index scale.`,
-          'suggestion',
-          'styles/z-index-singleton',
+          { severity: 'suggestion', rule: 'styles/z-index-singleton' },
         ));
       }
     }
@@ -1069,53 +1256,52 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
   ): Promise<AnalyzerResult> {
     const startTime = Date.now();
     const cfg: StylesAnalyzerConfig = { ...DEFAULT_STYLES_CONFIG, ...config };
-    const violations: Violation[] = [];
 
     // Use the IndexHandle passed through the pipeline; fall back if absent.
     const indexHandle: IndexHandle | undefined = config.indexHandle;
     if (!indexHandle) {
-      return {
+      return buildStylesResult({
         violations: [],
         errors: [{ file: '', error: 'No index handle available — style index not open' }],
-        status: makeVisitorStatus(0),
-        executionTime: Date.now() - startTime,
-        analyzerName: this.name,
-        metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
-      };
+        fileCount: 0,
+        startTime,
+        name: this.name,
+      });
     }
 
-    // Query all declarations, tokens, and class usage
     const declarations = this.queryDeclarations(indexHandle);
-    const tokens = this.queryTokens(indexHandle);
-    const classUsage = this.queryClassUsage(indexHandle);
 
     if (declarations.length === 0) {
-      return {
+      return buildStylesResult({
         violations: [],
-        errors: [],
-        status: makeVisitorStatus(files.length),
-        executionTime: Date.now() - startTime,
-        analyzerName: this.name,
-        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
-      };
+        fileCount: files.length,
+        startTime,
+        name: this.name,
+      });
     }
 
-    // Build helpers
-    const tokenValueMap = new Map<string, {name: string; valueType: string | null}>();  // normalized value → token info
-    for (const t of tokens) {
-      const normalizedTokenVal = normalizeValue(t.value, '__token__');
-      tokenValueMap.set(t.value, { name: t.name, valueType: normalizedTokenVal?.type ?? null });
-    }
+    const violations = await this.runDetectors({
+      byProperty: groupDeclarationsByProperty(declarations),
+      cfg,
+      declarations,
+      classUsage: this.queryClassUsage(indexHandle),
+      tokenValueMap: buildTokenValueMap(this.queryTokens(indexHandle)),
+    });
 
-    // Declarations by property
-    const byProperty = new Map<string, StyleDeclRow[]>();
-    for (const d of declarations) {
-      const list = byProperty.get(d.property) || [];
-      list.push(d);
-      byProperty.set(d.property, list);
-    }
+    applySeverityOverrides(violations, config);
 
-    // Run detectors
+    return buildStylesResult({
+      violations: violations.filter(v => v.severity !== 'off'),
+      fileCount: new Set(declarations.map(d => d.file_path)).size,
+      startTime,
+      name: this.name,
+    });
+  }
+
+  /** Run all detectors and return their combined violations. */
+  private async runDetectors(inputs: StyleDetectorInputs): Promise<Violation[]> {
+    const { byProperty, cfg, declarations, classUsage, tokenValueMap } = inputs;
+    const violations: Violation[] = [];
     violations.push(...this.detectValueDrift(byProperty, cfg, declarations));
     violations.push(...this.detectOffScaleValues(byProperty, cfg));
     violations.push(...await this.structure.detectUndefinedClasses(classUsage, declarations, byProperty, cfg));
@@ -1123,33 +1309,7 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
     violations.push(...this.structure.detectMechanismFragmentation(declarations, cfg));
     violations.push(...this.structure.detectDeclarationSetSimilarity(declarations, cfg));
     violations.push(...this.structure.detectZIndexInventory(byProperty, cfg));
-
-    // Apply severity overrides from config
-    const severityOverrides: Record<string, string> = config.severityOverrides ?? {};
-    if (Object.keys(severityOverrides).length > 0) {
-      for (const v of violations) {
-        const override = severityOverrides[v.rule];
-        if (override) {
-          v.severity = override as 'critical' | 'warning' | 'suggestion';
-        }
-      }
-    }
-
-    const filtered = violations.filter(v => v.severity !== 'off');
-
-    const uniqueFiles = new Set(declarations.map(d => d.file_path));
-    return {
-      violations: filtered,
-      errors: [],
-      status: makeVisitorStatus(uniqueFiles.size),
-      executionTime: Date.now() - startTime,
-      analyzerName: this.name,
-      metrics: {
-        filesAnalyzed: uniqueFiles.size,
-        totalViolations: filtered.length,
-        executionTime: Date.now() - startTime,
-      },
-    };
+    return violations;
   }
 
   /** Not used — we override analyze() directly. */

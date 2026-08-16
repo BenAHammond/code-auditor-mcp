@@ -328,8 +328,7 @@ class GoAnalysis extends GoTraversalHelpers {
     _typeSpec: TreeSitterNode,
     nameNode: TreeSitterNode,
     typeNode: TreeSitterNode,
-    allFunctions: FunctionInfo[],
-    _sourceCode: string
+    allFunctions: FunctionInfo[]
   ): ClassInfo | null {
     const name = nameNode.text;
     const isExported = this.isExportedGo(name);
@@ -550,7 +549,6 @@ class GoExtraction extends GoParserCore {
   }
 
   extractClasses(ast: AST): ClassInfo[] {
-    const sourceCode = sourceCodeMap.get(ast) ?? '';
     const classes: ClassInfo[] = [];
 
     // Collect all function_declarations so we can match methods to structs
@@ -571,8 +569,7 @@ class GoExtraction extends GoParserCore {
             spec,
             nameNode,
             typeNode,
-            allFunctions,
-            sourceCode
+            allFunctions
           );
           if (structInfo) classes.push(structInfo);
         }
@@ -858,22 +855,8 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
       // fmt.Sprintf("format", args...) — dynamic
       // strings.Join(parts, "sep") — dynamic
       // fmt.Sprint(args...) — dynamic
-      const funcText = func.text;
-      if (funcText === 'fmt.Sprintf' || funcText === 'fmt.Sprintf' ||
-          funcText === 'fmt.Sprint' || funcText === 'fmt.Sprintln' ||
-          funcText === 'fmt.Appendf' || funcText === 'fmt.Appendln' ||
-          funcText === 'fmt.Append' || funcText === 'fmt.Errorf' ||
-          funcText === 'fmt.Fprintf' || funcText === 'fmt.Fprintln' ||
-          funcText === 'fmt.Fprint' || funcText === 'strings.Join' ||
-          funcText === 'fmt.Scanf') {
+      if (isDynamicFormatFunction(func.text)) {
         return true;
-      }
-
-      // Also check for selector_expression patterns: pkg.Symbol()
-      const selectorMatch = /^(.*?\.)?(Sprintf|Sprintf|Sprint|Sprintln|Join|Appendf|Errorf|Fprintf)$/.test(funcText);
-      if (selectorMatch) {
-        // Verify it's actually fmt.* or strings.*
-        return funcText.startsWith('fmt.') || funcText.startsWith('strings.');
       }
 
       // Recurse into arguments: query(fmt.Sprintf(...)) where the outer
@@ -919,7 +902,6 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
   getDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
     const raw = node.raw as TreeSitterNode;
     const type = raw.type;
-    const parts: DynamicPart[] = [];
 
     // For call_expressions that aren't known fmt/strings functions,
     // walk into the first argument that is itself a dynamic string construction.
@@ -927,67 +909,68 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
       const funcText = raw.childForFieldName?.('function')?.text ?? '';
       const isKnownFormatter = /^(fmt\.|strings\.)(Sprintf|Fprintf|Errorf|Appendf|Sprint|Sprintln|Append|Appendln|Join|Scanf|Fprint|Fprintln|Sscanf)$/u.test(funcText);
       if (!isKnownFormatter) {
-        for (const child of node.children ?? []) {
-          if ((child.raw as TreeSitterNode).type === 'argument_list') {
-            for (const arg of child.children ?? []) {
-              const argType = (arg.raw as TreeSitterNode).type;
-              if (argType === '(' || argType === ')' || argType === ',') continue;
-              if (this.isDynamicStringConstruction(arg)) {
-                return this.getDynamicParts(arg, sourceCode);
-              }
-            }
-          }
-        }
+        const arg = this.findFirstDynamicArgument(node);
+        if (arg) return this.getDynamicParts(arg, sourceCode);
       }
-    }
-
-    if (type === 'call_expression') {
-      const argsNode = raw.childForFieldName?.('arguments');
-      if (!argsNode) return parts;
-
-      const namedChildren = argsNode.namedChildren;
-
-      // fmt.Sprintf("format", arg1, arg2...): skip format string (first arg)
-      // strings.Join(parts, "sep"): first arg is dynamic
-      const funcText = raw.childForFieldName?.('function')?.text ?? '';
-      const isFormatFunc = /^fmt\.(Sprintf|Fprintf|Errorf|Appendf)$/u.test(funcText);
-
-      const startIdx = isFormatFunc ? 1 : 0;
-
-      for (let i = startIdx; i < namedChildren.length; i++) {
-        const arg = namedChildren[i];
-        const argType = arg.type;
-        // Skip string literals (they're the separator or static parts)
-        if (argType === 'interpreted_string_literal' || argType === 'raw_string_literal') continue;
-        const text = sourceCode.slice(arg.startIndex, arg.endIndex);
-        const isId = /^[\p{L}_][\p{L}\p{N}_]*$/u.test(text.trim());
-        const idNode = isId ? {
-          type: argType,
-          range: [arg.startIndex, arg.endIndex] as [number, number],
-          location: {
-            start: { line: arg.startPosition.row, column: arg.startPosition.column },
-            end: { line: arg.endPosition.row, column: arg.endPosition.column },
-          },
-          raw: arg,
-        } : undefined;
-        parts.push({ text: text.trim(), isIdentifier: isId, node: idNode });
-      }
-      return parts;
+      return this.extractCallDynamicParts(raw, sourceCode);
     }
 
     if (type === 'binary_expression') {
-      for (const child of node.children ?? []) {
-        const childType = (child.raw as TreeSitterNode).type;
-        if (childType === 'interpreted_string_literal' ||
-            childType === 'raw_string_literal' ||
-            childType === '+') continue;
-        const text = sourceCode.slice(child.range[0], child.range[1]);
-        const isId = /^[\p{L}_][\p{L}\p{N}_]*$/u.test(text.trim());
-        parts.push({ text: text.trim(), isIdentifier: isId, node: isId ? child : undefined });
-      }
-      return parts;
+      return extractBinaryDynamicParts(node, sourceCode);
     }
 
+    return [];
+  }
+
+  /**
+   * Finds the first argument of a call_expression that is itself a dynamic
+   * string construction, or null if none exists.
+   */
+  private findFirstDynamicArgument(node: ASTNode): ASTNode | null {
+    for (const child of node.children ?? []) {
+      if ((child.raw as TreeSitterNode).type !== 'argument_list') continue;
+      for (const arg of child.children ?? []) {
+        const argType = (arg.raw as TreeSitterNode).type;
+        if (argType === '(' || argType === ')' || argType === ',') continue;
+        if (this.isDynamicStringConstruction(arg)) return arg;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Extracts dynamic parts from a call_expression's argument list.
+   * fmt.Sprintf("format", arg1...): skips the format string (first arg).
+   * strings.Join(parts, "sep"): first arg is dynamic.
+   */
+  private extractCallDynamicParts(raw: TreeSitterNode, sourceCode: string): DynamicPart[] {
+    const parts: DynamicPart[] = [];
+    const argsNode = raw.childForFieldName?.('arguments');
+    if (!argsNode) return parts;
+
+    const namedChildren = argsNode.namedChildren;
+    const funcText = raw.childForFieldName?.('function')?.text ?? '';
+    const isFormatFunc = /^fmt\.(Sprintf|Fprintf|Errorf|Appendf)$/u.test(funcText);
+    const startIdx = isFormatFunc ? 1 : 0;
+
+    for (let i = startIdx; i < namedChildren.length; i++) {
+      const arg = namedChildren[i];
+      const argType = arg.type;
+      // Skip string literals (they're the separator or static parts)
+      if (argType === 'interpreted_string_literal' || argType === 'raw_string_literal') continue;
+      const text = sourceCode.slice(arg.startIndex, arg.endIndex);
+      const isId = /^[\p{L}_][\p{L}\p{N}_]*$/u.test(text.trim());
+      const idNode = isId ? {
+        type: argType,
+        range: [arg.startIndex, arg.endIndex] as [number, number],
+        location: {
+          start: { line: arg.startPosition.row, column: arg.startPosition.column },
+          end: { line: arg.endPosition.row, column: arg.endPosition.column },
+        },
+        raw: arg,
+      } : undefined;
+      parts.push({ text: text.trim(), isIdentifier: isId, node: idNode });
+    }
     return parts;
   }
 
@@ -1106,4 +1089,47 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
     });
     return found;
   }
+}
+
+/**
+ * Whether a call_expression's function name denotes a dynamic string formatter
+ * (fmt.Sprint*, fmt.Errorf, strings.Join, etc.).
+ */
+function isDynamicFormatFunction(funcText: string): boolean {
+  if (funcText === 'fmt.Sprintf' || funcText === 'fmt.Sprint' ||
+      funcText === 'fmt.Sprintln' || funcText === 'fmt.Appendf' ||
+      funcText === 'fmt.Appendln' || funcText === 'fmt.Append' ||
+      funcText === 'fmt.Errorf' || funcText === 'fmt.Fprintf' ||
+      funcText === 'fmt.Fprintln' || funcText === 'fmt.Fprint' ||
+      funcText === 'strings.Join' || funcText === 'fmt.Scanf') {
+    return true;
+  }
+
+  // Also check for selector_expression patterns: pkg.Symbol()
+  const selectorMatch = /^(.*?\.)?(Sprintf|Sprint|Sprintln|Join|Appendf|Errorf|Fprintf)$/.test(funcText);
+  if (selectorMatch) {
+    // Verify it's actually fmt.* or strings.*
+    return funcText.startsWith('fmt.') || funcText.startsWith('strings.');
+  }
+
+  return false;
+}
+
+/**
+ * Extracts dynamic parts from a Go binary string-concatenation expression
+ * (a + b + c). Non-literal operands are dynamic; literals and the `+` operator
+ * are skipped.
+ */
+function extractBinaryDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
+  const parts: DynamicPart[] = [];
+  for (const child of node.children ?? []) {
+    const childType = (child.raw as TreeSitterNode).type;
+    if (childType === 'interpreted_string_literal' ||
+        childType === 'raw_string_literal' ||
+        childType === '+') continue;
+    const text = sourceCode.slice(child.range[0], child.range[1]);
+    const isId = /^[\p{L}_][\p{L}\p{N}_]*$/u.test(text.trim());
+    parts.push({ text: text.trim(), isIdentifier: isId, node: isId ? child : undefined });
+  }
+  return parts;
 }

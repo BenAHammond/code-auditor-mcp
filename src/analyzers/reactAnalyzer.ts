@@ -10,6 +10,7 @@ import {
   ComponentMetadata,
   ComponentScanResult
 } from '../types.js';
+import { withRuleTiming } from './ruleTiming.js';
 
 /**
  * Default configuration for React analyzer
@@ -54,74 +55,100 @@ export function analyzeComponent(
   scanResult: ComponentScanResult
 ): ReactViolation[] {
   const violations: ReactViolation[] = [];
-  
-  // Check component complexity
-  if (component.complexity && component.complexity > config.maxComponentComplexity) {
-    violations.push({
-      file: component.filePath,
-      line: component.lineNumber,
-      severity: 'warning',
-      message: `Component '${component.name}' has high complexity (${component.complexity})`,
-      componentName: component.name,
-      rule: 'complexity',
-      violationType: 'complexity',
-      details: {
-        currentComplexity: component.complexity,
-        maxComplexity: config.maxComponentComplexity
-      },
-      suggestion: 'Consider breaking this component into smaller, more focused components'
-    });
-  }
-  
+
+  violations.push(...checkComponentComplexity(component, config));
+
   // Check hooks rules for functional components
   if (config.checkHooksRules && component.hooks && component.hooks.length > 0) {
     violations.push(...checkHooksRules(component));
   }
-  
+
   // Check for missing props validation (TypeScript users might skip this)
-  if (config.requirePropTypes && !hasPropsValidation(component)) {
-    violations.push({
-      file: component.filePath,
-      line: component.lineNumber,
-      severity: 'warning',
-      message: `Component '${component.name}' is missing prop type definitions`,
-      componentName: component.name,
-      rule: 'missing-props',
-      violationType: 'missing-props',
-      suggestion: 'Add TypeScript interface or PropTypes for component props'
-    });
-  }
-  
+  violations.push(...checkPropsValidation(component, config));
+
   // Check for missing error boundary in complex components
-  if (config.requireErrorBoundaries && shouldHaveErrorBoundary(component)) {
-    violations.push({
-      file: component.filePath,
-      line: component.lineNumber,
-      severity: 'warning',
-      message: `Complex component '${component.name}' should be wrapped in an error boundary`,
-      componentName: component.name,
-      rule: 'no-error-boundary',
-      violationType: 'no-error-boundary',
-      suggestion: 'Wrap this component in an error boundary to handle runtime errors gracefully'
-    });
-  }
-  
+  violations.push(...checkErrorBoundary(component, config));
+
   // Check for performance issues
   if (config.checkUnnecessaryRerenders) {
     violations.push(...checkPerformanceIssues(component, config));
   }
-  
+
   // Check for accessibility issues
   if (config.checkAccessibility && component.jsxElements) {
     violations.push(...checkAccessibility(component));
   }
-  
+
   // Check for missing keys in lists
   if (config.requireKeyProps && component.jsxElements) {
     violations.push(...checkMissingKeys(component));
   }
-  
+
   return violations;
+}
+
+/** Check component complexity and push a violation when over threshold. */
+function checkComponentComplexity(
+  component: ComponentMetadata,
+  config: ReactAnalyzerConfig
+): ReactViolation[] {
+  if (!(component.complexity && component.complexity > config.maxComponentComplexity)) {
+    return [];
+  }
+  return [{
+    file: component.filePath,
+    line: component.lineNumber,
+    severity: 'warning',
+    message: `Component '${component.name}' has high complexity (${component.complexity})`,
+    componentName: component.name,
+    rule: 'complexity',
+    violationType: 'complexity',
+    details: {
+      currentComplexity: component.complexity,
+      maxComplexity: config.maxComponentComplexity
+    },
+    suggestion: 'Consider breaking this component into smaller, more focused components'
+  }];
+}
+
+/** Check for missing props validation and push a violation when absent. */
+function checkPropsValidation(
+  component: ComponentMetadata,
+  config: ReactAnalyzerConfig
+): ReactViolation[] {
+  if (!config.requirePropTypes || hasPropsValidation(component)) {
+    return [];
+  }
+  return [{
+    file: component.filePath,
+    line: component.lineNumber,
+    severity: 'warning',
+    message: `Component '${component.name}' is missing prop type definitions`,
+    componentName: component.name,
+    rule: 'missing-props',
+    violationType: 'missing-props',
+    suggestion: 'Add TypeScript interface or PropTypes for component props'
+  }];
+}
+
+/** Check for a missing error boundary on complex components. */
+function checkErrorBoundary(
+  component: ComponentMetadata,
+  config: ReactAnalyzerConfig
+): ReactViolation[] {
+  if (!config.requireErrorBoundaries || !shouldHaveErrorBoundary(component)) {
+    return [];
+  }
+  return [{
+    file: component.filePath,
+    line: component.lineNumber,
+    severity: 'warning',
+    message: `Complex component '${component.name}' should be wrapped in an error boundary`,
+    componentName: component.name,
+    rule: 'no-error-boundary',
+    violationType: 'no-error-boundary',
+    suggestion: 'Wrap this component in an error boundary to handle runtime errors gracefully'
+  }];
 }
 
 /**
@@ -306,6 +333,44 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
   return violations;
 }
 
+/** Mutable traversal state threaded through the cycle-detection recursion. */
+interface CycleDetectionContext {
+  componentTree: Map<string, Set<string>>;
+  visited: Set<string>;
+  recursionStack: Set<string>;
+}
+
+/** Recursively search for a cycle reachable from `component`. */
+function findCycle(
+  ctx: CycleDetectionContext,
+  component: string,
+  path: string[] = []
+): string[] | null {
+  if (ctx.recursionStack.has(component)) {
+    return path.concat(component);
+  }
+
+  if (ctx.visited.has(component)) {
+    return null;
+  }
+
+  ctx.visited.add(component);
+  ctx.recursionStack.add(component);
+
+  const dependencies = ctx.componentTree.get(component);
+  if (dependencies) {
+    for (const dep of dependencies) {
+      const cycle = findCycle(ctx, dep, path.concat(component));
+      if (cycle) {
+        return cycle;
+      }
+    }
+  }
+
+  ctx.recursionStack.delete(component);
+  return null;
+}
+
 /**
  * Check for circular dependencies between components
  * @param componentTree
@@ -315,38 +380,15 @@ export function checkCircularDependencies(
   componentTree: Map<string, Set<string>>
 ): ReactViolation[] {
   const violations: ReactViolation[] = [];
-  const visited = new Set<string>();
-  const recursionStack = new Set<string>();
-  
-  function hasCycle(component: string, path: string[] = []): string[] | null {
-    if (recursionStack.has(component)) {
-      return path.concat(component);
-    }
-    
-    if (visited.has(component)) {
-      return null;
-    }
-    
-    visited.add(component);
-    recursionStack.add(component);
-    
-    const dependencies = componentTree.get(component);
-    if (dependencies) {
-      for (const dep of dependencies) {
-        const cycle = hasCycle(dep, path.concat(component));
-        if (cycle) {
-          return cycle;
-        }
-      }
-    }
-    
-    recursionStack.delete(component);
-    return null;
-  }
-  
+  const ctx: CycleDetectionContext = {
+    componentTree,
+    visited: new Set<string>(),
+    recursionStack: new Set<string>(),
+  };
+
   // Check each component for cycles
   for (const [component] of componentTree) {
-    const cycle = hasCycle(component);
+    const cycle = findCycle(ctx, component);
     if (cycle) {
       violations.push({
         file: 'component-dependencies',
@@ -356,12 +398,12 @@ export function checkCircularDependencies(
         violationType: 'complexity',
         suggestion: 'Refactor components to remove circular dependencies'
       });
-      
+
       // Mark all components in cycle as visited to avoid duplicate reports
-      cycle.forEach(c => visited.add(c));
+      cycle.forEach(c => ctx.visited.add(c));
     }
   }
-  
+
   return violations;
 }
 
@@ -429,24 +471,43 @@ function buildRawElementWrapperMap(
   config: ReactAnalyzerConfig,
   watchSet: Set<string>,
 ): Map<string, RawElementWrapper> {
-  const wrapperMap = new Map<string, RawElementWrapper>();
-
   if (config.componentMap) {
     // User-provided overrides — trust them unconditionally
-    for (const [element, wrapperName] of Object.entries(config.componentMap)) {
-      // Try to locate the wrapper component's file in scan results
-      let wrapperFile = 'unknown';
-      for (const result of scanResults) {
-        const match = result.components.find(c => c.name === wrapperName);
-        if (match) { wrapperFile = match.filePath; break; }
-      }
-      wrapperMap.set(element, { wrapperName, wrapperFile });
-    }
-    return wrapperMap;
+    return buildWrapperMapFromConfig(scanResults, config.componentMap);
   }
 
   // Auto-detect: an exported component whose jsxElements contains exactly one
   // watch-list intrinsic element (the thing being wrapped).
+  return autoDetectWrapperMap(scanResults, watchSet);
+}
+
+/** Build the wrapper map from user-provided {@link ReactAnalyzerConfig.componentMap}. */
+function buildWrapperMapFromConfig(
+  scanResults: ComponentScanResult[],
+  componentMap: Record<string, string>,
+): Map<string, RawElementWrapper> {
+  const wrapperMap = new Map<string, RawElementWrapper>();
+
+  for (const [element, wrapperName] of Object.entries(componentMap)) {
+    // Try to locate the wrapper component's file in scan results
+    let wrapperFile = 'unknown';
+    for (const result of scanResults) {
+      const match = result.components.find(c => c.name === wrapperName);
+      if (match) { wrapperFile = match.filePath; break; }
+    }
+    wrapperMap.set(element, { wrapperName, wrapperFile });
+  }
+
+  return wrapperMap;
+}
+
+/** Auto-detect wrappers from exported components rendering a single watch-list element. */
+function autoDetectWrapperMap(
+  scanResults: ComponentScanResult[],
+  watchSet: Set<string>,
+): Map<string, RawElementWrapper> {
+  const wrapperMap = new Map<string, RawElementWrapper>();
+
   for (const result of scanResults) {
     for (const component of result.components) {
       if (!component.isExported) continue;
@@ -534,38 +595,47 @@ export function checkRawElements(
   scanResults: ComponentScanResult[],
   config: ReactAnalyzerConfig
 ): ReactViolation[] {
-  const violations: ReactViolation[] = [];
+  return withRuleTiming('raw-element', () => {
+    const violations: ReactViolation[] = [];
 
-  const watchList = config.rawElementWatchList ?? ['button', 'input', 'select', 'textarea', 'table'];
-  const watchSet = new Set(watchList);
+    const watchList = config.rawElementWatchList ?? ['button', 'input', 'select', 'textarea', 'table'];
+    const watchSet = new Set(watchList);
 
-  // ── Phase 1: Build wrapper map ─────────────────────────────────────────
-  const wrapperMap = buildRawElementWrapperMap(scanResults, config, watchSet);
-  if (wrapperMap.size === 0) return violations;
+    // ── Phase 1: Build wrapper map ─────────────────────────────────────────
+    const wrapperMap = buildRawElementWrapperMap(scanResults, config, watchSet);
+    if (wrapperMap.size === 0) return violations;
 
-  // ── Phase 2: Count raw usages and collect locations ────────────────────
-  const { rawUsageCounts, rawUsageLocations } =
-    collectRawElementUsages(scanResults, watchSet, wrapperMap);
+    // ── Phase 2: Count raw usages and collect locations ────────────────────
+    const { rawUsageCounts, rawUsageLocations } =
+      collectRawElementUsages(scanResults, watchSet, wrapperMap);
 
-  // ── Phase 3: Emit violations ──────────────────────────────────────────
-  const minUsages = config.wrapperMinUsages ?? 5;
-  const severity: 'warning' | 'suggestion' = config.componentMap ? 'warning' : 'suggestion';
+    // ── Phase 3: Emit violations ──────────────────────────────────────────
+    const minUsages = config.wrapperMinUsages ?? 5;
+    const severity: 'warning' | 'suggestion' = config.componentMap ? 'warning' : 'suggestion';
 
-  for (const loc of rawUsageLocations) {
-    const count = rawUsageCounts.get(loc.element) || 0;
-    if (count < minUsages) continue;
+    for (const loc of rawUsageLocations) {
+      const count = rawUsageCounts.get(loc.element) || 0;
+      if (count < minUsages) continue;
 
-    violations.push({
-      file: loc.filePath,
-      line: loc.line,
-      severity,
-      message: `raw \`<${loc.element}>\` — this project uses \`${loc.wrapperName}\` (${loc.wrapperFile})`,
-      componentName: loc.componentName,
-      rule: 'raw-element',
-      violationType: 'raw-element',
-      suggestion: `Replace raw <${loc.element}> with the project's <${loc.wrapperName}> component`
-    });
-  }
+      violations.push({
+        file: loc.filePath,
+        line: loc.line,
+        severity,
+        message: `raw \`<${loc.element}>\` — this project uses \`${loc.wrapperName}\` (${loc.wrapperFile})`,
+        componentName: loc.componentName,
+        rule: 'raw-element',
+        violationType: 'raw-element',
+        suggestion: `Replace raw <${loc.element}> with the project's <${loc.wrapperName}> component`,
+        resolution: {
+          action: 'use-wrapper',
+          summary: `Replace raw <${loc.element}> in ${loc.componentName} with the project's <${loc.wrapperName}> component (${loc.wrapperFile}).`,
+          symbols: [loc.wrapperName],
+          files: [loc.filePath, loc.wrapperFile],
+          lines: [loc.line],
+        },
+      });
+    }
 
-  return violations;
+    return violations;
+  });
 }

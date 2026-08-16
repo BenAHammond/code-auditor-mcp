@@ -36,6 +36,14 @@ import { extractSymbol } from '../symbols.js';
 import { generateJSONReport } from '../reporting/jsonReportGenerator.js';
 import type { Violation, Baseline, BaselineEntry } from '../types.js';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
+import { RULE_ALIASES, canonicalRuleId, describeRuleId } from '../ruleAliases.js';
+import { DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
+import { DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
+import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { DEFAULT_DOCUMENTATION_CONFIG } from '../analyzers/universal/UniversalDocumentationAnalyzer.js';
+import { DEFAULT_STYLES_CONFIG } from '../analyzers/universal/UniversalStylesAnalyzer.js';
+import { DEFAULT_CONVENTIONS_CONFIG } from '../analyzers/universal/UniversalConventionsAnalyzer.js';
+import { DEFAULT_ANALYZER_CONFIGS } from '../config/defaults.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1432,6 +1440,215 @@ describe('Rule Registry', () => {
       expect(id, 'Rule ID must not contain leading/trailing whitespace').toBe(id.trim());
     }
   });
+
+  // ── Spec 37 R2 — the rule contract ─────────────────────────────────────────
+  // A rule must declare its gating role, resolvability, message template, docs
+  // handle and threshold keys. A gating rule that cannot name an action is a
+  // contract violation (Spec 36 R6); a threshold that does not resolve to a key
+  // the analyzer actually reads is a lie in the config surface (Spec 38 R1).
+  it('Spec 37 R2 — every entry carries the contract; gating⇒resolvable; thresholds name real config keys', () => {
+    // Authoritative config-key source is each analyzer's own DEFAULT_*_CONFIG —
+    // the shape the analyzer actually reads at runtime — NOT the flat
+    // DEFAULT_ANALYZER_CONFIGS blob in defaults.ts. That blob has drifted: its
+    // dataAccess.performanceThresholds.maxJoins is dead, while the analyzer reads
+    // joinedTableCount. Flatten leaf paths so a threshold naming a real key
+    // resolves and one naming a phantom key fails.
+    const flattenLeafPaths = (obj: unknown, prefix = ''): Set<string> => {
+      const paths = new Set<string>();
+      if (obj === null || typeof obj !== 'object') {
+        if (prefix) paths.add(prefix);
+        return paths;
+      }
+      if (Array.isArray(obj)) {
+        if (prefix) paths.add(prefix);
+        return paths;
+      }
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        const p = prefix ? `${prefix}.${k}` : k;
+        if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+          for (const sub of flattenLeafPaths(v, p)) paths.add(sub);
+        } else {
+          paths.add(p);
+        }
+      }
+      return paths;
+    };
+
+    // Analyzer → its authoritative config shape. cross-domain has no
+    // DEFAULT_CROSS_DOMAIN_CONFIG export; its schemaLifecycle default lives in
+    // DEFAULT_ANALYZER_CONFIGS (the only namespace there that is still wired).
+    const analyzerConfigShapes: Record<string, unknown> = {
+      'solid': DEFAULT_SOLID_CONFIG,
+      'dry': DEFAULT_DRY_CONFIG,
+      'data-access': DEFAULT_DATA_ACCESS_CONFIG,
+      'documentation': DEFAULT_DOCUMENTATION_CONFIG,
+      'styles': DEFAULT_STYLES_CONFIG,
+      'conventions': DEFAULT_CONVENTIONS_CONFIG,
+      'cross-domain': DEFAULT_ANALYZER_CONFIGS.crossDomain,
+    };
+    const flatKeys = new Map<string, Set<string>>();
+    for (const [name, cfg] of Object.entries(analyzerConfigShapes)) {
+      flatKeys.set(name, flattenLeafPaths(cfg));
+    }
+
+    for (const [id, entry] of Object.entries(RULE_REGISTRY)) {
+      // Field completeness — missing any is a build failure (tsc enforces the
+      // required interface fields; this re-asserts it at runtime for the case
+      // where the literal is built dynamically).
+      expect(typeof entry.gating, `Registry entry "${id}" must declare gating (boolean)`).toBe('boolean');
+      expect(typeof entry.resolvable, `Registry entry "${id}" must declare resolvable (boolean)`).toBe('boolean');
+      expect(typeof entry.message, `Registry entry "${id}" must declare message (string)`).toBe('string');
+      expect(entry.message.trim().length, `Registry entry "${id}" message must be non-empty`).toBeGreaterThan(0);
+      expect(typeof entry.docs, `Registry entry "${id}" must declare docs (string)`).toBe('string');
+      expect(entry.docs.trim().length, `Registry entry "${id}" docs must be non-empty`).toBeGreaterThan(0);
+      expect(Array.isArray(entry.thresholds), `Registry entry "${id}" thresholds must be an array`).toBe(true);
+
+      // gating ⇒ resolvable. A gating rule that cannot produce a resolution is
+      // a contract violation (Spec 36 R6 / Spec 37 R2).
+      expect(
+        !entry.gating || entry.resolvable,
+        `gating rule "${id}" must be resolvable — declare resolvable: true or drop it from the gating set`,
+      ).toBe(true);
+
+      // Thresholds name real config keys the analyzer reads.
+      if (entry.thresholds.length === 0) continue;
+      const keys = flatKeys.get(entry.analyzer);
+      expect(
+        keys !== undefined,
+        `rule "${id}" declares thresholds but analyzer "${entry.analyzer}" has no config shape registered for validation`,
+      ).toBe(true);
+      for (const t of entry.thresholds) {
+        expect(
+          keys?.has(t),
+          `rule "${id}" threshold "${t}" is not a real config key in analyzer "${entry.analyzer}"`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  // ── Spec 37 R3 — inline samples are part of the contract ──────────────────
+  // A rule ships its valid/invalid samples adjacent to its implementation.
+  // At least one valid sample must be a near-miss (syntactically close to an
+  // invalid case but semantically different) — the shape-matching
+  // false-positive class behind the six historical regressions. A rule without
+  // both arrays, or without a near-miss, fails here. Every invalid sample on a
+  // resolvable rule must assert the resolution it must produce (keeps R1 honest
+  // as rules change); a non-resolvable rule must not claim one it cannot emit.
+  it('Spec 37 R3 — every rule declares valid+invalid samples with a near-miss; resolvable⇒resolution on invalid samples', () => {
+    for (const [id, entry] of Object.entries(RULE_REGISTRY)) {
+      expect(entry.samples, `Registry entry "${id}" must declare samples (Spec 37 R3)`).toBeDefined();
+      const { valid, invalid } = entry.samples;
+
+      expect(Array.isArray(valid), `Registry entry "${id}" samples.valid must be an array`).toBe(true);
+      expect(valid.length, `Registry entry "${id}" must have ≥1 valid sample`).toBeGreaterThan(0);
+
+      expect(Array.isArray(invalid), `Registry entry "${id}" samples.invalid must be an array`).toBe(true);
+      expect(invalid.length, `Registry entry "${id}" must have ≥1 invalid sample`).toBeGreaterThan(0);
+
+      // At least one near-miss: syntactically close to an invalid case but
+      // semantically different — catches a rule matching on shape, not meaning.
+      const hasNearMiss = valid.some((s) => s.nearMiss === true);
+      expect(
+        hasNearMiss,
+        `Registry entry "${id}" must have ≥1 valid sample marked nearMiss (a shape-match false-positive guard)`,
+      ).toBe(true);
+
+      // Every invalid sample must carry a code string.
+      for (const s of invalid) {
+        expect(typeof s.code, `Registry entry "${id}" invalid sample code must be a string`).toBe('string');
+        expect(s.code.trim().length, `Registry entry "${id}" invalid sample code must be non-empty`).toBeGreaterThan(0);
+      }
+
+      // Resolution assertion: a resolvable rule's invalid samples must each
+      // assert the resolution produced; a non-resolvable rule must not claim one.
+      if (entry.resolvable) {
+        for (const s of invalid) {
+          expect(
+            s.resolution,
+            `resolvable rule "${id}" invalid sample must assert a resolution (Spec 37 R3)`,
+          ).toBeDefined();
+          expect(
+            typeof s.resolution?.action,
+            `resolvable rule "${id}" invalid sample resolution must have an action string`,
+          ).toBe('string');
+          expect(
+            (s.resolution?.action ?? '').trim().length,
+            `resolvable rule "${id}" invalid sample resolution action must be non-empty`,
+          ).toBeGreaterThan(0);
+        }
+      } else {
+        for (const s of invalid) {
+          expect(
+            s.resolution,
+            `non-resolvable rule "${id}" invalid sample must not claim a resolution it cannot emit`,
+          ).toBeUndefined();
+        }
+      }
+    }
+  });
+
+  // ── Spec 38 R5 — rule-ID alias map ─────────────────────────────────────────
+  // A rename or removal must be recorded in RULE_ALIASES, and fingerprinting
+  // must canonicalize through it, so an existing baseline survives a rename
+  // (known vs new is not reshuffled). A rule ID that existed in a prior
+  // release and is absent from both the registry and the alias map fails here.
+  it('Spec 38 R5 — prior-release rule IDs resolve to the registry or the alias map', () => {
+    // Prior-release IDs = every current registry key (they existed before) plus
+    // every retired ID recorded in the alias map. Each must be reachable:
+    // either still in the registry, or mapped by an alias to a registry entry.
+    for (const [retiredId, alias] of Object.entries(RULE_ALIASES)) {
+      if (alias.to === null) {
+        // Tombstone — a genuine removal. The reason must be non-empty so a stale
+        // reference reports "removed because X", not an unexplained finding.
+        expect(
+          alias.reason.trim().length,
+          `tombstone "${retiredId}" must carry a reason`,
+        ).toBeGreaterThan(0);
+        // A tombstoned ID must NOT remain in the registry (single source of truth).
+        expect(
+          RULE_REGISTRY[retiredId],
+          `retired rule ID "${retiredId}" must not remain in the registry — it is tombstoned`,
+        ).toBeUndefined();
+      } else {
+        // Rename — the target must be a real, live registry entry.
+        expect(
+          RULE_REGISTRY[alias.to],
+          `alias "${retiredId}" → "${alias.to}" must name a real registry entry`,
+        ).toBeDefined();
+        // The old ID must not also be present in the registry (no split identity).
+        expect(
+          RULE_REGISTRY[retiredId],
+          `renamed rule ID "${retiredId}" must not remain in the registry alongside "${alias.to}"`,
+        ).toBeUndefined();
+      }
+    }
+
+    // describeRuleId must classify each retired ID correctly.
+    expect(describeRuleId('naming-convention')).toMatchObject({ status: 'renamed', to: 'table-naming-convention' });
+    expect(describeRuleId('direct-sql')).toMatchObject({ status: 'removed' });
+    expect(describeRuleId('unknown-column')).toMatchObject({ status: 'removed' });
+    expect(describeRuleId('table-naming-convention')).toEqual({ status: 'unknown' });
+  });
+
+  it('Spec 38 R5 — a baseline written before the rename still matches after', () => {
+    // Old baseline fingerprint recorded the pre-rename ID.
+    const oldFp = fingerprint({ analyzer: 'schema', rule: 'naming-convention', file: 'a.ts', symbol: 'UserProfiles' });
+    // New violation now emits the post-rename ID; buildFingerprintInput
+    // canonicalizes it back so the fingerprint is identical.
+    const newFp = fingerprint(buildFingerprintInput({
+      analyzer: 'schema',
+      rule: 'table-naming-convention',
+      file: 'a.ts',
+      symbol: 'UserProfiles',
+      severity: 'suggestion',
+      message: 'x',
+    }));
+    expect(newFp).toBe(oldFp);
+
+    // Canonicalization maps the new ID back to the old; unknown IDs pass through.
+    expect(canonicalRuleId('table-naming-convention')).toBe('naming-convention');
+    expect(canonicalRuleId('unknown-table')).toBe('unknown-table');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1458,7 +1675,7 @@ describe('JSON output purity', () => {
   });
 
   it('changed --json produces parseable JSON on stdout with zero non-JSON text', () => {
-    const r = runCli(`changed src/lib.ts --json --fail-on suggestion -p "${testDir}"`, testDir);
+    const r = runCli(`changed src/lib.ts --json -p "${testDir}"`, testDir);
     // stdout must be valid JSON — no interstitial banners, progress bars, or
     // migration notices. JSON.parse throws on any preamble/postamble text.
     let parsed: any;
@@ -1469,7 +1686,7 @@ describe('JSON output purity', () => {
   it('changed --stdin --json produces parseable JSON (hook invocation path)', () => {
     // The hook pipes file paths via stdin — this is the exact invocation path
     // used by hook-audit.sh
-    const cmd = `${distCli()} changed --stdin --json --fail-on critical -p "${testDir}"`;
+    const cmd = `${distCli()} changed --stdin --json -p "${testDir}"`;
     const result = execSync(cmd, {
       cwd: testDir,
       encoding: 'utf-8',
@@ -1485,7 +1702,7 @@ describe('JSON output purity', () => {
 
   it('changed --stdin --json with zero matches produces empty array, not empty string', () => {
     // Edge case: no files match any analyzer → stdout must still be valid JSON
-    const cmd = `${distCli()} changed --stdin --json --fail-on critical -p "${testDir}"`;
+    const cmd = `${distCli()} changed --stdin --json -p "${testDir}"`;
     const result = execSync(cmd, {
       cwd: testDir,
       encoding: 'utf-8',

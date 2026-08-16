@@ -8,6 +8,7 @@
  */
 
 import type { SchemaUsage } from '../../../types.js';
+import type { AST, LanguageAdapter } from '../../../languages/types.js';
 
 /**
  * Configuration for Schema analyzer
@@ -109,13 +110,19 @@ export interface TableCatalogEntry {
 
 /**
  * Resolution context threaded through the registry table extractors. Bundling
- * the file-path + import-map + module-reader triple keeps the extractor
- * signatures at six positional parameters (context tuple + target + context
- * object + accumulator) instead of eight.
+ * the AST + adapter + source + file-path + module-reader tuple keeps the
+ * extractor signatures at three positional parameters (target + context +
+ * accumulator) instead of six.
+ *
+ * `importMap` is populated by `extractTablesFromRegistry` before dispatch —
+ * callers build the context without it.
  */
 export interface RegistryExtractionContext {
+  ast: AST;
+  adapter: LanguageAdapter;
+  sourceCode: string;
   filePath: string;
-  importMap: Map<string, Map<string, string>>;
+  importMap?: Map<string, Map<string, string>>;
   readModule?: (fromFile: string, specifier: string) => string | null;
 }
 

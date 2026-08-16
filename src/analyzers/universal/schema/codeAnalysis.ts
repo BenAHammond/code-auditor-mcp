@@ -18,6 +18,16 @@ import type { SchemaAnalyzerConfig, TableReference } from './types.js';
 import { createSchemaViolation } from './violations.js';
 
 /**
+ * Bundled inputs for `findTableReferences`: config, provenance context, and the
+ * known-table catalog travel together so the signature stays under the param cap.
+ */
+export interface FindTableReferencesContext {
+  config: SchemaAnalyzerConfig;
+  provenanceContext?: ProvenanceContext;
+  allTables?: Set<string>;
+}
+
+/**
  * Extract table references from a TypeScript/JavaScript AST.
  *
  * Four extraction strategies: (1) tagged-template SQL, (2) DB-call string
@@ -26,24 +36,49 @@ import { createSchemaViolation } from './violations.js';
  * @param ast The parsed file AST.
  * @param adapter The language adapter for the file's syntax.
  * @param sourceCode The raw source text.
- * @param config Schema analyzer configuration (tag names, DB receiver/method sets).
- * @param provenanceContext Provenance-based DB-call detection context (Spec 21).
- * @param allTables Known-table catalog used to filter short CTE/alias identifiers.
+ * @param ctx Bundled config / provenance / known-table catalog.
  * @returns Table references extracted via all four strategies.
  */
 export function findTableReferences(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
-  config: SchemaAnalyzerConfig,
-  provenanceContext?: ProvenanceContext,
-  allTables?: Set<string>,
+  ctx: FindTableReferencesContext,
 ): TableReference[] {
+  const references: TableReference[] = [];
+
+  // (1) Tagged template SQL — e.g. sql`SELECT * FROM heroes`
+  references.push(...extractTaggedTemplateRefs(ast, adapter, sourceCode, ctx));
+
+  // (2) DB-call patterns — e.g. db.exec("SELECT * FROM heroes")
+  references.push(...extractDbCallRefs(ast, adapter, sourceCode, ctx));
+
+  // (3) .sql files — scan the entire source (the whole file IS SQL).
+  if (ast.filePath.endsWith('.sql')) {
+    const fileRefs = parseSqlTables(sourceCode, { line: 1, column: 1 }, sourceCode, ctx.allTables);
+    references.push(...fileRefs);
+  }
+
+  // (4) Spec 15 R2 — ORM-aware extraction (Drizzle + Prisma)
+  references.push(...extractOrmRefs(ast, adapter, sourceCode));
+
+  return references;
+}
+
+/**
+ * Strategy (1): tagged-template SQL — e.g. sql`SELECT * FROM heroes`.
+ * This is a syntax feature, not a naming convention — keep the sqlTagNames gate.
+ */
+function extractTaggedTemplateRefs(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  ctx: FindTableReferencesContext,
+): TableReference[] {
+  const { config, allTables } = ctx;
   const references: TableReference[] = [];
   const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
 
-  // (1) Tagged template SQL — e.g. sql`SELECT * FROM heroes`
-  // This is a syntax feature, not a naming convention — keep the sqlTagNames gate.
   const taggedTemplates = adapter.findNodes(ast, {
     custom: (node: ASTNode) => {
       if (node.type !== 'call_expression') return false;
@@ -59,25 +94,39 @@ export function findTableReferences(
     const templateText = getTemplateText(callNode, adapter, sourceCode);
     if (!templateText) continue;
     const location = getCallLocation(callNode);
-    const tableRefs = parseSqlTables(templateText, location, sourceCode, allTables);
-    references.push(...tableRefs);
+    references.push(...parseSqlTables(templateText, location, sourceCode, allTables));
   }
 
-  // (2) DB-call patterns — e.g. db.exec("SELECT * FROM heroes")
-  // Spec 21: Replace name-based isDbMemberCall with provenance-based isDBProvenanced.
+  return references;
+}
+
+/**
+ * Strategy (2): DB-call patterns — e.g. db.exec("SELECT * FROM heroes").
+ * Spec 21: provenance-based isDBProvenanced when available, falling back to
+ * the name-based isDbMemberCall for `names` mode / no context.
+ */
+function extractDbCallRefs(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  ctx: FindTableReferencesContext,
+): TableReference[] {
+  const { config, provenanceContext, allTables } = ctx;
+  const references: TableReference[] = [];
+
   const dbCalls = adapter.findNodes(ast, {
     custom: (node: ASTNode) => {
       if (node.type !== 'call_expression') return false;
       // Spec 21: Use provenance when available, fall back to name-based check
       if (provenanceContext && provenanceContext.mode !== 'names') {
-        return isDBProvenanced(node, adapter, sourceCode, provenanceContext, DB_CALL_METHODS);
+        return isDBProvenanced(node, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS });
       }
       // Legacy name-based check for names mode / no context
       const callee = getCallee(node, adapter, sourceCode);
       if (!callee) return false;
       const dbMethods = config.dbCallMethods ?? [...DB_CALL_METHOD_NAMES];
       const dbReceivers = config.dbReceiverNames ?? [...DB_RECEIVER_NAMES];
-      return isDbMemberCall(node, callee, dbMethods, dbReceivers, adapter, sourceCode);
+      return isDbMemberCall(callee, dbMethods, dbReceivers);
     },
   });
 
@@ -85,42 +134,39 @@ export function findTableReferences(
     const firstArg = getFirstStringArgument(callNode, adapter, sourceCode);
     if (!firstArg) continue;
     const location = getCallLocation(callNode);
-    const tableRefs = parseSqlTables(firstArg, location, sourceCode, allTables);
-    references.push(...tableRefs);
+    references.push(...parseSqlTables(firstArg, location, sourceCode, allTables));
   }
 
-  // (3) .sql files — scan the entire source (the whole file IS SQL).
-  // `.ts`/`.js` migration files are NOT full-source scanned: their SQL lives
-  // inside tagged templates (step 1), DB-call string arguments (step 2), or
-  // ORM builder calls (step 4). Full-source scanning a code file matches SQL
-  // keywords in comments, string literals, and import specifiers, producing
-  // unknown-table / lifecycle false positives (e.g. `// update again`,
-  // `import x from 'mod'`, `logger.warn('...from field ${...}')`).
-  if (ast.filePath.endsWith('.sql')) {
-    const fileRefs = parseSqlTables(sourceCode, { line: 1, column: 1 }, sourceCode, allTables);
-    references.push(...fileRefs);
-  }
+  return references;
+}
 
-  // (4) Spec 15 R2 — ORM-aware extraction (Drizzle + Prisma)
-  // Run ORM adapter extraction for files that match a registered adapter.
-  // This complements raw-SQL extraction by picking up ORM-specific patterns
-  // like db.select().from(users) and prisma.user.findMany().
+/**
+ * Strategy (4): ORM-aware extraction (Drizzle + Prisma) via the registered
+ * adapter. Complements raw-SQL extraction by picking up ORM-specific patterns
+ * like db.select().from(users) and prisma.user.findMany().
+ */
+function extractOrmRefs(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): TableReference[] {
+  const references: TableReference[] = [];
   const ormRegistry = OrmAdapterRegistry.getInstance();
   const ormAdapter = ormRegistry.getAdapterForFile(ast.filePath);
-  if (ormAdapter) {
-    try {
-      const ormRefs = ormAdapter.extractTableReferences(ast, adapter, sourceCode);
-      for (const ormRef of ormRefs) {
-        references.push({
-          table: ormRef.table,
-          type: ormRef.type,
-          location: ormRef.location,
-          context: ormRef.context,
-        });
-      }
-    } catch {
-      // ORM extraction is best-effort — failures don't block raw-SQL extraction.
+  if (!ormAdapter) return references;
+
+  try {
+    const ormRefs = ormAdapter.extractTableReferences(ast, adapter, sourceCode);
+    for (const ormRef of ormRefs) {
+      references.push({
+        table: ormRef.table,
+        type: ormRef.type,
+        location: ormRef.location,
+        context: ormRef.context,
+      });
     }
+  } catch {
+    // ORM extraction is best-effort — failures don't block raw-SQL extraction.
   }
 
   return references;
@@ -136,24 +182,25 @@ export function findTableReferences(
  * @param allTables Known-table catalog used to keep short CTE/alias identifiers.
  * @returns Table references found in the SQL text.
  */
-export function parseSqlTables(
-  sqlText: string,
-  baseLocation: { line: number; column: number },
-  sourceCode: string,
-  allTables?: Set<string>,
-): TableReference[] {
-  let references: TableReference[] = [];
+/** Bundled inputs for the SQL-pattern match loop inside `parseSqlTables`. */
+interface SqlParseContext {
+  sqlText: string;
+  cleaned: string;
+  baseLocation: { line: number; column: number };
+  sourceCode: string;
+  allTables?: Set<string>;
+}
 
-  // R2.3: Strip template expressions — `${prefix}_builds` → `_builds`
-  // (the prefix is replaced with empty, the suffix remains for matching)
-  const cleaned = resolveTemplateExpressions(sqlText);
-
-  // SQL patterns anchored to SQL keywords (not arbitrary substrings).
-  // Uses Unicode-aware \p{L} so non-Latin table names (日, 注文, пользователи)
-  // are correctly matched — \w is ASCII-only. Spec 21 R5.
-  const sqlPatterns: Array<{ regex: RegExp; type: TableReference['type'] }> = [
-    // Note: no trailing \b — greedy [\p{L}\p{N}_]* consumes the full identifier and
-    // \b after a closing quote (non-word char) fails, blocking quoted-table extraction.
+/**
+ * SQL patterns anchored to SQL keywords (not arbitrary substrings).
+ *
+ * Uses Unicode-aware \p{L} so non-Latin table names (日, 注文, пользователи)
+ * are correctly matched — \w is ASCII-only. Spec 21 R5. No trailing \b:
+ * greedy [\p{L}\p{N}_]* consumes the full identifier and \b after a closing
+ * quote (non-word char) fails, blocking quoted-table extraction.
+ */
+function sqlTablePatterns(): Array<{ regex: RegExp; type: TableReference['type'] }> {
+  return [
     { regex: /\bFROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
     { regex: /\bJOIN\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
     { regex: /\bINSERT\s+INTO\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'insert' },
@@ -161,11 +208,21 @@ export function parseSqlTables(
     { regex: /\bDELETE\s+FROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'delete' },
     { regex: /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'create' },
   ];
+}
 
-  for (const { regex, type } of sqlPatterns) {
-    let match;
+/**
+ * Run the keyword-anchored SQL patterns over `cleaned`, skipping system
+ * tables, table-valued functions, module-specifier FROMs, short CTE/alias
+ * identifiers, and SQL keywords.
+ */
+function matchSqlPatterns(ctx: SqlParseContext): TableReference[] {
+  const { sqlText, cleaned, baseLocation, sourceCode, allTables } = ctx;
+  const references: TableReference[] = [];
+
+  for (const { regex, type } of sqlTablePatterns()) {
     // Create fresh regex since we might consume with exec
     const re = new RegExp(regex.source, regex.flags);
+    let match;
     while ((match = re.exec(cleaned)) !== null) {
       const table = match[2]; // The table name (capture group 2)
       if (!table || isSystemTable(table) || isTableValuedFunction(table)) continue;
@@ -174,12 +231,9 @@ export function parseSqlTables(
       // full-source scan of migration `.ts` files otherwise captures as tables.
       if (isModuleImportFrom(cleaned, match.index)) continue;
 
-      // v3.4.8: Skip very short identifiers (likely CTE names like 'x', 't',
-      // aliases like 'o', 'c') unless they are known table names.
-      // Single-char identifiers matched by FROM/JOIN regex capture short
-      // CTE names that extractAliasIdentifiers() may miss (WITH x AS (...));
-      // subquery bare aliases (FROM (SELECT ...) t) likewise. The guard
-      // catches false positives from both gaps.
+      // Skip very short identifiers (likely CTE names / bare aliases like 'x',
+      // 't', 'o', 'c') unless they are known table names — the guard catches
+      // false positives from single-char CTE/alias identifiers.
       if (!isSqlKeyword(table) && table.length < 3 && !allTables?.has(table.toLowerCase())) continue;
 
       // Skip common false positives: common variable names, keywords
@@ -199,6 +253,31 @@ export function parseSqlTables(
       });
     }
   }
+
+  return references;
+}
+
+/**
+ * Parse a SQL string (possibly with template expressions) into table references.
+ *
+ * @param sqlText The SQL text to parse.
+ * @param baseLocation Location of the SQL text within its source file.
+ * @param sourceCode The full source file contents.
+ * @param allTables Optional known table set for match filtering.
+ * @returns Table references discovered in the SQL text.
+ */
+export function parseSqlTables(
+  sqlText: string,
+  baseLocation: { line: number; column: number },
+  sourceCode: string,
+  allTables?: Set<string>,
+): TableReference[] {
+  // R2.3: Strip template expressions — `${prefix}_builds` → `_builds`
+  // (the prefix is replaced with empty, the suffix remains for matching)
+  const cleaned = resolveTemplateExpressions(sqlText);
+  const ctx: SqlParseContext = { sqlText, cleaned, baseLocation, sourceCode, allTables };
+
+  let references = matchSqlPatterns(ctx);
 
   // Template sentinel filter: resolveTemplateExpressions() replaces
   // ${...} with __TMPL__. Strip these before alias extraction and
@@ -364,9 +443,7 @@ export function checkNamingConventions(
         filePath,
         ref.location,
         `Table name '${ref.table}' should use snake_case convention`,
-        'suggestion',
-        'naming-convention',
-        ref.table
+        { severity: 'suggestion', rule: 'table-naming-convention', symbol: ref.table }
       ));
     }
 
@@ -376,9 +453,7 @@ export function checkNamingConventions(
         filePath,
         ref.location,
         `Table name '${ref.table}' is a reserved word. Consider using a different name.`,
-        'warning',
-        'reserved-word',
-        ref.table
+        { severity: 'warning', rule: 'reserved-word', symbol: ref.table }
       ));
     }
   }
@@ -417,9 +492,7 @@ export function checkQueryPatterns(
         ast.filePath,
         func.location.start,
         `Function '${func.name}' has ${queryCount} queries, exceeding the maximum of ${config.maxQueriesPerFunction}`,
-        'warning',
-        'too-many-queries',
-        func.name
+        { severity: 'warning', rule: 'too-many-queries', symbol: func.name }
       ));
     }
   }
@@ -428,6 +501,70 @@ export function checkQueryPatterns(
   // The two were consolidated in Spec-19 Corrective Batch Item 3 — see CHANGELOG.
 
   return violations;
+}
+
+/** Regexes for dangerous query/execute call sites (global flag for iteration). */
+const DANGEROUS_SQL_PATTERNS: RegExp[] = [
+  /query\s*\(\s*`[^`]*\$\{[^}]+\}[^`]*`/g,
+  /query\s*\(\s*['"][^'"]*['"]?\s*\+/g,
+  /execute\s*\(\s*['"][^'"]*['"]?\s*\+/g,
+];
+
+/** Bundled inputs for the per-match injection check. */
+interface InjectionCheckContext {
+  ast: AST;
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  symbolOrdinals: Map<string, number>;
+  violations: Violation[];
+}
+
+/**
+ * Evaluate a single dangerous-pattern match: skip parameterized queries and
+ * taint-safe dynamic strings, else emit an sql-injection violation.
+ */
+function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray): void {
+  const { ast, adapter, sourceCode, symbolOrdinals, violations } = ctx;
+
+  // Parameterized queries pass a bound-params argument (`query(sql, params)`).
+  // When the matched literal is followed by `, params` the interpolated
+  // `${...}` segments are compile-time clauses whose `?` placeholders are
+  // bound by that argument — not an injection vector. The data-access
+  // analyzer's checkQuerySecurity applies the same signal.
+  const afterMatch = sourceCode.slice(match.index + match[0].length);
+  if (/^\s*,/.test(afterMatch)) return;
+
+  const location = offsetToLocation(sourceCode, match.index, { line: 1, column: 1 });
+
+  // Find enclosing function from the AST at this position
+  const node = findClosestNodeAt(ast.root, location, adapter);
+
+  // Taint-aware safety check (Spec 33 Item 11a): clear the finding when the
+  // query argument's dynamic parts are all provably safe. The naive regex
+  // cannot tell trusted-DDL interpolation (`query(\`CREATE TABLE ${name}...\`)`
+  // with a constant/sanitized name) from raw-input interpolation, so the
+  // distinction is delegated to the adapter's dynamic-string safety analysis
+  // (isSafeInterpolation / resolveLocalConstant) — the same signal the
+  // data-access analyzer already trusts for sql-injection-risk.
+  const callNode = findEnclosingCallExpression(node, adapter);
+  if (callNode && isAllDynamicPartsSafe(callNode, ast, adapter, sourceCode)) {
+    return;
+  }
+
+  const enclosingFn = node ? findEnclosingFunctionName(node, adapter) : 'top-level';
+
+  const baseSymbol = `${enclosingFn}:sql-injection`;
+  const ordinal = (symbolOrdinals.get(baseSymbol) ?? 0) + 1;
+  symbolOrdinals.set(baseSymbol, ordinal);
+  const symbol = ordinal > 1 ? `${baseSymbol}:${ordinal}` : baseSymbol;
+
+  violations.push(createSchemaViolation(
+    ast.filePath,
+    location,
+    'Potential SQL injection vulnerability. Use parameterized queries.',
+    // Spec 11 R4 blanket demotion: all survivors → suggestion
+    { severity: 'suggestion', rule: 'sql-injection', symbol }
+  ));
 }
 
 /**
@@ -444,60 +581,20 @@ export function checkSQLInjection(
   sourceCode: string
 ): Violation[] {
   const violations: Violation[] = [];
-  const symbolOrdinals = new Map<string, number>();
+  const ctx: InjectionCheckContext = {
+    ast,
+    adapter,
+    sourceCode,
+    symbolOrdinals: new Map<string, number>(),
+    violations,
+  };
 
-  // Use regex with global flag to find individual call sites
-  const dangerousPatterns = [
-    /query\s*\(\s*`[^`]*\$\{[^}]+\}[^`]*`/g,
-    /query\s*\(\s*['"][^'"]*['"]?\s*\+/g,
-    /execute\s*\(\s*['"][^'"]*['"]?\s*\+/g,
-  ];
-
-  for (const pattern of dangerousPatterns) {
+  for (const pattern of DANGEROUS_SQL_PATTERNS) {
     // Clone regex to reset state (global regexes track lastIndex)
     const re = new RegExp(pattern.source, pattern.flags);
     let match: RegExpExecArray | null;
     while ((match = re.exec(sourceCode)) !== null) {
-      // Parameterized queries pass a bound-params argument (`query(sql, params)`).
-      // When the matched literal is followed by `, params` the interpolated
-      // `${...}` segments are compile-time clauses whose `?` placeholders are
-      // bound by that argument — not an injection vector. The data-access
-      // analyzer's checkQuerySecurity applies the same signal.
-      const afterMatch = sourceCode.slice(match.index + match[0].length);
-      if (/^\s*,/.test(afterMatch)) continue;
-
-      const location = offsetToLocation(sourceCode, match.index, { line: 1, column: 1 });
-
-      // Find enclosing function from the AST at this position
-      const node = findClosestNodeAt(ast.root, location, adapter);
-
-      // Taint-aware safety check (Spec 33 Item 11a): clear the finding when the
-      // query argument's dynamic parts are all provably safe. The naive regex
-      // cannot tell trusted-DDL interpolation (`query(\`CREATE TABLE ${name}...\`)`
-      // with a constant/sanitized name) from raw-input interpolation, so the
-      // distinction is delegated to the adapter's dynamic-string safety analysis
-      // (isSafeInterpolation / resolveLocalConstant) — the same signal the
-      // data-access analyzer already trusts for sql-injection-risk.
-      const callNode = findEnclosingCallExpression(node, adapter);
-      if (callNode && isAllDynamicPartsSafe(callNode, ast, adapter, sourceCode)) {
-        continue;
-      }
-
-      const enclosingFn = node ? findEnclosingFunctionName(node, adapter) : 'top-level';
-
-      const baseSymbol = `${enclosingFn}:sql-injection`;
-      const ordinal = (symbolOrdinals.get(baseSymbol) ?? 0) + 1;
-      symbolOrdinals.set(baseSymbol, ordinal);
-      const symbol = ordinal > 1 ? `${baseSymbol}:${ordinal}` : baseSymbol;
-
-      violations.push(createSchemaViolation(
-        ast.filePath,
-        location,
-        'Potential SQL injection vulnerability. Use parameterized queries.',
-        'suggestion',  // Spec 11 R4 blanket demotion: all survivors → suggestion
-        'sql-injection',
-        symbol
-      ));
+      checkInjectionMatch(ctx, match);
     }
   }
 
@@ -608,9 +705,7 @@ export function checkMissingReferences(
       filePath,
       ref.location,
       msg,
-      'suggestion',
-      'unknown-table',
-      ref.table
+      { severity: 'suggestion', rule: 'unknown-table', symbol: ref.table }
     ));
   }
 
@@ -723,21 +818,15 @@ export function getFirstStringArgument(
 /**
  * Check if a callee is a DB member call like db.exec, database.query, etc.
  *
- * @param node The call_expression node.
  * @param calleeText The callee text (e.g. "db.exec").
  * @param methods The allowed DB call method names.
  * @param receivers The allowed DB receiver names.
- * @param adapter The language adapter for the file's syntax.
- * @param sourceCode The raw source text.
  * @returns True when the callee is a permitted receiver.method DB call.
  */
 export function isDbMemberCall(
-  node: ASTNode,
   calleeText: string,
   methods: string[],
-  receivers: string[],
-  adapter: LanguageAdapter,
-  sourceCode: string
+  receivers: string[]
 ): boolean {
   // calleeText might be like "db.exec"
   const dotIdx = calleeText.indexOf('.');

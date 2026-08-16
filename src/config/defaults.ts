@@ -297,9 +297,12 @@ export const DEFAULT_ANALYZER_CONFIGS = {
 /**
  * Built-in path profiles shipped with the tool.
  *
- * "scripts-and-tests" caps scripts, tests, and test fixtures to
- * "suggestion" severity — grounded in the Spec 11 triage numbers
- * showing these directories produce noise, not signal.
+ * "scripts-and-tests" excludes scripts, tests, and test fixtures from the
+ * blocking gate (Spec 36 R4) — grounded in the Spec 11 triage numbers showing
+ * these directories produce noise, not signal. Findings still report at their
+ * real severity; the gate simply does not block on them. This replaced the
+ * `severityCap` soften-in-place mechanism, which made findings invisible by
+ * capping them to "suggestion".
  *
  * Disable entirely via `"builtin": false` in .codeauditor.json.
  * Replace a specific built-in via a user profile with the same name
@@ -317,7 +320,7 @@ export const BUILTIN_PATH_PROFILES: PathProfile[] = [
       '*.test.*',
       '*.spec.*',
     ],
-    overrides: { severityCap: 'suggestion' },
+    overrides: { excludeFromGate: true },
   },
 ];
 

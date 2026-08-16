@@ -24,6 +24,8 @@ import { CodeIndexDB } from './codeIndexDB.js';
 import type { Severity, AuditScope, SearchOptions } from './types.js';
 import { getFilesProcessed, getFactsConsumed, isVisitorStatus, isReducerStatus } from './pipeline.js';
 import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
+import { computeDiffGatingDecision } from './enforcement/gate.js';
+import { computeDiffGate } from './enforcement/diffGate.js';
 
 // Get package.json for version info
 const __filename = fileURLToPath(import.meta.url);
@@ -52,6 +54,7 @@ program
   .option('--full', 'Show full violation inventory (overrides default delta view when baseline exists)')
   .option('--include-baseline', 'Evaluate baseline-known violations in --fail-on checks')
   .option('--fail-on-regression', 'Exit code 2 when total advisory debt exceeds the baseline snapshot')
+  .option('--preset <id>', 'Apply a shareable preset (repeatable)', (v: string, prev: string[]) => prev.concat([v]), [])
   .action(async (options) => {
     console.log(chalk.blue('🔍 Code Quality Audit Tool'));
     console.log(chalk.gray('══════════════════════════════════════════════════'));
@@ -69,10 +72,24 @@ program
         process.exit(1);
       }
 
+      // Validate --preset ids up front (Spec 38 R4). Unknown ids are a hard
+      // error, not a silent skip — same contract as print-config.
+      const presetIds: string[] = Array.isArray(options.preset) ? options.preset : (options.preset ? [options.preset] : []);
+      if (presetIds.length > 0) {
+        const { getPreset, PRESET_IDS } = await import('./presets/presets.js');
+        for (const id of presetIds) {
+          if (!getPreset(id)) {
+            console.error(chalk.red(`Error: unknown preset "${id}". Available: ${PRESET_IDS.join(', ')}`));
+            process.exit(1);
+          }
+        }
+      }
+
       const runner = createAuditRunner({
         projectRoot: options.path,
         configName: options.config,
-        outputDirectory: options.output
+        outputDirectory: options.output,
+        presets: presetIds
       });
 
       const result = await runner.run();
@@ -168,6 +185,29 @@ program
         }
         if (unparsedFiles.length > 20) {
           console.error(`    … and ${unparsedFiles.length - 20} more`);
+        }
+      }
+
+      // Spec 36 R7 — suppressions are reported: how many exist, where, and how
+      // many are unnecessary (or reasonless). Both are errors, surfaced here.
+      const suppressions = result.metadata?.suppressions;
+      if (suppressions) {
+        console.log(chalk.gray(`\n── Suppressions ──────────────────────────────`));
+        console.log(
+          `  ${suppressions.total} directive${suppressions.total !== 1 ? 's' : ''}, ` +
+          `${suppressions.suppressed} finding${suppressions.suppressed !== 1 ? 's' : ''} suppressed`
+        );
+        if (suppressions.unnecessary.length > 0) {
+          console.error(chalk.red(`  ❌ ${suppressions.unnecessary.length} unnecessary (finding no longer fires):`));
+          for (const d of suppressions.unnecessary) {
+            console.error(`    ${d.rule} @ ${d.file}:${d.line}`);
+          }
+        }
+        if (suppressions.reasonless.length > 0) {
+          console.error(chalk.red(`  ❌ ${suppressions.reasonless.length} missing a required reason:`));
+          for (const d of suppressions.reasonless) {
+            console.error(`    ${d.rule} @ ${d.file}:${d.line}`);
+          }
         }
       }
 
@@ -322,8 +362,6 @@ program
   .option('--json', 'Output violations as machine-readable JSON to stdout')
   .option('-f, --format <format>', 'Report format: json, or sarif (overrides --json)')
   .option('--quiet', 'Suppress output when zero violations')
-  .option('--fail-on <severity>', 'Exit code 2 when violations at or above this severity exist', 'critical')
-  .option('--include-baseline', 'Evaluate baseline-known violations in --fail-on checks')
   .option('--fail-on-zero-files', 'Exit code 2 when any enabled analyzer matches zero source files', true)
   .option('--stdin', 'Read file paths from stdin (one per line)')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
@@ -361,16 +399,6 @@ program
         scope = resolved as unknown as AuditScope;
       }
 
-      // Validate --fail-on severity
-      const validSeverities: Severity[] = ['critical', 'warning', 'suggestion'];
-      const failOnSeverity = options.failOn as Severity;
-      if (!validSeverities.includes(failOnSeverity)) {
-        console.error(
-          chalk.red(`Invalid --fail-on severity: "${failOnSeverity}". Must be one of: ${validSeverities.join(', ')}`)
-        );
-        process.exit(1);
-      }
-
       // Create runner
       const runner = createAuditRunner({
         projectRoot: options.path,
@@ -384,12 +412,6 @@ program
       const violations = Object.values(result.analyzerResults).flatMap(
         (r: any) => r.violations || []
       );
-
-      // Baseline classification (Spec 18 R4 — hook path)
-      const baseline = result.metadata?.baseline;
-      const knownViolations = violations.filter((v: any) => v.new === false);
-      const newViolations = violations.filter((v: any) => v.new === true || v.new === undefined);
-      const knownCount = knownViolations.length;
 
       // JSON output
       if (options.format === 'sarif') {
@@ -428,19 +450,13 @@ program
         });
         process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
       } else if (!options.quiet || violations.length > 0) {
-        // Console output
+        // Console output — Spec 36 R3: agent-facing output emits findings,
+        // never an aggregate total. The hook and the `changed` command are the
+        // agent's surface; a finding total is exactly the representation the
+        // consumer routes around. Findings only, each with file:line.
         console.log(chalk.blue('🔍 Diff-Scoped Code Audit'));
         console.log(chalk.gray('══════════════════════════════════════════════════'));
         console.log(chalk.gray(`Files analyzed: ${result.metadata.filesAnalyzed}`));
-        console.log(`\nFound ${violations.length} violations`);
-        console.log(`Critical: ${result.summary.criticalIssues}`);
-        console.log(`Warnings: ${result.summary.warnings}`);
-        console.log(`Suggestions: ${result.summary.suggestions}`);
-
-        // Known-finding informational line (Spec 18 R4)
-        if (baseline && knownCount > 0) {
-          console.log(chalk.gray(`\nℹ️ ${knownCount} pre-existing finding${knownCount !== 1 ? 's' : ''} in files you touched (not blocking).`));
-        }
 
         if (violations.length > 0) {
           console.log(chalk.gray('\n── Violations ────────────────────────────────────'));
@@ -455,22 +471,92 @@ program
               `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}${statusTag}`
             );
           }
+        } else {
+          console.log(chalk.green('\n✓ No findings.'));
         }
       }
 
-      // Exit code based on --fail-on (Spec 18 R3/R4)
-      if (failOnSeverity) {
-        const evaluableViolations = (baseline && !options.includeBaseline)
-          ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
-          : violations;
-        const severityOrder: Severity[] = ['critical', 'warning', 'suggestion'];
-        const failIndex = severityOrder.indexOf(failOnSeverity);
-        const hasAtOrAbove = evaluableViolations.some((v: any) => {
-          const vIndex = severityOrder.indexOf(v.severity);
-          return vIndex >= 0 && vIndex <= failIndex;
-        });
+      // Spec 38 R2/R3 — per-rule timing + gate wall-clock, opt-in by env var.
+      // Emitted to stderr so it never corrupts --json stdout. Slowest rule first.
+      if (process.env.CODE_AUDIT_RULE_TIMING === '1') {
+        const ruleTiming = (result.metadata as any)?.ruleTiming as
+          | Array<{ ruleId: string; totalMs: number; calls: number }>
+          | undefined;
+        const gateMs = (result.metadata as any)?.auditDuration as number | undefined;
+        const lines: string[] = [];
+        lines.push('');
+        lines.push(`⏱  gate wall-clock: ${(gateMs ?? 0).toFixed(1)} ms (budget 300 ms)`);
+        lines.push('── per-rule timing (slowest first) ──');
+        if (ruleTiming && ruleTiming.length > 0) {
+          for (const t of ruleTiming) {
+            lines.push(`  ${t.ruleId.padEnd(28)} ${t.totalMs.toFixed(2).padStart(9)} ms  ×${t.calls}`);
+          }
+        } else {
+          lines.push('  (no gating rules recorded)');
+        }
+        process.stderr.write(lines.join('\n') + '\n');
+      }
 
-        if (hasAtOrAbove) {
+      // Binary gate (Spec 36 R2/R4/R6): exit 2 when a gating finding is present.
+      // The `changed` command is the edit-boundary gate, so it compares against
+      // the file's prior state (git HEAD) via the touched-line diff gate (R2),
+      // NOT against a stored baseline. Gate-excluded files and non-gating rules
+      // never block. Severity does NOT factor in (R4). A gating rule that cannot
+      // name a next action for an occurrence emits non-blocking and the gap is
+      // recorded (R6), surfaced below to stderr.
+      {
+        const analyzedFiles = (result.metadata as any)?.analyzedFiles as string[] | undefined;
+        // The `changed` command is always scoped, so the runner records the
+        // analyzed file list. If it is somehow absent we still derive the gate
+        // from the files that actually produced findings rather than falling
+        // back to the baseline gate — a silent soft-fail is the one outcome R1
+        // forbids.
+        const gateFiles = analyzedFiles && analyzedFiles.length > 0
+          ? analyzedFiles
+          : [...new Set(
+              (violations as any[]).map((v) => v.file).filter(Boolean)
+            )];
+        const diffGate = computeDiffGate(options.path, gateFiles);
+        const { blocking, resolutionGaps } = computeDiffGatingDecision(violations as any, diffGate);
+
+        if (resolutionGaps.length > 0) {
+          // Spec 36 R6 — a gating rule that could not name an action is a defect
+          // in the rule. Record it loudly so it cannot route around as a count.
+          const lines = [
+            '⚠️  resolution gap — gating rule produced no next action for these occurrences (Spec 36 R6):',
+            ...resolutionGaps.map(
+              (g) => `  - ${g.rule} @ ${g.file}${g.line ? `:${g.line}` : ''}`
+            ),
+          ];
+          process.stderr.write(lines.join('\n') + '\n');
+        }
+
+        if (blocking.length > 0) {
+          process.exit(2);
+        }
+
+        // Spec 36 R7 — an unnecessary or reasonless suppression is itself an
+        // error. It is reported loudly and fails the write, exactly like an
+        // unused `@ts-expect-error`. A suppression that outlives its finding is
+        // a baseline entry with better branding unless it errors here.
+        const suppressions = (result.metadata as any)?.suppressions as
+          | { total: number; suppressed: number; unnecessary: any[]; reasonless: any[] }
+          | undefined;
+        if (suppressions && (suppressions.unnecessary.length > 0 || suppressions.reasonless.length > 0)) {
+          const lines: string[] = [];
+          if (suppressions.reasonless.length > 0) {
+            lines.push('❌ suppression missing a required reason (Spec 36 R7):');
+            for (const d of suppressions.reasonless) {
+              lines.push(`  - ${d.rule} @ ${d.file}:${d.line}`);
+            }
+          }
+          if (suppressions.unnecessary.length > 0) {
+            lines.push('❌ unnecessary suppression — the finding no longer fires (Spec 36 R7):');
+            for (const d of suppressions.unnecessary) {
+              lines.push(`  - ${d.rule} @ ${d.file}:${d.line}`);
+            }
+          }
+          process.stderr.write(lines.join('\n') + '\n');
           process.exit(2);
         }
       }
@@ -908,7 +994,7 @@ configCmd
             file: options.file,
             resolvedFilePath: filePath,
             matchedProfileNames: resolved.matchedProfileNames,
-            severityCap: resolved.severityCap || null,
+            excludeFromGate: resolved.excludeFromGate || null,
             overrides: resolved.overrides,
           }, null, 2) + '\n');
         } else {
@@ -921,8 +1007,8 @@ configCmd
               const builtinTag = profile?.builtin !== false && profiles.some(p => p.name === name) ? '' : '';
               console.log(`  ${chalk.cyan(name)}${builtinTag ? chalk.gray(' (built-in)') : ''}`);
             }
-            if (resolved.severityCap) {
-              console.log(chalk.yellow(`  severityCap: ${resolved.severityCap}`));
+            if (resolved.excludeFromGate) {
+              console.log(chalk.yellow(`  excludeFromGate: true`));
             }
             if (Object.keys(resolved.overrides).length > 0) {
               console.log(chalk.gray('  merged overrides:'));
@@ -2278,6 +2364,208 @@ coverageCmd
     }
   });
 
+// print-config command — effective config with source attribution (Spec 38 R1)
+program
+  .command('print-config <file>')
+  .description('Print the effective config for a file, naming the source of every value')
+  .option('-p, --path <path>', 'Project path', process.cwd())
+  .option('--json', 'Output as JSON')
+  .option('--preset <id>', 'Apply a shareable preset (repeatable)', (v: string, prev: string[]) => prev.concat([v]), [])
+  .action(async (file, options) => {
+    try {
+      const pathModule = await import('path');
+      const fs = await import('fs/promises');
+      const { loadConfig } = await import('./config/configLoader.js');
+      const { getDefaultConfig, DEFAULT_CODE_INDEX_CONFIG } = await import('./config/defaults.js');
+      const {
+        computeEffectiveConfig,
+        computeTopLevelConfig,
+      } = await import('./config/effectiveConfig.js');
+      const { getPreset, PRESET_IDS } = await import('./presets/presets.js');
+
+      const projectRoot = pathModule.resolve(options.path);
+      const filePath = pathModule.resolve(file);
+      const configPath = pathModule.join(projectRoot, '.codeauditor.json');
+
+      // Pristine defaults, normalized against projectRoot the same way loadConfig
+      // normalizes the real config, so path keys compare cleanly instead of
+      // reading as "user-set" because one side is absolute and the other is not.
+      const pristine: any = { ...getDefaultConfig(), codeIndex: { ...DEFAULT_CODE_INDEX_CONFIG } };
+      if (pristine.outputDirectory) {
+        pristine.outputDirectory = pathModule.resolve(projectRoot, pristine.outputDirectory);
+      }
+      pristine.includePaths = (pristine.includePaths ?? []).map((p: string) =>
+        pathModule.isAbsolute(p) ? p : pathModule.resolve(projectRoot, p));
+      pristine.excludePaths = (pristine.excludePaths ?? []).map((p: string) =>
+        pathModule.isAbsolute(p) ? p : pathModule.resolve(projectRoot, p));
+
+      // Load the project config (defaults when no config file exists).
+      let config: any;
+      try {
+        await fs.access(configPath);
+        config = await loadConfig({ configPath });
+      } catch {
+        config = pristine;
+      }
+
+      const analyzerConfigs = (config.analyzerConfigs ?? {}) as Record<string, unknown>;
+      const pathProfiles = (config.pathProfiles ?? []) as any[];
+      const enabledAnalyzers = (config.enabledAnalyzers ?? []) as string[];
+
+      // Resolve --preset ids to ordered preset objects (Spec 38 R4). Unknown
+      // ids are a hard error, not a silent skip.
+      const presetIds: string[] = Array.isArray(options.preset) ? options.preset : (options.preset ? [options.preset] : []);
+      for (const id of presetIds) {
+        if (!getPreset(id)) {
+          console.error(chalk.red(`Error: unknown preset "${id}". Available: ${PRESET_IDS.join(', ')}`));
+          process.exit(1);
+        }
+      }
+      const presets = presetIds.map((id) => getPreset(id)!);
+
+      const effective = computeEffectiveConfig({
+        filePath,
+        projectRoot,
+        analyzerConfigs,
+        pathProfiles,
+        enabledAnalyzers,
+        presets,
+      });
+
+      const topLevel = computeTopLevelConfig(
+        pristine as Record<string, unknown>,
+        config as Record<string, unknown>,
+      );
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify({
+          file: filePath,
+          projectRoot,
+          configPath,
+          presets: presetIds,
+          matchedProfiles: effective.matchedProfiles,
+          excludeFromGate: effective.excludeFromGate ?? null,
+          topLevel,
+          analyzers: effective.analyzers,
+        }, null, 2) + '\n');
+        return;
+      }
+
+      console.log(chalk.blue('🔧 Effective Config'));
+      console.log(chalk.gray('════════════════════════════════════════════════════'));
+      console.log(`${chalk.bold('file:')}        ${effective.relativePath}`);
+      console.log(`${chalk.bold('project root:')} ${projectRoot}`);
+      console.log(`${chalk.bold('presets:')}     ${presetIds.length > 0 ? presetIds.join(', ') : chalk.gray('(none)')}`);
+      console.log(`${chalk.bold('profiles:')}    ${effective.matchedProfiles.length > 0 ? effective.matchedProfiles.join(', ') : chalk.gray('(none)')}`);
+      if (effective.excludeFromGate) {
+        console.log(`${chalk.bold('excludeFromGate:')} ${chalk.yellow('true')}`);
+      }
+
+      // Top-level keys
+      console.log(chalk.bold('\n── Top-level ──'));
+      for (const key of topLevel) {
+        const flag = key.differsFromDefault ? chalk.yellow(' [differs from default]') : '';
+        console.log(
+          `${key.key.padEnd(24)} ${chalk.dim(JSON.stringify(key.value))}  ${chalk.cyan(key.source)}${flag}`,
+        );
+      }
+
+      // Per-analyzer keys
+      for (const analyzer of effective.analyzers) {
+        console.log(chalk.bold(`\n── ${analyzer.namespace} ──`));
+        for (const key of analyzer.keys) {
+          const flag = key.differsFromDefault
+            ? chalk.yellow(` [differs from default: ${JSON.stringify(key.defaultValue)}]`)
+            : '';
+          console.log(
+            `${key.key.padEnd(32)} ${chalk.dim(JSON.stringify(key.value))}  ${chalk.cyan(key.source)}${flag}`,
+          );
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Outstanding command (Spec 36 R8) — "what is outstanding" is re-derived from
+// the codebase on every invocation, never read from a stored list. The answer a
+// compacted agent gets is identical to an uncompacted one because the only input
+// is the code itself: run the audit, list the findings. No progress file, no
+// tracked count, no state that can drift from the code.
+program
+  .command('outstanding')
+  .description('List outstanding findings, re-derived from the codebase (never a stored list)')
+  .option('-p, --path <path>', 'Path to audit', process.cwd())
+  .option('--json', 'Output findings as machine-readable JSON')
+  .action(async (options) => {
+    try {
+      await initParsers();
+
+      const runner = createAuditRunner({ projectRoot: options.path });
+      const result = await runner.run();
+
+      const violations = Object.values(result.analyzerResults).flatMap(
+        (r: any) => r.violations || []
+      );
+
+      // Deterministic order — same answer every run, independent of analyzer
+      // registration order or any prior agent state. Sort by file, then line,
+      // then rule. This is what makes a compacted and uncompacted agent agree.
+      const sorted = [...violations].sort((a: any, b: any) => {
+        const fa = a.file ?? '';
+        const fb = b.file ?? '';
+        if (fa !== fb) return fa < fb ? -1 : 1;
+        const la = a.line ?? 0;
+        const lb = b.line ?? 0;
+        if (la !== lb) return la - lb;
+        const ra = a.rule ?? '';
+        const rb = b.rule ?? '';
+        if (ra !== rb) return ra < rb ? -1 : 1;
+        return 0;
+      });
+
+      if (options.json) {
+        const projectDir = resolve(options.path || process.cwd());
+        const out = sorted.map((v: any) => {
+          let filePath = v.file || '';
+          if (filePath.startsWith('/')) {
+            const rel = relative(projectDir, filePath);
+            if (!rel.startsWith('..') && !isAbsolute(rel)) filePath = rel;
+          }
+          return {
+            rule: v.rule || v.type || '',
+            analyzer: v.analyzer || '',
+            severity: v.severity,
+            file: filePath,
+            line: v.line ?? v.start?.line,
+            message: v.message,
+            resolution: v.resolution ?? null,
+            suppressed: (v as any).suppressed === true,
+            ...((v as any).suppressionReason && { suppressionReason: (v as any).suppressionReason }),
+          };
+        });
+        process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+        return;
+      }
+
+      // Spec 36 R3 — findings, never a total. Each line is a file:line finding;
+      // there is no count anywhere in this output to route around.
+      for (const v of sorted) {
+        const icon =
+          v.severity === 'critical' ? '🔴' :
+          v.severity === 'warning' ? '🟡' : '🔵';
+        const suppressed = (v as any).suppressed ? chalk.dim(' [suppressed]') : '';
+        console.log(
+          `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.rule || v.severity}] ${v.message}${suppressed}`
+        );
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
 /**
  * Render a simple ASCII bar chart.
  */
@@ -2459,7 +2747,7 @@ async function generateConfigurations(options: any): Promise<void> {
   console.log(chalk.blue('\nNext steps:'));
   console.log(chalk.gray('  1. Edit .codeauditor.json to match your codebase conventions'));
   console.log(chalk.gray('  2. Run ') + chalk.cyan('code-audit') + chalk.gray(' to enforce your rules'));
-  console.log(chalk.gray('  3. Use ') + chalk.cyan('code-audit changed --fail-on critical') + chalk.gray(' in your agent hook'));
+  console.log(chalk.gray('  3. Use ') + chalk.cyan('code-audit changed') + chalk.gray(' in your agent hook (gating rules block on new findings)'));
 }
 
 /**

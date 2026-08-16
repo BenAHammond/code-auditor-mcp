@@ -30,9 +30,10 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest watch",
-    "verify:dist": "bash scripts/verify-dist.sh",
+    "verify:dist": "npm pack --silent && bash scripts/verify-dist.sh && rm -f code-auditor-mcp-*.tgz",
     "verify:self": "node scripts/verify-self.mjs",
-    "verify:close": "npm run test && npm run test:integration && npm run verify:dist && npm run verify:self"
+    "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
+    "verify:close": "npm run test && npm run test:integration && npm run verify:dist && npm run verify:self && npm run verify:gate-budget"
   },
   "keywords": [
     "mcp",

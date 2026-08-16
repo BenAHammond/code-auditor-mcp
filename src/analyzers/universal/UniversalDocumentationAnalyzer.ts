@@ -12,7 +12,7 @@
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
-import type { AST, LanguageAdapter, ASTNode, FunctionInfo } from '../../languages/types.js';
+import type { AST, LanguageAdapter, ASTNode, ClassInfo, FunctionInfo } from '../../languages/types.js';
 import picomatch from 'picomatch';
 
 /**
@@ -119,14 +119,17 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
     // File-level documentation header check — R1.5 (defaults OFF)
     violations.push(...checkFileHeader(ast, adapter, finalConfig, fileHeaders));
 
+    // Per-file scan context for the section analyzers below (Spec 34 bundling).
+    const scan: DocScanContext = { adapter, sourceCode, config: finalConfig, scope };
+
     // Function documentation — R1.1 through R1.4, R1.6
     if (finalConfig.requireFunctionDocs) {
-      violations.push(...analyzeFunctionDocumentation(ast, adapter, finalConfig, sourceCode, scope));
+      violations.push(...analyzeFunctionDocumentation(ast, scan));
     }
 
     // Class documentation
     if (finalConfig.requireClassDocs) {
-      violations.push(...analyzeClassDocumentation(ast, adapter, finalConfig, sourceCode, scope));
+      violations.push(...analyzeClassDocumentation(ast, scan));
     }
 
     return violations;
@@ -149,24 +152,45 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
 //     violations are attributed to this analyzer's fixed name.
 // ---------------------------------------------------------------------------
 
+/**
+ * Bundled classification for a documentation violation — `severity`, `rule`,
+ * and an optional `symbol` travel together so `makeViolation` stays a 4-arg
+ * call rather than a 6-arg one (Spec 34 param-count bundling).
+ */
+interface DocumentationViolationClassification {
+  severity: 'critical' | 'warning' | 'suggestion';
+  rule: string;
+  symbol?: string;
+}
+
+/**
+ * Per-file documentation scan context — bundles `adapter` / `sourceCode` /
+ * `config` / `scope` into one object so the per-section analyzers clear the
+ * 4-parameter gate without each defining its own bespoke context type.
+ */
+interface DocScanContext {
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  config: DocumentationAnalyzerConfig;
+  scope: 'public' | 'all';
+}
+
 function makeViolation(
   file: string,
   location: { line: number; column: number },
   message: string,
-  severity: 'critical' | 'warning' | 'suggestion',
-  rule: string,
-  symbol?: string
+  classification: DocumentationViolationClassification
 ): Violation {
   const v: Violation = {
     file,
     line: location.line,
     column: location.column,
-    severity,
+    severity: classification.severity,
     message,
-    rule,
+    rule: classification.rule,
     analyzer: 'documentation'
   };
-  if (symbol) v.functionName = symbol;
+  if (classification.symbol) v.functionName = classification.symbol;
   return v;
 }
 
@@ -189,8 +213,7 @@ function checkFileHeader(
       ast.filePath,
       { line: 1, column: 1 },
       'File lacks proper documentation header',
-      'suggestion',
-      'file-documentation'
+      { severity: 'suggestion', rule: 'file-documentation' }
     ));
   }
   return violations;
@@ -200,11 +223,11 @@ function checkFileHeader(
 function shouldSkipFunction(
   node: ASTNode | null,
   func: FunctionInfo,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  scope: 'public' | 'all',
+  scan: DocScanContext,
   ast: AST
 ): boolean {
+  const { adapter, sourceCode, scope } = scan;
+
   // R1.1 — Skip anonymous/inline callables
   if (node && isAnonymousOrCallback(node, adapter)) {
     return true;
@@ -257,12 +280,23 @@ function checkFunctionDocumentation(
       ast.filePath,
       func.location.start,
       reason,
-      'suggestion',
-      'function-documentation',
-      func.name
+      { severity: 'suggestion', rule: 'function-documentation', symbol: func.name }
     ));
     return violations;
   }
+
+  return checkFunctionDocTags(ast.filePath, adapter, config, func);
+}
+
+/** R1 — parameter and return documentation (JSDoc tags, JSDoc languages only). */
+function checkFunctionDocTags(
+  file: string,
+  adapter: LanguageAdapter,
+  config: DocumentationAnalyzerConfig,
+  func: FunctionInfo
+): Violation[] {
+  const violations: Violation[] = [];
+  const doc = func.jsDoc || '';
 
   // Param docs — JSDoc @param tags only apply to JSDoc languages.
   const checkJsDocTags = JSDOC_LANGUAGES.has(adapter.name);
@@ -273,12 +307,10 @@ function checkFunctionDocumentation(
     );
     for (const param of missingParamDocs) {
       violations.push(makeViolation(
-        ast.filePath,
+        file,
         func.location.start,
         `Function '${func.name}' missing documentation for parameter '${param}'`,
-        'suggestion',
-        'parameter-documentation',
-        func.name
+        { severity: 'suggestion', rule: 'parameter-documentation', symbol: func.name }
       ));
     }
   }
@@ -290,12 +322,10 @@ function checkFunctionDocumentation(
       func.returnType !== 'void' &&
       !hasReturnDocumentation(doc)) {
     violations.push(makeViolation(
-      ast.filePath,
+      file,
       func.location.start,
       `Function '${func.name}' missing return value documentation`,
-      'suggestion',
-      'return-documentation',
-      func.name
+      { severity: 'suggestion', rule: 'return-documentation', symbol: func.name }
     ));
   }
 
@@ -305,11 +335,9 @@ function checkFunctionDocumentation(
 /** R1.1–R1.4, R1.6 — function/parameter/return documentation. */
 function analyzeFunctionDocumentation(
   ast: AST,
-  adapter: LanguageAdapter,
-  config: DocumentationAnalyzerConfig,
-  sourceCode: string,
-  scope: 'public' | 'all'
+  scan: DocScanContext
 ): Violation[] {
+  const { adapter, config } = scan;
   const violations: Violation[] = [];
   const functions = adapter.extractFunctions(ast);
   const docsMinLines = config.docsMinLines ?? 5;
@@ -318,7 +346,7 @@ function analyzeFunctionDocumentation(
     // Find the AST node for this function
     const node = findNodeByLocation(ast.root, func.location.start);
 
-    if (shouldSkipFunction(node, func, adapter, sourceCode, scope, ast)) {
+    if (shouldSkipFunction(node, func, scan, ast)) {
       continue;
     }
 
@@ -337,11 +365,9 @@ function analyzeFunctionDocumentation(
 /** Class + method documentation. */
 function analyzeClassDocumentation(
   ast: AST,
-  adapter: LanguageAdapter,
-  config: DocumentationAnalyzerConfig,
-  sourceCode: string,
-  scope: 'public' | 'all'
+  scan: DocScanContext
 ): Violation[] {
+  const { adapter, config, scope } = scan;
   const violations: Violation[] = [];
   const classes = adapter.extractClasses(ast);
 
@@ -352,42 +378,49 @@ function analyzeClassDocumentation(
     }
 
     const doc = cls.jsDoc || '';
-
     if (!doc || doc.length < config.minDescriptionLength) {
       violations.push(makeViolation(
         ast.filePath,
         cls.location.start,
         `Class '${cls.name}' lacks proper documentation`,
-        'suggestion',
-        'class-documentation',
-        cls.name
+        { severity: 'suggestion', rule: 'class-documentation', symbol: cls.name }
       ));
     }
 
     // Method documentation
-    if (config.requireFunctionDocs) {
-      for (const method of cls.methods) {
-        // Method scope filter
-        if (scope === 'public') {
-          const methodNode = findNodeByLocation(ast.root, method.location.start);
-          if (methodNode && isNonPublicMethod(methodNode, adapter, sourceCode)) {
-            continue;
-          }
-        }
+    violations.push(...checkClassMethodDocumentation(ast, cls, scan));
+  }
 
-        const methodDoc = method.jsDoc || '';
+  return violations;
+}
 
-        if (!methodDoc || methodDoc.length < config.minDescriptionLength) {
-          violations.push(makeViolation(
-            ast.filePath,
-            method.location.start,
-            `public method '${cls.name}.${method.name}' lacks proper documentation`,
-            'suggestion',
-            'method-documentation',
-            `${cls.name}.${method.name}`
-          ));
-        }
+/** R1.2 — method-documentation for each public method of a class. */
+function checkClassMethodDocumentation(
+  ast: AST,
+  cls: ClassInfo,
+  scan: DocScanContext
+): Violation[] {
+  const { adapter, config, sourceCode, scope } = scan;
+  const violations: Violation[] = [];
+  if (!config.requireFunctionDocs) return violations;
+
+  for (const method of cls.methods) {
+    // Method scope filter
+    if (scope === 'public') {
+      const methodNode = findNodeByLocation(ast.root, method.location.start);
+      if (methodNode && isNonPublicMethod(methodNode, adapter, sourceCode)) {
+        continue;
       }
+    }
+
+    const methodDoc = method.jsDoc || '';
+    if (!methodDoc || methodDoc.length < config.minDescriptionLength) {
+      violations.push(makeViolation(
+        ast.filePath,
+        method.location.start,
+        `public method '${cls.name}.${method.name}' lacks proper documentation`,
+        { severity: 'suggestion', rule: 'method-documentation', symbol: `${cls.name}.${method.name}` }
+      ));
     }
   }
 
@@ -418,68 +451,67 @@ function isAnonymousOrCallback(node: ASTNode, adapter: LanguageAdapter): boolean
     nodeType === 'function_expression' ||
     nodeType === 'generator_function_expression'
   ) {
-    // (a) Call argument — parent is 'arguments' (args to any call expression)
-    if (parentType === 'arguments') {
-      return true;
-    }
+    // (a)/(c) Call argument — direct, or via object/array literal container.
+    if (isInlineInCallArguments(parent, adapter)) return true;
 
     // (b) JSX attribute value (event handlers, render props)
-    if (
-      parentType === 'jsx_expression' ||
-      parentType === 'jsx_attribute' ||
-      parentType === 'jsx_self_closing_element' ||
-      parentType === 'jsx_opening_element'
-    ) {
-      return true;
-    }
-
-    // (c) Object literal property value in call arguments
-    // chain: arrow → pair → object → arguments → call_expression
-    if (parentType === 'pair') {
-      const gp = adapter.getParent(parent);
-      if (gp) {
-        const gpType = adapter.getNodeType(gp);
-        if (gpType === 'object' || gpType === 'object_pattern') {
-          const ggp = adapter.getParent(gp);
-          if (ggp && adapter.getNodeType(ggp) === 'arguments') {
-            return true;
-          }
-        }
-      }
-    }
-
-    // (c) Array element in call arguments
-    if (parentType === 'array') {
-      const gp = adapter.getParent(parent);
-      if (gp && adapter.getNodeType(gp) === 'arguments') {
-        return true;
-      }
-    }
+    if (isJsxAttributeValue(parentType)) return true;
 
     // (d) IIFE — the function is the callee of a call expression
-    if (parentType === 'call_expression') {
-      // Check if this node is in the function/callee position (not in arguments)
-      const fnChild = getFirstChildOfType(parent, [
-        'arrow_function',
-        'function_expression',
-        'function',
-        'identifier',
-        'member_expression',
-        'call_expression',
-      ]);
-      if (fnChild) {
-        // If the first function-ish child is at the same location, this IS the callee
-        if (
-          fnChild.location.start.line === node.location.start.line &&
-          fnChild.location.start.column === node.location.start.column
-        ) {
-          return true;
-        }
-      }
-    }
+    if (parentType === 'call_expression' && isIifeCallee(node, parent, adapter)) return true;
   }
 
   return false;
+}
+
+/** (a)/(c) — true when `parent` positions the inline callable as a call argument. */
+function isInlineInCallArguments(parent: ASTNode, adapter: LanguageAdapter): boolean {
+  const parentType = adapter.getNodeType(parent);
+  if (parentType === 'arguments') return true;
+
+  // Object literal property value in call arguments: arrow → pair → object → arguments
+  if (parentType === 'pair') {
+    const gp = adapter.getParent(parent);
+    if (gp && (adapter.getNodeType(gp) === 'object' || adapter.getNodeType(gp) === 'object_pattern')) {
+      const ggp = adapter.getParent(gp);
+      return !!(ggp && adapter.getNodeType(ggp) === 'arguments');
+    }
+  }
+
+  // Array element in call arguments: arrow → array → arguments
+  if (parentType === 'array') {
+    const gp = adapter.getParent(parent);
+    return !!(gp && adapter.getNodeType(gp) === 'arguments');
+  }
+
+  return false;
+}
+
+/** (b) — true when the parent type is a JSX attribute/expression value. */
+function isJsxAttributeValue(parentType: string): boolean {
+  return (
+    parentType === 'jsx_expression' ||
+    parentType === 'jsx_attribute' ||
+    parentType === 'jsx_self_closing_element' ||
+    parentType === 'jsx_opening_element'
+  );
+}
+
+/** (d) — true when `node` is the callee (not an argument) of the call expression. */
+function isIifeCallee(node: ASTNode, parent: ASTNode, adapter: LanguageAdapter): boolean {
+  const fnChild = getFirstChildOfType(parent, [
+    'arrow_function',
+    'function_expression',
+    'function',
+    'identifier',
+    'member_expression',
+    'call_expression',
+  ]);
+  if (!fnChild) return false;
+  return (
+    fnChild.location.start.line === node.location.start.line &&
+    fnChild.location.start.column === node.location.start.column
+  );
 }
 
 /**
@@ -569,31 +601,7 @@ function isMethodOfExportedClass(
   let current = adapter.getParent(node);
   while (current) {
     if (adapter.isClass(current)) {
-      // Check export by looking at parent of class node
-      const classParent = adapter.getParent(current);
-      if (classParent) {
-        const classParentType = adapter.getNodeType(classParent);
-        if (classParentType === 'export_statement') {
-          return true;
-        }
-        // Also check if class declaration itself has export modifier
-        const siblings = adapter.getChildren(classParent);
-        for (const sib of siblings) {
-          if (adapter.getNodeType(sib) === 'export' || adapter.getNodeType(sib) === 'export_statement') {
-            // Verify this export wraps our class
-            const exportChildren = adapter.getChildren(sib);
-            for (const ec of exportChildren) {
-              if (
-                adapter.getNodeType(ec) === 'class_declaration' &&
-                ec.location.start.line === current.location.start.line
-              ) {
-                return true;
-              }
-            }
-          }
-        }
-      }
-      // Use extractClasses to check isExported
+      if (isClassDirectlyExported(current, adapter)) return true;
       break;
     }
     current = adapter.getParent(current);
@@ -609,6 +617,30 @@ function isMethodOfExportedClass(
       cls.isExported
     ) {
       return true;
+    }
+  }
+  return false;
+}
+
+/** True when the class declaration node is directly wrapped in an export. */
+function isClassDirectlyExported(classNode: ASTNode, adapter: LanguageAdapter): boolean {
+  const classParent = adapter.getParent(classNode);
+  if (!classParent) return false;
+  if (adapter.getNodeType(classParent) === 'export_statement') return true;
+
+  // Also check if the class declaration itself has an export modifier.
+  const siblings = adapter.getChildren(classParent);
+  for (const sib of siblings) {
+    const sibType = adapter.getNodeType(sib);
+    if (sibType !== 'export' && sibType !== 'export_statement') continue;
+    const exportChildren = adapter.getChildren(sib);
+    for (const ec of exportChildren) {
+      if (
+        adapter.getNodeType(ec) === 'class_declaration' &&
+        ec.location.start.line === classNode.location.start.line
+      ) {
+        return true;
+      }
     }
   }
   return false;

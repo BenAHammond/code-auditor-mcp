@@ -1056,10 +1056,12 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         { kind: 'callee', name: 'sqliteTable', arg: 0, description: 'Drizzle SQLite table' },
       ];
       if (tableSources.length > 0) {
-        const registered = extractTablesFromRegistry(
-          ast as AST, adapter as LanguageAdapter, sourceCode,
-          tableSources, context.filePath
-        );
+        const registered = extractTablesFromRegistry(tableSources, {
+          ast: ast as AST,
+          adapter: adapter as LanguageAdapter,
+          sourceCode,
+          filePath: context.filePath,
+        });
         for (const { table, source } of registered) {
           ormTables.push(table);
           tableProvenances.push({ table, source });
@@ -1112,7 +1114,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       }
 
       // Find table references (per-file, uses allTables for short-id false-positive filtering)
-      const tableRefs = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, schemaConfig, provenanceContext, allTables);
+      const tableRefs = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, { config: schemaConfig, provenanceContext, allTables });
 
       // Record schema usage → emit as indexFacts via the shared instance
       a.recordTableUsage(ast as AST, adapter as LanguageAdapter, context.filePath, tableRefs);
@@ -1403,6 +1405,7 @@ export function createSchemaReducer(): Stage3Reducer {
             const msg = suggestions.length > 0
               ? `Reference to unknown table '${ref.table}' (${ref.type}). Did you mean: ${suggestions.join(', ')}?`
               : `Reference to unknown table '${ref.table}' (${ref.type})`;
+            const suggestionNames = suggestions.map((s) => s.replace(/^'|'$/g, ''));
             violations.push({
               file: ref.file,
               line: ref.line,
@@ -1412,6 +1415,15 @@ export function createSchemaReducer(): Stage3Reducer {
               rule: 'unknown-table',
               analyzer: 'schema',
               symbol: ref.table,
+              resolution: {
+                action: suggestionNames.length > 0 ? 'use-known-table' : 'register-or-fix-table',
+                summary: suggestionNames.length > 0
+                  ? `Rename the table reference '${ref.table}' to the nearest known table: ${suggestions.join(', ')}.`
+                  : `The table '${ref.table}' is not in the known catalog — register it, or fix the reference to a known table.`,
+                symbols: suggestionNames.length > 0 ? suggestionNames : [ref.table],
+                files: [ref.file],
+                lines: [ref.line],
+              },
             } as Violation);
           }
         }

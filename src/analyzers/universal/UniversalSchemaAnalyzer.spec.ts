@@ -41,7 +41,13 @@ function extract(
   filePath = 'test.ts',
   readModule?: (fromFile: string, specifier: string) => string | null
 ): Array<{ table: string; source: TableProvenance }> {
-  return extractTablesFromRegistry(ast, getAdapter(), sourceCode, entries, filePath, readModule);
+  return extractTablesFromRegistry(entries, {
+    ast,
+    adapter: getAdapter(),
+    sourceCode,
+    filePath,
+    readModule,
+  });
 }
 
 /**

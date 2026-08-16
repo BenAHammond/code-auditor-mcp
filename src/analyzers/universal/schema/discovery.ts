@@ -113,19 +113,10 @@ export async function discoverTablesFromMigrations(
  * @param projectRoot The project directory containing wrangler.toml.
  * @returns The set of table names discovered from D1 migration files.
  */
-export async function discoverTablesFromWrangler(
-  projectRoot: string,
-): Promise<Set<string>> {
-  const tables = new Set<string>();
-
-  const wranglerPath = path.join(projectRoot, 'wrangler.toml');
-  let wranglerContent: string;
-  try {
-    wranglerContent = await fs.readFile(wranglerPath, 'utf8');
-  } catch {
-    return tables; // No wrangler.toml
-  }
-
+/**
+ * Parse `migrations_dir` entries from a wrangler.toml `[[d1_databases]]` block.
+ */
+function extractWranglerMigrationDirs(wranglerContent: string): string[] {
   const migrationDirs: string[] = [];
   let inD1Block = false;
   for (const line of wranglerContent.split('\n')) {
@@ -145,29 +136,57 @@ export async function discoverTablesFromWrangler(
       }
     }
   }
+  return migrationDirs;
+}
 
-  for (const migDir of migrationDirs) {
-    const absDir = path.resolve(projectRoot, migDir);
-    let entries: string[];
+/** Replay DDL from every `.sql` file in a migration directory into `tables`. */
+async function processMigrationDirectory(absDir: string, tables: Set<string>): Promise<void> {
+  let entries: string[];
+  try {
+    const dirents = await fs.readdir(absDir, { withFileTypes: true });
+    entries = dirents
+      .filter(e => e.isFile() && e.name.endsWith('.sql'))
+      .map(e => e.name)
+      .sort();
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    const filePath = path.join(absDir, entry);
     try {
-      const dirents = await fs.readdir(absDir, { withFileTypes: true });
-      entries = dirents
-        .filter(e => e.isFile() && e.name.endsWith('.sql'))
-        .map(e => e.name)
-        .sort();
+      const source = await fs.readFile(filePath, 'utf8');
+      processMigrationSource(source, tables);
     } catch {
-      continue;
+      // Skip unreadable files
     }
+  }
+}
 
-    for (const entry of entries) {
-      const filePath = path.join(absDir, entry);
-      try {
-        const source = await fs.readFile(filePath, 'utf8');
-        processMigrationSource(source, tables);
-      } catch {
-        // Skip unreadable files
-      }
-    }
+/**
+ * Discover tables referenced by Cloudflare D1 migrations under `wrangler.toml`.
+ *
+ * Reads the `wrangler.toml` config, resolves its migration directories, and
+ * scans each migration file for `CREATE TABLE` DDL.
+ *
+ * @param projectRoot Root directory containing `wrangler.toml`.
+ * @returns Set of table names discovered from D1 migration files.
+ */
+export async function discoverTablesFromWrangler(
+  projectRoot: string,
+): Promise<Set<string>> {
+  const tables = new Set<string>();
+
+  const wranglerPath = path.join(projectRoot, 'wrangler.toml');
+  let wranglerContent: string;
+  try {
+    wranglerContent = await fs.readFile(wranglerPath, 'utf8');
+  } catch {
+    return tables; // No wrangler.toml
+  }
+
+  for (const migDir of extractWranglerMigrationDirs(wranglerContent)) {
+    await processMigrationDirectory(path.resolve(projectRoot, migDir), tables);
   }
 
   return tables;
@@ -259,6 +278,72 @@ export async function discoverTablesFromOrmSchemas(
  * @param provenanceContext Provenance-based DB detection context (Spec 21).
  * @returns True when the file shows DB usage and should be analyzed.
  */
+/**
+ * Legacy name-based DB detection: D1/SQL imports, env bindings, and
+ * receiver.method call patterns. Used in 'names' mode or when no provenance
+ * context is supplied.
+ */
+function detectDbUsageByName(sourceCode: string, config: SchemaAnalyzerConfig): boolean {
+  // Check for D1 or SQL API imports
+  const importPatterns = [
+    /import\s+.*\b(D1Database|D1PreparedStatement|D1Result)\b/,
+    /import\s+.*from\s+['"].*d1['"]/,
+    /import\s+.*from\s+['"].*pg['"]/,
+    /import\s+.*from\s+['"].*mysql['"]/,
+    /import\s+.*from\s+['"].*sqlite['"]/,
+    /import\s+.*from\s+['"].*knex['"]/,
+    /import\s+.*from\s+['"].*drizzle['"]/,
+    /import\s+.*from\s+['"].*prisma['"]/,
+  ];
+  for (const pat of importPatterns) {
+    if (pat.test(sourceCode)) return true;
+  }
+
+  // Check for env-binding patterns (e.g., env.DB in Cloudflare Workers)
+  const bindingNames = config.dbBindingNames ?? [...DB_BINDING_NAMES];
+  for (const binding of bindingNames) {
+    if (sourceCode.includes(binding)) return true;
+  }
+
+  // Check for DB call patterns (receiver.method)
+  const receivers = config.dbReceiverNames ?? [...DB_RECEIVER_NAMES];
+  const methods = config.dbCallMethods ?? [...DB_CALL_METHOD_NAMES];
+  for (const receiver of receivers) {
+    for (const method of methods) {
+      const pattern = new RegExp(`\\b${escapeRegex(receiver)}\\.${escapeRegex(method)}\\s*\\(`);
+      if (pattern.test(sourceCode)) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Detect SQL tagged template literals — a syntax feature, not a naming
+ * convention (e.g. sql\`SELECT ...\`).
+ */
+function hasSqlTag(sourceCode: string, config: SchemaAnalyzerConfig): boolean {
+  const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
+  for (const tag of sqlTags) {
+    const pattern = new RegExp(`\\b${escapeRegex(tag)}\`\\s*SELECT|\\b${escapeRegex(tag)}\`\\s*INSERT|\\b${escapeRegex(tag)}\`\\s*UPDATE|\\b${escapeRegex(tag)}\`\\s*DELETE|\\b${escapeRegex(tag)}\`\\s*CREATE`, 'i');
+    if (pattern.test(sourceCode)) return true;
+  }
+  return false;
+}
+
+/**
+ * Decide whether a file should be scanned for DB usage (the file gate).
+ *
+ * SQL files and migration directories always pass. In provenance modes the
+ * gate defers to DB-provenanced identifiers; in name mode it falls back to
+ * name-based DB detection.
+ *
+ * @param filePath Path of the file being gated.
+ * @param sourceCode Contents of the file being gated.
+ * @param config Schema analyzer configuration (globs, tag names).
+ * @param provenanceContext Optional provenance metadata for DB detection.
+ * @returns True when the file should be scanned for schema references.
+ */
 export function passesFileGate(
   filePath: string,
   sourceCode: string,
@@ -267,10 +352,8 @@ export function passesFileGate(
 ): boolean {
   // Always pass .sql files and migration directories
   const gateGlobs = config.fileGateGlobs ?? ['**/*.sql', '**/migrations/**'];
-  for (const glob of gateGlobs) {
-    if (picomatch.isMatch(filePath, glob)) {
-      return true;
-    }
+  if (gateGlobs.some(glob => picomatch.isMatch(filePath, glob))) {
+    return true;
   }
 
   // Spec 21: Provenance-first DB detection — if any identifier is DB-provenanced,
@@ -284,46 +367,11 @@ export function passesFileGate(
 
   // Legacy name-based detection — used in 'names' mode or when no provenance context
   if (!provenanceContext || provenanceContext.mode === 'names') {
-    // Check for D1 or SQL API imports
-    const importPatterns = [
-      /import\s+.*\b(D1Database|D1PreparedStatement|D1Result)\b/,
-      /import\s+.*from\s+['"].*d1['"]/,
-      /import\s+.*from\s+['"].*pg['"]/,
-      /import\s+.*from\s+['"].*mysql['"]/,
-      /import\s+.*from\s+['"].*sqlite['"]/,
-      /import\s+.*from\s+['"].*knex['"]/,
-      /import\s+.*from\s+['"].*drizzle['"]/,
-      /import\s+.*from\s+['"].*prisma['"]/,
-    ];
-    for (const pat of importPatterns) {
-      if (pat.test(sourceCode)) return true;
-    }
-
-    // Check for env-binding patterns (e.g., env.DB in Cloudflare Workers)
-    const bindingNames = config.dbBindingNames ?? [...DB_BINDING_NAMES];
-    for (const binding of bindingNames) {
-      if (sourceCode.includes(binding)) return true;
-    }
-
-    // Check for DB call patterns (receiver.method)
-    const receivers = config.dbReceiverNames ?? [...DB_RECEIVER_NAMES];
-    const methods = config.dbCallMethods ?? [...DB_CALL_METHOD_NAMES];
-    for (const receiver of receivers) {
-      for (const method of methods) {
-        const pattern = new RegExp(`\\b${escapeRegex(receiver)}\\.${escapeRegex(method)}\\s*\\(`);
-        if (pattern.test(sourceCode)) return true;
-      }
-    }
+    if (detectDbUsageByName(sourceCode, config)) return true;
   }
 
   // Check for SQL tagged template literals (syntax feature, not naming convention)
-  const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
-  for (const tag of sqlTags) {
-    const pattern = new RegExp(`\\b${escapeRegex(tag)}\`\\s*SELECT|\\b${escapeRegex(tag)}\`\\s*INSERT|\\b${escapeRegex(tag)}\`\\s*UPDATE|\\b${escapeRegex(tag)}\`\\s*DELETE|\\b${escapeRegex(tag)}\`\\s*CREATE`, 'i');
-    if (pattern.test(sourceCode)) return true;
-  }
-
-  return false;
+  return hasSqlTag(sourceCode, config);
 }
 
 /**
@@ -332,34 +380,26 @@ export function passesFileGate(
  *
  * @param ast The parsed file AST.
  * @param adapter The language adapter for the file's syntax.
- * @param sourceCode The raw source text.
  * @param tableSources Registry entries (callee/decorator) to match.
- * @param filePath The file under analysis.
- * @param readModule Resolves a module specifier to source text (barrel tracing).
+ * @param ctx Extraction context carrying the AST, adapter, source text, file
+ *   path, and an optional module reader.
  * @returns Extracted table names with ORM-registry provenance.
  */
 export function extractTablesFromRegistry(
-  ast: AST,
-  adapter: LanguageAdapter,
-  sourceCode: string,
   tableSources: TableSourceEntry[],
-  filePath: string,
-  /** Resolves a relative module specifier (e.g. './db') to its source text,
-   *  so a one-hop barrel re-export can be traced to its origin package.
-   *  Defaults to reading from disk relative to `fromFile`. */
-  readModule?: (fromFile: string, specifier: string) => string | null
+  ctx: RegistryExtractionContext
 ): Array<{ table: string; source: TableProvenance }> {
-  if (!ast || !tableSources || tableSources.length === 0) return [];
+  if (!ctx.ast || !tableSources || tableSources.length === 0) return [];
 
   const results: Array<{ table: string; source: TableProvenance }> = [];
-  const importMap = resolveImportMap(ast, adapter, sourceCode);
-  const ctx: RegistryExtractionContext = { filePath, importMap, readModule };
+  const importMap = resolveImportMap(ctx.ast, ctx.adapter, ctx.sourceCode);
+  const resolved: RegistryExtractionContext = { ...ctx, importMap };
 
   for (const entry of tableSources) {
     if (entry.kind === 'callee') {
-      extractCalleeTables(ast, adapter, sourceCode, entry, ctx, results);
+      extractCalleeTables(entry, resolved, results);
     } else if (entry.kind === 'decorator') {
-      extractDecoratorTables(ast, adapter, sourceCode, entry, ctx, results);
+      extractDecoratorTables(entry, resolved, results);
     }
   }
 
@@ -422,20 +462,19 @@ export function resolveImportMap(
  *      re-export).  Only ONE hop is traced; a barrel that re-exports from
  *      another local module is treated as unresolved.
  *
- * @param importMap The import map from resolveImportMap.
  * @param moduleFilter The required originating module.
  * @param rootId The call-site root identifier.
- * @param filePath The file under analysis (for resolving local barrels).
- * @param readModule Resolves a module specifier to source text.
+ * @param ctx Extraction context (import map, file path, module reader).
  * @returns The original export name, or null when unresolved.
  */
 export function resolveImportedName(
-  importMap: Map<string, Map<string, string>>,
   moduleFilter: string,
   rootId: string,
-  filePath: string,
-  readModule?: (fromFile: string, specifier: string) => string | null
+  ctx: RegistryExtractionContext
 ): string | null {
+  const { importMap, filePath, readModule } = ctx;
+  if (!importMap) return null;
+
   // 1. Direct import from the required module.
   const direct = importMap.get(moduleFilter);
   if (direct) {
@@ -529,23 +568,55 @@ export function getArgStringLiteral(
 }
 
 /**
+ * Resolve the call-site callee to the name to match against `entry.name`.
+ *
+ * When no module filter is set, match the call-site callee literally. When a
+ * module filter IS set, resolve the root identifier through the import map to
+ * find the original imported name — this handles aliased imports
+ * (e.g. `import { pgTable as table }`), default imports used as method
+ * receivers (e.g. `knex.schema.createTable`), and one-hop barrel re-exports
+ * (e.g. `import { pgTable } from './db'`).
+ *
+ * @param entry The table-source entry being resolved.
+ * @param callee The raw callee text at the call site.
+ * @param ctx The registry extraction context (import map, etc.).
+ * @returns The name to match, or null when the callee cannot be resolved.
+ */
+export function resolveCalleeMatchName(
+  entry: TableSourceEntry,
+  callee: string,
+  ctx: RegistryExtractionContext
+): string | null {
+  const rootId = callee.split('.')[0];
+
+  if (!entry.module) {
+    return callee;
+  }
+
+  const importedName = resolveImportedName(entry.module, rootId, ctx);
+  if (!importedName) return null;
+
+  // Reconstruct the callee with the imported name replacing the local.
+  // For simple calls: `table(...)` where rootId='table', importedName='pgTable'
+  //   → 'pgTable'
+  // For member calls: `knex.schema.createTable(...)` where rootId='knex'
+  //   → 'knex.schema.createTable' (unchanged, root=imported)
+  return importedName + callee.substring(rootId.length);
+}
+
+/**
  * Walk call_expression nodes for callee-shaped table-source entries.
  *
- * @param ast The parsed file AST.
- * @param adapter The language adapter for the file's syntax.
- * @param sourceCode The raw source text.
  * @param entry The callee-shaped registry entry to match.
- * @param ctx Shared extraction context (import map, file path, reader).
+ * @param ctx Shared extraction context (AST, adapter, source, import map, reader).
  * @param results Accumulator for extracted table references.
  */
 export function extractCalleeTables(
-  ast: AST,
-  adapter: LanguageAdapter,
-  sourceCode: string,
   entry: TableSourceEntry,
   ctx: RegistryExtractionContext,
   results: Array<{ table: string; source: TableProvenance }>
 ): void {
+  const { ast, adapter, sourceCode } = ctx;
   const nodes = adapter.findNodes(ast, {
     custom: (n: ASTNode) => adapter.getNodeType(n) === 'call_expression',
   });
@@ -554,31 +625,8 @@ export function extractCalleeTables(
     const callee = getCallee(node, adapter, sourceCode);
     if (!callee) continue;
 
-    const rootId = callee.split('.')[0];
-
-    // Determine the name to match against entry.name.
-    // When no module filter is set, match the call-site callee literally.
-    // When a module filter IS set, resolve the root identifier through
-    // the import map to find the original imported name — this handles
-    // aliased imports (e.g. `import { pgTable as table }`), default
-    // imports used as method receivers (e.g. `knex.schema.createTable`),
-    // and one-hop barrel re-exports (e.g. `import { pgTable } from './db'`).
-    let calleeNameToMatch: string;
-    if (entry.module) {
-      const importedName = resolveImportedName(
-        ctx.importMap, entry.module, rootId, ctx.filePath, ctx.readModule
-      );
-      if (!importedName) continue;
-
-      // Reconstruct the callee with the imported name replacing the local.
-      // For simple calls: `table(...)` where rootId='table', importedName='pgTable'
-      //   → calleeNameToMatch = 'pgTable'
-      // For member calls: `knex.schema.createTable(...)` where rootId='knex'
-      //   → calleeNameToMatch = 'knex.schema.createTable' (unchanged, root=imported)
-      calleeNameToMatch = importedName + callee.substring(rootId.length);
-    } else {
-      calleeNameToMatch = callee;
-    }
+    const calleeNameToMatch = resolveCalleeMatchName(entry, callee, ctx);
+    if (!calleeNameToMatch) continue;
 
     const matches = calleeNameToMatch === entry.name ||
                     calleeNameToMatch.endsWith('.' + entry.name);
@@ -604,21 +652,16 @@ export function extractCalleeTables(
  * Handles both argument-bearing decorators (@Entity('table')) and
  * bare decorators (skipped — no table name to extract).
  *
- * @param ast The parsed file AST.
- * @param adapter The language adapter for the file's syntax.
- * @param sourceCode The raw source text.
  * @param entry The decorator-shaped registry entry to match.
- * @param ctx Shared extraction context (import map, file path, reader).
+ * @param ctx Shared extraction context (AST, adapter, source, import map, reader).
  * @param results Accumulator for extracted table references.
  */
 export function extractDecoratorTables(
-  ast: AST,
-  adapter: LanguageAdapter,
-  sourceCode: string,
   entry: TableSourceEntry,
   ctx: RegistryExtractionContext,
   results: Array<{ table: string; source: TableProvenance }>
 ): void {
+  const { ast, adapter, sourceCode } = ctx;
   const nodes = adapter.findNodes(ast, {
     custom: (n: ASTNode) => adapter.getNodeType(n) === 'decorator',
   });
@@ -639,19 +682,8 @@ export function extractDecoratorTables(
     const callee = getCallee(callExpr, adapter, sourceCode);
     if (!callee) continue;
 
-    const rootId = callee.split('.')[0];
-
-    let calleeNameToMatch: string;
-    if (entry.module) {
-      const importedName = resolveImportedName(
-        ctx.importMap, entry.module, rootId, ctx.filePath, ctx.readModule
-      );
-      if (!importedName) continue;
-
-      calleeNameToMatch = importedName + callee.substring(rootId.length);
-    } else {
-      calleeNameToMatch = callee;
-    }
+    const calleeNameToMatch = resolveCalleeMatchName(entry, callee, ctx);
+    if (!calleeNameToMatch) continue;
 
     const matches = calleeNameToMatch === entry.name ||
                     calleeNameToMatch.endsWith('.' + entry.name);

@@ -2,7 +2,7 @@
  * Base class for universal analyzers that work across languages
  */
 
-import type { AnalyzerResult, Violation } from '../types.js';
+import type { AnalyzerResult, Violation, Resolution } from '../types.js';
 import type { AST, LanguageAdapter } from './types.js';
 import { LanguageRegistry } from './LanguageRegistry.js';
 import { resolvePathProfile } from '../config/pathProfiles.js';
@@ -21,6 +21,32 @@ export interface UniversalAnalyzerOptions {
  * critical severity for SQL injection findings.
  */
 export type SeverityOverrides = Record<string, 'critical' | 'warning' | 'suggestion'>;
+
+/**
+ * Bundled "how is this violation classified" inputs for createViolation: the
+ * severity + rule + optional symbol always travel together, so they are passed
+ * as one object rather than three trailing positional parameters.
+ */
+export interface ViolationClassification {
+  severity: 'critical' | 'warning' | 'suggestion';
+  rule: string;
+  symbol?: string;
+  /** Spec 37 R1 — structured next action carried on gating findings. */
+  resolution?: Resolution;
+}
+
+/**
+ * Bundled inputs for the per-file processing loop: the config (with overrides
+ * already stripped), the path-profile table, the project root, the run options,
+ * and the total file count used for progress reporting.
+ */
+interface ProcessContext {
+  config: any;
+  pathProfiles: any;
+  projectRoot: string | undefined;
+  options: UniversalAnalyzerOptions;
+  totalFiles: number;
+}
 
 /**
  * Universal analyzer.
@@ -60,14 +86,13 @@ export abstract class UniversalAnalyzer {
     delete configWithoutOverrides.projectRoot;
 
     const filesByAdapter = this.groupFilesByAdapter(files);
-    const { violations, errors, filesProcessed } = await this.processFiles(
-      filesByAdapter,
-      configWithoutOverrides,
+    const { violations, errors, filesProcessed } = await this.processFiles(filesByAdapter, {
+      config: configWithoutOverrides,
       pathProfiles,
       projectRoot,
       options,
-      files.length
-    );
+      totalFiles: files.length,
+    });
 
     const filteredViolations = this.applySeverityPipeline(violations, severityOverrides);
 
@@ -90,11 +115,7 @@ export abstract class UniversalAnalyzer {
    */
   private async processFiles(
     filesByAdapter: Map<LanguageAdapter, string[]>,
-    configWithoutOverrides: any,
-    pathProfiles: any,
-    projectRoot: string | undefined,
-    options: UniversalAnalyzerOptions,
-    totalFiles: number
+    ctx: ProcessContext
   ): Promise<{ violations: Violation[]; errors: Array<{ file: string; error: string }>; filesProcessed: number }> {
     const violations: Violation[] = [];
     const errors: Array<{ file: string; error: string }> = [];
@@ -102,67 +123,14 @@ export abstract class UniversalAnalyzer {
 
     for (const [adapter, adapterFiles] of filesByAdapter) {
       for (const file of adapterFiles) {
-        try {
-          const content = await fs.readFile(file, 'utf8');
-          const ast = await adapter.parse(file, content);
-
-          if (ast.errors.length > 0) {
-            // Record parse errors but continue
-            errors.push(...ast.errors.map(e => ({
-              file,
-              error: `Parse error: ${e.message}`
-            })));
-          }
-
-          // Resolve path profiles for this file (Spec-20)
-          let fileConfig = configWithoutOverrides;
-          let fileSeverityCap: string | undefined;
-          let fileProfileNames: string[] = [];
-          if (pathProfiles && projectRoot && pathProfiles.length > 0) {
-            const resolved = resolvePathProfile(file, projectRoot, pathProfiles);
-            if (Object.keys(resolved.overrides).length > 0) {
-              fileConfig = { ...configWithoutOverrides, ...resolved.overrides };
-            }
-            fileSeverityCap = resolved.severityCap;
-            fileProfileNames = resolved.matchedProfileNames;
-          }
-
-          // Run language-agnostic analysis
-          const fileViolations = await this.analyzeAST(
-            ast,
-            adapter,
-            fileConfig,
-            content
-          );
-
-          // Attach profile attribution (last matching profile wins on merge)
-          if (fileProfileNames.length > 0) {
-            for (const v of fileViolations) {
-              v.profile = fileProfileNames[fileProfileNames.length - 1];
-            }
-          }
-
-          // Store severity cap for post-processing (applied after severityOverrides
-          // so path-level caps beat global per-rule promotions — intentional design,
-          // documented in Spec-20)
-          if (fileSeverityCap) {
-            for (const v of fileViolations) {
-              (v as any)._severityCap = fileSeverityCap;
-            }
-          }
-
-          violations.push(...fileViolations);
-
+        const result = await this.processFile(adapter, file, ctx);
+        violations.push(...result.violations);
+        errors.push(...result.errors);
+        if (result.processed) {
           filesProcessed++;
-          if (options.progressCallback) {
-            options.progressCallback(filesProcessed / totalFiles);
+          if (ctx.options.progressCallback) {
+            ctx.options.progressCallback(filesProcessed / ctx.totalFiles);
           }
-        } catch (error) {
-          console.error(`[${this.name}] Error processing file ${file}:`, error);
-          errors.push({
-            file,
-            error: error instanceof Error ? error.message : String(error)
-          });
         }
       }
     }
@@ -171,9 +139,95 @@ export abstract class UniversalAnalyzer {
   }
 
   /**
-   * Apply severity overrides, filter 'off' severities, then apply path-profile
-   * severity caps (Spec-11 R5, Spec-20). Order is intentional and tested:
-   * caps run AFTER overrides so path-level caps beat global per-rule promotions.
+   * Analyze a single file: read + parse, resolve its path profile (Spec-20),
+   * run analyzeAST, and attach profile/severity-cap attribution. Failures are
+   * captured as errors rather than thrown so one bad file never aborts a run.
+   */
+  private async processFile(
+    adapter: LanguageAdapter,
+    file: string,
+    ctx: ProcessContext
+  ): Promise<{ violations: Violation[]; errors: Array<{ file: string; error: string }>; processed: boolean }> {
+    const { config } = ctx;
+    try {
+      const content = await fs.readFile(file, 'utf8');
+      const ast = await adapter.parse(file, content);
+
+      const errors: Array<{ file: string; error: string }> = [];
+      if (ast.errors.length > 0) {
+        // Record parse errors but continue
+        errors.push(...ast.errors.map(e => ({
+          file,
+          error: `Parse error: ${e.message}`
+        })));
+      }
+
+      // Resolve path profiles for this file (Spec-20, Spec-36 R4), then run analysis.
+      const { fileConfig, fileGateExcluded, fileProfileNames } =
+        this.applyPathProfile(file, config, ctx);
+
+      const fileViolations = await this.analyzeAST(ast, adapter, fileConfig, content);
+
+      this.attachProfileMetadata(fileViolations, fileProfileNames, fileGateExcluded);
+
+      return { violations: fileViolations, errors, processed: true };
+    } catch (error) {
+      console.error(`[${this.name}] Error processing file ${file}:`, error);
+      return {
+        violations: [],
+        errors: [{ file, error: error instanceof Error ? error.message : String(error) }],
+        processed: false,
+      };
+    }
+  }
+
+  /**
+   * Resolve per-file config, gate exclusion, and matched profiles (Spec-20, Spec-36 R4).
+   */
+  private applyPathProfile(
+    file: string,
+    config: any,
+    ctx: ProcessContext
+  ): { fileConfig: any; fileGateExcluded: boolean; fileProfileNames: string[] } {
+    const { pathProfiles, projectRoot } = ctx;
+    let fileConfig = config;
+    let fileGateExcluded = false;
+    let fileProfileNames: string[] = [];
+    if (pathProfiles && projectRoot && pathProfiles.length > 0) {
+      const resolved = resolvePathProfile(file, projectRoot, pathProfiles);
+      if (Object.keys(resolved.overrides).length > 0) {
+        fileConfig = { ...config, ...resolved.overrides };
+      }
+      fileGateExcluded = resolved.excludeFromGate === true;
+      fileProfileNames = resolved.matchedProfileNames;
+    }
+    return { fileConfig, fileGateExcluded, fileProfileNames };
+  }
+
+  /**
+   * Attach profile attribution and gate exclusion to violations (Spec-36 R4).
+   * A path profile excludes a file from the blocking gate; it never softens a
+   * finding within it (the old severity cap is removed).
+   */
+  private attachProfileMetadata(
+    fileViolations: Violation[],
+    fileProfileNames: string[],
+    fileGateExcluded: boolean
+  ): void {
+    if (fileProfileNames.length > 0) {
+      for (const v of fileViolations) {
+        v.profile = fileProfileNames[fileProfileNames.length - 1];
+      }
+    }
+    if (fileGateExcluded) {
+      for (const v of fileViolations) {
+        v.gateExcluded = true;
+      }
+    }
+  }
+
+  /**
+   * Apply severity overrides and filter 'off' severities (Spec-11 R5).
    */
   private applySeverityPipeline(violations: Violation[], severityOverrides: SeverityOverrides): Violation[] {
     if (Object.keys(severityOverrides).length > 0) {
@@ -186,22 +240,7 @@ export abstract class UniversalAnalyzer {
     }
 
     // Filter out violations whose severity was overridden to 'off' (Spec-11 R5).
-    // Must happen before severity caps so 'off' violations are removed entirely.
-    const filteredViolations = violations.filter(v => v.severity !== 'off');
-
-    const severityOrder = ['suggestion', 'warning', 'critical'];
-    for (const v of filteredViolations) {
-      const cap = (v as any)._severityCap as string | undefined;
-      if (cap) {
-        const capIndex = severityOrder.indexOf(cap);
-        if (severityOrder.indexOf(v.severity) > capIndex) {
-          v.severity = cap as 'critical' | 'warning' | 'suggestion';
-        }
-        delete (v as any)._severityCap;
-      }
-    }
-
-    return filteredViolations;
+    return violations.filter(v => v.severity !== 'off');
   }
   
   /**
@@ -245,10 +284,9 @@ export abstract class UniversalAnalyzer {
     file: string,
     location: { line: number; column: number },
     message: string,
-    severity: 'critical' | 'warning' | 'suggestion',
-    rule: string,
-    symbol?: string
+    classification: ViolationClassification
   ): Violation {
+    const { severity, rule, symbol } = classification;
     // Tree-sitter uses 0-based line numbers. Convert to 1-based for all
     // toSourceLocation() now returns 1-based positions — no compensation needed.
     const v: Violation = {
@@ -262,6 +300,9 @@ export abstract class UniversalAnalyzer {
     };
     if (symbol) {
       v.functionName = symbol;
+    }
+    if (classification.resolution) {
+      v.resolution = classification.resolution;
     }
     return v;
   }

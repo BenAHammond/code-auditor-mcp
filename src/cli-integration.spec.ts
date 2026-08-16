@@ -182,7 +182,7 @@ describe('CLI integration — foreign CWD with -p', () => {
     // The 'changed' command with a file list (not 'changed' scope) audits
     // the listed files directly. Pipe an absolute file path via stdin.
     const result = execSync(
-      cliCommand(`changed --stdin --json --fail-on critical -p "${projectDir}"`),
+      cliCommand(`changed --stdin --json -p "${projectDir}"`),
       {
         cwd: foreignCwd,
         encoding: 'utf-8',
@@ -226,7 +226,7 @@ describe('CLI integration — foreign CWD with -p', () => {
 
     // Run from foreign CWD with -p
     const result = execSync(
-      cliCommand(`changed --stdin --json --fail-on critical -p "${projectDir}"`),
+      cliCommand(`changed --stdin --json -p "${projectDir}"`),
       {
         cwd: foreignCwd,
         encoding: 'utf-8',

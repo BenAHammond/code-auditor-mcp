@@ -547,89 +547,64 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     const issues: DependencyIssue[] = [];
     const suggestions: DependencySuggestion[] = [];
 
-    // Check for circular dependencies
-    if (graph.cycles.length > 0) {
-      issues.push({
-        type: 'circular-dependency',
-        severity: 'warning',
-        description: `Found ${graph.cycles.length} circular dependencies`,
-        affectedNodes: graph.cycles.flatMap(cycle => cycle.nodes),
-        impact: 'high'
-      });
+    this.recordCheck({ issues, suggestions }, graph.cycles.length, graph.cycles.flatMap(c => c.nodes), {
+      issueType: 'circular-dependency', severity: 'warning', impact: 'high',
+      issueDesc: n => `Found ${n} circular dependencies`,
+      suggestionType: 'break-cycles', priority: 'high',
+      suggestionDesc: 'Break circular dependencies by introducing interfaces or dependency injection',
+      implementation: 'Consider using dependency inversion principle to break cycles',
+    });
 
-      suggestions.push({
-        type: 'break-cycles',
-        priority: 'high',
-        description: 'Break circular dependencies by introducing interfaces or dependency injection',
-        implementation: 'Consider using dependency inversion principle to break cycles'
-      });
-    }
+    const clusters = this.findTightlyCoupledClusters(graph);
+    this.recordCheck({ issues, suggestions }, clusters.length, clusters.flatMap(c => c.nodes), {
+      issueType: 'tight-coupling', severity: 'warning', impact: 'medium',
+      issueDesc: n => `Found ${n} tightly coupled clusters`,
+      suggestionType: 'reduce-coupling', priority: 'medium',
+      suggestionDesc: 'Reduce coupling between modules using interfaces and abstractions',
+      implementation: 'Extract common interfaces and use dependency injection',
+    });
 
-    // Check for tightly coupled clusters
-    const tightlyCoupledClusters = this.findTightlyCoupledClusters(graph);
-    if (tightlyCoupledClusters.length > 0) {
-      issues.push({
-        type: 'tight-coupling',
-        severity: 'warning',
-        description: `Found ${tightlyCoupledClusters.length} tightly coupled clusters`,
-        affectedNodes: tightlyCoupledClusters.flatMap(cluster => cluster.nodes),
-        impact: 'medium'
-      });
-
-      suggestions.push({
-        type: 'reduce-coupling',
-        priority: 'medium',
-        description: 'Reduce coupling between modules using interfaces and abstractions',
-        implementation: 'Extract common interfaces and use dependency injection'
-      });
-    }
-
-    // Check for hub nodes (too many dependencies)
     const hubNodes = this.findHubNodes(graph);
-    if (hubNodes.length > 0) {
-      issues.push({
-        type: 'hub-nodes',
-        severity: 'warning',
-        description: `Found ${hubNodes.length} hub nodes with excessive dependencies`,
-        affectedNodes: hubNodes.map(node => node.id),
-        impact: 'medium'
-      });
+    this.recordCheck({ issues, suggestions }, hubNodes.length, hubNodes.map(n => n.id), {
+      issueType: 'hub-nodes', severity: 'warning', impact: 'medium',
+      issueDesc: n => `Found ${n} hub nodes with excessive dependencies`,
+      suggestionType: 'split-responsibilities', priority: 'medium',
+      suggestionDesc: 'Split large modules to reduce their dependency burden',
+      implementation: 'Apply Single Responsibility Principle to break down large modules',
+    });
 
-      suggestions.push({
-        type: 'split-responsibilities',
-        priority: 'medium',
-        description: 'Split large modules to reduce their dependency burden',
-        implementation: 'Apply Single Responsibility Principle to break down large modules'
-      });
-    }
-
-    // Check for orphaned nodes
     const orphanedNodes = this.findOrphanedNodes(graph);
-    if (orphanedNodes.length > 0) {
-      issues.push({
-        type: 'orphaned-nodes',
-        severity: 'suggestion',
-        description: `Found ${orphanedNodes.length} orphaned nodes with no dependencies`,
-        affectedNodes: orphanedNodes.map(node => node.id),
-        impact: 'low'
-      });
-
-      suggestions.push({
-        type: 'review-orphans',
-        priority: 'low',
-        description: 'Review orphaned nodes to ensure they are still needed',
-        implementation: 'Consider removing unused code or integrating orphaned modules'
-      });
-    }
-
-    // Calculate health score
-    const healthScore = this.calculateHealthScore(graph, issues);
+    this.recordCheck({ issues, suggestions }, orphanedNodes.length, orphanedNodes.map(n => n.id), {
+      issueType: 'orphaned-nodes', severity: 'suggestion', impact: 'low',
+      issueDesc: n => `Found ${n} orphaned nodes with no dependencies`,
+      suggestionType: 'review-orphans', priority: 'low',
+      suggestionDesc: 'Review orphaned nodes to ensure they are still needed',
+      implementation: 'Consider removing unused code or integrating orphaned modules',
+    });
 
     return {
-      healthScore,
+      healthScore: this.calculateHealthScore(graph, issues),
       issues,
-      suggestions
+      suggestions,
     };
+  }
+
+  /** Push an issue+suggestion pair when `count` is non-zero. */
+  private recordCheck(
+    sink: CheckSink,
+    count: number,
+    affectedNodes: string[],
+    spec: CheckSpec,
+  ): void {
+    if (count === 0) return;
+    sink.issues.push({
+      type: spec.issueType, severity: spec.severity, impact: spec.impact,
+      description: spec.issueDesc(count), affectedNodes,
+    });
+    sink.suggestions.push({
+      type: spec.suggestionType, priority: spec.priority,
+      description: spec.suggestionDesc, implementation: spec.implementation,
+    });
   }
 }
 
@@ -647,5 +622,23 @@ export interface DependencySuggestion {
   type: 'break-cycles' | 'reduce-coupling' | 'split-responsibilities' | 'review-orphans';
   priority: 'high' | 'medium' | 'low';
   description: string;
+  implementation: string;
+}
+
+/** The issue+suggestion sinks a {@link DependencyGraphBuilder.recordCheck} call writes into. */
+interface CheckSink {
+  issues: DependencyIssue[];
+  suggestions: DependencySuggestion[];
+}
+
+/** Descriptor for how a non-zero check result should be phrased as issue+suggestion. */
+interface CheckSpec {
+  issueType: DependencyIssue['type'];
+  severity: DependencyIssue['severity'];
+  impact: DependencyIssue['impact'];
+  issueDesc: (n: number) => string;
+  suggestionType: DependencySuggestion['type'];
+  priority: DependencySuggestion['priority'];
+  suggestionDesc: string;
   implementation: string;
 }

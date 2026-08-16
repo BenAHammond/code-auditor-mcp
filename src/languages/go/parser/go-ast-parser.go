@@ -153,18 +153,11 @@ func main() {
 }
 
 func parseGoFile(filePath string, src string) ASTResponse {
-	response := ASTResponse{
-		Functions:  []FunctionInfo{},
-		Interfaces: []InterfaceInfo{},
-		Structs:    []StructInfo{},
-		Imports:    []ImportInfo{},
-		Packages:   []PackageInfo{},
-		Errors:     []ParseError{},
-	}
+	response := newEmptyResponse()
 
 	// Create a new token file set
 	fset := token.NewFileSet()
-	
+
 	// Parse the Go source code
 	node, err := parser.ParseFile(fset, filePath, src, parser.ParseComments)
 	if err != nil {
@@ -177,58 +170,82 @@ func parseGoFile(filePath string, src string) ASTResponse {
 	}
 
 	// Extract package information
-	if node.Name != nil {
-		pos := fset.Position(node.Name.Pos())
-		response.Packages = append(response.Packages, PackageInfo{
-			Name: node.Name.Name,
-			Path: filepath.Dir(filePath),
-			Location: SourceLocation{
-				Start: Position{Line: pos.Line, Column: pos.Column},
-				End:   Position{Line: pos.Line, Column: pos.Column + len(node.Name.Name)},
-			},
-		})
-	}
+	appendPackageInfo(fset, node, filepath.Dir(filePath), &response)
 
 	// Extract imports
 	for _, imp := range node.Imports {
-		importInfo := extractImportInfo(fset, imp)
-		response.Imports = append(response.Imports, importInfo)
+		response.Imports = append(response.Imports, extractImportInfo(fset, imp))
 	}
 
 	// Walk the AST and extract declarations
+	extractDeclarations(fset, node, &response)
+
+	return response
+}
+
+// newEmptyResponse returns an ASTResponse with all slices initialized.
+func newEmptyResponse() ASTResponse {
+	return ASTResponse{
+		Functions:  []FunctionInfo{},
+		Interfaces: []InterfaceInfo{},
+		Structs:    []StructInfo{},
+		Imports:    []ImportInfo{},
+		Packages:   []PackageInfo{},
+		Errors:     []ParseError{},
+	}
+}
+
+// appendPackageInfo records the package declaration name and directory.
+func appendPackageInfo(fset *token.FileSet, node *ast.File, dir string, response *ASTResponse) {
+	if node.Name == nil {
+		return
+	}
+	pos := fset.Position(node.Name.Pos())
+	response.Packages = append(response.Packages, PackageInfo{
+		Name: node.Name.Name,
+		Path: dir,
+		Location: SourceLocation{
+			Start: Position{Line: pos.Line, Column: pos.Column},
+			End:   Position{Line: pos.Line, Column: pos.Column + len(node.Name.Name)},
+		},
+	})
+}
+
+// extractDeclarations walks the AST and appends top-level declarations.
+func extractDeclarations(fset *token.FileSet, node *ast.File, response *ASTResponse) {
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.FuncDecl:
-			funcInfo := extractFunctionInfo(fset, x)
-			response.Functions = append(response.Functions, funcInfo)
-			
+			response.Functions = append(response.Functions, extractFunctionInfo(fset, x))
 		case *ast.GenDecl:
 			if x.Tok == token.TYPE {
-				for _, spec := range x.Specs {
-					switch typeSpec := spec.(type) {
-					case *ast.TypeSpec:
-						switch typeSpec.Type.(type) {
-						case *ast.InterfaceType:
-							interfaceInfo := extractInterfaceInfo(fset, typeSpec)
-							response.Interfaces = append(response.Interfaces, interfaceInfo)
-						case *ast.StructType:
-							structInfo := extractStructInfo(fset, typeSpec)
-							response.Structs = append(response.Structs, structInfo)
-						}
-					}
-				}
+				appendTypeDecls(fset, x, response)
 			}
 		}
 		return true
 	})
+}
 
-	return response
+// appendTypeDecls appends interface and struct declarations from a type GenDecl.
+func appendTypeDecls(fset *token.FileSet, gen *ast.GenDecl, response *ASTResponse) {
+	for _, spec := range gen.Specs {
+		typeSpec, ok := spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
+		switch typeSpec.Type.(type) {
+		case *ast.InterfaceType:
+			response.Interfaces = append(response.Interfaces, extractInterfaceInfo(fset, typeSpec))
+		case *ast.StructType:
+			response.Structs = append(response.Structs, extractStructInfo(fset, typeSpec))
+		}
+	}
 }
 
 func extractFunctionInfo(fset *token.FileSet, fn *ast.FuncDecl) FunctionInfo {
 	pos := fset.Position(fn.Pos())
 	end := fset.Position(fn.End())
-	
+
 	funcInfo := FunctionInfo{
 		Name: fn.Name.Name,
 		Location: SourceLocation{
@@ -243,54 +260,12 @@ func extractFunctionInfo(fset *token.FileSet, fn *ast.FuncDecl) FunctionInfo {
 
 	// Extract receiver (for methods)
 	if fn.Recv != nil && len(fn.Recv.List) > 0 {
-		recv := fn.Recv.List[0]
-		receiverType := extractTypeString(recv.Type)
-		funcInfo.ClassName = cleanTypeName(receiverType)
-		
-		receiverName := ""
-		if len(recv.Names) > 0 {
-			receiverName = recv.Names[0].Name
-		}
-		
-		funcInfo.Receiver = &ParameterInfo{
-			Name: receiverName,
-			Type: receiverType,
-		}
+		setReceiver(fn.Recv.List[0], &funcInfo)
 	}
 
-	// Extract parameters
-	if fn.Type.Params != nil {
-		for _, field := range fn.Type.Params.List {
-			paramType := extractTypeString(field.Type)
-			
-			if len(field.Names) == 0 {
-				// Unnamed parameter
-				funcInfo.Parameters = append(funcInfo.Parameters, ParameterInfo{
-					Name: "",
-					Type: paramType,
-				})
-			} else {
-				// Named parameters
-				for _, name := range field.Names {
-					funcInfo.Parameters = append(funcInfo.Parameters, ParameterInfo{
-						Name: name.Name,
-						Type: paramType,
-					})
-				}
-			}
-		}
-	}
-
-	// Extract return type
-	if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
-		returnTypes := []string{}
-		for _, field := range fn.Type.Results.List {
-			returnTypes = append(returnTypes, extractTypeString(field.Type))
-		}
-		funcInfo.ReturnType = strings.Join(returnTypes, ", ")
-	} else {
-		funcInfo.ReturnType = "void"
-	}
+	// Extract parameters and return type
+	funcInfo.Parameters = extractParameters(fn.Type.Params)
+	funcInfo.ReturnType = extractReturnType(fn.Type.Results)
 
 	// Extract documentation
 	if fn.Doc != nil {
@@ -298,6 +273,55 @@ func extractFunctionInfo(fset *token.FileSet, fn *ast.FuncDecl) FunctionInfo {
 	}
 
 	return funcInfo
+}
+
+// setReceiver populates the class name and receiver for a method.
+func setReceiver(recv *ast.Field, funcInfo *FunctionInfo) {
+	receiverType := extractTypeString(recv.Type)
+	funcInfo.ClassName = cleanTypeName(receiverType)
+
+	receiverName := ""
+	if len(recv.Names) > 0 {
+		receiverName = recv.Names[0].Name
+	}
+
+	funcInfo.Receiver = &ParameterInfo{
+		Name: receiverName,
+		Type: receiverType,
+	}
+}
+
+// extractParameters flattens a function's parameter list into ParameterInfo.
+func extractParameters(params *ast.FieldList) []ParameterInfo {
+	parameters := []ParameterInfo{}
+	if params == nil {
+		return parameters
+	}
+	for _, field := range params.List {
+		paramType := extractTypeString(field.Type)
+		if len(field.Names) == 0 {
+			// Unnamed parameter
+			parameters = append(parameters, ParameterInfo{Name: "", Type: paramType})
+		} else {
+			// Named parameters
+			for _, name := range field.Names {
+				parameters = append(parameters, ParameterInfo{Name: name.Name, Type: paramType})
+			}
+		}
+	}
+	return parameters
+}
+
+// extractReturnType joins the function's result types, or "void" if none.
+func extractReturnType(results *ast.FieldList) string {
+	if results == nil || len(results.List) == 0 {
+		return "void"
+	}
+	returnTypes := []string{}
+	for _, field := range results.List {
+		returnTypes = append(returnTypes, extractTypeString(field.Type))
+	}
+	return strings.Join(returnTypes, ", ")
 }
 
 func extractInterfaceInfo(fset *token.FileSet, typeSpec *ast.TypeSpec) InterfaceInfo {

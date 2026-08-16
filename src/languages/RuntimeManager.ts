@@ -340,23 +340,14 @@ class RuntimeManagerVersion extends RuntimeManagerDetection {
       const minVersion = config?.minVersion || runtime.minVersion;
       const compatible = this.checkVersionCompatibility(runtime, config);
 
-      let status: 'compatible' | 'incompatible' | 'unknown';
-      let recommendations: string[] = [];
-
-      if (!runtime.available) {
-        status = 'unknown';
-        recommendations.push(`Install ${runtime.name} runtime`);
-        recommendations.push(...this.getRuntimeInstallationSuggestions(name));
-      } else if (runtime.version === 'unknown') {
-        status = 'unknown';
-        recommendations.push(`Unable to detect ${runtime.name} version`);
-      } else if (!compatible) {
-        status = 'incompatible';
-        recommendations.push(`Update ${runtime.name} to version ${minVersion} or higher`);
-        recommendations.push(`Current: ${runtime.version}, Required: ${minVersion}`);
-      } else {
-        status = 'compatible';
-      }
+      const { status, recommendations } = deriveCompatibilityStatus({
+        name,
+        available: runtime.available,
+        version: runtime.version,
+        compatible,
+        minVersion,
+        installSuggestions: this.getRuntimeInstallationSuggestions(name)
+      });
 
       report.push({
         runtime: runtime.name,
@@ -960,63 +951,7 @@ class GoAnalyzer implements LanguageAnalyzer {
 
   private async runGoAnalyzer(goDir: string, files: string[], options: any): Promise<AnalysisResult> {
     const binaryPath = path.join(goDir, 'analyzer');
-
-    return new Promise((resolve, reject) => {
-      const child = spawn(binaryPath, [], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: goDir
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout?.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      child.stderr?.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      child.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`Go analyzer exited with code ${code}: ${stderr}`));
-          return;
-        }
-
-        try {
-          // Parse the last line as JSON response
-          const lines = stdout.trim().split('\n');
-          const lastLine = lines[lines.length - 1];
-          const response = JSON.parse(lastLine);
-
-          if (response.error) {
-            reject(new Error(`Go analyzer error: ${response.error.message}`));
-          } else {
-            resolve(response.result);
-          }
-        } catch (parseError) {
-          reject(new Error(`Failed to parse Go analyzer response: ${parseError}`));
-        }
-      });
-
-      child.on('error', (error) => {
-        reject(new Error(`Failed to spawn Go analyzer: ${error}`));
-      });
-
-      // Send JSON-RPC request
-      const request = {
-        method: 'analyze',
-        params: {
-          files,
-          options
-        },
-        id: 1
-      };
-
-      child.stdin?.write(JSON.stringify(request) + '\n');
-      child.stdin?.end();
-    });
+    return spawnGoAnalyzer(binaryPath, goDir, files, options);
   }
 }
 
@@ -1043,4 +978,125 @@ class PythonAnalyzer implements LanguageAnalyzer {
       }
     };
   }
+}
+
+interface CompatibilityStatusInput {
+  name: string;
+  available: boolean;
+  version: string;
+  compatible: boolean;
+  minVersion?: string;
+  installSuggestions: string[];
+}
+
+/**
+ * Derive compatibility status + recommendations for a single runtime.
+ */
+function deriveCompatibilityStatus(input: CompatibilityStatusInput): {
+  status: 'compatible' | 'incompatible' | 'unknown';
+  recommendations: string[];
+} {
+  const recommendations: string[] = [];
+
+  if (!input.available) {
+    recommendations.push(`Install ${input.name} runtime`);
+    recommendations.push(...input.installSuggestions);
+    return { status: 'unknown', recommendations };
+  }
+
+  if (input.version === 'unknown') {
+    recommendations.push(`Unable to detect ${input.name} version`);
+    return { status: 'unknown', recommendations };
+  }
+
+  if (!input.compatible) {
+    recommendations.push(`Update ${input.name} to version ${input.minVersion} or higher`);
+    recommendations.push(`Current: ${input.version}, Required: ${input.minVersion}`);
+    return { status: 'incompatible', recommendations };
+  }
+
+  return { status: 'compatible', recommendations };
+}
+
+/**
+ * Spawn the Go analyzer binary and stream a JSON-RPC analyze request.
+ */
+function spawnGoAnalyzer(
+  binaryPath: string,
+  goDir: string,
+  files: string[],
+  options: any,
+): Promise<AnalysisResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(binaryPath, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: goDir
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    child.on('close', (code) => {
+      handleGoAnalyzerClose(code, { stdout, stderr }, resolve, reject);
+    });
+
+    child.on('error', (error) => {
+      reject(new Error(`Failed to spawn Go analyzer: ${error}`));
+    });
+
+    // Send JSON-RPC request
+    const request = {
+      method: 'analyze',
+      params: { files, options },
+      id: 1
+    };
+
+    child.stdin?.write(JSON.stringify(request) + '\n');
+    child.stdin?.end();
+  });
+}
+
+/**
+ * Handle the `close` event of the Go analyzer child process: reject on a
+ * non-zero exit code, otherwise resolve with the parsed JSON-RPC result.
+ */
+function handleGoAnalyzerClose(
+  code: number | null,
+  streams: { stdout: string; stderr: string },
+  resolve: (result: AnalysisResult) => void,
+  reject: (error: Error) => void,
+): void {
+  if (code !== 0) {
+    reject(new Error(`Go analyzer exited with code ${code}: ${streams.stderr}`));
+    return;
+  }
+
+  try {
+    resolve(parseGoAnalyzerResponse(streams.stdout));
+  } catch (parseError) {
+    reject(new Error(`Failed to parse Go analyzer response: ${parseError}`));
+  }
+}
+
+/**
+ * Parse the last line of Go analyzer stdout as a JSON-RPC result.
+ */
+function parseGoAnalyzerResponse(stdout: string): AnalysisResult {
+  const lines = stdout.trim().split('\n');
+  const lastLine = lines[lines.length - 1];
+  const response = JSON.parse(lastLine);
+
+  if (response.error) {
+    throw new Error(`Go analyzer error: ${response.error.message}`);
+  }
+
+  return response.result;
 }

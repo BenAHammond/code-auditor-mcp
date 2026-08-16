@@ -187,7 +187,7 @@ describe('Hook script (hook-audit.sh)', () => {
       resolve(PLUGIN_DIR, 'scripts', 'hook-audit.sh'),
       'utf-8',
     );
-    expect(content).toContain('code-audit changed --stdin --json --fail-on critical');
+    expect(content).toContain('code-audit changed --stdin --json');
   });
 
   it('degrades cleanly when code-audit is missing', () => {

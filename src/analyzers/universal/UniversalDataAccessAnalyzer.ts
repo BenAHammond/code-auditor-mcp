@@ -5,7 +5,8 @@
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
-import type { Violation } from '../../types.js';
+import { withRuleTiming } from '../ruleTiming.js';
+import type { Violation, Resolution } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, DynamicPart } from '../../languages/types.js';
 import {
   buildProvenanceContext,
@@ -204,6 +205,44 @@ interface QueryAnalysis {
 // ── Diagnostic infrastructure (one-time v3.4.12 adjuciation) ──────────────
 
 /**
+ * Bundled classification for a data-access violation — `severity`, `rule`,
+ * and an optional `symbol` travel together so `makeViolation` stays a 4-arg
+ * call rather than a 6-arg one (Spec 34 param-count bundling).
+ */
+interface DataAccessViolationClassification {
+  severity: 'critical' | 'warning' | 'suggestion';
+  rule: string;
+  symbol?: string;
+  /** Spec 37 R1 — structured next action carried on gating findings. */
+  resolution?: Resolution;
+}
+
+/**
+ * Per-file analysis context threaded through the data-access helper chain.
+ * Bundles `adapter` / `sourceCode` / `dbImports` / `config` / `provenanceContext`
+ * into one object so the helpers that previously took 5–6 positional params
+ * (buildDatabaseCall, extractDatabaseCalls, checkQuerySecurity, …) clear the
+ * 4-parameter gate without each defining its own bespoke context type.
+ */
+interface DataAccessScanContext {
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  dbImports: Map<string, { hasImports: boolean; patterns: string[] }>;
+  config: DataAccessAnalyzerConfig;
+  provenanceContext?: ProvenanceContext;
+}
+
+/**
+ * Bundled inputs for checkViolations — file path, config, and the mutable
+ * symbol-ordinal map are threaded together so the helper stays a 3-arg call.
+ */
+interface ViolationCheckContext {
+  filePath: string;
+  config: DataAccessAnalyzerConfig;
+  symbolOrdinals: Map<string, number>;
+}
+
+/**
  * Build a violation attributed to this analyzer's fixed name.  Replaces the
  * base-class `createViolation` so every helper can be a module-level free
  * function (which keeps the analyzer class a thin orchestrator and collapses
@@ -213,20 +252,19 @@ function makeViolation(
   file: string,
   location: { line: number; column: number },
   message: string,
-  severity: 'critical' | 'warning' | 'suggestion',
-  rule: string,
-  symbol?: string
+  classification: DataAccessViolationClassification,
 ): Violation {
   const v: Violation = {
     file,
     line: location.line,
     column: location.column,
-    severity,
+    severity: classification.severity,
     message,
-    rule,
+    rule: classification.rule,
     analyzer: 'data-access'
   };
-  if (symbol) v.functionName = symbol;
+  if (classification.symbol) v.functionName = classification.symbol;
+  if (classification.resolution) v.resolution = classification.resolution;
   return v;
 }
 
@@ -271,7 +309,7 @@ function isDbCallCandidate(
   if (isFunctionCall(node, adapter)) {
     // Spec 21: Use provenance when available, fall back to name-based check
     if (provenanceContext) {
-      if (isDBProvenanced(node, adapter, sourceCode, provenanceContext, DB_CALL_METHODS)) {
+      if (isDBProvenanced(node, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS })) {
         return true;
       }
     }
@@ -331,52 +369,30 @@ function dedupeCandidateNodes(nodes: ASTNode[], adapter: LanguageAdapter): ASTNo
  */
 function buildDatabaseCall(
   node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
   ast: AST,
-  dbImports: Map<string, { hasImports: boolean; patterns: string[] }>,
-  config: DataAccessAnalyzerConfig,
+  scan: DataAccessScanContext,
 ): DatabaseCall | null {
+  const { adapter, sourceCode, dbImports, config } = scan;
   const nodeText = adapter.getNodeText(node, sourceCode);
-
-  // Skip if the node text is too short or doesn't contain meaningful content
   if (!nodeText || nodeText.trim().length < 10) return null;
 
-  // When a call_expression like db.prepare(`...`) spans multiple lines,
-  // findNodes discovers both the call_expression (via path 1) and the
-  // template_string inside its arguments (via path 2).  The template string
-  // is the more precise target for injection checks, and isDynamicString-
-  // Construction on a call_expression delegates to its template arguments
-  // anyway.  Skip the call_expression here so we don't double-report the
-  // same injection risk.
-  if (isFunctionCall(node, adapter)) {
-    const args = adapter.getChildren(node).find(
-      c => adapter.getNodeType(c) === 'arguments',
-    );
-    if (args) {
-      const hasTemplate = adapter.getChildren(args).some(
-        c => isTemplateLiteral(c, adapter),
-      );
-      if (hasTemplate) return null;
-    }
-  }
+  // Skip when a call_expression like db.prepare(`...`) is rediscovered via
+  // its template argument (path 2) — the template string is the precise target.
+  if (shouldSkipCallForTemplateArg(node, adapter)) return null;
 
-  // Determine if this is a database-related call
   const isSqlQuery = containsSQLKeywords(nodeText);
   const isOrmCall = isOrmPattern(nodeText);
-
   if (!isSqlQuery && !isOrmCall) return null;
 
   const tables = extractTables(nodeText, config);
   const hasOrgFilter = hasOrganizationFilter(nodeText, config);
-  const security = checkQuerySecurity(node, nodeText, ast, adapter, sourceCode, config);
+  const security = withRuleTiming('sql-injection-risk', () =>
+    checkQuerySecurity(node, nodeText, ast, scan));
 
-  // Determine the type based on imports or patterns
   let callType = 'unknown';
   if (isSqlQuery) {
     callType = 'sql';
   } else if (isOrmCall) {
-    // Check which ORM based on imports
     for (const [dbType, importInfo] of dbImports) {
       if (importInfo.hasImports) {
         callType = dbType;
@@ -400,16 +416,26 @@ function buildDatabaseCall(
 }
 
 /**
+ * True when a call_expression node carries a template-literal argument and so
+ * should be skipped in favour of the template string (path 2) itself.
+ */
+function shouldSkipCallForTemplateArg(node: ASTNode, adapter: LanguageAdapter): boolean {
+  if (!isFunctionCall(node, adapter)) return false;
+  const args = adapter.getChildren(node).find(
+    c => adapter.getNodeType(c) === 'arguments',
+  );
+  if (!args) return false;
+  return adapter.getChildren(args).some(c => isTemplateLiteral(c, adapter));
+}
+
+/**
  * Extract database calls from AST
  */
 function extractDatabaseCalls(
   ast: AST,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  dbImports: Map<string, { hasImports: boolean; patterns: string[] }>,
-  config: DataAccessAnalyzerConfig,
-  provenanceContext?: ProvenanceContext,
+  scan: DataAccessScanContext,
 ): DatabaseCall[] {
+  const { adapter, sourceCode, provenanceContext } = scan;
   const allNodes = adapter.findNodes(ast, {
     custom: (node) => isDbCallCandidate(node, adapter, sourceCode, provenanceContext),
   });
@@ -418,7 +444,7 @@ function extractDatabaseCalls(
 
   const calls: DatabaseCall[] = [];
   for (const node of uniqueNodes) {
-    const call = buildDatabaseCall(node, adapter, sourceCode, ast, dbImports, config);
+    const call = buildDatabaseCall(node, ast, scan);
     if (call) calls.push(call);
   }
 
@@ -467,77 +493,59 @@ function analyzeQuery(
 function checkViolations(
   call: DatabaseCall,
   analysis: QueryAnalysis,
-  filePath: string,
-  config: DataAccessAnalyzerConfig,
-  symbolOrdinals: Map<string, number>,
+  ctx: ViolationCheckContext,
 ): Violation[] {
+  const { filePath, config, symbolOrdinals } = ctx;
   const violations: Violation[] = [];
 
-  // Build a stable base symbol key — enclosing function + callee method.
-  // Ordinal added for genuine repeats within the same function.
-  const fnName = call.enclosingFunction ?? 'top-level';
-  const baseSymbol = `${fnName}:${call.method}`;
+  const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method, symbolOrdinals);
+  const push = (message: string, opts: Omit<DataAccessViolationClassification, 'symbol'>) =>
+    violations.push(makeViolation(filePath, { line: call.line, column: call.column }, message, { ...opts, symbol }));
 
-  const ordinal = (symbolOrdinals.get(baseSymbol) ?? 0) + 1;
-  symbolOrdinals.set(baseSymbol, ordinal);
-  const symbol = ordinal > 1 ? `${baseSymbol}:${ordinal}` : baseSymbol;
-
-  // Security: SQL Injection Risk
-  // Spec 11 (calibration): Detection uses AST-level heuristics (string
-  // concatenation in query construction) without type information. Findings
-  // are high-signal but not proof of exploitable injection. Severity demoted
-  // from critical → warning in Spec 17. Spec 11 will measure true-positive
-  // rate on ExcAlDraw and Gin corpora to decide whether heuristics should be
-  // tightened or severity re-escalated.
+  // Security: SQL injection — AST heuristics, high-signal not proof, so
+  // `warning` not `critical`; manual quote-escaping is not sanitization.
   if (config.checkSQLInjection && call.hasSqlInjectionRisk) {
-    violations.push(makeViolation(
-      filePath,
-      { line: call.line, column: call.column },
-      `Potential SQL injection risk in ${call.method}. Use parameterized queries.`,
-      'suggestion',
-      'sql-injection-risk',
-      symbol
-    ));
+    push(`Potential SQL injection risk in ${call.method}. Use parameterized queries.`, {
+      severity: 'warning',
+      rule: 'sql-injection-risk',
+      resolution: {
+        action: 'parameterize',
+        summary: `Replace the string-interpolated SQL in ${call.method} with a parameterized query — bind values via the driver's placeholder form (\`?\`, \`$1\`, or \`:name\`) instead of concatenating them into the statement.`,
+        symbols: [call.method],
+        files: [filePath],
+        lines: [call.line],
+      },
+    });
   }
 
   // Security: Missing Organization Filter
   if (config.checkOrgFilters && !call.hasOrganizationFilter && call.tables.length > 0 && requiresOrgFilter(call.tables, config)) {
-    violations.push(makeViolation(
-      filePath,
-      { line: call.line, column: call.column },
-      `Query on ${call.tables.join(', ')} missing organization/tenant filter`,
-      'warning',
-      'missing-org-filter',
-      symbol
-    ));
+    push(`Query on ${call.tables.join(', ')} missing organization/tenant filter`, { severity: 'warning', rule: 'missing-org-filter' });
   }
-
 
   // Performance: Complex Query
   if (analysis.performanceRisk === 'high') {
-    violations.push(makeViolation(
-      filePath,
-      { line: call.line, column: call.column },
-      `Complex query with ${call.tables.length} tables may have performance issues`,
-      'warning',
-      'complex-query',
-      symbol
-    ));
+    push(`Complex query with ${call.tables.length} tables may have performance issues`, { severity: 'warning', rule: 'complex-query' });
   }
 
   // Performance: Unfiltered Query
   if (!call.hasOrganizationFilter && analysis.performanceRisk === 'medium') {
-    violations.push(makeViolation(
-      filePath,
-      { line: call.line, column: call.column },
-      `Unfiltered query on ${call.tables.join(', ')} may cause performance issues`,
-      'suggestion',
-      'unfiltered-query',
-      symbol
-    ));
+    push(`Unfiltered query on ${call.tables.join(', ')} may cause performance issues`, { severity: 'suggestion', rule: 'unfiltered-query' });
   }
 
   return violations;
+}
+
+/** Compute the next stable violation symbol key for a (function, method) pair. */
+function nextSymbol(
+  fnName: string,
+  method: string,
+  symbolOrdinals: Map<string, number>,
+): string {
+  const baseSymbol = `${fnName}:${method}`;
+  const ordinal = (symbolOrdinals.get(baseSymbol) ?? 0) + 1;
+  symbolOrdinals.set(baseSymbol, ordinal);
+  return ordinal > 1 ? `${baseSymbol}:${ordinal}` : baseSymbol;
 }
 
 /**
@@ -572,9 +580,7 @@ function checkGeneralPatterns(
         ast.filePath,
         node.location.start,
         'Hardcoded database connection string detected. Use environment variables. (On Cloudflare Workers/D1, connection strings are injected via bindings.)',
-        'suggestion',                                         // R7: direct-access → suggestion
-        'hardcoded-connection',
-        sym
+        { severity: 'suggestion', rule: 'hardcoded-connection', symbol: sym } // R7: direct-access → suggestion
       ));
     }
   }
@@ -651,7 +657,7 @@ function isTemplateInDBProvenancedCall(
     const callExpr = adapter.getParent(parent);
     if (!callExpr || adapter.getNodeType(callExpr) !== 'call_expression') return false;
     if (provenanceContext) {
-      return isDBProvenanced(callExpr, adapter, sourceCode, provenanceContext, DB_CALL_METHODS);
+      return isDBProvenanced(callExpr, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS });
     }
     // Without provenance context, can't determine DB association —
     // do not speculate.
@@ -685,85 +691,95 @@ function isInPrepareBindChain(
   adapter: LanguageAdapter,
   sourceCode: string,
 ): boolean {
-  // Step 1: Find the prepare call_expression from the node.
-  let prepareCall: ASTNode | null;
+  const prepareCall = findCallFromEntry(node, adapter);
+  if (!prepareCall) return false;
 
-  if (adapter.getNodeType(node) === 'template_string') {
-    // Walk up through arguments → call_expression
+  const callee = findMemberCallee(prepareCall, adapter);
+  if (!callee || !hasProperty(callee, 'prepare', adapter, sourceCode)) return false;
+
+  // Direct chain: prepareCall.parent is a .bind member whose parent is a call.
+  if (isDirectBindChain(prepareCall, adapter, sourceCode)) return true;
+
+  // Two-statement pattern: const stmt = db.prepare(sql); stmt.bind(x).all();
+  if (isPrepareAssignedToVariable(prepareCall, adapter, sourceCode)) return true;
+
+  return false;
+}
+
+/** Locate the call_expression a node belongs to, if any. */
+function findCallFromEntry(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  const type = adapter.getNodeType(node);
+  if (type === 'template_string') {
     const args = adapter.getParent(node);
-    if (!args || adapter.getNodeType(args) !== 'arguments') return false;
-    prepareCall = adapter.getParent(args);
-  } else if (adapter.getNodeType(node) === 'call_expression') {
-    // Node is the call_expression itself — check if it's a prepare() call.
-    prepareCall = node;
-  } else {
-    return false;
+    if (!args || adapter.getNodeType(args) !== 'arguments') return null;
+    const call = adapter.getParent(args);
+    return call && adapter.getNodeType(call) === 'call_expression' ? call : null;
   }
+  if (type === 'call_expression') return node;
+  return null;
+}
 
-  if (!prepareCall || adapter.getNodeType(prepareCall) !== 'call_expression') {
-    return false;
-  }
-
-  // Step 2: Verify the call_expression is .prepare() by inspecting its
-  // callee — the first child that is a member_expression, which may be
-  // wrapped inside an await_expression (await db.prepare(sql)).
-  let prepareCallee = adapter.getChildren(prepareCall).find(
+/** Find a call's member_expression callee, unwrapping await_expression if present. */
+function findMemberCallee(call: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  const direct = adapter.getChildren(call).find(
     c => adapter.getNodeType(c) === 'member_expression',
   );
-  if (!prepareCallee) {
-    const awaitExpr = adapter.getChildren(prepareCall).find(
-      c => adapter.getNodeType(c) === 'await_expression',
-    );
-    if (awaitExpr) {
-      prepareCallee = adapter.getChildren(awaitExpr).find(
-        c => adapter.getNodeType(c) === 'member_expression',
-      );
-    }
-  }
-  if (!prepareCallee) return false;
-
-  const hasPrepareProp = adapter.getChildren(prepareCallee).some(
-    c =>
-      adapter.getNodeType(c) === 'property_identifier' &&
-      adapter.getNodeText(c, sourceCode) === 'prepare',
+  if (direct) return direct;
+  const awaitExpr = adapter.getChildren(call).find(
+    c => adapter.getNodeType(c) === 'await_expression',
   );
-  if (!hasPrepareProp) return false;
+  if (!awaitExpr) return null;
+  return adapter.getChildren(awaitExpr).find(
+    c => adapter.getNodeType(c) === 'member_expression',
+  ) ?? null;
+}
 
-  // Step 3: Walk up from the prepare call_expression to find .bind()
-  // chained onto it.  The parent of prepareCall should be a
-  // member_expression whose property is "bind".
+/** True when `node`'s property_identifier equals `prop`. */
+function hasProperty(node: ASTNode, prop: string, adapter: LanguageAdapter, sourceCode: string): boolean {
+  return memberPropertyName(node, adapter, sourceCode) === prop;
+}
+
+/** The property_identifier text of a member_expression, or null. */
+function memberPropertyName(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string | null {
+  const prop = adapter.getChildren(node).find(
+    c => adapter.getNodeType(c) === 'property_identifier',
+  );
+  return prop ? adapter.getNodeText(prop, sourceCode) : null;
+}
+
+/** True when a call's arguments contain a spread_element (…binds). */
+function hasSpreadArgument(call: ASTNode, adapter: LanguageAdapter): boolean {
+  const args = adapter.getChildren(call).find(
+    c => adapter.getNodeType(c) === 'arguments',
+  );
+  if (!args) return false;
+  return adapter.getChildren(args).some(
+    c => adapter.getNodeType(c) === 'spread_element',
+  );
+}
+
+/** Count real (non-punctuation) arguments in a call. */
+function countArgs(call: ASTNode, adapter: LanguageAdapter): number {
+  const args = adapter.getChildren(call).find(
+    c => adapter.getNodeType(c) === 'arguments',
+  );
+  if (!args) return 0;
+  return adapter.getChildren(args).filter(
+    c => !['(', ')', ',', 'comment'].includes(adapter.getNodeType(c)),
+  ).length;
+}
+
+/** True when a prepare() call is directly followed by a `.bind()` invocation. */
+function isDirectBindChain(
+  prepareCall: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
   const memberExpr = adapter.getParent(prepareCall);
-  if (memberExpr && adapter.getNodeType(memberExpr) === 'member_expression') {
-    const hasBindProp = adapter.getChildren(memberExpr).some(
-      c =>
-        adapter.getNodeType(c) === 'property_identifier' &&
-        adapter.getNodeText(c, sourceCode) === 'bind',
-    );
-    if (hasBindProp) {
-      // Step 4: The member_expression's parent must be a call_expression
-      // (the actual .bind() invocation).
-      const bindCall = adapter.getParent(memberExpr);
-      if (bindCall && adapter.getNodeType(bindCall) === 'call_expression') {
-        return true;
-      }
-    }
-  }
-
-  // Step 5 (two-statement pattern): The direct-chain check failed.  Check
-  // whether the prepare() result is assigned to a variable that is later
-  // .bind()'ed in the same function scope.
-  //   Pattern:  const stmt = db.prepare(sql);
-  //             stmt.bind(x).all();
-  if (isPrepareAssignedToVariable(prepareCall, adapter, sourceCode)) {
-    return true;
-  }
-
-  // Step 6 (no-param prepare): Node is inside .prepare() with no .bind()
-  // found in the direct chain or local scope.  Without .bind() the query
-  // has no runtime parameterisation at the statement level.  Fall through
-  // to let checkQuerySecurity determine whether template interpolation
-  // makes the query dynamic.
-  return false;
+  if (!memberExpr || adapter.getNodeType(memberExpr) !== 'member_expression') return false;
+  if (!hasProperty(memberExpr, 'bind', adapter, sourceCode)) return false;
+  const bindCall = adapter.getParent(memberExpr);
+  return !!bindCall && adapter.getNodeType(bindCall) === 'call_expression';
 }
 
 /**
@@ -783,70 +799,16 @@ function isInExecChain(
   adapter: LanguageAdapter,
   sourceCode: string,
 ): boolean {
-  // Step 1: Find the exec call_expression from the node.
-  let execCall: ASTNode | null;
+  const execCall = findCallFromEntry(node, adapter);
+  if (!execCall) return false;
 
-  if (adapter.getNodeType(node) === 'template_string') {
-    const args = adapter.getParent(node);
-    if (!args || adapter.getNodeType(args) !== 'arguments') return false;
-    execCall = adapter.getParent(args);
-  } else if (adapter.getNodeType(node) === 'call_expression') {
-    execCall = node;
-  } else {
-    return false;
-  }
+  const callee = findMemberCallee(execCall, adapter);
+  if (!callee || !hasProperty(callee, 'exec', adapter, sourceCode)) return false;
 
-  if (!execCall || adapter.getNodeType(execCall) !== 'call_expression') {
-    return false;
-  }
-
-  // Step 2: Verify the call_expression is .exec() — the member_expression
-  // may be inside an await_expression wrapper (await sql.exec(query)).
-  let execCallee = adapter.getChildren(execCall).find(
-    c => adapter.getNodeType(c) === 'member_expression',
-  );
-  if (!execCallee) {
-    const awaitExpr = adapter.getChildren(execCall).find(
-      c => adapter.getNodeType(c) === 'await_expression',
-    );
-    if (awaitExpr) {
-      execCallee = adapter.getChildren(awaitExpr).find(
-        c => adapter.getNodeType(c) === 'member_expression',
-      );
-    }
-  }
-  if (!execCallee) return false;
-
-  const hasExecProp = adapter.getChildren(execCallee).some(
-    c =>
-      adapter.getNodeType(c) === 'property_identifier' &&
-      adapter.getNodeText(c, sourceCode) === 'exec',
-  );
-  if (!hasExecProp) return false;
-
-  // Step 3: Check for spread bind parameters after the template.
-  // `sql.exec(template, ...binds)` — the spread element in arguments
-  // means values are parameterized.
-  const args = adapter.getChildren(execCall).find(
-    c => adapter.getNodeType(c) === 'arguments',
-  );
-  if (args) {
-    const argChildren = adapter.getChildren(args);
-    const hasSpread = argChildren.some(
-      c => adapter.getNodeType(c) === 'spread_element',
-    );
-    if (hasSpread) {
-      return true; // Parameterized via spread binds
-    }
-  }
-
-  // Step 4: No spread binds — the query has no runtime bind parameters.
-  // Fall through so checkQuerySecurity determines whether template
-  // interpolation makes the query dynamic.  The "in-process SQLite"
-  // argument does not make dynamic interpolation safe — if user-supplied
-  // values reach the SQL text they are still injectable regardless of
-  // whether the DB is remote or in-process.
-  return false;
+  // `sql.exec(template, ...binds)` — spread element means parameterized.
+  // Without it, there are no runtime binds: template interpolation is
+  // query-composition-time and checkQuerySecurity decides if it's dynamic.
+  return hasSpreadArgument(execCall, adapter);
 }
 
 /**
@@ -864,59 +826,15 @@ function isD1ConvenienceCall(
 ): boolean {
   const D1_CONVENIENCE = new Set(['all', 'first', 'run']);
 
-  // Find the call_expression.
-  let call: ASTNode | null;
-  if (adapter.getNodeType(node) === 'template_string') {
-    const args = adapter.getParent(node);
-    if (!args || adapter.getNodeType(args) !== 'arguments') return false;
-    call = adapter.getParent(args);
-  } else if (adapter.getNodeType(node) === 'call_expression') {
-    call = node;
-  } else {
-    return false;
-  }
+  const call = findCallFromEntry(node, adapter);
+  if (!call) return false;
 
-  if (!call || adapter.getNodeType(call) !== 'call_expression') return false;
+  const callee = findMemberCallee(call, adapter);
+  const method = callee ? memberPropertyName(callee, adapter, sourceCode) : null;
+  if (!method || !D1_CONVENIENCE.has(method)) return false;
 
-  // Verify the callee is one of .all / .first / .run — the
-  // member_expression may be inside an await_expression wrapper
-  // (await db.all(query, params)).
-  let callee = adapter.getChildren(call).find(
-    c => adapter.getNodeType(c) === 'member_expression',
-  );
-  if (!callee) {
-    const awaitExpr = adapter.getChildren(call).find(
-      c => adapter.getNodeType(c) === 'await_expression',
-    );
-    if (awaitExpr) {
-      callee = adapter.getChildren(awaitExpr).find(
-        c => adapter.getNodeType(c) === 'member_expression',
-      );
-    }
-  }
-  if (!callee) return false;
-
-  const methodName = adapter.getChildren(callee).find(
-    c =>
-      adapter.getNodeType(c) === 'property_identifier' &&
-      D1_CONVENIENCE.has(adapter.getNodeText(c, sourceCode)),
-  );
-  if (!methodName) return false;
-
-  // Check for bind parameters — must have more than one argument.
-  // The first argument is the query text; any subsequent argument
-  // carries bind values for the ? placeholders.
-  const args = adapter.getChildren(call).find(
-    c => adapter.getNodeType(c) === 'arguments',
-  );
-  if (!args) return false;
-
-  const argChildren = adapter.getChildren(args);
-  // Filter out commas and whitespace; count real argument nodes.
-  const realArgs = argChildren.filter(
-    c => !['(', ')', ',', 'comment'].includes(adapter.getNodeType(c)),
-  );
-  return realArgs.length >= 2;
+  // Bind params as a second argument → fully parameterized and safe.
+  return countArgs(call, adapter) >= 2;
 }
 
 /**
@@ -1124,58 +1042,28 @@ function extractTables(text: string, config: DataAccessAnalyzerConfig): string[]
 }
 
 function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): boolean {
-  const patterns = config.organizationPatterns || [];
+  const patterns = config.organizationPatterns ?? [];
   const lowerText = text.toLowerCase();
 
-  // If no patterns provided, check for hardcoded common patterns as fallback
-  const fallbackPatterns = patterns.length === 0 ? [
-    'organizationid', 'organization_id', 'orgid', 'org_id',
-    'tenantid', 'tenant_id', 'companyid', 'company_id'
-  ] : patterns;
+  // No patterns → hardcoded common fallback set.
+  const candidates = patterns.length
+    ? patterns
+    : ['organizationid', 'organization_id', 'orgid', 'org_id',
+       'tenantid', 'tenant_id', 'companyid', 'company_id'];
 
-  // Check for simple pattern matches first
-  const hasSimpleMatch = fallbackPatterns.some(pattern => {
-    const match = lowerText.includes(pattern.toLowerCase());
-    return match;
-  });
+  return candidates.some(p => matchesOrganizationPattern(lowerText, p.toLowerCase()));
+}
 
-  if (hasSimpleMatch) {
-    return true;
-  }
-
-  // Enhanced pattern matching for object properties and SQL WHERE clauses
-  for (const pattern of fallbackPatterns) {
-    const lowerPattern = pattern.toLowerCase();
-
-    // Check for object property patterns: { organizationId: ... }
-    if (lowerText.includes(`${lowerPattern}:`)) {
-      return true;
-    }
-
-    // Check for object property patterns with quotes: { "organizationId": ... }
-    if (lowerText.includes(`"${lowerPattern}"`)) {
-      return true;
-    }
-
-    // Check for object property patterns with single quotes: { 'organizationId': ... }
-    if (lowerText.includes(`'${lowerPattern}'`)) {
-      return true;
-    }
-
-    // Check for SQL WHERE clause patterns: WHERE organizationId =
-    if (lowerText.includes(`where ${lowerPattern} =`) ||
-        lowerText.includes(`where ${lowerPattern}=`)) {
-      return true;
-    }
-
-    // Check for SQL AND clause patterns: AND organizationId =
-    if (lowerText.includes(`and ${lowerPattern} =`) ||
-        lowerText.includes(`and ${lowerPattern}=`)) {
-      return true;
-    }
-  }
-
-  return false;
+/** True when `p` appears in `lowerText` as a bare token, object property, or SQL clause. */
+function matchesOrganizationPattern(lowerText: string, p: string): boolean {
+  return (
+    lowerText.includes(p) ||
+    lowerText.includes(`${p}:`) ||
+    lowerText.includes(`"${p}"`) ||
+    lowerText.includes(`'${p}'`) ||
+    lowerText.includes(`where ${p} =`) || lowerText.includes(`where ${p}=`) ||
+    lowerText.includes(`and ${p} =`) || lowerText.includes(`and ${p}=`)
+  );
 }
 
 /**
@@ -1206,10 +1094,9 @@ function isParameterizedByChain(
 function isSafeDynamicPart(
   part: DynamicPart,
   ast: AST,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  config: DataAccessAnalyzerConfig,
+  scan: DataAccessScanContext,
 ): boolean {
+  const { adapter, sourceCode, config } = scan;
   // Config-driven sanitizer allowlist (escapeSql(x), …) applies to
   // non-identifier expressions — an interpolation wrapped in a known
   // sanitizer isn't raw (same pattern as dbWrapperNames for provenance).
@@ -1250,64 +1137,39 @@ function checkQuerySecurity(
   node: ASTNode,
   text: string,
   ast: AST,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  config: DataAccessAnalyzerConfig
-): {
-  parameterized: boolean;
-  injectionRisk: boolean;
-  message?: string;
-} {
-  // Check for the four parameterized-chain shapes (D1 .prepare().bind(),
-  // Durable Objects .exec() spread, D1 convenience methods, and DB wrapper
-  // functions) — each means the query is safe without further analysis.
+  scan: DataAccessScanContext,
+): { parameterized: boolean; injectionRisk: boolean; message?: string } {
+  const { adapter, sourceCode, config } = scan;
+
+  // Parameterized chains (.prepare().bind(), .exec() spread, D1 convenience,
+  // DB wrappers) and explicit parameterization are always safe.
   if (isParameterizedByChain(node, adapter, sourceCode, config)) {
     return { parameterized: true, injectionRisk: false };
   }
-
-  const parameterized = (config.securityPatterns?.parameterizedQueries || []).some(pattern =>
-    text.includes(pattern)
-  );
-
-  if (parameterized) {
+  if ((config.securityPatterns?.parameterizedQueries || []).some(p => text.includes(p))) {
     return { parameterized: true, injectionRisk: false };
   }
 
-  // If the adapter doesn't implement the dynamic-string capability, we can't
-  // determine whether the query text was constructed unsafely.  Err on the
-  // quiet side — no capability means no injection-risk finding.
+  // No dynamic-string capability → can't prove unsafe; err quiet.
   if (!adapter.isDynamicStringConstruction || !adapter.getDynamicParts) {
     return { parameterized: false, injectionRisk: false };
   }
-
-  // Only a dynamically-constructed string (template literal, binary +, etc.)
-  // can be an injection risk.  Plain string literals are always safe.
-  if (!adapter.isDynamicStringConstruction(node)) {
+  // Only a dynamically-constructed string carrying SQL keywords can inject.
+  if (!adapter.isDynamicStringConstruction(node) || !containsSQLKeywords(text)) {
     return { parameterized: false, injectionRisk: false };
   }
 
-  // Still require SQL keywords in the text — a dynamic string without them
-  // isn't a SQL injection.
-  if (!containsSQLKeywords(text)) {
-    return { parameterized: false, injectionRisk: false };
-  }
-
-  // Extract the dynamic sub-parts and check whether they're provably safe.
-  const dynamicParts = adapter.getDynamicParts(node, sourceCode);
-  const unresolved = dynamicParts
-    .filter(part => !isSafeDynamicPart(part, ast, adapter, sourceCode, config))
+  const unresolved = adapter.getDynamicParts(node, sourceCode)
+    .filter(part => !isSafeDynamicPart(part, ast, scan))
     .map(part => part.text);
-
   if (unresolved.length === 0) {
-    // All dynamic parts are provably safe — no injection risk.
     return { parameterized: false, injectionRisk: false };
   }
 
-  const names = unresolved.map(id => '${' + id + '}').join(', ');
   return {
     parameterized: false,
     injectionRisk: true,
-    message: `Cannot protect interpolated content: ${names}`,
+    message: `Cannot protect interpolated content: ${unresolved.map(id => '${' + id + '}').join(', ')}`,
   };
 }
 
@@ -1448,21 +1310,17 @@ function isConnectionString(text: string): boolean {
  */
 function checkLoopQueries(
   ast: AST,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  config: DataAccessAnalyzerConfig,
-  provenanceContext?: ProvenanceContext,
+  scan: DataAccessScanContext,
 ): Violation[] {
+  const { adapter, sourceCode, provenanceContext } = scan;
   const violations: Violation[] = [];
 
-  // Find all nodes that look like database calls (Spec 21: provenance-gated)
+  // Spec 21: provenance-gated detection of database calls.
   const dbNodes = adapter.findNodes(ast, {
     custom: (node) => isDbCallNode(node, adapter, sourceCode, provenanceContext),
   });
 
-  // Track reported line+loop combos to avoid duplicates (runtime dedup only)
   const reported = new Set<string>();
-  // Track symbol ordinals per enclosing function for fingerprint stability
   const loopOrdinals = new Map<string, number>();
 
   for (const node of dbNodes) {
@@ -1472,35 +1330,23 @@ function checkLoopQueries(
     const loopInfo = findEnclosingLoop(node, adapter);
     if (!loopInfo) continue;
 
-    // R4.1: Use query node's actual location (never line 1)
+    // R4.1: query node's actual location (never line 1) + runtime dedup.
     const queryLine = node.location.start.line;
-
-    // Deduplicate: same line + same loop line = already reported
     const dedupKey = `${queryLine}:${loopInfo.loopNode.location.start.line}`;
     if (reported.has(dedupKey)) continue;
     reported.add(dedupKey);
 
-    // Stable fingerprint symbol: enclosing function + ordinal
-    const enclosingFn = findEnclosingFunctionName(node, adapter);
-    const baseSym = `${enclosingFn}:loop-query`;
-    const count = (loopOrdinals.get(baseSym) ?? 0) + 1;
-    loopOrdinals.set(baseSym, count);
-    const sym = count > 1 ? `${baseSym}:${count}` : baseSym;
-
-    // R4.2: Nested-loop attribution
-    const depthMsg = loopInfo.depth > 1
-      ? ` (nested ${loopInfo.depth} levels deep)`
-      : '';
+    const sym = nextSymbol(findEnclosingFunctionName(node, adapter), 'loop-query', loopOrdinals);
+    // R4.2: Nested-loop attribution.
+    const depthMsg = loopInfo.depth > 1 ? ` (nested ${loopInfo.depth} levels deep)` : '';
 
     violations.push(makeViolation(
       ast.filePath,
-      node.location.start,                                   // query-call line, never line 1
+      node.location.start,
       `Database query inside loop${depthMsg} ` +
       `(loop at line ${loopInfo.loopNode.location.start.line}). ` +
       `This may cause N+1 performance issues. Consider batching queries or using a join.`,
-      'warning',                                             // R7: loop-query → warning
-      'loop-query',
-      sym
+      { severity: 'warning', rule: 'loop-query', symbol: sym },
     ));
   }
 
@@ -1523,7 +1369,7 @@ function isDbCallNode(
   if (provenanceContext && provenanceContext.mode !== 'names') {
     // In provenance or hybrid mode, use provenance check
     if (isFunctionCall(node, adapter)) {
-      if (isDBProvenanced(node, adapter, sourceCode, provenanceContext, DB_CALL_METHODS)) {
+      if (isDBProvenanced(node, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS })) {
         return true;
       }
     }
@@ -1534,7 +1380,7 @@ function isDbCallNode(
       if (parent && adapter.getNodeType(parent) === 'arguments') {
         const callExpr = adapter.getParent(parent);
         if (callExpr && adapter.getNodeType(callExpr) === 'call_expression') {
-          return isDBProvenanced(callExpr, adapter, sourceCode, provenanceContext, DB_CALL_METHODS);
+          return isDBProvenanced(callExpr, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS });
         }
       }
       return false;
@@ -1732,11 +1578,8 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
 
-    // Spec 21: Build provenance context for this file (R1 — provenance-primary detection).
-    // DB-detection patterns come from THIS analyzer's own defaults (finalConfig),
-    // not the schema analyzer's — each analyzer owns its own namespace of keys.
-    const detectionMode: DetectionMode =
-      finalConfig.detection?.mode ?? 'hybrid';
+    // Spec 21 R1: provenance-primary detection (names owned by THIS analyzer).
+    const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
     const p0 = performance.now();
     const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
       mode: detectionMode,
@@ -1748,26 +1591,28 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const timingAcc: { totalMs: number } | undefined = (config as any)._provenanceTiming;
     if (timingAcc) timingAcc.totalMs += performance.now() - p0;
 
-    // Check imports for database libraries
-    const imports = adapter.extractImports(ast);
-    const dbImports = mapDatabaseImports(imports, finalConfig);
+    // Spec 34: bundle per-file context to stay under the 4-parameter gate.
+    const scan: DataAccessScanContext = {
+      adapter,
+      sourceCode,
+      dbImports: mapDatabaseImports(adapter.extractImports(ast), finalConfig),
+      config: finalConfig,
+      provenanceContext,
+    };
 
-    // Find database calls (Spec 21: uses provenance context)
-    const calls = extractDatabaseCalls(ast, adapter, sourceCode, dbImports, finalConfig, provenanceContext);
-
-    // Analyze each call — track symbol ordinals for fingerprint stability
+    // Analyze each database call, tracking symbol ordinals for stable fingerprints.
     const symbolOrdinals = new Map<string, number>();
-    for (const call of calls) {
+    for (const call of extractDatabaseCalls(ast, scan)) {
       const analysis = analyzeQuery(call, sourceCode, finalConfig);
-
-      // Check for violations
-      violations.push(...checkViolations(call, analysis, ast.filePath, finalConfig, symbolOrdinals));
+      violations.push(...checkViolations(call, analysis, {
+        filePath: ast.filePath,
+        config: finalConfig,
+        symbolOrdinals,
+      }));
     }
 
-    // R4.1: Check for database queries inside loops (N+1 detection, Spec 21: provenance-gated)
-    violations.push(...checkLoopQueries(ast, adapter, sourceCode, finalConfig, provenanceContext));
-
-    // Check for general data access patterns
+    // R4.1: loop-query (N+1) detection + general patterns.
+    violations.push(...checkLoopQueries(ast, scan));
     violations.push(...checkGeneralPatterns(ast, adapter, sourceCode, finalConfig));
 
     return violations;

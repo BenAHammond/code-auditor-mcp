@@ -8,6 +8,10 @@
       "similarityThreshold": 0.75
     }
   },
+  "rationales": {
+    "dry.minLineThreshold": "Self-audit wants duplicated blocks flagged as small as 3 lines; the 15-line default was calibrated for consumer repos, not for this project auditing its own analyzer code where a short duplicated block is still a real extraction candidate.",
+    "dry.similarityThreshold": "0.75 catches copy-paste-with-light-edit duplication that 0.85 misses; the looser match surfaces near-duplicates for the self-audit without changing what fires on external corpora."
+  },
   "rules": [
     {
       "id": "no-lokijs",

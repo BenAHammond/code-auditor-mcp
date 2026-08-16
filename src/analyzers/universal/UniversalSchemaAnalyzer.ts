@@ -11,6 +11,7 @@
 
 import { readFileSync } from 'node:fs';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
+import { withRuleTiming } from '../ruleTiming.js';
 import type { Violation, Violation as BaseViolation, AnalyzerResult, SchemaUsage } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
 import {
@@ -116,63 +117,12 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     const codeFiles = files.filter(f => !f.endsWith('.json'));
 
     // Auto-discover known tables when no schemas are configured.
-    const schemas = config.schemas;
-    const projectRoot = (config as any).projectRoot || process.cwd();
-    if (!schemas || schemas.length === 0) {
-      const fromWrangler = await discoverTablesFromWrangler(projectRoot);
-      const schemaFiles = (config as SchemaAnalyzerConfig).schemaFiles;
-      const fromSchemaFiles = schemaFiles && schemaFiles.length > 0
-        ? await discoverTablesFromSchemaFiles(schemaFiles, projectRoot)
-        : new Set<string>();
-      const fromMigrations = await discoverTablesFromMigrations(projectRoot, config);
-      const fromOrm = await discoverTablesFromOrmSchemas(codeFiles);
-      const discovered = new Set([
-        ...fromWrangler,
-        ...fromSchemaFiles,
-        ...fromMigrations,
-        ...fromOrm,
-      ]);
-      if (discovered.size > 0) {
-        config = {
-          ...config,
-          schemas: [{
-            name: 'auto-discovered',
-            tables: [...discovered].map(name => ({ name, columns: [] })),
-          }],
-        };
-      }
-    }
+    config = await resolveSchemasViaAutoDiscovery(config, codeFiles);
 
-    const codeResult = codeFiles.length > 0 ? await super.analyze(codeFiles, config) : {
-      violations: [] as Violation[],
-      executionTime: 0,
-      status: makeVisitorStatus(0),
-      analyzerName: this.name,
-      errors: [] as Array<{ file: string; error: string }>,
-      filesProcessed: 0,
-    };
-
-    // Adapt JSON handling to the pipeline-style analyzeJsonSchemas(files, readJson) signature.
-    let jsonResult: AnalyzerResult = {
-      violations: [],
-      executionTime: 0,
-      status: makeVisitorStatus(0),
-      analyzerName: this.name,
-      errors: [],
-      filesProcessed: 0,
-    };
-    if (jsonFiles.length > 0) {
-      const readJson = (file: string): object | null => {
-        try {
-          const raw = readFileSync(file, 'utf8');
-          const parsed = JSON.parse(raw);
-          return parsed !== null && typeof parsed === 'object' ? (parsed as object) : null;
-        } catch {
-          return null;
-        }
-      };
-      jsonResult = analyzeJsonSchemas(jsonFiles, readJson, config);
-    }
+    const codeResult = codeFiles.length > 0
+      ? await super.analyze(codeFiles, config)
+      : emptySchemaResult(this.name);
+    const jsonResult = analyzeJsonFiles(jsonFiles, config, this.name);
 
     return {
       violations: [...codeResult.violations, ...jsonResult.violations],
@@ -195,72 +145,42 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   ): Promise<Violation[]> {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_SCHEMA_CONFIG, ...config };
-
-    // Spec 21: Build provenance context for this file (R1 — provenance-primary detection)
-    const detectionMode: DetectionMode =
-      (config as any).detection?.mode ?? 'hybrid';
-    const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
-      mode: detectionMode,
-      dbReceiverNames: finalConfig.dbReceiverNames ?? DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
-      dbBindingNames: finalConfig.dbBindingNames ?? DEFAULT_SCHEMA_CONFIG.dbBindingNames,
-      dbCallMethods: finalConfig.dbCallMethods ?? DEFAULT_SCHEMA_CONFIG.dbCallMethods,
-      dbWrapperNames: finalConfig.dbWrapperNames ?? DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
-    });
+    const provenanceContext = buildSchemaProvenanceContext(ast, adapter, sourceCode, finalConfig);
 
     // R2.2 — File gate: only analyze files with DB context (Spec 21: provenance-based)
     if (!passesFileGate(ast.filePath, sourceCode, finalConfig, provenanceContext)) {
       return violations;
     }
 
-    // Get available schemas
     const schemas = finalConfig.schemas || [];
-    const allTables = new Set<string>();
-
-    for (const schema of schemas) {
-      for (const table of schema.tables) {
-        allTables.add(table.name);
-      }
-    }
+    const allTables = collectAllTableNames(schemas);
 
     if (finalConfig.requiredSchemas && finalConfig.requiredSchemas.length > 0 && schemas.length === 0) {
       violations.push(this.createViolation(
         ast.filePath,
         { line: 1, column: 1 },
         'No database schemas loaded for analysis',
-        'warning',
-        'missing-schemas',
-        'top-level:missing-schemas'
+        { severity: 'warning', rule: 'missing-schemas', symbol: 'top-level:missing-schemas' }
       ));
       return violations;
     }
 
     // R2.1 — AST-based table reference extraction (replaces legacy regex scan-all-strings)
-    // Spec 21: Uses provenance context for DB-call pattern detection
-    const tableRefs = findTableReferences(ast, adapter, sourceCode, finalConfig, provenanceContext, allTables);
+    const tableRefs = findTableReferences(ast, adapter, sourceCode, { config: finalConfig, provenanceContext, allTables });
 
     // Spec 15 R1 — Record schema usage for cross-domain lifecycle analysis.
-    // Idempotent per-file: clear stale entries before inserting fresh references.
     if (finalConfig.enableTableUsageTracking) {
       this.recordTableUsage(ast, adapter, ast.filePath, tableRefs);
     }
 
-    // Check for missing table references — R2.4: Levenshtein suggestions
-    if (finalConfig.checkMissingReferences) {
-      violations.push(...checkMissingReferences(tableRefs, allTables, ast.filePath));
-    }
-
-    // Check naming conventions
-    if (finalConfig.checkNamingConventions) {
-      violations.push(...checkNamingConventions(tableRefs, ast.filePath));
-    }
-
-    // Check query patterns
-    if (finalConfig.validateQueryPatterns) {
-      violations.push(...checkQueryPatterns(ast, adapter, sourceCode, finalConfig));
-    }
-
-    // Check for SQL injection patterns
-    violations.push(...checkSQLInjection(ast, adapter, sourceCode));
+    appendSchemaViolations(violations, {
+      ast,
+      adapter,
+      sourceCode,
+      config: finalConfig,
+      tableRefs,
+      allTables,
+    });
 
     return violations;
   }
@@ -323,6 +243,129 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     return records;
   }
 
+}
+
+// ── Spec 34 — analyze()/analyzeAST() extraction helpers ────────────────
+// Extracted from the two methods above to keep them under the 50-line
+// function-length gate. Pure module-level functions (no `this`), consistent
+// with the functional-analyzer pattern.
+
+/**
+ * Auto-discover known tables when no schemas are configured, returning the
+ * (possibly augmented) config. When schemas are already present, returns the
+ * config unchanged.
+ */
+async function resolveSchemasViaAutoDiscovery(config: any, codeFiles: string[]): Promise<any> {
+  const schemas = config.schemas;
+  if (schemas && schemas.length > 0) {
+    return config;
+  }
+  const projectRoot = (config as any).projectRoot || process.cwd();
+  const fromWrangler = await discoverTablesFromWrangler(projectRoot);
+  const schemaFiles = (config as SchemaAnalyzerConfig).schemaFiles;
+  const fromSchemaFiles = schemaFiles && schemaFiles.length > 0
+    ? await discoverTablesFromSchemaFiles(schemaFiles, projectRoot)
+    : new Set<string>();
+  const fromMigrations = await discoverTablesFromMigrations(projectRoot, config);
+  const fromOrm = await discoverTablesFromOrmSchemas(codeFiles);
+  const discovered = new Set([
+    ...fromWrangler,
+    ...fromSchemaFiles,
+    ...fromMigrations,
+    ...fromOrm,
+  ]);
+  if (discovered.size === 0) {
+    return config;
+  }
+  return {
+    ...config,
+    schemas: [{
+      name: 'auto-discovered',
+      tables: [...discovered].map(name => ({ name, columns: [] })),
+    }],
+  };
+}
+
+function emptySchemaResult(analyzerName: string): AnalyzerResult {
+  return {
+    violations: [],
+    executionTime: 0,
+    status: makeVisitorStatus(0),
+    analyzerName,
+    errors: [],
+    filesProcessed: 0,
+  };
+}
+
+function analyzeJsonFiles(jsonFiles: string[], config: any, analyzerName: string): AnalyzerResult {
+  if (jsonFiles.length === 0) {
+    return emptySchemaResult(analyzerName);
+  }
+  const readJson = (file: string): object | null => {
+    try {
+      const raw = readFileSync(file, 'utf8');
+      const parsed = JSON.parse(raw);
+      return parsed !== null && typeof parsed === 'object' ? (parsed as object) : null;
+    } catch {
+      return null;
+    }
+  };
+  return analyzeJsonSchemas(jsonFiles, readJson, config);
+}
+
+function buildSchemaProvenanceContext(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  config: SchemaAnalyzerConfig,
+): ProvenanceContext {
+  const detectionMode: DetectionMode = (config as any).detection?.mode ?? 'hybrid';
+  return buildProvenanceContext(ast, adapter, sourceCode, {
+    mode: detectionMode,
+    dbReceiverNames: config.dbReceiverNames ?? DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
+    dbBindingNames: config.dbBindingNames ?? DEFAULT_SCHEMA_CONFIG.dbBindingNames,
+    dbCallMethods: config.dbCallMethods ?? DEFAULT_SCHEMA_CONFIG.dbCallMethods,
+    dbWrapperNames: config.dbWrapperNames ?? DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
+  });
+}
+
+function collectAllTableNames(schemas: SchemaAnalyzerConfig['schemas']): Set<string> {
+  const allTables = new Set<string>();
+  for (const schema of schemas ?? []) {
+    for (const table of schema.tables) {
+      allTables.add(table.name);
+    }
+  }
+  return allTables;
+}
+
+interface SchemaViolationContext {
+  ast: AST;
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  config: SchemaAnalyzerConfig;
+  tableRefs: TableReference[];
+  allTables: Set<string>;
+}
+
+function appendSchemaViolations(
+  violations: Violation[],
+  ctx: SchemaViolationContext,
+): void {
+  const { ast, adapter, sourceCode, config, tableRefs, allTables } = ctx;
+  // Check for missing table references — R2.4: Levenshtein suggestions
+  if (config.checkMissingReferences) {
+    violations.push(...withRuleTiming('unknown-table', () =>
+      checkMissingReferences(tableRefs, allTables, ast.filePath)));
+  }
+  if (config.checkNamingConventions) {
+    violations.push(...checkNamingConventions(tableRefs, ast.filePath));
+  }
+  if (config.validateQueryPatterns) {
+    violations.push(...checkQueryPatterns(ast, adapter, sourceCode, config));
+  }
+  // Check for SQL injection patterns
+  violations.push(...checkSQLInjection(ast, adapter, sourceCode));
 }
 
 import { analyzeJsonSchemas } from './schema/jsonSchema.js';

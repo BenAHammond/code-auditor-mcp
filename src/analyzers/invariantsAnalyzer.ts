@@ -60,6 +60,71 @@ function toViolation(rv: RuleViolation): Violation {
   };
 }
 
+interface InvariantCheckArgs {
+  rules: InvariantRule[];
+  files: string[];
+  options: AuditOptions | undefined;
+  projectDir: string;
+  config: any;
+}
+
+/** Build config-validation-error violations (anchored to .codeauditor.json). */
+function configErrorViolations(errors: string[]): Violation[] {
+  return errors.map(err => ({
+    file: '.codeauditor.json',
+    line: 1,
+    column: 1,
+    severity: 'critical' as const,
+    message: err,
+    rule: 'config-error',
+    analyzer: 'invariants',
+    details: 'config-validation',
+  }));
+}
+
+/** Build rule-engine-error violations (anchored to .codeauditor.json). */
+function engineErrorViolations(errors: string[]): Violation[] {
+  return errors.map(err => ({
+    file: '.codeauditor.json',
+    line: 1,
+    column: 1,
+    severity: 'warning' as const,
+    message: err,
+    rule: 'engine-error',
+    analyzer: 'invariants',
+    details: 'check-error',
+  }));
+}
+
+/** Build the empty-result object returned when no rules are configured. */
+function emptyResult(startTime: number): AnalyzerResult {
+  return {
+    violations: [],
+    status: makeVisitorStatus(0),
+    executionTime: Date.now() - startTime,
+    analyzerName: 'invariants',
+  };
+}
+
+/** Run the rule engine and convert its output into standard violations. */
+function runRuleEngine(args: InvariantCheckArgs): Violation[] {
+  const indexHandle = (args.options as any)?.indexHandle as IndexHandle | undefined;
+  const result = checkRules({
+    rules: args.rules,
+    files: args.files,
+    indexHandle,
+    projectDir: args.projectDir,
+    readSource: args.config.readSource,
+    knownFiles: args.config.knownFiles,
+    fileData: args.config.fileData,
+  });
+
+  return [
+    ...result.violations.map(toViolation),
+    ...engineErrorViolations(result.errors),
+  ];
+}
+
 /**
  * The invariants analyzer function — conforms to AnalyzerFunction.
  */
@@ -70,38 +135,17 @@ export const analyzeInvariants: AnalyzerFunction = async (
   _progressCallback?: any
 ): Promise<AnalyzerResult> => {
   const startTime = Date.now();
-
-  // Determine project directory (needed before loadRules for auto-discovery)
   const projectDir = (options as any)?.projectRoot || process.cwd();
-
-  // Load rules from config
   const ruleData = loadRules(config, projectDir);
 
   if (!ruleData) {
-    return {
-      violations: [],
-      status: makeVisitorStatus(0),
-      executionTime: Date.now() - startTime,
-      analyzerName: 'invariants',
-    };
+    return emptyResult(startTime);
   }
 
   const { rules, errors } = ruleData;
+  const errorViolations = configErrorViolations(errors);
 
-  // If there are validation errors, return them as violations.
-  // line: 1 anchors file-level errors (no specific line to point at).
-  // Required by validateHookContract: every violation needs file + line ≥ 1.
-  const errorViolations: Violation[] = errors.map(err => ({
-    file: '.codeauditor.json',
-    line: 1,
-    column: 1,
-    severity: 'critical' as const,
-    message: err,
-    rule: 'config-error',
-    analyzer: 'invariants',
-    details: 'config-validation',
-  }));
-
+  // If there are validation errors but no runnable rules, surface only them.
   if (rules.length === 0) {
     return {
       violations: errorViolations,
@@ -111,39 +155,10 @@ export const analyzeInvariants: AnalyzerFunction = async (
     };
   }
 
-  // IndexHandle for call-constraint and style checks, routed via pipeline.
-  // When not running through the pipeline (standalone analyzer call), fall
-  // back to accessing the DB through the options handle if provided.
-  const indexHandle = (options as any)?.indexHandle as IndexHandle | undefined;
-
-  // Run the rule engine
-  const result = checkRules({
-    rules,
-    files,
-    indexHandle,
-    projectDir,
-    readSource: config.readSource,
-    knownFiles: config.knownFiles,
-    fileData: config.fileData,
-  });
-
-  const violations: Violation[] = [
-    ...errorViolations,
-    ...result.violations.map(toViolation),
-    ...result.errors.map(err => ({
-      file: '.codeauditor.json',
-      line: 1,
-      column: 1,
-      severity: 'warning' as const,
-      message: err,
-      rule: 'engine-error',
-      analyzer: 'invariants',
-      details: 'check-error',
-    })),
-  ];
+  const engineViolations = runRuleEngine({ rules, files, options, projectDir, config });
 
   return {
-    violations,
+    violations: [...errorViolations, ...engineViolations],
     status: makeVisitorStatus(files.length),
     executionTime: Date.now() - startTime,
     analyzerName: 'invariants',

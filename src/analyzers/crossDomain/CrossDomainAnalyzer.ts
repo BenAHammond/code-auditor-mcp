@@ -45,6 +45,52 @@ interface FilePathClause {
   param: string;
 }
 
+/** Call-graph infrastructure availability for depth-1 callee expansion. */
+interface CallGraphContext {
+  hasGraphData: boolean;
+  fnIdLookup: Map<string, number> | null;
+}
+
+/** A function that writes to schema tables, from the schema_usage join. */
+interface WriterRow {
+  function_name: string;
+  file_path: string;
+  line: number;
+  function_id: number;
+}
+
+/** Per-writer validator-reach result. */
+interface WriterCoverage {
+  covered: boolean;
+  line: number;
+  funcName: string;
+}
+
+/** Grouped write entries per function key. */
+interface FuncWriteEntry {
+  filePath: string;
+  line: number;
+  tables: Set<string>;
+}
+
+/** A writer bucketed into a directory group. */
+interface DirWriter {
+  key: string;
+  covered: boolean;
+  line: number;
+  funcName: string;
+  filePath: string;
+}
+
+/** A high-risk function from the ranked hotspot query. */
+interface HighRiskFn {
+  id: number;
+  name: string;
+  file_path: string;
+  line_number: number;
+  risk_score: number;
+}
+
 
 // ---------------------------------------------------------------------------
 // Call-graph helpers — pure functions with no `this` state, kept off the
@@ -106,10 +152,10 @@ function expandWrittenTables(
   indexHandle: IndexHandle,
   key: string,
   initialTables: Set<string>,
-  fnIdLookup: Map<string, number> | null,
-  hasGraphData: boolean,
+  graph: CallGraphContext,
 ): Set<string> {
   const allTables = new Set(initialTables);
+  const { fnIdLookup, hasGraphData } = graph;
 
   if (!fnIdLookup || !hasGraphData) return allTables;
 
@@ -142,16 +188,62 @@ function expandWrittenTables(
   return allTables;
 }
 
+/**
+ * BFS outward from test-file function IDs through the call graph (graph_cache)
+ * up to maxDepth, collecting every function ID reached. Used for the
+ * static-reach fallback: a high-risk function not in this set is uncovered.
+ */
+function collectReachableIds(
+  indexHandle: IndexHandle,
+  startIds: Set<number>,
+  maxDepth: number,
+): Set<number> {
+  const reachableIds = new Set<number>();
+
+  for (const startId of startIds) {
+    const visited = new Set<number>();
+    let currentLevel = [startId];
+
+    for (let d = 0; d < maxDepth; d++) {
+      const nextLevel: number[] = [];
+      for (const funcId of currentLevel) {
+        if (visited.has(funcId)) continue;
+        visited.add(funcId);
+        reachableIds.add(funcId);
+
+        const callees = indexHandle
+          .query(`SELECT neighbor_key FROM graph_cache
+             WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
+        for (const callee of callees) {
+          const calleeId = parseInt(callee.neighbor_key, 10);
+          if (!isNaN(calleeId) && !visited.has(calleeId)) {
+            nextLevel.push(calleeId);
+          }
+        }
+      }
+      currentLevel = nextLevel;
+    }
+    // Check the final level's nodes that never got expanded.
+    for (const funcId of currentLevel) {
+      if (!reachableIds.has(funcId)) reachableIds.add(funcId);
+    }
+  }
+
+  return reachableIds;
+}
+
 
 // ---------------------------------------------------------------------------
 // Analyzer
 // ---------------------------------------------------------------------------
 
+const ANALYZER_NAME = 'cross-domain';
+
 /**
  * Cross domain analyzer.
  */
 export class CrossDomainAnalyzer extends UniversalAnalyzer {
-  readonly name = 'cross-domain';
+  readonly name = ANALYZER_NAME;
   readonly description =
     'Detects cross-domain issues (schema lifecycle, validation bypass, coverage gaps)';
   readonly category = 'architecture';
@@ -171,8 +263,6 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     options: any = {},
   ): Promise<AnalyzerResult> {
     const startTime = Date.now();
-    const violations: Violation[] = [];
-
     const indexHandle: IndexHandle | undefined = config.indexHandle;
     if (!indexHandle) {
       return {
@@ -180,69 +270,21 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
         errors: [{ file: '', error: 'Failed to open code index database' }],
         status: makeVisitorStatus(0),
         executionTime: Date.now() - startTime,
-        analyzerName: 'cross-domain',
+        analyzerName: ANALYZER_NAME,
         metrics: { filesAnalyzed: 0, totalViolations: 0, executionTime: Date.now() - startTime },
       };
     }
 
-    if (!indexHandle) {
-      return {
-        violations: [],
-        errors: [],
-        status: makeVisitorStatus(files.length),
-        executionTime: Date.now() - startTime,
-        analyzerName: 'cross-domain',
-        metrics: { filesAnalyzed: files.length, totalViolations: 0, executionTime: Date.now() - startTime },
-      };
-    }
-
-    // Project root scoping: in test environments the in-memory DB singleton
-    // is shared across tests, so schema_usage entries from previous test
-    // cases leak into subsequent queries. Filter to the current project root.
-    const projectRoot = config.projectRoot as string | undefined;
-    const resolvedRoot = projectRoot ? path.resolve(projectRoot) : undefined;
-    const filePathClause = resolvedRoot
-      ? { prefix: resolvedRoot, clause: 'AND file_path LIKE ?', param: `${resolvedRoot}%` }
-      : undefined;
-
-    // R1 — Schema lifecycle detectors
-    const lifecycle = config.schemaLifecycle ?? {};
-    if (lifecycle.enableWrittenNeverRead !== false) {
-      violations.push(...this.detectWrittenNeverRead(indexHandle, filePathClause));
-    }
-    if (lifecycle.enableReadNeverWritten !== false) {
-      violations.push(...this.detectReadNeverWritten(indexHandle, filePathClause));
-    }
-    if (lifecycle.enableTransactionBoundaryRisk !== false) {
-      const txnTableMax = lifecycle.txnTableMax ?? 4;
-      violations.push(...this.detectTransactionBoundaryRisk(indexHandle, txnTableMax, filePathClause));
-    }
-
-    // R3 — Validation-bypass detection
-    const bypass = config.validatorBypass as ValidatorBypassConfig | undefined;
-    if (bypass) {
-      violations.push(...this.detectValidationBypass(indexHandle, bypass, filePathClause));
-    }
-
-    // R4 — Coverage by importance
-    const coverage = config.coverage as CoverageConfig | undefined;
-    if (coverage) {
-      violations.push(...this.detectUncoveredRisk(indexHandle, coverage, filePathClause));
-    }
-
-    // Count distinct files with schema_usage entries
-    const fileRows = indexHandle
-      .query(filePathClause
-          ? `SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage WHERE 1=1 ${filePathClause.clause}`
-          : 'SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage', (filePathClause ? [filePathClause.param] : [])) as Array<{ cnt: number }>;
-    const uniqueFiles = fileRows[0]?.cnt ?? 0;
+    const filePathClause = this.resolveFilePathClause(config);
+    const violations = this.runDetectors(indexHandle, config, filePathClause);
+    const uniqueFiles = this.countDistinctFiles(indexHandle, filePathClause);
 
     return {
       violations,
       errors: [],
       status: makeVisitorStatus(uniqueFiles || files.length),
       executionTime: Date.now() - startTime,
-      analyzerName: 'cross-domain',
+      analyzerName: ANALYZER_NAME,
       metrics: {
         filesAnalyzed: uniqueFiles || files.length,
         totalViolations: violations.length,
@@ -251,651 +293,674 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     };
   }
 
+  /**
+   * Project root scoping: in test environments the in-memory DB singleton is
+   * shared across tests, so schema_usage entries from previous test cases leak
+   * into subsequent queries. Build a file-path LIKE clause scoped to root.
+   */
+  private resolveFilePathClause(config: any): FilePathClause | undefined {
+    const projectRoot = config.projectRoot as string | undefined;
+    const resolvedRoot = projectRoot ? path.resolve(projectRoot) : undefined;
+    return resolvedRoot
+      ? { clause: 'AND file_path LIKE ?', param: `${resolvedRoot}%` }
+      : undefined;
+  }
+
+  /** Run the R1/R3/R4 detectors and collect their violations. */
+  private runDetectors(indexHandle: IndexHandle, config: any, filePathClause?: FilePathClause): Violation[] {
+    const violations: Violation[] = [];
+
+    // R1 — Schema lifecycle detectors
+    const lifecycle = config.schemaLifecycle ?? {};
+    if (lifecycle.enableWrittenNeverRead !== false) {
+      violations.push(...detectWrittenNeverRead(indexHandle, filePathClause));
+    }
+    if (lifecycle.enableReadNeverWritten !== false) {
+      violations.push(...detectReadNeverWritten(indexHandle, filePathClause));
+    }
+    if (lifecycle.enableTransactionBoundaryRisk !== false) {
+      const txnTableMax = lifecycle.txnTableMax ?? 4;
+      violations.push(...detectTransactionBoundaryRisk(indexHandle, txnTableMax, filePathClause));
+    }
+
+    // R3 — Validation-bypass detection
+    const bypass = config.validatorBypass as ValidatorBypassConfig | undefined;
+    if (bypass) {
+      violations.push(...detectValidationBypass(indexHandle, bypass, filePathClause));
+    }
+
+    // R4 — Coverage by importance
+    const coverage = config.coverage as CoverageConfig | undefined;
+    if (coverage) {
+      violations.push(...detectUncoveredRisk(indexHandle, coverage, filePathClause));
+    }
+
+    return violations;
+  }
+
+  /** Count distinct files with schema_usage entries. */
+  private countDistinctFiles(indexHandle: IndexHandle, filePathClause?: FilePathClause): number {
+    const rows = indexHandle
+      .query(filePathClause
+          ? `SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage WHERE 1=1 ${filePathClause.clause}`
+          : 'SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage', (filePathClause ? [filePathClause.param] : [])) as Array<{ cnt: number }>;
+    return rows[0]?.cnt ?? 0;
+  }
+
   /** No-op — all detection is DB-based. */
   async analyzeAST(): Promise<any[]> {
     return [];
   }
+}
 
-  // ── R1: Written-Never-Read ──────────────────────────────────────────────
+// ── R1: Written-Never-Read ──────────────────────────────────────────────
 
-  /**
-   * Detect tables that are written to (INSERT/UPDATE/DELETE/CREATE) but
-   * never read from (SELECT). These might be dead writes or missed read paths.
-   */
-  private detectWrittenNeverRead(indexHandle: IndexHandle, filePath?: FilePathClause): Violation[] {
-    const violations: Violation[] = [];
+/**
+ * Detect tables that are written to (INSERT/UPDATE/DELETE/CREATE) but
+ * never read from (SELECT). These might be dead writes or missed read paths.
+ */
+function detectWrittenNeverRead(indexHandle: IndexHandle, filePath?: FilePathClause): Violation[] {
+  const violations: Violation[] = [];
 
-    const fpWhere = filePath ? filePath.clause : '';
+  const fpWhere = filePath ? filePath.clause : '';
 
-    const rows = indexHandle
-      .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
-         FROM schema_usage
-         WHERE usage_type IN ('insert', 'update', 'delete', 'create')
-           ${fpWhere}
-           AND table_name NOT IN (
-             SELECT DISTINCT table_name FROM schema_usage WHERE usage_type = 'select' ${fpWhere}
-           )
-         ORDER BY table_name, file_path`, (filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
-
-    // Deduplicate by table_name — one violation per table, anchored to
-    // the first writing file encountered.
-    const seen = new Set<string>();
-    for (const row of rows) {
-      if (seen.has(row.table_name)) continue;
-      seen.add(row.table_name);
-
-      violations.push({
-        file: row.file_path,
-        line: row.line,
-        column: 0,
-        severity: 'suggestion',
-        message: `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
-        rule: 'cross-domain/written-never-read',
-        analyzer: this.name,
-        functionName: row.function_name,
-      });
-    }
-
-    return violations;
-  }
-
-  // ── R1: Read-Never-Written ──────────────────────────────────────────────
-
-  /**
-   * Detect tables that are read from (SELECT) but never written to
-   * (INSERT/UPDATE/DELETE/CREATE). These may be external/managed tables
-   * or indicate missing write coverage.
-   */
-  private detectReadNeverWritten(indexHandle: IndexHandle, filePath?: FilePathClause): Violation[] {
-    const violations: Violation[] = [];
-
-    const fpWhere = filePath ? filePath.clause : '';
-
-    const rows = indexHandle
-      .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
-         FROM schema_usage
-         WHERE usage_type = 'select'
-           ${fpWhere}
-           AND table_name NOT IN (
-             SELECT DISTINCT table_name FROM schema_usage
-             WHERE usage_type IN ('insert', 'update', 'delete', 'create') ${fpWhere}
-           )
-         ORDER BY table_name, file_path`, (filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
-
-    const seen = new Set<string>();
-    for (const row of rows) {
-      if (seen.has(row.table_name)) continue;
-      seen.add(row.table_name);
-
-      violations.push({
-        file: row.file_path,
-        line: row.line,
-        column: 0,
-        severity: 'suggestion',
-        message: `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
-        rule: 'cross-domain/read-never-written',
-        analyzer: this.name,
-        functionName: row.function_name,
-      });
-    }
-
-    return violations;
-  }
-
-  // ── R1: Transaction-Boundary Risk ───────────────────────────────────────
-
-  /**
-   * Detect functions that write to ≥ txnTableMax distinct tables, including
-   * tables written by depth-1 callees via the call graph (graph_cache).
-   *
-   * This surfaces functions that may have transaction-boundary risk:
-   * writing to too many tables in a single logical operation can lead to
-   * long-running transactions, lock contention, and partial-failure complexity.
-   */
-  private detectTransactionBoundaryRisk(
-    indexHandle: IndexHandle,
-    txnTableMax: number,
-    filePath?: FilePathClause,
-  ): Violation[] {
-    const violations: Violation[] = [];
-
-    const fpWhere = filePath ? filePath.clause : '';
-    const fpParams = filePath ? [filePath.param] : [];
-
-    // ── 1. Group writes by (function_name, file_path) — no JOIN on functions.
-    //    The functions table is only populated during deepSync (code-audit index
-    //    sync), not during normal audit. We query schema_usage directly so this
-    //    detector works in both modes.
-    const writerRows = indexHandle
-      .query(`SELECT su.function_name, su.file_path, su.table_name, MIN(su.line) as line
-         FROM schema_usage su
-         WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
+  const rows = indexHandle
+    .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
+       FROM schema_usage
+       WHERE usage_type IN ('insert', 'update', 'delete', 'create')
          ${fpWhere}
-         GROUP BY su.function_name, su.file_path, su.table_name
-         ORDER BY su.function_name, su.file_path`, fpParams) as Array<{
-      function_name: string;
-      file_path: string;
-      table_name: string;
-      line: number;
-    }>;
+         AND table_name NOT IN (
+           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type = 'select' ${fpWhere}
+         )
+       ORDER BY table_name, file_path`, (filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
 
-    if (writerRows.length === 0) return violations;
+  // Deduplicate by table_name — one violation per table, anchored to
+  // the first writing file encountered.
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.table_name)) continue;
+    seen.add(row.table_name);
 
-    // Group written tables by function key
-    interface FuncWriteEntry {
-      filePath: string;
-      line: number;
-      tables: Set<string>;
-    }
-
-    const funcWrites = new Map<string, FuncWriteEntry>();
-    for (const row of writerRows) {
-      const key = `${row.file_path}::${row.function_name}`;
-      const entry = funcWrites.get(key);
-      if (entry) {
-        entry.tables.add(row.table_name);
-      } else {
-        funcWrites.set(key, {
-          filePath: row.file_path,
-          line: row.line,
-          tables: new Set([row.table_name]),
-        });
-      }
-    }
-
-    // ── 2. Attempt callee expansion via graph_cache when the infrastructure
-    //    is populated (requires code-audit index sync). When the functions or
-    //    graph_cache tables are empty/missing, we fall back to reporting on
-    //    direct writes only — the basic signal is still useful without the
-    //    call-graph context.
-    const { hasGraphData, fnIdLookup } = this.resolveCallGraphContext(indexHandle);
-
-    for (const [key, funcData] of funcWrites) {
-      // Depth-1 callee expansion (see expandWrittenTables) augments the direct
-      // write set with tables written by called functions, when the call-graph
-      // infrastructure is populated.
-      const allTables = expandWrittenTables(indexHandle, key, funcData.tables, fnIdLookup, hasGraphData);
-
-      if (allTables.size >= txnTableMax) {
-        const tableList = [...allTables].sort().join(', ');
-        violations.push({
-          file: funcData.filePath,
-          line: funcData.line,
-          column: 0,
-          severity: 'suggestion',
-          message: `Function writes to ${allTables.size} distinct tables (threshold: ${txnTableMax}): ${tableList}. This may indicate transaction-boundary risk — consider splitting writes across smaller transactional scopes.`,
-          rule: 'cross-domain/transaction-boundary',
-          analyzer: this.name,
-          functionName: key.split('::')[1],
-        });
-      }
-    }
-
-    return violations;
+    violations.push({
+      file: row.file_path,
+      line: row.line,
+      column: 0,
+      severity: 'suggestion',
+      message: `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
+      rule: 'cross-domain/written-never-read',
+      analyzer: ANALYZER_NAME,
+      functionName: row.function_name,
+    });
   }
 
-  /**
-   * Resolve the call-graph infrastructure available for callee expansion:
-   * whether graph_cache has any 'call' edges, and a function key → id lookup
-   * built from the functions table (populated only by deepSync). Any failure
-   * degrades gracefully to direct-write-only detection.
-   */
-  private resolveCallGraphContext(indexHandle: IndexHandle): {
-    hasGraphData: boolean;
-    fnIdLookup: Map<string, number> | null;
-  } {
-    let hasGraphData = false;
-    try {
-      const row = indexHandle.query("SELECT COUNT(*) AS n FROM graph_cache WHERE graph_type = 'call'",
-      ) as Array<{ n: number }>;
-      const cnt = row[0] as { n: number } | undefined;
-      hasGraphData = (cnt?.n ?? 0) > 0;
-    } catch {
-      hasGraphData = false;
-    }
+  return violations;
+}
 
-    let fnIdLookup: Map<string, number> | null = null;
-    if (hasGraphData) {
-      try {
-        const fnRows = indexHandle.query('SELECT id, name, file_path FROM functions',) as Array<{ id: number; name: string; file_path: string }>;
-        if (fnRows.length > 0) {
-          fnIdLookup = new Map();
-          for (const r of fnRows) {
-            fnIdLookup.set(`${r.file_path}::${r.name}`, r.id);
-          }
-        }
-      } catch {
-        // functions table might not exist or be unpopulated
-      }
-    }
+// ── R1: Read-Never-Written ──────────────────────────────────────────────
 
-    return { hasGraphData, fnIdLookup };
+/**
+ * Detect tables that are read from (SELECT) but never written to
+ * (INSERT/UPDATE/DELETE/CREATE). These may be external/managed tables
+ * or indicate missing write coverage.
+ */
+function detectReadNeverWritten(indexHandle: IndexHandle, filePath?: FilePathClause): Violation[] {
+  const violations: Violation[] = [];
+
+  const fpWhere = filePath ? filePath.clause : '';
+
+  const rows = indexHandle
+    .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
+       FROM schema_usage
+       WHERE usage_type = 'select'
+         ${fpWhere}
+         AND table_name NOT IN (
+           SELECT DISTINCT table_name FROM schema_usage
+           WHERE usage_type IN ('insert', 'update', 'delete', 'create') ${fpWhere}
+         )
+       ORDER BY table_name, file_path`, (filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
+
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.table_name)) continue;
+    seen.add(row.table_name);
+
+    violations.push({
+      file: row.file_path,
+      line: row.line,
+      column: 0,
+      severity: 'suggestion',
+      message: `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
+      rule: 'cross-domain/read-never-written',
+      analyzer: ANALYZER_NAME,
+      functionName: row.function_name,
+    });
   }
 
-  // ── R3: Validation-Bypass ────────────────────────────────────────────────
+  return violations;
+}
 
-  /**
-   * Detect write functions that don't reach a validator, when a majority of
-   * peer writers in the same directory do (BFS ≤ configurable depth).
-   *
-   * Validator identification (priority order):
-   *   1. User-configured validators list
-   *   2. Provenanced: exported functions in files importing VALIDATOR_PACKAGES
-   *   3. Heuristic fallback: name GLOB 'validate*' OR 'assert*' (when both
-   *      above are silent)
-   */
-  private detectValidationBypass(
-    indexHandle: IndexHandle,
-    config: ValidatorBypassConfig,
-    filePath?: FilePathClause,
-  ): Violation[] {
-    const violations: Violation[] = [];
-    const {
-      validators: userValidators = [],
-      modeShare = 0.8,
-      minCorpus = 20,
-      depth = 3,
-    } = config;
+// ── R1: Transaction-Boundary Risk ───────────────────────────────────────
 
-    // ── 1. Build the validator function ID set ─────────────────────────────
-    const validatorIds = this.buildValidatorIds(indexHandle, userValidators);
+/**
+ * Detect functions that write to ≥ txnTableMax distinct tables, including
+ * tables written by depth-1 callees via the call graph (graph_cache).
+ *
+ * This surfaces functions that may have transaction-boundary risk:
+ * writing to too many tables in a single logical operation can lead to
+ * long-running transactions, lock contention, and partial-failure complexity.
+ */
+function detectTransactionBoundaryRisk(
+  indexHandle: IndexHandle,
+  txnTableMax: number,
+  filePath?: FilePathClause,
+): Violation[] {
+  const fpWhere = filePath ? filePath.clause : '';
+  const fpParams = filePath ? [filePath.param] : [];
 
-    if (validatorIds.size === 0) return violations;
+  // Query schema_usage directly (no JOIN on functions) so this detector
+  // works whether or not deepSync has populated the functions table.
+  const writerRows = indexHandle
+    .query(`SELECT su.function_name, su.file_path, su.table_name, MIN(su.line) as line
+       FROM schema_usage su
+       WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
+       ${fpWhere}
+       GROUP BY su.function_name, su.file_path, su.table_name
+       ORDER BY su.function_name, su.file_path`, fpParams) as Array<{
+    function_name: string;
+    file_path: string;
+    table_name: string;
+    line: number;
+  }>;
 
-    // ── 2. Find all writer functions from schema_usage ─────────────────────
+  if (writerRows.length === 0) return [];
 
-    const fpAliasWhere = filePath
-      ? `AND su.${filePath.clause.slice(4)}`
-      : '';
+  const funcWrites = groupWriterTables(writerRows);
+  const graph = resolveCallGraphContext(indexHandle);
+  return flagTransactionBoundaryWrites(funcWrites, indexHandle, graph, txnTableMax);
+}
 
-    const writers = indexHandle
-      .query(`SELECT DISTINCT su.function_name, su.file_path, su.line, f.id as function_id
-         FROM schema_usage su
-         JOIN functions f ON f.name = su.function_name
-                          AND f.file_path = su.file_path
-         WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
-         ${fpAliasWhere}
-         ORDER BY su.file_path, su.function_name`, (filePath ? [filePath.param] : [])) as Array<{
-      function_name: string;
-      file_path: string;
-      line: number;
-      function_id: number;
-    }>;
-
-    if (writers.length === 0) return violations;
-
-    // ── 3. BFS from each writer to check validator reach ───────────────────
-
-    interface WriterCoverage {
-      covered: boolean;
-      line: number;
-      funcName: string;
-    }
-    const writerCoverage = new Map<string, WriterCoverage>();
-
-    for (const w of writers) {
-      const key = `${w.file_path}::${w.function_name}`;
-      if (writerCoverage.has(key)) continue; // deduplicate
-      const covered = bfsReachesValidator(
-        indexHandle,
-        w.function_id,
-        validatorIds,
-        depth,
-      );
-      writerCoverage.set(key, {
-        covered,
-        line: w.line,
-        funcName: w.function_name,
+/** Group written tables by (file_path, function_name) key. */
+function groupWriterTables(
+  writerRows: Array<{ function_name: string; file_path: string; table_name: string; line: number }>,
+): Map<string, FuncWriteEntry> {
+  const funcWrites = new Map<string, FuncWriteEntry>();
+  for (const row of writerRows) {
+    const key = `${row.file_path}::${row.function_name}`;
+    const entry = funcWrites.get(key);
+    if (entry) {
+      entry.tables.add(row.table_name);
+    } else {
+      funcWrites.set(key, {
+        filePath: row.file_path,
+        line: row.line,
+        tables: new Set([row.table_name]),
       });
     }
-
-    // ── 4-5. Group writers by directory and flag uncovered writers in
-    //    validator-dense directories.
-    violations.push(
-      ...this.flagUncoveredWriters(writers, writerCoverage, minCorpus, modeShare, depth),
-    );
-
-    return violations;
   }
+  return funcWrites;
+}
 
-  /**
-   * Build the validator function ID set in priority order: user-configured
-   * validators, then provenanced validators (exported functions whose own
-   * used_imports includes a validator package), then a name-based heuristic
-   * fallback only when both prior sources are silent.
-   */
-  private buildValidatorIds(indexHandle: IndexHandle, userValidators: string[]): Set<number> {
-    const validatorIds = new Set<number>();
+/**
+ * Flag functions whose depth-1-expanded write set reaches txnTableMax.
+ * When graph_cache is unpopulated, expandWrittenTables degrades gracefully
+ * to reporting direct writes only.
+ */
+function flagTransactionBoundaryWrites(
+  funcWrites: Map<string, FuncWriteEntry>,
+  indexHandle: IndexHandle,
+  graph: CallGraphContext,
+  txnTableMax: number,
+): Violation[] {
+  const violations: Violation[] = [];
 
-    // 1a. User-configured validators (format: "funcName" or "path#funcName")
-    for (const v of userValidators) {
-      const hashIdx = v.indexOf('#');
-      if (hashIdx >= 0) {
-        const vPath = v.substring(0, hashIdx);
-        const vName = v.substring(hashIdx + 1);
-        const rows = indexHandle
-          .query('SELECT id FROM functions WHERE name = ? AND file_path = ?', [vName, vPath]) as Array<{ id: number }>;
-        for (const r of rows) validatorIds.add(r.id);
-      } else {
-        const rows = indexHandle
-          .query('SELECT id FROM functions WHERE name = ?', [v]) as Array<{ id: number }>;
-        for (const r of rows) validatorIds.add(r.id);
-      }
-    }
+  for (const [key, funcData] of funcWrites) {
+    const allTables = expandWrittenTables(indexHandle, key, funcData.tables, graph);
 
-    // 1b. Provenanced validators: exported functions whose OWN used_imports
-    //     includes a validator package. Per-identifier check — a function in
-    //     a zod-importing file only qualifies if its own body uses the
-    //     validator package, not just because it cohabits the file.
-    if (validatorIds.size === 0) {
-      const likeClauses = [...VALIDATOR_PACKAGES].map(() => 'used_imports LIKE ?');
-      const likeParams = [...VALIDATOR_PACKAGES].map((pkg) => `%"${pkg}"%`);
-
-      const validatorFuncs = indexHandle
-        .query(`SELECT id FROM functions
-           WHERE used_imports IS NOT NULL
-             AND (${likeClauses.join(' OR ')})
-             AND is_exported = 1`, likeParams) as Array<{ id: number }>;
-      for (const f of validatorFuncs) validatorIds.add(f.id);
-    }
-
-    // 1c. Heuristic fallback: name-based matching (only when provenance
-    //     found nothing AND no user-configured validators exist).
-    if (validatorIds.size === 0 && userValidators.length === 0) {
-      const heuristicFuncs = indexHandle
-        .query(`SELECT id FROM functions
-           WHERE (name GLOB 'validate*' OR name GLOB 'assert*')
-             AND is_exported = 1`,) as Array<{ id: number }>;
-      for (const f of heuristicFuncs) validatorIds.add(f.id);
-    }
-
-    return validatorIds;
-  }
-
-  /**
-   * Group writers by directory, then flag uncovered writers only in
-   * directories where a mode-share of peers reach a validator.
-   */
-  private flagUncoveredWriters(
-    writers: Array<{ function_name: string; file_path: string; line: number; function_id: number }>,
-    writerCoverage: Map<string, { covered: boolean; line: number; funcName: string }>,
-    minCorpus: number,
-    modeShare: number,
-    depth: number,
-  ): Violation[] {
-    const violations: Violation[] = [];
-
-    interface DirWriter {
-      key: string;
-      covered: boolean;
-      line: number;
-      funcName: string;
-      filePath: string;
-    }
-    const dirWriters = new Map<string, DirWriter[]>();
-    const dirSeen = new Set<string>(); // deduplicate writers with multiple schema_usage rows
-
-    for (const w of writers) {
-      const dir = path.dirname(w.file_path);
-      const key = `${w.file_path}::${w.function_name}`;
-      const dirKey = `${dir}::${key}`;
-      if (dirSeen.has(dirKey)) continue;
-      dirSeen.add(dirKey);
-
-      const cov = writerCoverage.get(key);
-      if (!cov) continue;
-      if (!dirWriters.has(dir)) dirWriters.set(dir, []);
-      dirWriters.get(dir)!.push({
-        key,
-        covered: cov.covered,
-        line: cov.line,
-        funcName: cov.funcName,
-        filePath: w.file_path,
-      });
-    }
-
-    for (const [dir, dirWriterList] of dirWriters) {
-      if (dirWriterList.length < minCorpus) continue;
-
-      const coveredCount = dirWriterList.filter((w) => w.covered).length;
-      const ratio = coveredCount / dirWriterList.length;
-
-      if (ratio >= modeShare) {
-        for (const w of dirWriterList) {
-          if (w.covered) continue;
-          violations.push({
-            file: w.filePath,
-            line: w.line,
-            column: 0,
-            severity: 'suggestion',
-            message:
-              `Function '${w.funcName}' is not validated. ` +
-              `${coveredCount}/${dirWriterList.length} peer writers in '${dir}' ` +
-              `reach a validator but this function does not (BFS depth ≤ ${depth}). ` +
-              `Consider adding input validation.`,
-            rule: 'cross-domain/validation-bypass',
-            analyzer: this.name,
-            functionName: w.funcName,
-          });
-        }
-      }
-    }
-
-    return violations;
-  }
-
-  // ── R4: Coverage by Importance ──────────────────────────────────────────
-
-  /**
-   * Detect exported, high-risk functions with no test coverage.
-   * Uses the getUntestedTopDecile() query that joins functions with
-   * hotspot_scores and coverage_data to find untested high-risk functions.
-   *
-   * Static-reach fallback: when no measured coverage exists, falls back
-   * to static reach analysis from test files (BFS from test-file functions
-   * into the call graph).
-   */
-  private detectUncoveredRisk(
-    indexHandle: IndexHandle,
-    coverage: CoverageConfig,
-    filePath?: FilePathClause,
-  ): Violation[] {
-    const topRiskDecile = coverage.topRiskDecile ?? 0.1;
-
-    // Check if any measured coverage exists
-    const measuredCount = (
-      indexHandle
-        .query("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")[0] as { cnt: number }
-    ).cnt;
-
-    if (measuredCount > 0) {
-      return this.detectMeasuredUncovered(indexHandle, topRiskDecile);
-    }
-    return this.detectStaticReachUncovered(indexHandle, coverage, filePath);
-  }
-
-  /**
-   * Flag exported high-risk functions with no measured test coverage, using
-   * lcov/istanbul-imported data with stale-import detection.
-   */
-  private detectMeasuredUncovered(indexHandle: IndexHandle, topRiskDecile: number): Violation[] {
-    const violations: Violation[] = [];
-
-    const untested = indexHandle.getUntestedTopDecile(topRiskDecile) as Array<{
-      functionName: string; filePath: string; lineNumber: number | null;
-      riskScore: number; basis: string;
-    }>;
-
-    // Determine source format from existing coverage entries
-    const sourceRow = indexHandle
-      .query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1",)[0] as { source: string | null; imported_at: string | null } | undefined;
-    const sourceFormat = sourceRow?.source ?? 'unknown';
-    const importedAt = sourceRow?.imported_at ?? null;
-
-    // Stale-import detection: measured coverage predates last full index sync
-    let staleWarning: string | null = null;
-    if (importedAt) {
-      const lastSync = indexHandle.getMeta?.('last_full_sync_timestamp') ?? null;
-      if (lastSync && importedAt < lastSync) {
-        staleWarning =
-          ` — WARNING: this coverage data may be stale (imported ${importedAt}, ` +
-          `last index sync was ${lastSync}). ` +
-          `Re-import with 'code-audit coverage --import <path>' for accurate results.`;
-      }
-    }
-
-    for (const fn of untested) {
+    if (allTables.size >= txnTableMax) {
+      const tableList = [...allTables].sort().join(', ');
       violations.push({
-        file: fn.filePath,
-        line: fn.lineNumber ?? 1,
+        file: funcData.filePath,
+        line: funcData.line,
         column: 0,
         severity: 'suggestion',
-        message:
-          `Exported function '${fn.functionName}' (risk ${fn.riskScore.toFixed(3)}) has no measured test coverage. ` +
-          `Top imported functions should have test coverage. Import coverage data with 'code-audit coverage --import <path>'.` +
-          (staleWarning ?? ''),
-        rule: 'cross-domain/uncovered-risk',
-        analyzer: this.name,
-        functionName: fn.functionName,
-        basis: fn.basis,
-        sourceFormat,
-        ...(staleWarning ? { staleImport: true } : {}),
+        message: `Function writes to ${allTables.size} distinct tables (threshold: ${txnTableMax}): ${tableList}. This may indicate transaction-boundary risk — consider splitting writes across smaller transactional scopes.`,
+        rule: 'cross-domain/transaction-boundary',
+        analyzer: ANALYZER_NAME,
+        functionName: key.split('::')[1],
       });
     }
-
-    return violations;
   }
 
-  /**
-   * Static-reach fallback: flag exported high-risk functions that are not
-   * reachable from known test files via BFS through the call graph.
-   */
-  private detectStaticReachUncovered(
-    indexHandle: IndexHandle,
-    coverage: CoverageConfig,
-    filePath?: FilePathClause,
-  ): Violation[] {
-    const violations: Violation[] = [];
-    const topRiskDecile = coverage.topRiskDecile ?? 0.1;
+  return violations;
+}
 
-    const fpWhere = filePath ? 'AND f.file_path LIKE ?' : '';
-    const params: any[] = [topRiskDecile];
-    if (filePath) params.push(filePath.param);
+/**
+ * Resolve the call-graph infrastructure available for callee expansion:
+ * whether graph_cache has any 'call' edges, and a function key → id lookup
+ * built from the functions table (populated only by deepSync). Any failure
+ * degrades gracefully to direct-write-only detection.
+ */
+function resolveCallGraphContext(indexHandle: IndexHandle): CallGraphContext {
+  let hasGraphData = false;
+  try {
+    const row = indexHandle.query("SELECT COUNT(*) AS n FROM graph_cache WHERE graph_type = 'call'",
+    ) as Array<{ n: number }>;
+    const cnt = row[0] as { n: number } | undefined;
+    hasGraphData = (cnt?.n ?? 0) > 0;
+  } catch {
+    hasGraphData = false;
+  }
 
-    const highRiskFns = indexHandle.query(
-        `WITH ranked AS (
-          SELECT
-            f.name,
-            f.file_path,
-            f.line_number,
-            f.id,
-            COALESCE(hs.score, 0.0) as risk_score,
-            PERCENT_RANK() OVER (ORDER BY COALESCE(hs.score, 0.0) DESC) as pct
-          FROM functions f
-          LEFT JOIN hotspot_scores hs ON hs.target = (f.file_path || ':' || f.name)
-            AND hs.type = 'function'
-          WHERE f.is_exported = 1
-            ${fpWhere}
-        )
-        SELECT id, name, file_path, line_number, risk_score
-        FROM ranked
-        WHERE pct <= ?
-        ORDER BY risk_score DESC`, params) as Array<{
-      id: number;
-      name: string;
-      file_path: string;
-      line_number: number;
-      risk_score: number;
-    }>;
+  let fnIdLookup: Map<string, number> | null = null;
+  if (hasGraphData) {
+    try {
+      const fnRows = indexHandle.query('SELECT id, name, file_path FROM functions',) as Array<{ id: number; name: string; file_path: string }>;
+      if (fnRows.length > 0) {
+        fnIdLookup = new Map();
+        for (const r of fnRows) {
+          fnIdLookup.set(`${r.file_path}::${r.name}`, r.id);
+        }
+      }
+    } catch {
+      // functions table might not exist or be unpopulated
+    }
+  }
 
-    if (highRiskFns.length === 0) return violations;
+  return { hasGraphData, fnIdLookup };
+}
 
-    const reachableIds = this.computeTestReachableIds(indexHandle, coverage);
+// ── R3: Validation-Bypass ────────────────────────────────────────────────
 
-    // Flag high-risk functions not in the reachable set
-    for (const fn of highRiskFns) {
-      if (!reachableIds.has(fn.id)) {
+/**
+ * Detect write functions that don't reach a validator, when a majority of
+ * peer writers in the same directory do (BFS ≤ configurable depth).
+ *
+ * Validator identification (priority order):
+ *   1. User-configured validators list
+ *   2. Provenanced: exported functions in files importing VALIDATOR_PACKAGES
+ *   3. Heuristic fallback: name GLOB 'validate*' OR 'assert*' (when both
+ *      above are silent)
+ */
+function detectValidationBypass(
+  indexHandle: IndexHandle,
+  config: ValidatorBypassConfig,
+  filePath?: FilePathClause,
+): Violation[] {
+  const violations: Violation[] = [];
+  const {
+    validators: userValidators = [],
+    modeShare = 0.8,
+    minCorpus = 20,
+    depth = 3,
+  } = config;
+
+  const validatorIds = buildValidatorIds(indexHandle, userValidators);
+  if (validatorIds.size === 0) return violations;
+
+  const fpAliasWhere = filePath ? `AND su.${filePath.clause.slice(4)}` : '';
+
+  const writers = indexHandle
+    .query(`SELECT DISTINCT su.function_name, su.file_path, su.line, f.id as function_id
+       FROM schema_usage su
+       JOIN functions f ON f.name = su.function_name
+                        AND f.file_path = su.file_path
+       WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
+       ${fpAliasWhere}
+       ORDER BY su.file_path, su.function_name`, (filePath ? [filePath.param] : [])) as WriterRow[];
+
+  if (writers.length === 0) return violations;
+
+  const writerCoverage = computeWriterCoverage(writers, validatorIds, indexHandle, depth);
+  violations.push(...flagUncoveredWriters(writers, writerCoverage, { minCorpus, modeShare, depth }));
+
+  return violations;
+}
+
+/** BFS from each writer to check validator reach, deduplicated by key. */
+function computeWriterCoverage(
+  writers: WriterRow[],
+  validatorIds: Set<number>,
+  indexHandle: IndexHandle,
+  depth: number,
+): Map<string, WriterCoverage> {
+  const writerCoverage = new Map<string, WriterCoverage>();
+
+  for (const w of writers) {
+    const key = `${w.file_path}::${w.function_name}`;
+    if (writerCoverage.has(key)) continue; // deduplicate
+    const covered = bfsReachesValidator(indexHandle, w.function_id, validatorIds, depth);
+    writerCoverage.set(key, {
+      covered,
+      line: w.line,
+      funcName: w.function_name,
+    });
+  }
+
+  return writerCoverage;
+}
+
+/**
+ * Build the validator function ID set in priority order: user-configured
+ * validators, then provenanced validators (exported functions whose own
+ * used_imports includes a validator package), then a name-based heuristic
+ * fallback only when both prior sources are silent.
+ */
+function buildValidatorIds(indexHandle: IndexHandle, userValidators: string[]): Set<number> {
+  const validatorIds = new Set<number>();
+
+  // 1a. User-configured validators (format: "funcName" or "path#funcName")
+  for (const v of userValidators) {
+    const hashIdx = v.indexOf('#');
+    if (hashIdx >= 0) {
+      const vPath = v.substring(0, hashIdx);
+      const vName = v.substring(hashIdx + 1);
+      const rows = indexHandle
+        .query('SELECT id FROM functions WHERE name = ? AND file_path = ?', [vName, vPath]) as Array<{ id: number }>;
+      for (const r of rows) validatorIds.add(r.id);
+    } else {
+      const rows = indexHandle
+        .query('SELECT id FROM functions WHERE name = ?', [v]) as Array<{ id: number }>;
+      for (const r of rows) validatorIds.add(r.id);
+    }
+  }
+
+  // 1b. Provenanced validators: exported functions whose OWN used_imports
+  //     includes a validator package. Per-identifier check — a function in
+  //     a zod-importing file only qualifies if its own body uses the
+  //     validator package, not just because it cohabits the file.
+  if (validatorIds.size === 0) {
+    const likeClauses = [...VALIDATOR_PACKAGES].map(() => 'used_imports LIKE ?');
+    const likeParams = [...VALIDATOR_PACKAGES].map((pkg) => `%"${pkg}"%`);
+
+    const validatorFuncs = indexHandle
+      .query(`SELECT id FROM functions
+         WHERE used_imports IS NOT NULL
+           AND (${likeClauses.join(' OR ')})
+           AND is_exported = 1`, likeParams) as Array<{ id: number }>;
+    for (const f of validatorFuncs) validatorIds.add(f.id);
+  }
+
+  // 1c. Heuristic fallback: name-based matching (only when provenance
+  //     found nothing AND no user-configured validators exist).
+  if (validatorIds.size === 0 && userValidators.length === 0) {
+    const heuristicFuncs = indexHandle
+      .query(`SELECT id FROM functions
+         WHERE (name GLOB 'validate*' OR name GLOB 'assert*')
+           AND is_exported = 1`,) as Array<{ id: number }>;
+    for (const f of heuristicFuncs) validatorIds.add(f.id);
+  }
+
+  return validatorIds;
+}
+
+/**
+ * Group writers by directory, then flag uncovered writers only in
+ * directories where a mode-share of peers reach a validator.
+ */
+function flagUncoveredWriters(
+  writers: WriterRow[],
+  writerCoverage: Map<string, WriterCoverage>,
+  opts: { minCorpus: number; modeShare: number; depth: number },
+): Violation[] {
+  const { minCorpus, modeShare, depth } = opts;
+  const dirWriters = groupWritersByDirectory(writers, writerCoverage);
+  return flagUnvalidatedWriters(dirWriters, minCorpus, modeShare, depth);
+}
+
+/** Group writers by directory, deduplicating multi-row schema_usage entries. */
+function groupWritersByDirectory(
+  writers: WriterRow[],
+  writerCoverage: Map<string, WriterCoverage>,
+): Map<string, DirWriter[]> {
+  const dirWriters = new Map<string, DirWriter[]>();
+  const dirSeen = new Set<string>();
+
+  for (const w of writers) {
+    const dir = path.dirname(w.file_path);
+    const key = `${w.file_path}::${w.function_name}`;
+    const dirKey = `${dir}::${key}`;
+    if (dirSeen.has(dirKey)) continue;
+    dirSeen.add(dirKey);
+
+    const cov = writerCoverage.get(key);
+    if (!cov) continue;
+    if (!dirWriters.has(dir)) dirWriters.set(dir, []);
+    dirWriters.get(dir)!.push({
+      key,
+      covered: cov.covered,
+      line: cov.line,
+      funcName: cov.funcName,
+      filePath: w.file_path,
+    });
+  }
+
+  return dirWriters;
+}
+
+/** Flag uncovered writers in validator-dense directories. */
+function flagUnvalidatedWriters(
+  dirWriters: Map<string, DirWriter[]>,
+  minCorpus: number,
+  modeShare: number,
+  depth: number,
+): Violation[] {
+  const violations: Violation[] = [];
+
+  for (const [dir, dirWriterList] of dirWriters) {
+    if (dirWriterList.length < minCorpus) continue;
+
+    const coveredCount = dirWriterList.filter((w) => w.covered).length;
+    const ratio = coveredCount / dirWriterList.length;
+
+    if (ratio >= modeShare) {
+      for (const w of dirWriterList) {
+        if (w.covered) continue;
         violations.push({
-          file: fn.file_path,
-          line: fn.line_number,
+          file: w.filePath,
+          line: w.line,
           column: 0,
           severity: 'suggestion',
           message:
-            `Exported function '${fn.name}' (risk ${fn.risk_score.toFixed(3)}) is not reachable from known test files. ` +
-            `Add test coverage or import measured coverage with 'code-audit coverage --import <path>'.`,
-          rule: 'cross-domain/uncovered-risk',
-          analyzer: this.name,
-          functionName: fn.name,
-          basis: 'static-reach',
+            `Function '${w.funcName}' is not validated. ` +
+            `${coveredCount}/${dirWriterList.length} peer writers in '${dir}' ` +
+            `reach a validator but this function does not (BFS depth ≤ ${depth}). ` +
+            `Consider adding input validation.`,
+          rule: 'cross-domain/validation-bypass',
+          analyzer: ANALYZER_NAME,
+          functionName: w.funcName,
         });
       }
     }
-
-    return violations;
   }
 
-  /**
-   * Compute the set of function IDs reachable from test-file functions via
-   * BFS through the call graph (reverse direction: test → code under test).
-   */
-  private computeTestReachableIds(indexHandle: IndexHandle, coverage: CoverageConfig): Set<number> {
-    const reachableIds = new Set<number>();
+  return violations;
+}
 
-    // Find test-file functions to use as BFS starting points.
-    const testGlobs = coverage.testGlobs ?? ['**/*.test.*', '**/*.spec.*', '**/__tests__/**'];
-    const testGlobPatterns = testGlobs.map((g: string) =>
-      g.replace(/\*\*/g, '%').replace(/\*/g, '%'),
-    );
+// ── R4: Coverage by Importance ──────────────────────────────────────────
 
-    let testFileClause = '';
-    const testFileParams: string[] = [];
-    if (testGlobPatterns.length > 0) {
-      testFileClause = testGlobPatterns
-        .map((_p: string, i: number) => `file_path LIKE ?`)
-        .join(' OR ');
-      for (const p of testGlobPatterns) testFileParams.push(p);
-    }
+/**
+ * Detect exported, high-risk functions with no test coverage.
+ * Uses the getUntestedTopDecile() query that joins functions with
+ * hotspot_scores and coverage_data to find untested high-risk functions.
+ *
+ * Static-reach fallback: when no measured coverage exists, falls back
+ * to static reach analysis from test files (BFS from test-file functions
+ * into the call graph).
+ */
+function detectUncoveredRisk(
+  indexHandle: IndexHandle,
+  coverage: CoverageConfig,
+  filePath?: FilePathClause,
+): Violation[] {
+  const topRiskDecile = coverage.topRiskDecile ?? 0.1;
 
-    const testFuncIds = new Set<number>();
-    if (testFileClause) {
-      const testFunctions = indexHandle
-        .query(`SELECT id FROM functions WHERE ${testFileClause}`, testFileParams) as Array<{ id: number }>;
-      for (const tf of testFunctions) testFuncIds.add(tf.id);
-    }
+  // Check if any measured coverage exists
+  const measuredCount = (
+    indexHandle
+      .query("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")[0] as { cnt: number }
+  ).cnt;
 
-    const maxDepth = coverage.staticReachDepth ?? 2;
-
-    if (testFuncIds.size > 0) {
-      for (const startId of testFuncIds) {
-        const visited = new Set<number>();
-        let currentLevel = [startId];
-
-        for (let d = 0; d < maxDepth; d++) {
-          const nextLevel: number[] = [];
-          for (const funcId of currentLevel) {
-            if (visited.has(funcId)) continue;
-            visited.add(funcId);
-            reachableIds.add(funcId);
-
-            const callees = indexHandle
-              .query(`SELECT neighbor_key FROM graph_cache
-                 WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
-            for (const callee of callees) {
-              const calleeId = parseInt(callee.neighbor_key, 10);
-              if (!isNaN(calleeId) && !visited.has(calleeId)) {
-                nextLevel.push(calleeId);
-              }
-            }
-          }
-          currentLevel = nextLevel;
-        }
-        // Check last level
-        for (const funcId of currentLevel) {
-          if (!reachableIds.has(funcId)) reachableIds.add(funcId);
-        }
-      }
-    }
-
-    return reachableIds;
+  if (measuredCount > 0) {
+    return detectMeasuredUncovered(indexHandle, topRiskDecile);
   }
+  return detectStaticReachUncovered(indexHandle, coverage, filePath);
+}
+
+/**
+ * Flag exported high-risk functions with no measured test coverage, using
+ * lcov/istanbul-imported data with stale-import detection.
+ */
+function detectMeasuredUncovered(indexHandle: IndexHandle, topRiskDecile: number): Violation[] {
+  const violations: Violation[] = [];
+
+  const untested = indexHandle.getUntestedTopDecile(topRiskDecile) as Array<{
+    functionName: string; filePath: string; lineNumber: number | null;
+    riskScore: number; basis: string;
+  }>;
+
+  // Determine source format from existing coverage entries
+  const sourceRow = indexHandle
+    .query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1",)[0] as { source: string | null; imported_at: string | null } | undefined;
+  const sourceFormat = sourceRow?.source ?? 'unknown';
+  const importedAt = sourceRow?.imported_at ?? null;
+
+  // Stale-import detection: measured coverage predates last full index sync
+  let staleWarning: string | null = null;
+  if (importedAt) {
+    const lastSync = indexHandle.getMeta?.('last_full_sync_timestamp') ?? null;
+    if (lastSync && importedAt < lastSync) {
+      staleWarning =
+        ` — WARNING: this coverage data may be stale (imported ${importedAt}, ` +
+        `last index sync was ${lastSync}). ` +
+        `Re-import with 'code-audit coverage --import <path>' for accurate results.`;
+    }
+  }
+
+  for (const fn of untested) {
+    violations.push({
+      file: fn.filePath,
+      line: fn.lineNumber ?? 1,
+      column: 0,
+      severity: 'suggestion',
+      message:
+        `Exported function '${fn.functionName}' (risk ${fn.riskScore.toFixed(3)}) has no measured test coverage. ` +
+        `Top imported functions should have test coverage. Import coverage data with 'code-audit coverage --import <path>'.` +
+        (staleWarning ?? ''),
+      rule: 'cross-domain/uncovered-risk',
+      analyzer: ANALYZER_NAME,
+      functionName: fn.functionName,
+      basis: fn.basis,
+      sourceFormat,
+      ...(staleWarning ? { staleImport: true } : {}),
+    });
+  }
+
+  return violations;
+}
+
+/**
+ * Static-reach fallback: flag exported high-risk functions that are not
+ * reachable from known test files via BFS through the call graph.
+ */
+function detectStaticReachUncovered(
+  indexHandle: IndexHandle,
+  coverage: CoverageConfig,
+  filePath?: FilePathClause,
+): Violation[] {
+  const topRiskDecile = coverage.topRiskDecile ?? 0.1;
+  const highRiskFns = queryHighRiskFunctions(indexHandle, topRiskDecile, filePath);
+
+  if (highRiskFns.length === 0) return [];
+
+  const reachableIds = computeTestReachableIds(indexHandle, coverage);
+  return flagUnreachedHighRisk(highRiskFns, reachableIds);
+}
+
+/** Rank exported functions by hotspot score and take the top decile. */
+function queryHighRiskFunctions(
+  indexHandle: IndexHandle,
+  topRiskDecile: number,
+  filePath?: FilePathClause,
+): HighRiskFn[] {
+  const fpWhere = filePath ? 'AND f.file_path LIKE ?' : '';
+  const params: any[] = [topRiskDecile];
+  if (filePath) params.push(filePath.param);
+
+  return indexHandle.query(
+      `WITH ranked AS (
+        SELECT
+          f.name,
+          f.file_path,
+          f.line_number,
+          f.id,
+          COALESCE(hs.score, 0.0) as risk_score,
+          PERCENT_RANK() OVER (ORDER BY COALESCE(hs.score, 0.0) DESC) as pct
+        FROM functions f
+        LEFT JOIN hotspot_scores hs ON hs.target = (f.file_path || ':' || f.name)
+          AND hs.type = 'function'
+        WHERE f.is_exported = 1
+          ${fpWhere}
+      )
+      SELECT id, name, file_path, line_number, risk_score
+      FROM ranked
+      WHERE pct <= ?
+      ORDER BY risk_score DESC`, params) as HighRiskFn[];
+}
+
+/** Flag high-risk functions not in the reachable set. */
+function flagUnreachedHighRisk(highRiskFns: HighRiskFn[], reachableIds: Set<number>): Violation[] {
+  const violations: Violation[] = [];
+
+  for (const fn of highRiskFns) {
+    if (reachableIds.has(fn.id)) continue;
+    violations.push({
+      file: fn.file_path,
+      line: fn.line_number,
+      column: 0,
+      severity: 'suggestion',
+      message:
+        `Exported function '${fn.name}' (risk ${fn.risk_score.toFixed(3)}) is not reachable from known test files. ` +
+        `Add test coverage or import measured coverage with 'code-audit coverage --import <path>'.`,
+      rule: 'cross-domain/uncovered-risk',
+      analyzer: ANALYZER_NAME,
+      functionName: fn.name,
+      basis: 'static-reach',
+    });
+  }
+
+  return violations;
+}
+
+/**
+ * Compute the set of function IDs reachable from test-file functions via
+ * BFS through the call graph (reverse direction: test → code under test).
+ */
+function computeTestReachableIds(indexHandle: IndexHandle, coverage: CoverageConfig): Set<number> {
+  const testFuncIds = collectTestFuncIds(indexHandle, coverage);
+  if (testFuncIds.size === 0) return new Set<number>();
+
+  const maxDepth = coverage.staticReachDepth ?? 2;
+  return collectReachableIds(indexHandle, testFuncIds, maxDepth);
+}
+
+/** Find test-file function IDs to use as BFS starting points. */
+function collectTestFuncIds(indexHandle: IndexHandle, coverage: CoverageConfig): Set<number> {
+  const testGlobs = coverage.testGlobs ?? ['**/*.test.*', '**/*.spec.*', '**/__tests__/**'];
+  const testGlobPatterns = testGlobs.map((g: string) =>
+    g.replace(/\*\*/g, '%').replace(/\*/g, '%'),
+  );
+
+  if (testGlobPatterns.length === 0) return new Set<number>();
+
+  const testFileClause = testGlobPatterns
+    .map(() => `file_path LIKE ?`)
+    .join(' OR ');
+  const testFileParams = [...testGlobPatterns];
+
+  const testFuncIds = new Set<number>();
+  const testFunctions = indexHandle
+    .query(`SELECT id FROM functions WHERE ${testFileClause}`, testFileParams) as Array<{ id: number }>;
+  for (const tf of testFunctions) testFuncIds.add(tf.id);
+
+  return testFuncIds;
 }

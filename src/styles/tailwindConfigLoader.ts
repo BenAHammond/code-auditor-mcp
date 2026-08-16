@@ -15,6 +15,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import type { StyleToken } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -60,22 +61,40 @@ const DEFAULT_TOKENS: TailwindThemeTokens = {
 /**
  * Load Tailwind config tokens from a project root.
  * Returns default tokens if no config is found — this is always graceful.
+ *
+ * Memoized per projectRoot: theme config is project-global and immutable for
+ * the lifetime of a process, and the style index sync calls this once per
+ * file batch. The long-running MCP server would otherwise re-walk the whole
+ * tree (including any gitignored corpus) on every sync.
  */
+const configCache = new Map<string, TailwindConfigResult>();
+
 export function loadTailwindConfig(projectRoot: string): TailwindConfigResult {
+  const cached = configCache.get(projectRoot);
+  if (cached) return cached;
+
   // Tier 1: Tailwind v3 JS config
   const v3Result = tryLoadV3Config(projectRoot);
-  if (v3Result) return v3Result;
+  if (v3Result) {
+    configCache.set(projectRoot, v3Result);
+    return v3Result;
+  }
 
   // Tier 2: Tailwind v4 CSS config
   const v4Result = tryLoadV4Config(projectRoot);
-  if (v4Result) return v4Result;
+  if (v4Result) {
+    configCache.set(projectRoot, v4Result);
+    return v4Result;
+  }
 
   // Tier 3: Bundled defaults
-  return {
+  const fallback = {
     tokens: { ...DEFAULT_TOKENS },
     source: 'defaults',
     configPath: null,
-  };
+  } satisfies TailwindConfigResult;
+  configCache.set(projectRoot, fallback);
+  return fallback;
 }
 
 /**
@@ -198,11 +217,55 @@ function loadV3ConfigFile(configPath: string): TailwindThemeTokens | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Recursively walk projectRoot for .css files containing @theme directives.
- * Skips node_modules and .git directories.
+ * Find .css files containing @theme directives.
  * Exported — also used by tailwindUtilityExpander.ts.
+ *
+ * Uses `git ls-files` when projectRoot is inside a git work tree, so the
+ * walk respects .gitignore and does not descend into ignored corpora (e.g. a
+ * checked-out validation corpus). This is the same exclusion the audit's own
+ * file discovery applies, and it keeps the diff-scoped `changed` gate from
+ * paying a full-tree walk per invocation. Falls back to a raw recursive walk
+ * when git is unavailable (not a repository).
  */
 export function findThemeCssFiles(projectRoot: string): string[] {
+  const gitCssFiles = listCssFilesViaGit(projectRoot);
+  if (gitCssFiles !== null) {
+    return gitCssFiles.filter(containsThemeDirective);
+  }
+  return walkCssFiles(projectRoot).filter(containsThemeDirective);
+}
+
+function containsThemeDirective(filePath: string): boolean {
+  try {
+    return readFileSync(filePath, 'utf-8').includes('@theme');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Enumerate .css files tracked by git (or untracked but not ignored) under
+ * projectRoot. Returns null when git is unavailable or projectRoot is not
+ * inside a git work tree, signalling the caller to fall back to a raw walk.
+ */
+function listCssFilesViaGit(projectRoot: string): string[] | null {
+  try {
+    const stdout = execFileSync(
+      'git',
+      ['ls-files', '--cached', '--others', '--exclude-standard', '--', '*.css'],
+      { cwd: projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((rel) => join(projectRoot, rel));
+  } catch {
+    return null;
+  }
+}
+
+function walkCssFiles(projectRoot: string): string[] {
   const results: string[] = [];
   const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '.turbo', '__pycache__']);
 
@@ -228,15 +291,7 @@ export function findThemeCssFiles(projectRoot: string): string[] {
           walk(fullPath);
         }
       } else if (st.isFile() && extname(fullPath) === '.css') {
-        // Only include files that actually contain @theme
-        try {
-          const content = readFileSync(fullPath, 'utf-8');
-          if (content.includes('@theme')) {
-            results.push(fullPath);
-          }
-        } catch {
-          // Skip unreadable files
-        }
+        results.push(fullPath);
       }
     }
   }

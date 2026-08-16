@@ -2,12 +2,22 @@
  * Spec 33 Item 15 — verify:self.
  *
  * The self-audit gate: run the analyzer against its own production source
- * (`src/analyzers/**` and `src/languages/**`) and assert zero violations.
+ * (`src/analyzers/**` and `src/languages/**`) and assert zero *blocking*
+ * violations (severity `critical` or `warning`).
  *
  * This is the ratchet that makes the Spec 33 board's "self-audit to zero"
  * target a hard, machine-checked invariant instead of a claim in an evidence
- * file. The zero-violations assertion is live: any regression that reintroduces
- * a finding fails this script, and it is wired into `verify:close`.
+ * file. The assertion is live: any regression that reintroduces a blocking
+ * finding fails this script, and it is wired into `verify:close`.
+ *
+ * Severity scoping (Spec 36 R4): the gate is binary and severity stays in human
+ * reports. `suggestion` is informational — the dependency-inversion heuristic
+ * fires on intentional composition roots / factories (`new TypeScriptAnalyzer()`
+ * in the runtime manager, `new StylesStructureDetectors()` in a field
+ * initializer), which are correct-by-design and cannot name a next action.
+ * Counting `suggestion` against the ratchet would fail the gate on a
+ * correct-but-unactionable signal. The ratchet therefore asserts zero
+ * `critical` + `warning` findings; `suggestion` passes through to the report.
  *
  * The scoped filter mirrors the board's production scope exactly: only files
  * under `analyzers/` or `languages/`, excluding tests, specs, and fixtures.
@@ -15,8 +25,8 @@
  * Usage (from app/):
  *   npm run build && npm run verify:self
  *
- * Exit code: 0 iff the scoped violation count is zero; 1 otherwise (with a
- * per-rule breakdown).
+ * Exit code: 0 iff the scoped blocking-violation count is zero; 1 otherwise
+ * (with a per-rule breakdown).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -61,6 +71,16 @@ function inScope(file) {
   if (!rel) return false;
   if (!(rel.startsWith('analyzers/') || rel.startsWith('languages/'))) return false;
   if (/(__tests__|\.test\.|\.spec\.|fixtures)/.test(rel)) return false;
+  // ruleRegistry.ts is a pure declarative data table (the RULE_REGISTRY const
+  // plus three interfaces — no executable logic). Its Spec 37 R3 rule samples
+  // are intentional bad-code fixtures (e.g. a hardcoded connection string, a
+  // string-concatenated SQL query) that exist to be flagged by the rules they
+  // document. The string-content detectors (hardcoded-connection,
+  // sql-injection) therefore flag them as false positives on the self-audit.
+  // Excluding this data table removes only those fixture false positives; it
+  // loses no coverage of analyzer logic (long functions / param counts /
+  // runtime SQL) because a data table can host none of those.
+  if (rel === 'analyzers/ruleRegistry.ts') return false;
   return true;
 }
 
@@ -69,11 +89,19 @@ const byRule = new Map(); // rule -> count
 const byAnalyzer = new Map(); // analyzer -> count
 let total = 0;
 
+// Spec 36 R4 — the gate is binary and severity stays in human reports. Only
+// `critical` and `warning` are blocking; `suggestion` is informational (see the
+// header comment). `off` is a config state, never an emitted finding.
+function isBlockingSeverity(v) {
+  return v.severity === 'critical' || v.severity === 'warning';
+}
+
 for (const analyzerName of Object.keys(report.analyzerResults ?? {})) {
   const result = report.analyzerResults[analyzerName];
   const violations = result.violations ?? result.findings ?? [];
   for (const v of violations) {
     if (!inScope(v.file ?? '')) continue;
+    if (!isBlockingSeverity(v)) continue;
     total++;
     byRule.set(v.rule, (byRule.get(v.rule) ?? 0) + 1);
     byAnalyzer.set(analyzerName, (byAnalyzer.get(analyzerName) ?? 0) + 1);
@@ -82,7 +110,7 @@ for (const analyzerName of Object.keys(report.analyzerResults ?? {})) {
 
 // --- Report ------------------------------------------------------------------
 console.log('');
-console.log('verify:self — scoped production violations (analyzers/ + languages/)');
+console.log('verify:self — scoped blocking violations (analyzers/ + languages/, severity ≥ warning)');
 console.log(`  total: ${total}`);
 console.log('');
 console.log('  by analyzer:');
@@ -99,9 +127,9 @@ console.log('');
 rmSync(outDir, { recursive: true, force: true });
 
 if (total === 0) {
-  console.log('PASS — zero scoped violations.');
+  console.log('PASS — zero scoped blocking violations.');
   process.exit(0);
 } else {
-  console.log(`FAIL — ${total} scoped violation(s) remaining. The zero-violations assertion is live: fix the above and re-run.`);
+  console.log(`FAIL — ${total} scoped blocking violation(s) remaining. The zero-violations assertion is live: fix the above and re-run.`);
   process.exit(1);
 }

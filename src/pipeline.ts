@@ -35,6 +35,7 @@ import {
   type Violation,
 } from './types.js';
 import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
+import { resetRuleTiming, getRuleTimingSortedDesc } from './analyzers/ruleTiming.js';
 import { LanguageRegistry } from './languages/LanguageRegistry.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { resolvePathProfile, type PathProfile } from './config/pathProfiles.js';
@@ -213,7 +214,7 @@ function runStage1(config: PipelineConfig): {
 
 // ── Stage 2: Per-file visitors ─────────────────────────────────────────────
 
-async function runStage2(
+export async function runStage2(
   tuples: AsyncIterable<FileASTTuple>,
   visitors: Stage2Visitor[],
   config: PipelineConfig,
@@ -274,14 +275,14 @@ async function runStage2(
       // Resolve path profiles for this file (non-analyzer-specific)
       let fileInfra = infra;
       let fileProfileNames: string[] = [];
-      let fileSeverityCap: string | undefined;
+      let fileGateExcluded: boolean | undefined;
       if (pathProfiles && pathProfiles.length > 0) {
         const resolved = resolvePathProfile(tuple.file, projectRoot, pathProfiles);
         if (Object.keys(resolved.overrides).length > 0) {
           fileInfra = { ...infra, ...resolved.overrides };
         }
         fileProfileNames = resolved.matchedProfileNames;
-        fileSeverityCap = resolved.severityCap;
+        fileGateExcluded = resolved.excludeFromGate;
       }
 
       // Fan out to all visitors for this file — filter by declared extensions
@@ -312,8 +313,9 @@ async function runStage2(
           // Accumulate timing
           timingMap.set(visitor.name, (timingMap.get(visitor.name) ?? 0) + vMs);
 
-          // Attach profile, severity overrides, analyzer name
-          const severityOrder = ['suggestion', 'warning', 'critical'] as const;
+          // Attach profile, severity overrides, analyzer name, and gate exclusion
+          // (Spec 36 R4). Severity is left untouched — a path profile excludes a
+          // file from the blocking gate, it never softens a finding within it.
           const processedViolations = result.violations
             .map((v) => ({
               ...v,
@@ -321,20 +323,10 @@ async function runStage2(
                 ? fileProfileNames[fileProfileNames.length - 1]
                 : v.profile,
               severity: (severityOverrides[v.rule] ?? v.severity) as Severity,
+              ...(fileGateExcluded ? { gateExcluded: true } : {}),
             }))
             // Filter out violations whose severity was overridden to 'off' (Spec-11 R5)
-            .filter((v) => v.severity !== 'off')
-            // Apply severity cap from path profiles (Spec-20)
-            // Applied AFTER severityOverrides so path-level caps beat global promotions
-            .map((v) => {
-              if (fileSeverityCap) {
-                const capIndex = severityOrder.indexOf(fileSeverityCap as typeof severityOrder[number]);
-                if (capIndex >= 0 && severityOrder.indexOf(v.severity as typeof severityOrder[number]) > capIndex) {
-                  return { ...v, severity: fileSeverityCap as 'suggestion' | 'warning' | 'critical' };
-                }
-              }
-              return v;
-            });
+            .filter((v) => v.severity !== 'off');
 
           // Accumulate violations
           const ar = visitorResults.get(visitor.name)!;
@@ -598,6 +590,10 @@ export async function runPipeline(
   const reducers = config.reducers ?? [];
   const derivedReducers = config.derivedReducers ?? [];
 
+  // Spec 38 R2 — per-rule timing accumulator is module-global (spans stages 2+3),
+  // so reset it at pipeline entry to avoid cross-run contamination.
+  resetRuleTiming();
+
   // ── Validate facts dependencies ──────────────────────────────────────────
   const depErrors = validateFactsDependencies(visitors, reducers, derivedReducers);
   if (depErrors.length > 0) {
@@ -746,6 +742,9 @@ export async function runPipeline(
   // skipped files must never report as clean.
   const unparsedFiles = s1.getUnparsedFiles();
 
+  // Spec 38 R2 — surface per-rule timing, slowest first, only when opt-in.
+  const ruleTiming = getRuleTimingSortedDesc();
+
   return {
     analyzerResults,
     metadata: {
@@ -759,6 +758,7 @@ export async function runPipeline(
       tableCatalog,
       ...(skippedFiles.length > 0 && { skippedFiles }),
       ...(unparsedFiles.length > 0 && { unparsedFiles }),
+      ...(ruleTiming.length > 0 && { ruleTiming }),
     },
     indexFacts: stage2.indexFacts,
   };

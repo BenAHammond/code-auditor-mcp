@@ -12,6 +12,7 @@
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
+import { withRuleTiming } from '../ruleTiming.js';
 import type { Violation, FunctionMetadata } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
 import * as crypto from 'crypto';
@@ -503,39 +504,45 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
    * Report exact token-identical duplicates (dry/duplicate, warning).
    */
   private reportExactDuplicates(deduped: CodeBlock[], violations: Violation[]): void {
-    const exactHashmap = groupByHash(deduped, 'hash');
+    withRuleTiming('dry/duplicate', () => {
+      const exactHashmap = groupByHash(deduped, 'hash');
 
-    for (const [, group] of exactHashmap) {
-      if (group.length < 2) continue;
+      for (const [, group] of exactHashmap) {
+        if (group.length < 2) continue;
 
-      const sorted = [...group].sort(byFileAndLine);
-      const original = sorted[0];
+        const sorted = [...group].sort(byFileAndLine);
+        const original = sorted[0];
 
-      for (let i = 1; i < sorted.length; i++) {
-        const block = sorted[i];
+        for (let i = 1; i < sorted.length; i++) {
+          const block = sorted[i];
 
-        // R3.1: Span-overlap check — skip if block overlaps with original
-        if (spansOverlap(original, block)) continue;
+          // R3.1: Span-overlap check — skip if block overlaps with original
+          if (spansOverlap(original, block)) continue;
 
-        const violation = this.createViolation(
-          block.file,
-          block.start,
-          `Duplicate code block detected (${block.lineCount} lines). ` +
-          `First occurrence at ${original.file}:${original.start.line}`,
-          'warning',                                         // R7
-          'dry/duplicate',
-          block.hash
-        );
-        violation.fix = {
-          oldText: block.text,
-          newText: `// Consider extracting to a shared function`
-        };
-        violations.push(violation);
+          const violation = this.createViolation(
+            block.file,
+            block.start,
+            `Duplicate code block detected (${block.lineCount} lines). ` +
+            `First occurrence at ${original.file}:${original.start.line}`,
+            { severity: 'warning', rule: 'dry/duplicate', symbol: block.hash,  // R7
+              resolution: {
+                action: 'extract-duplicate',
+                summary: `Extract the ${block.lineCount}-line block duplicated at ${original.file}:${original.start.line} into a shared function both sites call.`,
+                files: [block.file, original.file],
+                lines: [block.start.line, original.start.line],
+              } }
+          );
+          violation.fix = {
+            oldText: block.text,
+            newText: `// Consider extracting to a shared function`
+          };
+          violations.push(violation);
 
-        // Spec 13 R5 — seed pair for diverging-clone tracking
-        this.seedPair(original, block, 1.0, 'dry/duplicate');
+          // Spec 13 R5 — seed pair for diverging-clone tracking
+          this.seedPair(original, block, 1.0, 'dry/duplicate');
+        }
       }
-    }
+    });
   }
 
   /**
@@ -564,9 +571,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           block.start,
           `Structurally similar code block detected (${block.lineCount} lines). ` +
           `First occurrence at ${original.file}:${original.start.line}`,
-          'suggestion',                                      // R7
-          'dry/structural-similarity',
-          block.hash
+          { severity: 'suggestion', rule: 'dry/structural-similarity', symbol: block.hash }  // R7
         );
         violation.fix = {
           oldText: block.text,
@@ -592,31 +597,37 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     config: DRYAnalyzerConfig,
     violations: Violation[]
   ): void {
-    if (!config.fullFunctionIndex || config.fullFunctionIndex.length === 0) return;
+    withRuleTiming('dry/duplicate', () => {
+      if (!config.fullFunctionIndex || config.fullFunctionIndex.length === 0) return;
 
-    const fullHashmap = this.buildFullFunctionHashmap(config);
+      const fullHashmap = this.buildFullFunctionHashmap(config);
 
-    for (const block of blocks) {
-      if (!isBlockLargeEnough(block, config)) continue;
+      for (const block of blocks) {
+        if (!isBlockLargeEnough(block, config)) continue;
 
-      const fullMatch = fullHashmap.get(block.hash);
-      if (fullMatch && fullMatch.file !== block.file) {
-        const violation = this.createViolation(
-          block.file,
-          block.start,
-          `Duplicate code block detected (${block.lineCount} lines). ` +
-          `First occurrence in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name})`,
-          'warning',
-          'dry/duplicate',
-          block.hash
-        );
-        violation.fix = {
-          oldText: block.text,
-          newText: `// Consider extracting to a shared function`
-        };
-        violations.push(violation);
+        const fullMatch = fullHashmap.get(block.hash);
+        if (fullMatch && fullMatch.file !== block.file) {
+          const violation = this.createViolation(
+            block.file,
+            block.start,
+            `Duplicate code block detected (${block.lineCount} lines). ` +
+            `First occurrence in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name})`,
+            { severity: 'warning', rule: 'dry/duplicate', symbol: block.hash,
+              resolution: {
+                action: 'extract-duplicate',
+                summary: `Extract the ${block.lineCount}-line block duplicated in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name}) into a shared function both sites call.`,
+                files: [block.file, fullMatch.file],
+                lines: [block.start.line, fullMatch.line],
+              } }
+          );
+          violation.fix = {
+            oldText: block.text,
+            newText: `// Consider extracting to a shared function`
+          };
+          violations.push(violation);
+        }
       }
-    }
+    });
   }
 
   /**
@@ -681,9 +692,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           locations[0],
           `String literal "${value.substring(0, 30)}..." is duplicated ${locations.length} times`,
-          'suggestion',
-          'duplicate-string-literal',
-          value.substring(0, 50)
+          { severity: 'suggestion', rule: 'duplicate-string-literal', symbol: value.substring(0, 50) }
         );
         violation.fix = {
           oldText: value,
@@ -721,9 +730,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           { line: 1, column: 1 }, // Import section is typically at the top
           `Module "${source}" is imported ${count} times`,
-          'warning',
-          'duplicate-import',
-          source
+          { severity: 'warning', rule: 'duplicate-import', symbol: source }
         ));
       }
     }

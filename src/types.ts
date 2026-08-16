@@ -31,6 +31,28 @@ export interface ArchitectureViolation extends Violation {
 }
 
 /**
+ * Spec 37 R1 — the structured next action a gating finding carries.
+ *
+ * A resolution is not prose appended to the message: consumers route on
+ * `action`, and every field it names (symbols/files/lines) is something the
+ * analyzer already computed. Where an analyzer cannot produce one for a given
+ * occurrence, it emits the finding non-blocking (Spec 36 R6) and records the
+ * gap rather than inventing a plan.
+ */
+export interface Resolution {
+  /** Machine-actionable verb the consumer routes on (e.g. `split-class`, `parameterize`). */
+  action: string;
+  /** One-sentence specific next step naming concrete symbols/files/lines. */
+  summary: string;
+  /** Concrete symbols the analyzer identified. */
+  symbols?: string[];
+  /** Concrete files the analyzer identified. */
+  files?: string[];
+  /** Concrete lines the analyzer identified. */
+  lines?: number[];
+}
+
+/**
  * Audit scope applied to a result.
  * - `full` – a complete audit (scope was `all`)
  * - `scoped` – audit was scoped to a subset of files; the result does NOT
@@ -71,6 +93,13 @@ export interface Violation {
   recommendation?: string;
   /** Scratch flag for diff/new detection. */
   new?: boolean;
+  /**
+   * Spec 36 R4 — true when the file matched a path profile that excludes it
+   * from the blocking gate. The finding still appears in reports at its real
+   * severity; it is simply never blocking. This replaces the removed
+   * `severityCap` soften-in-place mechanism.
+   */
+  gateExcluded?: boolean;
   violationType?: string;
   symbol?: string;
   principle?: string;
@@ -94,6 +123,22 @@ export interface Violation {
   caller?: string;
   /** Suggested fix — either a string description or a structured {oldText, newText} patch. */
   fix?: string | { oldText: string; newText: string };
+  /**
+   * Spec 37 R1 — structured next action for gating findings. Present on every
+   * gating finding; absent on non-gating findings.
+   */
+  resolution?: Resolution;
+  /**
+   * Spec 36 R7 — true when an inline `code-audit-disable-*` directive with a
+   * required reason suppressed this finding. Suppressed findings never block
+   * (the directive is the block-removal mechanism); they still appear in
+   * reports with the reason attached.
+   */
+  suppressed?: boolean;
+  /** The required reason from the directive that suppressed this finding. */
+  suppressionReason?: string;
+  /** Which directive form (`disable-line` / `disable-next-line`) suppressed it. */
+  suppressionKind?: 'disable-line' | 'disable-next-line';
 }
 
 /**
@@ -346,6 +391,9 @@ export interface PipelineResult {
      *  buildCoverageReport to promote zero-violation rules from `unassessed` to
      *  `clean` (input present) or `notApplicable` (all inputs absent). */
     inputPresence?: InputPresence;
+    /** Spec 38 R2: per-rule wall-clock timing, slowest first, gating path only.
+     *  Present only when CODE_AUDIT_RULE_TIMING=1. */
+    ruleTiming?: Array<{ ruleId: string; totalMs: number; calls: number }>;
   };
   indexFacts?: IndexFactsEntry[];
 }
@@ -414,6 +462,9 @@ export interface AuditResult {
     auditDuration: number;
     filesAnalyzed: number;
     analyzersRun: string[];
+    /** Absolute paths of every file this run analyzed. Populated for scoped
+     *  runs; the `changed` command feeds it to the diff gate (Spec 36 R2). */
+    analyzedFiles?: string[];
     configUsed?: AuditOptions;
     collectedFunctions?: FunctionMetadata[]; // Functions collected during audit
     fileToFunctionsMap?: Record<string, FunctionMetadata[]>; // Functions per file for sync
@@ -444,6 +495,15 @@ export interface AuditResult {
      *  buildCoverageReport to promote zero-violation rules from `unassessed` to
      *  `clean` (input present) or `notApplicable` (all inputs absent). */
     inputPresence?: InputPresence;
+    /** Spec 36 R7 — suppression triage: how many directives, how many findings
+     *  they suppressed, and which directives were unnecessary or reasonless
+     *  (both are errors). */
+    suppressions?: {
+      total: number;
+      suppressed: number;
+      unnecessary: Array<{ file: string; line: number; rule: string }>;
+      reasonless: Array<{ file: string; line: number; rule: string }>;
+    };
   };
 }
 
@@ -590,6 +650,10 @@ export interface AuditConfig {
   crossDomain?: CrossDomainConfig;
   // Analyzer-specific configurations
   analyzerOptions?: Record<string, any>;
+  /** Per-analyzer config overrides keyed by analyzer namespace (e.g. `solid.maxLinesPerMethod`). */
+  analyzerConfigs?: Record<string, any>;
+  /** Spec 36 R5 — written justifications for each non-default threshold, keyed `"<analyzer>.<key>"`. */
+  rationales?: Record<string, string>;
 }
 
 // Legacy type aliases for backward compatibility
@@ -613,6 +677,8 @@ export interface AuditMetadata {
   tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
   /** Spec 30: Per-stage wall-clock timing for the streaming pipeline */
   stageTiming?: Record<string, number>;
+  /** Spec 36 R5 — thresholds the run changed from default, with the delta. */
+  thresholdChanges?: Array<{ key: string; defaultValue: unknown; effectiveValue: unknown }>;
 }
 
 export interface BaseAnalyzerOptions {
@@ -686,6 +752,10 @@ export interface AuditRunnerOptions extends AuditOptions {
   configName?: string;
   projectRoot?: string;
   analyzerConfigs?: Record<string, any>;
+  /** Spec 36 R5 — written justifications for non-default thresholds, keyed `"<analyzer>.<key>"`. */
+  rationales?: Record<string, string>;
+  /** Shareable presets to apply (Spec 38 R4) — resolved by id via `getPreset`. */
+  presets?: string[];
   indexFunctions?: boolean; // Whether to index functions during audit
   analyzerConcurrency?: number; // Number of analyzers to run in parallel
   /** Cooperative cancel (MCP parent or worker soft budget). Checked between analyzers and on progress. */
@@ -1181,7 +1251,7 @@ export interface SchemaDefinition {
 
 // Schema Analysis Types
 export interface SchemaViolation extends Violation {
-  schemaType: 'missing-reference' | 'orphaned-table' | 'naming-convention' | 'missing-index' | 'circular-dependency';
+  schemaType: 'missing-reference' | 'orphaned-table' | 'table-naming-convention' | 'missing-index' | 'circular-dependency';
   tableName?: string;
   columnName?: string;
   expectedSchema?: string;

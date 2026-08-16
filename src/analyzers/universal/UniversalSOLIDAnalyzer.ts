@@ -4,6 +4,7 @@
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
+import { withRuleTiming } from '../ruleTiming.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, ClassInfo, FunctionInfo, InterfaceInfo } from '../../languages/types.js';
 
@@ -34,19 +35,14 @@ export interface SOLIDAnalyzerConfig {
 
 export const DEFAULT_SOLID_CONFIG: SOLIDAnalyzerConfig = {
   maxMethodsPerClass: 15,
-  // CALIBRATED 50→100 (recorded rationale): line count is a weak SRP signal
-  // for AST/visitor code, where a single switch/if-ladder over node types is
-  // the correct OCP-idiomatic shape and must not be split into artificial
-  // helpers. The real SRP signal is maxMethodComplexity: 50 (unchanged), which
-  // still flags genuinely over-branched methods. 100 is the hard "truly too
-  // long to hold in the head" backstop.
-  maxLinesPerMethod: 100,
-  // CALIBRATED 4→6 (recorded rationale): universal analyzers thread a context
-  // tuple (ast, adapter, sourceCode, config) plus a target through private
-  // methods — 5-6 positional parameters is that idiom's natural shape, not an
-  // SRP smell. The threshold still catches real options-object candidates
-  // (7+ params), which are fixed individually rather than waived.
-  maxParametersPerMethod: 6,
+  // Confirmed by the Spec-11 R3 sweep; must match src/config/defaults.ts.
+  // Reverted 2026-08-14: a 50→100 / 4→6 calibration (made to clear
+  // UniversalSchemaAnalyzer during Spec 33) silently dropped 660
+  // single-responsibility findings on recall-protocol. Undone rather than
+  // re-baselined — a threshold change must be decided on its own merits with
+  // recall's numbers in front of you, not as a side effect of one file passing.
+  maxLinesPerMethod: 50,
+  maxParametersPerMethod: 4,
   maxClassComplexity: 50,              // DEPRECATED — kept for back-compat
   maxInterfaceMembers: 20,
   // R5.1: Per-method cyclomatic complexity (true McCC)
@@ -86,6 +82,18 @@ const BUILTIN_TYPES = new Set<string>([
 ]);
 
 /**
+ * Bundled per-file inputs for the SOLID checks. `ast`, `adapter`, `sourceCode`,
+ * and `config` travel together through every class/function/interface check, so
+ * they are passed as one context object rather than four trailing parameters.
+ */
+interface SolidContext {
+  ast: AST;
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  config: SOLIDAnalyzerConfig;
+}
+
+/**
  * Universal solid analyzer.
  */
 export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
@@ -103,21 +111,23 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     const finalConfig = { ...DEFAULT_SOLID_CONFIG, ...config };
 
     // Skip test files if configured
-    if (finalConfig.skipTestFiles && this.isTestFile(ast.filePath)) {
+    if (finalConfig.skipTestFiles && isTestFile(ast.filePath)) {
       return violations;
     }
+
+    const ctx: SolidContext = { ast, adapter, sourceCode, config: finalConfig };
 
     // Analyze classes
     const classes = adapter.extractClasses(ast);
     for (const cls of classes) {
-      violations.push(...this.analyzeClass(cls, ast, adapter, sourceCode, finalConfig));
+      violations.push(...this.analyzeClass(cls, ctx));
     }
 
     // Analyze standalone functions
     const functions = adapter.extractFunctions(ast);
     for (const func of functions) {
       if (!func.isMethod) { // Skip methods as they're analyzed with their classes
-        violations.push(...this.analyzeFunction(func, ast, adapter, sourceCode, finalConfig));
+        violations.push(...this.analyzeFunction(func, ctx));
       }
     }
 
@@ -125,7 +135,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     if (adapter.extractInterfaces) {
       const interfaces = adapter.extractInterfaces(ast);
       for (const iface of interfaces) {
-        violations.push(...this.analyzeInterface(iface, ast, adapter, sourceCode, finalConfig));
+        violations.push(...this.analyzeInterface(iface, ctx));
       }
     }
 
@@ -135,35 +145,76 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   /**
    * Analyze a class for SOLID violations
    */
-  private analyzeClass(
-    cls: ClassInfo,
-    ast: AST,
-    adapter: LanguageAdapter,
-    sourceCode: string,
-    config: SOLIDAnalyzerConfig
-  ): Violation[] {
+  private analyzeClass(cls: ClassInfo, ctx: SolidContext): Violation[] {
     const violations: Violation[] = [];
 
-    // ── R5.2: Class size (suggestion) ──────────────────────────────────
+    this.checkClassSize(cls, ctx, violations);
+    this.checkOpenClosed(cls, ctx, violations);
+    this.checkLiskov(cls, ctx, violations);
+    this.checkDependencyInversion(cls, ctx, violations);
 
-    const methodsThreshold = config.classMethodsThreshold ?? config.maxMethodsPerClass ?? 15;
-    if (cls.methods.length > methodsThreshold) {
-      violations.push(this.createViolation(
-        ast.filePath,
-        cls.location.start,
-        `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting responsibilities.`,
-        'suggestion',                                          // R7: class-size → suggestion
-        'solid/class-size',
-        cls.name
-      ));
-    }
+    return violations;
+  }
 
-    // Analyze each method for complexity + standard size checks
+  /**
+   * R5.2: Class size checks (method count + aggregate cyclomatic complexity).
+   */
+  private checkClassSize(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): void {
+    const { ast, config } = ctx;
+
+    withRuleTiming('solid/class-size', () => {
+      const methodsThreshold = config.classMethodsThreshold ?? config.maxMethodsPerClass ?? 15;
+      if (cls.methods.length > methodsThreshold) {
+        violations.push(this.createViolation(
+          ast.filePath,
+          cls.location.start,
+          `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting responsibilities.`,
+          { severity: 'suggestion', rule: 'solid/class-size', symbol: cls.name,  // R7: class-size → suggestion
+            resolution: {
+              action: 'split-class',
+              summary: `Split class "${cls.name}" (${cls.methods.length} methods) into smaller classes by extracting a cohesive subset of its methods.`,
+              symbols: cls.methods.map((m) => `${cls.name}.${m.name}`),
+              files: [ast.filePath],
+              lines: cls.methods.map((m) => m.location.start.line),
+            } }
+        ));
+      }
+    });
+
+    const aggregateComplexity = this.analyzeClassMethods(cls, ctx, violations);
+
+    withRuleTiming('solid/class-size', () => {
+      const maxAggregate = config.classAggregateComplexity ?? 100;
+      if (aggregateComplexity > maxAggregate) {
+        violations.push(this.createViolation(
+          ast.filePath,
+          cls.location.start,
+          `Class "${cls.name}" has aggregate cyclomatic complexity ${aggregateComplexity}, ` +
+          `exceeding the maximum of ${maxAggregate}. Consider splitting the class.`,
+          { severity: 'suggestion', rule: 'solid/class-size', symbol: cls.name,  // R7: class-size → suggestion
+            resolution: {
+              action: 'split-class',
+              summary: `Split class "${cls.name}" (aggregate complexity ${aggregateComplexity}) to move its most-complex methods into a separate class.`,
+              symbols: cls.methods.map((m) => `${cls.name}.${m.name}`),
+              files: [ast.filePath],
+              lines: cls.methods.map((m) => m.location.start.line),
+            } }
+        ));
+      }
+    });
+  }
+
+  /**
+   * Analyze each method's complexity + standard size checks, returning the
+   * class's aggregate cyclomatic complexity for the R5.2 aggregation check.
+   */
+  private analyzeClassMethods(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): number {
+    const { ast, adapter, config } = ctx;
     let aggregateComplexity = 0;
 
     for (const method of cls.methods) {
       // R5.1: Per-method cyclomatic complexity (warning)
-      const methodNode = this.findNodeByLocation(ast.root, method.location.start);
+      const methodNode = findNodeByLocation(ast.root, method.location.start);
       if (methodNode) {
         const methodComplexity = adapter.getComplexity(methodNode);
         aggregateComplexity += methodComplexity;
@@ -175,129 +226,127 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             method.location.start,
             `Method "${cls.name}.${method.name}" has cyclomatic complexity ${methodComplexity}, ` +
             `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller methods.`,
-            'warning',                                         // R7: method-complexity → warning
-            'solid/method-complexity',
-            `${cls.name}.${method.name}`
+            { severity: 'warning', rule: 'solid/method-complexity', symbol: `${cls.name}.${method.name}` }  // R7: method-complexity → warning
           ));
         }
       }
 
       // Standard function checks (params, line count)
-      violations.push(...this.analyzeFunction(method, ast, adapter, sourceCode, config));
+      violations.push(...this.analyzeFunction(method, ctx));
     }
 
-    // R5.2: Class aggregate complexity (suggestion)
-    const maxAggregate = config.classAggregateComplexity ?? 100;
-    if (aggregateComplexity > maxAggregate) {
-      violations.push(this.createViolation(
-        ast.filePath,
-        cls.location.start,
-        `Class "${cls.name}" has aggregate cyclomatic complexity ${aggregateComplexity}, ` +
-        `exceeding the maximum of ${maxAggregate}. Consider splitting the class.`,
-        'suggestion',                                          // R7: class-size → suggestion
-        'solid/class-size',
-        cls.name
-      ));
-    }
+    return aggregateComplexity;
+  }
 
-    // Open/Closed Principle - check for modification patterns
-    if (this.hasModificationPatterns(cls, ast, adapter, sourceCode)) {
+  /**
+   * Open/Closed Principle — check for modification patterns.
+   */
+  private checkOpenClosed(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): void {
+    if (this.hasModificationPatterns(cls, ctx.ast, ctx.adapter, ctx.sourceCode)) {
       violations.push(this.createViolation(
-        ast.filePath,
+        ctx.ast.filePath,
         cls.location.start,
         `Class "${cls.name}" appears to be frequently modified. Consider using composition or inheritance for extension.`,
-        'suggestion',
-        'open-closed',
-        cls.name
+        { severity: 'suggestion', rule: 'open-closed', symbol: cls.name }
       ));
     }
+  }
 
-    // Liskov Substitution Principle
-    if (config.checkLiskovSubstitution && cls.extends) {
-      const lspViolations = this.checkLiskovSubstitution(cls, ast, adapter);
-      violations.push(...lspViolations);
+  /**
+   * Liskov Substitution Principle.
+   */
+  private checkLiskov(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): void {
+    if (ctx.config.checkLiskovSubstitution && cls.extends) {
+      violations.push(...this.checkLiskovSubstitution(cls, ctx.ast, ctx.adapter));
     }
-
-    // Dependency Inversion Principle
-    if (config.checkDependencyInversion) {
-      const dipViolations = this.checkDependencyInversion(cls, ast, adapter, sourceCode);
-      violations.push(...dipViolations);
-    }
-
-    return violations;
   }
   
   /**
    * Analyze a function for SOLID violations
    */
-  private analyzeFunction(
-    func: FunctionInfo,
-    ast: AST,
-    adapter: LanguageAdapter,
-    sourceCode: string,
-    config: SOLIDAnalyzerConfig
-  ): Violation[] {
+  private analyzeFunction(func: FunctionInfo, ctx: SolidContext): Violation[] {
     const violations: Violation[] = [];
 
-    // Too many parameters
-    if (func.parameters.length > (config.maxParametersPerMethod || 4)) {
-      violations.push(this.createViolation(
-        ast.filePath,
-        func.location.start,
-        `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 4}. Consider using an options object.`,
-        'warning',
-        'single-responsibility',
-        func.name
-      ));
-    }
-
-    // Function too long
-    const lineCount = func.location.end.line - func.location.start.line + 1;
-    if (lineCount > (config.maxLinesPerMethod || 50)) {
-      violations.push(this.createViolation(
-        ast.filePath,
-        func.location.start,
-        `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 50}. Consider breaking it down.`,
-        'warning',
-        'single-responsibility',
-        func.name
-      ));
-    }
+    this.checkFunctionSize(func, ctx, violations);
 
     // R5.1: Cyclomatic complexity for standalone functions (not methods — those are
     // already checked in analyzeClass). Skip methods to avoid double-reporting.
     if (!func.isMethod) {
-      const funcNode = this.findNodeByLocation(ast.root, func.location.start);
-      if (funcNode) {
-        const cyclomaticComplexity = adapter.getComplexity(funcNode);
-        const maxMethod = config.maxMethodComplexity ?? 50;
-        if (cyclomaticComplexity > maxMethod) {
-          violations.push(this.createViolation(
-            ast.filePath,
-            func.location.start,
-            `Function "${func.name}" has cyclomatic complexity ${cyclomaticComplexity}, ` +
-            `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller functions.`,
-            'warning',                                          // R7: method-complexity → warning
-            'solid/method-complexity',
-            func.name
-          ));
-        }
-      }
+      this.checkFunctionComplexity(func, ctx, violations);
     }
 
     return violations;
+  }
+
+  /**
+   * R5.1/R5.2: Function size checks (parameter count + line count).
+   */
+  private checkFunctionSize(func: FunctionInfo, ctx: SolidContext, violations: Violation[]): void {
+    const { ast, config } = ctx;
+
+    withRuleTiming('single-responsibility', () => {
+      if (func.parameters.length > (config.maxParametersPerMethod || 4)) {
+        violations.push(this.createViolation(
+          ast.filePath,
+          func.location.start,
+          `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 4}. Consider using an options object.`,
+          { severity: 'warning', rule: 'single-responsibility', symbol: func.name,
+            resolution: {
+              action: 'bundle-params',
+              summary: `Bundle the ${func.parameters.length} parameters of "${func.name}" into an options object.`,
+              symbols: func.parameters.map((p) => p.name),
+              files: [ast.filePath],
+              lines: [func.location.start.line],
+            } }
+        ));
+      }
+    });
+
+    withRuleTiming('single-responsibility', () => {
+      const lineCount = func.location.end.line - func.location.start.line + 1;
+      if (lineCount > (config.maxLinesPerMethod || 50)) {
+        violations.push(this.createViolation(
+          ast.filePath,
+          func.location.start,
+          `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 50}. Consider breaking it down.`,
+          { severity: 'warning', rule: 'single-responsibility', symbol: func.name,
+            resolution: {
+              action: 'break-down-function',
+              summary: `Break "${func.name}" (${lineCount} lines) into smaller functions, extracting named helper blocks.`,
+              symbols: [func.name],
+              files: [ast.filePath],
+              lines: [func.location.start.line],
+            } }
+        ));
+      }
+    });
+  }
+
+  /**
+   * R5.1: Cyclomatic complexity for a standalone function.
+   */
+  private checkFunctionComplexity(func: FunctionInfo, ctx: SolidContext, violations: Violation[]): void {
+    const funcNode = findNodeByLocation(ctx.ast.root, func.location.start);
+    if (!funcNode) return;
+
+    const cyclomaticComplexity = ctx.adapter.getComplexity(funcNode);
+    const maxMethod = ctx.config.maxMethodComplexity ?? 50;
+    if (cyclomaticComplexity > maxMethod) {
+      violations.push(this.createViolation(
+        ctx.ast.filePath,
+        func.location.start,
+        `Function "${func.name}" has cyclomatic complexity ${cyclomaticComplexity}, ` +
+        `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller functions.`,
+        { severity: 'warning', rule: 'solid/method-complexity', symbol: func.name }  // R7: method-complexity → warning
+      ));
+    }
   }
   
   /**
    * Analyze an interface for Interface Segregation Principle
    */
-  private analyzeInterface(
-    iface: InterfaceInfo,
-    ast: AST,
-    adapter: LanguageAdapter,
-    sourceCode: string,
-    config: SOLIDAnalyzerConfig
-  ): Violation[] {
+  private analyzeInterface(iface: InterfaceInfo, ctx: SolidContext): Violation[] {
+    const { ast, config } = ctx;
     const violations: Violation[] = [];
 
     if (!config.checkInterfaceSegregation) {
@@ -320,9 +369,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         ast.filePath,
         iface.location.start,
         `Interface "${iface.name}" has ${memberCount} members, exceeding the maximum of ${maxMembers}. Consider splitting into smaller interfaces.`,
-        'warning',
-        'interface-segregation',
-        iface.name
+        { severity: 'warning', rule: 'interface-segregation', symbol: iface.name }
       ));
     }
 
@@ -346,12 +393,12 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     adapter: LanguageAdapter,
     sourceCode: string
   ): boolean {
-    const classNode = this.findNodeByLocation(ast.root, cls.location.start);
+    const classNode = findNodeByLocation(ast.root, cls.location.start);
     if (!classNode) return false;
 
     let hasTypeChecking = false;
 
-    this.walkAST(classNode, node => {
+    walkAST(classNode, node => {
       if (node.type !== 'binary_expression') return;
       const text = adapter.getNodeText(node, sourceCode);
       const m = /\binstanceof\s+([A-Za-z_$][\w$]*)/.exec(text);
@@ -382,10 +429,10 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
       if (method.name === 'constructor') continue;
       
       // Check for methods that throw exceptions when parent doesn't
-      const methodNode = this.findNodeByLocation(ast.root, method.location.start);
+      const methodNode = findNodeByLocation(ast.root, method.location.start);
       if (methodNode) {
         let hasThrow = false;
-        this.walkAST(methodNode, node => {
+        walkAST(methodNode, node => {
           if (node.type === 'throw_statement') {
             hasThrow = true;
           }
@@ -396,9 +443,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             ast.filePath,
             method.location.start,
             `Method "${cls.name}.${method.name}" throws exceptions. Ensure this doesn't violate parent class contract.`,
-            'suggestion',
-            'liskov-substitution',
-            `${cls.name}.${method.name}`
+            { severity: 'suggestion', rule: 'liskov-substitution', symbol: `${cls.name}.${method.name}` }
           ));
         }
       }
@@ -410,101 +455,109 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   /**
    * Check Dependency Inversion Principle
    */
-  private checkDependencyInversion(
-    cls: ClassInfo,
-    ast: AST,
-    adapter: LanguageAdapter,
-    sourceCode: string
-  ): Violation[] {
-    const violations: Violation[] = [];
-    const classNode = this.findNodeByLocation(ast.root, cls.location.start);
+  private checkDependencyInversion(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): void {
+    const classNode = findNodeByLocation(ctx.ast.root, cls.location.start);
     if (!classNode) {
-      return violations;
+      return;
     }
 
-    // Names statically imported from other modules. Directly instantiating one
-    // of these (`new Foo()`) is depending on a concrete type instead of an
-    // abstraction — the DIP signal. Composition-root wiring via dynamic
-    // `await import(...)` is deliberately not resolvable from this static
-    // import table, so factories/orchestrators are not flagged.
-    const importedNames = new Set<string>();
-    for (const imp of adapter.extractImports(ast)) {
-      for (const spec of imp.specifiers) {
-        importedNames.add(spec.alias ?? spec.name);
-      }
+    if (this.hasDirectInstantiation(cls, classNode, ctx)) {
+      violations.push(this.createViolation(
+        ctx.ast.filePath,
+        cls.location.start,
+        `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
+        { severity: 'suggestion', rule: 'dependency-inversion', symbol: cls.name }
+      ));
     }
+  }
+
+  /**
+   * True if the class body directly instantiates a concrete type (`new Foo()`),
+   * which is the dependency-inversion signal.
+   *
+   * The signal is a *bare* construction of a PascalCase type name, regardless of
+   * where the type comes from — a statically-imported class, a CommonJS
+   * `require()` binding, or a class defined locally in the same file. The prior
+   * implementation gated on a statically-imported-name table, which made the rule
+   * dead on locally-defined classes (the common case — `AppGenerator`,
+   * `ResetPasswordError`, …) and on every `require()`-based codebase. Provenance is
+   * not a DIP concern: instantiating a concrete type violates the principle whether
+   * the type was imported or defined next door.
+   */
+  private hasDirectInstantiation(cls: ClassInfo, classNode: ASTNode, ctx: SolidContext): boolean {
+    const { adapter, sourceCode } = ctx;
 
     let hasDirectInstantiation = false;
-    this.walkAST(classNode, node => {
+    walkAST(classNode, node => {
       if (node.type !== 'new_expression') return;
-      const text = adapter.getNodeText(node, sourceCode);
-      const m = /\bnew\s+([A-Za-z_$][\w$]*)/.exec(text);
-      if (!m) return;
-      const ctorName = m[1];
+
+      // The constructor is the direct child that is neither the argument list
+      // nor a type-argument clause. It must be a bare `identifier`: a member
+      // access (`new this.Foo()`, `new ns.Foo()`), a parenthesized expression
+      // (`new (ctor())()`), or a call are not a concrete-type signal.
+      const ctor = (node.children ?? []).find(
+        c => c.type !== 'arguments' && c.type !== 'type_arguments'
+      );
+      if (!ctor || ctor.type !== 'identifier') return;
+
+      const ctorName = adapter.getNodeText(ctor, sourceCode).trim();
+      // A lowercase binding is an instance, not a type; only PascalCase names
+      // are treated as concrete classes (the JS/TS naming convention).
+      if (!/^[A-Z]/.test(ctorName)) return;
       // Platform primitives / error types are not application dependencies.
       if (BUILTIN_TYPES.has(ctorName)) return;
       // A class instantiating itself (singleton `new ThisClass()`) is not a
       // dependency.
       if (ctorName === cls.name) return;
-      if (importedNames.has(ctorName)) {
-        hasDirectInstantiation = true;
-      }
+
+      hasDirectInstantiation = true;
     });
 
-    if (hasDirectInstantiation) {
-      violations.push(this.createViolation(
-        ast.filePath,
-        cls.location.start,
-        `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
-        'suggestion',
-        'dependency-inversion',
-        cls.name
-      ));
+    return hasDirectInstantiation;
+  }
+}
+
+// --- Module-level helpers (pure tree/path utilities, no `this`) ---------------
+
+/** True when the path is a test/spec file (used by SOLID's skipTestFiles). */
+function isTestFile(filePath: string): boolean {
+  const testPatterns = [
+    /\.test\.[jt]sx?$/,
+    /\.spec\.[jt]sx?$/,
+    /__tests__\//,
+    /test\//,
+    /tests\//
+  ];
+
+  return testPatterns.some(pattern => pattern.test(filePath));
+}
+
+/** Breadth-first search for the node whose start position matches `location`. */
+function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
+  const queue: ASTNode[] = [root];
+
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+
+    if (node.location.start.line === location.line &&
+        node.location.start.column === location.column) {
+      return node;
     }
 
-    return violations;
-  }
-  
-  /**
-   * Helper methods
-   */
-  private isTestFile(filePath: string): boolean {
-    const testPatterns = [
-      /\.test\.[jt]sx?$/,
-      /\.spec\.[jt]sx?$/,
-      /__tests__\//,
-      /test\//,
-      /tests\//
-    ];
-    
-    return testPatterns.some(pattern => pattern.test(filePath));
-  }
-  
-  private findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
-    const queue: ASTNode[] = [root];
-    
-    while (queue.length > 0) {
-      const node = queue.shift()!;
-      
-      if (node.location.start.line === location.line &&
-          node.location.start.column === location.column) {
-        return node;
-      }
-      
-      if (node.children) {
-        queue.push(...node.children);
-      }
-    }
-    
-    return null;
-  }
-  
-  private walkAST(node: ASTNode, callback: (node: ASTNode) => void): void {
-    callback(node);
     if (node.children) {
-      for (const child of node.children) {
-        this.walkAST(child, callback);
-      }
+      queue.push(...node.children);
+    }
+  }
+
+  return null;
+}
+
+/** Depth-first walk over a subtree, invoking `callback` on every node. */
+function walkAST(node: ASTNode, callback: (node: ASTNode) => void): void {
+  callback(node);
+  if (node.children) {
+    for (const child of node.children) {
+      walkAST(child, callback);
     }
   }
 }

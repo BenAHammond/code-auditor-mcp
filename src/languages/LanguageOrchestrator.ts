@@ -198,6 +198,21 @@ export class LanguageOrchestrator {
     // 4. Merge results
     const mergedResult = this.mergeLanguageResults(analysisResults, languagesToAnalyze);
 
+    await this.applyPolyglotPostProcessing(analysisResults, mergedResult, options, startTime);
+
+    return mergedResult;
+  }
+
+  /**
+   * Run the optional post-merge steps: cross-references, cross-language
+   * violations, API contracts, dependency graph, index update, and metrics.
+   */
+  private async applyPolyglotPostProcessing(
+    analysisResults: Array<{ language: string; result: AnalysisResult }>,
+    mergedResult: PolyglotAnalysisResult,
+    options: PolyglotAnalysisOptions,
+    startTime: number,
+  ): Promise<void> {
     // 5. Build cross-references if enabled
     if (options.buildCrossReferences) {
       mergedResult.crossReferences = await this.buildCrossReferences(analysisResults);
@@ -207,7 +222,7 @@ export class LanguageOrchestrator {
     // 6. Detect cross-language violations
     if (options.enableCrossLanguageAnalysis) {
       mergedResult.crossLanguageViolations = await this.detectCrossLanguageViolations(
-        analysisResults, 
+        analysisResults,
         mergedResult.crossReferences || []
       );
       console.log(`[LanguageOrchestrator] Found ${mergedResult.crossLanguageViolations.length} cross-language violations`);
@@ -237,8 +252,6 @@ export class LanguageOrchestrator {
     // 10. Final metrics
     mergedResult.metrics.executionTime = Date.now() - startTime;
     console.log(`[LanguageOrchestrator] Analysis complete in ${mergedResult.metrics.executionTime}ms`);
-
-    return mergedResult;
   }
 
   /**
@@ -402,14 +415,7 @@ export class LanguageOrchestrator {
       }
 
       // Calculate language stats
-      merged.languageStats.set(language, {
-        filesAnalyzed: result.metrics.filesAnalyzed,
-        violations: result.violations.length,
-        functions: result.indexEntries?.filter(e => e.type === 'function').length || 0,
-        classes: result.indexEntries?.filter(e => e.type === 'class').length || 0,
-        interfaces: result.indexEntries?.filter(e => e.type === 'interface').length || 0,
-        executionTime: result.metrics.executionTime
-      });
+      merged.languageStats.set(language, buildLanguageStats(result));
 
       // Update totals
       merged.metrics.totalFiles += result.metrics.filesAnalyzed;
@@ -455,58 +461,10 @@ export class LanguageOrchestrator {
       }
     }
     
-    // Import and run API contract analysis
-    try {
-      const { APIContractAnalyzer, extractEndpoints, extractAPICalls } = await import('../analyzers/cross-language/APIContractAnalyzer.js');
+    // Import and run API contract analysis + schema validation
+    violations.push(...await runAPIContractAnalysis(allEntities));
+    violations.push(...await runSchemaValidation(allEntities));
 
-      const endpoints = extractEndpoints(allEntities);
-      const apiCalls = extractAPICalls(allEntities);
-      
-      if (endpoints.length > 0 || apiCalls.length > 0) {
-        const contractAnalyzer = new APIContractAnalyzer();
-        const contractViolations = await contractAnalyzer.analyzeContracts(endpoints, apiCalls);
-        
-        // Convert to CrossLanguageViolation format
-        for (const violation of contractViolations) {
-          violations.push({
-            ...violation,
-            crossLanguageType: 'api-mismatch',
-            relatedFiles: [violation.file, ...(violation.endpoint ? [violation.endpoint.file] : [])],
-            relatedLanguages: [
-              violation.call?.language || 'unknown',
-              violation.endpoint?.language || 'unknown'
-            ].filter(lang => lang !== 'unknown')
-          });
-        }
-      }
-    } catch (error) {
-      console.warn('[LanguageOrchestrator] Failed to run API contract analysis:', error);
-    }
-    
-    // Import and run schema validation
-    try {
-      const { SchemaValidator, extractSchemas } = await import('../analyzers/cross-language/SchemaValidator.js');
-
-      const schemas = extractSchemas(allEntities);
-      
-      if (schemas.length > 0) {
-        const schemaValidator = new SchemaValidator();
-        const schemaViolations = await schemaValidator.validateSchemas(schemas);
-        
-        // Convert to CrossLanguageViolation format
-        for (const violation of schemaViolations) {
-          violations.push({
-            ...violation,
-            crossLanguageType: 'type-mismatch',
-            relatedFiles: violation.schemas.map(s => s.file),
-            relatedLanguages: violation.schemas.map(s => s.language)
-          });
-        }
-      }
-    } catch (error) {
-      console.warn('[LanguageOrchestrator] Failed to run schema validation:', error);
-    }
-    
     console.log(`[LanguageOrchestrator] Found ${violations.length} cross-language violations`);
     return violations;
   }
@@ -600,4 +558,83 @@ export class LanguageOrchestrator {
       }
     };
   }
+}
+
+/**
+ * Build per-language statistics from a single analysis result.
+ */
+function buildLanguageStats(result: AnalysisResult): LanguageStats {
+  const entries = result.indexEntries || [];
+  return {
+    filesAnalyzed: result.metrics.filesAnalyzed,
+    violations: result.violations.length,
+    functions: entries.filter(e => e.type === 'function').length,
+    classes: entries.filter(e => e.type === 'class').length,
+    interfaces: entries.filter(e => e.type === 'interface').length,
+    executionTime: result.metrics.executionTime
+  };
+}
+
+/**
+ * Run API contract analysis and convert results to cross-language violations.
+ */
+async function runAPIContractAnalysis(allEntities: any[]): Promise<CrossLanguageViolation[]> {
+  const violations: CrossLanguageViolation[] = [];
+  try {
+    const { APIContractAnalyzer, extractEndpoints, extractAPICalls } = await import('../analyzers/cross-language/APIContractAnalyzer.js');
+
+    const endpoints = extractEndpoints(allEntities);
+    const apiCalls = extractAPICalls(allEntities);
+
+    if (endpoints.length > 0 || apiCalls.length > 0) {
+      const contractAnalyzer = new APIContractAnalyzer();
+      const contractViolations = await contractAnalyzer.analyzeContracts(endpoints, apiCalls);
+
+      // Convert to CrossLanguageViolation format
+      for (const violation of contractViolations) {
+        violations.push({
+          ...violation,
+          crossLanguageType: 'api-mismatch',
+          relatedFiles: [violation.file, ...(violation.endpoint ? [violation.endpoint.file] : [])],
+          relatedLanguages: [
+            violation.call?.language || 'unknown',
+            violation.endpoint?.language || 'unknown'
+          ].filter(lang => lang !== 'unknown')
+        });
+      }
+    }
+  } catch (error) {
+    console.warn('[LanguageOrchestrator] Failed to run API contract analysis:', error);
+  }
+  return violations;
+}
+
+/**
+ * Run schema validation and convert results to cross-language violations.
+ */
+async function runSchemaValidation(allEntities: any[]): Promise<CrossLanguageViolation[]> {
+  const violations: CrossLanguageViolation[] = [];
+  try {
+    const { SchemaValidator, extractSchemas } = await import('../analyzers/cross-language/SchemaValidator.js');
+
+    const schemas = extractSchemas(allEntities);
+
+    if (schemas.length > 0) {
+      const schemaValidator = new SchemaValidator();
+      const schemaViolations = await schemaValidator.validateSchemas(schemas);
+
+      // Convert to CrossLanguageViolation format
+      for (const violation of schemaViolations) {
+        violations.push({
+          ...violation,
+          crossLanguageType: 'type-mismatch',
+          relatedFiles: violation.schemas.map(s => s.file),
+          relatedLanguages: violation.schemas.map(s => s.language)
+        });
+      }
+    }
+  } catch (error) {
+    console.warn('[LanguageOrchestrator] Failed to run schema validation:', error);
+  }
+  return violations;
 }

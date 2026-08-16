@@ -239,7 +239,6 @@ function validatePathProfiles(profiles: PathProfile[] | undefined): string[] {
 
   const seenNames = new Set<string>();
   const VALID_PROFILE_KEYS = new Set(['name', 'paths', 'overrides', 'builtin']);
-  const VALID_SEVERITIES = new Set(['suggestion', 'warning', 'critical']);
 
   for (const profile of profiles) {
     // Check for unknown keys
@@ -271,15 +270,20 @@ function validatePathProfiles(profiles: PathProfile[] | undefined): string[] {
       errors.push(`Path profile "${profile.name}" : "overrides" must be an object`);
     }
 
-    // Validate severityCap value if present
+    // Reject the removed severityCap key and validate excludeFromGate (Spec-36 R4).
+    // severityCap was the "soften a finding in place" mechanism that made findings
+    // invisible without excluding the file; it is removed outright.
     if (profile.overrides && typeof profile.overrides === 'object' && !Array.isArray(profile.overrides)) {
-      const cap = (profile.overrides as Record<string, unknown>).severityCap;
-      if (cap !== undefined) {
-        if (typeof cap !== 'string' || !VALID_SEVERITIES.has(cap)) {
-          errors.push(
-            `Path profile "${profile.name}" : severityCap must be one of "suggestion", "warning", "critical" — got "${String(cap)}"`
-          );
-        }
+      const overrides = profile.overrides as Record<string, unknown>;
+      if (overrides.severityCap !== undefined) {
+        errors.push(
+          `Path profile "${profile.name}" : "severityCap" has been removed (Spec-36 R4). Use "excludeFromGate": true to exclude a file from the blocking gate instead of softening findings within it.`
+        );
+      }
+      if (overrides.excludeFromGate !== undefined && typeof overrides.excludeFromGate !== 'boolean') {
+        errors.push(
+          `Path profile "${profile.name}" : "excludeFromGate" must be a boolean — got "${String(overrides.excludeFromGate)}"`
+        );
       }
     }
 

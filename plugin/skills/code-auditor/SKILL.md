@@ -60,22 +60,22 @@ These are the codebase's declared constraints — "no importing X from Y," "modu
 
 ### Path Profiles — "my scripts directory is noisy"
 
-When an audit produces too many findings in scripts, tests, or fixtures, use **path profiles** in `.codeauditor.json` to cap severity per directory:
+When an audit produces too many findings in scripts, tests, or fixtures, use **path profiles** in `.codeauditor.json` to exclude a directory from the blocking gate:
 
 ```json
 {
   "pathProfiles": [
     { "name": "source-strict", "paths": ["src/**"], "overrides": { "requireFunctionDocs": true } },
-    { "name": "scripts-lenient", "paths": ["scripts/**"], "overrides": { "severityCap": "suggestion" } }
+    { "name": "scripts-lenient", "paths": ["scripts/**"], "overrides": { "excludeFromGate": true } }
   ]
 }
 ```
 
-Path profiles are an ordered array — files matching multiple profiles merge overrides (later wins). The `severityCap` key caps all violations in matching files at that severity. Caps are applied **after** global `severityOverrides`, so a path-level "this zone is lenient" always beats a global per-rule promotion.
+Path profiles are an ordered array — files matching multiple profiles merge overrides (later wins). The `excludeFromGate: true` key excludes all findings in matching files from the blocking gate. Findings still report at their real severity — a path profile excludes a file from the gate, it never softens a finding within it.
 
-A **built-in** `scripts-and-tests` profile ships with every install — it caps `scripts/**`, `tests/**`, `__tests__/**`, `fixtures/**`, and `*.test.*`/`*.spec.*` files at `suggestion`. Disable it with `"builtin": false` in `.codeauditor.json`.
+A **built-in** `scripts-and-tests` profile ships with every install — it excludes `scripts/**`, `tests/**`, `__tests__/**`, `fixtures/**`, and `*.test.*`/`*.spec.*` files from the gate. Disable it with `"builtin": false` in `.codeauditor.json`.
 
-Invariant violations are **immune** to path profile caps — invariants enforce declared laws and their severity is absolute.
+Invariant violations are **immune** to path profile gate exclusion — invariants enforce declared laws and always block.
 
 ### `code-audit tasks` — queue remediation work
 

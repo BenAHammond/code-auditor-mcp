@@ -25,10 +25,13 @@ import {
 import { discoverFiles } from './utils/fileDiscovery.js';
 import { loadConfig } from './config/configLoader.js';
 import { mergePathProfiles } from './config/defaults.js';
+import { checkThresholdRationales } from './config/thresholdRationales.js';
+import { applyPresets, getPreset } from './presets/presets.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
 import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
+import { collectSuppressionDirectives, applySuppressions, type SuppressionDirective } from './enforcement/suppressions.js';
 import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
 
 // Import universal analyzers
@@ -120,6 +123,38 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // No config file — proceed with defaults
     }
     const mergedOptions = { ...fileConfig, ...options, ...runOptions };
+
+    // Spec 36 R5 — a threshold change needs a written rationale. Check the
+    // user-facing analyzerConfigs layer (project config + inline options)
+    // BEFORE presets merge in, so curated presets never trip the guard. Any
+    // changed threshold without a rationale is a config error, not a warning.
+    const thresholdCheck = checkThresholdRationales(
+      mergedOptions.analyzerConfigs as Record<string, unknown> | undefined,
+      (mergedOptions as AuditRunnerOptions).rationales,
+    );
+    if (thresholdCheck.errors.length > 0) {
+      const message = [
+        'Configuration error — threshold changes require a rationale (Spec 36 R5):',
+        ...thresholdCheck.errors.map((e) => `  - ${e}`),
+      ].join('\n');
+      throw new Error(message);
+    }
+    const thresholdChanges = thresholdCheck.changes.map((c) => ({
+      key: c.key,
+      defaultValue: c.defaultValue,
+      effectiveValue: c.effectiveValue,
+    }));
+
+    // Resolve shareable presets (Spec 38 R4). Unknown ids are dropped (matching
+    // mergePresets semantics); the merged preset layer becomes the base under
+    // the project config / run options already present in mergedOptions.
+    const presetIds = Array.isArray(mergedOptions.presets) ? mergedOptions.presets : [];
+    if (presetIds.length > 0) {
+      mergedOptions.analyzerConfigs = applyPresets(
+        presetIds,
+        mergedOptions.analyzerConfigs
+      );
+    }
 
     // Always merge built-in path profiles — corpus audits and projects without
     // .codeauditor.json must still get the built-in scripts-and-tests profile.
@@ -372,6 +407,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let pipelineSkippedFiles: Array<{ filePath: string; bytes: number; reason: string }> | undefined;
     let pipelineUnparsedFiles: Array<{ filePath: string; reason: string }> | undefined;
     let pipelineInputPresence: InputPresence | undefined;
+    let pipelineRuleTiming: Array<{ ruleId: string; totalMs: number; calls: number }> | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -514,6 +550,13 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           dbCallMethods: scConfig.dbCallMethods,
           dbBindingNames: scConfig.dbBindingNames ?? ['env.DB'],
           fileGateGlobs: scConfig.fileGateGlobs,
+          // Declarative ORM table-source registry (Spec 29 R2). Defaults to the
+          // Drizzle builders in the visitor when unset; presets (drizzle, typeorm,
+          // knex) supply their own, and it must not be dropped before the visitor.
+          tableSources: scConfig.tableSources,
+          // Provenance context knobs that the visitor reads via buildProvenanceContext.
+          dbWrapperNames: scConfig.dbWrapperNames,
+          detection: scConfig.detection,
           // External schema references — the pipeline reducer gates unknown-table
           // detection on these being non-empty (fail-open law: no external
           // authority means the rule cannot accuse).
@@ -629,6 +672,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         pipelineSkippedFiles = pipelineResult.metadata?.skippedFiles;
         pipelineUnparsedFiles = pipelineResult.metadata?.unparsedFiles;
         pipelineInputPresence = pipelineResult.metadata?.inputPresence;
+        pipelineRuleTiming = pipelineResult.metadata?.ruleTiming;
       } catch (error) {
         if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
           throw error;
@@ -763,6 +807,36 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         fixed: classified.fixed.length,
         known: classified.known.length,
       });
+    }
+
+    // ── Spec 36 R7 — suppression decay ──────────────────────────────────
+    // Inline `code-audit-disable-*` directives suppress a finding only while
+    // it fires, carry a required reason, and are themselves an error when
+    // unnecessary or reasonless. Computed here (not in the gate) so the
+    // suppressed/unnecessary/reasonless triage is reported, never silent.
+    let suppressionMetadata:
+      | { total: number; suppressed: number; unnecessary: SuppressionDirective[]; reasonless: SuppressionDirective[] }
+      | undefined;
+    {
+      const directives = collectSuppressionDirectives(files);
+      if (directives.length > 0) {
+        const allViolations = Object.values(orderedAnalyzerResults).flatMap(
+          (r) => r.violations
+        );
+        const applied = applySuppressions(allViolations, directives);
+        suppressionMetadata = {
+          total: directives.length,
+          suppressed: applied.suppressed.length,
+          unnecessary: applied.unnecessary,
+          reasonless: applied.reasonless,
+        };
+        logMcpInfo('suppressions', 'suppression triage complete', {
+          total: directives.length,
+          suppressed: applied.suppressed.length,
+          unnecessary: applied.unnecessary.length,
+          reasonless: applied.reasonless.length,
+        });
+      }
     }
 
     // ── Spec 13 R2 — Hotspot scoring & finding reordering ──────────────
@@ -953,6 +1027,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         auditDuration: Date.now() - startTime,
         filesAnalyzed: files.length,
         analyzersRun: enabledAnalyzers,
+        ...(isScoped && { analyzedFiles: files }),
         configUsed: mergedOptions,
         scope: scopeResultType,
         provenanceResolutionMs: provenanceTiming.totalMs,
@@ -962,9 +1037,12 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(pipelineCoverage && { coverage: pipelineCoverage }),
         ...(pipelineTableCatalog && { tableCatalog: pipelineTableCatalog }),
         ...(pipelineStageTiming && { stageTiming: pipelineStageTiming }),
+        ...(thresholdChanges.length > 0 && { thresholdChanges }),
         ...(pipelineSkippedFiles && pipelineSkippedFiles.length > 0 && { skippedFiles: pipelineSkippedFiles }),
         ...(pipelineUnparsedFiles && pipelineUnparsedFiles.length > 0 && { unparsedFiles: pipelineUnparsedFiles }),
         ...(pipelineInputPresence && { inputPresence: pipelineInputPresence }),
+        ...(pipelineRuleTiming && { ruleTiming: pipelineRuleTiming }),
+        ...(suppressionMetadata && { suppressions: suppressionMetadata }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
           fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)

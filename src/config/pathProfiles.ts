@@ -24,15 +24,16 @@ export interface PathProfile {
 }
 
 export interface ResolvedProfile {
-  /** Merged overrides (excluding severityCap). */
+  /** Merged overrides (excluding gate-exclusion). */
   overrides: Record<string, unknown>;
-  /** Severity cap to apply post-analysis, if any. */
-  severityCap?: string;
+  /**
+   * Spec 36 R4 — true when the file is excluded from the blocking gate by a
+   * matching path profile. Findings still report at their real severity.
+   */
+  excludeFromGate: boolean;
   /** Names of all profiles that matched this file, in match order. */
   matchedProfileNames: string[];
 }
-
-const VALID_SEVERITIES = new Set(['suggestion', 'warning', 'critical']);
 
 /**
  * Resolve which profiles match a file and merge their overrides.
@@ -40,7 +41,7 @@ const VALID_SEVERITIES = new Set(['suggestion', 'warning', 'critical']);
  * @param filePath - Absolute path to the file being analyzed
  * @param projectRoot - Project root directory
  * @param profiles - Ordered array of path profiles (built-in + user)
- * @returns Merged overrides, severity cap, and matched profile names
+ * @returns Merged overrides, gate exclusion, and matched profile names
  */
 export function resolvePathProfile(
   filePath: string,
@@ -48,7 +49,7 @@ export function resolvePathProfile(
   profiles: PathProfile[]
 ): ResolvedProfile {
   const overrides: Record<string, unknown> = {};
-  let severityCap: string | undefined;
+  let excludeFromGate = false;
   const matchedProfileNames: string[] = [];
 
   const relativePath = path.relative(projectRoot, filePath);
@@ -60,18 +61,16 @@ export function resolvePathProfile(
     matchedProfileNames.push(profile.name);
 
     for (const [key, value] of Object.entries(profile.overrides)) {
-      if (key === 'severityCap') {
-        severityCap = value as string;
+      if (key === 'excludeFromGate') {
+        // Last matching profile that mentions the key wins (consistent with
+        // "later wins" override merging). A profile that doesn't mention it
+        // leaves the prior value untouched.
+        excludeFromGate = value === true;
       } else {
         overrides[key] = value;
       }
     }
   }
 
-  if (severityCap && !VALID_SEVERITIES.has(severityCap)) {
-    // Should never reach here if validateConfig catches it, but guard anyway
-    severityCap = undefined;
-  }
-
-  return { overrides, severityCap, matchedProfileNames };
+  return { overrides, excludeFromGate, matchedProfileNames };
 }

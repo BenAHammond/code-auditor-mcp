@@ -124,56 +124,34 @@ export class DrizzleAdapter implements OrmAdapter {
     sourceCode: string,
   ): OrmTableReference | null {
     const text = adapter.getNodeText(node, sourceCode);
+    const location = node.location.start;
 
-    // db.select().from(tableName)
-    // Spec 22 R4.2: Require .select() companion — prevents Array.from(map) false positives.
-    const fromMatch = text.match(/\.from\s*\(\s*(\w+)\s*\)/);
-    if (fromMatch && /\.select\s*\(/.test(text)) {
-      return {
-        table: fromMatch[1],
-        type: 'select',
-        location: node.location.start,
-        context: fromMatch[0],
-      };
-    }
+    // Spec 22 R4.2: each method requires a companion in the expression to
+    // avoid matching generic .from()/.insert()/.delete() calls.
+    const from = this.matchTable(text, 'from', 'select');
+    if (from) return { ...from, type: 'select', location };
 
-    // db.insert(tableName).values(...)  → insert
-    // Spec 22 R4.2: Requires .values() companion — prevents generic .insert(record) false positives.
-    const insertMatch = text.match(/\.insert\s*\(\s*(\w+)\s*\)/);
-    if (insertMatch && /\.values\s*\(/.test(text)) {
-      return {
-        table: insertMatch[1],
-        type: 'insert',
-        location: node.location.start,
-        context: insertMatch[0],
-      };
-    }
+    const insert = this.matchTable(text, 'insert', 'values');
+    if (insert) return { ...insert, type: 'insert', location };
 
-    // db.update(tableName).set(...)  → update
-    // Already gated by .set() — no Spec 22 change needed.
-    const updateMatch = text.match(/\.update\s*\(\s*(\w+)\s*\)/);
-    if (updateMatch && /\.set\s*\(/.test(text)) {
-      return {
-        table: updateMatch[1],
-        type: 'update',
-        location: node.location.start,
-        context: updateMatch[0],
-      };
-    }
+    const update = this.matchTable(text, 'update', 'set');
+    if (update) return { ...update, type: 'update', location };
 
-    // db.delete(tableName).where(...)  → delete
-    // Spec 22 R4.2: Require .where() companion — prevents generic .delete(id) false positives.
-    const deleteMatch = text.match(/\.delete\s*\(\s*(\w+)\s*\)/);
-    if (deleteMatch && /\.where\s*\(/.test(text)) {
-      return {
-        table: deleteMatch[1],
-        type: 'delete',
-        location: node.location.start,
-        context: deleteMatch[0],
-      };
-    }
+    const del = this.matchTable(text, 'delete', 'where');
+    if (del) return { ...del, type: 'delete', location };
 
     return null;
+  }
+
+  /** Match `.method(table)` only when the companion method also appears. */
+  private matchTable(
+    text: string,
+    method: string,
+    companion: string,
+  ): { table: string; context: string } | null {
+    const m = text.match(new RegExp(`\\.${method}\\s*\\(\\s*(\\w+)\\s*\\)`));
+    if (!m || !new RegExp(`\\.${companion}\\s*\\(`).test(text)) return null;
+    return { table: m[1], context: m[0] };
   }
 
   // ── Schema definitions from table builders ──────────────────────────────

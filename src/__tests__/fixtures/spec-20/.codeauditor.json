@@ -11,7 +11,7 @@
       "name": "scripts-lenient",
       "paths": ["scripts/**"],
       "overrides": {
-        "severityCap": "suggestion",
+        "excludeFromGate": true,
         "requireFunctionDocs": true
       }
     }

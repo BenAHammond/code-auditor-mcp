@@ -36,6 +36,15 @@ import type {
   SourceLocation,
 } from '../types.js';
 
+/** A raw import/require record extracted directly from a syntax tree. */
+interface RawImport {
+  moduleSpecifier: string;
+  isStatic: boolean;
+  isDynamic: boolean;
+  isRequire: boolean;
+  line: number;
+}
+
 // ---------------------------------------------------------------------------
 // Source code storage
 // ---------------------------------------------------------------------------
@@ -269,43 +278,18 @@ class TsNameDocumentation extends TsTraversalHelpers {
       case 'abstract_class_declaration':
       case 'interface_declaration':
       case 'enum_declaration':
-      case 'type_alias_declaration': {
-        const nameNode = node.childForFieldName?.('name');
-        if (nameNode) return nameNode.text;
-        // Fallback: find first identifier child
-        for (const child of node.namedChildren) {
-          if (child.type === 'identifier' || child.type === 'type_identifier') {
-            return child.text;
-          }
-        }
-        return null;
-      }
+      case 'type_alias_declaration':
+        return this.resolveNameField(node, ['identifier', 'type_identifier']);
 
       case 'method_definition':
-      case 'public_field_definition': {
-        const nameNode = node.childForFieldName?.('name');
-        if (nameNode) return nameNode.text;
-        // property_identifier or string
-        for (const child of node.namedChildren) {
-          if (
-            child.type === 'property_identifier' ||
-            child.type === 'string'
-          ) {
-            return child.text.replace(/^["']|["']$/g, '');
-          }
-        }
-        return null;
-      }
+      case 'public_field_definition':
+        return this.resolveNameField(node, ['property_identifier', 'string']);
 
-      case 'variable_declarator': {
-        const nameNode = node.childForFieldName?.('name');
-        if (nameNode) return nameNode.text;
-        return null;
-      }
+      case 'variable_declarator':
+        return this.resolveNameField(node, []);
 
       case 'lexical_declaration':
       case 'variable_declaration': {
-        // Find the declarator child and extract its name
         for (const child of node.namedChildren) {
           if (child.type === 'variable_declarator') {
             return this.extractName(child);
@@ -315,24 +299,15 @@ class TsNameDocumentation extends TsTraversalHelpers {
       }
 
       case 'arrow_function': {
-        // Check if assigned to a variable: const foo = () => {}
         const parent = node.parent;
-        if (parent?.type === 'variable_declarator') {
-          return this.extractName(parent);
-        }
-        return null;
+        return parent?.type === 'variable_declarator' ? this.extractName(parent) : null;
       }
 
       case 'function_expression': {
-        // Might have a name: const foo = function bar() {}
         const nameNode = node.childForFieldName?.('name');
         if (nameNode) return nameNode.text;
-        // Check if assigned to a variable
         const parent = node.parent;
-        if (parent?.type === 'variable_declarator') {
-          return this.extractName(parent);
-        }
-        return null;
+        return parent?.type === 'variable_declarator' ? this.extractName(parent) : null;
       }
 
       case 'property_identifier':
@@ -344,6 +319,21 @@ class TsNameDocumentation extends TsTraversalHelpers {
       default:
         return null;
     }
+  }
+
+  /** Return `node`'s `name` field text, else the first named child whose type
+   *  is in `fallbackTypes` (stripping quotes from `string` children). */
+  protected resolveNameField(node: TreeSitterNode, fallbackTypes: string[]): string | null {
+    const nameNode = node.childForFieldName?.('name');
+    if (nameNode) return nameNode.text;
+    for (const child of node.namedChildren) {
+      if (fallbackTypes.includes(child.type)) {
+        return child.type === 'string'
+          ? child.text.replace(/^["']|["']$/g, '')
+          : child.text;
+      }
+    }
+    return null;
   }
 
   /** Extract a type annotation string from a node. */
@@ -417,40 +407,36 @@ class TsNameDocumentation extends TsTraversalHelpers {
       return this.cleanCommentText(text);
     }
 
-    // When the immediate parent is a wrapper like `export_statement`, it won't
-    // contain comment nodes — the JSDoc lives at the grandparent (program) level
-    // as a sibling of the wrapper. Ascend and check for an adjacent comment.
-    // Adjacency guard prevents misattributing file-level comments: only a
-    // comment whose end row is immediately before the wrapper's start row
-    // (no blank line gap) is treated as JSDoc for the function inside.
-    if (parent.type === 'export_statement' && parent.parent) {
-      const gpSiblings = parent.parent.children;
-      let parentIndex = -1;
-      for (let i = 0; i < gpSiblings.length; i++) {
-        if (gpSiblings[i].equals(parent)) {
-          parentIndex = i;
-          break;
-        }
-      }
+    // When the parent is `export_statement`, the JSDoc lives at the grandparent
+    // (program) level as a sibling of the wrapper — ascend and look for it.
+    return this.findExportStatementDoc(parent);
+  }
 
-      if (parentIndex > 0) {
-        // Look backwards from the export_statement in the grandparent's children
-        for (let i = parentIndex - 1; i >= 0; i--) {
-          const sibling = gpSiblings[i];
-          if (sibling.type === 'comment' && sibling.text.trimStart().startsWith('/**')) {
-            // Only attribute if comment is adjacent — no blank line gap.
-            // Adjacent: comment ends on line L, export_statement starts on L+1.
-            if (sibling.endPosition.row + 1 === parent.startPosition.row) {
-              return this.cleanCommentText(sibling.text);
-            }
-            break; // Found a comment but not adjacent — stop looking
-          } else if (sibling.isNamed) {
-            break; // Stop at named siblings
-          }
-        }
+  /** When `parent` is an `export_statement`, find an adjacent /** JSDoc comment
+   *  at the grandparent level. Adjacency guard (comment ends on line L, wrapper
+   *  starts on L+1) prevents misattributing file-level comments. */
+  private findExportStatementDoc(parent: TreeSitterNode): string | null {
+    if (parent.type !== 'export_statement' || !parent.parent) return null;
+    const gpSiblings = parent.parent.children;
+    let parentIndex = -1;
+    for (let i = 0; i < gpSiblings.length; i++) {
+      if (gpSiblings[i].equals(parent)) {
+        parentIndex = i;
+        break;
       }
     }
-
+    if (parentIndex <= 0) return null;
+    for (let i = parentIndex - 1; i >= 0; i--) {
+      const sibling = gpSiblings[i];
+      if (sibling.type === 'comment' && sibling.text.trimStart().startsWith('/**')) {
+        if (sibling.endPosition.row + 1 === parent.startPosition.row) {
+          return this.cleanCommentText(sibling.text);
+        }
+        break; // Found a comment but not adjacent — stop looking
+      } else if (sibling.isNamed) {
+        break; // Stop at named siblings
+      }
+    }
     return null;
   }
 
@@ -615,29 +601,10 @@ class TsExtraction extends TsNameDocumentation {
       implementsList = implementsClause.namedChildren.map((c: TreeSitterNode) => c.text);
     }
 
-    // Extract methods
     const classBody = node.childForFieldName?.('body');
-    const methods: FunctionInfo[] = [];
-    const properties: PropertyInfo[] = [];
-
-    if (classBody) {
-      for (const member of classBody.namedChildren) {
-        if (member.type === 'method_definition') {
-          const fnInfo = this.buildFunctionInfo(member, sourceCode);
-          if (fnInfo) {
-            fnInfo.className = name;
-            fnInfo.isMethod = true;
-            methods.push(fnInfo);
-          }
-        } else if (
-          member.type === 'public_field_definition' ||
-          member.type === 'field_definition'
-        ) {
-          const propInfo = this.buildPropertyInfo(member);
-          if (propInfo) properties.push(propInfo);
-        }
-      }
-    }
+    const { methods, properties } = classBody
+      ? this.buildClassMembers(classBody, sourceCode, name)
+      : { methods: [], properties: [] };
 
     return {
       name,
@@ -650,6 +617,33 @@ class TsExtraction extends TsNameDocumentation {
       isExported,
       jsDoc: jsDoc ?? undefined,
     };
+  }
+
+  /** Build method/property lists from a class body's members. */
+  private buildClassMembers(
+    classBody: TreeSitterNode,
+    sourceCode: string,
+    className: string
+  ): { methods: FunctionInfo[]; properties: PropertyInfo[] } {
+    const methods: FunctionInfo[] = [];
+    const properties: PropertyInfo[] = [];
+    for (const member of classBody.namedChildren) {
+      if (member.type === 'method_definition') {
+        const fnInfo = this.buildFunctionInfo(member, sourceCode);
+        if (fnInfo) {
+          fnInfo.className = className;
+          fnInfo.isMethod = true;
+          methods.push(fnInfo);
+        }
+      } else if (
+        member.type === 'public_field_definition' ||
+        member.type === 'field_definition'
+      ) {
+        const propInfo = this.buildPropertyInfo(member);
+        if (propInfo) properties.push(propInfo);
+      }
+    }
+    return { methods, properties };
   }
 
   protected buildPropertyInfo(node: TreeSitterNode): PropertyInfo | null {
@@ -684,58 +678,8 @@ class TsExtraction extends TsNameDocumentation {
 
     const source = sourceNode.text.slice(1, -1); // strip quotes
     const specifiers: ImportSpecifier[] = [];
-
-    // import defaultExport from 'module'
-    // import * as namespace from 'module'
-    // import { named } from 'module'
-    //
-    // Tree-sitter nests named imports inside import_clause -> named_imports,
-    // so we walk into import_clause children recursively.
-    const collectSpecifiers = (child: TreeSitterNode): void => {
-      if (child.type === 'import_specifier') {
-        const nameNode = child.childForFieldName?.('name');
-        const aliasNode = child.childForFieldName?.('alias');
-        if (nameNode) {
-          specifiers.push({
-            name: nameNode.text,
-            alias: aliasNode?.text,
-            isDefault: false,
-            isNamespace: false,
-          });
-        }
-      } else if (child.type === 'namespace_import') {
-        const nameNode = child.childForFieldName?.('name');
-        if (nameNode) {
-          specifiers.push({
-            name: nameNode.text,
-            isDefault: false,
-            isNamespace: true,
-          });
-        }
-      } else if (child.type === 'import_clause') {
-        // Default import: `import foo from '...'`
-        // import_clause children include an identifier for the default binding
-        // and optionally named_imports for mixed imports (`import foo, { bar }`)
-        for (const grandchild of child.namedChildren) {
-          if (grandchild.type === 'identifier') {
-            specifiers.push({
-              name: grandchild.text,
-              isDefault: true,
-              isNamespace: false,
-            });
-          } else {
-            collectSpecifiers(grandchild);
-          }
-        }
-      } else {
-        // Recurse into containers: import_clause, named_imports
-        for (const grandchild of child.namedChildren) {
-          collectSpecifiers(grandchild);
-        }
-      }
-    };
     for (const child of node.namedChildren) {
-      collectSpecifiers(child);
+      this.collectImportSpecifiers(child, specifiers);
     }
 
     return {
@@ -745,6 +689,55 @@ class TsExtraction extends TsNameDocumentation {
     };
   }
 
+  /** Recursively collect import specifiers (default / named / namespace).
+   *  Tree-sitter nests named imports inside import_clause -> named_imports. */
+  private collectImportSpecifiers(
+    child: TreeSitterNode,
+    specifiers: ImportSpecifier[]
+  ): void {
+    if (child.type === 'import_specifier') {
+      const nameNode = child.childForFieldName?.('name');
+      const aliasNode = child.childForFieldName?.('alias');
+      if (nameNode) {
+        specifiers.push({
+          name: nameNode.text,
+          alias: aliasNode?.text,
+          isDefault: false,
+          isNamespace: false,
+        });
+      }
+    } else if (child.type === 'namespace_import') {
+      const nameNode = child.childForFieldName?.('name');
+      if (nameNode) {
+        specifiers.push({
+          name: nameNode.text,
+          isDefault: false,
+          isNamespace: true,
+        });
+      }
+    } else if (child.type === 'import_clause') {
+      // Default import: `import foo from '...'` — import_clause children include
+      // an identifier for the default binding and optionally named_imports for
+      // mixed imports (`import foo, { bar }`).
+      for (const grandchild of child.namedChildren) {
+        if (grandchild.type === 'identifier') {
+          specifiers.push({
+            name: grandchild.text,
+            isDefault: true,
+            isNamespace: false,
+          });
+        } else {
+          this.collectImportSpecifiers(grandchild, specifiers);
+        }
+      }
+    } else {
+      // Recurse into containers: import_clause, named_imports
+      for (const grandchild of child.namedChildren) {
+        this.collectImportSpecifiers(grandchild, specifiers);
+      }
+    }
+  }
+
   protected buildExportInfo(
     node: TreeSitterNode,
     _sourceCode: string
@@ -752,29 +745,10 @@ class TsExtraction extends TsNameDocumentation {
     // export default <expression>
     const isDefault = this.hasChild(node, 'default');
 
-    // export { foo, bar } [from '...']
-    const clause = node.childForFieldName?.('clause');
-    if (clause?.type === 'export_clause') {
-      const sourceNode = node.childForFieldName?.('source');
-      const exports: ExportInfo[] = [];
-
-      for (const spec of clause.namedChildren) {
-        if (spec.type === 'export_specifier') {
-          const nameNode = spec.childForFieldName?.('name');
-          if (nameNode) {
-            exports.push({
-              name: nameNode.text,
-              location: toSourceLocation(nameNode),
-              isDefault: false,
-              source: sourceNode?.text.slice(1, -1),
-            });
-          }
-        }
-      }
-
-      // Return first (handled by caller iterating export_statement nodes)
-      return exports[0] ?? null;
-    }
+    // export { foo, bar } [from '...'] — return the first named export
+    // (caller iterates export_statement nodes).
+    const named = this.buildNamedExport(node);
+    if (named) return named;
 
     // export function/class/const/let/var name
     const declaration = this.findFirstNamedChild(node, [
@@ -812,6 +786,27 @@ class TsExtraction extends TsNameDocumentation {
     return null;
   }
 
+  /** Build the ExportInfo for an `export { a, b } [from '...']` statement. */
+  private buildNamedExport(node: TreeSitterNode): ExportInfo | null {
+    const clause = node.childForFieldName?.('clause');
+    if (clause?.type !== 'export_clause') return null;
+    const sourceNode = node.childForFieldName?.('source');
+    for (const spec of clause.namedChildren) {
+      if (spec.type === 'export_specifier') {
+        const nameNode = spec.childForFieldName?.('name');
+        if (nameNode) {
+          return {
+            name: nameNode.text,
+            location: toSourceLocation(nameNode),
+            isDefault: false,
+            source: sourceNode?.text.slice(1, -1),
+          };
+        }
+      }
+    }
+    return null;
+  }
+
   protected buildInterfaceInfo(
     node: TreeSitterNode,
     _sourceCode: string
@@ -830,31 +825,9 @@ class TsExtraction extends TsNameDocumentation {
 
     // Members
     const body = node.childForFieldName?.('body');
-    const members: InterfaceInfo['members'] = [];
-
-    if (body) {
-      for (const member of body.namedChildren) {
-        if (member.type === 'method_signature') {
-          const memberName = member.childForFieldName?.('name')?.text;
-          if (memberName) {
-            members.push({
-              name: memberName,
-              type: 'method',
-              location: toSourceLocation(member),
-            });
-          }
-        } else if (member.type === 'property_signature') {
-          const memberName = member.childForFieldName?.('name')?.text;
-          if (memberName) {
-            members.push({
-              name: memberName,
-              type: 'property',
-              location: toSourceLocation(member),
-            });
-          }
-        }
-      }
-    }
+    const members: InterfaceInfo['members'] = body
+      ? this.buildInterfaceMembers(body)
+      : [];
 
     return {
       name,
@@ -863,6 +836,24 @@ class TsExtraction extends TsNameDocumentation {
       extends: extendsList,
       isExported,
     };
+  }
+
+  /** Build method/property member descriptors from an interface body. */
+  private buildInterfaceMembers(body: TreeSitterNode): InterfaceInfo['members'] {
+    const members: InterfaceInfo['members'] = [];
+    for (const member of body.namedChildren) {
+      if (member.type === 'method_signature' || member.type === 'property_signature') {
+        const memberName = member.childForFieldName?.('name')?.text;
+        if (memberName) {
+          members.push({
+            name: memberName,
+            type: member.type === 'method_signature' ? 'method' : 'property',
+            location: toSourceLocation(member),
+          });
+        }
+      }
+    }
+    return members;
   }
 
   /** Get the enclosing class name for a method. */
@@ -875,6 +866,92 @@ class TsExtraction extends TsNameDocumentation {
       current = current.parent ?? null;
     }
     return undefined;
+  }
+
+  /** Collect static imports, dynamic `import()`, and `require()` calls. */
+  protected collectRawImport(node: TreeSitterNode, results: RawImport[]): void {
+    if (node.type === 'import_statement') {
+      const source = this.getChildByType(node, 'string');
+      if (source) {
+        results.push({
+          moduleSpecifier: source.text.slice(1, -1), // strip quotes
+          isStatic: true,
+          isDynamic: false,
+          isRequire: false,
+          line: source.startPosition.row,
+        });
+      }
+    }
+
+    if (node.type === 'call_expression') {
+      const fn = node.firstChild;
+      if (fn?.type === 'import') {
+        this.pushCallImport(node, results, /* isRequire */ false);
+      } else if (fn?.type === 'identifier' && fn.text === 'require') {
+        this.pushCallImport(node, results, /* isRequire */ true);
+      }
+    }
+  }
+
+  /** Push a `import('...')` or `require('...')` record for a call expression. */
+  protected pushCallImport(
+    node: TreeSitterNode,
+    results: RawImport[],
+    isRequire: boolean
+  ): void {
+    const args = this.getChildByType(node, 'arguments');
+    const strNode = args ? this.findFirstNamedChild(args, 'string') : null;
+    if (!strNode) return;
+    results.push({
+      moduleSpecifier: strNode.text.slice(1, -1),
+      isStatic: false,
+      isDynamic: !isRequire,
+      isRequire,
+      line: strNode.startPosition.row,
+    });
+  }
+
+  /** Collect the exported symbol(s) declared by a single `export_statement`. */
+  protected collectExportedSymbol(
+    node: TreeSitterNode,
+    symbols: Array<{ name: string; line: number }>
+  ): void {
+    // export function foo / export class Foo / export const x
+    const declaration = this.findFirstNamedChild(node, [
+      'function_declaration',
+      'class_declaration',
+      'abstract_class_declaration',
+      'lexical_declaration',
+      'variable_declaration',
+      'interface_declaration',
+      'type_alias_declaration',
+      'enum_declaration',
+    ]);
+    if (declaration) {
+      const name = this.extractName(declaration);
+      if (name) {
+        symbols.push({ name, line: declaration.startPosition.row });
+        return;
+      }
+    }
+
+    // export { foo, bar } or export { default }
+    const clause = this.getChildByType(node, 'export_clause');
+    if (clause) {
+      for (const child of clause.namedChildren) {
+        if (child.type === 'export_specifier') {
+          const nameNode = this.getChildByType(child, 'identifier');
+          if (nameNode) {
+            symbols.push({ name: nameNode.text, line: nameNode.startPosition.row });
+          }
+        }
+      }
+    }
+
+    // export default <expression>
+    if (node.childForFieldName?.('value')) {
+      symbols.push({ name: 'default', line: node.startPosition.row });
+    }
   }
 }
 
@@ -1121,140 +1198,24 @@ class TsPredicatesOptional extends TsPublicApi {
     return interfaces;
   }
 
-  extractRawImports(
-    _filePath: string,
-    content: string
-  ): Array<{
-    moduleSpecifier: string;
-    isStatic: boolean;
-    isDynamic: boolean;
-    isRequire: boolean;
-    line: number;
-  }> {
-    const results: Array<{
-      moduleSpecifier: string;
-      isStatic: boolean;
-      isDynamic: boolean;
-      isRequire: boolean;
-      line: number;
-    }> = [];
+  extractRawImports(_filePath: string, content: string): RawImport[] {
+    const results: RawImport[] = [];
 
     const parser = getParser('typescript');
     const tree = parser.parse(content);
     if (!tree) return results;
 
-    // Static imports
-    this.walkRaw(tree.rootNode, (node) => {
-      if (node.type === 'import_statement') {
-        const source = this.getChildByType(node, 'string');
-        if (source) {
-          const specifier = source.text.slice(1, -1); // strip quotes
-          results.push({
-            moduleSpecifier: specifier,
-            isStatic: true,
-            isDynamic: false,
-            isRequire: false,
-            line: source.startPosition.row,
-          });
-        }
-      }
-
-      // Dynamic import(): import('...')
-      if (node.type === 'call_expression') {
-        const fn = node.firstChild;
-        if (fn?.type === 'import') {
-          const args = this.getChildByType(node, 'arguments');
-          if (args) {
-            const strNode = this.findFirstNamedChild(args, 'string');
-            if (strNode) {
-              const specifier = strNode.text.slice(1, -1);
-              results.push({
-                moduleSpecifier: specifier,
-                isStatic: false,
-                isDynamic: true,
-                isRequire: false,
-                line: strNode.startPosition.row,
-              });
-            }
-          }
-        }
-
-        // require('...')
-        if (fn?.type === 'identifier' && fn.text === 'require') {
-          const args = this.getChildByType(node, 'arguments');
-          if (args) {
-            const strNode = this.findFirstNamedChild(args, 'string');
-            if (strNode) {
-              const specifier = strNode.text.slice(1, -1);
-              results.push({
-                moduleSpecifier: specifier,
-                isStatic: false,
-                isDynamic: false,
-                isRequire: true,
-                line: strNode.startPosition.row,
-              });
-            }
-          }
-        }
-      }
-    });
+    this.walkRaw(tree.rootNode, (node) => this.collectRawImport(node, results));
 
     return results;
   }
 
   extractExportedSymbols(ast: AST): Array<{ name: string; line: number }> {
     const symbols: Array<{ name: string; line: number }> = [];
-
     this.walk(ast.root, (astNode) => {
       const node = astNode.raw as TreeSitterNode;
-
-      if (node.type === 'export_statement') {
-        // export function foo / export class Foo / export const x
-        const declaration = this.findFirstNamedChild(node, [
-          'function_declaration',
-          'class_declaration',
-          'abstract_class_declaration',
-          'lexical_declaration',
-          'variable_declaration',
-          'interface_declaration',
-          'type_alias_declaration',
-          'enum_declaration',
-        ]);
-
-        if (declaration) {
-          const name = this.extractName(declaration);
-          if (name) {
-            symbols.push({ name, line: declaration.startPosition.row });
-            return;
-          }
-        }
-
-        // export { foo, bar } or export { default }
-        const clause = this.getChildByType(node, 'export_clause');
-        if (clause) {
-          for (const child of clause.namedChildren) {
-            if (child.type === 'export_specifier') {
-              const nameNode = this.getChildByType(child, 'identifier');
-              if (nameNode) {
-                symbols.push({
-                  name: nameNode.text,
-                  line: nameNode.startPosition.row,
-                });
-              }
-            }
-          }
-        }
-
-        // export default <expression>
-        if (node.childForFieldName?.('value')) {
-          symbols.push({
-            name: 'default',
-            line: node.startPosition.row,
-          });
-        }
-      }
+      if (node.type === 'export_statement') this.collectExportedSymbol(node, symbols);
     });
-
     return symbols;
   }
 }
@@ -1285,11 +1246,8 @@ class TsScopeStatic extends TsPredicatesOptional {
       return true;
     }
 
-    // Array literals: static when all elements are compile-time constants.
-    // This enables tracing through patterns like:
-    //   const TABLES = ["a", "b"];
-    //   for (const t of TABLES) { … `${t}` … }
-    // where every possible value of `t` is known at compile time.
+    // Array literals are static when every element is a compile-time constant
+    // (enables tracing `for (const t of TABLES)` over a static column list).
     if (type === 'array') {
       for (let i = 0; i < node.childCount; i++) {
         const child = node.child(i);
@@ -1301,10 +1259,8 @@ class TsScopeStatic extends TsPredicatesOptional {
       return true;
     }
 
-    // Type assertions (`[...] as const`, `x as T`, `x satisfies T`) wrap an
-    // inner expression without changing its runtime value — `as const` is how
-    // the codebase writes static flag/column arrays.  Unwrap to the single
-    // named child and judge that instead.
+    // Type assertions (`[...] as const`, `x as T`, `x satisfies T`) wrap an inner
+    // expression without changing its runtime value — unwrap and judge that.
     if (
       type === 'as_expression' ||
       type === 'type_assertion' ||
@@ -1566,86 +1522,83 @@ class TsDynamicStringConstruction extends TsScopeStatic {
    */
   getDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
     const type = (node.raw as TreeSitterNode).type;
+    if (type === 'call_expression') {
+      const nested = this.getNestedDynamicCallParts(node, sourceCode);
+      if (nested) return nested;
+      return this.getCallArgParts(node);
+    }
+    if (type === 'template_string') return this.getTemplateStringParts(node, sourceCode);
+    if (type === 'binary_expression') return this.getBinaryExpressionParts(node, sourceCode);
+    return [];
+  }
+
+  /** For a non-`.concat()` call, recurse into the first argument that is itself
+   *  a dynamic string construction; null when there is none (or it's .concat). */
+  private getNestedDynamicCallParts(node: ASTNode, sourceCode: string): DynamicPart[] | null {
+    const text = (node.raw as TreeSitterNode).text;
+    if (text.includes('.concat(') || text.includes('?.concat(')) return null;
+    for (const child of node.children ?? []) {
+      if ((child.raw as TreeSitterNode).type !== 'arguments') continue;
+      for (const arg of child.children ?? []) {
+        const argType = (arg.raw as TreeSitterNode).type;
+        if (argType === '(' || argType === ')' || argType === ',') continue;
+        if (this.isDynamicStringConstruction(arg)) {
+          return this.getDynamicParts(arg, sourceCode);
+        }
+      }
+    }
+    return null;
+  }
+
+  /** `.concat()` (or a call with no nested dynamic arg): every argument is dynamic. */
+  private getCallArgParts(node: ASTNode): DynamicPart[] {
     const parts: DynamicPart[] = [];
-
-    // For call_expressions (other than .concat), walk into the first
-    // argument that is itself a dynamic string construction.
-    if (type === 'call_expression') {
-      const text = (node.raw as TreeSitterNode).text;
-      // .concat() handled below
-      if (!text.includes('.concat(') && !text.includes('?.concat(')) {
-        for (const child of node.children ?? []) {
-          if ((child.raw as TreeSitterNode).type === 'arguments') {
-            for (const arg of child.children ?? []) {
-              const argType = (arg.raw as TreeSitterNode).type;
-              if (argType === '(' || argType === ')' || argType === ',') continue;
-              if (this.isDynamicStringConstruction(arg)) {
-                return this.getDynamicParts(arg, sourceCode);
-              }
-            }
-          }
-        }
+    for (const child of node.children ?? []) {
+      if ((child.raw as TreeSitterNode).type !== 'arguments') continue;
+      for (const arg of child.children ?? []) {
+        const argType = (arg.raw as TreeSitterNode).type;
+        if (argType === '(' || argType === ')' || argType === ',') continue;
+        const text = (arg.raw as TreeSitterNode).text.trim();
+        const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(text);
+        parts.push({ text, isIdentifier: isId, node: arg });
       }
     }
+    return parts;
+  }
 
-    if (type === 'template_string') {
-      for (const child of node.children ?? []) {
-        if ((child.raw as TreeSitterNode).type === 'template_substitution') {
-          const text = sourceCode.slice(child.range[0], child.range[1]);
-          // Strip the ${ } wrapper to get the inner identifier/expression
-          // tree-sitter: template_substitution text includes ${ and }
-          const inner = text.startsWith('${') ? text.slice(2, -1).trim() : text;
-          const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(inner);
-          // The expression inside ${…} — tree-sitter nests it as the single
-          // named child of template_substitution (identifier, call_expression,
-          // ternary_expression, member_expression, …).  Attach it for BOTH
-          // identifier and non-identifier parts so callers can hand it to
-          // isSafeInterpolation() for the cross-function safety check.
-          let exprNode: ASTNode | undefined;
-          for (const subChild of child.children ?? []) {
-            const subType = (subChild.raw as TreeSitterNode).type;
-            if (subType !== 'template_substitution') {
-              exprNode = subChild;
-              break;
-            }
-          }
-          parts.push({ text: inner, isIdentifier: isId, node: exprNode ?? child });
+  /** Dynamic parts from a template string's `${…}` substitutions. */
+  private getTemplateStringParts(node: ASTNode, sourceCode: string): DynamicPart[] {
+    const parts: DynamicPart[] = [];
+    for (const child of node.children ?? []) {
+      if ((child.raw as TreeSitterNode).type !== 'template_substitution') continue;
+      const text = sourceCode.slice(child.range[0], child.range[1]);
+      // Strip the ${ } wrapper to get the inner identifier/expression.
+      const inner = text.startsWith('${') ? text.slice(2, -1).trim() : text;
+      const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(inner);
+      // The expression inside ${…} is the single named child; attach it for
+      // isSafeInterpolation() cross-function safety checks.
+      let exprNode: ASTNode | undefined;
+      for (const subChild of child.children ?? []) {
+        if ((subChild.raw as TreeSitterNode).type !== 'template_substitution') {
+          exprNode = subChild;
+          break;
         }
       }
-      return parts;
+      parts.push({ text: inner, isIdentifier: isId, node: exprNode ?? child });
     }
+    return parts;
+  }
 
-    if (type === 'binary_expression') {
-      for (const child of node.children ?? []) {
-        const childType = (child.raw as TreeSitterNode).type;
-        if (childType !== 'string' && childType !== '+' && childType !== 'template_string') {
-          const text = sourceCode.slice(child.range[0], child.range[1]);
-          const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(text.trim());
-          // Attach the operand node for BOTH identifiers and expressions so
-          // isSafeInterpolation() can clear cross-function false positives.
-          parts.push({ text: text.trim(), isIdentifier: isId, node: child });
-        }
-      }
-      return parts;
+  /** Dynamic parts from a `+`-concatenation of strings and expressions. */
+  private getBinaryExpressionParts(node: ASTNode, sourceCode: string): DynamicPart[] {
+    const parts: DynamicPart[] = [];
+    for (const child of node.children ?? []) {
+      const childType = (child.raw as TreeSitterNode).type;
+      if (childType === 'string' || childType === '+' || childType === 'template_string') continue;
+      const text = sourceCode.slice(child.range[0], child.range[1]);
+      const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(text.trim());
+      parts.push({ text: text.trim(), isIdentifier: isId, node: child });
     }
-
-    if (type === 'call_expression') {
-      // .concat() — arguments after the first are dynamic
-      for (const child of node.children ?? []) {
-        if ((child.raw as TreeSitterNode).type === 'arguments') {
-          for (const arg of child.children ?? []) {
-            const argType = (arg.raw as TreeSitterNode).type;
-            if (argType !== '(' && argType !== ')' && argType !== ',') {
-              const text = (arg.raw as TreeSitterNode).text.trim();
-              const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(text);
-              parts.push({ text, isIdentifier: isId, node: arg });
-            }
-          }
-        }
-      }
-      return parts;
-    }
-
     return parts;
   }
 }
@@ -1661,75 +1614,92 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     const idName = sourceCode.slice(identifierNode.range[0], identifierNode.range[1]).trim();
     if (!idName) return null;
 
-    // Find the enclosing function or file scope.  First search within
-    // the enclosing function; if not found, fall back to the program-level
-    // (module) scope — constants declared at module level are accessible
-    // inside any function in that module.
+    // Enclosing function/file scope, falling back to the module scope for
+    // module-level constants.
     const enclosing = this.findEnclosingScope(identifierNode, ast);
     const scopeRoot = enclosing ?? ast.root;
+    const scope: ScopeContext = { scopeRoot, enclosing, ast };
+
+    const resolved = this.resolveDeclarationOrConstant(identifierNode, idName, sourceCode, scope);
+    if (resolved.constant) return resolved.constant;
+    const declNode = resolved.declNode;
+    if (!declNode) return null;
+
+    return this.resolveFromDeclaration(declNode, idName, sourceCode, scope);
+  }
+
+  /** Determine static-ness and init text from a resolved declaration node.
+   *
+   *  "Static" means the value is a compile-time constant that is never
+   *  reassigned.  String literals and substitution-free template strings are
+   *  constants regardless of `?` placeholders — SQL fragment constants (WHERE
+   *  clauses, column lists) are as static as parameterised query strings.
+   *
+   *  The value is extracted from the AST rather than regex so that multiline
+   *  declarations survive (`.` doesn't match `\n`). */
+  private resolveFromDeclaration(
+    declNode: ASTNode,
+    idName: string,
+    sourceCode: string,
+    scope: ScopeContext,
+  ): ResolvedConstant {
+    const { scopeRoot, enclosing, ast } = scope;
+    const raw = declNode.raw as TreeSitterNode;
+    const valueNode = (raw as any).childForFieldName?.('value') as TreeSitterNode | null;
+    const declLine = declNode.location.start.line;
+    const reassigned = this.hasReassignment(scopeRoot, idName, declLine);
+
+    let isStatic = !reassigned && this.isStaticValueNode(valueNode);
+
+    // For-of / for-in loop variables: the declarator has no `value` field
+    // (the iterable is on the for-statement's `right` child).  Trace the
+    // iterable to see if all possible loop values are known constants.
+    if (!isStatic && !valueNode && this.traceForOfLoopVariable(declNode, scopeRoot, enclosing, ast)) {
+      isStatic = true;
+    }
+
+    // Value is a simple identifier (e.g. `table` ← `tables`): trace through to
+    // the linked declaration (handles `for (const table of TABLES)` where the
+    // iterable is a compile-time constant array).
+    if (!isStatic && valueNode?.type === 'identifier' && this.traceLinkedIdentifier(valueNode, idName, scope)) {
+      isStatic = true;
+    }
+
+    const initText = this.extractInitText(valueNode, declNode, sourceCode);
+    return { initText, isStatic, declLine };
+  }
+
+  /** Resolve `idName` to a declaration in the enclosing scope (falling back to
+   *  the program-level scope), or — when no local declaration exists — to an
+   *  imported constant or a `for…in`/`for…of` loop variable.  Returns either a
+   *  declaration node or a fully resolved constant. */
+  private resolveDeclarationOrConstant(
+    identifierNode: ASTNode,
+    idName: string,
+    sourceCode: string,
+    scope: ScopeContext,
+  ): { declNode: ASTNode | null; constant: ResolvedConstant | null } {
+    const { scopeRoot, enclosing, ast } = scope;
     let declNode = this.findDeclarationInScope(scopeRoot, idName);
     // If the enclosing scope is a function (not the program) and we didn't
     // find the declaration there, also search the program-level scope.
     if (!declNode && enclosing && enclosing !== ast.root) {
       declNode = this.findDeclarationInScope(ast.root, idName);
     }
-    // If still not found in local declarations, check if the identifier
-    // is imported (import { X } from … or import X from …).  Imported
-    // symbols are compile-time constants — they're resolved at link time,
-    // not at runtime, so user input cannot reach them via import bindings.
-    if (!declNode) {
-      const importResult = this.resolveImportConstant(idName, ast);
-      if (importResult) return importResult;
+    if (declNode) return { declNode, constant: null };
 
-      // tree-sitter-typescript (v0.x) parses both "for…in" and "for…of"
-      // as `for_in_statement`; the loop variable is a bare identifier child.
-      const forInResult = this.traceForInLoopVariable(
-        identifierNode, idName, scopeRoot, enclosing, ast, sourceCode,
-      );
-      if (forInResult) return forInResult;
-      return null;
-    }
+    // Not in local declarations — imported symbols are compile-time constants
+    // resolved at link time, not runtime, so user input cannot reach them via
+    // import bindings.
+    const importResult = this.resolveImportConstant(idName, ast);
+    if (importResult) return { declNode: null, constant: importResult };
 
-    // Extract value from AST (handles multiline declarations that the old
-    // regex missed — `.` doesn't match `\n` so `.+?` truncated at newlines).
-    const raw = declNode.raw as TreeSitterNode;
-    const valueNode = (raw as any).childForFieldName?.('value') as TreeSitterNode | null;
-    const declLine = declNode.location.start.line;
-    // Check for reassignment after declaration
-    const reassigned = this.hasReassignment(scopeRoot, idName, declLine);
+    // tree-sitter-typescript (v0.x) parses both "for…in" and "for…of" as
+    // `for_in_statement`; the loop variable is a bare identifier child.
+    const forInResult = this.traceForInLoopVariable(identifierNode, idName, sourceCode, scope);
+    if (forInResult) return { declNode: null, constant: forInResult };
 
-    // Determine if static by inspecting the value node's AST type.  String
-    // literals and substitution-free template strings are compile-time constants
-    // regardless of whether they contain `?` placeholders — SQL fragment
-    // constants (WHERE clauses, column lists) are just as static as
-    // parameterised query strings.
-    let isStatic = !reassigned && this.isStaticValueNode(valueNode);
-
-    // For-of / for-in loop variables: the declarator has no `value` field
-    // (the iterable is on the for-statement's `right` child).  Trace the
-    // iterable to see if all possible loop values are known constants.
-    //   const TABLES = ["a", "b"];
-    //   for (const table of TABLES) { … `${table}` … }
-    if (!isStatic && !valueNode) {
-      if (this.traceForOfLoopVariable(declNode, scopeRoot, enclosing, ast)) {
-        isStatic = true;
-      }
-    }
-
-    // When the value is a simple identifier (e.g. `table` ← `tables`),
-    // trace through to the linked declaration.  This handles patterns like:
-    //   const TABLES = ["a", "b"];
-    //   for (const table of TABLES) { … `${table}` … }
-    // where the variable's value is known at compile time because the
-    // iterable is a constant array.
-    if (!isStatic && valueNode && valueNode.type === 'identifier') {
-      if (this.traceLinkedIdentifier(valueNode, idName, scopeRoot, enclosing, ast)) {
-        isStatic = true;
-      }
-    }
-
-    const initText = this.extractInitText(valueNode, declNode, sourceCode);
-    return { initText, isStatic, declLine };
+    return { declNode: null, constant: null };
   }
 
   /** Trace a `for…in`/`for…of` loop variable whose identifier appears directly
@@ -1744,11 +1714,10 @@ class TsConstantResolution extends TsDynamicStringConstruction {
   protected traceForInLoopVariable(
     identifierNode: ASTNode,
     idName: string,
-    scopeRoot: ASTNode,
-    enclosing: ASTNode | null,
-    ast: AST,
     sourceCode: string,
+    scope: ScopeContext,
   ): ResolvedConstant | null {
+    const { scopeRoot, enclosing, ast } = scope;
     const idRaw = identifierNode.raw as TreeSitterNode;
     let tsCurrent: TreeSitterNode | null = idRaw.parent;
     while (tsCurrent) {
@@ -1816,10 +1785,9 @@ class TsConstantResolution extends TsDynamicStringConstruction {
   protected traceLinkedIdentifier(
     valueNode: TreeSitterNode,
     idName: string,
-    scopeRoot: ASTNode,
-    enclosing: ASTNode | null,
-    ast: AST,
+    scope: ScopeContext,
   ): boolean {
+    const { scopeRoot, enclosing, ast } = scope;
     const linkedName = valueNode.text;
     if (!linkedName || linkedName === idName) return false;
     let linkedDecl = this.findDeclarationInScope(scopeRoot, linkedName);
@@ -1895,64 +1863,62 @@ class TsConstantResolution extends TsDynamicStringConstruction {
 // Cross-function safety analysis (Spec 33 Item 6 — sql-injection FP: taint
 // tracking).  `isSafeInterpolation` decides whether an expression embedded in
 // a ${…} substitution (or a `+`/`.concat()` operand) is provably safe to put
-// in a SQL string — extending the static-constant check to: quote-escape
-// sanitizers (`.replace(/'/g, "''")`), ternary expressions whose branches are
-// all safe, static-array `.map().join()` chains, local function calls with a
-// safe body and safe call sites, and guard-validated / call-site-provenanced
-// function parameters.  Each of these clears a real false positive without
-// weakening raw-input detection.
+// in a SQL string — extending the static-constant check to: ternary expressions
+// whose branches are all safe, static-array `.map().join()` chains, local
+// function calls with a safe body and safe call sites, and guard-validated /
+// call-site-provenanced function parameters.  Each of these clears a real
+// false positive without weakening raw-input detection.
+//
+// Deliberately NOT cleared: manual quote-escaping (`x.replace(/'/g, "''")`).
+// Single-quote doubling handles only the single-quote case — not backslash
+// escapes, unicode quote variants, or numeric/identifier positions where a
+// quote isn't the injection vector — so certifying it "safe" would actively
+// bless a real vulnerability (silence reads as clearance).  Such input stays
+// unresolved and is flagged as a potential injection.
 // ---------------------------------------------------------------------------
 
-/** True when the call is `x.replace(/['"]+/g?, "''")` or the `.replaceAll`
- *  string-literal equivalent — the standard quote-escape idiom.  A module-level
- *  helper: it needs no instance state, so it lives outside the class chain and
- *  does not count toward any class's aggregate complexity. */
-function isQuoteEscapeSanitizer(
-  firstArg: ASTNode | undefined,
-  secondArg: ASTNode | undefined,
-  sourceCode: string,
-): boolean {
-  if (!firstArg || !secondArg) return false;
-  const firstRaw = firstArg.raw as TreeSitterNode;
-  const secondRaw = secondArg.raw as TreeSitterNode;
-  const firstText = sourceCode.slice(firstArg.range[0], firstArg.range[1]).trim();
+/** Mutable traversal state threaded through the `isSafe*` recursion: `seen`
+ *  guards cycles, `seenFns` guards mutually-recursive function calls, and
+ *  `paramMap` binds function parameters to the values passed at the current
+ *  call site so we can trace through local helper functions
+ *  (`qualifiedIconRemote(alias)` with a literal alias).  Bundled into a single
+ *  context object so the whole family shares one signature instead of six
+ *  positional parameters each. */
+interface SafetyContext {
+  ast: AST;
+  sourceCode: string;
+  seen: Set<number>;
+  seenFns: Set<string>;
+  paramMap: Map<string, ASTNode | null>;
+}
 
-  let quoteSearch = false;
-  if (firstRaw.type === 'regex') {
-    // /'/g, /"/g, /['"]/g, /'/ — a quote class with an optional global flag.
-    quoteSearch = /^\/['"]+\/g?$/.test(firstText);
-  } else if (firstRaw.type === 'string') {
-    const inner = firstText.slice(1, -1);
-    quoteSearch = inner.length > 0 && /^['"]+$/.test(inner);
-  }
-  if (!quoteSearch) return false;
-  // The replacement must be a literal — the escaped/doubled quote sequence.
-  return secondRaw.type === 'string';
+/** Scope-resolution inputs shared by the constant-tracing helpers: the local
+ *  scope root, the enclosing function scope (or null at module level), and the
+ *  full AST for program-level fallback searches. */
+interface ScopeContext {
+  scopeRoot: ASTNode;
+  enclosing: ASTNode | null;
+  ast: AST;
 }
 
 class TsSafetyAnalysis extends TsConstantResolution {
   /** Public entry point (LanguageAdapter.isSafeInterpolation). */
   isSafeInterpolation(node: ASTNode, ast: AST, sourceCode: string): boolean {
-    return this.isSafeExpression(node, ast, sourceCode, new Set(), new Set(), new Map());
+    return this.isSafeExpression(node, {
+      ast,
+      sourceCode,
+      seen: new Set(),
+      seenFns: new Set(),
+      paramMap: new Map(),
+    });
   }
 
-  /** Recursive safety check.  `seen` guards cycles; `seenFns` guards mutually
-   *  recursive function calls; `paramMap` binds function parameters to the
-   *  values passed at the current call site so we can trace through local
-   *  helper functions (`qualifiedIconRemote(alias)` with a literal alias). */
-  protected isSafeExpression(
-    node: ASTNode | null,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-    paramMap: Map<string, ASTNode | null>,
-  ): boolean {
+  /** Recursive safety check against the traversal context in `ctx`. */
+  protected isSafeExpression(node: ASTNode | null, ctx: SafetyContext): boolean {
     if (!node) return false;
     if (node === SAFE_STRING_NODE) return true;
 
     const raw = node.raw as TreeSitterNode;
-    const type = raw.type;
 
     // `seen` is path-based (added on entry, removed on exit) and keyed by the
     // node's unique `id` — NOT `startIndex`, which collides between an
@@ -1961,11 +1927,22 @@ class TsSafetyAnalysis extends TsConstantResolution {
     // (one literal bound to two parameters) be re-checked via sibling branches
     // while still breaking true cycles (a node in its own ancestor chain).
     const key = raw.id;
-    if (seen.has(key)) return false;
-    seen.add(key);
+    if (ctx.seen.has(key)) return false;
+    ctx.seen.add(key);
 
-    let result = false;
-    switch (type) {
+    const result = this.evaluateSafeExpression(node, raw, ctx);
+
+    ctx.seen.delete(key);
+    return result;
+  }
+
+  /** Evaluate a single expression node's safety, dispatching on its AST type. */
+  private evaluateSafeExpression(node: ASTNode, raw: TreeSitterNode, ctx: SafetyContext): boolean {
+    // Structural nodes (wrappers, binary, ternary) recurse into children.
+    const structural = this.evaluateStructuralExpression(node, raw, ctx);
+    if (structural !== null) return structural;
+
+    switch (raw.type) {
       case 'string':
       case 'number':
       case 'true':
@@ -1973,116 +1950,96 @@ class TsSafetyAnalysis extends TsConstantResolution {
       case 'null':
       case 'undefined':
       case 'regex':
-        result = true;
-        break;
-
+        return true;
       case 'identifier':
-        result = this.isSafeIdentifier(node, ast, sourceCode, seen, seenFns, paramMap);
-        break;
+        return this.isSafeIdentifier(node, ctx);
+      case 'template_string':
+        return this.isSafeTemplateString(node, ctx);
+      case 'array':
+        return this.isSafeArray(node, ctx);
+      case 'call_expression':
+        return this.isSafeCallExpression(node, ctx);
+      // member_expression, object/class literals, await/async, etc. — a value we
+      // cannot prove safe.  Conservative: stay flagged.
+      default:
+        return false;
+    }
+  }
 
+  /** Handle structural nodes that recurse into child expressions (parenthesized
+   *  wrappers, type casts/assertions, ternaries, binary ops).  Returns `null`
+   *  when the node is not structural, so the caller can fall through to the
+   *  leaf switch. */
+  private evaluateStructuralExpression(
+    node: ASTNode,
+    raw: TreeSitterNode,
+    ctx: SafetyContext,
+  ): boolean | null {
+    switch (raw.type) {
       case 'parenthesized_expression': {
         const inner = (node.children ?? []).find(
           (c) => !['(', ')'].includes((c.raw as TreeSitterNode).type),
         );
-        result = this.isSafeExpression(inner ?? null, ast, sourceCode, seen, seenFns, paramMap);
-        break;
+        return this.isSafeExpression(inner ?? null, ctx);
       }
-
       case 'as_expression':
       case 'type_assertion':
       case 'satisfies_expression':
       case 'non_null_expression': {
         const inner = (raw as any).namedChild?.(0) as TreeSitterNode | null;
-        result = this.isSafeExpression(this.wrapRaw(inner), ast, sourceCode, seen, seenFns, paramMap);
-        break;
+        return this.isSafeExpression(this.wrapRaw(inner), ctx);
       }
-
-      case 'template_string':
-        result = this.isSafeTemplateString(node, ast, sourceCode, seen, seenFns, paramMap);
-        break;
-
-      case 'array':
-        result = this.isSafeArray(node, ast, sourceCode, seen, seenFns, paramMap);
-        break;
-
       case 'ternary_expression': {
         const consequence = (raw as any).childForFieldName?.('consequence') as TreeSitterNode | null;
         const alternative = (raw as any).childForFieldName?.('alternative') as TreeSitterNode | null;
-        result = this.isSafeExpression(this.wrapRaw(consequence), ast, sourceCode, seen, seenFns, paramMap)
-          && this.isSafeExpression(this.wrapRaw(alternative), ast, sourceCode, seen, seenFns, paramMap);
-        break;
+        return this.isSafeExpression(this.wrapRaw(consequence), ctx)
+          && this.isSafeExpression(this.wrapRaw(alternative), ctx);
       }
-
       case 'binary_expression': {
         const left = (raw as any).childForFieldName?.('left') as TreeSitterNode | null;
         const right = (raw as any).childForFieldName?.('right') as TreeSitterNode | null;
-        result = this.isSafeExpression(this.wrapRaw(left), ast, sourceCode, seen, seenFns, paramMap)
-          && this.isSafeExpression(this.wrapRaw(right), ast, sourceCode, seen, seenFns, paramMap);
-        break;
+        return this.isSafeExpression(this.wrapRaw(left), ctx)
+          && this.isSafeExpression(this.wrapRaw(right), ctx);
       }
-
-      case 'call_expression':
-        result = this.isSafeCallExpression(node, ast, sourceCode, seen, seenFns, paramMap);
-        break;
-
-      // member_expression, object/class literals, await/async, etc. — a value we
-      // cannot prove safe.  Conservative: stay flagged.
       default:
-        result = false;
+        return null;
     }
-
-    seen.delete(key);
-    return result;
   }
 
   /** Identifier safety: a bound parameter, compile-time constant, or validated
    *  parameter at all call sites. */
-  private isSafeIdentifier(
-    node: ASTNode,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-    paramMap: Map<string, ASTNode | null>,
-  ): boolean {
+  private isSafeIdentifier(node: ASTNode, ctx: SafetyContext): boolean {
     const name = (node.raw as TreeSitterNode).text;
     // A parameter bound at the current call site — recurse into its value.
-    if (paramMap.has(name)) {
-      return this.isSafeExpression(paramMap.get(name) ?? null, ast, sourceCode, seen, seenFns, paramMap);
+    if (ctx.paramMap.has(name)) {
+      return this.isSafeExpression(ctx.paramMap.get(name) ?? null, ctx);
     }
     // Compile-time constant (string/number/static array/imported symbol).
-    const resolved = this.resolveLocalConstant(node, ast, sourceCode);
+    const resolved = this.resolveLocalConstant(node, ctx.ast, ctx.sourceCode);
     if (resolved && resolved.isStatic) {
       return true;
     }
-    if (this.isDeclarationValueSafe(node, ast, sourceCode, seen, seenFns, paramMap)) {
+    if (this.isDeclarationValueSafe(node, ctx)) {
       return true;
     }
-    if (this.isGuardValidatedParameter(node, ast)) {
+    if (this.isGuardValidatedParameter(node, ctx.ast)) {
       return true;
     }
-    if (this.isParamSafeAtAllCallSites(node, ast, sourceCode, seen, seenFns)) {
+    if (this.isParamSafeAtAllCallSites(node, ctx)) {
       return true;
     }
     return false;
   }
 
   /** A template string is safe only if every `${…}` substitution is safe. */
-  private isSafeTemplateString(
-    node: ASTNode,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-    paramMap: Map<string, ASTNode | null>,
-  ): boolean {
+  private isSafeTemplateString(node: ASTNode, ctx: SafetyContext): boolean {
     for (const child of node.children ?? []) {
       const ct = (child.raw as TreeSitterNode).type;
       if (ct !== 'template_substitution') continue;
       const inner = (child.children ?? []).find(
         (c) => (c.raw as TreeSitterNode).type !== 'template_substitution',
       ) ?? child;
-      if (!this.isSafeExpression(inner, ast, sourceCode, seen, seenFns, paramMap)) {
+      if (!this.isSafeExpression(inner, ctx)) {
         return false;
       }
     }
@@ -2090,18 +2047,11 @@ class TsSafetyAnalysis extends TsConstantResolution {
   }
 
   /** An array literal is safe only if every element is safe. */
-  private isSafeArray(
-    node: ASTNode,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-    paramMap: Map<string, ASTNode | null>,
-  ): boolean {
+  private isSafeArray(node: ASTNode, ctx: SafetyContext): boolean {
     for (const child of node.children ?? []) {
       const ct = (child.raw as TreeSitterNode).type;
       if (ct === ',' || ct === '[' || ct === ']') continue;
-      if (!this.isSafeExpression(child, ast, sourceCode, seen, seenFns, paramMap)) {
+      if (!this.isSafeExpression(child, ctx)) {
         return false;
       }
     }
@@ -2109,50 +2059,28 @@ class TsSafetyAnalysis extends TsConstantResolution {
   }
 
   /** Decide whether a call expression is provably safe to embed in SQL. */
-  protected isSafeCallExpression(
-    node: ASTNode,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-    paramMap: Map<string, ASTNode | null>,
-  ): boolean {
+  protected isSafeCallExpression(node: ASTNode, ctx: SafetyContext): boolean {
     const raw = node.raw as TreeSitterNode;
     const fnNode = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
     if (!fnNode) return false;
-    const argNodes = this.getCallArgASTNodes(node);
 
-    // 1. Quote-escape sanitizer: `x.replace(/'/g, "''")` / `x.replaceAll("'", "''")`.
-    //    Sanitizing arbitrary input is the point, so the receiver's own safety is
-    //    irrelevant here — the call returns an escaped literal.
-    if (fnNode.type === 'member_expression') {
-      const prop = (fnNode as any).childForFieldName?.('property') as TreeSitterNode | null;
-      const propName = prop?.text ?? '';
-      if ((propName === 'replace' || propName === 'replaceAll')
-          && isQuoteEscapeSanitizer(argNodes[0], argNodes[1], sourceCode)) {
-        return true;
-      }
-    }
+    // NOTE: manual quote-escaping (`x.replace(/'/g, "''")`) is deliberately NOT
+    // treated as a sanitizer here — see the module-level comment above.  It
+    // covers only the single-quote case and would otherwise bless a real
+    // vulnerability.
 
-    // 2. Static-array `.map().join()` chain (e.g. `FLAGS.map((c) => \`a.${c}\`).join(", ")`).
-    if (this.isSafeMapJoin(node, ast, sourceCode, seen, seenFns, paramMap)) return true;
+    // 1. Static-array `.map().join()` chain (e.g. `FLAGS.map((c) => \`a.${c}\`).join(", ")`).
+    if (this.isSafeMapJoin(node, ctx)) return true;
 
-    // 3. Local function call with a safe body and safe call sites.
-    if (this.isLocalFunctionCallSafe(node, ast, sourceCode, seen, seenFns, paramMap)) return true;
+    // 2. Local function call with a safe body and safe call sites.
+    if (this.isLocalFunctionCallSafe(node, ctx)) return true;
 
     return false;
   }
 
   /** True when the node is `.join(...)` over `.map(...)` of a static array whose
    *  callback body is safe for every element. */
-  protected isSafeMapJoin(
-    node: ASTNode,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-    paramMap: Map<string, ASTNode | null>,
-  ): boolean {
+  protected isSafeMapJoin(node: ASTNode, ctx: SafetyContext): boolean {
     const raw = node.raw as TreeSitterNode;
     const fnNode = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
     if (!fnNode || fnNode.type !== 'member_expression') return false;
@@ -2169,7 +2097,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
     if (!mapProp || !mapObj || mapProp.text !== 'map') return false;
 
     // The array being mapped must itself be provably safe (static array/const).
-    if (!this.isSafeExpression(this.wrapRaw(mapObj), ast, sourceCode, seen, seenFns, paramMap)) return false;
+    if (!this.isSafeExpression(this.wrapRaw(mapObj), ctx)) return false;
 
     // The callback must be safe for any element — bind its first parameter to a
     // compile-time string sentinel and check the callback body.
@@ -2177,46 +2105,33 @@ class TsSafetyAnalysis extends TsConstantResolution {
     if (!callback || !['arrow_function', 'function_expression', 'function'].includes(callback.type)) return false;
     const cbParams = this.getParamNames(this.wrapRaw(callback)!);
     if (cbParams.length === 0) return false;
-    const bound = new Map<string, ASTNode | null>(paramMap);
+    const bound = new Map<string, ASTNode | null>(ctx.paramMap);
     bound.set(cbParams[0], SAFE_STRING_NODE);
-    return this.isBodySafeUnderParams(this.wrapRaw(callback)!, bound, ast, sourceCode, seen, seenFns);
+    return this.isBodySafeUnderParams(this.wrapRaw(callback)!, { ...ctx, paramMap: bound });
   }
 
   /** True when the node is a call to a local (in-file) function whose body is
    *  safe under the values passed at this call site. */
-  protected isLocalFunctionCallSafe(
-    node: ASTNode,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-    paramMap: Map<string, ASTNode | null>,
-  ): boolean {
+  protected isLocalFunctionCallSafe(node: ASTNode, ctx: SafetyContext): boolean {
     const raw = node.raw as TreeSitterNode;
     const fnNode = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
     if (!fnNode || fnNode.type !== 'identifier') return false;
     const calleeName = fnNode.text;
-    if (!calleeName || seenFns.has(calleeName)) return false;
-    seenFns.add(calleeName);
+    if (!calleeName || ctx.seenFns.has(calleeName)) return false;
+    ctx.seenFns.add(calleeName);
 
-    const decl = this.findFunctionDeclaration(calleeName, ast);
+    const decl = this.findFunctionDeclaration(calleeName, ctx.ast);
     if (!decl) return false;
     const paramNames = this.getParamNames(decl);
     const argNodes = this.getCallArgASTNodes(node);
-    const bound = new Map<string, ASTNode | null>(paramMap);
+    const bound = new Map<string, ASTNode | null>(ctx.paramMap);
     paramNames.forEach((p, i) => bound.set(p, argNodes[i] ?? null));
-    return this.isBodySafeUnderParams(decl, bound, ast, sourceCode, seen, seenFns);
+    return this.isBodySafeUnderParams(decl, { ...ctx, paramMap: bound });
   }
 
-  /** Check a function's body returns only safe values, given `bound` params. */
-  protected isBodySafeUnderParams(
-    fnNode: ASTNode,
-    bound: Map<string, ASTNode | null>,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-  ): boolean {
+  /** Check a function's body returns only safe values, under the `paramMap`
+   *  already bound in `ctx` to the values passed at the call site. */
+  protected isBodySafeUnderParams(fnNode: ASTNode, ctx: SafetyContext): boolean {
     const raw = fnNode.raw as TreeSitterNode;
     const body = (raw as any).childForFieldName?.('body') as TreeSitterNode | null;
     if (!body) return false;
@@ -2232,71 +2147,58 @@ class TsSafetyAnalysis extends TsConstantResolution {
       for (const r of returns) {
         const expr = r.namedChildren.find((c) => c.type !== 'return_statement') ?? null;
         if (!expr) return false;
-        if (!this.isSafeExpression(this.wrapRaw(expr), ast, sourceCode, seen, seenFns, bound)) return false;
+        if (!this.isSafeExpression(this.wrapRaw(expr), ctx)) return false;
       }
       return true;
     }
 
     // Arrow-function expression body (no braces).
-    return this.isSafeExpression(this.wrapRaw(body), ast, sourceCode, seen, seenFns, bound);
+    return this.isSafeExpression(this.wrapRaw(body), ctx);
   }
 
   /** True when the identifier names the enclosing function's parameter AND every
    *  in-file call site of that function passes a provably-safe value for that
    *  parameter position. */
-  protected isParamSafeAtAllCallSites(
-    identifierNode: ASTNode,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-  ): boolean {
+  protected isParamSafeAtAllCallSites(identifierNode: ASTNode, ctx: SafetyContext): boolean {
     const idRaw = identifierNode.raw as TreeSitterNode;
     const paramName = idRaw.text;
-    const enclosing = this.findEnclosingScope(identifierNode, ast);
-    if (!enclosing || enclosing === ast.root) return false;
+    const enclosing = this.findEnclosingScope(identifierNode, ctx.ast);
+    if (!enclosing || enclosing === ctx.ast.root) return false;
     const paramNames = this.getParamNames(enclosing);
     const paramIndex = paramNames.indexOf(paramName);
     if (paramIndex < 0) return false;
     const fnName = this.getFunctionName(enclosing);
     if (!fnName) return false;
-    const callSites = this.findCallSites(fnName, ast);
+    const callSites = this.findCallSites(fnName, ctx.ast);
     if (callSites.length === 0) return false;
     for (const site of callSites) {
       const arg = this.getCallArgASTNodes(site)[paramIndex];
       if (!arg) return false;
-      if (!this.isSafeExpression(arg, ast, sourceCode, seen, seenFns, new Map())) return false;
+      if (!this.isSafeExpression(arg, { ...ctx, paramMap: new Map() })) return false;
     }
     return true;
   }
 
   /** True when the identifier names a local variable whose initializer is a
    *  provably-safe expression and which is never reassigned. */
-  protected isDeclarationValueSafe(
-    identifierNode: ASTNode,
-    ast: AST,
-    sourceCode: string,
-    seen: Set<number>,
-    seenFns: Set<string>,
-    paramMap: Map<string, ASTNode | null>,
-  ): boolean {
+  protected isDeclarationValueSafe(identifierNode: ASTNode, ctx: SafetyContext): boolean {
     const idRaw = identifierNode.raw as TreeSitterNode;
     const name = idRaw.text;
-    const enclosing = this.findEnclosingScope(identifierNode, ast);
-    const scopeRoot = enclosing ?? ast.root;
+    const enclosing = this.findEnclosingScope(identifierNode, ctx.ast);
+    const scopeRoot = enclosing ?? ctx.ast.root;
     let declNode = this.findDeclarationInScope(scopeRoot, name);
-    if (!declNode && enclosing && enclosing !== ast.root) {
-      declNode = this.findDeclarationInScope(ast.root, name);
+    if (!declNode && enclosing && enclosing !== ctx.ast.root) {
+      declNode = this.findDeclarationInScope(ctx.ast.root, name);
     }
     if (!declNode) return false;
     const declLine = declNode.location.start.line;
     const reassigned = this.hasReassignment(scopeRoot, name, declLine)
-      || (enclosing && enclosing !== ast.root ? this.hasReassignment(ast.root, name, declLine) : false);
+      || (enclosing && enclosing !== ctx.ast.root ? this.hasReassignment(ctx.ast.root, name, declLine) : false);
     if (reassigned) return false;
     const declRaw = declNode.raw as TreeSitterNode;
     const valueRaw = (declRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
     if (!valueRaw) return false;
-    return this.isSafeExpression(this.wrapRaw(valueRaw), ast, sourceCode, seen, seenFns, paramMap);
+    return this.isSafeExpression(this.wrapRaw(valueRaw), ctx);
   }
 }
 

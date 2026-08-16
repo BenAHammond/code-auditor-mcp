@@ -473,42 +473,15 @@ export function extractImports(
 
   for (const imp of importNodes) {
     const raw = imp.raw as TreeSitterNode;
-    const importedNames: string[] = [];
-    let isDefault = false;
-    let isNamespace = false;
-
-    // Get module specifier (the string argument)
-    const stringNodes = raw.namedChildren.filter((c: TreeSitterNode) => c.type === 'string');
-    const moduleSpecifier = stringNodes.length > 0
-      ? stringNodes[0].text.replace(/^["']|["']$/g, '')
-      : '';
+    const moduleSpecifier = extractModuleSpecifier(raw);
 
     // Get import clause
     const importClause = raw.namedChildren.find((c: TreeSitterNode) =>
       c.type === 'import_clause'
     );
-
-    if (importClause) {
-      for (const child of importClause.namedChildren) {
-        if (child.type === 'identifier') {
-          importedNames.push(child.text);
-          isDefault = true;
-        } else if (child.type === 'namespace_import') {
-          const ident = child.namedChildren.find((c: TreeSitterNode) => c.type === 'identifier');
-          if (ident) {
-            importedNames.push(ident.text);
-            isNamespace = true;
-          }
-        } else if (child.type === 'named_imports') {
-          for (const spec of child.namedChildren) {
-            if (spec.type === 'import_specifier') {
-              const name = spec.namedChildren.find((c: TreeSitterNode) => c.type === 'identifier');
-              if (name) importedNames.push(name.text);
-            }
-          }
-        }
-      }
-    }
+    const { importedNames, isDefault, isNamespace } = importClause
+      ? extractImportClause(importClause)
+      : { importedNames: [], isDefault: false, isNamespace: false };
 
     results.push({
       moduleSpecifier,
@@ -520,4 +493,49 @@ export function extractImports(
   }
 
   return results;
+}
+
+/**
+ * Extract the module specifier (the string argument) from an import node.
+ */
+function extractModuleSpecifier(raw: TreeSitterNode): string {
+  const stringNodes = raw.namedChildren.filter((c: TreeSitterNode) => c.type === 'string');
+  return stringNodes.length > 0
+    ? stringNodes[0].text.replace(/^["']|["']$/g, '')
+    : '';
+}
+
+/**
+ * Extract imported names and default/namespace flags from an import clause.
+ */
+function extractImportClause(importClause: TreeSitterNode): {
+  importedNames: string[];
+  isDefault: boolean;
+  isNamespace: boolean;
+} {
+  const importedNames: string[] = [];
+  let isDefault = false;
+  let isNamespace = false;
+
+  for (const child of importClause.namedChildren) {
+    if (child.type === 'identifier') {
+      importedNames.push(child.text);
+      isDefault = true;
+    } else if (child.type === 'namespace_import') {
+      const ident = child.namedChildren.find((c: TreeSitterNode) => c.type === 'identifier');
+      if (ident) {
+        importedNames.push(ident.text);
+        isNamespace = true;
+      }
+    } else if (child.type === 'named_imports') {
+      for (const spec of child.namedChildren) {
+        if (spec.type === 'import_specifier') {
+          const name = spec.namedChildren.find((c: TreeSitterNode) => c.type === 'identifier');
+          if (name) importedNames.push(name.text);
+        }
+      }
+    }
+  }
+
+  return { importedNames, isDefault, isNamespace };
 }

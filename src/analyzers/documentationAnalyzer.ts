@@ -204,21 +204,27 @@ function isFunctionLikeNode(node: ASTNode): boolean {
 }
 
 /**
+ * Per-file scan context threaded through the documentation check helpers.
+ * Bundles the adapter, config, file name, and mutable violation/counter
+ * accumulators so the check functions take a single context object.
+ */
+interface DocScanContext {
+  adapter: LanguageAdapter | null;
+  config: DocumentationAnalyzerConfig;
+  fileName: string;
+  violations: Violation[];
+  counters: DocCounters;
+}
+
+/**
  * Check function-documentation quality for a single function-like node,
  * mutating counters and appending violations.
  */
-function checkFunctionDocumentation(
-  node: ASTNode,
-  adapter: LanguageAdapter | null,
-  config: DocumentationAnalyzerConfig,
-  fileName: string,
-  violations: Violation[],
-  counters: DocCounters,
-): void {
-  const nodeExported = adapterIsExported(node);
-  const shouldCheck = !config.checkExportedOnly || nodeExported;
+function checkFunctionDocumentation(node: ASTNode, ctx: DocScanContext): void {
+  const { adapter, config, counters } = ctx;
 
-  if (!shouldCheck) return;
+  const nodeExported = adapterIsExported(node);
+  if (config.checkExportedOnly && !nodeExported) return;
 
   const jsDoc = adapter?.getDocumentation(node) ?? null;
   const hasGoodDoc = jsDoc ? jsDoc.length >= config.minDescriptionLength : false;
@@ -226,20 +232,7 @@ function checkFunctionDocumentation(
   if (hasGoodDoc) {
     counters.documentedFunctions++;
   } else if (config.requireFunctionDocs) {
-    const functionName = getNodeName(node) || 'anonymous function';
-    const position = getNodePosition(node);
-
-    violations.push({
-      file: fileName,
-      line: position.line,
-      column: position.column,
-      severity: 'suggestion',
-      rule: 'function-documentation',
-      message: `Function '${functionName}' lacks documentation`,
-      details: 'Functions should have JSDoc comments describing their purpose',
-      suggestion: 'Add JSDoc comment with function description and parameter/return documentation',
-      functionName
-    });
+    pushFunctionDocViolation(node, ctx);
   }
 
   // Parameter and return documentation only apply to declarations/expressions.
@@ -247,31 +240,61 @@ function checkFunctionDocumentation(
     return;
   }
 
-  // Check parameter documentation
+  checkParamDocumentation(node, ctx, hasGoodDoc);
+  checkReturnDocumentation(node, ctx, hasGoodDoc);
+}
+
+/** Push a missing-function-documentation violation. */
+function pushFunctionDocViolation(node: ASTNode, ctx: DocScanContext): void {
+  const { fileName, violations } = ctx;
+  const functionName = getNodeName(node) || 'anonymous function';
+  const position = getNodePosition(node);
+
+  violations.push({
+    file: fileName,
+    line: position.line,
+    column: position.column,
+    severity: 'suggestion',
+    rule: 'function-documentation',
+    message: `Function '${functionName}' lacks documentation`,
+    details: 'Functions should have JSDoc comments describing their purpose',
+    suggestion: 'Add JSDoc comment with function description and parameter/return documentation',
+    functionName
+  });
+}
+
+/** Check @param coverage for a function-like node. */
+function checkParamDocumentation(node: ASTNode, ctx: DocScanContext, hasGoodDoc: boolean): void {
+  const { adapter, config, counters } = ctx;
   const paramAnalysis = analyzeParamDocumentation(node, adapter!);
-  if (paramAnalysis.totalParams > 0) {
-    counters.functionsWithParams++;
-    if (paramAnalysis.documentedParams === paramAnalysis.totalParams) {
-      counters.paramsDocumented++;
-    } else if (config.requireParamDocs && hasGoodDoc) {
-      const functionName = getNodeName(node) || 'function';
-      const position = getNodePosition(node);
+  if (paramAnalysis.totalParams === 0) return;
 
-      violations.push({
-        file: fileName,
-        line: position.line,
-        column: position.column,
-        severity: 'suggestion',
-        rule: 'parameter-documentation',
-        message: `Function '${functionName}' has undocumented parameters`,
-        details: `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
-        suggestion: 'Add @param tags for all function parameters',
-        functionName
-      });
-    }
+  counters.functionsWithParams++;
+  if (paramAnalysis.documentedParams === paramAnalysis.totalParams) {
+    counters.paramsDocumented++;
+  } else if (config.requireParamDocs && hasGoodDoc) {
+    const { fileName, violations } = ctx;
+    const functionName = getNodeName(node) || 'function';
+    const position = getNodePosition(node);
+
+    violations.push({
+      file: fileName,
+      line: position.line,
+      column: position.column,
+      severity: 'suggestion',
+      rule: 'parameter-documentation',
+      message: `Function '${functionName}' has undocumented parameters`,
+      details: `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
+      suggestion: 'Add @param tags for all function parameters',
+      functionName
+    });
   }
+}
 
-  // Check return documentation
+/** Check @returns coverage for a function-like node. */
+function checkReturnDocumentation(node: ASTNode, ctx: DocScanContext, hasGoodDoc: boolean): void {
+  const { adapter, config, counters } = ctx;
+
   const hasReturnType = !!findChild(node, 'type_annotation');
   const body = findChild(node, 'statement_block');
   const hasReturnStatements = body
@@ -279,40 +302,35 @@ function checkFunctionDocumentation(
     : false;
   const hasReturn = hasReturnType || hasReturnStatements;
 
-  if (hasReturn) {
-    counters.functionsWithReturns++;
-    if (hasReturnDocumentation(node, adapter!)) {
-      counters.returnsDocumented++;
-    } else if (config.requireReturnDocs && hasGoodDoc) {
-      const functionName = getNodeName(node) || 'function';
-      const position = getNodePosition(node);
+  if (!hasReturn) return;
+  counters.functionsWithReturns++;
+  if (hasReturnDocumentation(node, adapter!)) {
+    counters.returnsDocumented++;
+  } else if (config.requireReturnDocs && hasGoodDoc) {
+    const { fileName, violations } = ctx;
+    const functionName = getNodeName(node) || 'function';
+    const position = getNodePosition(node);
 
-      violations.push({
-        file: fileName,
-        line: position.line,
-        column: position.column,
-        severity: 'suggestion',
-        rule: 'return-documentation',
-        message: `Function '${functionName}' missing return documentation`,
-        details: 'Functions with return values should document what they return',
-        suggestion: 'Add @returns tag describing the return value',
-        functionName
-      });
-    }
+    violations.push({
+      file: fileName,
+      line: position.line,
+      column: position.column,
+      severity: 'suggestion',
+      rule: 'return-documentation',
+      message: `Function '${functionName}' missing return documentation`,
+      details: 'Functions with return values should document what they return',
+      suggestion: 'Add @returns tag describing the return value',
+      functionName
+    });
   }
 }
 
 /**
  * Check documentation quality for a single React component node.
  */
-function checkComponentDocumentation(
-  node: ASTNode,
-  adapter: LanguageAdapter | null,
-  config: DocumentationAnalyzerConfig,
-  fileName: string,
-  violations: Violation[],
-  counters: DocCounters,
-): void {
+function checkComponentDocumentation(node: ASTNode, ctx: DocScanContext): void {
+  const { adapter, config, fileName, violations, counters } = ctx;
+
   const componentExported = adapterIsExported(node);
   const shouldCheck = !config.checkExportedOnly || componentExported;
 
@@ -349,6 +367,43 @@ function checkComponentDocumentation(
 * @param sourceCode - Full source text of the file
 * @param config - Documentation analyzer configuration
  */
+function createDocCounters(): DocCounters {
+  return {
+    documentedFunctions: 0,
+    documentedComponents: 0,
+    functionsWithParams: 0,
+    paramsDocumented: 0,
+    functionsWithReturns: 0,
+    returnsDocumented: 0,
+  };
+}
+
+/**
+ * Check file-level purpose documentation and push a violation if missing.
+ * Returns whether the file has purpose docs (for metric aggregation).
+ */
+function checkFileDocumentation(
+  ast: ASTNode,
+  filePath: string,
+  config: DocumentationAnalyzerConfig,
+  violations: Violation[],
+): boolean {
+  const hasFileDocs = !!getFilePurpose(ast);
+  if (config.requireFileDocs && !hasFileDocs) {
+    violations.push({
+      file: filePath,
+      line: 1,
+      column: 1,
+      severity: 'suggestion',
+      rule: 'file-documentation',
+      message: 'File missing purpose documentation',
+      details: 'Consider adding @fileoverview or @purpose comment at the top of the file',
+      suggestion: "Add file-level documentation explaining the module's purpose"
+    });
+  }
+  return hasFileDocs;
+}
+
 function analyzeFileDocumentation(
   ast: ASTNode,
   filePath: string,
@@ -359,48 +414,21 @@ function analyzeFileDocumentation(
   metrics: Partial<DocumentationMetrics>;
 } {
   const violations: Violation[] = [];
-  const fileName = filePath;
-
-  // B3: Get the language adapter for this file type
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(filePath);
-
   let totalFunctions = 0;
   let totalComponents = 0;
-  const counters: DocCounters = {
-    documentedFunctions: 0,
-    documentedComponents: 0,
-    functionsWithParams: 0,
-    paramsDocumented: 0,
-    functionsWithReturns: 0,
-    returnsDocumented: 0,
-  };
+  const counters = createDocCounters();
+  const hasFileDocs = checkFileDocumentation(ast, filePath, config, violations);
 
-  // Check file-level documentation
-  const filePurpose = getFilePurpose(ast);
-  const hasFileDocs = !!filePurpose;
-
-  if (config.requireFileDocs && !hasFileDocs) {
-    violations.push({
-      file: fileName,
-      line: 1,
-      column: 1,
-      severity: 'suggestion',
-      rule: 'file-documentation',
-      message: 'File missing purpose documentation',
-      details: 'Consider adding @fileoverview or @purpose comment at the top of the file',
-      suggestion: "Add file-level documentation explaining the module's purpose"
-    });
-  }
-
-  // Walk the AST to find function-like nodes and React components
+  const ctx: DocScanContext = { adapter, config, fileName: filePath, violations, counters };
   walkAST(ast, (node: ASTNode) => {
     if (isFunctionLikeNode(node)) {
       totalFunctions++;
-      checkFunctionDocumentation(node, adapter, config, fileName, violations, counters);
+      checkFunctionDocumentation(node, ctx);
     }
     if (isReactComponent(node)) {
       totalComponents++;
-      checkComponentDocumentation(node, adapter, config, fileName, violations, counters);
+      checkComponentDocumentation(node, ctx);
     }
   });
 
@@ -424,6 +452,57 @@ function analyzeFileDocumentation(
  * Aggregate per-file documentation metrics into a single corpus-level result,
  * computing coverage score and classifying well/poorly documented files.
  */
+const NUMERIC_METRIC_KEYS: (keyof DocumentationMetrics)[] = [
+  'totalFunctions', 'documentedFunctions',
+  'totalComponents', 'documentedComponents',
+  'functionsWithParams', 'paramsDocumented',
+  'functionsWithReturns', 'returnsDocumented',
+  'totalFiles', 'filesWithPurpose'
+];
+
+/**
+ * Accumulate one file's metrics into the aggregated result and classify the
+ * file as well/poorly documented based on its per-file coverage ratio.
+ */
+function accumulateFileMetrics(
+  aggregated: DocumentationMetrics,
+  fileMetrics: Partial<DocumentationMetrics>,
+  filePath: string,
+): void {
+  for (const key of NUMERIC_METRIC_KEYS) {
+    const val = fileMetrics[key];
+    if (typeof val === 'number') {
+      (aggregated as any)[key] += val;
+    }
+  }
+
+  const fileTotal = (fileMetrics.totalFunctions || 0) +
+    (fileMetrics.totalComponents || 0) + 1;
+  const fileDocumented = (fileMetrics.documentedFunctions || 0) +
+    (fileMetrics.documentedComponents || 0) +
+    (fileMetrics.filesWithPurpose || 0);
+  const fileCoverage = fileTotal > 0 ? (fileDocumented / fileTotal) : 0;
+
+  if (fileCoverage >= 0.8) {
+    aggregated.wellDocumentedFiles.push(filePath);
+  } else if (fileCoverage < 0.3) {
+    aggregated.poorlyDocumentedFiles.push(filePath);
+  }
+}
+
+/** Compute the overall documentation coverage score (0-100). */
+function computeCoverageScore(aggregated: DocumentationMetrics): number {
+  const totalItems = aggregated.totalFunctions +
+    aggregated.totalComponents +
+    aggregated.totalFiles;
+  const documentedItems = aggregated.documentedFunctions +
+    aggregated.documentedComponents +
+    aggregated.filesWithPurpose;
+  return totalItems > 0
+    ? Math.round((documentedItems / totalItems) * 100)
+    : 100;
+}
+
 function aggregateDocumentationMetrics(
   allMetrics: Partial<DocumentationMetrics>[],
   filteredFiles: string[]
@@ -444,52 +523,13 @@ function aggregateDocumentationMetrics(
     poorlyDocumentedFiles: []
   };
 
-  // Combine metrics from all files
   allMetrics.forEach((fileMetrics, index) => {
     if (fileMetrics) {
-      // Sum numeric metrics
-      const numericKeys: (keyof DocumentationMetrics)[] = [
-        'totalFunctions', 'documentedFunctions',
-        'totalComponents', 'documentedComponents',
-        'functionsWithParams', 'paramsDocumented',
-        'functionsWithReturns', 'returnsDocumented',
-        'totalFiles', 'filesWithPurpose'
-      ];
-      for (const key of numericKeys) {
-        const val = fileMetrics[key];
-        if (typeof val === 'number') {
-          (aggregatedMetrics as any)[key] += val;
-        }
-      }
-
-      // Identify well/poorly documented files
-      const fileTotal = (fileMetrics.totalFunctions || 0) +
-        (fileMetrics.totalComponents || 0) + 1;
-      const fileDocumented = (fileMetrics.documentedFunctions || 0) +
-        (fileMetrics.documentedComponents || 0) +
-        (fileMetrics.filesWithPurpose || 0);
-      const fileCoverage = fileTotal > 0 ? (fileDocumented / fileTotal) : 0;
-
-      const filePath = filteredFiles[index];
-      if (fileCoverage >= 0.8) {
-        aggregatedMetrics.wellDocumentedFiles.push(filePath);
-      } else if (fileCoverage < 0.3) {
-        aggregatedMetrics.poorlyDocumentedFiles.push(filePath);
-      }
+      accumulateFileMetrics(aggregatedMetrics, fileMetrics, filteredFiles[index]);
     }
   });
 
-  // Calculate coverage score
-  const totalItems = aggregatedMetrics.totalFunctions +
-    aggregatedMetrics.totalComponents +
-    aggregatedMetrics.totalFiles;
-  const documentedItems = aggregatedMetrics.documentedFunctions +
-    aggregatedMetrics.documentedComponents +
-    aggregatedMetrics.filesWithPurpose;
-  aggregatedMetrics.coverageScore = totalItems > 0
-    ? Math.round((documentedItems / totalItems) * 100)
-    : 100;
-
+  aggregatedMetrics.coverageScore = computeCoverageScore(aggregatedMetrics);
   return aggregatedMetrics;
 }
 
@@ -502,35 +542,12 @@ function aggregateDocumentationMetrics(
  * @param progressCallback
  * @returns
  */
-export async function analyzeDocumentation(
-  files: string[],
-  config: Partial<DocumentationAnalyzerConfig> = {},
-  options: AuditOptions = {},
-  progressCallback?: ProgressCallback
-): Promise<AnalyzerResult> {
-  const finalConfig = { ...DEFAULT_DOCUMENTATION_CONFIG, ...config };
-  const startTime = Date.now();
-
-  // Filter out exempt files
-  const filteredFiles = files.filter(file => {
-    return !finalConfig.exemptPatterns.some(pattern =>
-      new RegExp(pattern, 'i').test(file)
-    );
-  });
-
-  const progressReporter = progressCallback ? (current: number, total: number, file: string) => {
-    progressCallback({ current, total, analyzer: 'documentation', file });
-  } : undefined;
-
-  // Collect per-file metrics in a closure so we only parse each file once
-  const allMetrics: Partial<DocumentationMetrics>[] = [];
-
-  const perFileAnalyzer = (
-    filePath: string,
-    ast: AST,
-    _config: any,
-    sourceCode?: string
-  ): Violation[] => {
+/** Build the per-file analyzer callback that collects metrics into `allMetrics`. */
+function makePerFileAnalyzer(
+  allMetrics: Partial<DocumentationMetrics>[],
+  finalConfig: DocumentationAnalyzerConfig,
+): (filePath: string, ast: AST, _config: any, sourceCode?: string) => Violation[] {
+  return (filePath, ast, _config, sourceCode) => {
     const analysis = analyzeFileDocumentation(
       ast.root,
       filePath,
@@ -540,16 +557,46 @@ export async function analyzeDocumentation(
     allMetrics.push(analysis.metrics);
     return analysis.violations;
   };
+}
+
+/**
+ * Run the documentation analyzer across the given files.
+ *
+ * @param files Source file paths to analyze.
+ * @param config Documentation analyzer configuration overrides.
+ * @param options Audit options (progress reporting, project root, etc.).
+ * @param progressCallback Optional progress callback invoked per file.
+ * @returns The documentation analyzer result with violations and metrics.
+ */
+export async function analyzeDocumentation(
+  files: string[],
+  config: Partial<DocumentationAnalyzerConfig> = {},
+  options: AuditOptions = {},
+  progressCallback?: ProgressCallback
+): Promise<AnalyzerResult> {
+  const finalConfig = { ...DEFAULT_DOCUMENTATION_CONFIG, ...config };
+  const startTime = Date.now();
+
+  const filteredFiles = files.filter(file =>
+    !finalConfig.exemptPatterns.some(pattern =>
+      new RegExp(pattern, 'i').test(file)
+    )
+  );
+
+  const progressReporter = progressCallback ? (current: number, total: number, file: string) => {
+    progressCallback({ current, total, analyzer: 'documentation', file });
+  } : undefined;
+
+  const allMetrics: Partial<DocumentationMetrics>[] = [];
+  const perFileAnalyzer = makePerFileAnalyzer(allMetrics, finalConfig);
 
   const result = await processFiles(
     filteredFiles,
     perFileAnalyzer,
     'documentation',
-    finalConfig,
-    progressReporter
+    { config: finalConfig, progressReporter }
   );
 
-  // Aggregate metrics from all files (single pass — no re-parsing)
   const aggregatedMetrics = aggregateDocumentationMetrics(allMetrics, filteredFiles);
 
   return {
