@@ -76,7 +76,11 @@ export function resolveRuleId(violation: Violation): string {
  */
 export function buildFullRuleId(analyzerName: string, violation: Violation): string {
   const localId = resolveRuleId(violation);
-  return `${normalizeAnalyzerName(analyzerName)}/${localId}`;
+  const normName = normalizeAnalyzerName(analyzerName);
+  // The analyzer may already emit a namespaced rule ID (e.g. `solid/class-size`);
+  // don't double-prefix it into `solid/solid/class-size`.
+  if (localId.startsWith(`${normName}/`)) return localId;
+  return `${normName}/${localId}`;
 }
 
 /**

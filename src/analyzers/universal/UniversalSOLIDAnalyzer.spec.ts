@@ -35,7 +35,7 @@ async function solidViolations(code: string, name: string) {
     DEFAULT_SOLID_CONFIG,
     code
   );
-  return violations.filter((v: any) => v.rule === 'dependency-inversion');
+  return violations.filter((v: any) => v.rule === 'solid/dependency-inversion');
 }
 
 describe('dependency-inversion — concrete-type signal (task #41)', () => {

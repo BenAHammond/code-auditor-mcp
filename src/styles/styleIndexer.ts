@@ -205,12 +205,21 @@ async function extractForFile(
  * Extract class usage from a source file.
  * Looks for className="..." attributes in JSX and class="..." in HTML.
  */
-function extractClassUsage(
+export function extractClassUsage(
   filePath: string,
   sourceCode: string,
 ): StyleClassUsage[] {
   const usage: StyleClassUsage[] = [];
   const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
+
+  // Class usage only exists in markup/component source. Data/config files
+  // (`.json`, `.sql`, `.toml`, `.prisma`), `.go`, and stylesheets can contain
+  // `class`/`className` substrings inside string literals (Bug #3 — e.g. an
+  // audit-report.json embedding a raw source snippet with `error_class =
+  // 'zombie-capped'`). Those must never reach the class-usage table, so gate
+  // extraction to the extensions that actually carry class attributes.
+  const CLASS_USAGE_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.html', '.vue', '.svelte'];
+  if (!CLASS_USAGE_EXTENSIONS.includes(ext)) return [];
 
   // Determine mechanism by file type
   let mechanism: StyleClassUsage['mechanism'] = 'class';
@@ -218,8 +227,12 @@ function extractClassUsage(
     mechanism = 'className';
   }
 
-  // Match className="..." or class="..."
-  const attrRegex = /(?:className|class)\s*=\s*(?:"([^"]*)"|'([^']*)'|\{(["'`])((?:(?!\3).)*)\3\})/g;
+  // Match className="..." or class="..." as an attribute. The leading \b word
+  // boundary is load-bearing: without it, `class` matches as a substring of
+  // identifiers like `error_class` (and `className` inside `myclassName`), so a
+  // SQL string literal such as `error_class = 'zombie-capped'` leaks its
+  // *value* into the class-usage table and is later flagged undefined-class.
+  const attrRegex = /\b(?:className|class)\s*=\s*(?:"([^"]*)"|'([^']*)'|\{(["'`])((?:(?!\3).)*)\3\})/g;
   let match: RegExpExecArray | null;
 
   while ((match = attrRegex.exec(sourceCode)) !== null) {

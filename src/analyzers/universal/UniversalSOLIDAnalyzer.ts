@@ -247,7 +247,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         ctx.ast.filePath,
         cls.location.start,
         `Class "${cls.name}" appears to be frequently modified. Consider using composition or inheritance for extension.`,
-        { severity: 'suggestion', rule: 'open-closed', symbol: cls.name }
+        { severity: 'suggestion', rule: 'solid/open-closed', symbol: cls.name }
       ));
     }
   }
@@ -284,13 +284,13 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   private checkFunctionSize(func: FunctionInfo, ctx: SolidContext, violations: Violation[]): void {
     const { ast, config } = ctx;
 
-    withRuleTiming('single-responsibility', () => {
+    withRuleTiming('solid/single-responsibility', () => {
       if (func.parameters.length > (config.maxParametersPerMethod || 4)) {
         violations.push(this.createViolation(
           ast.filePath,
           func.location.start,
           `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 4}. Consider using an options object.`,
-          { severity: 'warning', rule: 'single-responsibility', symbol: func.name,
+          { severity: 'warning', rule: 'solid/single-responsibility', symbol: func.name,
             resolution: {
               action: 'bundle-params',
               summary: `Bundle the ${func.parameters.length} parameters of "${func.name}" into an options object.`,
@@ -302,14 +302,14 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
       }
     });
 
-    withRuleTiming('single-responsibility', () => {
+    withRuleTiming('solid/single-responsibility', () => {
       const lineCount = func.location.end.line - func.location.start.line + 1;
       if (lineCount > (config.maxLinesPerMethod || 50)) {
         violations.push(this.createViolation(
           ast.filePath,
           func.location.start,
           `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 50}. Consider breaking it down.`,
-          { severity: 'warning', rule: 'single-responsibility', symbol: func.name,
+          { severity: 'warning', rule: 'solid/single-responsibility', symbol: func.name,
             resolution: {
               action: 'break-down-function',
               summary: `Break "${func.name}" (${lineCount} lines) into smaller functions, extracting named helper blocks.`,
@@ -369,7 +369,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         ast.filePath,
         iface.location.start,
         `Interface "${iface.name}" has ${memberCount} members, exceeding the maximum of ${maxMembers}. Consider splitting into smaller interfaces.`,
-        { severity: 'warning', rule: 'interface-segregation', symbol: iface.name }
+        { severity: 'warning', rule: 'solid/interface-segregation', symbol: iface.name }
       ));
     }
 
@@ -443,7 +443,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             ast.filePath,
             method.location.start,
             `Method "${cls.name}.${method.name}" throws exceptions. Ensure this doesn't violate parent class contract.`,
-            { severity: 'suggestion', rule: 'liskov-substitution', symbol: `${cls.name}.${method.name}` }
+            { severity: 'suggestion', rule: 'solid/liskov-substitution', symbol: `${cls.name}.${method.name}` }
           ));
         }
       }
@@ -466,7 +466,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         ctx.ast.filePath,
         cls.location.start,
         `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
-        { severity: 'suggestion', rule: 'dependency-inversion', symbol: cls.name }
+        { severity: 'suggestion', rule: 'solid/dependency-inversion', symbol: cls.name }
       ));
     }
   }

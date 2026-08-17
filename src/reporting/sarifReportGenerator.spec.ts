@@ -597,6 +597,12 @@ describe('buildFullRuleId', () => {
     delete (v as any).rule;
     expect(buildFullRuleId('react-analyzer', v)).toBe('react/hooks-conditional');
   });
+
+  it('does not double-prefix an already-namespaced rule ID', () => {
+    const v = makeViolation({ rule: 'solid/class-size' });
+    expect(buildFullRuleId('solid', v)).toBe('solid/class-size');
+    expect(buildFullRuleId('solid-analyzer', v)).toBe('solid/class-size');
+  });
 });
 
   describe('Golden file', () => {

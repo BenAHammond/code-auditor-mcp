@@ -47,7 +47,7 @@ export function getDefaultConfig(): AuditConfig {
       'missing-org-filter': 'suggestion',
       'unknown-table': 'suggestion',
       'solid/class-size': 'warning',
-      'dependency-inversion': 'warning',
+      'solid/dependency-inversion': 'warning',
     }
   };
 }

@@ -73,7 +73,7 @@ async function runSolidAnalyzer(filePath: string): Promise<{
 
   return {
     methodComplexity: violations.filter((v: any) => v.rule === 'solid/method-complexity'),
-    singleResponsibility: violations.filter((v: any) => v.rule === 'single-responsibility'),
+    singleResponsibility: violations.filter((v: any) => v.rule === 'solid/single-responsibility'),
     classSize: violations.filter((v: any) => v.rule === 'solid/class-size'),
     all: violations,
   };

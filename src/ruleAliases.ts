@@ -56,6 +56,34 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
     reason:
       'Removed — column-level unknown detection never shipped; unknown-table (table-level) covers the same gap.',
   },
+  // Rename: bare SOLID rule IDs → solid/-prefixed (task #5 — rule-ID normalization).
+  // The analyzer and registry emitted 5 of 7 SOLID rules without the `solid/`
+  // prefix that solid/class-size and solid/method-complexity already carried.
+  'open-closed': {
+    to: 'solid/open-closed',
+    reason:
+      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+  },
+  'single-responsibility': {
+    to: 'solid/single-responsibility',
+    reason:
+      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+  },
+  'interface-segregation': {
+    to: 'solid/interface-segregation',
+    reason:
+      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+  },
+  'liskov-substitution': {
+    to: 'solid/liskov-substitution',
+    reason:
+      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+  },
+  'dependency-inversion': {
+    to: 'solid/dependency-inversion',
+    reason:
+      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+  },
 };
 
 /**

@@ -18,7 +18,7 @@ function v(partial: Partial<Violation> & { analyzer: string; rule: string }): Vi
 }
 
 const GATING = { analyzer: 'solid', rule: 'solid/class-size' };
-const GATING_BARE = { analyzer: 'solid', rule: 'single-responsibility' };
+const GATING_BARE = { analyzer: 'solid', rule: 'solid/single-responsibility' };
 const NON_GATING = { analyzer: 'solid', rule: 'solid/method-complexity' };
 
 describe('computeGatingDecision — Spec 36 R4/R6', () => {
@@ -63,11 +63,11 @@ describe('computeGatingDecision — Spec 36 R4/R6', () => {
     ]);
   });
 
-  it('records a gap for the bare rule-ID gating rule too', () => {
+  it('records a gap for the single-responsibility gating rule too', () => {
     const decision = computeGatingDecision([v({ ...GATING_BARE })]);
     expect(decision.blocking).toHaveLength(0);
     expect(decision.resolutionGaps).toHaveLength(1);
-    expect(decision.resolutionGaps[0].rule).toBe('single-responsibility');
+    expect(decision.resolutionGaps[0].rule).toBe('solid/single-responsibility');
   });
 
   it('treats an undefined new flag as blocking (no baseline → everything is new)', () => {

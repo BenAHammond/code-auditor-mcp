@@ -82,7 +82,7 @@ function runStage1(config: PipelineConfig): {
   async function* generate(): AsyncGenerator<FileASTTuple, void, undefined> {
     // Lazy file discovery (only if not explicit)
     const fileList: string[] = files ?? await discoverFiles(projectRoot, {
-      excludeDirs: ['node_modules', '.next', 'dist', 'build', '.git', 'coverage', '.turbo'],
+      excludeDirs: ['node_modules', '.next', 'dist', 'build', '.git', 'coverage', '.turbo', '.code-index'],
     });
     total = fileList.length;
 

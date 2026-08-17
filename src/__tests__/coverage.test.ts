@@ -150,7 +150,7 @@ describe('buildCoverageReport', () => {
     expect(methodComplexity!.count).toBe(1);
 
     // Rules with no violations but `files` input present should be clean
-    const ocp = coverage.find(c => c.ruleId === 'open-closed');
+    const ocp = coverage.find(c => c.ruleId === 'solid/open-closed');
     expect(ocp).toBeDefined();
     expect(ocp!.state).toBe('clean');
   });

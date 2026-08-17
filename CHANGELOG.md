@@ -2,6 +2,34 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.14] — 2026-08-17
+
+### SOLID rule-ID namespace normalization (task #5)
+- The five SOLID rules that were still emitting bare IDs — `single-responsibility`,
+  `open-closed`, `interface-segregation`, `liskov-substitution`,
+  `dependency-inversion` — now emit `solid/`-prefixed IDs, matching the two that
+  already did (`solid/class-size`, `solid/method-complexity`). Applied consistently
+  across the analyzer, `RULE_REGISTRY`, `defaults.ts`, and `RULE_ALIASES` (with a
+  reverse map for the bare forms). `buildFullRuleId` now guards against
+  double-prefixing (`solid/solid/class-size`).
+
+### Self-scan exclusion (Bug #3)
+- The tool's own on-disk output is no longer re-discovered as source: `.code-index`
+  (the CodeIndexDB directory) is added to the excluded-dirs set, and
+  `audit-report.{json,html,csv,sarif}` are skipped by basename. A prior audit's
+  report embeds raw source snippets (e.g. `error_class = 'zombie-capped'`) that
+  otherwise leaked class-usage false positives back into the next run.
+
+### Two live false positives fixed (task #4)
+- **Class-usage extraction**: a `\b` word boundary before the `class`/`className`
+  attribute name prevents identifier-substring matches (`error_class`,
+  `myclassName`) from being read as class attributes, while real
+  `className="..."`/`class="..."` attributes still extract.
+- **Tailwind v4 bare-import resolution**: bare package `@import`s (e.g.
+  `tw-animate-css`, shadcn utility styles) are now resolved from `node_modules` via
+  their package export map, so plugin utilities validate against the project's own
+  `tailwindcss`. Fails open when a package or `node_modules` is absent.
+
 ## [3.4.13] — 2026-08-16
 
 ### Memory — streaming pipeline + `tree.delete()` (Spec 30/31/32)

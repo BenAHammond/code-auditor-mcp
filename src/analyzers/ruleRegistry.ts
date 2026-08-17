@@ -170,14 +170,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'open-closed': {
+  'solid/open-closed': {
     analyzer: 'solid',
     field: 'rule',
     input: ['files'],
     gating: false,
     resolvable: false,
     message: 'Class "{name}" violates the Open/Closed Principle.',
-    docs: 'open-closed',
+    docs: 'solid/open-closed',
     thresholds: [],
     samples: {
       valid: [
@@ -188,14 +188,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'single-responsibility': {
+  'solid/single-responsibility': {
     analyzer: 'solid',
     field: 'rule',
     input: ['files'],
     gating: true,
     resolvable: true,
     message: 'Function "{name}" has {count} {metric}, exceeding the maximum of {max}. Break it down.',
-    docs: 'single-responsibility',
+    docs: 'solid/single-responsibility',
     thresholds: ['maxParametersPerMethod', 'maxLinesPerMethod'],
     samples: {
       valid: [
@@ -209,14 +209,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'interface-segregation': {
+  'solid/interface-segregation': {
     analyzer: 'solid',
     field: 'rule',
     input: ['files'],
     gating: false,
     resolvable: false,
     message: 'Interface "{name}" violates the Interface Segregation Principle.',
-    docs: 'interface-segregation',
+    docs: 'solid/interface-segregation',
     thresholds: [],
     samples: {
       valid: [
@@ -227,14 +227,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'liskov-substitution': {
+  'solid/liskov-substitution': {
     analyzer: 'solid',
     field: 'rule',
     input: ['files'],
     gating: false,
     resolvable: false,
     message: 'Class "{name}" violates the Liskov Substitution Principle.',
-    docs: 'liskov-substitution',
+    docs: 'solid/liskov-substitution',
     thresholds: [],
     samples: {
       valid: [
@@ -245,14 +245,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'dependency-inversion': {
+  'solid/dependency-inversion': {
     analyzer: 'solid',
     field: 'rule',
     input: ['files'],
     gating: false,
     resolvable: false,
     message: 'Module "{name}" violates the Dependency Inversion Principle.',
-    docs: 'dependency-inversion',
+    docs: 'solid/dependency-inversion',
     thresholds: [],
     samples: {
       valid: [

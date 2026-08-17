@@ -29,7 +29,26 @@ export const DEFAULT_EXCLUDED_DIRS = [
   'specs',
   'backup',
   'backups',
+  // The tool's own on-disk index (CodeIndexDB). A prior audit run writes
+  // `.code-index/index.db` into the project root; it must never be re-scanned
+  // as source on a subsequent run (Bug #3).
+  '.code-index',
 ];
+
+/**
+ * Basenames the tool itself writes into the project, which must never be
+ * re-discovered as source on a subsequent run (Bug #3 — "exclude the tool's
+ * own output from discovery"). The `audit` command writes `audit-report.<ext>`
+ * next to (or under) the project root; its content embeds raw source snippets
+ * (e.g. `error_class = 'zombie-capped'`) that would otherwise leak class-usage
+ * false positives back into the index.
+ */
+export const DEFAULT_EXCLUDED_FILES = new Set([
+  'audit-report.json',
+  'audit-report.html',
+  'audit-report.csv',
+  'audit-report.sarif',
+]);
 
 // Supported file extensions
 export const TYPESCRIPT_EXTENSIONS = ['.ts', '.tsx'];
@@ -95,6 +114,8 @@ async function findFilesRecursive(
         const subResults = await findFilesRecursive(fullPath, options);
         results.push(...subResults);
       } else if (entry.isFile()) {
+        // Skip the tool's own report output by basename (Bug #3).
+        if (DEFAULT_EXCLUDED_FILES.has(entry.name)) continue;
         const ext = path.extname(entry.name);
         if (options.extensions.includes(ext)) {
           if (!options.pattern || options.pattern.test(entry.name)) {

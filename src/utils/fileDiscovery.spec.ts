@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findFiles, shouldExcludeDir as _shouldExcludeDir } from './fileDiscovery.js';
+import { findFiles, DEFAULT_EXCLUDED_FILES } from './fileDiscovery.js';
 import path from 'path';
 import { promises as fs } from 'fs';
 import os from 'os';
@@ -78,6 +78,49 @@ describe('fileDiscovery', () => {
 
         expect(files.some(f => f.endsWith('main.ts'))).toBe(true);
         expect(files.some(f => f.includes('node_modules'))).toBe(false);
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Bug #3 — excludes the tool\'s own output', () => {
+    it('does not discover audit-report.* files by basename', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-report-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.writeFile(path.join(baseDir, 'app.ts'), 'export const q = 7;');
+        // The report embeds raw source snippets (e.g. `error_class = 'zombie-capped'`)
+        // that would otherwise be re-scanned as source on a second run.
+        for (const name of DEFAULT_EXCLUDED_FILES) {
+          await fs.writeFile(path.join(baseDir, name), '{"x": 1}');
+        }
+
+        const files = await findFiles(baseDir); // default ALL_EXTENSIONS
+
+        expect(files.some(f => f.endsWith('app.ts'))).toBe(true);
+        for (const name of DEFAULT_EXCLUDED_FILES) {
+          expect(files.some(f => f.endsWith(name))).toBe(false);
+        }
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not discover files inside .code-index', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-idx-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.mkdir(path.join(baseDir, '.code-index'), { recursive: true });
+        await fs.writeFile(path.join(baseDir, 'src-app.ts'), 'export const q = 8;');
+        // index.db has no matching extension but the dir may hold .json/.ts artifacts
+        await fs.writeFile(path.join(baseDir, '.code-index', 'index.db'), 'binary');
+        await fs.writeFile(path.join(baseDir, '.code-index', 'stale.ts'), 'export const leak = 9;');
+
+        const files = await findFiles(baseDir); // default ALL_EXTENSIONS
+
+        expect(files.some(f => f.endsWith('src-app.ts'))).toBe(true);
+        expect(files.some(f => f.includes('.code-index'))).toBe(false);
       } finally {
         await fs.rm(baseDir, { recursive: true, force: true });
       }

@@ -289,11 +289,20 @@ export class TailwindProbe {
    */
   private buildLoadStylesheet(): (path: string) => Promise<{ base: string; content: string; roots: Record<string, unknown> | null }> {
     const twDir = this._twDir!;
+    const projectRoot = this.projectRoot;
     return async (path: string) => {
       if (path === 'tailwindcss' || path === 'tailwindcss/theme' ||
           path === 'tailwindcss/preflight' || path === 'tailwindcss/utilities') {
         const cssPath = join(twDir, 'index.css');
         return { base: twDir, content: readFileSync(cssPath, 'utf-8'), roots: null };
+      }
+      // Resolve Tailwind v4 ecosystem plugin imports (e.g. "tw-animate-css",
+      // "shadcn/tailwind.css") from the audited project's node_modules and
+      // serve their CSS so the compile-probe sees their @theme/@custom-variant/
+      // @utility definitions — the same plugins the project's real build loads.
+      const resolved = this.resolveCssImport(path, projectRoot);
+      if (resolved) {
+        return { base: dirname(resolved), content: readFileSync(resolved, 'utf-8'), roots: null };
       }
       return { base: path, content: '', roots: null };
     };
@@ -347,15 +356,28 @@ export class TailwindProbe {
     // relative @import "./theme.css" that loadStylesheet can't resolve,
     // which throws a non-matchable error that breaks the retry loop.
     // Extracting only @theme blocks gives the compiler the custom property
-    // definitions it needs to resolve semantic tokens (bg-surface-elevated,
-    // text-danger-default) without the import directives that break compilation.
+    // definitions it needs to resolve semantic tokens (bg-surface-raised,
+    // bg-bg-elevated) without the import directives that break compilation.
+    // Note: `bg-surface-elevated`, `*-success-default`, `*-danger-default` do
+    // NOT resolve — recall-protocol never defined those --color-* tokens, so
+    // they are genuine dead classes, not a discovery regression.
+    //
+    // Bare package @imports (tw-animate-css, shadcn/tailwind.css, …) are
+    // re-injected separately so the probe loads the same Tailwind v4 ecosystem
+    // plugins the project's real build does — without them, plugin-provided
+    // utilities (animate-accordion-up, data-closed variants, …) are wrongly
+    // flagged undefined. buildLoadStylesheet() serves their CSS from the
+    // project's node_modules.
     const projectTheme = this.extractThemeBlocks();
+    const projectImports = this.extractBareImports()
+      .map((spec) => `@import "${spec}";`)
+      .join('');
 
     while (remaining.length > 0) {
       const rules = remaining
         .map((cls, i) => `.p${i}{@apply ${escapeCls(cls)};}`)
         .join('');
-      const css = `${projectTheme}@import "tailwindcss";${rules}`;
+      const css = `${projectImports}${projectTheme}@import "tailwindcss";${rules}`;
 
       try {
         await this.compileV4(css, this.projectRoot);
@@ -404,6 +426,44 @@ export class TailwindProbe {
     }
 
     return blocks.join('\n');
+  }
+
+  /**
+   * Extract bare package @import specifiers (e.g. "tw-animate-css",
+   * "shadcn/tailwind.css") from project CSS. These are Tailwind v4 ecosystem
+   * plugins the project's real build loads via node_modules resolution.
+   *
+   * Excludes relative imports ("./theme.css"), absolute paths, URLs, and
+   * "tailwindcss" itself — only specifiers resolveCssImport() can serve from
+   * node_modules are returned.
+   */
+  private extractBareImports(): string[] {
+    const css = this._projectCss;
+    if (!css) return [];
+
+    const importRegex = /@import\s+(?:url\(\s*)?["']([^"']+)["']/g;
+    const seen = new Set<string>();
+    const specs: string[] = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = importRegex.exec(css)) !== null) {
+      const spec = match[1];
+      if (
+        spec === 'tailwindcss' ||
+        spec.startsWith('tailwindcss/') ||
+        spec.startsWith('./') ||
+        spec.startsWith('../') ||
+        spec.startsWith('/') ||
+        /^[a-z][a-z0-9+.-]*:/i.test(spec) ||
+        seen.has(spec)
+      ) {
+        continue;
+      }
+      seen.add(spec);
+      specs.push(spec);
+    }
+
+    return specs;
   }
 
   // -----------------------------------------------------------------------
@@ -551,15 +611,102 @@ export class TailwindProbe {
    * Locate tailwindcss in the project's node_modules, walking up directories.
    */
   private findTailwindcss(projectRoot: string): string | null {
+    return this.findNodeModuleDir('tailwindcss', projectRoot);
+  }
+
+  /**
+   * Locate a package directory in the project's node_modules, walking up
+   * directories (monorepo-aware). Handles scoped package names (@scope/pkg).
+   */
+  private findNodeModuleDir(packageName: string, projectRoot: string): string | null {
     let dir = projectRoot;
     for (let i = 0; i < 20; i++) {
-      const pkgPath = join(dir, 'node_modules', 'tailwindcss');
+      const pkgPath = join(dir, 'node_modules', ...packageName.split('/'));
       if (existsSync(pkgPath)) {
         return pkgPath;
       }
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
+    }
+    return null;
+  }
+
+  /**
+   * Resolve a bare package CSS @import specifier (e.g. "tw-animate-css",
+   * "shadcn/tailwind.css") to an absolute CSS file path, using the package's
+   * `exports` map. Prefers the `style` condition (or a `style`-bearing string
+   * export) as defined by Tailwind v4 ecosystem packages, so the compile-probe
+   * serves the same CSS the project's real build imports.
+   *
+   * Returns null when the package is absent or no CSS entry can be resolved.
+   */
+  private resolveCssImport(specifier: string, projectRoot: string): string | null {
+    if (!specifier) return null;
+
+    // Split specifier into package name + subpath, handling scoped names.
+    let packageName = specifier;
+    let subpath = '';
+    if (specifier.startsWith('@')) {
+      const parts = specifier.split('/');
+      if (parts.length >= 2) {
+        packageName = `${parts[0]}/${parts[1]}`;
+        subpath = parts.slice(2).join('/');
+      }
+    } else {
+      const idx = specifier.indexOf('/');
+      if (idx >= 0) {
+        packageName = specifier.slice(0, idx);
+        subpath = specifier.slice(idx + 1);
+      }
+    }
+
+    const pkgDir = this.findNodeModuleDir(packageName, projectRoot);
+    if (!pkgDir) return null;
+
+    const packageJsonPath = join(pkgDir, 'package.json');
+    let pkg: { exports?: Record<string, unknown>; style?: string; main?: string } = {};
+    try {
+      pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    } catch {
+      return null;
+    }
+
+    // Determine the export target for this specifier: the "." subpath when
+    // no subpath is given, otherwise "./<subpath>".
+    const exportKey = subpath ? `./${subpath}` : '.';
+    const raw = pkg.exports?.[exportKey];
+
+    const target = this.pickExportTarget(raw);
+    if (!target) {
+      // Fall back to top-level style/main for the bare package case.
+      const fallback = pkg.style || pkg.main;
+      if (fallback && !subpath) {
+        const resolvedPath = join(pkgDir, fallback);
+        if (existsSync(resolvedPath)) return resolvedPath;
+      }
+      return null;
+    }
+
+    const resolvedPath = join(pkgDir, target);
+    return existsSync(resolvedPath) ? resolvedPath : null;
+  }
+
+  /**
+   * Resolve a nested conditional export target (recursive helper for
+   * resolveCssImport). Mirrors Node's condition-object resolution, stopping at
+   * the first string path under a preferred condition key.
+   */
+  private pickExportTarget(value: unknown): string | null {
+    if (typeof value === 'string') return value;
+    if (value && typeof value === 'object') {
+      const obj = value as Record<string, unknown>;
+      for (const key of ['style', 'import', 'require', 'default']) {
+        const v = obj[key];
+        if (typeof v === 'string') return v;
+        const nested = this.pickExportTarget(v);
+        if (nested) return nested;
+      }
     }
     return null;
   }
