@@ -125,3 +125,19 @@ export interface StyleClassUsage {
   /** True when the class value is dynamic (template literal, clsx call) and can't be fully resolved. */
   unresolvable: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Unread Stylesheet Source (Spec 42 R2)
+// ---------------------------------------------------------------------------
+
+/**
+ * A stylesheet source the indexer could not read. When any exist, the
+ * `styles/undefined-class` detector reports `notApplicable` rather than
+ * asserting a class is undefined (the class may live in the unread source).
+ */
+export interface UnreadStyleSource {
+  /** File path (project-relative or absolute, as recorded). */
+  filePath: string;
+  /** Why the stylesheet could not be read (e.g. "read failed: <msg>", "unsupported dialect: sass"). */
+  reason: string;
+}

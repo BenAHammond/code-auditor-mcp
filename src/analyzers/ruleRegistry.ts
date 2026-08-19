@@ -369,7 +369,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'missing-org-filter': {
     analyzer: 'data-access',
     field: 'rule',
-    input: ['files'],
+    input: ['schema'],
     gating: false,
     resolvable: false,
     message: 'Query on {tables} is missing an organization/tenant filter.',

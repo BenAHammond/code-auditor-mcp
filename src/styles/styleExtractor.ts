@@ -12,7 +12,7 @@
  */
 
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
-import type { NormalizedDeclaration, StyleMechanism, StyleToken } from './types.js';
+import type { NormalizedDeclaration, StyleMechanism, StyleToken, UnreadStyleSource } from './types.js';
 import { normalizeValue, expandShorthand } from './normalizer.js';
 import { expandUtility } from './tailwindExpander.js';
 import { loadTailwindConfig, tokensToStyleTokens } from './tailwindConfigLoader.js';
@@ -40,6 +40,7 @@ export function extractDeclarations(
   sourceCode: string,
   ast?: AST,
   tailwindTokens?: TailwindThemeTokens,
+  unreadSources?: UnreadStyleSource[],
 ): NormalizedDeclaration[] {
   const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
 
@@ -57,8 +58,9 @@ export function extractDeclarations(
     case '.html':
     case '.vue':
     case '.svelte':
-      // HTML/Vue/Svelte: extract class attributes only (limited support)
-      return extractFromHTML(filePath, sourceCode, tailwindTokens);
+    case '.astro':
+      // HTML/Vue/Svelte/Astro: extract class attributes + embedded <style> blocks.
+      return extractFromHTML(filePath, sourceCode, tailwindTokens, unreadSources);
     default:
       return [];
   }
@@ -132,6 +134,7 @@ function extractRuleSets(
   css: string,
   filePath: string,
   declarations: NormalizedDeclaration[],
+  mechanism: StyleMechanism = 'scss',
 ): void {
   // Track current context (selector, at-rule)
   const lines = css.split('\n');
@@ -224,7 +227,7 @@ function extractRuleSets(
     extractDeclarationsFromBlock(
       block,
       filePath,
-      'scss',
+      mechanism,
       selector,
       atRuleStack.length > 0 ? atRuleStack.join(', ') : null,
       declarations,
@@ -631,8 +634,12 @@ function extractFromCSSinJS(
   filePath: string,
   declarations: NormalizedDeclaration[],
 ): boolean {
-  // Tagged template expression: styled.div`...` or css`...`
-  if (node.type !== 'tagged_template_expression') return false;
+  // Tagged templates (styled.div`...` / css`...`) parse as a `call_expression`
+  // whose argument is a `template_string` — the WASM grammar emits no
+  // `tagged_template_expression` node. Guard on the template argument so a
+  // plain function call never reaches the tag-match below.
+  if (node.type !== 'call_expression') return false;
+  if (!findChildByType(node, 'template_string')) return false;
 
   const nodeText = sourceCode.slice(node.range[0], node.range[1]);
   const line = getLine(sourceCode, node.range[0]);
@@ -684,8 +691,14 @@ function extractFromHTML(
   filePath: string,
   sourceCode: string,
   tailwindTokens?: TailwindThemeTokens,
+  unreadSources?: UnreadStyleSource[],
 ): NormalizedDeclaration[] {
   const declarations: NormalizedDeclaration[] = [];
+
+  // Embedded <style> blocks (Astro/Vue/Svelte) — extract the CSS text and feed
+  // it to the same rule-set parser the .scss path uses (Spec 42 R1). Blocks with
+  // an unsupported dialect (sass/less/stylus/…) are recorded as unread (R2).
+  extractStyleBlocks(filePath, sourceCode, declarations, unreadSources);
 
   // Simple class attribute extraction from HTML
   const classRegex = /class(Name)?\s*=\s*"([^"]*)"/g;
@@ -750,6 +763,60 @@ function extractFromHTML(
   }
 
   return declarations;
+}
+
+/**
+ * Extract `<style>…</style>` blocks from a markup source (Astro/Vue/Svelte).
+ *
+ * Each block's CSS text is fed to `extractRuleSets`, the same parser the
+ * `.scss` path uses, so selectors (including `:global(.foo)`), at-rules, and
+ * declarations are extracted identically. The dialect is chosen from the
+ * `lang`/`type` attribute:
+ *   - `css` (or absent) → `css`
+ *   - `scss` → `scss` (nesting handled by the existing SCSS path)
+ *   - anything else (`sass`, `less`, `styl`, `postcss`, …) → recorded as an
+ *     unread source so `undefined-class` never asserts a class defined only here.
+ */
+function extractStyleBlocks(
+  filePath: string,
+  sourceCode: string,
+  declarations: NormalizedDeclaration[],
+  unreadSources?: UnreadStyleSource[],
+): void {
+  const styleRegex = /<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = styleRegex.exec(sourceCode)) !== null) {
+    const attrs = match[1];
+    const body = match[2];
+    // Index of the first character of the block body (right after the opening
+    // `>`), used to map body line numbers back to the source file.
+    const bodyStart = match.index + match[0].indexOf('>') + 1;
+
+    const langAttr = attrs.match(/\blang\s*=\s*["']?([a-zA-Z0-9-]+)/);
+    const typeAttr = attrs.match(/\btype\s*=\s*["']?([a-zA-Z0-9-]+)/);
+    const lang = (langAttr?.[1] ?? typeAttr?.[1] ?? '').toLowerCase();
+
+    let mechanism: StyleMechanism;
+    if (lang === '' || lang === 'css') {
+      mechanism = 'css';
+    } else if (lang === 'scss') {
+      mechanism = 'scss';
+    } else {
+      unreadSources?.push({
+        filePath,
+        reason: `unsupported style dialect: ${lang}`,
+      });
+      continue;
+    }
+
+    // Pad with newlines so that `extractRuleSets`' line arithmetic (which counts
+    // newlines up to each `{`) maps onto source-file line numbers. Newlines are
+    // whitespace, so selector extraction and at-rule parsing are unaffected.
+    const bodyLine0 = sourceCode.slice(0, bodyStart).split('\n').length;
+    const padded = '\n'.repeat(bodyLine0 - 1) + body;
+    extractRuleSets(padded, filePath, declarations, mechanism);
+  }
 }
 
 // ---------------------------------------------------------------------------

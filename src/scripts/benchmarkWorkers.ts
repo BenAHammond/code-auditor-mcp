@@ -15,7 +15,7 @@ const defaults = {
 async function waitForResult(jobId: string): Promise<{ elapsedMs: number; resultId: string }> {
   const started = Date.now();
   for (;;) {
-    const status = getAuditJobStatus(jobId) as Record<string, unknown>;
+    const status = (await getAuditJobStatus(jobId)) as Record<string, unknown>;
     if (status.status === 'failed') {
       throw new Error(`Job ${jobId} failed: ${String(status.error ?? 'unknown error')}`);
     }

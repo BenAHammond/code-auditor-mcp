@@ -394,6 +394,10 @@ export interface PipelineResult {
     /** Spec 38 R2: per-rule wall-clock timing, slowest first, gating path only.
      *  Present only when CODE_AUDIT_RULE_TIMING=1. */
     ruleTiming?: Array<{ ruleId: string; totalMs: number; calls: number }>;
+    /** Spec 39: per-rule derived applicability evaluated over the pipeline's
+     *  computed inputs. Consumed by buildCoverageReport to report inapplicable
+     *  rules as `notApplicable` with a reason. */
+    ruleApplicability?: Array<{ ruleId: string; applicable: boolean; reason?: string }>;
   };
   indexFacts?: IndexFactsEntry[];
 }
@@ -773,6 +777,14 @@ export interface AuditRunnerOptions extends AuditOptions {
   scope?: AuditScope;
   /** Path profiles from config (Spec-20). */
   pathProfiles?: PathProfile[];
+  /**
+   * Write the run to the findings ledger on completion (Spec 41). Defaults to
+   * true. Forked shard workers set this false: the parent run is the single
+   * ledger writer — a worker writing the ledger concurrently contends with the
+   * parent's `syncFileIndex` (SQLITE_BUSY) and pollutes `listRuns` with stray
+   * `completed` rows.
+   */
+  writeToLedger?: boolean;
 }
 
 // Code Index Types

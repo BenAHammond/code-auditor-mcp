@@ -46,7 +46,7 @@ describe('extractClassUsage — attribute boundary', () => {
 
   it('still extracts class usage from markup/component extensions', () => {
     const src = `<div className="mt-1">hi</div>`;
-    for (const ext of ['.tsx', '.jsx', '.ts', '.js', '.html', '.vue', '.svelte']) {
+    for (const ext of ['.tsx', '.jsx', '.ts', '.js', '.html', '.vue', '.svelte', '.astro']) {
       expect(extractClassUsage(`component${ext}`, src).map((u) => u.className)).toEqual(['mt-1']);
     }
   });

@@ -5,5 +5,5 @@
   "dataAccess": {
     "enabled": true
   },
-  "enabledAnalyzers": ["data-access"]
+  "enabledAnalyzers": ["data-access", "schema"]
 }

@@ -58,6 +58,15 @@ interface FunctionDocument extends EnhancedFunctionMetadata {
   meta?: any;
 }
 
+// ── SQLite busy timeout ─────────────────────────────────────────────────
+// The database is shared across forked processes (a detached audit runner and
+// its shard workers). better-sqlite3's default busy timeout (~5s) is too short
+// for a running job's long completion transaction, so a queued job's lease
+// `BEGIN IMMEDIATE` (or the runner's own writes) would throw SQLITE_BUSY
+// ("database is locked") instead of waiting. A generous timeout makes
+// contention block gracefully; the lease loop also retries SQLITE_BUSY.
+export const DB_BUSY_TIMEOUT_MS = 30_000;
+
 // ── Content hash ────────────────────────────────────────────────────────
 
 function computeContentHash(body: string | undefined, signature: string | undefined): string {
@@ -288,7 +297,7 @@ export class CodeIndexDB {
   private stmts: Map<string, Database.Statement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 8;
+  private static readonly SCHEMA_VERSION = 11;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -331,6 +340,15 @@ export class CodeIndexDB {
       CodeIndexDB.instance.isInitialized = false;
     }
     (CodeIndexDB as any).instance = null;
+  }
+
+  /**
+   * The project root the current singleton was opened for (undefined when opened
+   * cwd-scoped). Detached-job readers use this to resolve the same DB the writer
+   * opened, without re-resolving against cwd and flipping the singleton away.
+   */
+  static get currentProject(): string | undefined {
+    return CodeIndexDB.currentProjectRoot;
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
@@ -397,7 +415,7 @@ export class CodeIndexDB {
     // Open SQLite database (with auto-recovery for corrupted files)
     let retried = false;
     try {
-      this.db = new Database(this.dbPath);
+      this.db = new Database(this.dbPath, { timeout: DB_BUSY_TIMEOUT_MS });
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
     } catch (e: unknown) {
@@ -406,7 +424,7 @@ export class CodeIndexDB {
       if (!retried && this.dbPath !== ':memory:' && /(not a database|malformed|corrupt)/i.test(msg)) {
         retried = true;
         try { await fs.unlink(this.dbPath); } catch { /* ignore */ }
-        this.db = new Database(this.dbPath);
+        this.db = new Database(this.dbPath, { timeout: DB_BUSY_TIMEOUT_MS });
         this.db.pragma('journal_mode = WAL');
         this.db.pragma('foreign_keys = ON');
       } else {
@@ -672,6 +690,88 @@ export class CodeIndexDB {
       }
     }
 
+    // Migration 8 → 9: Detached-run lifecycle + queryable coverage (Spec 41).
+    // `findings_ledger_runs` gains the job-lifecycle columns (status, timing,
+    // provenance, lease heartbeat, progress, stderr log); the one genuinely new
+    // table is `findings_ledger_coverage` (per-rule state + reason rows that
+    // `writeAuditToLedger` previously dropped).
+    if (currentVersion < 9) {
+      const runCols = this.db
+        .prepare(`PRAGMA table_info('findings_ledger_runs')`)
+        .all() as Array<{ name: string }>;
+      const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
+      const newRunCols: Array<[string, string]> = [
+        ['status', "TEXT NOT NULL DEFAULT 'completed'"],
+        ['project_root', 'TEXT'],
+        ['started_at', 'TEXT'],
+        ['heartbeat_at', 'TEXT'],
+        ['finished_at', 'TEXT'],
+        ['error', 'TEXT'],
+        ['progress_json', 'TEXT'],
+        ['stderr_log', 'TEXT'],
+        ['content_hash', 'TEXT'],
+        ['files_count', 'INTEGER'],
+        ['file_manifest_json', 'TEXT'],
+      ];
+      for (const [name, decl] of newRunCols) {
+        if (!hasRunCol(name)) {
+          this.db.exec(`ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`);
+        }
+      }
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+          run_id    TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
+          analyzer  TEXT NOT NULL,
+          rule_id   TEXT NOT NULL,
+          state     TEXT NOT NULL,
+          count     INTEGER NOT NULL DEFAULT 0,
+          reason    TEXT,
+          PRIMARY KEY (run_id, analyzer, rule_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ledger_coverage_run ON findings_ledger_coverage(run_id);
+      `);
+    }
+
+    // Migration 9 → 10: PID-based lease liveness (Spec 41 Amendment B).
+    // The heartbeat is no longer the primary liveness signal for the common
+    // case (a healthy child whose synchronous `syncFileIndex` phase starves the
+    // event loop, so its heartbeat interval cannot fire). The child records its
+    // PID + process start time + hostname at lease claim; `reclaimStaleRunning`
+    // then skips any `running` row whose PID is still the same live process, and
+    // only reclaims when the process is genuinely gone (or on a foreign host,
+    // where the PID means nothing and the heartbeat stays the fallback).
+    if (currentVersion < 10) {
+      const runCols = this.db
+        .prepare(`PRAGMA table_info('findings_ledger_runs')`)
+        .all() as Array<{ name: string }>;
+      const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
+      const newRunCols: Array<[string, string]> = [
+        ['runner_pid', 'INTEGER'],
+        ['runner_pid_started_at', 'TEXT'],
+        ['runner_host', 'TEXT'],
+      ];
+      for (const [name, decl] of newRunCols) {
+        if (!hasRunCol(name)) {
+          this.db.exec(`ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`);
+        }
+      }
+    }
+
+    // Migration 10 → 11: unread stylesheet sources (Spec 42 R2).
+    // Records stylesheets whose dialect the style indexer cannot read, so
+    // styles/undefined-class can report notApplicable instead of asserting a
+    // class is undefined when it may live in one of these files.
+    if (currentVersion < 11) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS style_unread_sources (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_path  TEXT NOT NULL UNIQUE,
+          reason     TEXT NOT NULL,
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+      `);
+    }
+
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -899,7 +999,21 @@ export class CodeIndexDB {
         target       TEXT NOT NULL,
         duration_ms  INTEGER NOT NULL DEFAULT 0,
         exit_status  INTEGER NOT NULL DEFAULT 0,
-        metadata_json TEXT DEFAULT '{}'
+        metadata_json TEXT DEFAULT '{}',
+        status        TEXT NOT NULL DEFAULT 'completed',
+        project_root  TEXT,
+        started_at    TEXT,
+        heartbeat_at  TEXT,
+        finished_at   TEXT,
+        error         TEXT,
+        progress_json TEXT,
+        stderr_log    TEXT,
+        content_hash  TEXT,
+        files_count   INTEGER,
+        file_manifest_json TEXT,
+        runner_pid           INTEGER,
+        runner_pid_started_at TEXT,
+        runner_host          TEXT
       );
       CREATE TABLE IF NOT EXISTS findings_ledger_findings (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -913,8 +1027,18 @@ export class CodeIndexDB {
         symbol       TEXT DEFAULT '',
         fingerprint  TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+        run_id    TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
+        analyzer  TEXT NOT NULL,
+        rule_id   TEXT NOT NULL,
+        state     TEXT NOT NULL,
+        count     INTEGER NOT NULL DEFAULT 0,
+        reason    TEXT,
+        PRIMARY KEY (run_id, analyzer, rule_id)
+      );
       CREATE INDEX IF NOT EXISTS idx_ledger_runs_surface    ON findings_ledger_runs(surface);
       CREATE INDEX IF NOT EXISTS idx_ledger_runs_timestamp   ON findings_ledger_runs(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_ledger_coverage_run     ON findings_ledger_coverage(run_id);
       CREATE INDEX IF NOT EXISTS idx_ledger_findings_run     ON findings_ledger_findings(run_id);
       CREATE INDEX IF NOT EXISTS idx_ledger_findings_fp      ON findings_ledger_findings(fingerprint);
       CREATE INDEX IF NOT EXISTS idx_ledger_findings_rule    ON findings_ledger_findings(analyzer, rule);
@@ -968,6 +1092,16 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_style_class_usage_name   ON style_class_usage(class_name);
       CREATE INDEX IF NOT EXISTS idx_style_class_usage_file   ON style_class_usage(file_path);
       CREATE INDEX IF NOT EXISTS idx_style_class_usage_unres  ON style_class_usage(unresolvable);
+
+      -- Spec 42 R2: Stylesheet sources the style indexer could not read.
+      -- When any rows exist, styles/undefined-class reports notApplicable
+      -- instead of asserting a class is undefined (it may live in one of these).
+      CREATE TABLE IF NOT EXISTS style_unread_sources (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path  TEXT NOT NULL UNIQUE,
+        reason     TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
 
       -- Spec 12: Convention mining
       CREATE TABLE IF NOT EXISTS conventions (
@@ -1110,7 +1244,7 @@ export class CodeIndexDB {
       // Rename old LokiJS file FIRST, then create fresh SQLite DB
       require('fs').renameSync(this.dbPath, bakPath);
 
-      const migDb = new Database(this.dbPath);
+      const migDb = new Database(this.dbPath, { timeout: DB_BUSY_TIMEOUT_MS });
       migDb.pragma('journal_mode = WAL');
       migDb.pragma('foreign_keys = ON');
 
@@ -1420,6 +1554,51 @@ export class CodeIndexDB {
     };
   }
 
+  /**
+   * Upsert/remove one file's function rows. Runs inside the caller's
+   * transaction (no nested `db.transaction` here) so a batch sync can wrap many
+   * files in a single write transaction.
+   */
+  private syncFileIndexRow(
+    filePath: string,
+    currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[],
+    stats: { added: number; updated: number; removed: number }
+  ): void {
+    const existing = this.db.prepare(
+      'SELECT id, name, file_path, line_number FROM functions WHERE file_path = ?'
+    ).all(filePath) as any[];
+
+    const createKey = (f: any) => `${(f as any).name ?? f.name}:${(f as any).filePath ?? f.file_path}:${(f as any).lineNumber ?? f.line_number}`;
+    const currentMap = new Map(currentFunctions.map(f => [createKey(f), f]));
+
+    // Insert/update current functions
+    for (const func of currentFunctions) {
+      const exists = existing.find(e => e.name === func.name && e.line_number === func.lineNumber);
+      if (exists) {
+        const row = this.functionToRow(func);
+        const keys = Object.keys(row);
+        const sets = keys.filter(k => k !== 'name' && k !== 'file_path').map(k => `"${k}" = @${k}`);
+        const params = { ...row, _id: exists.id };
+        this.db.prepare(`UPDATE functions SET ${sets.join(', ')} WHERE id = @_id`).run(params);
+        stats.updated++;
+      } else {
+        const row = this.functionToRow(func);
+        const keys = Object.keys(row);
+        const sql = `INSERT INTO functions ("${keys.join('", "')}") VALUES (${keys.map(k => '@' + k).join(', ')})`;
+        this.db.prepare(sql).run(row);
+        stats.added++;
+      }
+    }
+
+    // Remove stale functions
+    for (const e of existing) {
+      if (!currentMap.has(createKey(e))) {
+        this.db.prepare('DELETE FROM functions WHERE id = ?').run(e.id);
+        stats.removed++;
+      }
+    }
+  }
+
   async syncFileIndex(filePath: string, currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[]): Promise<{
     added: number;
     updated: number;
@@ -1428,44 +1607,31 @@ export class CodeIndexDB {
     this.ensureInitialized();
     const stats = { added: 0, updated: 0, removed: 0 };
 
-    const txn = this.db.transaction(() => {
-      const existing = this.db.prepare(
-        'SELECT id, name, file_path, line_number FROM functions WHERE file_path = ?'
-      ).all(filePath) as any[];
-
-      const createKey = (f: any) => `${(f as any).name ?? f.name}:${(f as any).filePath ?? f.file_path}:${(f as any).lineNumber ?? f.line_number}`;
-      const currentMap = new Map(currentFunctions.map(f => [createKey(f), f]));
-
-      // Insert/update current functions
-      for (const func of currentFunctions) {
-        const exists = existing.find(e => e.name === func.name && e.line_number === func.lineNumber);
-        if (exists) {
-          const row = this.functionToRow(func);
-          const keys = Object.keys(row);
-          const sets = keys.filter(k => k !== 'name' && k !== 'file_path').map(k => `"${k}" = @${k}`);
-          const params = { ...row, _id: exists.id };
-          this.db.prepare(`UPDATE functions SET ${sets.join(', ')} WHERE id = @_id`).run(params);
-          stats.updated++;
-        } else {
-          const row = this.functionToRow(func);
-          const keys = Object.keys(row);
-          const sql = `INSERT INTO functions ("${keys.join('", "')}") VALUES (${keys.map(k => '@' + k).join(', ')})`;
-          this.db.prepare(sql).run(row);
-          stats.added++;
-        }
-      }
-
-      // Remove stale functions
-      for (const e of existing) {
-        if (!currentMap.has(createKey(e))) {
-          this.db.prepare('DELETE FROM functions WHERE id = ?').run(e.id);
-          stats.removed++;
-        }
-      }
-    });
-
-    txn();
+    this.db.transaction(() => this.syncFileIndexRow(filePath, currentFunctions, stats)).immediate();
     await this.updateDependencyGraph(filePath);
+    return stats;
+  }
+
+  /**
+   * Batch variant of {@link syncFileIndex}: upsert many files in a single write
+   * transaction, then rebuild the dependency graph once (unscoped). The
+   * detached-audit path previously called {@link syncFileIndex} once per file —
+   * one transaction plus one dependency-graph rebuild per file, and the
+   * rebuild's un-scoped `SELECT` made that O(files × functions). Collapsing it
+   * to one transaction is Amendment B2.
+   */
+  async syncFileIndexBatch(
+    entries: Array<{ filePath: string; currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[] }>
+  ): Promise<{ added: number; updated: number; removed: number }> {
+    this.ensureInitialized();
+    const stats = { added: 0, updated: 0, removed: 0 };
+
+    this.db.transaction(() => {
+      for (const { filePath, currentFunctions } of entries) {
+        this.syncFileIndexRow(filePath, currentFunctions, stats);
+      }
+    }).immediate();
+    await this.updateDependencyGraph();
     return stats;
   }
 
@@ -1475,11 +1641,6 @@ export class CodeIndexDB {
     this.ensureInitialized();
 
     const txn = this.db.transaction(() => {
-      // For functions in scope, rebuild their call edges
-      const functions = filePath
-        ? this.db.prepare('SELECT id, name, file_path FROM functions WHERE file_path = ?').all(filePath) as any[]
-        : this.db.prepare('SELECT id, name, file_path FROM functions').all() as any[];
-
       // Clear existing call edges for scoped functions
       if (filePath) {
         this.db.prepare(
@@ -1498,33 +1659,28 @@ export class CodeIndexDB {
         this.db.prepare('DELETE FROM function_dependencies').run();
       }
 
-      // Rebuild from metadata
+      // Rebuild edges from metadata. When scoped to one file, read only that
+      // file's functions — a per-file call previously re-read every function
+      // in the index, making the detached-audit loop O(files × functions).
       const allFns = filePath
-        ? this.db.prepare('SELECT id, name, file_path, metadata_json FROM functions').all() as any[]
+        ? this.db.prepare('SELECT id, name, file_path, metadata_json FROM functions WHERE file_path = ?').all(filePath) as any[]
         : this.db.prepare('SELECT id, name, file_path, metadata_json FROM functions').all() as any[];
 
       const insertCall = this.db.prepare(
         'INSERT OR IGNORE INTO function_calls (caller_id, callee_name) VALUES (?, ?)'
       );
-      const insertDep = this.db.prepare(
+      const insertFnDep = this.db.prepare(
         'INSERT OR IGNORE INTO function_dependencies (function_id, dependency) VALUES (?, ?)'
       );
 
       for (const fn of allFns) {
         const meta = tryParseJson(fn.metadata_json) ?? {};
+
         if (meta.functionCalls) {
           for (const callee of meta.functionCalls) {
             insertCall.run(fn.id, callee);
           }
         }
-      }
-
-      // Also rebuild dependency edges from the functions' import data
-      const insertFnDep = this.db.prepare(
-        'INSERT OR IGNORE INTO function_dependencies (function_id, dependency) VALUES (?, ?)'
-      );
-      for (const fn of allFns) {
-        const meta = tryParseJson(fn.metadata_json) ?? {};
 
         // Add specifier-level dependencies (e.g., useState, useEffect)
         const usedImports: string[] = meta.usedImports ?? [];
@@ -1541,7 +1697,7 @@ export class CodeIndexDB {
       }
     });
 
-    txn();
+    txn.immediate();
   }
 
   async getTransitiveDependencies(

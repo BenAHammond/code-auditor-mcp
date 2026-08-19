@@ -14,6 +14,7 @@ import { UniversalStylesAnalyzer } from './UniversalStylesAnalyzer.js';
 import { CodeIndexDB } from '../../codeIndexDB.js';
 import { resetTailwindExpander } from '../../styles/tailwindUtilityExpander.js';
 import { extractDeclarations } from '../../styles/styleExtractor.js';
+import { extractClassUsage } from '../../styles/styleIndexer.js';
 import { initializeLanguages, initParsers } from '../../languages/index.js';
 import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { extractDeclarationsFromCSSAst } from '../../styles/cssAstExtractor.js';
@@ -540,6 +541,13 @@ describe('Detector 3 — Undefined Classes', () => {
       const disabled = findViolations(violations, 'styles/undefined-class-disabled');
       expect(disabled.length).toBe(1);
       expect(disabled[0].message).toContain('skipped');
+      // The fail-open notice must be anchored to a real file+line (the @theme
+      // CSS file) so the hook-contract guard does not strip it — otherwise
+      // coverage counts it `fired` while the finding is dropped, producing the
+      // impossible `fired` count=0 drift (Spec 39 R2/R3).
+      expect(disabled[0].file).toBeTruthy();
+      expect(disabled[0].file).toContain('global.css');
+      expect(disabled[0].line).toBeGreaterThanOrEqual(1);
 
       const undef = findViolations(violations, 'styles/undefined-class');
       expect(undef.length).toBe(0);
@@ -1058,5 +1066,150 @@ describe('Edge cases', () => {
     expect(result.executionTime).toBeGreaterThanOrEqual(0);
     expect(result.metrics).toBeDefined();
     expect(result.metrics.filesAnalyzed).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spec 42 R1 — dialect stylesheets (Astro / Vue / Svelte / SCSS-in-Vue / CSS-in-JS)
+// ---------------------------------------------------------------------------
+
+describe('Spec 42 R1 — dialect stylesheets', () => {
+  // Mirror the Detector 3 fixture classes so the tailwind probe stays on the
+  // same proven path (no projectRoot → no fail-open in the test environment).
+  const KNOWN_TAILWIND = ['flex', 'bg-blue-500'];
+
+  /**
+   * Run a dialect fixture through the exact extraction path syncStyleIndex
+   * uses for markup/component extensions, insert the resulting facts into the
+   * in-memory style index, then run the analyzer.
+   *
+   * `extractDeclarations` produces the class *definitions* (the selector lands
+   * in `context`); `extractClassUsage` produces the class *usages*. If a
+   * dialect's embedded `<style>` block is correctly read, `.foo` is defined and
+   * the single `foo` usage must not be flagged undefined.
+   */
+  async function extractAndAnalyze(fixturePath: string, source: string) {
+    const unreadSources: Array<{ filePath: string; reason: string }> = [];
+    const declarations = extractDeclarations(
+      fixturePath, null as any, source, undefined, undefined, unreadSources,
+    );
+    for (const d of declarations) {
+      insertDecl({
+        property: d.property,
+        raw_value: d.rawValue,
+        mechanism: d.mechanism,
+        file_path: d.filePath,
+        line: d.line,
+        context: d.context,
+        variant_context: d.variantContext,
+        token_ref: d.tokenRef,
+      });
+    }
+    const usages = extractClassUsage(fixturePath, source);
+    for (const u of usages) {
+      insertClassUsage(u.className, u.filePath, u.line, u.mechanism, u.unresolvable ? 1 : 0);
+    }
+    const violations = await runAnalyzer({ tailwindClasses: KNOWN_TAILWIND });
+    return { declarations, usages, unreadSources, undefinedViolations: findViolations(violations, 'styles/undefined-class') };
+  }
+
+  it('.astro <style> block — class defined + used once → no undefined-class', async () => {
+    const source = [
+      '<div class="foo">hello</div>',
+      '<style>',
+      '  .foo { color: red; }',
+      '</style>',
+    ].join('\n');
+
+    const { declarations, usages, undefinedViolations } = await extractAndAnalyze('src/page.astro', source);
+
+    // The <style> block must yield a real definition of `.foo`.
+    expect(declarations.some((d) => d.context === '.foo' && d.mechanism === 'css')).toBe(true);
+    // The markup must yield a single `foo` usage.
+    expect(usages.map((u) => u.className)).toContain('foo');
+    expect(undefinedViolations).toEqual([]);
+  });
+
+  it('.vue <style scoped> block — class defined + used once → no undefined-class', async () => {
+    const source = [
+      '<template>',
+      '  <div class="foo">hello</div>',
+      '</template>',
+      '<style scoped>',
+      '  .foo { color: red; }',
+      '</style>',
+    ].join('\n');
+
+    const { declarations, undefinedViolations } = await extractAndAnalyze('src/Component.vue', source);
+
+    // Scoped styles are real definitions (R1) — `scoped` must not hide `.foo`.
+    expect(declarations.some((d) => d.context === '.foo')).toBe(true);
+    expect(undefinedViolations).toEqual([]);
+  });
+
+  it('.svelte <style> block (incl. :global) — class defined + used once → no undefined-class', async () => {
+    const source = [
+      '<div class="foo">hello</div>',
+      '<style>',
+      '  :global(.foo) { color: red; }',
+      '</style>',
+    ].join('\n');
+
+    const { declarations, undefinedViolations } = await extractAndAnalyze('src/Component.svelte', source);
+
+    // `:global(.foo)` must still register `foo` as defined — collectDefinedClassCatalog
+    // matches `.foo` inside the selector without special-casing the wrapper.
+    expect(declarations.some((d) => d.context?.includes('.foo'))).toBe(true);
+    expect(undefinedViolations).toEqual([]);
+  });
+
+  it('.vue <style lang="scss"> — reuses the SCSS path (dialect reuse, R1)', async () => {
+    const source = [
+      '<template><div class="card">hello</div></template>',
+      '<style lang="scss">',
+      '  .card {',
+      '    color: red;',
+      '    .title { font-weight: bold; }',
+      '  }',
+      '</style>',
+    ].join('\n');
+
+    const { declarations, undefinedViolations } = await extractAndAnalyze('src/Card.vue', source);
+
+    // The lang="scss" block must be parsed as SCSS, and `.card` must be defined.
+    expect(declarations.some((d) => d.mechanism === 'scss')).toBe(true);
+    expect(declarations.some((d) => d.context?.includes('.card'))).toBe(true);
+    expect(undefinedViolations).toEqual([]);
+  });
+
+  it('styled-components styled.div`…` → css-in-js declaration (R1 CSS-in-JS)', async () => {
+    const source = ['const Button = styled.div`', '  color: red;', '`;'].join('\n');
+    const adapter = LanguageRegistry.getInstance().getAdapterForFile('src/Button.tsx');
+    const ast = await adapter.parse('src/Button.tsx', source);
+    const declarations = extractDeclarations('src/Button.tsx', adapter, source, ast);
+
+    const cssInJs = declarations.filter((d) => d.mechanism === 'css-in-js');
+    expect(cssInJs.length).toBeGreaterThan(0);
+    expect(cssInJs.some((d) => d.property === 'color')).toBe(true);
+  });
+
+  it('<style lang="sass"> → recorded unread, no CSS/SCSS declarations (R2)', async () => {
+    const source = [
+      '<template><div class="foo">hello</div></template>',
+      '<style lang="sass">',
+      '  .foo',
+      '    color: red',
+      '</style>',
+    ].join('\n');
+
+    const unreadSources: Array<{ filePath: string; reason: string }> = [];
+    const declarations = extractDeclarations('src/Component.vue', null as any, source, undefined, undefined, unreadSources);
+
+    // The sass block yields no css/scss declarations (dialect unsupported on the
+    // regex path), and is recorded as an unread source rather than silently dropped.
+    expect(declarations.filter((d) => d.mechanism === 'css' || d.mechanism === 'scss')).toEqual([]);
+    expect(unreadSources).toEqual([
+      { filePath: 'src/Component.vue', reason: 'unsupported style dialect: sass' },
+    ]);
   });
 });

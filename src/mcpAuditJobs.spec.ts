@@ -113,4 +113,67 @@ describe('mcpAuditJobs partition planning', () => {
     expect(merged.status.status === 'visitor-ran' ? merged.status.filesProcessed : 0).toBe(2);
     expect(merged.executionTime).toBe(5);
   });
+
+  it('derives fired coverage counts from merged deduped violations (not summed shard counts)', () => {
+    // cross-domain is a DB-based analyzer that ignores shard scope: each of 4
+    // shards emits the same 21 full-project findings. Summing their coverage
+    // counts would yield 84; the deduped merged violations below have 21.
+    const rule = 'cross-domain/read-never-written';
+    const shardViolation = (file: string): any => ({
+      file,
+      rule,
+      severity: 'warning',
+      message: `Table read but never written (${file})`,
+    });
+    const shards = Array.from({ length: 4 }, (_, i) => ({
+      metadata: {
+        coverage: [
+          { ruleId: rule, analyzer: 'cross-domain', state: 'fired', count: 21 },
+        ],
+      },
+    }));
+    // All 4 shards report the same 21 violations (same file:line:message).
+    const dedupedViolations = Array.from({ length: 21 }, (_, i) => shardViolation(`src/a.ts:${i}`));
+    const ordered = { 'cross-domain': { violations: dedupedViolations } as any };
+
+    const merged = __testables.mergeCoverage(shards as any, ordered);
+    expect(merged).toBeDefined();
+    const row = merged!.find((r) => r.ruleId === rule && r.analyzer === 'cross-domain');
+    expect(row).toBeDefined();
+    expect(row!.state).toBe('fired');
+    expect(row!.count).toBe(21);
+  });
+
+  it('sums distinct per-shard findings for genuinely sharded analyzers', () => {
+    // A sharded analyzer (solid) emits disjoint findings per partition: shard 1
+    // has 2, shard 2 has 3 — the merged deduped set has 5 distinct violations.
+    const rule = 'solid/single-responsibility';
+    const shards = [
+      {
+        metadata: {
+          coverage: [
+            { ruleId: rule, analyzer: 'solid', state: 'fired', count: 2 },
+          ],
+        },
+      },
+      {
+        metadata: {
+          coverage: [
+            { ruleId: rule, analyzer: 'solid', state: 'fired', count: 3 },
+          ],
+        },
+      },
+    ];
+    const v = (file: string): any => ({ file, rule, severity: 'warning', message: `SRP (${file})` });
+    const ordered = {
+      solid: {
+        violations: [v('src/a.ts'), v('src/b.ts'), v('src/c.ts'), v('src/d.ts'), v('src/e.ts')],
+      } as any,
+    };
+
+    const merged = __testables.mergeCoverage(shards as any, ordered);
+    const row = merged!.find((r) => r.ruleId === rule && r.analyzer === 'solid');
+    expect(row!.state).toBe('fired');
+    expect(row!.count).toBe(5);
+  });
 });

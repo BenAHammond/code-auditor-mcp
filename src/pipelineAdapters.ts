@@ -831,7 +831,13 @@ export function createConventionsReducer(): Stage3Reducer {
 
         const config = { ...context.config, indexHandle: context.indexHandle, projectRoot: context.projectRoot, readSource: context.readSource, exportsMap };
         const result = await analyzer.analyze([], config);
-        const factsConsumed = context.indexHandle.count('conventions');
+        // Count the INPUT the conventions analyzer reads (the function index the
+        // function-index visitor populated), not the derived `conventions` table it
+        // writes. `conventions` is an output cache (mineAllConventions) that can be
+        // empty when `minCorpus` is unmet even though thousands of functions fed the
+        // analyzer — counting it as "facts consumed" misreports a present input as
+        // notApplicable. (Spec 39 R2/R3 bug B)
+        const factsConsumed = context.indexHandle.count('functions');
         return { violations: result.violations ?? [], facts: {}, factsConsumed };
       } catch {
         return { violations: [], facts: {} };
@@ -868,7 +874,11 @@ export function createCrossDomainReducer(): Stage4Reducer {
         // Count DB rows consumed across primary cross-domain tables
         let factsConsumed = 0;
         try { factsConsumed += context.indexHandle.count('schema_usage'); } catch { /* table may not exist */ }
-        try { factsConsumed += context.indexHandle.count('indexed_functions'); } catch { /* table may not exist */ }
+        // `indexed_functions` is not a real table — the function index lives in
+        // `functions`. The old name made this term silently no-op (swallowed by the
+        // catch), undercounting the input for read/write coverage detectors.
+        // (Spec 39 R2/R3 bug C)
+        try { factsConsumed += context.indexHandle.count('functions'); } catch { /* table may not exist */ }
         return { violations: result.violations ?? [], facts: {}, factsConsumed };
       } catch (e: any) {
         console.error('[cross-domain reducer] error:', e.message);
@@ -1000,12 +1010,13 @@ export function createSchemaSqlVisitor(): Stage2Visitor {
     getRuleIds: () => [],
     async visit(_ast: unknown, _adapter: unknown, context: VisitorContext, sourceCode: string) {
       const { extractMigrationOpsFromFile } = await getMigrationExtractor();
-      const { ops, skipped, bytes } = await extractMigrationOpsFromFile(context.filePath, sourceCode);
+      const { ops, columns, skipped, bytes } = await extractMigrationOpsFromFile(context.filePath, sourceCode);
       return {
         violations: [],
         facts: {
           [context.filePath]: {
             ddlOps: ops,
+            ...(columns.length > 0 && { ddlColumns: columns }),
             ...(skipped && { skipped: true, bytes }),
           },
         },
@@ -1027,6 +1038,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       analyzer: new m.UniversalSchemaAnalyzer(),
       defaults: m.DEFAULT_SCHEMA_CONFIG,
       parseMigrationOps: m.parseMigrationOps,
+      extractDdlColumnNames: m.extractDdlColumnNames,
     })),
   );
 
@@ -1036,7 +1048,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
     extensions: ['.ts', '.tsx', '.js', '.jsx'],
     getRuleIds: () => getRuleIdsFor('schema'),
     async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const { analyzer: a, defaults, parseMigrationOps } = await getAnalyzer();
+      const { analyzer: a, defaults, parseMigrationOps, extractDdlColumnNames } = await getAnalyzer();
       const pm = await _getProvenanceModule();
       const violations: Violation[] = [];
       const indexFacts: IndexFactsEntry[] = [];
@@ -1084,6 +1096,8 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         const sql = ddlMatch[2].trim();
         if (sql) doDDL.push(sql);
       }
+      const doDDLSql = doDDL.length > 0 ? doDDL.join(';\n') : null;
+      const doDDLColumns = doDDLSql ? extractDdlColumnNames(doDDLSql) : [];
 
       // Build provenance context for this file — defaults from DEFAULT_SCHEMA_CONFIG
       const detectionMode = ((schemaConfig.detection as any)?.mode as string) ?? ('hybrid' as any);
@@ -1098,7 +1112,10 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       // File gate — skip files without DB usage
       if (!passesFileGate(context.filePath, sourceCode, schemaConfig, provenanceContext)) {
         const facts: Record<string, unknown> = { [context.filePath]: { tableRefs: [], ormTables, tableProvenance: tableProvenances } };
-        if (doDDL.length > 0) (facts[context.filePath] as any).ddlOps = parseMigrationOps(doDDL.join(';\n'));
+        if (doDDL.length > 0) {
+          (facts[context.filePath] as any).ddlOps = parseMigrationOps(doDDLSql!);
+          if (doDDLColumns.length > 0) (facts[context.filePath] as any).ddlColumns = doDDLColumns;
+        }
         return { violations: [], facts };
       }
 
@@ -1166,7 +1183,10 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         ormTables,
         tableProvenance: tableProvenances,
       };
-      if (doDDL.length > 0) (fileFacts as any).ddlOps = parseMigrationOps(doDDL.join(';\n'));
+      if (doDDL.length > 0) {
+        (fileFacts as any).ddlOps = parseMigrationOps(doDDLSql!);
+        if (doDDLColumns.length > 0) (fileFacts as any).ddlColumns = doDDLColumns;
+      }
 
       return {
         violations,
@@ -1346,6 +1366,17 @@ export function createSchemaReducer(): Stage3Reducer {
         }
       }
 
+      // 1d. Aggregate DDL-declared columns (Spec 39 — derived applicability).
+      //      The schema-sql and schema-code visitors emit per-file `ddlColumns`;
+      //      the reducer folds them into a single case-insensitive, deduplicated
+      //      set so downstream applicability predicates can ask "does ANY table
+      //      carry a tenant-scoping column?" without per-table column lists.
+      const ddlColumns = new Set<string>();
+      for (const [filePath, fact] of perFile()) {
+        const cols: string[] = (fact as any).ddlColumns ?? [];
+        for (const c of cols) ddlColumns.add(String(c).toLowerCase());
+      }
+
       // ── 2. Unknown-table detection ────────────────────────────────────────
       //
       // Fail-open guardrail: we can only accuse when the table catalog is
@@ -1467,7 +1498,7 @@ export function createSchemaReducer(): Stage3Reducer {
 
       return {
         violations,
-        facts: { tableCatalog: catalogEntries },
+        facts: { tableCatalog: catalogEntries, ddlColumns: [...ddlColumns].sort() },
         factsConsumed: [...perFile()].length,
       };
     },

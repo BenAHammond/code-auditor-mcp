@@ -56,13 +56,25 @@ export const JAVASCRIPT_EXTENSIONS = ['.js', '.jsx'];
 export const JSON_EXTENSIONS = ['.json'];
 export const GO_EXTENSIONS = ['.go'];
 export const CSS_EXTENSIONS = ['.css', '.scss'];
+// Markup extensions that carry `<style>` blocks (Spec 42 R1). Discovered so the
+// style indexer can extract their embedded stylesheets; the pipeline itself has
+// no language adapter for them, so they are consumed only by syncStyleIndex.
+export const MARKUP_EXTENSIONS = ['.astro', '.vue', '.svelte'];
+// Dialects the style indexer cannot yet read (Sass/SCSS indented syntax, Less,
+// Stylus). Not discovered as source — the indexer records them as *unread*
+// stylesheet sources (Spec 42 R2) so undefined-class never asserts on a class
+// that could be defined in one of these.
+export const UNREAD_STYLE_EXTENSIONS = ['.less', '.styl', '.sass'];
 // Raw-source extensions — no tree-sitter grammar, included for visitors that
 // read sourceCode directly (e.g. SQL migrations, TOML config, Prisma schemas)
 export const SQL_EXTENSIONS = ['.sql'];
 export const TOML_EXTENSIONS = ['.toml'];
 export const PRISMA_EXTENSIONS = ['.prisma'];
 export const RAW_EXTENSIONS = [...SQL_EXTENSIONS, ...TOML_EXTENSIONS, ...PRISMA_EXTENSIONS];
-export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS, ...CSS_EXTENSIONS, ...RAW_EXTENSIONS];
+// NOTE: .html is deliberately NOT here — recall-protocol has ~11,928 .html
+// files (spec dumps) and reading them all would blow up the audit. Markup
+// extensions are added because they are real component files with styles.
+export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS, ...CSS_EXTENSIONS, ...RAW_EXTENSIONS, ...MARKUP_EXTENSIONS];
 
 export interface FileDiscoveryOptions {
   extensions?: string[];

@@ -16,7 +16,8 @@
  *   warning and disable the undefined-class detector.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { TailwindProbe, type ProbeInitResult } from './tailwindProbe.js';
 import { findThemeCssFiles, type TailwindConfigResult } from './tailwindConfigLoader.js';
 
@@ -138,6 +139,7 @@ export class TailwindUtilityExpander {
   private _configFailed = false;
   private _configFailureReason: string | null = null;
   private _hasTailwindConfig = false;
+  private _tailwindConfigPath: string | null = null;
 
   /**
    * Initialize the expander with optional project config.
@@ -176,6 +178,13 @@ export class TailwindUtilityExpander {
 
       this._hasTailwindConfig = this._hasTailwindConfig || result.tailwindFound;
 
+      // For a v3 project (tailwind.config.*, no @theme CSS) the theme-file
+      // anchor above never fired; fall back to the v3 config file so the
+      // fail-open notice still gets a real file+line.
+      if (!this._tailwindConfigPath && result.tailwindFound) {
+        this._tailwindConfigPath = findV3ConfigPath(config.projectRoot);
+      }
+
       if (!result.ok) {
         this._configFailed = true;
         this._configFailureReason = result.error ?? 'Unknown probe init failure';
@@ -194,6 +203,12 @@ export class TailwindUtilityExpander {
   private discoverProjectCss(projectRoot: string): string | null {
     const themeFiles = findThemeCssFiles(projectRoot);
     if (themeFiles.length === 0) return null;
+
+    // Remember the first theme CSS file as the anchor for the fail-open
+    // notice: when the compile-probe fails, the `undefined-class-disabled`
+    // violation must carry a real file+line so the hook-contract guard does
+    // not strip it (Spec 39 coverage-vs-violations drift).
+    if (!this._tailwindConfigPath) this._tailwindConfigPath = themeFiles[0];
 
     const parts: string[] = [];
     for (const cssPath of themeFiles) {
@@ -221,6 +236,11 @@ export class TailwindUtilityExpander {
   /** Whether tailwindcss was found on disk (even if the probe failed to load it). */
   get hasTailwindConfig(): boolean {
     return this._hasTailwindConfig;
+  }
+
+  /** Resolved path to the project's Tailwind config (v3 JS or v4 theme CSS), if any. */
+  get tailwindConfigPath(): string | null {
+    return this._tailwindConfigPath;
   }
 
   /** Whether the probe is ready (initialized successfully). */
@@ -399,7 +419,23 @@ export class TailwindUtilityExpander {
     this._configFailed = false;
     this._configFailureReason = null;
     this._hasTailwindConfig = false;
+    this._tailwindConfigPath = null;
   }
+}
+
+/** Locate a Tailwind v3 JS/TS config file, if present. */
+function findV3ConfigPath(projectRoot: string): string | null {
+  const candidates = [
+    'tailwind.config.js',
+    'tailwind.config.ts',
+    'tailwind.config.cjs',
+    'tailwind.config.mjs',
+  ];
+  for (const candidate of candidates) {
+    const configPath = join(projectRoot, candidate);
+    if (existsSync(configPath)) return configPath;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

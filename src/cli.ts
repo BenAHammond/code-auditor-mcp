@@ -55,9 +55,20 @@ program
   .option('--include-baseline', 'Evaluate baseline-known violations in --fail-on checks')
   .option('--fail-on-regression', 'Exit code 2 when total advisory debt exceeds the baseline snapshot')
   .option('--preset <id>', 'Apply a shareable preset (repeatable)', (v: string, prev: string[]) => prev.concat([v]), [])
+  .option('--detach', 'Run the audit in a detached background process and print the job ID')
+  .option('--partition-strategy <strategy>', 'Partition strategy for detached runs: none, auto, or top-level')
+  .option('--max-partitions <n>', 'Maximum number of partition shards (detached runs)')
+  .option('--shard-timeout-ms <ms>', 'Per-shard timeout in milliseconds (detached runs)')
   .action(async (options) => {
     console.log(chalk.blue('🔍 Code Quality Audit Tool'));
     console.log(chalk.gray('══════════════════════════════════════════════════'));
+
+    // Spec 41 — `--detach` hands off to a forked worker; the parent never parses
+    // or hashes, so it must route out before `initParsers()`.
+    if (options.detach) {
+      await runDetachedAudit(options);
+      return;
+    }
 
     try {
       await initParsers();
@@ -1892,6 +1903,386 @@ ledgerCmd
       process.exit(1);
     }
   });
+
+// ── Spec 41 — Detached runs & queryable findings (CLI) ──────────────────────
+// `audit --detach` forks workers/auditJobRunner; `status`/`result`/`jobs` read
+// the persisted ledger. One job model (the ledger run), one write path — these
+// are thin wrappers over ledger.ts + mcpAuditJobs.ts, not a second store.
+
+/** Full analyzer set — matches createAuditRunner's registry, so `--detach` produces
+ *  the same per-rule coverage as a synchronous `audit` (73 rows on recall). */
+const DETACHED_DEFAULT_ANALYZERS = [
+  'solid',
+  'dry',
+  'data-access',
+  'react',
+  'documentation',
+  'invariants',
+  'schema',
+  'styles',
+  'conventions',
+  'cross-domain',
+];
+
+/** Lease TTL used by read-path reclaim, mirroring mcpAuditJobs.jobLeaseTtlMs. */
+const CLI_JOB_LEASE_TTL_MS = Number(process.env.CODE_AUDITOR_JOB_LEASE_TTL_MS) || 30_000;
+
+function spec41StatusBadge(status: string): string {
+  switch (status) {
+    case 'completed':
+      return chalk.green('completed');
+    case 'running':
+      return chalk.cyan('running');
+    case 'queued':
+      return chalk.blue('queued');
+    case 'failed':
+      return chalk.red('failed');
+    default:
+      return status;
+  }
+}
+
+function spec41SeverityColor(severity: string): (s: string) => string {
+  if (severity === 'critical') return chalk.red;
+  if (severity === 'warning') return chalk.yellow;
+  return chalk.gray;
+}
+
+/**
+ * Render a run's staleness: the cheap marker (changed count) plus, when stale,
+ * the per-file diff. The cheap stat-only pass in `computeStaleness` populates
+ * `changedFiles` on divergence, so this list is the full `--stale` deliverable
+ * regardless of whether the caller requested `full`. Bounded so a mass-change
+ * doesn't flood the terminal; the JSON path always carries the complete list.
+ */
+function spec41RenderStaleness(staleness: { stale: boolean; changedFiles: string[] } | null): void {
+  if (!staleness) {
+    console.log(chalk.gray('  stale:    n/a'));
+    return;
+  }
+  if (!staleness.stale) {
+    console.log(chalk.gray('  stale:    no (working tree unchanged)'));
+    return;
+  }
+  console.log(chalk.yellow(`  stale:    ${staleness.changedFiles.length} file(s) changed since run`));
+  const maxFiles = 20;
+  for (const f of staleness.changedFiles.slice(0, maxFiles)) {
+    console.log(chalk.yellow(`            + ${f}`));
+  }
+  if (staleness.changedFiles.length > maxFiles) {
+    console.log(chalk.gray(`            … and ${staleness.changedFiles.length - maxFiles} more`));
+  }
+}
+
+/**
+ * Spec 41 — `audit --detach`. Persists a `queued` run, opens a per-run log as
+ * the child's stderr, and forks workers/auditJobRunner detached. Returns with
+ * the job id; the parent never parses or hashes, so it stays sub-second even
+ * on a minutes-long corpus.
+ */
+async function runDetachedAudit(options: {
+  path?: string;
+  partitionStrategy?: string;
+  maxPartitions?: string;
+  shardTimeoutMs?: string;
+}): Promise<void> {
+  // `spawn` + no IPC channel: `fork()` establishes an IPC channel, and `unref()`
+  // does NOT let the parent exit while that channel is open (Node: "unless there
+  // is an established IPC channel"). The runner talks to the ledger through the
+  // DB, never back to the parent, so there is no channel to keep — and without
+  // one the parent exits immediately, keeping `--detach` sub-second.
+  const { spawn } = await import('node:child_process');
+  const { openSync } = await import('node:fs');
+  const { createAuditJob } = await import('./services/auditJobService.js');
+  const { patchLedgerRun } = await import('./ledger.js');
+  const { resolveJobRunnerEntrypoint } = await import('./mcpAuditJobs.js');
+  const { assertAuditPathExists } = await import('./mcpToolErrors.js');
+  const { getPersistedStorageRoot } = await import('./dataPaths.js');
+
+  const auditPath = resolve(options.path || process.cwd());
+  const { isFile } = await assertAuditPathExists(auditPath);
+  const projectRoot = isFile ? dirname(auditPath) : auditPath;
+
+  const db = CodeIndexDB.getInstance(undefined, projectRoot);
+  await db.initialize();
+
+  const job = createAuditJob(db.rawDb, projectRoot, { surface: 'cli', command: 'audit --detach' });
+
+  // The log is the diagnosable trace when the child dies before its first DB
+  // patch (e.g. inside initParsers()). Lives next to the index db.
+  const logsDir = join(getPersistedStorageRoot(projectRoot), 'logs');
+  await fs.mkdir(logsDir, { recursive: true });
+  const logPath = join(logsDir, `${job.jobId}.log`);
+  const logFd = openSync(logPath, 'a');
+
+  const argsJson = JSON.stringify({
+    path: auditPath,
+    ...(options.partitionStrategy && { partitionStrategy: options.partitionStrategy }),
+    ...(options.maxPartitions && { maxPartitions: Number(options.maxPartitions) }),
+    ...(options.shardTimeoutMs && { shardTimeoutMs: Number(options.shardTimeoutMs) }),
+  });
+  const defaultsJson = JSON.stringify({
+    defaultAnalyzers: DETACHED_DEFAULT_ANALYZERS,
+    defaultMinSeverity: 'warning',
+    defaultGenerateCodeMap: false,
+  });
+
+  patchLedgerRun(db.rawDb, job.jobId, { stderrLog: logPath });
+
+  const child = spawn(process.execPath, [resolveJobRunnerEntrypoint(), job.jobId, argsJson, defaultsJson], {
+    detached: true,
+    stdio: ['ignore', 'ignore', logFd],
+    env: process.env,
+  });
+  child.unref();
+
+  console.log(chalk.green(`✓ Audit detached (job ${job.jobId})`));
+  console.log(chalk.gray(`  Monitor: code-auditor status ${job.jobId}`));
+  console.log(chalk.gray(`  Results: code-auditor result ${job.jobId}`));
+  console.log(chalk.gray(`  Log:     ${logPath}`));
+}
+
+program
+  .command('status <jobId>')
+  .description('Show a detached audit job status, progress, and staleness')
+  .option('-p, --path <path>', 'Project root containing the job (default: cwd)', process.cwd())
+  .option('--json', 'Output as JSON')
+  .action(async (jobId: string, options: { path: string; json?: boolean }) => {
+    try {
+      const { getLedgerRun, reclaimStaleRunning, computeStaleness } = await import('./ledger.js');
+      const projectRoot = resolve(options.path);
+      const db = CodeIndexDB.getInstance(undefined, projectRoot);
+      await db.initialize();
+
+      reclaimStaleRunning(db.rawDb, projectRoot, CLI_JOB_LEASE_TTL_MS);
+
+      const run = getLedgerRun(db.rawDb, jobId);
+      if (!run) {
+        console.error(chalk.red(`Job not found: ${jobId}`));
+        process.exit(1);
+      }
+
+      const staleness = run.projectRoot ? computeStaleness(db.rawDb, jobId, run.projectRoot) : null;
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify({ ...run, staleness }, null, 2) + '\n');
+        return;
+      }
+
+      let progress = '';
+      if (run.progressJson) {
+        try {
+          const p = JSON.parse(run.progressJson) as { phase?: string; message?: string; current?: number; total?: number };
+          progress = [p.phase, p.message].filter(Boolean).join(' — ');
+          if (p.total != null) progress += ` (${p.current ?? 0}/${p.total})`;
+        } catch {
+          progress = '';
+        }
+      }
+
+      console.log(chalk.blue(`Job ${jobId}`));
+      console.log(`  status:   ${spec41StatusBadge(run.status)}`);
+      console.log(`  path:     ${run.projectRoot ?? run.target}`);
+      console.log(`  created:  ${run.timestamp}`);
+      if (run.startedAt) console.log(`  started:  ${run.startedAt}`);
+      if (run.finishedAt) console.log(`  finished: ${run.finishedAt}`);
+      if (run.durationMs) console.log(`  duration: ${run.durationMs}ms`);
+      if (progress) console.log(`  progress: ${progress}`);
+      if (run.error) console.log(chalk.red(`  error:    ${run.error}`));
+      if (run.stderrLog) console.log(chalk.gray(`  log:      ${run.stderrLog}`));
+      if (run.contentHash) console.log(chalk.gray(`  content:  ${run.contentHash.slice(0, 12)} (${run.filesCount} files)`));
+      spec41RenderStaleness(staleness);
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('result <jobId>')
+  .description('Query a detached audit run: findings or per-rule coverage')
+  .option('-p, --path <path>', 'Project root containing the job (default: cwd)', process.cwd())
+  .option('--rule <rule>', 'Filter by rule id')
+  .option('--analyzer <analyzer>', 'Filter by analyzer')
+  .option('--file <file>', 'Filter by file path (substring match)')
+  .option('--severity <severity>', 'Filter by severity (critical|warning|suggestion)')
+  .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|unassessed); omit value for all')
+  .option('--count', 'Group findings by analyzer/rule with counts')
+  .option('--limit <n>', 'Max findings to return (0 = unbounded)', '50')
+  .option('--offset <n>', 'Findings offset', '0')
+  .option('--stale', 'Force full content re-hash for staleness')
+  .option('--json', 'Output as JSON')
+  .action(
+    async (
+      jobId: string,
+      options: {
+        path: string;
+        rule?: string;
+        analyzer?: string;
+        file?: string;
+        severity?: string;
+        state?: string | boolean;
+        count?: boolean;
+        limit: string;
+        offset: string;
+        stale?: boolean;
+        json?: boolean;
+      },
+    ) => {
+      try {
+        const { getLedgerRun, queryLedgerFindings, queryLedgerCoverage, computeStaleness } = await import('./ledger.js');
+        const projectRoot = resolve(options.path);
+        const db = CodeIndexDB.getInstance(undefined, projectRoot);
+        await db.initialize();
+
+        const run = getLedgerRun(db.rawDb, jobId);
+        if (!run) {
+          console.error(chalk.red(`Job not found: ${jobId}`));
+          process.exit(1);
+        }
+
+        const staleness = run.projectRoot
+          ? computeStaleness(db.rawDb, jobId, run.projectRoot, { full: !!options.stale })
+          : null;
+
+        // A finding read must never be silent about the tree it was computed
+        // against (Spec 41 R3): carry the staleness marker in human output too.
+        if (!options.json) spec41RenderStaleness(staleness);
+
+        if (options.state !== undefined) {
+          const stateFilter = typeof options.state === 'string' ? (options.state as import('./types.js').RuleCoverageState) : undefined;
+          const rows = queryLedgerCoverage(db.rawDb, jobId, {
+            ...(stateFilter ? { state: stateFilter } : {}),
+            ...(options.rule ? { rule: options.rule } : {}),
+            ...(options.analyzer ? { analyzer: options.analyzer } : {}),
+          });
+          if (options.json) {
+            process.stdout.write(JSON.stringify({ runId: jobId, staleness, coverage: rows }, null, 2) + '\n');
+          } else {
+            console.log(chalk.blue(stateFilter ? `Coverage — ${stateFilter}` : 'Coverage — all states'));
+            for (const r of rows) {
+              const reason = r.reason ? chalk.gray(`  (${r.reason})`) : '';
+              console.log(`  ${r.analyzer}/${r.ruleId}: ${r.state} × ${r.count}${reason}`);
+            }
+            if (rows.length === 0) console.log(chalk.gray('  (no rows)'));
+          }
+          return;
+        }
+
+        const findingFilter = {
+          ...(options.rule ? { rule: options.rule } : {}),
+          ...(options.analyzer ? { analyzer: options.analyzer } : {}),
+          ...(options.file ? { file: options.file } : {}),
+          ...(options.severity ? { severity: options.severity } : {}),
+        };
+
+        if (options.count) {
+          const groups = queryLedgerFindings(db.rawDb, jobId, { ...findingFilter, count: true }) as Array<{
+            group: string;
+            count: number;
+          }>;
+          if (options.json) {
+            process.stdout.write(JSON.stringify({ runId: jobId, staleness, groups }, null, 2) + '\n');
+          } else {
+            console.log(chalk.blue('Findings by analyzer/rule'));
+            for (const g of groups) console.log(`  ${g.count}\t${g.group}`);
+            if (groups.length === 0) console.log(chalk.gray('  (no findings)'));
+          }
+          return;
+        }
+
+        const limit = options.limit === '0' ? 0 : parseInt(options.limit, 10) || 50;
+        const offset = parseInt(options.offset, 10) || 0;
+        const findings = queryLedgerFindings(db.rawDb, jobId, { ...findingFilter, limit, offset }) as Array<
+          import('./ledger.js').LedgerFindingRecord
+        >;
+
+        if (options.json) {
+          const nextOffset = limit > 0 && findings.length === limit ? offset + limit : null;
+          process.stdout.write(
+            JSON.stringify({ runId: jobId, staleness, count: findings.length, nextOffset, findings }, null, 2) + '\n',
+          );
+        } else {
+          console.log(chalk.blue(`Findings (${findings.length} shown)`));
+          for (const f of findings) {
+            const loc = f.line != null ? `${f.file}:${f.line}` : f.file;
+            const paint = spec41SeverityColor(f.severity);
+            console.log(`  ${paint(f.severity)} ${chalk.gray(loc)} [${f.analyzer}/${f.rule}] ${f.message}`);
+          }
+          if (findings.length === 0) console.log(chalk.gray('  (no findings)'));
+          if (limit > 0 && findings.length === limit) {
+            console.log(chalk.gray(`  next offset: ${offset + limit} (use --offset ${offset + limit})`));
+          }
+        }
+      } catch (error) {
+        console.error(chalk.red('Error:'), error);
+        process.exit(1);
+      }
+    },
+  );
+
+program
+  .command('jobs')
+  .description('List detached audit jobs with staleness badges')
+  .option('-p, --path <path>', 'Project root (default: cwd)', process.cwd())
+  .option('--prune', 'Delete all but the newest runs for this project')
+  .option('--keep <n>', 'Runs to keep when --prune is set', '10')
+  .option('--limit <n>', 'Runs to display (staleness computed for these)', '20')
+  .option('--json', 'Output as JSON')
+  .action(
+    async (options: { path: string; prune?: boolean; keep: string; limit: string; json?: boolean }) => {
+      try {
+        const { listLedgerRuns, reclaimStaleRunning, pruneLedgerRuns, computeStaleness } = await import('./ledger.js');
+        const projectRoot = resolve(options.path);
+        const db = CodeIndexDB.getInstance(undefined, projectRoot);
+        await db.initialize();
+
+        reclaimStaleRunning(db.rawDb, projectRoot, CLI_JOB_LEASE_TTL_MS);
+
+        if (options.prune) {
+          const keep = parseInt(options.keep, 10) || 10;
+          const n = pruneLedgerRuns(db.rawDb, projectRoot, keep);
+          console.log(chalk.green(`✓ Pruned ${n} run(s) — keeping ${keep} newest`));
+        }
+
+        const limit = parseInt(options.limit, 10) || 20;
+        const runs = listLedgerRuns(db.rawDb, projectRoot).slice(0, limit);
+
+        const withStaleness = runs.map((run) => {
+          let staleness = null;
+          if (run.projectRoot && run.contentHash) {
+            staleness = computeStaleness(db.rawDb, run.runId, run.projectRoot);
+          }
+          return { ...run, staleness };
+        });
+
+        if (options.json) {
+          process.stdout.write(JSON.stringify(withStaleness, null, 2) + '\n');
+          return;
+        }
+
+        if (withStaleness.length === 0) {
+          console.log(chalk.gray('No jobs yet — run `code-auditor audit --detach` first.'));
+          return;
+        }
+
+        console.log(chalk.blue(`Jobs (${withStaleness.length} newest)`));
+        for (const run of withStaleness) {
+          const badge = run.staleness?.stale
+            ? chalk.yellow('stale')
+            : run.staleness
+              ? chalk.green('current')
+              : chalk.gray('n/a');
+          console.log(`  ${spec41StatusBadge(run.status)}  ${chalk.cyan(run.runId)}  [${badge}]`);
+          console.log(`    ${run.projectRoot ?? run.target}  ${run.timestamp}`);
+          if (run.error) console.log(`    ${chalk.red(run.error)}`);
+        }
+      } catch (error) {
+        console.error(chalk.red('Error:'), error);
+        process.exit(1);
+      }
+    },
+  );
 
 // ── Conventions command — Spec 12 R3 ────────────────────────────────────────
 const conventionsCmd = program

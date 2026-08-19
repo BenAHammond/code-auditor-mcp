@@ -28,6 +28,7 @@ import { makeVisitorStatus } from '../../pipeline.js';
 // and UniversalDataAccessAnalyzer.ts import from this module).
 import {
   parseMigrationOps,
+  extractDdlColumnNames,
   extractReExports,
   sqlFileHasDdl,
   extractMigrationOpsFromFile,
@@ -70,6 +71,7 @@ import {
 
 export {
   parseMigrationOps,
+  extractDdlColumnNames,
   extractReExports,
   sqlFileHasDdl,
   extractMigrationOpsFromFile,

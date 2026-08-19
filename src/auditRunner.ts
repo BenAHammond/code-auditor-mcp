@@ -664,6 +664,12 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           analyzerResults,
           pipelineConfig,
           pipelineResult.metadata?.inputPresence,
+          new Map(
+            (pipelineResult.metadata?.ruleApplicability ?? []).map((a) => [
+              a.ruleId,
+              { applicable: a.applicable, reason: a.reason },
+            ]),
+          ),
         );
 
         // Spec 29: extract table catalog from pipeline metadata for audit report
@@ -1064,31 +1070,35 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       );
     }
 
-    // Spec 11 R1 — write to findings ledger (non-fatal: ledger is advisory)
-    const ledgerRunId = (async () => {
-      try {
-        const indexDb = CodeIndexDB.getInstance(undefined, root);
-        await indexDb.initialize();
-        const violations = Object.values(orderedAnalyzerResults).flatMap(ar => ar.violations);
-        const scopeStr = Array.isArray(scope) ? `files:${scope.length}` : (scope ?? 'all');
-        return writeAuditToLedger(
-          indexDb.rawDb,
-          detectRunInput(
-            process.argv.slice(2).join(' '),
-            (options as any).surface ?? 'cli',
-            scopeStr,
-            root,
-            TOOL_VERSION,
-          ),
-          violations,
-          Date.now() - startTime,
-          0, // exit status TBD — updateLedgerRunStatus by CLI after return
-        );
-      } catch (_err) {
-        // ledger write is non-fatal — audit result is still valid
-        return null;
-      }
-    })();
+    // Spec 11 R1 — write to findings ledger (non-fatal: ledger is advisory).
+    // Forked shard workers set writeToLedger:false so the parent run is the
+    // single ledger writer (see AuditRunnerOptions.writeToLedger).
+    if (mergedOptions.writeToLedger !== false) {
+      void (async () => {
+        try {
+          const indexDb = CodeIndexDB.getInstance(undefined, root);
+          await indexDb.initialize();
+          const violations = Object.values(orderedAnalyzerResults).flatMap(ar => ar.violations);
+          const scopeStr = Array.isArray(scope) ? `files:${scope.length}` : (scope ?? 'all');
+          return writeAuditToLedger(
+            indexDb.rawDb,
+            detectRunInput(
+              process.argv.slice(2).join(' '),
+              (options as any).surface ?? 'cli',
+              scopeStr,
+              root,
+              TOOL_VERSION,
+            ),
+            violations,
+            Date.now() - startTime,
+            0, // exit status TBD — updateLedgerRunStatus by CLI after return
+          );
+        } catch (_err) {
+          // ledger write is non-fatal — audit result is still valid
+          return null;
+        }
+      })();
+    }
 
     return result;
   }

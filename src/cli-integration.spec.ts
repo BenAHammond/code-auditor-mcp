@@ -373,6 +373,8 @@ describe('A2 gate — SKILL.md doc-CLI parity', () => {
     'propose',
     // ledger subcommands
     'trends',
+    // Spec 41 detached-run read commands (top-level)
+    'result', 'jobs',
   ]);
 
   function looksLikeSubcommand(token: string): boolean {
@@ -651,5 +653,91 @@ describe('INSERT/DELETE table patterns + provenance fixture', () => {
     for (const v of d1ExecViolations) {
       expect(v.functionName).toContain('runMigration');
     }
+  });
+});
+
+// ── Spec 41 — detached runs & queryable findings (CLI surface) ──────────────
+// Exercises the four Spec 41 commands end-to-end against a real detached run:
+//   audit --detach → status → result → jobs.
+//
+// The detached child is a separate OS process (spawned with `detached: true` +
+// `unref()`), so the test must poll `status` until the run reaches a terminal
+// state before asserting — and before `afterEach` tears the temp dir down from
+// under a still-running child.
+
+describe('CLI integration — Spec 41 detached runs', () => {
+  let testDir: string;
+  let fixtureDir: string;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), 'ca-spec41-'));
+    fixtureDir = join(testDir, 'project');
+    await mkdir(join(fixtureDir, 'src'), { recursive: true });
+    await writeFile(join(fixtureDir, 'src', 'index.ts'), [
+      'export function add(a: number, b: number): number {',
+      '  return a + b;',
+      '}',
+    ].join('\n'));
+  });
+
+  afterEach(() => {
+    try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  function pollStatus(jobId: string, timeoutMs = 45_000): any {
+    const deadline = Date.now() + timeoutMs;
+    let last: any = null;
+    while (Date.now() < deadline) {
+      const res = runCli(`status "${jobId}" -p "${fixtureDir}" --json`, testDir);
+      expect(res.exitCode).toBe(0);
+      last = JSON.parse(res.stdout);
+      if (last.status === 'completed' || last.status === 'failed') return last;
+      execSync(`sleep 0.5`);
+    }
+    return last;
+  }
+
+  it('audit --detach → status → result → jobs round-trips a completed run', async () => {
+    const detach = runCli(`audit --detach -p "${fixtureDir}"`, testDir);
+    expect(detach.exitCode).toBe(0);
+
+    const jobId = detach.stdout.match(/job ([0-9a-f-]{36})/)?.[1];
+    expect(jobId).toBeTruthy();
+    expect(detach.stdout).toContain('Audit detached');
+
+    // status reaches a terminal state (completed, not failed)
+    const final = pollStatus(jobId!);
+    expect(final.status).toBe('completed');
+    expect(final.projectRoot).toBe(fixtureDir);
+    expect(final.staleness).toBeTruthy();
+    expect(final.staleness.stale).toBe(false);
+
+    // jobs lists the run (newest first) with a staleness badge
+    const jobs = runCli(`jobs -p "${fixtureDir}" --json`, testDir);
+    expect(jobs.exitCode).toBe(0);
+    const jobsArr = JSON.parse(jobs.stdout);
+    expect(Array.isArray(jobsArr)).toBe(true);
+    expect(jobsArr.map((j: any) => j.runId)).toContain(jobId);
+
+    // result --count returns grouped findings keyed by run id
+    const counts = runCli(`result "${jobId}" -p "${fixtureDir}" --count --json`, testDir);
+    expect(counts.exitCode).toBe(0);
+    const countJson = JSON.parse(counts.stdout);
+    expect(countJson.runId).toBe(jobId);
+    expect(Array.isArray(countJson.groups)).toBe(true);
+
+    // result --state returns coverage rows keyed by run id
+    const coverage = runCli(`result "${jobId}" -p "${fixtureDir}" --state --json`, testDir);
+    expect(coverage.exitCode).toBe(0);
+    const covJson = JSON.parse(coverage.stdout);
+    expect(covJson.runId).toBe(jobId);
+    expect(Array.isArray(covJson.coverage)).toBe(true);
+    expect(covJson.coverage.length).toBeGreaterThan(0);
+  }, 90_000);
+
+  it('status exits non-zero for an unknown job id', () => {
+    const res = runCli(`status "00000000-0000-0000-0000-000000000000" -p "${fixtureDir}" --json`, testDir);
+    expect(res.exitCode).not.toBe(0);
+    expect(res.stderr).toContain('Job not found');
   });
 });

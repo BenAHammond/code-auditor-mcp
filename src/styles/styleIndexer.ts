@@ -16,10 +16,12 @@ import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import type { LanguageAdapter } from '../languages/types.js';
 import { extractDeclarations, extractTokens, getOrLoadTailwindTokens } from './styleExtractor.js';
 import { loadTailwindConfig, tokensToStyleTokens } from './tailwindConfigLoader.js';
+import { findFiles, UNREAD_STYLE_EXTENSIONS } from '../utils/fileDiscovery.js';
 import type {
   NormalizedDeclaration,
   StyleToken,
   StyleClassUsage,
+  UnreadStyleSource,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -63,6 +65,11 @@ export async function syncStyleIndex(
   const result: StyleSyncResult = { changed: 0, skipped: 0, removed: 0, errors: 0 };
   const scoped = options.scoped ?? false;
 
+  // Unread stylesheet sources (Spec 42 R2). When any exist, the
+  // styles/undefined-class detector reports notApplicable rather than
+  // asserting a class is undefined (it may live in the unread source).
+  const unreadSources: UnreadStyleSource[] = [];
+
   // Load Tailwind config once for the project
   const tailwindResult = loadTailwindConfig(projectRoot);
   const tailwindTokens = tailwindResult.tokens;
@@ -81,8 +88,19 @@ export async function syncStyleIndex(
     // .scss is parsed by tree-sitter-scss which extends the CSS grammar.
     if (filePath.endsWith('.css') || filePath.endsWith('.scss')) continue;
 
+    let content: string;
     try {
-      const content = readFileSync(filePath, 'utf-8');
+      content = readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      result.errors++;
+      unreadSources.push({
+        filePath,
+        reason: `read failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      continue;
+    }
+
+    try {
       const contentHash = computeFileHash(content);
 
       // Check if file is already indexed and unchanged
@@ -98,7 +116,7 @@ export async function syncStyleIndex(
       deleteFileEntries(rawDb, filePath);
 
       // Extract declarations
-      const declarations = await extractForFile(filePath, content, registry, tailwindTokens);
+      const declarations = await extractForFile(filePath, content, registry, tailwindTokens, unreadSources);
 
       // Insert declarations
       if (declarations.length > 0) {
@@ -122,6 +140,17 @@ export async function syncStyleIndex(
       result.errors++;
     }
   }
+
+  // Full runs: also record stylesheet dialects the indexer cannot read
+  // (Sass indented syntax, Less, Stylus) — a class may be defined there.
+  if (!scoped) {
+    unreadSources.push(...(await findUnreadStyleFiles(projectRoot)));
+  }
+
+  // Persist unread sources. Full runs rebuild the table wholesale; scoped runs
+  // only upsert the read-failures they encountered (leaving prior full-run rows
+  // for the rest of the project intact).
+  persistUnreadSources(rawDb, unreadSources, scoped);
 
   // For full runs: remove stale entries for files not in the current set
   if (!scoped) {
@@ -153,12 +182,13 @@ async function extractForFile(
   sourceCode: string,
   registry: LanguageRegistry | null,
   tailwindTokens: any,
+  unreadSources?: UnreadStyleSource[],
 ): Promise<NormalizedDeclaration[]> {
   const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
 
   // CSS/SCSS can be extracted without an adapter
   if (ext === '.css' || ext === '.scss') {
-    return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens);
+    return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
   }
 
   // TS/JS/TSX/JSX need a language adapter
@@ -176,7 +206,7 @@ async function extractForFile(
       try {
         const ast = await adapter.parse(filePath, sourceCode);
         try {
-          return extractDeclarations(filePath, adapter, sourceCode, ast, tailwindTokens);
+          return extractDeclarations(filePath, adapter, sourceCode, ast, tailwindTokens, unreadSources);
         } finally {
           // Free the WASM tree. The style index parses every TS/JS file to pull
           // out class/style declarations; without this the tree (and, for TSX/JSX,
@@ -190,12 +220,12 @@ async function extractForFile(
     }
 
     // Try extraction without AST (regex-only for class attributes)
-    return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens);
+    return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
   }
 
-  // HTML/Vue/Svelte — extractor handles these with regex
-  if (['.html', '.vue', '.svelte'].includes(ext)) {
-    return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens);
+  // HTML/Vue/Svelte/Astro — extractor handles these with regex
+  if (['.html', '.vue', '.svelte', '.astro'].includes(ext)) {
+    return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
   }
 
   return [];
@@ -218,7 +248,7 @@ export function extractClassUsage(
   // audit-report.json embedding a raw source snippet with `error_class =
   // 'zombie-capped'`). Those must never reach the class-usage table, so gate
   // extraction to the extensions that actually carry class attributes.
-  const CLASS_USAGE_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.html', '.vue', '.svelte'];
+  const CLASS_USAGE_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.html', '.vue', '.svelte', '.astro'];
   if (!CLASS_USAGE_EXTENSIONS.includes(ext)) return [];
 
   // Determine mechanism by file type
@@ -268,6 +298,61 @@ export function extractClassUsage(
 }
 
 // ---------------------------------------------------------------------------
+// Unread stylesheet sources (Spec 42 R2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Discover stylesheet files whose dialect the indexer cannot read (Sass indented
+ * syntax, Less, Stylus). Each is recorded as an unread source so that
+ * `styles/undefined-class` reports `notApplicable` instead of asserting a class
+ * is undefined when it could be defined in one of these files.
+ */
+async function findUnreadStyleFiles(projectRoot: string): Promise<UnreadStyleSource[]> {
+  const files = await findFiles(projectRoot, { extensions: UNREAD_STYLE_EXTENSIONS });
+  return files.map((filePath) => {
+    const ext = filePath.slice(filePath.lastIndexOf('.') + 1);
+    return { filePath, reason: `unsupported style dialect: ${ext}` };
+  });
+}
+
+/**
+ * Persist unread stylesheet sources.
+ *
+ * Full runs rebuild the table wholesale so dialects/read-failures that no longer
+ * exist are dropped. Scoped runs only upsert the read-failures they encountered,
+ * leaving prior full-run rows for the rest of the project intact.
+ */
+function persistUnreadSources(
+  rawDb: Database.Database,
+  unreadSources: UnreadStyleSource[],
+  scoped: boolean,
+): void {
+  if (scoped) {
+    if (unreadSources.length === 0) return;
+    const upsert = rawDb.prepare(
+      `INSERT INTO style_unread_sources (file_path, reason) VALUES (@filePath, @reason)
+       ON CONFLICT(file_path) DO UPDATE SET reason = excluded.reason`,
+    );
+    const txn = rawDb.transaction(() => {
+      for (const s of unreadSources) upsert.run({ filePath: s.filePath, reason: s.reason });
+    });
+    txn();
+    return;
+  }
+
+  rawDb.prepare('DELETE FROM style_unread_sources').run();
+  if (unreadSources.length === 0) return;
+
+  const insert = rawDb.prepare(
+    'INSERT INTO style_unread_sources (file_path, reason) VALUES (@filePath, @reason)',
+  );
+  const txn = rawDb.transaction(() => {
+    for (const s of unreadSources) insert.run({ filePath: s.filePath, reason: s.reason });
+  });
+  txn();
+}
+
+// ---------------------------------------------------------------------------
 // Database helpers
 // ---------------------------------------------------------------------------
 
@@ -286,6 +371,7 @@ function deleteFileEntries(rawDb: Database.Database, filePath: string): void {
   rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?').run(filePath);
   rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(filePath);
   rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(filePath);
+  rawDb.prepare('DELETE FROM style_unread_sources WHERE file_path = ?').run(filePath);
 }
 
 function removeStaleEntries(rawDb: Database.Database, currentFiles: string[]): number {

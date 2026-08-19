@@ -10,6 +10,7 @@
  * compute histograms, clusters, and distributions across the entire codebase.
  */
 
+import { join } from 'node:path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
 import type { AnalyzerResult, IndexHandle, Violation, Resolution } from '../../types.js';
@@ -761,8 +762,15 @@ async function initTailwindProbe(
   // Fail-open rule (Spec 22 R1.3): if the probe fails and Tailwind IS
   // present, disable the undefined-class detector.
   if (expander.configFailed && expander.hasTailwindConfig) {
+    // Anchor the notice to a real file+line (the Tailwind config, or the
+    // project root's package.json as a last resort) so the hook-contract
+    // guard does not strip it. A file-less violation would still register
+    // as `fired` in coverage while the finding itself is dropped — the
+    // coverage-vs-violations drift Spec 39 surfaced.
+    const anchor = expander.tailwindConfigPath
+      ?? (cfg?.projectRoot ? join(cfg.projectRoot, 'package.json') : '');
     return [report(
-      '', 0,
+      anchor, 1,
       `Tailwind probe unavailable (${expander.configFailureReason ?? 'unknown error'}) — ` +
       `undefined-class detection skipped. Classes defined only in Tailwind ` +
       `config will not be checked. Install tailwindcss in the project ` +

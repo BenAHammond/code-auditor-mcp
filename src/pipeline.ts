@@ -35,6 +35,7 @@ import {
   type Violation,
 } from './types.js';
 import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
+import { evaluateRuleApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
 import { resetRuleTiming, getRuleTimingSortedDesc } from './analyzers/ruleTiming.js';
 import { LanguageRegistry } from './languages/LanguageRegistry.js';
 import { discoverFiles } from './utils/fileDiscovery.js';
@@ -709,12 +710,48 @@ export async function runPipeline(
     }
   }
 
+  // Spec 39 — derived rule applicability. Each rule's predicate is evaluated
+  // over its declared inputs BEFORE findings are surfaced; an inapplicable rule
+  // has its findings removed from the raw analyzer results so they never reach
+  // the report total, and is reported `notApplicable` (with a reason) in
+  // coverage rather than `fired`/`clean`. Runs after Stage 4 so the schema
+  // reducer's `ddlColumns` fact is available.
+  const dataAccessConfig = (config.config ?? {})['data-access'] as Record<string, unknown> | undefined;
+  const schemaReducerFacts = combinedFacts['schema'] as Record<string, unknown> | undefined;
+  const ddlColumns = schemaReducerFacts?.ddlColumns as string[] | undefined;
+  // Spec 42 R2 — stylesheet sources the indexer could not read. Whole-run scope:
+  // if any exist, styles/undefined-class reports notApplicable naming them.
+  let unreadStyleSources: UnreadStyleSourceInfo[] = [];
+  if (indexHandle) {
+    try {
+      unreadStyleSources = indexHandle.query(
+        'SELECT file_path AS filePath, reason FROM style_unread_sources',
+      ) as UnreadStyleSourceInfo[];
+    } catch {
+      // Table absent (pre-migration DB) — treated as "nothing unread".
+      unreadStyleSources = [];
+    }
+  }
+  const ruleApplicability = new Map<string, RuleApplicability>();
+  for (const ruleId of Object.keys(RULE_REGISTRY)) {
+    const app = evaluateRuleApplicability(ruleId, dataAccessConfig, ddlColumns, unreadStyleSources);
+    if (app) ruleApplicability.set(ruleId, app);
+  }
+  for (const [ruleId, app] of ruleApplicability) {
+    if (app.applicable) continue;
+    const entry = RULE_REGISTRY[ruleId];
+    const result = analyzerResults[entry.analyzer];
+    if (result?.violations) {
+      result.violations = result.violations.filter((v) => !violationMatchesRule(v, ruleId, entry.field));
+    }
+  }
+
   // Spec 33 Item 14 — per-rule input presence, computed once from the merged
   // facts + index tables, then used to promote zero-violation rules.
   const inputPresence = computeInputPresence(combinedFacts, indexHandle);
 
   // Spec 27 — build per-rule coverage from completed pipeline results
-  const coverage = buildCoverageReport(analyzerResults, config, inputPresence);
+  const coverage = buildCoverageReport(analyzerResults, config, inputPresence, ruleApplicability);
 
   // Spec 29: Extract table catalog from schema reducer facts for metadata
   const schemaFacts = combinedFacts['schema'] as Record<string, unknown> | undefined;
@@ -755,6 +792,11 @@ export async function runPipeline(
       diagnostics,
       coverage,
       inputPresence,
+      ruleApplicability: [...ruleApplicability.entries()].map(([ruleId, app]) => ({
+        ruleId,
+        applicable: app.applicable,
+        reason: app.reason,
+      })),
       tableCatalog,
       ...(skippedFiles.length > 0 && { skippedFiles }),
       ...(unparsedFiles.length > 0 && { unparsedFiles }),
@@ -933,6 +975,20 @@ function computeInputPresence(
 }
 
 /**
+ * Match a violation to a rule id using the rule's declared `field` discriminator.
+ * Shared by coverage counting and Spec 39 applicability suppression so the two
+ * can never disagree about which violations belong to a rule.
+ */
+export function violationMatchesRule(v: Violation, ruleId: string, field: string | undefined): boolean {
+  if (field === 'type') return (v as any).type === ruleId;
+  if (field === 'contractType') return (v as any).contractType === ruleId;
+  if (field === 'principle') return (v as any).principle === ruleId;
+  if (field === 'violationType') return (v as any).violationType === ruleId;
+  if (field === 'ruleId') return (v as any).ruleId === ruleId;
+  return v.rule === ruleId;
+}
+
+/**
  * Build a per-rule coverage report from completed pipeline results.
  *
  * Iterates every rule in the canonical {@link RULE_REGISTRY}, cross-references
@@ -957,6 +1013,7 @@ export function buildCoverageReport(
   analyzerResults: Record<string, AnalyzerResult>,
   config: PipelineConfig,
   inputPresence?: InputPresence,
+  ruleApplicability?: ReadonlyMap<string, RuleApplicability>,
 ): RuleCoverage[] {
   const coverage: RuleCoverage[] = [];
 
@@ -1037,15 +1094,24 @@ export function buildCoverageReport(
       }
     }
 
+    // Spec 39 — derived applicability. A rule whose predicate evaluated false is
+    // `notApplicable` with the predicate's reason, before any finding is counted.
+    const applicability = ruleApplicability?.get(ruleId);
+    if (applicability && !applicability.applicable) {
+      coverage.push({
+        ruleId,
+        analyzer: analyzerName,
+        state: 'notApplicable',
+        count: 0,
+        reason: applicability.reason,
+      });
+      continue;
+    }
+
     // Analyzer ran with input — count violations for this rule
-    const violations = (result.violations ?? []).filter((v: Violation) => {
-      if (field === 'type') return (v as any).type === ruleId;
-      if (field === 'contractType') return (v as any).contractType === ruleId;
-      if (field === 'principle') return (v as any).principle === ruleId;
-      if (field === 'violationType') return (v as any).violationType === ruleId;
-      if (field === 'ruleId') return (v as any).ruleId === ruleId;
-      return v.rule === ruleId;
-    });
+    const violations = (result.violations ?? []).filter((v: Violation) =>
+      violationMatchesRule(v, ruleId, field),
+    );
 
     const count = violations.length;
     if (count > 0) {

@@ -93,6 +93,123 @@ export function parseMigrationOps(source: string): MigrationOp[] {
   return ops;
 }
 
+// ── DDL column extraction (Spec 39 — derived applicability) ──────────────────
+
+/**
+ * Split a CREATE TABLE column-definition body on top-level commas. Commas
+ * inside nested parens (type arguments, CHECK clauses) and inside string
+ * literals are preserved so a column definition is never split mid-expression.
+ * @param body The text between the CREATE TABLE parens.
+ * @returns The individual column/constraint definitions.
+ */
+function splitColumnDefs(body: string): string[] {
+  const defs: string[] = [];
+  let depth = 0;
+  let current = '';
+  let inString: '"' | "'" | '`' | null = null;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inString) {
+      current += ch;
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inString = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      current += ch;
+      continue;
+    }
+    if (ch === ')') {
+      depth--;
+      current += ch;
+      continue;
+    }
+    if (ch === ',' && depth === 0) {
+      defs.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) defs.push(current);
+  return defs;
+}
+
+/**
+ * Extract the leading column name from a single column definition. Table-level
+ * constraint clauses (PRIMARY KEY, UNIQUE, FOREIGN KEY, CHECK, CONSTRAINT …)
+ * have no leading column identifier and are skipped.
+ * @param def A single column or constraint definition.
+ * @returns The column name, or null when the definition is a table constraint.
+ */
+function leadingColumnName(def: string): string | null {
+  const m = /^\s*(?:CONSTRAINT\s+(?:`[^`]+`|"[^"]+"|\w+))?\s*(`[^`]+`|"[^"]+"|\w+)/.exec(def);
+  if (!m) return null;
+  const name = stripIdentifier(m[1]);
+  const upper = name.toUpperCase();
+  if (
+    upper === 'PRIMARY' || upper === 'UNIQUE' || upper === 'CONSTRAINT' ||
+    upper === 'FOREIGN' || upper === 'CHECK' || upper === 'KEY' || upper === 'INDEX'
+  ) {
+    return null;
+  }
+  return name;
+}
+
+/**
+ * Extract column names from migration SQL — CREATE TABLE bodies (via a
+ * depth-tracking paren scan that finds each matching close paren) and
+ * ALTER TABLE … ADD COLUMN statements. Returns lowercased, deduplicated names
+ * so the schema reducer can answer "does any table carry a tenant-scoping
+ * column?" without materializing per-table column lists.
+ * @param source Migration/DDL SQL text.
+ * @returns The set of column names declared across the source.
+ */
+export function extractDdlColumnNames(source: string): string[] {
+  const columns = new Set<string>();
+
+  const createRe = /\bCREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s*\(/gi;
+  let match: RegExpExecArray | null;
+  while ((match = createRe.exec(source)) !== null) {
+    const openParen = createRe.lastIndex - 1;
+    let depth = 0;
+    let closeParen = -1;
+    let inString: '"' | "'" | '`' | null = null;
+    for (let i = openParen; i < source.length; i++) {
+      const ch = source[i];
+      if (inString) {
+        if (ch === inString) inString = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) { closeParen = i; break; } }
+    }
+    if (closeParen === -1) {
+      createRe.lastIndex = openParen + 1;
+      continue;
+    }
+    const body = source.slice(openParen + 1, closeParen);
+    for (const def of splitColumnDefs(body)) {
+      const name = leadingColumnName(def);
+      if (name) columns.add(name.toLowerCase());
+    }
+    createRe.lastIndex = closeParen + 1;
+  }
+
+  const alterRe = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)/gi;
+  while ((match = alterRe.exec(source)) !== null) {
+    columns.add(stripIdentifier(match[2]).toLowerCase());
+  }
+
+  return [...columns];
+}
+
 // ── One-hop barrel re-export resolution (Spec 33 item 9) ─────────────────────
 
 /**
@@ -227,9 +344,9 @@ export async function sqlFileHasDdl(filePath: string): Promise<boolean> {
 export async function extractMigrationOpsFromFile(
   filePath: string,
   sourceCode: string,
-): Promise<{ ops: MigrationOp[]; skipped: boolean; bytes: number }> {
+): Promise<{ ops: MigrationOp[]; columns: string[]; skipped: boolean; bytes: number }> {
   if (sourceCode !== '') {
-    return { ops: parseMigrationOps(sourceCode), skipped: false, bytes: Buffer.byteLength(sourceCode) };
+    return { ops: parseMigrationOps(sourceCode), columns: extractDdlColumnNames(sourceCode), skipped: false, bytes: Buffer.byteLength(sourceCode) };
   }
   let size = 0;
   try {
@@ -239,11 +356,11 @@ export async function extractMigrationOpsFromFile(
   }
   if (size <= MAX_ORPHAN_SOURCE_BYTES) {
     // Empty or small file whose read produced an empty string — nothing to do.
-    return { ops: [], skipped: false, bytes: size };
+    return { ops: [], columns: [], skipped: false, bytes: size };
   }
   if (!(await sqlFileHasDdl(filePath))) {
-    return { ops: [], skipped: true, bytes: size };
+    return { ops: [], columns: [], skipped: true, bytes: size };
   }
   const full = await fs.readFile(filePath, 'utf-8');
-  return { ops: parseMigrationOps(full), skipped: false, bytes: size };
+  return { ops: parseMigrationOps(full), columns: extractDdlColumnNames(full), skipped: false, bytes: size };
 }

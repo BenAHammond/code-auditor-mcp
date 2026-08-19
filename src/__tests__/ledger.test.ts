@@ -56,6 +56,15 @@ describe('Findings Ledger — write and status', () => {
         symbol       TEXT DEFAULT '',
         fingerprint  TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+        run_id      TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
+        analyzer    TEXT NOT NULL,
+        rule_id     TEXT NOT NULL,
+        state       TEXT NOT NULL,
+        count       INTEGER NOT NULL DEFAULT 0,
+        reason      TEXT,
+        PRIMARY KEY (run_id, analyzer, rule_id)
+      );
     `);
   }
 
@@ -205,6 +214,15 @@ describe('Findings Ledger — reading and stats', () => {
         line         INTEGER,
         symbol       TEXT DEFAULT '',
         fingerprint  TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+        run_id      TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
+        analyzer    TEXT NOT NULL,
+        rule_id     TEXT NOT NULL,
+        state       TEXT NOT NULL,
+        count       INTEGER NOT NULL DEFAULT 0,
+        reason      TEXT,
+        PRIMARY KEY (run_id, analyzer, rule_id)
       );
     `);
   }
@@ -376,6 +394,12 @@ describe('Findings Ledger — audit runner integration', () => {
         symbol TEXT DEFAULT '', fingerprint TEXT NOT NULL,
         FOREIGN KEY (run_id) REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+        run_id TEXT NOT NULL, analyzer TEXT NOT NULL, rule_id TEXT NOT NULL,
+        state TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, reason TEXT,
+        PRIMARY KEY (run_id, analyzer, rule_id),
+        FOREIGN KEY (run_id) REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS project_tasks (id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS analyzer_configs (id TEXT PRIMARY KEY);
     `);
@@ -422,6 +446,12 @@ describe('Findings Ledger — audit runner integration', () => {
         symbol TEXT DEFAULT '', fingerprint TEXT NOT NULL,
         FOREIGN KEY (run_id) REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+        run_id TEXT NOT NULL, analyzer TEXT NOT NULL, rule_id TEXT NOT NULL,
+        state TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, reason TEXT,
+        PRIMARY KEY (run_id, analyzer, rule_id),
+        FOREIGN KEY (run_id) REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE
+      );
     `);
 
     writeAuditToLedger(
@@ -463,6 +493,12 @@ describe('Findings Ledger — audit runner integration', () => {
         symbol TEXT DEFAULT '', fingerprint TEXT NOT NULL,
         FOREIGN KEY (run_id) REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+        run_id TEXT NOT NULL, analyzer TEXT NOT NULL, rule_id TEXT NOT NULL,
+        state TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, reason TEXT,
+        PRIMARY KEY (run_id, analyzer, rule_id),
+        FOREIGN KEY (run_id) REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE
+      );
     `);
 
     writeAuditToLedger(
@@ -497,6 +533,12 @@ describe('Findings Ledger — corruption resilience', () => {
         analyzer TEXT NOT NULL, rule TEXT NOT NULL, severity TEXT NOT NULL,
         message TEXT NOT NULL, file TEXT NOT NULL, line INTEGER,
         symbol TEXT DEFAULT '', fingerprint TEXT NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+        run_id TEXT NOT NULL, analyzer TEXT NOT NULL, rule_id TEXT NOT NULL,
+        state TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, reason TEXT,
+        PRIMARY KEY (run_id, analyzer, rule_id),
         FOREIGN KEY (run_id) REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE
       );
     `);

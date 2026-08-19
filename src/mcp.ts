@@ -470,7 +470,7 @@ function registerAllTools(registry: ToolRegistry): void {
       handler: async (args) => {
         const jobId = args.jobId as string | undefined;
         if (!jobId) throw new Error('audit.status requires jobId');
-        return getAuditJobStatus(jobId);
+        return await getAuditJobStatus(jobId);
       },
     },
     {

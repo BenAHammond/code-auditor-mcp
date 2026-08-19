@@ -2,7 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { fork, ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpus } from 'node:os';
+import { cpus, hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type {
   AnalyzerResult,
@@ -10,18 +10,29 @@ import type {
   AuditRunnerOptions,
   AuditScope,
   FunctionMetadata,
+  RuleCoverage,
   Severity,
   Violation,
 } from './types.js';
+import Database from 'better-sqlite3';
 import { CodeIndexDB } from './codeIndexDB.js';
-import { syncFileIndex } from './codeIndexService.js';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { assertAuditPathExists, ContextualError } from './mcpToolErrors.js';
 import { createAuditJob, getAuditJob, patchAuditJob, setAuditJobProgress } from './services/auditJobService.js';
+import {
+  detectRunInput,
+  evaluateStaleRunning,
+  hashFileSet,
+  markRunsFailed,
+  patchLedgerRun,
+  writeAuditToLedger,
+} from './ledger.js';
+import { PACKAGE_VERSION } from './constants.js';
 import { mcpDebugStderr } from './mcpDiagnostics.js';
 import { findFiles } from './utils/fileDiscovery.js';
-import { makeVisitorStatus, getFilesProcessed } from './pipeline.js';
+import { makeVisitorStatus, getFilesProcessed, violationMatchesRule } from './pipeline.js';
+import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
 import type {
   ParentToWorkerMessage,
   SerializableAuditRunConfig,
@@ -45,7 +56,30 @@ export type PartitionPlan = {
 };
 
 const SOURCE_FOLDERS = ['app', 'src'];
-const GLOBAL_ONLY_ANALYZERS = new Set(['dry', 'data-access', 'schema']);
+// Cross-file reducers run once over the FULL scope, never inside partition
+// shards. A shard sees only its partition's files and (worse) reads shared
+// index tables that other shards are still writing, so any reducer that reads
+// accumulated state must be global. The set is every reducer/derived-reducer
+// in the pipeline stage model:
+//   dry         — cross-file duplicate detection over the function index
+//   data-access — per-file, but kept global so its coverage/status is a single
+//                 full-scope row (harmless to shard, but global is uniform)
+//   schema      — schema_usage reducers (unknown-table, JSON validation)
+//   styles      — reads style_declarations/tokens/class_usage written by the
+//                 styles-css visitor + syncStyleIndex (same analyzer gate)
+//   conventions — reads function_calls/conventions via updateDependencyGraph +
+//                 mineAllConventions (same analyzer gate)
+//   invariants  — call-constraint/module-boundary need the full file list
+//   cross-domain— reads schema_usage/indexed_functions/graph_cache (stage 4)
+const GLOBAL_ONLY_ANALYZERS = new Set([
+  'dry',
+  'data-access',
+  'schema',
+  'styles',
+  'conventions',
+  'invariants',
+  'cross-domain',
+]);
 const RETRYABLE_ERROR_PATTERNS = [/timed out/i, /timeout/i, /econnreset/i, /eagain/i, /emfile/i];
 
 /** Hard cap so pathological configs cannot fork unbounded processes. */
@@ -62,6 +96,104 @@ function defaultJobTimeoutMs(): number {
   return Math.min(n, ABSOLUTE_MAX_JOB_TIMEOUT_MS);
 }
 
+// Spec 41 R5 — heartbeat-based concurrency lease. A plain `status='running'`
+// count wedges the queue behind a crashed job's ghost row forever; a stale
+// heartbeat is reclaimable instead.
+const DEFAULT_JOB_LEASE_TTL_MS = 30 * 1000;
+const DEFAULT_MAX_RUNNING_JOBS = 1;
+
+function jobLeaseTtlMs(): number {
+  const raw = process.env.CODE_AUDITOR_JOB_LEASE_TTL_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_JOB_LEASE_TTL_MS;
+}
+
+function maxRunningJobs(): number {
+  const raw = process.env.CODE_AUDITOR_MAX_RUNNING_JOBS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? n : DEFAULT_MAX_RUNNING_JOBS;
+}
+
+/** True when a write hit better-sqlite3's busy timeout under lock contention. */
+function isBusyError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const code = (e as { code?: string }).code;
+  return code === 'SQLITE_BUSY' || /database is locked/i.test(e.message);
+}
+
+/**
+ * Claims the `running` slot for `jobId`. The reclaim-then-count-then-claim
+ * sequence runs under `BEGIN IMMEDIATE` because the lease is contested by
+ * separate forked processes (better-sqlite3 serializes writes per-connection,
+ * not per-DB) — without the write lock two children could both see zero
+ * `running` rows and both claim the slot. Stale `running` rows (killed runners)
+ * are reclaimed first, so a ghost never wedges the queue.
+ *
+ * The polling path is deliberately read-only: while a healthy runner holds the
+ * slot, a queued job evaluates the lease pool via `evaluateStaleRunning` (SELECT
+ * + `kill(0)`/`ps`, no write lock) and sleeps. It only grabs `BEGIN IMMEDIATE`
+ * when the pool shows a free slot or a reclaimable ghost. Grabbing the write
+ * lock every poll would contend with the running job's own write transactions
+ * (the long `syncFileIndex`/`updateDependencyGraph` phase) and crash it with
+ * `database is locked`.
+ */
+async function acquireLease(db: Database.Database, projectRoot: string, jobId: string): Promise<void> {
+  const ttl = jobLeaseTtlMs();
+  const limit = maxRunningJobs();
+  const now = () => new Date().toISOString();
+
+  // The transaction only performs the *write* half of reclaim — `reclaimable`
+  // and `cutoff` are computed read-only outside the lock (see below), so the
+  // `ps` liveness check never runs while holding the write lock.
+  const claim = db.transaction((reclaimable: Parameters<typeof markRunsFailed>[1], cutoff: string): boolean => {
+    markRunsFailed(db, reclaimable, cutoff);
+    const row = db
+      .prepare('SELECT COUNT(*) AS cnt FROM findings_ledger_runs WHERE project_root = ? AND status = ?')
+      .get(projectRoot, 'running') as { cnt: number };
+    if (row.cnt < limit) {
+      // Record PID-based liveness at claim (Spec 41 Amendment B): the child's
+      // PID + process start time (defeats PID reuse) + hostname (foreign hosts
+      // fall back to the heartbeat). `process.uptime()` in the forked child is
+      // measured from the child's start, so `now - uptime` is its true start.
+      patchLedgerRun(db, jobId, {
+        status: 'running',
+        startedAt: now(),
+        heartbeatAt: now(),
+        runnerPid: process.pid,
+        runnerPidStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+        runnerHost: hostname(),
+      });
+      return true;
+    }
+    return false;
+  });
+
+  for (;;) {
+    // Read-only evaluation — no write lock, so it never contends with the
+    // running job's write transactions (the `ps` spawn for a stale-heartbeat
+    // candidate happens here, outside the lock).
+    const evaluation = evaluateStaleRunning(db, projectRoot, ttl);
+    const mightClaim = evaluation.runningCount < limit || evaluation.reclaimable.length > 0;
+    if (mightClaim) {
+      try {
+        if (claim.immediate(evaluation.reclaimable, evaluation.cutoff)) return;
+      } catch (e) {
+        // The lease is contested by separate forked processes. A running job can
+        // hold the write lock longer than the busy timeout (e.g. the long
+        // `writeAuditToLedger` completion transaction), surfacing as SQLITE_BUSY.
+        // That is contention, not failure — wait and retry rather than failing
+        // the queued job (which would cascade into failing the running job too).
+        if (isBusyError(e)) {
+          await new Promise((resolve) => setTimeout(resolve, Math.max(250, Math.floor(ttl / 4))));
+          continue;
+        }
+        throw e;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.max(250, Math.floor(ttl / 4))));
+  }
+}
+
 type WorkerShardTask = {
   shardId: string;
   config: SerializableAuditRunConfig;
@@ -73,6 +205,15 @@ function resolveWorkerEntrypoint(): string {
   const ext = path.extname(current);
   const dir = path.dirname(current);
   const filename = ext === '.ts' ? 'auditWorker.ts' : 'auditWorker.js';
+  return path.join(dir, 'workers', filename);
+}
+
+/** Entrypoint for the detached CLI runner (Spec 41 `--detach`). */
+export function resolveJobRunnerEntrypoint(): string {
+  const current = fileURLToPath(import.meta.url);
+  const ext = path.extname(current);
+  const dir = path.dirname(current);
+  const filename = ext === '.ts' ? 'auditJobRunner.ts' : 'auditJobRunner.js';
   return path.join(dir, 'workers', filename);
 }
 
@@ -98,6 +239,7 @@ function isRetryableShardError(error: string): boolean {
 }
 
 async function runShardTasksWithWorkerPool(
+  getDb: () => Database.Database,
   jobId: string,
   tasks: WorkerShardTask[],
   options: {
@@ -251,7 +393,7 @@ async function runShardTasksWithWorkerPool(
             retryCount++;
             setTimeout(() => {
               queue.push(next);
-              setAuditJobProgress(jobId, {
+              setAuditJobProgress(getDb(), jobId, {
                 phase: 'analysis',
                 message: `Retrying shard ${next.shardId} (${next.attempts}/${options.maxRetries}) after worker recycle`,
                 current: completedResults.length,
@@ -348,7 +490,7 @@ async function runShardTasksWithWorkerPool(
         const overallCurrent =
           completedResults.length +
           Math.min(1, (message.progress.current ?? 0) / Math.max(1, message.progress.total ?? 1));
-        setAuditJobProgress(jobId, {
+        setAuditJobProgress(getDb(), jobId, {
           phase: message.progress.phase ?? 'analysis',
           message: `${message.shardId}: ${message.progress.message ?? 'running'} (retries=${retryCount})`,
           current: Math.floor(overallCurrent),
@@ -369,7 +511,7 @@ async function runShardTasksWithWorkerPool(
           attempts: 0,
           config: message.continuation,
         });
-        setAuditJobProgress(jobId, {
+        setAuditJobProgress(getDb(), jobId, {
           phase: 'analysis',
           message: `Chunk done for ${entry.task.shardId}; queued ${message.remainingFiles.length} remaining file(s) (retries=${retryCount})`,
           current: completedResults.length,
@@ -388,7 +530,7 @@ async function runShardTasksWithWorkerPool(
 
         if (message.kind === 'worker-result') {
           completedResults.push(message.result);
-          setAuditJobProgress(jobId, {
+          setAuditJobProgress(getDb(), jobId, {
             phase: 'analysis',
             message: `Completed shard ${entry.task.shardId} (${completedResults.length} chunk(s), retries=${retryCount})`,
             current: completedResults.length,
@@ -534,14 +676,106 @@ function mergeAnalyzerResult(base: AnalyzerResult | undefined, next: AnalyzerRes
   };
 }
 
+/**
+ * Merge per-shard coverage rows into the project-wide coverage a synchronous
+ * (non-sharded) run would have produced. Every shard's `buildCoverageReport`
+ * iterates the full rule registry and emits, for rules whose analyzer that
+ * shard did not run, a placeholder `notApplicable` row with reason
+ * `analyzer "<name>" not in results`. Those placeholders are filtered out so a
+ * rule's real state comes only from the shards that actually ran its analyzer.
+ *
+ * Precedence across the remaining rows: `fired` wins (its count re-derived from
+ * the merged deduped violations — never the summed per-shard counts, which
+ * over-count DB-based analyzers that emit full-project findings in every
+ * shard), then `clean` (ran somewhere with input present and found nothing)
+ * over `unassessed`, over `notApplicable` (only when every shard that ran the
+ * rule reported no input). Global-only analyzers (GLOBAL_ONLY_ANALYZERS) run
+ * in a single shard over the full scope, so their rows — including Spec 39
+ * applicability predicates like `missing-org-filter` — pass through untouched.
+ */
+function mergeCoverage(
+  results: AuditResult[],
+  ordered: Record<string, AnalyzerResult>,
+): RuleCoverage[] | undefined {
+  const rows = results.flatMap((r) => r.metadata?.coverage ?? []);
+  if (rows.length === 0) return undefined;
+
+  const byRule = new Map<string, RuleCoverage[]>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.analyzer, row.ruleId]);
+    const group = byRule.get(key);
+    if (group) group.push(row);
+    else byRule.set(key, [row]);
+  }
+
+  const merged: RuleCoverage[] = [];
+  for (const [key, group] of byRule) {
+    const [analyzer, ruleId] = JSON.parse(key) as [string, string];
+    // Rows from shards that did not run this analyzer are placeholders, not a
+    // real state. Prefer the shards that ran it; fall back to placeholders only
+    // if the analyzer ran nowhere (then the placeholder's reason is truthful).
+    const real = group.filter((r) => r.reason !== `analyzer "${analyzer}" not in results`);
+    const src = real.length > 0 ? real : group;
+
+    const fired = src.filter((r) => r.state === 'fired');
+    if (fired.length > 0) {
+      // Derive the fired count from the merged (deduped) violations, exactly as
+      // the synchronous path's buildCoverageReport does. Summing per-shard
+      // counts would over-count if a DB-based analyzer ever ran in multiple
+      // shards (it no longer does — reducers are global-only), but deduping
+      // from the merged set stays correct regardless and keeps coverage.count
+      // in agreement with the ledger findings count.
+      const field = RULE_REGISTRY[ruleId]?.field;
+      const dedupedCount = (ordered[analyzer]?.violations ?? []).filter((v) =>
+        violationMatchesRule(v, ruleId, field),
+      ).length;
+      merged.push({
+        ruleId,
+        analyzer,
+        state: 'fired',
+        count: dedupedCount,
+      });
+      continue;
+    }
+    const clean = src.find((r) => r.state === 'clean');
+    if (clean) {
+      merged.push({ ruleId, analyzer, state: 'clean', count: 0 });
+      continue;
+    }
+    const unassessed = src.find((r) => r.state === 'unassessed');
+    if (unassessed) {
+      merged.push({ ruleId, analyzer, state: 'unassessed', count: 0 });
+      continue;
+    }
+    const notApplicable = src.find((r) => r.state === 'notApplicable');
+    if (notApplicable) {
+      merged.push({
+        ruleId,
+        analyzer,
+        state: 'notApplicable',
+        count: 0,
+        reason: notApplicable.reason,
+      });
+      continue;
+    }
+    merged.push({ ruleId, analyzer, state: src[0].state, count: src[0].count, reason: src[0].reason });
+  }
+
+  return merged;
+}
+
 function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): AuditResult {
   const analyzerResults: Record<string, AnalyzerResult> = {};
   const fileToFunctionsMap: Record<string, FunctionMetadata[]> = {};
   const collectedFunctions: FunctionMetadata[] = [];
   const recommendations: any[] = [];
+  const skippedFiles: NonNullable<AuditResult['metadata']['skippedFiles']> = [];
+  const unparsedFiles: NonNullable<AuditResult['metadata']['unparsedFiles']> = [];
+  const diagnostics: NonNullable<AuditResult['metadata']['diagnostics']> = [];
   let filesAnalyzed = 0;
   let auditDuration = 0;
   let provenanceResolutionMs = 0;
+  let tableCatalog: NonNullable<AuditResult['metadata']['tableCatalog']> | undefined;
 
   for (const result of results) {
     for (const [analyzerName, analyzerResult] of Object.entries(result.analyzerResults || {})) {
@@ -553,6 +787,15 @@ function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): 
     if (result.metadata?.collectedFunctions) {
       collectedFunctions.push(...result.metadata.collectedFunctions);
     }
+    if (result.metadata?.skippedFiles) skippedFiles.push(...result.metadata.skippedFiles);
+    if (result.metadata?.unparsedFiles) unparsedFiles.push(...result.metadata.unparsedFiles);
+    if (result.metadata?.diagnostics) diagnostics.push(...result.metadata.diagnostics);
+    // tableCatalog is produced by the schema analyzer, which is global-only and
+    // therefore runs in a single shard over the full scope — first non-undefined
+    // is the whole catalog, never a fragment.
+    if (result.metadata?.tableCatalog && tableCatalog === undefined) {
+      tableCatalog = result.metadata.tableCatalog;
+    }
     filesAnalyzed += result.metadata?.filesAnalyzed || 0;
     auditDuration += result.metadata?.auditDuration || 0;
     provenanceResolutionMs += result.metadata?.provenanceResolutionMs || 0;
@@ -563,6 +806,8 @@ function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): 
   for (const name of orderedAnalyzers) {
     if (analyzerResults[name]) ordered[name] = analyzerResults[name];
   }
+
+  const coverage = mergeCoverage(results, ordered);
 
   return {
     timestamp: new Date(),
@@ -576,6 +821,11 @@ function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): 
       provenanceResolutionMs,
       ...(collectedFunctions.length > 0 && { collectedFunctions }),
       ...(Object.keys(fileToFunctionsMap).length > 0 && { fileToFunctionsMap }),
+      ...(coverage !== undefined && { coverage }),
+      ...(tableCatalog !== undefined && { tableCatalog }),
+      ...(skippedFiles.length > 0 && { skippedFiles }),
+      ...(unparsedFiles.length > 0 && { unparsedFiles }),
+      ...(diagnostics.length > 0 && { diagnostics }),
     },
   };
 }
@@ -652,14 +902,17 @@ export async function startAuditJob(args: any, defaults: StartAuditDefaults): Pr
   path: string;
 }> {
   const auditPath = path.resolve((args.path as string) || process.cwd());
-  await assertAuditPathExists(auditPath);
+  const { isFile } = await assertAuditPathExists(auditPath);
+  const projectRoot = isFile ? path.dirname(auditPath) : auditPath;
 
-  const job = createAuditJob(auditPath);
+  const db = CodeIndexDB.getInstance(undefined, projectRoot);
+  await db.initialize();
+  const job = createAuditJob(db.rawDb, projectRoot, { surface: 'mcp', command: 'audit.start' });
 
   setTimeout(() => {
     void runAuditJob(job.jobId, args, defaults).catch((err) => {
       try {
-        patchAuditJob(job.jobId, {
+        patchAuditJob(db.rawDb, job.jobId, {
           status: 'failed',
           finishedAt: new Date().toISOString(),
           error: err instanceof Error ? err.message : String(err),
@@ -678,20 +931,53 @@ export async function startAuditJob(args: any, defaults: StartAuditDefaults): Pr
   };
 }
 
-async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefaults): Promise<void> {
+export async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefaults): Promise<void> {
   let jobTimer: ReturnType<typeof setTimeout> | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  // Declared as `| undefined` so a failure thrown before the DB handle resolves
+  // is still catchable; getJobDb() asserts it via `!` and the catch block
+  // swallows the resulting throw rather than masking the original error.
+  let db: CodeIndexDB | undefined;
   const ac = new AbortController();
+
+  // All progress/heartbeat writes go through the singleton connection — there is
+  // no transient second connection. A detached run forks shard workers, each of
+  // which opens its own SQLite connection to the shared per-project DB;
+  // better-sqlite3 opens its fd O_CLOEXEC, so forked children never inherit this
+  // parent's fd. A second open connection to the same WAL database left open
+  // into the indexing loop participates in the shared -shm state and makes the
+  // parent's deferred read→write transactions fail with "database is locked" —
+  // the defect that originally motivated a separate progress connection, so this
+  // stays a single connection throughout.
+  const getJobDb = (): Database.Database => db!.rawDb;
+
   try {
-    patchAuditJob(jobId, {
-      status: 'running',
-      startedAt: new Date().toISOString(),
-      progress: {
-        phase: 'queued',
-        message: 'Audit queued',
-      },
+    const auditPath = path.resolve((args.path as string) || process.cwd());
+    const { isFile } = await assertAuditPathExists(auditPath);
+    const projectRoot = isFile ? path.dirname(auditPath) : auditPath;
+
+    // Open the per-project DB so a detached child resolves the same DB as the
+    // parent, not the child's cwd.
+    db = CodeIndexDB.getInstance(undefined, projectRoot);
+    await db.initialize();
+
+    // Spec 41 R5 — heartbeat lease in the prologue, before queued→running.
+    await acquireLease(db.rawDb, projectRoot, jobId);
+
+    patchAuditJob(db.rawDb, jobId, {
+      progress: { phase: 'queued', message: 'Audit queued' },
     });
 
-    const auditPath = path.resolve((args.path as string) || process.cwd());
+    const startedMs = Date.now();
+    const heartbeatMs = Math.max(1000, Math.floor(jobLeaseTtlMs() / 2));
+    heartbeat = setInterval(() => {
+      try {
+        patchLedgerRun(getJobDb(), jobId, { heartbeatAt: new Date().toISOString() });
+      } catch (e) {
+        // best-effort — a lost beat only matters after the lease TTL expires
+      }
+    }, heartbeatMs);
+
     const indexFunctions = (args.indexFunctions as boolean) !== false;
     const generateCodeMap = (args.generateCodeMap as boolean) ?? defaults.defaultGenerateCodeMap;
 
@@ -707,17 +993,12 @@ async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefault
       }
     }, jobTimeoutMs);
 
-    const { isFile } = await assertAuditPathExists(auditPath);
-
-    const db = CodeIndexDB.getInstance();
-    await db.initialize();
     const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
     const analyzerConfigs = {
       ...storedConfigs,
       ...(args.analyzerConfigs as Record<string, unknown> || {}),
     };
 
-    const projectRoot = isFile ? path.dirname(auditPath) : auditPath;
     const enabledAnalyzers = (args.analyzers as string[]) || defaults.defaultAnalyzers;
     const maxWorkers = Math.max(
       1,
@@ -756,7 +1037,7 @@ async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefault
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
       ...(args.scope && args.scope !== 'all' && { scope: args.scope as AuditScope }),
       progressCallback: (p) => {
-        setAuditJobProgress(jobId, {
+        setAuditJobProgress(getJobDb(), jobId, {
           phase: p.phase ?? 'analysis',
           message: p.message ?? p.phase ?? 'running',
           current: typeof p.current === 'number' ? p.current : undefined,
@@ -766,20 +1047,31 @@ async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefault
     };
 
     const plan = await derivePartitionPlan(args, projectRoot, isFile, enabledAnalyzers);
-    const shardTasks: WorkerShardTask[] = [];
+
+    // Spec 41 R3 — provenance: capture an aggregate content hash + per-file
+    // manifest so `result`/`status` can report staleness cheaply.
+    const fileHash = hashFileSet(await findFiles(projectRoot), projectRoot);
+    patchLedgerRun(db.rawDb, jobId, {
+      contentHash: fileHash.contentHash,
+      filesCount: fileHash.filesCount,
+      fileManifestJson: JSON.stringify(fileHash.manifest),
+    });
+
+    const partitionTasks: WorkerShardTask[] = [];
+    const globalTasks: WorkerShardTask[] = [];
     if (plan.mode === 'none') {
-      shardTasks.push({
+      partitionTasks.push({
         shardId: 'full-scope',
         attempts: 0,
         config: asSerializableConfig(baseOptions),
       });
     } else {
-      setAuditJobProgress(jobId, {
+      setAuditJobProgress(getJobDb(), jobId, {
         phase: 'partitioning',
         message: `Planning ${plan.partitionPaths.length} shard(s) + ${plan.globalAnalyzers.length > 0 ? 'global' : 'no-global'} analyzers`,
       });
       if (plan.globalAnalyzers.length > 0) {
-        shardTasks.push({
+        globalTasks.push({
           shardId: 'global-analyzers',
           attempts: 0,
           config: asSerializableConfig({
@@ -790,7 +1082,7 @@ async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefault
         });
       }
       for (const partitionPath of plan.partitionPaths) {
-        shardTasks.push({
+        partitionTasks.push({
           shardId: `shard:${path.basename(partitionPath)}`,
           attempts: 0,
           config: asSerializableConfig({
@@ -802,20 +1094,38 @@ async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefault
       }
     }
 
-    setAuditJobProgress(jobId, {
+    const totalTasks = partitionTasks.length + globalTasks.length;
+    setAuditJobProgress(getJobDb(), jobId, {
       phase: 'analysis',
-      message: `Running ${shardTasks.length} shard task(s) with ${maxWorkers} worker(s)`,
+      message: `Running ${totalTasks} shard task(s) with ${maxWorkers} worker(s)`,
       current: 0,
-      total: shardTasks.length,
+      total: totalTasks,
     });
 
-    const resultParts = await runShardTasksWithWorkerPool(jobId, shardTasks, {
+    const poolOptions = {
       maxWorkers,
       maxRetries,
       shardTimeoutMs,
       retryBackoffMs,
       signal: ac.signal,
-    });
+    };
+
+    // Partition shards run first; the global-analyzers shard is scheduled only
+    // after every partition shard has completed. The global shard's full-scope
+    // reducers (conventions, cross-domain, styles) read cross-file index tables
+    // (`functions`, `function_calls`, `style_*`) that the always-on function-index
+    // visitor writes from *every* shard. Running it concurrently — even pushed
+    // "first" — left a `functions`-table write/read race in principle. Serializing
+    // it after the partitions closes that last multi-writer window structurally.
+    const resultParts: AuditResult[] = [];
+    resultParts.push(
+      ...(await runShardTasksWithWorkerPool(getJobDb, jobId, partitionTasks, poolOptions))
+    );
+    if (globalTasks.length > 0) {
+      resultParts.push(
+        ...(await runShardTasksWithWorkerPool(getJobDb, jobId, globalTasks, poolOptions))
+      );
+    }
 
     if (ac.signal.aborted) {
       throw ac.signal.reason instanceof Error
@@ -828,18 +1138,16 @@ async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefault
 
     let indexingResult: any = null;
     if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
-      const syncStats = { added: 0, updated: 0, removed: 0 };
-      for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
-        if (ac.signal.aborted) {
-          throw ac.signal.reason instanceof Error
-            ? ac.signal.reason
-            : new Error(String(ac.signal.reason || 'Audit job was cancelled during indexing'));
-        }
-        const fileStats = await syncFileIndex(filePath, functions as FunctionMetadata[]);
-        syncStats.added += fileStats.added;
-        syncStats.updated += fileStats.updated;
-        syncStats.removed += fileStats.removed;
+      if (ac.signal.aborted) {
+        throw ac.signal.reason instanceof Error
+          ? ac.signal.reason
+          : new Error(String(ac.signal.reason || 'Audit job was cancelled during indexing'));
       }
+      // Batch all per-file upserts into a single transaction (Amendment B2).
+      const entries = Object.entries(auditResult.metadata.fileToFunctionsMap).map(
+        ([filePath, functions]) => ({ filePath, currentFunctions: functions as FunctionMetadata[] })
+      );
+      const syncStats = await db.syncFileIndexBatch(entries);
       indexingResult = {
         success: true,
         registered: syncStats.added + syncStats.updated,
@@ -899,28 +1207,72 @@ async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefault
     };
     const resultId = await db.storeAuditResults(persisted, projectRootForStore);
 
-    patchAuditJob(jobId, {
+    // Spec 41 R2 — converge on the one ledger write path: attach findings +
+    // coverage to the pre-existing run, then close the lifecycle.
+    const runInput = detectRunInput(
+      'audit.start',
+      'mcp',
+      (args.scope as string) || 'all',
+      projectRoot,
+      PACKAGE_VERSION
+    );
+    writeAuditToLedger(
+      db.rawDb,
+      runInput,
+      getAllViolations(auditResult),
+      Date.now() - startedMs,
+      0,
+      { runId: jobId, coverage: auditResult.metadata.coverage }
+    );
+
+    patchAuditJob(db.rawDb, jobId, {
       status: 'completed',
       finishedAt: new Date().toISOString(),
       progress: { phase: 'completed', message: 'Audit completed' },
       resultId,
     });
   } catch (e) {
-    patchAuditJob(jobId, {
-      status: 'failed',
-      finishedAt: new Date().toISOString(),
-      error: e instanceof Error ? e.message : String(e),
-      progress: { phase: 'failed', message: 'Audit failed' },
-    });
+    // Write the full trace to stderr (the detached child's per-run log) so a
+    // failure is diagnosable without re-running — the error row alone drops the
+    // stack that says *where* the run died.
+    try {
+      process.stderr.write(
+        `[code-auditor] job ${jobId} failed: ${e instanceof Error ? (e.stack || e.message) : String(e)}\n`
+      );
+    } catch {
+      // ignore — the log write is best-effort
+    }
+    // Record the failure through the singleton connection (best-effort — never
+    // mask the original error, and the run already failed). If the error was
+    // thrown before the DB handle resolved, getJobDb() itself throws and is
+    // swallowed here.
+    try {
+      patchAuditJob(getJobDb(), jobId, {
+        status: 'failed',
+        finishedAt: new Date().toISOString(),
+        error: e instanceof Error ? e.message : String(e),
+        progress: { phase: 'failed', message: 'Audit failed' },
+      });
+    } catch {
+      // best-effort — the run already failed; never mask the original error
+    }
   } finally {
+    if (heartbeat !== undefined) {
+      clearInterval(heartbeat);
+    }
     if (jobTimer !== undefined) {
       clearTimeout(jobTimer);
     }
   }
 }
 
-export function getAuditJobStatus(jobId: string): Record<string, unknown> {
-  const job = getAuditJob(jobId);
+export async function getAuditJobStatus(jobId: string): Promise<Record<string, unknown>> {
+  // Resolve the same DB the writer opened: startAuditJob/runAuditJob set the
+  // singleton to the project-scoped DB, so read from the current singleton's
+  // project root rather than cwd (which would flip the singleton away).
+  const db = CodeIndexDB.getInstance(undefined, CodeIndexDB.currentProject);
+  await db.initialize();
+  const job = getAuditJob(db.rawDb, jobId);
   if (!job) {
     throw new ContextualError(`Audit job not found: ${jobId}`, {
       jobId,
@@ -951,7 +1303,7 @@ export async function getAuditResultsAsSarif(args: any): Promise<string> {
     });
   }
 
-  const db = CodeIndexDB.getInstance();
+  const db = CodeIndexDB.getInstance(undefined, CodeIndexDB.currentProject);
   await db.initialize();
   const stored = await db.getAuditResults(resultId);
   if (!stored) {
@@ -1002,7 +1354,7 @@ export async function getAuditResultsPage(args: any): Promise<Record<string, unk
   const limit = Math.min(Math.max(0, Number(args.limit)) || 50, 100);
   const offset = Math.max(0, Number(args.offset) || 0);
 
-  const db = CodeIndexDB.getInstance();
+  const db = CodeIndexDB.getInstance(undefined, CodeIndexDB.currentProject);
   await db.initialize();
   const auditResult = await db.getAuditResults(resultId);
   if (!auditResult) {
@@ -1045,4 +1397,5 @@ export async function getAuditResultsPage(args: any): Promise<Record<string, unk
 export const __testables = {
   isRetryableShardError,
   mergeAnalyzerResult,
+  mergeCoverage,
 };
