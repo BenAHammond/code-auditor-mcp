@@ -21,6 +21,7 @@ import { ProjectTaskRepository } from './services/ProjectTaskRepository.js';
 import {
   EnhancedFunctionMetadata,
   FunctionMetadata,
+  DryFunctionIndexEntry,
   SearchResult,
   SearchOptions,
   ParsedQuery,
@@ -1990,6 +1991,34 @@ export class CodeIndexDB {
     this.ensureInitialized();
     const rows = this.db.prepare('SELECT * FROM functions').all() as any[];
     return rows.map((r: any) => this.rowToFunction(r));
+  }
+
+  /**
+   * Narrow variant for the scoped-DRY gate path (Spec 43 R4). Selects only the
+   * columns `buildFullFunctionHashmap` reads — name, file_path, start_line,
+   * line_number, body — so the hot `changed` path skips the wide JSON columns
+   * (`parameters`, `hooks`, `props`, `signature`, `metadata_json`,
+   * `content_hash`) and their per-row `JSON.parse` cost.
+   */
+  async getAllFunctionsForDry(): Promise<DryFunctionIndexEntry[]> {
+    this.ensureInitialized();
+    const rows = this.db
+      .prepare('SELECT name, file_path, start_line, line_number, body FROM functions')
+      .all() as any[];
+    return rows.map((r: any) => ({
+      name: r.name,
+      filePath: r.file_path,
+      startLine: r.start_line ?? undefined,
+      lineNumber: r.line_number ?? undefined,
+      body: r.body ?? '',
+    }));
+  }
+
+  /** Row count of the `functions` table — for callers that only need `.length`. */
+  async getFunctionCount(): Promise<number> {
+    this.ensureInitialized();
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM functions').get() as any;
+    return row?.n ?? 0;
   }
 
   async getStats(): Promise<{

@@ -31,6 +31,13 @@ export interface ResolvedProfile {
    * matching path profile. Findings still report at their real severity.
    */
   excludeFromGate: boolean;
+  /**
+   * Spec 44 R1 reason 7 — true when a matching path profile opts the file out
+   * of analysis entirely (no stage-2 visitors run). Sibling of
+   * `excludeFromGate`, which only affects the gate. Defaults to false; no
+   * built-in profile sets it, so reason 7 fires only when a user opts in.
+   */
+  excludeFromAnalysis: boolean;
   /** Names of all profiles that matched this file, in match order. */
   matchedProfileNames: string[];
 }
@@ -50,6 +57,7 @@ export function resolvePathProfile(
 ): ResolvedProfile {
   const overrides: Record<string, unknown> = {};
   let excludeFromGate = false;
+  let excludeFromAnalysis = false;
   const matchedProfileNames: string[] = [];
 
   const relativePath = path.relative(projectRoot, filePath);
@@ -66,11 +74,15 @@ export function resolvePathProfile(
         // "later wins" override merging). A profile that doesn't mention it
         // leaves the prior value untouched.
         excludeFromGate = value === true;
+      } else if (key === 'excludeFromAnalysis') {
+        // Spec 44 R1 reason 7 — same last-matching-wins semantics as
+        // excludeFromGate. No built-in profile sets it.
+        excludeFromAnalysis = value === true;
       } else {
         overrides[key] = value;
       }
     }
   }
 
-  return { overrides, excludeFromGate, matchedProfileNames };
+  return { overrides, excludeFromGate, excludeFromAnalysis, matchedProfileNames };
 }

@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { findFiles, DEFAULT_EXCLUDED_FILES } from './fileDiscovery.js';
+import {
+  findFiles,
+  discoverFilesDetailed,
+  DEFAULT_EXCLUDED_FILES,
+  TYPESCRIPT_EXTENSIONS,
+  JAVASCRIPT_EXTENSIONS,
+  ALL_EXTENSIONS,
+} from './fileDiscovery.js';
+import { FileAccounting } from '../services/fileAccounting.js';
 import path from 'path';
 import { promises as fs } from 'fs';
 import os from 'os';
@@ -84,6 +92,53 @@ describe('fileDiscovery', () => {
     });
   });
 
+  describe('Spec 43 R5 follow-up — skipped extensions', () => {
+    it('records extensions discovery skipped, aggregated and sorted by count', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-skip-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.writeFile(path.join(baseDir, 'a.ts'), 'export const a = 1;');
+        await fs.writeFile(path.join(baseDir, 'b.md'), '# b');
+        await fs.writeFile(path.join(baseDir, 'c.mdx'), '# c');
+        await fs.writeFile(path.join(baseDir, 'd.md'), '# d');
+
+        const { files, skippedExtensions } = await discoverFilesDetailed(baseDir, {
+          extensions: ['.ts'],
+        });
+
+        expect(files.map(f => path.basename(f))).toEqual(['a.ts']);
+        // .md (count 2) before .mdx (count 1)
+        expect(skippedExtensions).toEqual([
+          { ext: '.md', count: 2 },
+          { ext: '.mdx', count: 1 },
+        ]);
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not record extensionless files or files in excluded dirs', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-skip2-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.mkdir(path.join(baseDir, 'node_modules'), { recursive: true });
+        await fs.writeFile(path.join(baseDir, 'main.ts'), 'export const m = 1;');
+        await fs.writeFile(path.join(baseDir, 'LICENSE'), 'plain text');
+        await fs.writeFile(path.join(baseDir, 'node_modules', 'pkg.md'), '# ignored');
+
+        const { skippedExtensions } = await discoverFilesDetailed(baseDir, {
+          extensions: ['.ts'],
+        });
+
+        // LICENSE has no extension → not reported. pkg.md is inside node_modules
+        // (an excluded dir) → never walked → not reported.
+        expect(skippedExtensions).toEqual([]);
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('Bug #3 — excludes the tool\'s own output', () => {
     it('does not discover audit-report.* files by basename', async () => {
       const baseDir = path.join(os.tmpdir(), `ca-fd-report-${Date.now()}`);
@@ -121,6 +176,79 @@ describe('fileDiscovery', () => {
 
         expect(files.some(f => f.endsWith('src-app.ts'))).toBe(true);
         expect(files.some(f => f.includes('.code-index'))).toBe(false);
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Spec 44 — R3 missing extensions', () => {
+    it('includes .mts/.cts in TypeScript and .mjs/.cjs in JavaScript extensions', () => {
+      expect(TYPESCRIPT_EXTENSIONS).toEqual(expect.arrayContaining(['.mts', '.cts']));
+      expect(JAVASCRIPT_EXTENSIONS).toEqual(expect.arrayContaining(['.mjs', '.cjs']));
+      expect(ALL_EXTENSIONS).toEqual(
+        expect.arrayContaining(['.mts', '.cts', '.mjs', '.cjs'])
+      );
+    });
+
+    it('discovers .mts/.cts/.mjs/.cjs files by default', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-r3-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.writeFile(path.join(baseDir, 'a.mts'), 'export const a = 1;');
+        await fs.writeFile(path.join(baseDir, 'b.cts'), 'export const b = 2;');
+        await fs.writeFile(path.join(baseDir, 'c.mjs'), 'export const c = 3;');
+        await fs.writeFile(path.join(baseDir, 'd.cjs'), 'module.exports = 4;');
+
+        const files = await findFiles(baseDir); // default ALL_EXTENSIONS
+
+        expect(files.some(f => f.endsWith('a.mts'))).toBe(true);
+        expect(files.some(f => f.endsWith('b.cts'))).toBe(true);
+        expect(files.some(f => f.endsWith('c.mjs'))).toBe(true);
+        expect(files.some(f => f.endsWith('d.cjs'))).toBe(true);
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Spec 44 — directory pruned accounting', () => {
+    it('records content-dir files as `directory pruned` and infra dirs as aggregate', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-acct-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.mkdir(path.join(baseDir, 'src'), { recursive: true });
+        await fs.mkdir(path.join(baseDir, 'docs'), { recursive: true });
+        await fs.mkdir(path.join(baseDir, 'node_modules', 'pkg'), { recursive: true });
+        await fs.writeFile(path.join(baseDir, 'src', 'app.ts'), 'export const a = 1;');
+        await fs.writeFile(path.join(baseDir, 'docs', 'guide.mdx'), '# guide');
+        await fs.writeFile(path.join(baseDir, 'node_modules', 'pkg', 'index.ts'), 'export const n = 2;');
+
+        const fa = new FileAccounting();
+        const files = await findFiles(baseDir, {
+          extensions: ['.ts', '.mdx'],
+          fileAccounting: fa,
+        });
+
+        // Only the non-excluded file survives discovery.
+        expect(files.map(f => path.basename(f))).toEqual(['app.ts']);
+
+        const summary = fa.summary();
+        // docs/guide.mdx → dropped: directory pruned (content dir), enumerated per-file.
+        const dirPruned = summary.reasons['directory pruned'];
+        expect(dirPruned).toBeDefined();
+        expect(dirPruned!.count).toBe(1);
+        expect(dirPruned!.files[0].filePath).toContain(path.join('docs', 'guide.mdx'));
+        expect(dirPruned!.files[0].directory).toBe('docs');
+        expect(dirPruned!.files[0].rule).toBe('DEFAULT_EXCLUDED_DIRS');
+
+        // node_modules → aggregate infraPruned, never per-file.
+        expect(summary.infraPruned).toContainEqual({
+          directory: 'node_modules',
+          rule: 'DEFAULT_EXCLUDED_DIRS',
+          count: 1,
+        });
+        expect(summary.dropped).toBe(1);
       } finally {
         await fs.rm(baseDir, { recursive: true, force: true });
       }

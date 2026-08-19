@@ -3,6 +3,8 @@
  * Generic types that work with any TypeScript/JavaScript project
  */
 
+import type { FileAccounting } from './services/fileAccounting.js';
+
 export type Severity = 'critical' | 'warning' | 'suggestion' | 'off';
 
 export type ReportFormat = 'html' | 'json' | 'csv' | 'sarif';
@@ -269,6 +271,13 @@ export interface ReducerResult {
    *  instead of reducer-ran. Used for runtime auto-disable (e.g. invariants
    *  with no rules configured). */
   notRunReason?: string;
+  /**
+   * File paths this reducer read *directly* (not via the `readSource` closure,
+   * which the pipeline already instruments). The pipeline unions these into the
+   * run's consumed set for Spec 44 reclassification. Reducers that read through
+   * `context.readSource` do not need to report here.
+   */
+  consumedFiles?: string[];
 }
 
 /** Per-file visitor — runs on every AST in stage 2. */
@@ -356,6 +365,16 @@ export interface PipelineConfig {
   abortSignal?: AbortSignal;
   progressCallback?: (progress: AuditProgress) => void;
   isScoped?: boolean;
+  /** Spec 44: file accounting accumulator owned by the run. */
+  fileAccounting?: FileAccounting;
+  /**
+   * Spec 44: file paths consumed by layers that run *before* the pipeline
+   * (e.g. the style indexer, which readFileSyncs every discovered file). The
+   * pipeline unions these with the paths it observed `readSource` consume, then
+   * reclassifies any stage-2 `no adapter`/`no visitor matched` drop in the union
+   * as `partially analyzed`.
+   */
+  consumedFilePaths?: string[];
 }
 
 /**
@@ -366,6 +385,71 @@ export interface PipelineConfig {
  * below this; only data dumps cross it.
  */
 export const MAX_ORPHAN_SOURCE_BYTES = 8 * 1024 * 1024; // 8 MB
+
+/**
+ * Spec 44 — File Accounting. The eight named reasons a file can be dropped from
+ * analysis. Every touched file lands in exactly one terminal state: `analyzed`
+ * (reached >= 1 stage-2 visitor), `partially analyzed` (dropped at stage 2 as
+ * `no adapter` / `no visitor matched` but still reached by a stage-3/4 layer),
+ * or `dropped` (with one of these reasons). Reason 8 (`unsupported dialect`) is
+ * a sub-layer: a style-level unread source that does NOT affect the file-level
+ * `analyzed + partiallyAnalyzed + dropped === touched` balance.
+ */
+export type FileDropReason =
+  | 'directory pruned'
+  | 'extension not known'
+  | 'no adapter'
+  | 'parse failed'
+  | 'no visitor matched'
+  | 'size threshold'
+  | 'path profile excluded'
+  | 'unsupported dialect';
+
+/** One dropped file in the per-reason lists (everything except the filePath). */
+export interface FileAccountingFileEntry {
+  filePath: string;
+  /** True when the file was dropped at stage 2 (`no adapter` / `no visitor
+   *  matched`) yet still *consumed* (read) by a later layer — the style indexer
+   *  readFileSyncs every discovered file, stage-3 reducers pull source via
+   *  `readSource`. Such a file is "partially analyzed": reached by some layer,
+   *  not others, regardless of whether it happened to produce findings. The drop
+   *  reason still explains why it wasn't *fully* analyzed. */
+  partial?: boolean;
+  /** Reason 1: the matched directory name (e.g. `docs`) and the rule that
+   *  pruned it (e.g. `DEFAULT_EXCLUDED_DIRS` or a user glob). */
+  directory?: string;
+  rule?: string;
+  /** Reason 2: the extension that was skipped (e.g. `.mdx`). */
+  ext?: string;
+  /** Reason 2 sub-classification: a known source extension that was not in the
+   *  discovery set, vs. an entirely unknown extension. */
+  kind?: 'known-but-not-discovered' | 'unknown';
+  /** Reason 7: the matched path profile name. */
+  profile?: string;
+  /** Reason 8: why the embedded style dialect could not be read. */
+  reason?: string;
+  /** Reason 6: the size of the oversized file in bytes. */
+  bytes?: number;
+}
+
+/** Spec 44 — per-run file accounting summary (surfaced in metadata). */
+export interface FileAccountingSummary {
+  /** Every candidate file the discovery walk enumerated plus every dropped file. */
+  touched: number;
+  /** Files whose tuple reached >= 1 stage-2 visitor. */
+  analyzed: number;
+  /** Files dropped at stage 2 (`no adapter` / `no visitor matched`) that still
+   *  produced findings at a later layer — "partially analyzed". Included in
+   *  `reasons` under their drop reason with `partial: true` on each file entry. */
+  partiallyAnalyzed: number;
+  /** Files dropped with one of the eight reasons (never reached any layer). */
+  dropped: number;
+  /** Aggregate infrastructure-directory prunes (not per-file — node_modules is
+   *  not enumerable at scale). Sorted by count desc, then directory asc. */
+  infraPruned: Array<{ directory: string; rule: string; count: number }>;
+  /** Per-reason file lists (complete in the JSON report). */
+  reasons: Partial<Record<FileDropReason, { count: number; files: FileAccountingFileEntry[] }>>;
+}
 
 /** Pipeline output — merged results from all four stages. */
 export interface PipelineResult {
@@ -387,6 +471,11 @@ export interface PipelineResult {
      *  must surface it and exit non-zero rather than report a plausible-but-wrong
      *  result. */
     unparsedFiles?: Array<{ filePath: string; reason: string }>;
+    /** Spec 43 R5 follow-up: extensions present on disk that discovery skipped
+     *  (not in the discovery extension set). Informational — surfaces "what isn't
+     *  being analyzed here" rather than silently dropping unlisted extensions at
+     *  discovery. Sorted by count descending. */
+    skippedExtensions?: Array<{ ext: string; count: number }>;
     /** Spec 33 Item 14: per-rule input presence snapshot consumed by
      *  buildCoverageReport to promote zero-violation rules from `unassessed` to
      *  `clean` (input present) or `notApplicable` (all inputs absent). */
@@ -398,6 +487,8 @@ export interface PipelineResult {
      *  computed inputs. Consumed by buildCoverageReport to report inapplicable
      *  rules as `notApplicable` with a reason. */
     ruleApplicability?: Array<{ ruleId: string; applicable: boolean; reason?: string }>;
+    /** Spec 44: per-file accounting (analyzed vs. dropped, with reasons). */
+    fileAccounting?: FileAccountingSummary;
   };
   indexFacts?: IndexFactsEntry[];
 }
@@ -495,6 +586,10 @@ export interface AuditResult {
     /** Spec 32: files that failed to parse (or to be read) during stage 1, with
      *  the reason. Non-empty means the audit was incomplete. */
     unparsedFiles?: Array<{ filePath: string; reason: string }>;
+    /** Spec 43 R5 follow-up: extensions present on disk that discovery skipped.
+     *  Informational — surfaces "what isn't being analyzed here" rather than
+     *  silently dropping unlisted extensions at discovery. */
+    skippedExtensions?: Array<{ ext: string; count: number }>;
     /** Spec 33 Item 14: per-rule input presence snapshot consumed by
      *  buildCoverageReport to promote zero-violation rules from `unassessed` to
      *  `clean` (input present) or `notApplicable` (all inputs absent). */
@@ -508,6 +603,8 @@ export interface AuditResult {
       unnecessary: Array<{ file: string; line: number; rule: string }>;
       reasonless: Array<{ file: string; line: number; rule: string }>;
     };
+    /** Spec 44: per-file accounting (analyzed vs. dropped, with reasons). */
+    fileAccounting?: FileAccountingSummary;
   };
 }
 
@@ -799,6 +896,23 @@ export interface FunctionMetadata {
   purpose: string;
   context: string;
   metadata?: Record<string, any>;
+}
+
+/**
+ * Minimal function index entry for the scoped-DRY gate path (Spec 43 R4).
+ *
+ * `UniversalDRYAnalyzer.buildFullFunctionHashmap` reads only `name`, `filePath`,
+ * `startLine ?? lineNumber`, and `body` from each indexed function. The narrow
+ * query selects exactly those columns, avoiding the wide JSON fields
+ * (`parameters`, `hooks`, `props`, `signature`, `metadata_json`, `content_hash`)
+ * and the per-row `JSON.parse` cost they incur on the hot `changed` path.
+ */
+export interface DryFunctionIndexEntry {
+  name: string;
+  filePath: string;
+  lineNumber?: number;
+  startLine?: number;
+  body?: string;
 }
 
 // Enhanced function metadata with additional searchable fields

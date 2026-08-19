@@ -961,7 +961,7 @@ class TsExtraction extends TsNameDocumentation {
 
 class TsPublicApi extends TsExtraction {
   readonly name = 'typescript';
-  readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx'];
+  readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
 
   supportsFile(filePath: string): boolean {
     return this.fileExtensions.some((ext) => filePath.endsWith(ext));

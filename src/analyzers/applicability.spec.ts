@@ -27,7 +27,9 @@ describe('evaluateRuleApplicability — styles/undefined-class (R2)', () => {
     );
     expect(app).not.toBeNull();
     expect(app!.applicable).toBe(false);
-    expect(app!.reason).toBe('stylesheets were not read: styles/theme.sass, styles/legacy.less');
+    expect(app!.reason).toBe(
+      'stylesheets were not read: styles/theme.sass (unsupported style dialect: .sass), styles/legacy.less (unsupported style dialect: .less)',
+    );
   });
 
   it('is a whole-run predicate: one unread source anywhere disables the rule', () => {

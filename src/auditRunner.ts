@@ -16,13 +16,16 @@ import {
   Violation,
   AuditProgress,
   FunctionMetadata,
+  DryFunctionIndexEntry,
   AuditResultScope,
   AuditAbortedError,
   AuditHandoffError,
   type RuleCoverage,
   type InputPresence,
+  type FileAccountingSummary,
 } from './types.js';
-import { discoverFiles } from './utils/fileDiscovery.js';
+import { discoverFiles, discoverFilesDetailed } from './utils/fileDiscovery.js';
+import { FileAccounting } from './services/fileAccounting.js';
 import { loadConfig } from './config/configLoader.js';
 import { mergePathProfiles } from './config/defaults.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
@@ -178,6 +181,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Discover files based on scope
     let files: string[];
     let changedFunctions: FunctionMetadata[] | undefined;
+    // Extensions present on disk that discovery skipped (Spec 43 R5 follow-up).
+    // Populated only for the `all` scope — scoped runs are explicitly scoped by
+    // the user, so "what wasn't analyzed" there is the scope itself, not the
+    // extension filter.
+    let skippedExtensions: Array<{ ext: string; count: number }> | undefined;
+
+    // Spec 44 — file accounting accumulator, owned by the run. Threaded through
+    // discovery (full `all` scope) and the pipeline (stage 1/2) so every touched
+    // file lands in exactly one terminal state and the balance can be asserted.
+    const fileAccounting = new FileAccounting();
 
     if (typeof scope === 'string' && scope.startsWith('git:')) {
       // git:<ref> scope
@@ -208,7 +221,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       });
     } else {
       // all scope: current behavior
-      files = await discoverProjectFiles(mergedOptions);
+      const discovered = await discoverProjectFiles(mergedOptions, fileAccounting);
+      files = discovered.files;
+      skippedExtensions = discovered.skippedExtensions;
     }
 
     throwIfAborted(mergedOptions.abortSignal);
@@ -303,7 +318,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // Note: Go files will be indexed by the Universal SOLID analyzer directly
       const scriptFiles = files.filter(f =>
         f.endsWith('.ts') || f.endsWith('.tsx') ||
-        f.endsWith('.js') || f.endsWith('.jsx')
+        f.endsWith('.js') || f.endsWith('.jsx') ||
+        f.endsWith('.mts') || f.endsWith('.cts') ||
+        f.endsWith('.mjs') || f.endsWith('.cjs')
       );
 
       logMcpInfo('function-indexing', 'extracting functions from script files', {
@@ -350,11 +367,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // ── Build full function index for scoped DRY ─────────────────────
     // When scope is not 'all', DRY must compare scoped functions against
     // the full index so new duplicates are caught (R2.2).
-    let fullFunctionIndex: FunctionMetadata[] | undefined;
+    let fullFunctionIndex: DryFunctionIndexEntry[] | undefined;
     if (isScoped) {
       try {
         const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
-        fullFunctionIndex = await db.getAllFunctions();
+        fullFunctionIndex = await db.getAllFunctionsForDry();
         logMcpInfo('analysis', 'loaded full function index for scoped DRY', {
           functionCount: fullFunctionIndex.length
         });
@@ -373,6 +390,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // ── Style index sync (Spec 10) ────────────────────────────────────
     // Sync style declarations, tokens, and class usage before the
     // styles analyzer runs, mirroring the function index sync pattern.
+    // Spec 44: the indexer readFileSyncs every discovered file (except
+    // `.css`/`.scss`), so `consumedFiles` is the "any layer read it" evidence
+    // for files dropped at stage 2 — threaded into the pipeline below.
+    let styleConsumedFiles: string[] = [];
     if (enabledAnalyzers.includes('styles')) {
       try {
         const styleDb = CodeIndexDB.getInstance(undefined, root);
@@ -383,11 +404,13 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           root,
           { scoped: isScoped }
         );
+        styleConsumedFiles = styleSyncResult.consumedFiles;
         logMcpInfo('style-index', 'style index sync complete', {
           changed: styleSyncResult.changed,
           skipped: styleSyncResult.skipped,
           removed: styleSyncResult.removed,
           errors: styleSyncResult.errors,
+          consumed: styleSyncResult.consumedFiles.length,
         });
       } catch (err) {
         // Non-fatal: styles analyzer will run with whatever is in the index
@@ -408,6 +431,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let pipelineUnparsedFiles: Array<{ filePath: string; reason: string }> | undefined;
     let pipelineInputPresence: InputPresence | undefined;
     let pipelineRuleTiming: Array<{ ruleId: string; totalMs: number; calls: number }> | undefined;
+    let pipelineFileAccounting: FileAccountingSummary | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -592,6 +616,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           reportProgress(mergedOptions, progress);
         },
         isScoped,
+        fileAccounting,
+        consumedFilePaths: styleConsumedFiles,
         onStage2Complete: async (ctx) => {
           // Post-stage-2 setup: rebuild function_calls from the functions table
           // (populated by the function-index visitor), then mine conventions.
@@ -679,6 +705,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         pipelineUnparsedFiles = pipelineResult.metadata?.unparsedFiles;
         pipelineInputPresence = pipelineResult.metadata?.inputPresence;
         pipelineRuleTiming = pipelineResult.metadata?.ruleTiming;
+        pipelineFileAccounting = pipelineResult.metadata?.fileAccounting;
       } catch (error) {
         if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
           throw error;
@@ -1046,8 +1073,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(thresholdChanges.length > 0 && { thresholdChanges }),
         ...(pipelineSkippedFiles && pipelineSkippedFiles.length > 0 && { skippedFiles: pipelineSkippedFiles }),
         ...(pipelineUnparsedFiles && pipelineUnparsedFiles.length > 0 && { unparsedFiles: pipelineUnparsedFiles }),
+        ...(skippedExtensions && skippedExtensions.length > 0 && { skippedExtensions }),
         ...(pipelineInputPresence && { inputPresence: pipelineInputPresence }),
         ...(pipelineRuleTiming && { ruleTiming: pipelineRuleTiming }),
+        ...(pipelineFileAccounting && { fileAccounting: pipelineFileAccounting }),
         ...(suppressionMetadata && { suppressions: suppressionMetadata }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
@@ -1129,16 +1158,25 @@ function throwIfAborted(signal?: AbortSignal): void {
   throw new AuditAbortedError(String(r ?? 'Audit aborted'));
 }
 
-async function discoverProjectFiles(options: AuditRunnerOptions): Promise<string[]> {
+async function discoverProjectFiles(
+  options: AuditRunnerOptions,
+  fileAccounting?: FileAccounting
+): Promise<{ files: string[]; skippedExtensions: Array<{ ext: string; count: number }> }> {
   const rootDir = path.resolve(options.projectRoot || process.cwd());
   if (options.explicitFiles !== undefined) {
-    return [...new Set(options.explicitFiles.map((f) => path.resolve(f)))].sort();
+    // Explicitly scoped files — the user named them, so extension skipping is
+    // not a silent drop (and discovery-by-extension never runs).
+    return {
+      files: [...new Set(options.explicitFiles.map((f) => path.resolve(f)))].sort(),
+      skippedExtensions: []
+    };
   }
-  return discoverFiles(rootDir, {
+  return discoverFilesDetailed(rootDir, {
     includePaths: options.includePaths,
     excludePaths: options.excludePaths,
     extensions: options.fileExtensions, // Use override if provided
-    excludeDirs: undefined // This will use DEFAULT_EXCLUDED_DIRS which includes node_modules
+    excludeDirs: undefined, // This will use DEFAULT_EXCLUDED_DIRS which includes node_modules
+    ...(fileAccounting ? { fileAccounting } : {})
   });
 }
 

@@ -55,21 +55,47 @@ export function evaluateRuleApplicability(
   unreadStyleSources?: UnreadStyleSourceInfo[],
 ): RuleApplicability | null {
   if (ruleId === 'styles/undefined-class') {
-    // Spec 42 R2 — whole-run scope: if any stylesheet went unread, a class this
-    // detector would otherwise flag undefined may in fact be defined there.
-    // Report notApplicable naming what was unread rather than assert undefined.
-    if (unreadStyleSources && unreadStyleSources.length > 0) {
-      const names = unreadStyleSources.map((s) => s.filePath).join(', ');
-      return {
-        applicable: false,
-        reason: `stylesheets were not read: ${names}`,
-      };
-    }
-    return null;
+    return evaluateUndefinedClassApplicability(unreadStyleSources);
   }
+  if (ruleId === 'missing-org-filter') {
+    return evaluateMissingOrgFilterApplicability(dataAccessConfig, ddlColumns);
+  }
+  return null;
+}
 
-  if (ruleId !== 'missing-org-filter') return null;
+/**
+ * Spec 42 R2 — whole-run scope: if any stylesheet went unread, a class this
+ * detector would otherwise flag undefined may in fact be defined there. Report
+ * notApplicable naming what was unread rather than assert undefined.
+ */
+function evaluateUndefinedClassApplicability(
+  unreadStyleSources?: UnreadStyleSourceInfo[],
+): RuleApplicability | null {
+  if (unreadStyleSources && unreadStyleSources.length > 0) {
+    // Surface the per-source reason (which encodes the offending extension for
+    // the Spec 43 R5 fallthrough, or the unsupported dialect for Spec 42 R2)
+    // rather than only the file path, so a "loud" fallthrough stays loud end to
+    // end instead of being collapsed back to a bare path list.
+    const names = unreadStyleSources
+      .map((s) => (s.reason ? `${s.filePath} (${s.reason})` : s.filePath))
+      .join(', ');
+    return {
+      applicable: false,
+      reason: `stylesheets were not read: ${names}`,
+    };
+  }
+  return null;
+}
 
+/**
+ * Spec 39/42 R3 — `missing-org-filter` is applicable when the project declares a
+ * tenant-scoping column in one of three places: configured tenant tables by name,
+ * a configured schema table, or the DDL-derived table catalog.
+ */
+function evaluateMissingOrgFilterApplicability(
+  dataAccessConfig: Record<string, unknown> | undefined,
+  ddlColumns: string[] | undefined,
+): RuleApplicability {
   // Tier 1 — user declared tenant-scoped tables by name (policy of record).
   const orgFilterTables: string[] = (dataAccessConfig?.orgFilterTables as string[] | undefined) ?? [];
   if (orgFilterTables.length > 0) return { applicable: true };

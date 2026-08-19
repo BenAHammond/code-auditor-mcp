@@ -38,7 +38,7 @@ import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
 import { evaluateRuleApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
 import { resetRuleTiming, getRuleTimingSortedDesc } from './analyzers/ruleTiming.js';
 import { LanguageRegistry } from './languages/LanguageRegistry.js';
-import { discoverFiles } from './utils/fileDiscovery.js';
+import { discoverFiles, DEFAULT_EXCLUDED_DIRS } from './utils/fileDiscovery.js';
 import { resolvePathProfile, type PathProfile } from './config/pathProfiles.js';
 import { validateFactsDependencies, buildFactsMap } from './pipelineTypes.js';
 
@@ -59,6 +59,7 @@ function runStage1(config: PipelineConfig): {
   fileCount: number;
   getTiming: () => { parseDurationMs: number; readDurationMs: number };
   getUnparsedFiles: () => Array<{ filePath: string; reason: string }>;
+  getSkippedExtensions: () => Array<{ ext: string; count: number }>;
 } {
   // ── Eager discovery (same as before) ─────────────────────────────────
   const projectRoot = config.projectRoot;
@@ -79,11 +80,19 @@ function runStage1(config: PipelineConfig): {
   // reason. A non-empty list means the audit was incomplete; surfaced in coverage
   // and forces a non-zero exit so a plausible-but-wrong report is never silent.
   const unparsedFiles: Array<{ filePath: string; reason: string }> = [];
+  // Spec 43 R5 follow-up — extensions discovery skipped (only populated on the
+  // lazy-discovery path, i.e. when `explicitFiles` is absent). Surfaced so "what
+  // isn't being analyzed here" is answerable from the report.
+  const skippedExtensionCounts = new Map<string, number>();
 
   async function* generate(): AsyncGenerator<FileASTTuple, void, undefined> {
     // Lazy file discovery (only if not explicit)
     const fileList: string[] = files ?? await discoverFiles(projectRoot, {
-      excludeDirs: ['node_modules', '.next', 'dist', 'build', '.git', 'coverage', '.turbo', '.code-index'],
+      excludeDirs: DEFAULT_EXCLUDED_DIRS,
+      onSkippedExtension: (ext) => {
+        skippedExtensionCounts.set(ext, (skippedExtensionCounts.get(ext) ?? 0) + 1);
+      },
+      ...(config.fileAccounting ? { fileAccounting: config.fileAccounting } : {}),
     });
     total = fileList.length;
 
@@ -91,6 +100,7 @@ function runStage1(config: PipelineConfig): {
     const orphans: string[] = [];
 
     for (const file of fileList) {
+      config.fileAccounting?.recordTouched(file);
       const adapter = registry.getAdapterForFile(file);
       if (adapter) {
         const list = groups.get(adapter) ?? [];
@@ -130,6 +140,7 @@ function runStage1(config: PipelineConfig): {
           // parseWithRecovery) must never be silent: record it so it lands in
           // coverage and forces a non-zero exit.
           unparsedFiles.push({ filePath: file, reason: err?.message ?? String(err) });
+          config.fileAccounting?.recordDropped('parse failed', file, { reason: err?.message ?? String(err) });
           if (config.progressCallback) {
             config.progressCallback({
               current: parsed,
@@ -180,6 +191,7 @@ function runStage1(config: PipelineConfig): {
         };
       } catch (err: any) {
         unparsedFiles.push({ filePath: file, reason: `read error: ${err?.message ?? String(err)}` });
+        config.fileAccounting?.recordDropped('parse failed', file, { reason: `read error: ${err?.message ?? String(err)}` });
         if (config.progressCallback) {
           config.progressCallback({
             current: orphans.indexOf(file),
@@ -209,6 +221,10 @@ function runStage1(config: PipelineConfig): {
     generator: generate(),
     get fileCount() { return total; },
     getUnparsedFiles: () => unparsedFiles,
+    getSkippedExtensions: () =>
+      [...skippedExtensionCounts.entries()]
+        .map(([ext, count]) => ({ ext, count }))
+        .sort((a, b) => b.count - a.count || a.ext.localeCompare(b.ext)),
     getTiming: () => ({ parseDurationMs: parseMs, readDurationMs: readMs }),
   };
 }
@@ -261,6 +277,10 @@ export async function runStage2(
       throw new AuditAbortedError('Audit aborted during stage 2');
     }
 
+    let matchedAny = false;
+    let fileAnalysisExcluded = false;
+    let fileAnalysisExcludedProfile: string | undefined;
+
     try {
       // Progress
       if (config.progressCallback && i % 10 === 0) {
@@ -284,11 +304,18 @@ export async function runStage2(
         }
         fileProfileNames = resolved.matchedProfileNames;
         fileGateExcluded = resolved.excludeFromGate;
+        fileAnalysisExcluded = resolved.excludeFromAnalysis;
+        if (fileAnalysisExcluded) {
+          fileAnalysisExcludedProfile = fileProfileNames[fileProfileNames.length - 1];
+        }
       }
 
       // Fan out to all visitors for this file — filter by declared extensions
       const fileExt = path.extname(tuple.file);
       for (const visitor of visitors) {
+        // Spec 44 reason 7 — a path-profile `excludeFromAnalysis` opt-out skips
+        // every visitor for this file (no stage-2 work runs).
+        if (fileAnalysisExcluded) continue;
         // Dispatch check: backward-compat visitors see only parsed tuples.
         // Visitors that declare extensions see only tuples whose extension they consume.
         if (visitor.extensions) {
@@ -297,6 +324,7 @@ export async function runStage2(
           // No extensions declared → parsed tuples only (backward compat)
           if (tuple.kind !== 'parsed') continue;
         }
+        matchedAny = true;
 
         const visitorConfig = { ...(rawConfig[visitor.name] ?? {}), ...fileInfra };
         const visitorContext = {
@@ -363,6 +391,24 @@ export async function runStage2(
       ast?.dispose?.();
       tuple.sourceCode = '';
     }
+
+    // Spec 44 — every file lands in exactly one terminal state. A raw tuple that
+    // matched no visitor is `no adapter`; a parsed tuple that matched none is
+    // `no visitor matched`; a path-profile opt-out is `path profile excluded`.
+    if (config.fileAccounting) {
+      if (fileAnalysisExcluded) {
+        config.fileAccounting.recordDropped('path profile excluded', tuple.file, {
+          profile: fileAnalysisExcludedProfile,
+        });
+      } else if (matchedAny) {
+        config.fileAccounting.recordAnalyzed(tuple.file);
+      } else if (tuple.kind === 'raw') {
+        config.fileAccounting.recordDropped('no adapter', tuple.file);
+      } else {
+        config.fileAccounting.recordDropped('no visitor matched', tuple.file);
+      }
+    }
+
     i++;
   }
 
@@ -415,11 +461,16 @@ async function runStage3(
   reducerResults: Map<string, AnalyzerResult>;
   reducerFacts: Map<string, Record<string, unknown>>;
   durationMs: number;
+  consumedFiles: Set<string>;
 }> {
   const t0 = performance.now();
   const reducerResults = new Map<string, AnalyzerResult>();
   const reducerFacts = new Map<string, Record<string, unknown>>();
   const factsObj = Object.fromEntries(allFacts);
+  // Spec 44 — file paths any stage-3 reducer actually read (via the on-demand
+  // `readSource` closure below, or self-reported `result.consumedFiles`). Unioned
+  // with pre-pipeline consumption to drive the "partially analyzed" reclassification.
+  const consumedFiles = new Set<string>();
   // Count visitors that produced non-empty facts (not visitor keys in the map)
   const factsConsumed = [...allFacts.values()].filter(f => Object.keys(f).length > 0).length;
 
@@ -437,7 +488,9 @@ async function runStage3(
     // instead of retaining every file's source as a fact through stage 4.
     const readSource = (filePath: string): string | undefined => {
       try {
-        return readFileSync(filePath, 'utf-8');
+        const content = readFileSync(filePath, 'utf-8');
+        consumedFiles.add(filePath);
+        return content;
       } catch {
         return undefined;
       }
@@ -454,6 +507,9 @@ async function runStage3(
       const r0 = performance.now();
       const result = await reducer.reduce(factsObj, reducerContext);
       const rMs = performance.now() - r0;
+
+      // Reducers that read files directly (not via readSource) report them here.
+      for (const p of result.consumedFiles ?? []) consumedFiles.add(p);
 
       // Allow reducers to signal notRun (e.g. invariants auto-disabled when no
       // rules are configured). The reducer sets notRunReason in its result.
@@ -494,6 +550,7 @@ async function runStage3(
     reducerResults,
     reducerFacts,
     durationMs: performance.now() - t0,
+    consumedFiles,
   };
 }
 
@@ -768,9 +825,39 @@ export async function runPipeline(
       const f = fact as { skipped?: boolean; bytes?: number };
       if (f.skipped) {
         skippedFiles.push({ filePath, bytes: f.bytes ?? 0, reason: 'oversized-orphan-no-ddl' });
+        // Spec 44 reason 6 — the oversized .sql orphan reached the schema-sql
+        // visitor (recorded analyzed) before being skipped; reclassify it so the
+        // balance reflects the size-threshold drop, not a phantom "analyzed".
+        config.fileAccounting?.reclassifyAnalyzedToDropped('size threshold', filePath, { bytes: f.bytes ?? 0 });
       }
     }
   }
+
+  // Spec 44 R1 follow-up — "partially analyzed" is keyed on *consumption*, not
+  // findings. A file dropped at stage 2 (`no adapter` / `no visitor matched`)
+  // that any later layer READ (the style indexer readFileSyncs every discovered
+  // file; stage-3 reducers pull source via `readSource`) was still reached by
+  // that layer — regardless of whether it happened to emit findings. Keying on
+  // findings would collapse "clean" and "never looked at" into the same drop
+  // label. The consumed set is the union of pre-pipeline consumption
+  // (`config.consumedFilePaths`, the style indexer) and stage-3 reads
+  // (`stage3.consumedFiles`). Reclassify before the balance assertion; the method
+  // no-ops for non-reclassifiable states/reasons.
+  if (config.fileAccounting) {
+    const consumedFiles = new Set<string>([
+      ...(config.consumedFilePaths ?? []),
+      ...stage3.consumedFiles,
+    ]);
+    for (const filePath of consumedFiles) {
+      config.fileAccounting.reclassifyDroppedToPartiallyAnalyzed(filePath);
+    }
+  }
+
+  // Spec 44 R2 — the accounting must balance before we report. A touched file
+  // that was never classified (a silent-drop leak) or classified more than once
+  // throws AccountingBalanceError here and fails the run.
+  config.fileAccounting?.assertBalanced();
+  const fileAccounting = config.fileAccounting?.summary();
 
   const totalDuration = performance.now() - totalT0;
 
@@ -778,6 +865,7 @@ export async function runPipeline(
   // coverage and used by the CLI to force a non-zero exit — a run that silently
   // skipped files must never report as clean.
   const unparsedFiles = s1.getUnparsedFiles();
+  const skippedExtensions = s1.getSkippedExtensions();
 
   // Spec 38 R2 — surface per-rule timing, slowest first, only when opt-in.
   const ruleTiming = getRuleTimingSortedDesc();
@@ -800,7 +888,9 @@ export async function runPipeline(
       tableCatalog,
       ...(skippedFiles.length > 0 && { skippedFiles }),
       ...(unparsedFiles.length > 0 && { unparsedFiles }),
+      ...(skippedExtensions.length > 0 && { skippedExtensions }),
       ...(ruleTiming.length > 0 && { ruleTiming }),
+      ...(fileAccounting ? { fileAccounting } : {}),
     },
     indexFacts: stage2.indexFacts,
   };

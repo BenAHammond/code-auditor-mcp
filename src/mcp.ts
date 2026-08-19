@@ -893,10 +893,10 @@ function registerAllTools(registry: ToolRegistry): void {
         handler: async () => {
           const db = CodeIndexDB.getInstance();
           await db.initialize();
-          const funcs = await db.getAllFunctions();
+          const functionCount = await db.getFunctionCount();
           return {
             success: true,
-            functionCount: Array.isArray(funcs) ? funcs.length : 0,
+            functionCount,
           };
         },
       },

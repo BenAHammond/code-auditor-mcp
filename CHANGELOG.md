@@ -2,6 +2,74 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.15] — 2026-08-19
+
+### Detached runs & a queryable findings store (Spec 41)
+- The findings ledger is now the single queryable findings store. `audit --detach`
+  forks a detached run with per-run stderr captured to a log; new `status`,
+  `result`, and `jobs` CLI commands read persisted run state and findings.
+- Ledger runs gain lifecycle/provenance columns (`status`, `started_at`,
+  `heartbeat_at`, `finished_at`, `error`, `progress_json`, content-hash
+  manifest) and a `findings_ledger_coverage` table; coverage rows (fired / clean /
+  notApplicable / unassessed per rule) are persisted for the first time.
+- `auditJobService` is DB-backed (no in-memory `Map`); `runAuditJob` is shared by
+  the MCP server and the CLI. Concurrency is a heartbeat lease (stale `running`
+  rows are reclaimed as `failed`, never wedging the queue); retention is opt-in
+  `jobs --prune` only.
+
+### Stylesheet-dialect support (Spec 42)
+- Embedded `<style>` blocks in `.astro` / `.vue` / `.svelte` are now read and
+  parsed through the single shared rule-set parser (dispatching on `lang`/`type`),
+  so those component dialects no longer produce silent zero class-usage counts.
+- Unread style sources (`.sass` / `.less` / `.styl`, and unsupported `<style lang>`)
+  are recorded to `style_unread_sources`; `styles/undefined-class` reports
+  `notApplicable` naming them instead of asserting a class it cannot see.
+- `styles/missing-org-filter` derives applicability from the schema table catalog
+  (Tier 1 named tables / Tier 2 schema columns / Tier 3 DDL columns); no tenant
+  column → `notApplicable` without a config flag.
+
+### Silent-drop backstop (Spec 42 R2)
+- The style extractor's `default:` branch no longer drops an unhandled file
+  extension silently. A genuinely unknown dialect (`.mdx`, `.md`, …) is recorded
+  as an unread source so `undefined-class` surfaces the gap; known non-style
+  source (JSON/Go/SQL/TOML/Prisma) and `.css`/`.scss` (owned by the AST pipeline)
+  stay silent via the shared `KNOWN_SOURCE_EXTENSIONS` set.
+- The last hand-maintained extension lists (markup dispatch + class-usage gate)
+  now derive from the `STYLE_MARKUP_EXTENSIONS` discovery constant, so adding a
+  dialect to the discovery set flows everywhere at once.
+
+### Gate-budget & fallthrough surface (Spec 43)
+- The gate speed budget is now warm-then-measure: a cold run warms the page cache
+  and index (reported, never asserted), and the warm run is the asserted figure —
+  the budget measures rule latency rather than one-time WASM/index cost.
+- The scoped-DRY `changed` path reads only the narrow columns
+  `buildFullFunctionHashmap` needs (`getAllFunctionsForDry`), and `audit.health`
+  counts functions with a `COUNT(*)` query — skipping the wide JSON columns and
+  their per-row `JSON.parse`.
+- Extensions present on disk but skipped by discovery (`.mdx`, `.md`, …) are now
+  surfaced in the CLI so an unlisted extension never vanishes silently, and
+  `styles/undefined-class`'s `notApplicable` reason names the per-source
+  dialect/extension rather than a bare path list.
+
+### File accounting (Spec 44)
+- Every file the walk touches now lands in exactly one terminal state —
+  `analyzed`, `partially analyzed`, or `dropped` (one of eight named reasons) —
+  and the accounting must balance (`analyzed + partiallyAnalyzed + dropped ===
+  touched`), asserted at end-of-run; a leak or double-classification fails the run.
+- `partially analyzed` is keyed on *consumption*, not output: a file dropped at
+  stage 2 (`no adapter` / `no visitor matched`) that any later layer read (the
+  style indexer, or a stage-3 `readSource`) is reclassified, whether or not it
+  produced findings — so a clean file the indexer read is never reported as
+  "not analyzed".
+- Infrastructure directories (`node_modules`, `.git`, …) are recorded as an
+  aggregate `infraPruned` line, never per-file; content directories (`docs`,
+  `specs`, …) are enumerated per-file as `dropped: directory pruned`.
+- `.mjs` / `.cjs` / `.cts` / `.mts` are added to every site that hard-codes the
+  JS/TS extension set, so those files are now discovered, parsed, and analyzed.
+- The CLI summary line (`N analyzed · M dropped (R reasons)`) replaces
+  `Files analyzed`, and `--explain-skipped` prints a bounded per-reason breakdown;
+  the full per-file lists live in the JSON report under `metadata.fileAccounting`.
+
 ## [3.4.14] — 2026-08-17
 
 ### SOLID rule-ID namespace normalization (task #5)

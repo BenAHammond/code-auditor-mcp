@@ -44,6 +44,14 @@ export interface StyleSyncResult {
   removed: number;
   /** Files that failed extraction. */
   errors: number;
+  /**
+   * Every file path this indexer actually read (readFileSync succeeded).
+   * Excludes `.css`/`.scss` (handled by the styles-css stage-2 visitor) and
+   * files that failed to read. This is the "any layer read it" evidence used by
+   * Spec 44 to reclassify a stage-2 `no adapter`/`no visitor matched` drop as
+   * `partially analyzed` — a file the style indexer consumed is not "not analyzed".
+   */
+  consumedFiles: string[];
 }
 
 export interface StyleSyncOptions {
@@ -69,7 +77,7 @@ export async function syncStyleIndex(
   projectRoot: string,
   options: StyleSyncOptions = {},
 ): Promise<StyleSyncResult> {
-  const result: StyleSyncResult = { changed: 0, skipped: 0, removed: 0, errors: 0 };
+  const result: StyleSyncResult = { changed: 0, skipped: 0, removed: 0, errors: 0, consumedFiles: [] };
   const scoped = options.scoped ?? false;
 
   // Unread stylesheet sources (Spec 42 R2). When any exist, the
@@ -98,6 +106,10 @@ export async function syncStyleIndex(
     let content: string;
     try {
       content = readFileSync(filePath, 'utf-8');
+      // Reading the file is itself consumption (Spec 44) — record it regardless
+      // of whether extraction later finds declarations. A finding-free file the
+      // indexer read is still "partially analyzed", not "not analyzed".
+      result.consumedFiles.push(filePath);
     } catch (err) {
       result.errors++;
       unreadSources.push({

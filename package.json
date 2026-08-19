@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "3.4.14",
+  "version": "3.4.15",
   "description": "Architectural invariants and code quality analysis, enforced inside your AI agent's edit loop. MCP server + CLI + Claude Code plugin. TypeScript, JavaScript, Go.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,7 +33,7 @@
     "verify:dist": "npm pack --silent && bash scripts/verify-dist.sh && rm -f code-auditor-mcp-*.tgz",
     "verify:self": "node scripts/verify-self.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
-    "verify:close": "npm run test && npm run test:integration && npm run verify:dist && npm run verify:self && npm run verify:gate-budget"
+    "verify:close": "npm run test && npm run test:integration && npm run verify:gate-budget && npm run verify:dist && npm run verify:self"
   },
   "keywords": [
     "mcp",

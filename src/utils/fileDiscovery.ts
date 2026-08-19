@@ -8,9 +8,21 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import type { FileAccounting } from '../services/fileAccounting.js';
 
-// Default directories to exclude from analysis
-export const DEFAULT_EXCLUDED_DIRS = [
+/**
+ * Spec 44 — the excluded-directory split. The two halves of the default
+ * exclusion set behave differently under file accounting:
+ *
+ * - **Infra** dirs are toolchain artifacts (never source). They are pruned
+ *   silently and recorded only as an aggregate `infraPruned` line, because
+ *   enumerating `node_modules` per-file is impossible at scale.
+ * - **Content** dirs (docs, specs, tmp, …) are small and genuinely "source the
+ *   user might have meant to include". They are enumerated per-file and each
+ *   file is recorded `dropped: directory pruned` — which is what makes an
+ *   `.mdx` under `docs/` appear in the report instead of vanishing.
+ */
+export const DEFAULT_EXCLUDED_INFRA_DIRS = [
   'node_modules',
   '.next',
   'dist',
@@ -20,19 +32,29 @@ export const DEFAULT_EXCLUDED_DIRS = [
   '.turbo',
   'out',
   '.cache',
-  'tmp',
-  'temp',
   '.vscode',
   '.idea',
-  // Documentation, specs, and backups — rarely contain production source code
-  'docs',
-  'specs',
-  'backup',
-  'backups',
   // The tool's own on-disk index (CodeIndexDB). A prior audit run writes
   // `.code-index/index.db` into the project root; it must never be re-scanned
   // as source on a subsequent run (Bug #3).
   '.code-index',
+];
+
+// Documentation, specs, and backups — rarely contain production source code,
+// but enumerated per-file under accounting so they are reported, not silent.
+export const DEFAULT_EXCLUDED_CONTENT_DIRS = [
+  'tmp',
+  'temp',
+  'docs',
+  'specs',
+  'backup',
+  'backups',
+];
+
+// Backward-compatible union — still the default `excludeDirs` for discovery.
+export const DEFAULT_EXCLUDED_DIRS = [
+  ...DEFAULT_EXCLUDED_INFRA_DIRS,
+  ...DEFAULT_EXCLUDED_CONTENT_DIRS,
 ];
 
 /**
@@ -51,8 +73,8 @@ export const DEFAULT_EXCLUDED_FILES = new Set([
 ]);
 
 // Supported file extensions
-export const TYPESCRIPT_EXTENSIONS = ['.ts', '.tsx'];
-export const JAVASCRIPT_EXTENSIONS = ['.js', '.jsx'];
+export const TYPESCRIPT_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts'];
+export const JAVASCRIPT_EXTENSIONS = ['.js', '.jsx', '.mjs', '.cjs'];
 export const JSON_EXTENSIONS = ['.json'];
 export const GO_EXTENSIONS = ['.go'];
 export const CSS_EXTENSIONS = ['.css', '.scss'];
@@ -100,20 +122,75 @@ export interface FileDiscoveryOptions {
   includePaths?: string[];
   excludePaths?: string[];
   followSymlinks?: boolean;
+  /**
+   * Opt-in callback fired for every file whose extension is not in the
+   * discovery `extensions` set (Spec 43 R5 follow-up). Lets a caller aggregate
+   * the "what isn't being analyzed here" list so it can surface in the report
+   * instead of vanishing silently at discovery. Extensionless files (`''`) are
+   * not reported. Files inside `excludeDirs` are never walked, so they are never
+   * reported here — directory exclusion is a separate, documented concern from
+   * extension filtering.
+   */
+  onSkippedExtension?: (ext: string, filePath: string) => void;
+  /**
+   * Spec 44 — the file-accounting accumulator. When set, discovery records:
+   * `directory pruned` drops for every file under a *content* exclude dir,
+   * `extension not known` drops for skipped extensions, an aggregate
+   * `infraPruned` line per *infra* exclude dir, `directory pruned` drops for
+   * `excludePaths` matches (rule = the glob), and `recordTouched` for every
+   * candidate that survives filtering. Without it, discovery is a pure
+   * enumerator (unchanged behavior).
+   */
+  fileAccounting?: FileAccounting;
 }
 
 /**
- * Check if a path should be excluded based on directory names.
- * Only checks directory components *below* the scan root to avoid
- * false matches against filesystem roots like /tmp or /temp.
+ * Classify a path against the excluded-directory split (Spec 44).
+ *
+ * Only checks directory components *below* the scan root to avoid false
+ * matches against filesystem roots like /tmp or /temp. A component that is a
+ * default *infra* dir prunes silently (aggregate); every other excluded
+ * component — default *content* dirs and any user-supplied dir — is enumerated
+ * per-file so nothing is silently dropped.
  */
-function shouldExcludeDir(filePath: string, excludeDirs: string[], scanRoot: string): boolean {
+function classifyExcludedDir(
+  filePath: string,
+  excludeDirs: string[],
+  scanRoot: string
+): { kind: 'infra' | 'content'; dir: string } | null {
   // Get the relative path below scanRoot
   const relPath = path.relative(scanRoot, filePath);
   // If the path is outside scanRoot (shouldn't happen), don't exclude
-  if (relPath.startsWith('..')) return false;
+  if (relPath.startsWith('..')) return null;
   const parts = relPath.split(path.sep);
-  return parts.some(part => excludeDirs.includes(part));
+  for (const part of parts) {
+    if (!excludeDirs.includes(part)) continue;
+    if (DEFAULT_EXCLUDED_INFRA_DIRS.includes(part)) return { kind: 'infra', dir: part };
+    return { kind: 'content', dir: part };
+  }
+  return null;
+}
+
+/**
+ * Recursively list every file under a directory, any extension. Used only for
+ * *content* exclude dirs (small, enumerated per-file under accounting).
+ */
+async function enumerateAllFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        out.push(...(await enumerateAllFiles(fullPath)));
+      } else if (entry.isFile()) {
+        out.push(fullPath);
+      }
+    }
+  } catch {
+    // Unreadable subtree — skip (mirrors the walk's EACCES tolerance).
+  }
+  return out;
 }
 
 /**
@@ -126,6 +203,8 @@ async function findFilesRecursive(
     excludeDirs: string[];
     pattern?: RegExp;
     scanRoot: string;
+    onSkippedExtension?: (ext: string, filePath: string) => void;
+    fileAccounting?: FileAccounting;
   }
 ): Promise<string[]> {
   const results: string[] = [];
@@ -136,10 +215,23 @@ async function findFilesRecursive(
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
 
-      if (shouldExcludeDir(fullPath, options.excludeDirs, options.scanRoot)) {
+      const excl = classifyExcludedDir(fullPath, options.excludeDirs, options.scanRoot);
+      if (excl) {
+        const rule = DEFAULT_EXCLUDED_DIRS.includes(excl.dir) ? 'DEFAULT_EXCLUDED_DIRS' : 'excludeDirs';
+        if (excl.kind === 'infra') {
+          // Aggregate — never per-file (node_modules is not enumerable at scale).
+          options.fileAccounting?.recordInfraPruned(excl.dir, rule);
+        } else if (entry.isDirectory() && options.fileAccounting) {
+          // Content dir — enumerated per-file, each dropped: directory pruned.
+          // This is what makes `.mdx` under `docs/` appear (Spec 44 acceptance 5).
+          const contentFiles = await enumerateAllFiles(fullPath);
+          for (const f of contentFiles) {
+            options.fileAccounting.recordDropped('directory pruned', f, { directory: excl.dir, rule });
+          }
+        }
         continue;
       }
-      
+
       if (entry.isDirectory()) {
         const subResults = await findFilesRecursive(fullPath, options);
         results.push(...subResults);
@@ -151,6 +243,17 @@ async function findFilesRecursive(
           if (!options.pattern || options.pattern.test(entry.name)) {
             results.push(fullPath);
           }
+        } else if (ext !== '') {
+          // Record the extension discovery skipped so the report can answer
+          // "what isn't being analyzed here" (Spec 43 R5 follow-up) rather than
+          // silently dropping the file at discovery.
+          options.onSkippedExtension?.(ext, fullPath);
+          // Spec 44 reason 2 — a file with a known (or unknown) extension that
+          // is simply not in the discovery set.
+          options.fileAccounting?.recordDropped('extension not known', fullPath, {
+            ext,
+            kind: KNOWN_SOURCE_EXTENSIONS.includes(ext) ? 'known-but-not-discovered' : 'unknown',
+          });
         }
       }
     }
@@ -160,7 +263,7 @@ async function findFilesRecursive(
       console.error(`Error reading directory ${dir}:`, error);
     }
   }
-  
+
   return results;
 }
 
@@ -177,14 +280,25 @@ export async function findFiles(
   const files = await findFilesRecursive(rootDir, {
     extensions,
     excludeDirs,
-    scanRoot: rootDir
+    scanRoot: rootDir,
+    ...(options.onSkippedExtension ? { onSkippedExtension: options.onSkippedExtension } : {}),
+    ...(options.fileAccounting ? { fileAccounting: options.fileAccounting } : {})
   });
 
   // Apply additional filtering
-  let filtered = filterFiles(files, {
+  const filtered = filterFiles(files, {
     includePaths: options.includePaths,
-    excludePaths: options.excludePaths
+    excludePaths: options.excludePaths,
+    fileAccounting: options.fileAccounting
   });
+
+  // Spec 44 — every candidate that survives discovery filtering is "touched"
+  // (it will be classified analyzed/dropped in stage 2). Recording it here —
+  // after include/exclude filtering — means a positive-selection `includePaths`
+  // narrows the universe instead of producing touched-but-dropped entries.
+  if (options.fileAccounting) {
+    for (const f of filtered) options.fileAccounting.recordTouched(f);
+  }
 
   // Sort for consistent output
   return filtered.sort();
@@ -249,15 +363,22 @@ export async function findFilesByPattern(
     extensions,
     excludeDirs,
     pattern: regex,
-    scanRoot: rootDir
+    scanRoot: rootDir,
+    ...(options.onSkippedExtension ? { onSkippedExtension: options.onSkippedExtension } : {}),
+    ...(options.fileAccounting ? { fileAccounting: options.fileAccounting } : {})
   });
-  
+
   // Apply additional filtering
-  let filtered = filterFiles(files, {
+  const filtered = filterFiles(files, {
     includePaths: options.includePaths,
-    excludePaths: options.excludePaths
+    excludePaths: options.excludePaths,
+    fileAccounting: options.fileAccounting
   });
-  
+
+  if (options.fileAccounting) {
+    for (const f of filtered) options.fileAccounting.recordTouched(f);
+  }
+
   return filtered.sort();
 }
 
@@ -269,11 +390,13 @@ export function filterFiles(
   options: {
     includePaths?: string[];
     excludePaths?: string[];
+    fileAccounting?: FileAccounting;
   } = {}
 ): string[] {
   let filtered = [...files];
-  
-  // Apply include patterns
+
+  // Apply include patterns (positive selection — narrows the universe; a file
+  // removed here is simply not "touched", not dropped).
   if (options.includePaths && options.includePaths.length > 0) {
     filtered = filtered.filter(file => {
       return options.includePaths!.some(pattern => {
@@ -283,18 +406,26 @@ export function filterFiles(
       });
     });
   }
-  
+
   // Apply exclude patterns
   if (options.excludePaths && options.excludePaths.length > 0) {
-    filtered = filtered.filter(file => {
-      return !options.excludePaths!.some(pattern => {
+    const kept: string[] = [];
+    for (const file of filtered) {
+      const matched = options.excludePaths.find(pattern => {
         // Convert glob patterns to regex
         const regex = globToRegex(pattern);
         return regex.test(file);
       });
-    });
+      if (matched) {
+        // Spec 44 reason 1 — a user `excludePaths` prune, rule = the glob.
+        options.fileAccounting?.recordDropped('directory pruned', file, { rule: matched });
+      } else {
+        kept.push(file);
+      }
+    }
+    filtered = kept;
   }
-  
+
   return filtered;
 }
 
@@ -357,3 +488,37 @@ export async function isReadableFile(filePath: string): Promise<boolean> {
  * Alias for findFiles to match expected import
  */
 export const discoverFiles = findFiles;
+
+/**
+ * Discovery result plus the extensions discovery skipped, aggregated with
+ * counts. Surfacing this list makes "what isn't being analyzed here" answerable
+ * from the report instead of from a grep (Spec 43 R5 follow-up — the same
+ * silent-fallthrough fix applied to `.astro`/`.vue`/`.svelte` at extraction,
+ * moved one layer earlier to discovery).
+ */
+export interface DiscoverFilesDetailedResult {
+  files: string[];
+  skippedExtensions: Array<{ ext: string; count: number }>;
+}
+
+/**
+ * Discover files and simultaneously record the extensions discovery skipped.
+ * Mirrors `findFiles` (same defaults and filtering), but the returned
+ * `skippedExtensions` is aggregated during the recursive walk — before
+ * `includePaths`/`excludePaths` filtering — so it reflects the full scan, not
+ * just the filtered subset. Sorted by count descending, then extension.
+ */
+export async function discoverFilesDetailed(
+  rootDir: string = process.cwd(),
+  options: FileDiscoveryOptions = {}
+): Promise<DiscoverFilesDetailedResult> {
+  const counts = new Map<string, number>();
+  const onSkippedExtension = (ext: string) => {
+    counts.set(ext, (counts.get(ext) ?? 0) + 1);
+  };
+  const files = await findFiles(rootDir, { ...options, onSkippedExtension });
+  const skippedExtensions = [...counts.entries()]
+    .map(([ext, count]) => ({ ext, count }))
+    .sort((a, b) => b.count - a.count || a.ext.localeCompare(b.ext));
+  return { files, skippedExtensions };
+}

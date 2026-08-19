@@ -36,6 +36,49 @@ const packageJson = JSON.parse(
 
 const program = new Command();
 
+// Spec 44 R4 — file accounting summary line + `--explain-skipped` breakdown.
+// The full per-reason file lists live in the JSON report (`metadata.fileAccounting`);
+// the CLI preview is bounded to the first ~20 files per reason.
+function printFileAccounting(result: any, explainSkipped: boolean): void {
+  const fa = result?.metadata?.fileAccounting;
+  if (!fa) return;
+  const reasons = fa.reasons ?? {};
+  const reasonNames = Object.keys(reasons);
+  const reasonCount = reasonNames.length;
+  const partialSeg =
+    fa.partiallyAnalyzed > 0
+      ? ` · ${fa.partiallyAnalyzed.toLocaleString()} partially analyzed`
+      : '';
+  console.log(
+    chalk.gray(
+      `${fa.analyzed.toLocaleString()} analyzed` +
+        `${partialSeg}` +
+        ` · ${fa.dropped.toLocaleString()} dropped` +
+        ` (${reasonCount} reason${reasonCount !== 1 ? 's' : ''})`
+    )
+  );
+  if (!explainSkipped || reasonCount === 0) return;
+  console.log(chalk.gray('\n── Skipped files (by reason) ────────────────'));
+  for (const name of reasonNames.sort(
+    (a, b) => (reasons[b] as any).count - (reasons[a] as any).count
+  )) {
+    const { count, files } = reasons[name] as {
+      count: number;
+      files: Array<{ filePath: string; partial?: boolean }>;
+    };
+    const partialCount = files.filter((f) => f.partial).length;
+    const label =
+      partialCount > 0
+        ? `${name}: ${count.toLocaleString()} (${partialCount.toLocaleString()} partially analyzed)`
+        : `${name}: ${count.toLocaleString()}`;
+    console.log(`  ${label}`);
+    for (const f of files.slice(0, 20)) {
+      console.log(`    ${f.filePath}${f.partial ? '  (partially analyzed)' : ''}`);
+    }
+    if (files.length > 20) console.log(`    … and ${files.length - 20} more`);
+  }
+}
+
 // Configure the main program
 program
   .name('code-auditor')
@@ -59,6 +102,7 @@ program
   .option('--partition-strategy <strategy>', 'Partition strategy for detached runs: none, auto, or top-level')
   .option('--max-partitions <n>', 'Maximum number of partition shards (detached runs)')
   .option('--shard-timeout-ms <ms>', 'Per-shard timeout in milliseconds (detached runs)')
+  .option('--explain-skipped', 'Print a per-reason breakdown of files dropped from analysis')
   .action(async (options) => {
     console.log(chalk.blue('🔍 Code Quality Audit Tool'));
     console.log(chalk.gray('══════════════════════════════════════════════════'));
@@ -186,6 +230,9 @@ program
         console.log(`Suggestions: ${result.summary.suggestions}`);
       }
 
+      // Spec 44 R4 — file accounting: analyzed/dropped totals + optional breakdown.
+      printFileAccounting(result, !!options.explainSkipped);
+
       // Spec 32 — unparsed files are never silent. A run where any file failed
       // to parse (WASM abort, read error, …) must surface the count + reasons.
       const unparsedFiles = result.metadata?.unparsedFiles ?? [];
@@ -197,6 +244,18 @@ program
         if (unparsedFiles.length > 20) {
           console.error(`    … and ${unparsedFiles.length - 20} more`);
         }
+      }
+
+      // Spec 43 R5 follow-up — extensions present on disk that discovery skipped.
+      // Informational: surfaces "what isn't being analyzed here" so an unlisted
+      // extension (e.g. `.mdx`) never vanishes silently at discovery. Not an
+      // error — a skipped extension is not necessarily a defect (`.md`/`.svg`
+      // are legitimately not source), unlike `unparsedFiles` above.
+      const skippedExtensions = result.metadata?.skippedExtensions ?? [];
+      if (skippedExtensions.length > 0) {
+        console.log(chalk.gray(`\n── Not analyzed (skipped extensions) ────────`));
+        const parts = skippedExtensions.map(s => `${s.ext} (${s.count})`);
+        console.log(`  ${parts.join(', ')}`);
       }
 
       // Spec 36 R7 — suppressions are reported: how many exist, where, and how
@@ -375,6 +434,7 @@ program
   .option('--quiet', 'Suppress output when zero violations')
   .option('--fail-on-zero-files', 'Exit code 2 when any enabled analyzer matches zero source files', true)
   .option('--stdin', 'Read file paths from stdin (one per line)')
+  .option('--explain-skipped', 'Print a per-reason breakdown of files dropped from analysis')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
   .action(async (paths: string[], options: Record<string, any>) => {
     try {
@@ -467,7 +527,7 @@ program
         // consumer routes around. Findings only, each with file:line.
         console.log(chalk.blue('🔍 Diff-Scoped Code Audit'));
         console.log(chalk.gray('══════════════════════════════════════════════════'));
-        console.log(chalk.gray(`Files analyzed: ${result.metadata.filesAnalyzed}`));
+        printFileAccounting(result, !!options.explainSkipped);
 
         if (violations.length > 0) {
           console.log(chalk.gray('\n── Violations ────────────────────────────────────'));

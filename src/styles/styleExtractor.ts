@@ -64,6 +64,10 @@ export function extractDeclarations(
     case '.jsx':
     case '.ts':
     case '.js':
+    case '.mts':
+    case '.cts':
+    case '.mjs':
+    case '.cjs':
       return extractFromTypeScript(filePath, adapter, sourceCode, ast, tailwindTokens);
     default:
       // Not a style-bearing extension. Known source (`.css`/`.scss` — handled by

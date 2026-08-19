@@ -224,9 +224,13 @@ function getLanguageFromPath(filePath: string): string {
   switch (ext) {
     case '.ts':
     case '.tsx':
+    case '.mts':
+    case '.cts':
       return 'typescript';
     case '.js':
     case '.jsx':
+    case '.mjs':
+    case '.cjs':
       return 'javascript';
     default:
       return 'unknown';
@@ -1045,7 +1049,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
   return {
     name: 'schema-code',
     stage: 'visitor',
-    extensions: ['.ts', '.tsx', '.js', '.jsx'],
+    extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'],
     getRuleIds: () => getRuleIdsFor('schema'),
     async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
       const { analyzer: a, defaults, parseMigrationOps, extractDdlColumnNames } = await getAnalyzer();

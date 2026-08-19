@@ -1,5 +1,5 @@
 /**
- * Spec 38 R3 — gate speed budget.
+ * Spec 38 R3 — gate speed budget (Spec 43 R2/R3: warm-then-measure).
  *
  * The blocking gate (`code-audit changed`) must complete in under 300 ms on a
  * single changed file. This is the machine-checked assertion: it runs the real
@@ -11,11 +11,19 @@
  * R3 is about: a slow *rule* makes the audit slow, and a slow WASM load is a
  * different (fixed, once-per-process) cost that R2/R3 are not scoped to.
  *
+ * Spec 43 R2/R3 — the first invocation is a COLD run (page cache, tree-sitter,
+ * and index all still cold); its timing is reported but NOT asserted. The
+ * second invocation is the WARM run the budget asserts on. A slow rule makes
+ * the warm run slow, and that is what Spec 38 R3 exists to catch — there isn't
+ * one, so the warm figure is the honest signal. The cold figure is still
+ * printed because a cold number that climbs past a second is a finding worth
+ * seeing rather than one the warm-up conceals.
+ *
  * Usage (from app/):
  *   npm run build && npm run verify:gate-budget
  *
- * Exit code: 0 iff the gate is under budget; 1 otherwise (with the measured
- * figure and the per-rule breakdown so the dominant rule is visible).
+ * Exit code: 0 iff the warm gate is under budget; 1 otherwise (with the
+ * measured figures and the per-rule breakdown so the dominant rule is visible).
  */
 
 import { spawnSync } from 'node:child_process';
@@ -31,51 +39,69 @@ if (!existsSync(CLI)) {
   process.exit(1);
 }
 
-const result = spawnSync(
-  'node',
-  [CLI, 'changed', REPRESENTATIVE_FILE, '--json'],
-  {
-    encoding: 'utf-8',
-    env: { ...process.env, CODE_AUDIT_RULE_TIMING: '1' },
-  },
-);
-
-if (result.error) {
-  console.error(`verify:gate-budget: failed to launch CLI: ${result.error.message}`);
-  process.exit(1);
+function runGate() {
+  const result = spawnSync(
+    'node',
+    [CLI, 'changed', REPRESENTATIVE_FILE, '--json'],
+    {
+      encoding: 'utf-8',
+      env: { ...process.env, CODE_AUDIT_RULE_TIMING: '1' },
+    },
+  );
+  if (result.error) {
+    return { gateMs: null, stderr: '', error: result.error.message };
+  }
+  const stderr = result.stderr ?? '';
+  const gateMatch = stderr.match(/gate wall-clock:\s*([\d.]+)\s*ms/);
+  return { gateMs: gateMatch ? parseFloat(gateMatch[1]) : null, stderr, error: null };
 }
 
-const stderr = result.stderr ?? '';
-const gateMatch = stderr.match(/gate wall-clock:\s*([\d.]+)\s*ms/);
-if (!gateMatch) {
-  console.error('verify:gate-budget: could not parse "gate wall-clock" from CLI output.');
+function reportParseFailure(label, stderr) {
+  console.error(`verify:gate-budget: could not parse "gate wall-clock" from CLI output (${label} run).`);
   console.error('--- captured stderr ---');
   console.error(stderr);
   process.exit(1);
 }
 
-const gateMs = parseFloat(gateMatch[1]);
-console.log(`gate wall-clock: ${gateMs.toFixed(1)} ms (budget ${BUDGET_MS} ms)`);
+// Cold run — warms the page cache and index; reported, never asserted (Spec 43 R3).
+const cold = runGate();
+if (cold.error) {
+  console.error(`verify:gate-budget: failed to launch CLI (cold run): ${cold.error}`);
+  process.exit(1);
+}
+if (cold.gateMs === null) reportParseFailure('cold', cold.stderr);
 
-// Re-emit the per-rule breakdown (slowest first) so a slow rule is visible.
-const ruleLines = stderr.split('\n').filter((l) => /^\s{2}\S+\s+[\d.]+ ms/.test(l));
+// Warm run — the figure the budget asserts on (Spec 43 R2).
+const warm = runGate();
+if (warm.error) {
+  console.error(`verify:gate-budget: failed to launch CLI (warm run): ${warm.error}`);
+  process.exit(1);
+}
+if (warm.gateMs === null) reportParseFailure('warm', warm.stderr);
+
+console.log(`cold gate wall-clock: ${cold.gateMs.toFixed(1)} ms (unasserted — page-cache cold)`);
+console.log(`warm gate wall-clock: ${warm.gateMs.toFixed(1)} ms (budget ${BUDGET_MS} ms)`);
+
+// Re-emit the per-rule breakdown (slowest first) from the warm run so a slow
+// rule is visible.
+const ruleLines = warm.stderr.split('\n').filter((l) => /^\s{2}\S+\s+[\d.]+ ms/.test(l));
 if (ruleLines.length > 0) {
-  console.log('per-rule timing (slowest first):');
+  console.log('per-rule timing (warm, slowest first):');
   for (const line of ruleLines) console.log(line);
 }
 
-if (!Number.isFinite(gateMs)) {
-  console.error(`verify:gate-budget: unparseable gate wall-clock: ${gateMatch[1]}`);
+if (!Number.isFinite(warm.gateMs)) {
+  console.error('verify:gate-budget: unparseable warm gate wall-clock.');
   process.exit(1);
 }
 
-if (gateMs >= BUDGET_MS) {
+if (warm.gateMs >= BUDGET_MS) {
   console.error(
-    `FAIL: gate ${gateMs.toFixed(1)} ms exceeds budget ${BUDGET_MS} ms. ` +
+    `FAIL: warm gate ${warm.gateMs.toFixed(1)} ms exceeds budget ${BUDGET_MS} ms. ` +
       'Do not quietly widen the budget — see Spec 38 R3.',
   );
   process.exit(1);
 }
 
-console.log(`PASS: gate ${gateMs.toFixed(1)} ms is under budget ${BUDGET_MS} ms.`);
+console.log(`PASS: warm gate ${warm.gateMs.toFixed(1)} ms is under budget ${BUDGET_MS} ms.`);
 process.exit(0);
