@@ -60,6 +60,15 @@ export const CSS_EXTENSIONS = ['.css', '.scss'];
 // style indexer can extract their embedded stylesheets; the pipeline itself has
 // no language adapter for them, so they are consumed only by syncStyleIndex.
 export const MARKUP_EXTENSIONS = ['.astro', '.vue', '.svelte'];
+// Markup/component extensions the style extractor reads (embedded <style> blocks
+// and class attributes). This is the single source of truth for the extractor's
+// markup dispatch — the gates in styleIndexer.ts and the dispatch in
+// styleExtractor.ts derive from it so a newly supported dialect is handled
+// everywhere at once instead of silently dropped from one list. `.html` is
+// included because scoped runs may pass HTML files, even though `.html` is NOT
+// discovered by default (recall-protocol's ~11,928 spec-dump `.html` files would
+// blow up a full audit).
+export const STYLE_MARKUP_EXTENSIONS = ['.html', ...MARKUP_EXTENSIONS];
 // Dialects the style indexer cannot yet read (Sass/SCSS indented syntax, Less,
 // Stylus). Not discovered as source — the indexer records them as *unread*
 // stylesheet sources (Spec 42 R2) so undefined-class never asserts on a class
@@ -75,6 +84,15 @@ export const RAW_EXTENSIONS = [...SQL_EXTENSIONS, ...TOML_EXTENSIONS, ...PRISMA_
 // files (spec dumps) and reading them all would blow up the audit. Markup
 // extensions are added because they are real component files with styles.
 export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS, ...CSS_EXTENSIONS, ...RAW_EXTENSIONS, ...MARKUP_EXTENSIONS];
+// Every extension the analysis layer understands as source — style-bearing
+// (TS/JS/markup/CSS) plus non-style (JSON/Go/SQL/TOML/Prisma), with `.html`
+// added since scoped runs may pass it even though it is not discovered by
+// default. Single source of truth for the style extractor's "loud" default
+// branch: an extension that reaches it unhandled is recorded as an unread
+// source (Spec 42 R2) *only* when it is NOT in this set, so a genuinely unknown
+// dialect (`.mdx`, `.md`, …) surfaces instead of a silent zero while legitimate
+// non-style source and `.css`/`.scss` (handled by the AST pipeline) stay silent.
+export const KNOWN_SOURCE_EXTENSIONS = [...ALL_EXTENSIONS, '.html'];
 
 export interface FileDiscoveryOptions {
   extensions?: string[];

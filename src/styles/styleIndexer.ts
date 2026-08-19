@@ -16,7 +16,14 @@ import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import type { LanguageAdapter } from '../languages/types.js';
 import { extractDeclarations, extractTokens, getOrLoadTailwindTokens } from './styleExtractor.js';
 import { loadTailwindConfig, tokensToStyleTokens } from './tailwindConfigLoader.js';
-import { findFiles, UNREAD_STYLE_EXTENSIONS } from '../utils/fileDiscovery.js';
+import {
+  findFiles,
+  UNREAD_STYLE_EXTENSIONS,
+  STYLE_MARKUP_EXTENSIONS,
+  KNOWN_SOURCE_EXTENSIONS,
+  TYPESCRIPT_EXTENSIONS,
+  JAVASCRIPT_EXTENSIONS,
+} from '../utils/fileDiscovery.js';
 import type {
   NormalizedDeclaration,
   StyleToken,
@@ -191,8 +198,8 @@ async function extractForFile(
     return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
   }
 
-  // TS/JS/TSX/JSX need a language adapter
-  if (['.ts', '.tsx', '.js', '.jsx'].includes(ext)) {
+  // TS/JS/TSX/JSX need a language adapter (derived from the discovery constants)
+  if ([...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS].includes(ext)) {
     let adapter: LanguageAdapter | null = null;
     try {
       if (registry) {
@@ -223,11 +230,21 @@ async function extractForFile(
     return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
   }
 
-  // HTML/Vue/Svelte/Astro — extractor handles these with regex
-  if (['.html', '.vue', '.svelte', '.astro'].includes(ext)) {
+  // Markup/component files — extractor handles these with regex. Derived from
+  // the shared STYLE_MARKUP_EXTENSIONS so it can't drift from extractDeclarations
+  // (the `.astro` silent-drop bug).
+  if (STYLE_MARKUP_EXTENSIONS.includes(ext)) {
     return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
   }
 
+  // Not a style-bearing extension. Known source (`.css`/`.scss` — handled by the
+  // AST pipeline — plus JSON/Go/SQL/TOML/Prisma owned by other analyzers) is
+  // skipped silently; any *other* extension is unhandled — record it so
+  // undefined-class surfaces the gap instead of silently dropping the file type
+  // (Spec 42 R2 backstop).
+  if (ext && !KNOWN_SOURCE_EXTENSIONS.includes(ext)) {
+    unreadSources?.push({ filePath, reason: `unsupported source extension: ${ext}` });
+  }
   return [];
 }
 
@@ -247,13 +264,15 @@ export function extractClassUsage(
   // `class`/`className` substrings inside string literals (Bug #3 — e.g. an
   // audit-report.json embedding a raw source snippet with `error_class =
   // 'zombie-capped'`). Those must never reach the class-usage table, so gate
-  // extraction to the extensions that actually carry class attributes.
-  const CLASS_USAGE_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.html', '.vue', '.svelte', '.astro'];
+  // extraction to the extensions that actually carry class attributes. Derived
+  // from the shared discovery constants so this list can't drift from the
+  // declaration extractor (the `.astro` silent-drop bug).
+  const CLASS_USAGE_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...STYLE_MARKUP_EXTENSIONS];
   if (!CLASS_USAGE_EXTENSIONS.includes(ext)) return [];
 
   // Determine mechanism by file type
   let mechanism: StyleClassUsage['mechanism'] = 'class';
-  if (['.tsx', '.jsx', '.ts', '.js'].includes(ext)) {
+  if ([...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS].includes(ext)) {
     mechanism = 'className';
   }
 

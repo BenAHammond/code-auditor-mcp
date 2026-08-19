@@ -17,6 +17,7 @@ import { normalizeValue, expandShorthand } from './normalizer.js';
 import { expandUtility } from './tailwindExpander.js';
 import { loadTailwindConfig, tokensToStyleTokens } from './tailwindConfigLoader.js';
 import type { TailwindThemeTokens } from './tailwindConfigLoader.js';
+import { STYLE_MARKUP_EXTENSIONS, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileDiscovery.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -44,6 +45,15 @@ export function extractDeclarations(
 ): NormalizedDeclaration[] {
   const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
 
+  // Markup/component files — extract class attributes + embedded <style> blocks.
+  // Membership is derived from the shared STYLE_MARKUP_EXTENSIONS (single source
+  // of truth) so a newly supported dialect is handled here automatically rather
+  // than silently dropped from a hand-maintained `case` list (the `.astro`
+  // silent-drop bug, Spec 42 R2).
+  if (STYLE_MARKUP_EXTENSIONS.includes(ext)) {
+    return extractFromHTML(filePath, sourceCode, tailwindTokens, unreadSources);
+  }
+
   switch (ext) {
     // .css files are handled by the AST pipeline (cssAstExtractor.ts +
     // createStylesCssVisitor in pipelineAdapters.ts). SCSS stays on the
@@ -55,13 +65,16 @@ export function extractDeclarations(
     case '.ts':
     case '.js':
       return extractFromTypeScript(filePath, adapter, sourceCode, ast, tailwindTokens);
-    case '.html':
-    case '.vue':
-    case '.svelte':
-    case '.astro':
-      // HTML/Vue/Svelte/Astro: extract class attributes + embedded <style> blocks.
-      return extractFromHTML(filePath, sourceCode, tailwindTokens, unreadSources);
     default:
+      // Not a style-bearing extension. Known source (`.css`/`.scss` — handled by
+      // the AST pipeline — plus JSON/Go/SQL/TOML/Prisma owned by other analyzers)
+      // is skipped silently; any *other* extension is unhandled — record it so
+      // undefined-class surfaces the gap (whole-run notApplicable) instead of
+      // silently dropping the file type. This is the loud backstop for the next
+      // dialect that isn't added to the known set.
+      if (unreadSources && ext && !KNOWN_SOURCE_EXTENSIONS.includes(ext)) {
+        unreadSources.push({ filePath, reason: `unsupported source extension: ${ext}` });
+      }
       return [];
   }
 }

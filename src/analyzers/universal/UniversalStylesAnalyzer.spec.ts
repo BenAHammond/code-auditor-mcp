@@ -1212,4 +1212,35 @@ describe('Spec 42 R1 — dialect stylesheets', () => {
       { filePath: 'src/Component.vue', reason: 'unsupported style dialect: sass' },
     ]);
   });
+
+  it('records an unhandled extension as unread; skips known non-style sources (R2 backstop)', async () => {
+    // Unknown source extension — the loud backstop: recorded so undefined-class
+    // surfaces it rather than silently dropping the file type.
+    const unknownUnread: Array<{ filePath: string; reason: string }> = [];
+    const unknownDecl = extractDeclarations(
+      'src/Widget.mdx', null as any, '# hello', undefined, undefined, unknownUnread,
+    );
+    expect(unknownDecl).toEqual([]);
+    expect(unknownUnread).toEqual([
+      { filePath: 'src/Widget.mdx', reason: 'unsupported source extension: .mdx' },
+    ]);
+
+    // Known non-style source (owned by other analyzers) — skipped silently; must
+    // NOT record an unread source (which would falsely disable undefined-class
+    // on every project containing a .json/.go/.sql/.toml/.prisma file).
+    const nonStyleUnread: Array<{ filePath: string; reason: string }> = [];
+    extractDeclarations(
+      'prisma/schema.prisma', null as any, 'model User { id Int }', undefined, undefined, nonStyleUnread,
+    );
+    expect(nonStyleUnread).toEqual([]);
+
+    // `.css` is style-bearing but handled by the AST pipeline, not this regex
+    // extractor — it must stay silent too (a `.css` file must never read as an
+    // "unsupported extension" and falsely disable undefined-class).
+    const cssUnread: Array<{ filePath: string; reason: string }> = [];
+    extractDeclarations(
+      'src/app.css', null as any, '.foo { color: red }', undefined, undefined, cssUnread,
+    );
+    expect(cssUnread).toEqual([]);
+  });
 });
