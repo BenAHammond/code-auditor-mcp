@@ -51,21 +51,26 @@ describe('fileDiscovery', () => {
       }
     });
 
-    it('still excludes tmp directories inside the project', async () => {
+    it('excludes tmp dirs at any depth (transient, never source)', async () => {
       const baseDir = path.join(os.tmpdir(), `ca-fd-test-${Date.now()}`);
       await fs.mkdir(baseDir, { recursive: true });
       try {
         await fs.mkdir(path.join(baseDir, 'src', 'tmp'), { recursive: true });
+        await fs.mkdir(path.join(baseDir, 'tmp'), { recursive: true });
         await fs.writeFile(path.join(baseDir, 'src', 'app.ts'), 'export const z = 3;');
-        await fs.writeFile(path.join(baseDir, 'src', 'tmp', 'artifact.ts'), 'export const a = 4;');
+        await fs.writeFile(path.join(baseDir, 'src', 'tmp', 'route.ts'), 'export const a = 4;');
+        await fs.writeFile(path.join(baseDir, 'tmp', 'artifact.ts'), 'export const b = 5;');
 
         const files = await findFiles(baseDir, {
           extensions: ['.ts']
         });
 
-        // Should find the file in src/ but NOT in src/tmp/
+        // tmp is any-depth (Wrangler build cache and the like), so both the
+        // root tmp/ and the nested src/tmp/ are pruned; src/app.ts is the only
+        // source file.
         expect(files.some(f => f.endsWith('app.ts'))).toBe(true);
-        expect(files.some(f => f.includes('tmp') && f.endsWith('artifact.ts'))).toBe(false);
+        expect(files.some(f => f.endsWith(path.join('src', 'tmp', 'route.ts')))).toBe(false);
+        expect(files.some(f => f.endsWith(path.join('tmp', 'artifact.ts')))).toBe(false);
       } finally {
         await fs.rm(baseDir, { recursive: true, force: true });
       }
@@ -246,9 +251,96 @@ describe('fileDiscovery', () => {
         expect(summary.infraPruned).toContainEqual({
           directory: 'node_modules',
           rule: 'DEFAULT_EXCLUDED_DIRS',
-          count: 1,
+          directories: 1,
         });
         expect(summary.dropped).toBe(1);
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Spec 45 R1 — root-anchored directory exclusions', () => {
+    it('analyzes nested docs/ under src/ but prunes root-level docs/', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-r1-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.mkdir(path.join(baseDir, 'src', 'pages', 'docs'), { recursive: true });
+        await fs.mkdir(path.join(baseDir, 'docs'), { recursive: true });
+        await fs.writeFile(path.join(baseDir, 'src', 'pages', 'docs', 'page.ts'), 'export const p = 1;');
+        await fs.writeFile(path.join(baseDir, 'docs', 'guide.mdx'), '# guide');
+
+        const fa = new FileAccounting();
+        const files = await findFiles(baseDir, {
+          extensions: ['.ts', '.mdx'],
+          fileAccounting: fa,
+        });
+
+        // src/pages/docs/page.ts is source; root docs/guide.mdx is pruned.
+        expect(files.map(f => path.relative(baseDir, f))).toContain(
+          path.join('src', 'pages', 'docs', 'page.ts')
+        );
+        const summary = fa.summary();
+        const dirPruned = summary.reasons['directory pruned'];
+        expect(dirPruned).toBeDefined();
+        expect(dirPruned!.count).toBe(1);
+        expect(dirPruned!.files[0].filePath).toContain(path.join('docs', 'guide.mdx'));
+        expect(dirPruned!.files[0].directory).toBe('docs');
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it('still prunes nested node_modules at any depth (any-depth exception)', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-r1b-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.mkdir(path.join(baseDir, 'infra', 'node_modules', 'pkg'), { recursive: true });
+        await fs.writeFile(path.join(baseDir, 'app.ts'), 'export const a = 1;');
+        await fs.writeFile(path.join(baseDir, 'infra', 'node_modules', 'pkg', 'index.ts'), 'export const n = 2;');
+
+        const fa = new FileAccounting();
+        const files = await findFiles(baseDir, {
+          extensions: ['.ts'],
+          fileAccounting: fa,
+        });
+
+        expect(files.some(f => f.endsWith('app.ts'))).toBe(true);
+        expect(files.some(f => f.includes('node_modules'))).toBe(false);
+        expect(fa.summary().infraPruned).toContainEqual({
+          directory: 'node_modules',
+          rule: 'DEFAULT_EXCLUDED_DIRS',
+          directories: 1,
+        });
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it('prunes nested toolchain dirs (.cache, .code-index, dist) at any depth', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-r1c-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        await fs.mkdir(path.join(baseDir, 'scripts', '.cache', 'build-articles'), { recursive: true });
+        await fs.mkdir(path.join(baseDir, 'src', 'agents', '.code-index'), { recursive: true });
+        await fs.mkdir(path.join(baseDir, 'packages', 'x', 'dist'), { recursive: true });
+        await fs.writeFile(path.join(baseDir, 'src', 'app.ts'), 'export const a = 1;');
+        await fs.writeFile(path.join(baseDir, 'scripts', '.cache', 'build-articles', 'x.json'), '{}');
+        await fs.writeFile(path.join(baseDir, 'src', 'agents', '.code-index', 'index.db'), 'binary');
+        await fs.writeFile(path.join(baseDir, 'packages', 'x', 'dist', 'out.js'), 'export const o = 2;');
+
+        const fa = new FileAccounting();
+        const files = await findFiles(baseDir, { // default ALL_EXTENSIONS
+          fileAccounting: fa,
+        });
+
+        // Only src/app.ts survives; the three nested toolchain dirs are pruned.
+        expect(files.map(f => path.basename(f))).toEqual(['app.ts']);
+
+        const infra = fa.summary().infraPruned;
+        expect(infra).toContainEqual({ directory: '.cache', rule: 'DEFAULT_EXCLUDED_DIRS', directories: 1 });
+        expect(infra).toContainEqual({ directory: '.code-index', rule: 'DEFAULT_EXCLUDED_DIRS', directories: 1 });
+        expect(infra).toContainEqual({ directory: 'dist', rule: 'DEFAULT_EXCLUDED_DIRS', directories: 1 });
       } finally {
         await fs.rm(baseDir, { recursive: true, force: true });
       }

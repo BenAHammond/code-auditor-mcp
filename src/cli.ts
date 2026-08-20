@@ -57,25 +57,40 @@ function printFileAccounting(result: any, explainSkipped: boolean): void {
         ` (${reasonCount} reason${reasonCount !== 1 ? 's' : ''})`
     )
   );
-  if (!explainSkipped || reasonCount === 0) return;
-  console.log(chalk.gray('\n── Skipped files (by reason) ────────────────'));
-  for (const name of reasonNames.sort(
-    (a, b) => (reasons[b] as any).count - (reasons[a] as any).count
-  )) {
-    const { count, files } = reasons[name] as {
-      count: number;
-      files: Array<{ filePath: string; partial?: boolean }>;
-    };
-    const partialCount = files.filter((f) => f.partial).length;
-    const label =
-      partialCount > 0
-        ? `${name}: ${count.toLocaleString()} (${partialCount.toLocaleString()} partially analyzed)`
-        : `${name}: ${count.toLocaleString()}`;
-    console.log(`  ${label}`);
-    for (const f of files.slice(0, 20)) {
-      console.log(`    ${f.filePath}${f.partial ? '  (partially analyzed)' : ''}`);
+  if (!explainSkipped) return;
+  if (reasonCount > 0) {
+    console.log(chalk.gray('\n── Skipped files (by reason) ────────────────'));
+    for (const name of reasonNames.sort(
+      (a, b) => (reasons[b] as any).count - (reasons[a] as any).count
+    )) {
+      const { count, files } = reasons[name] as {
+        count: number;
+        files: Array<{ filePath: string; partial?: boolean }>;
+      };
+      const partialCount = files.filter((f) => f.partial).length;
+      const label =
+        partialCount > 0
+          ? `${name}: ${count.toLocaleString()} (${partialCount.toLocaleString()} partially analyzed)`
+          : `${name}: ${count.toLocaleString()}`;
+      console.log(`  ${label}`);
+      for (const f of files.slice(0, 20)) {
+        console.log(`    ${f.filePath}${f.partial ? '  (partially analyzed)' : ''}`);
+      }
+      if (files.length > 20) console.log(`    … and ${files.length - 20} more`);
     }
-    if (files.length > 20) console.log(`    … and ${files.length - 20} more`);
+  }
+  // Spec 45 R3 — infrastructure prunes are directory-basename match counts, not
+  // file counts. Say so explicitly so `node_modules 2` can't be misread as two
+  // files (it's two directories: ./node_modules and ./infra/node_modules).
+  const infraPruned = fa.infraPruned ?? [];
+  if (infraPruned.length > 0) {
+    console.log(
+      chalk.gray('\n── Infrastructure directories pruned (count = directories, not files) ──')
+    );
+    for (const { directory, rule, directories } of infraPruned) {
+      const noun = directories === 1 ? 'directory' : 'directories';
+      console.log(`  ${directory} (${directories.toLocaleString()} ${noun})${rule ? ` [${rule}]` : ''}`);
+    }
   }
 }
 

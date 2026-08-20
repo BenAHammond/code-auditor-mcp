@@ -86,8 +86,8 @@ describe('FileAccounting', () => {
     const s = fa.summary();
     expect(s.touched).toBe(0);
     expect(s.infraPruned).toEqual([
-      { directory: '/proj/node_modules', rule: 'DEFAULT_EXCLUDED_DIRS', count: 2 },
-      { directory: '/proj/dist', rule: 'DEFAULT_EXCLUDED_DIRS', count: 1 },
+      { directory: '/proj/node_modules', rule: 'DEFAULT_EXCLUDED_DIRS', directories: 2 },
+      { directory: '/proj/dist', rule: 'DEFAULT_EXCLUDED_DIRS', directories: 1 },
     ]);
   });
 

@@ -58,6 +58,57 @@ export const DEFAULT_EXCLUDED_DIRS = [
 ];
 
 /**
+ * Spec 45 R1 — the per-entry anchoring choice. Each directory basename in
+ * `DEFAULT_EXCLUDED_DIRS` is either *any-depth* or *root-anchored* depending on
+ * whether the name is an unambiguous toolchain/transient marker (never a source
+ * route) or an ambiguous one (could be user source when nested).
+ *
+ * ANY-DEPTH (13 entries) — toolchain artifacts wherever they appear; nested
+ * occurrences are never source, so they are excluded at every depth below the
+ * scan root:
+ *
+ *   - `node_modules` — package deps; monorepo workspaces are still deps.
+ *   - `.git` — VCS metadata; submodules are still VCS.
+ *   - `.next` — Next.js build output (reserved name).
+ *   - `dist`, `out` — build/export output.
+ *   - `coverage` — test coverage report.
+ *   - `.turbo` — Turborepo cache.
+ *   - `.cache` — cache (recall's `scripts/.cache` holds generated build JSON).
+ *   - `.vscode`, `.idea` — editor state.
+ *   - `.code-index` — the tool's own SQLite index (Bug #3); a prior scoped run
+ *     can leave `src/agents/.code-index` nested.
+ *   - `tmp`, `temp` — transient (recall's `scripts/.wrangler/tmp` is Wrangler
+ *     build cache; never source).
+ *
+ * ROOT-ANCHORED (5 entries) — ambiguous: they can be a real file-router route
+ * or user source when nested under `src/`, so they are excluded only as the
+ * first component below the scan root. File-based routers (Astro, Next,
+ * SvelteKit, Nuxt) make `src/pages/docs/…` and `src/pages/…/build/…` real
+ * routes:
+ *
+ *   - `build` — a nested `src/pages/…/build/…` dir is a route; root `build` is
+ *     build output.
+ *   - `docs` — `src/pages/docs/…` is a route (recall's two R1 source files);
+ *     root `docs` is documentation.
+ *   - `specs`, `backup`, `backups` — can be in-repo source.
+ */
+export const DEFAULT_EXCLUDED_ANY_DEPTH_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.next',
+  'dist',
+  'out',
+  'coverage',
+  '.turbo',
+  '.cache',
+  '.vscode',
+  '.idea',
+  '.code-index',
+  'tmp',
+  'temp',
+]);
+
+/**
  * Basenames the tool itself writes into the project, which must never be
  * re-discovered as source on a subsequent run (Bug #3 — "exclude the tool's
  * own output from discovery"). The `audit` command writes `audit-report.<ext>`
@@ -145,13 +196,20 @@ export interface FileDiscoveryOptions {
 }
 
 /**
- * Classify a path against the excluded-directory split (Spec 44).
+ * Classify a path against the excluded-directory split (Spec 44 + Spec 45 R1).
  *
  * Only checks directory components *below* the scan root to avoid false
  * matches against filesystem roots like /tmp or /temp. A component that is a
  * default *infra* dir prunes silently (aggregate); every other excluded
  * component — default *content* dirs and any user-supplied dir — is enumerated
  * per-file so nothing is silently dropped.
+ *
+ * Spec 45 R1: a basename matches only as the *first* component below the scan
+ * root, unless it is one of the `DEFAULT_EXCLUDED_ANY_DEPTH_DIRS` entries
+ * (unambiguous toolchain/transient names — see the per-entry list on that
+ * constant), which match at any depth. This keeps `src/pages/docs/…` and
+ * `src/pages/…/build/…` as source instead of silently pruning them, while still
+ * pruning nested `node_modules`, `.cache`, `.code-index`, and `tmp`.
  */
 function classifyExcludedDir(
   filePath: string,
@@ -163,8 +221,12 @@ function classifyExcludedDir(
   // If the path is outside scanRoot (shouldn't happen), don't exclude
   if (relPath.startsWith('..')) return null;
   const parts = relPath.split(path.sep);
-  for (const part of parts) {
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
     if (!excludeDirs.includes(part)) continue;
+    // Root-anchored entries match only at the first component; any-depth
+    // entries (`node_modules`, `.git`) match anywhere below the scan root.
+    if (i !== 0 && !DEFAULT_EXCLUDED_ANY_DEPTH_DIRS.has(part)) continue;
     if (DEFAULT_EXCLUDED_INFRA_DIRS.includes(part)) return { kind: 'infra', dir: part };
     return { kind: 'content', dir: part };
   }

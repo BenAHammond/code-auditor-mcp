@@ -445,8 +445,11 @@ export interface FileAccountingSummary {
   /** Files dropped with one of the eight reasons (never reached any layer). */
   dropped: number;
   /** Aggregate infrastructure-directory prunes (not per-file — node_modules is
-   *  not enumerable at scale). Sorted by count desc, then directory asc. */
-  infraPruned: Array<{ directory: string; rule: string; count: number }>;
+   *  not enumerable at scale). `directories` is a directory-basename match
+   *  count, NOT a file count (Spec 45 R3): `node_modules: 2` means two
+   *  directories matched (`./node_modules` and `./infra/node_modules`), not two
+   *  files. Sorted by directories desc, then directory asc. */
+  infraPruned: Array<{ directory: string; rule: string; directories: number }>;
   /** Per-reason file lists (complete in the JSON report). */
   reasons: Partial<Record<FileDropReason, { count: number; files: FileAccountingFileEntry[] }>>;
 }

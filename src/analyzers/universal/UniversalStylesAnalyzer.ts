@@ -429,17 +429,18 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
       histogram.set(key, list);
     }
 
-    // Find the mode (most frequent value)
+    // Find the mode (most frequent value) — the message displays the raw
+    // spelling, never the JSON `normalized_value` bucket key (Spec 45 R2).
     let modeKey = '';
-    let modeCount = 0;
+    let modeList: StyleDeclRow[] = [];
     for (const [key, list] of histogram) {
-      if (list.length > modeCount) {
-        modeCount = list.length;
+      if (list.length > modeList.length) {
         modeKey = key;
+        modeList = list;
       }
     }
 
-    if (modeCount < cfg.modeMinCount) return violations;
+    if (modeList.length < cfg.modeMinCount) return violations;
 
     // Flag low-share values
     const total = decls.length;
@@ -453,7 +454,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
           sample.line,
           `Value drift in "${property}": "${sample.raw_value}" is rare ` +
           `(${list.length} of ${total} usages, ${(share * 100).toFixed(1)}%). ` +
-          `The dominant value "${modeKey}" is used ${modeCount} times. ` +
+          `The dominant value "${modeList[0].raw_value}" is used ${modeList.length} times. ` +
           `Consider using a consistent value or design token.`,
           { severity: 'warning', rule: 'styles/value-drift', symbol: 'exact' },
         ));
@@ -890,11 +891,13 @@ function flagPropertyValueFragmentation(
   for (const [key, mechs] of pvMap) {
     if (mechs.size < minMechanisms) continue;
     const sample = pvSample.get(key)!;
-    const [prop, value] = key.split('::');
+    // The grouping key is `${property}::${normalized_value}` — a JSON object in
+    // production — so display the *resolved* raw spelling, not the key (Spec 45 R2).
+    const prop = sample.property;
     violations.push(report(
       sample.file_path,
       sample.line,
-      `Mechanism fragmentation: "${prop}: ${value}" is applied via ` +
+      `Mechanism fragmentation: "${prop}: ${sample.raw_value}" is applied via ` +
       `${mechs.size} different mechanisms (${[...mechs].sort().join(', ')}). ` +
       `Consolidate to a single mechanism or design token.`,
       { severity: 'warning', rule: 'styles/mechanism-fragmentation' },

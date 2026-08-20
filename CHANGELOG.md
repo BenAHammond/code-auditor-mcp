@@ -2,6 +2,21 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.16] — 2026-08-19
+
+### Close the 3.4.15 findings (Spec 45)
+- Directory exclusions are now root-anchored: `docs` / `specs` / `backup` /
+  `backups` / `build` at the project root are pruned, but the same names nested
+  under source (`src/pages/docs/...`) are analyzed. Toolchain dirs
+  (`node_modules`, `.git`, `.next`, `dist`, `out`, `coverage`, `.turbo`,
+  `.cache`, `.vscode`, `.idea`, `.code-index`, `tmp`, `temp`) still prune at any
+  depth.
+- `styles/mechanism-fragmentation` and sibling style rules now report the raw CSS
+  value in messages instead of the JSON `normalized_value` bucket key (fixes the
+  `{"type":"literal","value":"center"}` leak).
+- `infraPruned` accounting now reports directory counts (`node_modules (2
+  directories)`) rather than implying file counts.
+
 ## [3.4.15] — 2026-08-19
 
 ### Detached runs & a queryable findings store (Spec 41)
