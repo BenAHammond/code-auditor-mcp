@@ -730,12 +730,28 @@ function findNodeByLocation(root: ASTNode, location: { line: number; column: num
 }
 
 /**
+ * True when `name` is a plain identifier (valid @param target). Destructured
+ * parameters surface in `ParameterInfo.name` as their raw pattern text (e.g.
+ * `{ children }` or `[first, second]`), which cannot match an `@param` tag and
+ * is never a legitimately documentable parameter name — so skip them.
+ */
+function isPlainIdentifierName(name: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name);
+}
+
+/**
  * Check which parameters are missing documentation.
  */
 function checkParameterDocumentation(doc: string, paramNames: string[]): string[] {
   const missingParams: string[] = [];
 
   for (const param of paramNames) {
+    // Destructured object/array-pattern params (e.g. `({ children })`) have no
+    // single name to document via @param — skip rather than flag a false positive.
+    if (!isPlainIdentifierName(param)) {
+      continue;
+    }
+
     const paramRegex = new RegExp(`@param\\s+(?:\\{[^}]+\\}\\s+)?${param}\\b`, 'i');
     if (!paramRegex.test(doc)) {
       missingParams.push(param);

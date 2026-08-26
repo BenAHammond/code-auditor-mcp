@@ -11,6 +11,7 @@ import {
   ComponentScanResult
 } from '../types.js';
 import { withRuleTiming } from './ruleTiming.js';
+import { basename } from 'node:path';
 
 /**
  * Default configuration for React analyzer
@@ -408,13 +409,29 @@ export function checkCircularDependencies(
 }
 
 /**
+ * Next.js App Router convention-based error boundary files. These are function
+ * components (not class components), so `component.hasErrorBoundary` is never
+ * true for them — but they ARE error boundaries by convention.
+ */
+const NEXT_ERROR_BOUNDARY_BASENAMES = new Set([
+  'error.tsx',
+  'error.js',
+  'error.jsx',
+  'error.ts',
+  'global-error.tsx',
+  'global-error.js',
+  'global-error.jsx',
+  'global-error.ts'
+]);
+
+/**
  * Check for proper error boundary usage
  * @param scanResults
  * @returns
  */
 export function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViolation[] {
   const violations: ReactViolation[] = [];
-  
+
   // Find all components with error boundaries
   const componentsWithErrorBoundary = new Set<string>();
   for (const result of scanResults) {
@@ -424,9 +441,16 @@ export function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): Rea
       }
     }
   }
-  
+
+  // Next.js App Router convention error boundaries (app/error.tsx,
+  // app/global-error.tsx, etc.) are function components, so they are never
+  // flagged via `hasErrorBoundary`. Detect them by convention filename.
+  const hasConventionErrorBoundary = scanResults.some((result) =>
+    NEXT_ERROR_BOUNDARY_BASENAMES.has(basename(result.filePath))
+  );
+
   // Check if there's at least one error boundary in the app
-  if (componentsWithErrorBoundary.size === 0) {
+  if (componentsWithErrorBoundary.size === 0 && !hasConventionErrorBoundary) {
     const totalComponents = scanResults.reduce((sum, r) => sum + r.components.length, 0);
     
     if (totalComponents > 10) { // Only warn for apps with significant components
