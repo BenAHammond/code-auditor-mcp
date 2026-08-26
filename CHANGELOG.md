@@ -2,6 +2,19 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.17] — 2026-08-26
+
+### False-positive fixes
+- `react/no-error-boundary` now recognizes Next.js App Router convention
+  error-boundary files (`app/error.tsx`, `app/global-error.tsx`, and `.js`/`.jsx`/`.ts`
+  variants) by basename. These are function components, so the class-only
+  `hasErrorBoundary` check never fired for them, wrongly reporting "No error
+  boundaries found" on projects that already define boundaries by convention.
+- `documentation/parameter-documentation` no longer flags destructured
+  object/array-pattern parameters (e.g. `({ children })`). Their parameter name
+  is the raw pattern text, which can never match an `@param` tag, so they are
+  skipped instead of reported as undocumented.
+
 ## [3.4.16] — 2026-08-19
 
 ### Close the 3.4.15 findings (Spec 45)
