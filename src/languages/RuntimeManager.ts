@@ -770,7 +770,7 @@ class TypeScriptAnalyzer implements LanguageAnalyzer {
       const auditResult = await runAudit({
         includePaths: files,
         enabledAnalyzers: options?.analyzers || ['solid', 'dry', 'documentation', 'dataAccess'],
-        minSeverity: options?.minSeverity || 'warning',
+        minSeverity: options?.minSeverity || 'suggestion',
         verbose: false
       });
 
@@ -891,7 +891,7 @@ class GoAnalyzer implements LanguageAnalyzer {
       // Prepare analysis options
       const analysisOptions = {
         analyzers: options?.analyzers || ['solid', 'imports', 'errors'],
-        minSeverity: options?.minSeverity || 'warning',
+        minSeverity: options?.minSeverity || 'suggestion',
         timeout: options?.timeout || 30000,
         language: options?.language || 'go',
         verbose: options?.verbose || false

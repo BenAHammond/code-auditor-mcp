@@ -672,7 +672,12 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           try {
             const reactResult = analyzerResults['react'];
             if (reactResult) {
-              const extraViolations = await reactBundle.finalizeCrossComponent(pipelineAnalyzerConfig);
+              // Pass the react namespace (not the whole namespaced config) so
+              // finalize reads `requireErrorBoundaries`/`rawElementCheck` at the
+              // same level the visitor's `context.config` does.
+              const extraViolations = await reactBundle.finalizeCrossComponent(
+                pipelineAnalyzerConfig['react'] ?? {},
+              );
               reactResult.violations.push(...extraViolations);
             }
           } catch (err) {

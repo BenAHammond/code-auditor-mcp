@@ -641,7 +641,14 @@ export function createReactVisitor(): ReactVisitorBundle {
           checkCircularDependencies,
           checkErrorBoundaryUsage,
           checkRawElements,
+          DEFAULT_REACT_CONFIG,
         } = await import('./analyzers/reactAnalyzer.js');
+
+        // Merge with defaults — mirrors the visitor's
+        // `{ ...DEFAULT_REACT_CONFIG, ...context.config }` so a partial config
+        // still yields every required field, and so the `react.*` flags set in
+        // .codeauditor.json reach the cross-component checks.
+        const cfg = { ...DEFAULT_REACT_CONFIG, ...(config ?? {}) };
 
         // Build component tree and check for circular dependencies
         const { buildComponentTree } = await import('./componentScanner.js');
@@ -649,13 +656,13 @@ export function createReactVisitor(): ReactVisitorBundle {
         violations.push(...checkCircularDependencies(tree));
 
         // Check for missing error boundaries
-        if (config.requireErrorBoundaries !== false) {
+        if (cfg.requireErrorBoundaries !== false) {
           violations.push(...checkErrorBoundaryUsage(scanResults));
         }
 
         // Check for raw element usage (Spec 10 R4)
-        if (config.rawElementCheck !== false) {
-          violations.push(...checkRawElements(scanResults, config));
+        if (cfg.rawElementCheck !== false) {
+          violations.push(...checkRawElements(scanResults, cfg));
         }
       } catch {
         // Cross-component checks are advisory

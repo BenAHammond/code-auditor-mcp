@@ -426,7 +426,12 @@ function hasErrorBoundaryMethods(node: ASTNode): boolean {
   const classBody = findChildOfType(node, 'class_body');
   for (const member of classBody?.children ?? []) {
     if (member.type !== 'method_definition') continue;
-    const nameNode = findChildOfType(member, 'identifier');
+    // tree-sitter-typescript names class methods with a `property_identifier`
+    // (not `identifier`), and private methods with `private_property_identifier`.
+    const nameNode =
+      findChildOfType(member, 'property_identifier') ??
+      findChildOfType(member, 'private_property_identifier') ??
+      findChildOfType(member, 'identifier');
     if (nameNode) {
       methodNames.add(rawText(nameNode));
     }

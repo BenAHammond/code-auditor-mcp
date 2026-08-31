@@ -364,7 +364,7 @@ export function mergePathProfiles(
  * Default code index configuration
  */
 export const DEFAULT_CODE_INDEX_CONFIG = {
-  databasePath: './.code-index/index.db',
+  databasePath: './node_modules/.cache/code-auditor/index.db',
   maxBatchSize: 1000,
   searchResultLimit: 100,
   enableAutoIndex: false

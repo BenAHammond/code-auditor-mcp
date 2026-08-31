@@ -176,10 +176,14 @@ function calculateHealthScore(result: AuditResult): number {
 }
 
 function getHealthRecommendation(score: number, result: AuditResult): string {
+  const criticals = result.summary.criticalIssues || 0;
+  const warnings = result.summary.warnings || 0;
+  if (criticals > 0)
+    return `Fix ${criticals} critical violation${criticals === 1 ? '' : 's'} first`;
+  if (warnings > 0)
+    return `Resolve ${warnings} warning${warnings === 1 ? '' : 's'} before declaring this clean`;
   if (score >= 90) return 'Excellent code health!';
   if (score >= 70) return 'Good code health with room for improvement';
-  if (result.summary.criticalIssues > 0)
-    return `Fix ${result.summary.criticalIssues} critical violations first`;
   return 'Code health needs attention - run detailed audit';
 }
 
@@ -242,9 +246,9 @@ function registerAllTools(registry: ToolRegistry): void {
           name: 'minSeverity',
           type: 'string',
           required: false,
-          description: 'Minimum severity level to report.',
-          default: 'warning',
-          enum: ['info', 'warning', 'critical'],
+          description: 'Minimum severity level to report (suggestions included by default).',
+          default: 'suggestion',
+          enum: ['suggestion', 'warning', 'critical'],
         },
         {
           name: 'indexFunctions',
@@ -272,7 +276,7 @@ function registerAllTools(registry: ToolRegistry): void {
           const auditPath = path.resolve((args.path as string) || process.cwd());
           await assertAuditPathExists(auditPath);
           const analyzers = (args.analyzers as string[]) ?? DEFAULT_ANALYZERS;
-          const minSeverity = ((args.minSeverity as string) || 'warning') as Severity;
+          const minSeverity = ((args.minSeverity as string) || 'suggestion') as Severity;
           const indexFunctions = (args.indexFunctions as boolean) !== false;
 
           const db = CodeIndexDB.getInstance();
@@ -340,9 +344,9 @@ function registerAllTools(registry: ToolRegistry): void {
           name: 'minSeverity',
           type: 'string',
           required: false,
-          description: 'Minimum severity level to report.',
-          default: 'warning',
-          enum: ['info', 'warning', 'critical'],
+          description: 'Minimum severity level to report (suggestions included by default).',
+          default: 'suggestion',
+          enum: ['suggestion', 'warning', 'critical'],
         },
         {
           name: 'indexFunctions',
@@ -450,7 +454,7 @@ function registerAllTools(registry: ToolRegistry): void {
         return withAbortSignal(signal, 'audit.start', () =>
           startAuditJob(args, {
             defaultAnalyzers: DEFAULT_ANALYZERS,
-            defaultMinSeverity: 'warning',
+            defaultMinSeverity: 'suggestion',
             defaultGenerateCodeMap: false,
           }),
         );
@@ -575,7 +579,7 @@ function registerAllTools(registry: ToolRegistry): void {
         const runner = createAuditRunner({
           projectRoot: auditPath,
           enabledAnalyzers: DEFAULT_ANALYZERS,
-          minSeverity: 'warning' as Severity,
+          minSeverity: 'suggestion' as Severity,
           verbose: false,
           indexFunctions,
           ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),

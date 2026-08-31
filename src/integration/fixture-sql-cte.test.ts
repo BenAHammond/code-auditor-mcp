@@ -6,7 +6,7 @@
  * correctly extracted.
  *
  * Baseline established 2026-08-09 from cold run:
- *   rm -rf .code-index && node dist/cli.js audit --path <fixture> -f json -o <out>
+ *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  *
  * Expected violations (unknown-table):
  *   - orders: table referenced inside CTE body (SELECT * FROM orders)

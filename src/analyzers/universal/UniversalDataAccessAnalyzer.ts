@@ -187,6 +187,16 @@ interface DatabaseCall {
   column: number;
   tables: string[];
   hasOrganizationFilter: boolean;
+  /** True when the query carries a limiting clause (WHERE/HAVING/LIMIT/ON) —
+   *  broader than the tenant-isolation org filter, used for the performance
+   *  `unfiltered-query` rule. */
+  hasFilter: boolean;
+  /** True when the statement contains a SELECT (a read component) — either a
+   *  bare SELECT or an INSERT...SELECT / WITH...SELECT whose source rows are
+   *  read.  Drives the `unfiltered-query` filter gate, which only suppresses
+   *  statements that both read and carry a limiting clause; pure writes are
+   *  always surfaced so INSERT-only/DELETE-only tables stay visible. */
+  hasSelectSource: boolean;
   hasParameterizedQuery: boolean;
   hasSqlInjectionRisk: boolean;
   /** Enclosing function name for stable fingerprinting (Spec 18 Gap 2). */
@@ -199,6 +209,7 @@ interface QueryAnalysis {
   hasJoins: boolean;
   hasSubquery: boolean;
   hasOrganizationFilter: boolean;
+  hasFilter: boolean;
   performanceRisk: 'low' | 'medium' | 'high';
 }
 
@@ -303,7 +314,7 @@ function isDbCallCandidate(
   sourceCode: string,
   provenanceContext?: ProvenanceContext,
 ): boolean {
-  const nodeText = adapter.getNodeText(node, sourceCode);
+  const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
 
   // Check if it's a function call whose callee is DB-related
   if (isFunctionCall(node, adapter)) {
@@ -373,7 +384,7 @@ function buildDatabaseCall(
   scan: DataAccessScanContext,
 ): DatabaseCall | null {
   const { adapter, sourceCode, dbImports, config } = scan;
-  const nodeText = adapter.getNodeText(node, sourceCode);
+  const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
   if (!nodeText || nodeText.trim().length < 10) return null;
 
   // Skip when a call_expression like db.prepare(`...`) is rediscovered via
@@ -386,6 +397,7 @@ function buildDatabaseCall(
 
   const tables = extractTables(nodeText, config);
   const hasOrgFilter = hasOrganizationFilter(nodeText, config);
+  const { hasFilter, hasSelectSource } = detectQueryFiltering(nodeText);
   const security = withRuleTiming('sql-injection-risk', () =>
     checkQuerySecurity(node, nodeText, ast, scan));
 
@@ -409,6 +421,8 @@ function buildDatabaseCall(
     column: node.location.start.column,
     tables,
     hasOrganizationFilter: hasOrgFilter,
+    hasFilter,
+    hasSelectSource,
     hasParameterizedQuery: security.parameterized,
     hasSqlInjectionRisk: security.injectionRisk,
     enclosingFunction: findEnclosingFunctionName(node, adapter),
@@ -473,7 +487,7 @@ function analyzeQuery(
   let performanceRisk: 'low' | 'medium' | 'high' = 'low';
   if (call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
     performanceRisk = 'high';
-  } else if (!call.hasOrganizationFilter && call.tables.length > 0) {
+  } else if (isUnfilteredQuery(call) && call.tables.length > 0) {
     performanceRisk = 'medium';
   }
 
@@ -483,6 +497,7 @@ function analyzeQuery(
     hasJoins,
     hasSubquery,
     hasOrganizationFilter: call.hasOrganizationFilter,
+    hasFilter: call.hasFilter,
     performanceRisk
   };
 }
@@ -529,7 +544,7 @@ function checkViolations(
   }
 
   // Performance: Unfiltered Query
-  if (!call.hasOrganizationFilter && analysis.performanceRisk === 'medium') {
+  if (isUnfilteredQuery(call) && analysis.performanceRisk === 'medium') {
     push(`Unfiltered query on ${call.tables.join(', ')} may cause performance issues`, { severity: 'suggestion', rule: 'unfiltered-query' });
   }
 
@@ -610,6 +625,64 @@ function isVariableAssignment(node: ASTNode, adapter: LanguageAdapter): boolean 
 function containsSQLKeywords(text: string): boolean {
   const upperText = text.toUpperCase();
   return SQL_KEYWORDS.some(keyword => upperText.includes(keyword));
+}
+
+/**
+ * Strip `//` line and `/* *`/ block comments from a source slice before SQL
+ * analysis.  Comments inside a node's byte range (e.g. a doc comment placed
+ * inside a `pgEnum(...)` array literal) otherwise leak prose words like
+ * "from under the submission" into `containsSQLStructure`/`extractTables`,
+ * fabricating a phantom table and an `unfiltered-query` finding.
+ *
+ * String/template-literal contents are preserved so a URL or a `//` inside a
+ * quoted SQL string is not mangled — only comments proper are removed.
+ */
+function stripComments(text: string): string {
+  if (!text) return text;
+  let out = '';
+  let i = 0;
+  const n = text.length;
+  let quote: string | null = null; // ', ", or ` when inside a quoted span
+  while (i < n) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (quote) {
+      out += ch;
+      if (ch === '\\' && i + 1 < n) {
+        out += next;
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '/' && next === '/') {
+      // Line comment — drop until end of line.
+      while (i < n && text[i] !== '\n') i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      // Block comment — drop until closing */
+      i += 2;
+      while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+
+    out += ch;
+    i += 1;
+  }
+  return out;
 }
 
 /**
@@ -1064,6 +1137,55 @@ function matchesOrganizationPattern(lowerText: string, p: string): boolean {
     lowerText.includes(`where ${p} =`) || lowerText.includes(`where ${p}=`) ||
     lowerText.includes(`and ${p} =`) || lowerText.includes(`and ${p}=`)
   );
+}
+
+/**
+ * True when a query applies *any* row-limiting filter, not merely a tenant/
+ * organization predicate.  The `unfiltered-query` rule is about reads that
+ * sweep an unbounded result set; a WHERE/HAVING/LIMIT clause, or a JOIN ... ON
+ * predicate (which the organization-pattern heuristic never sees), is enough
+ * to show the query is deliberately scoped.  Evaluated on comment-stripped
+ * text so prose in `//` or `/* *`/ comments cannot fabricate a filter.
+ */
+function hasQueryFilter(text: string): boolean {
+  const upper = text.toUpperCase();
+  return /\bWHERE\b/.test(upper)
+    || /\bHAVING\b/.test(upper)
+    || /\bLIMIT\b/.test(upper)
+    || /\bON\b/.test(upper);
+}
+
+/**
+ * True when a SQL statement contains a SELECT — a read component.  This is true
+ * for a bare `SELECT`, an `INSERT ... SELECT`, and a `WITH ... SELECT`, whose
+ * source rows are read and therefore subject to the WHERE/HAVING/LIMIT/ON filter
+ * gate.  It is false for pure writes (`INSERT ... VALUES`, `DELETE`, `UPDATE`),
+ * which have no read component.  Text with no DML verb (ORM fragments, raw
+ * query-builder text) has no SELECT and is therefore treated as a pure write.
+ */
+function hasSelectComponent(text: string): boolean {
+  return /\bSELECT\b/.test(text.toUpperCase());
+}
+
+/**
+ * Filter/read shape of a SQL statement, computed together for the
+ * `unfiltered-query` gate (keeps `buildDatabaseCall` under its line budget).
+ */
+function detectQueryFiltering(text: string): { hasFilter: boolean; hasSelectSource: boolean } {
+  return { hasFilter: hasQueryFilter(text), hasSelectSource: hasSelectComponent(text) };
+}
+
+/**
+ * True when a call should be surfaced by the `unfiltered-query` rule.  Pure
+ * writes (`INSERT ... VALUES`, `DELETE`, `UPDATE`) are always surfaced — they
+ * have no read component for the WHERE/HAVING/LIMIT/ON gate to scope, so a
+ * scoped DELETE still surfaces its table, which the INSERT-only / DELETE-only
+ * table-extraction path depends on.  Statements with a SELECT component (a bare
+ * `SELECT`, or an `INSERT ... SELECT`) are surfaced only when that read lacks a
+ * limiting clause.
+ */
+function isUnfilteredQuery(call: DatabaseCall): boolean {
+  return !call.hasSelectSource || !call.hasFilter;
 }
 
 /**

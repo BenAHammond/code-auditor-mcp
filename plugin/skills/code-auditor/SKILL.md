@@ -89,7 +89,7 @@ code-audit tasks delete <taskId>                     # Delete a task
 code-audit tasks from-audit                          # Create tasks from audit violations
 ```
 
-Use `tasks from-audit` to convert audit violations into a tracked task list. This lets you triage findings: fix criticals now, file warnings for later, dismiss suggestions. Tasks carry fingerprints so duplicates are automatically deduplicated across audit runs.
+Use `tasks from-audit` to convert audit violations into a tracked task list so every finding is resolved, not dropped. Work findings in severity order — criticals first, then warnings, then suggestions. Tasks carry fingerprints so duplicates are automatically deduplicated across audit runs. Every finding should end as fixed, not silently dismissed; if you choose not to fix one, record why before moving on.
 
 ### `code-audit index` — refresh the index after structural changes
 
@@ -139,7 +139,7 @@ code-audit conventions propose --json                # JSON proposal array
 
 **Usage:** Run a full audit or `code-audit index sync` to mine conventions from the codebase index. Then `code-audit conventions list` to see what was found, and `code-audit conventions propose` to get the rules. Paste the proposals into the `rules` array in `.codeauditor.json`.
 
-All convention violations ship at `suggestion` severity by default. Promote them with `severityOverrides` if your team treats them as blocking.
+Convention violations ship at `suggestion` severity by default. Severity ranks how a finding blocks the edit gate, not whether it matters — resolve suggestions the same way you resolve warnings, and promote them with `severityOverrides` if your team wants them to block edits too.
 
 ### `code-audit hotspots` — identify churn-prone code
 
@@ -181,14 +181,14 @@ When an edit hook blocks your edit with a violation message:
 1. **Read the violation** — it includes the invariant rule's `message` field explaining *why* the edit was blocked
 2. **Fix the violation** — change your approach to comply with the invariant
 3. **Do NOT retry the same edit** — the hook will block it again
-4. The hook runs `code-audit changed --fail-on critical`, so only critical-severity invariant violations block edits. Warnings and suggestions pass through as non-blocking output — still worth fixing.
+4. The hook runs `code-audit changed --fail-on critical`, so only critical-severity invariant violations block the edit. Warnings and suggestions are still violations and must be fixed — they pass the gate, they are not resolved.
 
 The hook auto-installs the package via npx on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the npx auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
 
 ## Host-specific notes
 
 - **Claude Code**: This skill is bundled in the `code-auditor` plugin (`claude plugin install code-auditor`). The plugin also ships a `PostToolUse` hook on `Write|Edit` that runs `code-audit changed --fail-on critical` automatically — the hook feedback section above describes that behavior. The MCP server is available as `mcp__code-auditor__*` tools for shell-less use.
-- **Cursor**: Skill install via `code-audit install --agent cursor`. Cursor's `afterFileEdit` hook is advisory (fires after the edit; cannot block retroactively) — violations are reported through the strongest available feedback channel.
+- **Cursor**: Skill install via `code-audit install --agent cursor`. Cursor's `afterFileEdit` hook fires after the edit and cannot block retroactively, so violations are reported through the strongest available feedback channel — fix them even though the edit already landed.
 - **Codex**: Skill install via `code-audit install --agent codex`. Codex's `PostToolUse` hook provides blocking feedback via exit code 2, replacing the tool result with violation messages.
 - **Gemini CLI**: Skill install only (`code-audit install --agent gemini`). No hook system exists; MCP covers shell-less use.
 - **Other SKILL.md-compliant tools**: Install via `code-audit install --agent agents`. The skill teaches the `code-audit` CLI, which is identical everywhere. The MCP server is the shell-less side door.

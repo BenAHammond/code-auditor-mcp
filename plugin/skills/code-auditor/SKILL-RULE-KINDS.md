@@ -144,8 +144,10 @@ With language and path constraints:
 | Severity | Meaning | Hook behavior |
 |----------|---------|---------------|
 | `critical` | Security vulnerabilities, data loss risks | Blocks the edit (`--fail-on critical`) |
-| `warning` | Architecture violations, tech debt | Non-blocking; still reported |
-| `suggestion` | Style issues, minor improvements | Non-blocking; informational |
+| `warning` | Architecture violations, tech debt | Reported; does not block the edit |
+| `suggestion` | Style issues, minor improvements | Reported; does not block the edit |
+
+> **Severity controls the gate, never the obligation.** A finding that does not block the edit is still a defect to fix — it passes the gate, not the review.
 
 ## Validation
 

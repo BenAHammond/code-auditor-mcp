@@ -198,6 +198,9 @@ program
           }
         } else {
           console.log(chalk.green('\n✓ No new findings since last baseline.'));
+          if (knownCount > 0) {
+            console.log(chalk.gray(`  ${knownCount} known finding(s) are still open — recorded, not fixed.`));
+          }
         }
 
         // Debt by analyzer
@@ -551,7 +554,7 @@ program
               v.severity === 'critical' ? '🔴' :
               v.severity === 'warning' ? '🟡' : '🔵';
             const statusTag = (v as any).new === false
-              ? chalk.dim(' [known]')
+              ? chalk.dim(' [known — still open]')
               : '';
             console.log(
               `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}${statusTag}`
@@ -2098,7 +2101,7 @@ async function runDetachedAudit(options: {
   });
   const defaultsJson = JSON.stringify({
     defaultAnalyzers: DETACHED_DEFAULT_ANALYZERS,
-    defaultMinSeverity: 'warning',
+    defaultMinSeverity: 'suggestion',
     defaultGenerateCodeMap: false,
   });
 
@@ -3257,9 +3260,9 @@ async function buildRulesInteractively(): Promise<Record<string, unknown>> {
         type: 'list',
         message: 'Severity:',
         choices: [
-          { name: chalk.red('Critical — exit code 2, blocks the agent loop'), value: 'critical' },
-          { name: chalk.yellow('Warning — visible, non-blocking'), value: 'warning' },
-          { name: chalk.blue('Suggestion — informational'), value: 'suggestion' },
+          { name: chalk.red('Critical — exit code 2, blocks the edit'), value: 'critical' },
+          { name: chalk.yellow('Warning — must fix; does not block the edit'), value: 'warning' },
+          { name: chalk.blue('Suggestion — must fix; does not block the edit'), value: 'suggestion' },
         ],
         default: 'warning',
       },

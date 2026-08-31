@@ -67,9 +67,9 @@ export const tools: Tool[] = [
         name: 'minSeverity',
         type: 'string',
         required: false,
-        description: 'Minimum severity level to report',
-        default: 'warning',
-        enum: ['info', 'warning', 'critical'],
+        description: 'Minimum severity level to report (suggestions included by default).',
+        default: 'suggestion',
+        enum: ['suggestion', 'warning', 'critical'],
       },
       {
         name: 'indexFunctions',
@@ -496,9 +496,9 @@ export const uiTools: Tool[] = [
         name: 'minSeverity',
         type: 'string',
         required: false,
-        description: 'Minimum severity level',
-        default: 'warning',
-        enum: ['info', 'warning', 'critical'],
+        description: 'Minimum severity level (suggestions included by default).',
+        default: 'suggestion',
+        enum: ['suggestion', 'warning', 'critical'],
       },
     ],
   },
@@ -543,7 +543,7 @@ export class ToolHandlers {
     const options: AuditRunnerOptions = {
       projectRoot: isFile ? path.dirname(auditPath) : auditPath,
       enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'documentation', 'react', 'data-access'],
-      minSeverity: ((args.minSeverity as string) || 'warning') as Severity,
+      minSeverity: ((args.minSeverity as string) || 'suggestion') as Severity,
       verbose: false,
       indexFunctions,
       ...(isFile && { includePaths: [auditPath] }),
@@ -700,7 +700,7 @@ export class ToolHandlers {
     const runner = createAuditRunner({
       projectRoot: auditPath,
       enabledAnalyzers: ['solid', 'dry', 'documentation', 'react', 'data-access'],
-      minSeverity: 'warning',
+      minSeverity: 'suggestion',
       verbose: false,
       indexFunctions,
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
@@ -1320,11 +1320,16 @@ export class ToolHandlers {
   }
 
   static getHealthRecommendation(score: number, result: AuditResult): string {
+    const criticals = result.summary.criticalIssues || 0;
+    const warnings = result.summary.warnings || 0;
+    if (criticals > 0) {
+      return `Fix ${criticals} critical violation${criticals === 1 ? '' : 's'} first`;
+    }
+    if (warnings > 0) {
+      return `Resolve ${warnings} warning${warnings === 1 ? '' : 's'} before declaring this clean`;
+    }
     if (score >= 90) return 'Excellent code health!';
     if (score >= 70) return 'Good code health with room for improvement';
-    if (result.summary.criticalIssues > 0) {
-      return `Fix ${result.summary.criticalIssues} critical violations first`;
-    }
     return 'Code health needs attention - run detailed audit';
   }
 

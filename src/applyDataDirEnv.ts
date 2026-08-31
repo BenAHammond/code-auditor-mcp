@@ -14,7 +14,7 @@ for (let i = 0; i < argv.length; i++) {
     } else {
       // stderr only; avoids silent failure when e.g. `--data-dir --ui` skips the path
       console.error(
-        '[code-auditor] --data-dir requires a directory path (next argv). Using CODE_AUDITOR_DATA_DIR env or default .code-index/.'
+        '[code-auditor] --data-dir requires a directory path (next argv). Using CODE_AUDITOR_DATA_DIR env or the default (node_modules/.cache/code-auditor).'
       );
     }
     break;

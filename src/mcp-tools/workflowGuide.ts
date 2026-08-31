@@ -114,7 +114,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 2,
         tool: 'audit',
-        parameters: { action: 'start', path: './src', analyzers: ['solid', 'dry', 'documentation'], minSeverity: 'warning' },
+        parameters: { action: 'start', path: './src', analyzers: ['solid', 'dry', 'documentation'], minSeverity: 'suggestion' },
         description: 'Start detailed background audit if health check shows issues',
         condition: 'If health score is below threshold'
       },
@@ -259,7 +259,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit',
-        parameters: { action: 'start', path: '.', analyzers: ['solid'], minSeverity: 'warning', analyzerConcurrency: 2 },
+        parameters: { action: 'start', path: '.', analyzers: ['solid'], minSeverity: 'suggestion', analyzerConcurrency: 2 },
         description: 'Start a background audit and get a jobId immediately'
       },
       {
@@ -284,7 +284,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       }
     ],
     tips: [
-      'Use minSeverity:"warning" to filter out info-level suggestions',
+      'minSeverity defaults to suggestion — keep it there so no finding is hidden',
       'audit.start is non-blocking; heavy work runs in the background',
       'audit.status returns resultId only when the run is completed',
       'audit.results is read-only and never starts a new audit',

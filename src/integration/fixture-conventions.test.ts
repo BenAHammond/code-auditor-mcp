@@ -11,7 +11,7 @@
  *   src/all-named/      — 20 named exports (no convention violations)
  *
  * Baseline established 2026-08-09 from cold run:
- *   rm -rf .code-index && node dist/cli.js audit --path <fixture> -f json -o <out>
+ *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  *
  * Total conventions violations: 2
  *   - conventions/export-shape: 1 (outlier.tsx:8, default export in named-majority dir)

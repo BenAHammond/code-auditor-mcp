@@ -16,7 +16,7 @@ export interface PolyglotAnalysisOptions {
   
   // Analysis options
   analyzers?: string[];
-  minSeverity?: 'info' | 'warning' | 'critical';
+  minSeverity?: 'suggestion' | 'warning' | 'critical';
   
   // Cross-language features
   enableCrossLanguageAnalysis?: boolean;

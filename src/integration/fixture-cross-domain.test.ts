@@ -21,7 +21,7 @@
  *   src/query-users.ts — SELECT from users (establishes read, prevents WNR on users)
  *
  * Baseline established 2026-08-09 from cold run:
- *   rm -rf .code-index && node dist/cli.js audit --path <fixture> -f json -o <out>
+ *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  *
  * Total cross-domain violations: 2
  *   - cross-domain/written-never-read: 1 (audit_log table)

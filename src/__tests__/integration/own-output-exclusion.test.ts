@@ -1,26 +1,31 @@
 /**
  * Bug #3 — the tool must never re-scan its own output.
  *
- * A prior audit writes two artifacts into the project root that a subsequent
- * run must ignore: the persisted style/code index (`.code-index/index.db`) and
- * the audit report (`audit-report.{json,html,csv,sarif}`). Both can embed raw
- * source snippets — the report especially, since it inlines the offending line
- * (e.g. `error_class = 'zombie-capped'`), which the class-usage regex would
- * otherwise treat as a `class` attribute and leak back into the style index as
- * an undefined-class finding citing `audit-report.json`.
+ * A prior audit writes two artifacts that a subsequent run must ignore:
+ *   1. the persisted style/code index — now `node_modules/.cache/code-auditor/index.db`,
+ *      a location gitignored by universal convention so consumers never have to
+ *      touch their own `.gitignore` for an internal implementation detail;
+ *   2. the audit report (`audit-report.{json,html,csv,sarif}`), written into the
+ *      project root, which inlines the offending source line.
  *
- * This test runs the audit twice in the same directory and asserts that no
- * finding from the second run cites the report or the index. It also asserts
- * the run is non-vacuous: a genuine undefined class in a real `.tsx` source
- * file must still be flagged.
+ * Both can embed raw source snippets — the report especially, since it inlines
+ * the offending line (e.g. `error_class = 'zombie-capped'`), which the
+ * class-usage regex would otherwise treat as a `class` attribute and leak back
+ * into the style index as an undefined-class finding citing `audit-report.json`.
+ *
+ * This test runs the audit twice in the same directory and asserts that the
+ * index lands under `node_modules/.cache/code-auditor` (not a project-local
+ * `.code-index` dir), and that no finding from the second run cites the report
+ * or the index. It also asserts the run is non-vacuous: a genuine undefined
+ * class in a real `.tsx` source file must still be flagged.
  *
  * Integration suite — loads tree-sitter WASM; excluded from `npm run test`,
  * run with `npm run test:integration`.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { mkdtemp, writeFile } from 'fs/promises';
-import { rmSync } from 'fs';
+import { mkdtemp, writeFile, mkdir } from 'fs/promises';
+import { rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -59,11 +64,13 @@ const REPORT_SOURCE =
   `"snippet":"const el = <div className='zombie-capped'>hi</div>"}]}`;
 
 describe('Bug #3 — own-output exclusion (run twice, no finding cites the report)', () => {
-  it('second run does not cite audit-report.json or .code-index', async () => {
+  it('stores the index under node_modules/.cache and never re-scans it or the report', async () => {
     const testDir = await mkdtemp(join(tmpdir(), 'ca-own-output-'));
     try {
       await writeFile(join(testDir, 'widget.tsx'), TSX_SOURCE, 'utf-8');
       await writeFile(join(testDir, 'styles.css'), CSS_SOURCE, 'utf-8');
+      // Simulate a Node project: the nearest node_modules is the one we place here.
+      await mkdir(join(testDir, 'node_modules'), { recursive: true });
 
       const run = () =>
         runAudit({
@@ -74,8 +81,19 @@ describe('Bug #3 — own-output exclusion (run twice, no finding cites the repor
           scope: 'all',
         });
 
-      // Run 1 — creates the persisted index (.code-index/index.db) in testDir.
+      // Run 1 — indexes into node_modules/.cache/code-auditor (gitignored).
       await run();
+
+      // The index now lives under node_modules/.cache, never in a project-local
+      // .code-index dir the consumer would have to gitignore by hand.
+      expect(
+        existsSync(join(testDir, 'node_modules', '.cache', 'code-auditor', 'index.db')),
+        'index must live under node_modules/.cache',
+      ).toBe(true);
+      expect(
+        existsSync(join(testDir, '.code-index')),
+        'no legacy .code-index dir must be created',
+      ).toBe(false);
 
       // The tool would now have written its report into the project root.
       await writeFile(join(testDir, 'audit-report.json'), REPORT_SOURCE, 'utf-8');
@@ -91,7 +109,10 @@ describe('Bug #3 — own-output exclusion (run twice, no finding cites the repor
 
       // No finding may cite the tool's own output.
       const citesOwnOutput = violations.filter(
-        (v) => v.file.includes('audit-report') || v.file.includes('.code-index'),
+        (v) =>
+          v.file.includes('audit-report') ||
+          v.file.includes('.code-index') ||
+          v.file.includes(join('.cache', 'code-auditor')),
       );
       expect(citesOwnOutput, 'no finding may cite the report or index').toEqual([]);
     } finally {

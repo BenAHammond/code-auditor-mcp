@@ -135,39 +135,56 @@ export function returnsJSX(node: ASTNode): boolean {
 export function isClassComponent(node: ASTNode): boolean {
   if (node.type !== 'class_declaration') return false;
 
-  // Check heritage clauses for extends React.Component / PureComponent
+  // Check heritage clauses for extends React.Component / PureComponent.
+  // tree-sitter-typescript nests heritage as `class_heritage` → `extends_clause`;
+  // older grammars used a flat `heritage_clause` — handle both. `implements_clause`
+  // must NOT count as a React base (implementing an interface is not extending).
   for (const child of node.children ?? []) {
-    if (child.type !== 'heritage_clause') continue;
+    if (child.type !== 'class_heritage' && child.type !== 'heritage_clause') continue;
 
-    // Check if this is an 'extends' clause (not 'implements')
-    const raw = child.raw as TreeSitterNode;
-    if (!raw?.children) continue;
-    const isExtends = raw.children.some(c => !c.isNamed && c.type === 'extends');
-    if (!isExtends) continue;
+    for (const clause of child.children ?? []) {
+      if (clause.type !== 'extends_clause') continue;
 
-    // Check each type in the extends clause
-    for (const typeNode of child.children ?? []) {
-      if (typeNode.type === 'member_expression') {
-        // React.Component or React.PureComponent
-        const parts = typeNode.children ?? [];
-        if (parts.length >= 2) {
-          const obj = parts[0];
-          const prop = parts[parts.length - 1];
-          if (obj.type === 'identifier' && rawText(obj) === 'React' &&
-              prop.type === 'property_identifier' &&
-              (rawText(prop) === 'Component' || rawText(prop) === 'PureComponent')) {
-            return true;
-          }
-        }
-      }
-
-      if (typeNode.type === 'identifier') {
-        const name = rawText(typeNode);
-        if (name === 'Component' || name === 'PureComponent') {
-          return true;
-        }
+      for (const typeNode of clause.children ?? []) {
+        if (isReactComponentBaseType(typeNode)) return true;
       }
     }
+  }
+
+  return false;
+}
+
+/**
+ * True when a heritage-clause type names `Component`/`PureComponent`, with or
+ * without a `React.` qualifier and with or without generic type arguments
+ * (e.g. `Component`, `React.Component`, `Component<Props>`,
+ * `React.Component<Props, State>`).  `generic_type` (type + `type_arguments`)
+ * is otherwise missed — `extends Component<{ children }, State>` was not
+ * recognised as a class component, so error boundaries that extend
+ * `Component<Props>` were dropped from `detectComponentType`.
+ */
+function isReactComponentBaseType(typeNode: ASTNode): boolean {
+  // identifier: `Component` / `PureComponent`
+  if (typeNode.type === 'identifier') {
+    const name = rawText(typeNode);
+    return name === 'Component' || name === 'PureComponent';
+  }
+
+  // member_expression: `React.Component` / `React.PureComponent`
+  if (typeNode.type === 'member_expression') {
+    const parts = typeNode.children ?? [];
+    const obj = parts[0];
+    const prop = parts[parts.length - 1];
+    return obj?.type === 'identifier' && rawText(obj) === 'React' &&
+      prop?.type === 'property_identifier' &&
+      (rawText(prop) === 'Component' || rawText(prop) === 'PureComponent');
+  }
+
+  // generic_type: `Component<Props>` / `React.Component<Props>` — the base
+  // type name is the first named child, before the `type_arguments`.
+  if (typeNode.type === 'generic_type') {
+    const name = typeNode.children?.[0];
+    return name ? isReactComponentBaseType(name) : false;
   }
 
   return false;
@@ -383,21 +400,21 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
   // For class components, check Props in extends clause
   if (node.type === 'class_declaration') {
     for (const child of node.children ?? []) {
-      if (child.type !== 'heritage_clause') continue;
+      if (child.type !== 'class_heritage' && child.type !== 'heritage_clause') continue;
 
-      const raw = child.raw as TreeSitterNode;
-      const isExtends = raw?.children?.some(c => !c.isNamed && c.type === 'extends') ?? false;
-      if (!isExtends) continue;
+      for (const clause of child.children ?? []) {
+        if (clause.type !== 'extends_clause') continue;
 
-      for (const typeNode of child.children ?? []) {
-        if (typeNode.type === 'generic_type') {
-          // React.Component<Props> — type_arguments contain the props type
-          const typeArgs = findChildOfType(typeNode, 'type_arguments');
-          if (typeArgs?.children) {
-            const firstArg = typeArgs.children[0];
-            if (firstArg?.type === 'object_type' || firstArg?.type === 'type_literal') {
-              props.push(...extractPropsFromTypeLiteral(firstArg));
-            }
+        // `extends Component<Props>` — tree-sitter-typescript puts the base type
+        // (`identifier`/`member_expression`) and its `type_arguments` as siblings,
+        // not wrapped in a `generic_type`. Only inline object literals are
+        // recoverable; `Component<Props>` (a type reference) cannot be resolved
+        // without TypeChecker (documented tree-sitter limitation).
+        const typeArgs = findChildOfType(clause, 'type_arguments');
+        if (typeArgs?.children) {
+          const firstArg = typeArgs.children[0];
+          if (firstArg?.type === 'object_type' || firstArg?.type === 'type_literal') {
+            props.push(...extractPropsFromTypeLiteral(firstArg));
           }
         }
       }
@@ -516,9 +533,10 @@ export function getComponentName(node: ASTNode): string {
     if (nameNode) return rawText(nameNode);
   }
 
-  // Class declaration
+  // Class declaration — tree-sitter-typescript names classes with a
+  // `type_identifier`, not a plain `identifier`.
   if (node.type === 'class_declaration') {
-    const nameNode = findChildOfType(node, 'identifier');
+    const nameNode = findChildOfType(node, 'identifier') ?? findChildOfType(node, 'type_identifier');
     if (nameNode) return rawText(nameNode);
   }
 

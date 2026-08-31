@@ -7,7 +7,7 @@
  * Their assertions are recorded as TODO until the fixture adds index-sync support.
  *
  * Baseline established 2026-08-09 from cold run:
- *   rm -rf .code-index && node dist/cli.js audit --path <fixture> -f json -o <out>
+ *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

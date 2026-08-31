@@ -404,7 +404,7 @@ export class CodeIndexDB {
         throw new ContextualError(
           `Failed to prepare code index storage: ${e instanceof Error ? e.message : String(e)}`,
           { ...(code && { errnoCode: code }), storageRoot, dbPath: this.dbPath,
-            hint: 'Ensure the storage directory is writable (default: <cwd>/.code-index when CODE_AUDITOR_DATA_DIR is unset).' },
+            hint: 'Ensure the storage directory is writable (default: <node_modules>/.cache/code-auditor when CODE_AUDITOR_DATA_DIR is unset).' },
           e instanceof Error ? e : undefined
         );
       }

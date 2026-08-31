@@ -6,14 +6,16 @@
  * the rule). The test asserts exact per-file, per-rule counts to catch both
  * false negatives (lost detection) and false positives (over-eager matching).
  *
- * Baseline established 2026-08-09 from cold run:
- *   rm -rf .code-index && node dist/cli.js audit --path <fixture> -f json -o <out>
+ * Baseline established 2026-08-09 from cold run; recalibrated 2026-08-31 after
+ * the unfiltered-query precision fix — queries scoped by WHERE/HAVING/LIMIT/ON
+ * are no longer flagged "unfiltered" (only genuinely unbound reads are).
+ *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  *
- * Total violations: 12
+ * Total violations: 9
  *   - complex-query: 1 (line 12 in complex-query.ts)
  *   - loop-query: 1 (line 16 in loop-query.ts)
- *   - missing-org-filter: 5 (across unfiltered-query, missing-org-filter, loop-query, complex-query files)
- *   - unfiltered-query: 5 (across unfiltered-query, missing-org-filter, loop-query, complex-query files)
+ *   - missing-org-filter: 5 (complex-query.ts:32, loop-query.ts:16/22, missing-org-filter.ts:12, unfiltered-query.ts:12)
+ *   - unfiltered-query: 2 (missing-org-filter.ts:12, unfiltered-query.ts:12 — the two genuinely unbound reads)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -68,7 +70,7 @@ describe('data-access-rules fixture', () => {
 
   it('total violations match baseline', () => {
     const violations = runAndGetViolations(testDir);
-    expect(violations.length).toBe(12);
+    expect(violations.length).toBe(9);
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -186,9 +188,9 @@ describe('data-access-rules fixture', () => {
       expect(poolViolations.length).toBe(0);
     });
 
-    it('baseline total is unchanged by non-db-receiver.ts (12 violations)', () => {
+    it('baseline total is unchanged by non-db-receiver.ts (9 violations)', () => {
       const violations = runAndGetViolations(testDir);
-      expect(violations.length).toBe(12);
+      expect(violations.length).toBe(9);
     });
   });
 });

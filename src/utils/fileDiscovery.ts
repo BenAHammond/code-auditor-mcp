@@ -34,9 +34,9 @@ export const DEFAULT_EXCLUDED_INFRA_DIRS = [
   '.cache',
   '.vscode',
   '.idea',
-  // The tool's own on-disk index (CodeIndexDB). A prior audit run writes
-  // `.code-index/index.db` into the project root; it must never be re-scanned
-  // as source on a subsequent run (Bug #3).
+  // Legacy index dir (CodeIndexDB) from older versions. Kept excluded so
+  // pre-existing installs are never re-scanned (Bug #3). The current default
+  // lives under `node_modules/.cache/code-auditor` (see dataPaths.ts).
   '.code-index',
 ];
 
@@ -75,8 +75,8 @@ export const DEFAULT_EXCLUDED_DIRS = [
  *   - `.turbo` — Turborepo cache.
  *   - `.cache` — cache (recall's `scripts/.cache` holds generated build JSON).
  *   - `.vscode`, `.idea` — editor state.
- *   - `.code-index` — the tool's own SQLite index (Bug #3); a prior scoped run
- *     can leave `src/agents/.code-index` nested.
+ *   - `.code-index` — legacy index dir (Bug #3); a prior scoped run can leave
+ *     `src/agents/.code-index` nested. Current default: `node_modules/.cache/code-auditor`.
  *   - `tmp`, `temp` — transient (recall's `scripts/.wrangler/tmp` is Wrangler
  *     build cache; never source).
  *
