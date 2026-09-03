@@ -7,7 +7,8 @@
  * R1.4: scope: "all" restores pre-spec-17 behaviour minus R1.1 skips.
  * R1.5: File-header checks default OFF (fileHeaders replaces requireFileDocs).
  * R1.6: Finding messages name the audience reason.
- * R7:   All documentation/* severities are "suggestion".
+ * R7:   All documentation/* severities are "warning" (documentation is a real
+ *       maintainability obligation, not a stylistic nicety).
  */
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
@@ -213,7 +214,7 @@ function checkFileHeader(
       ast.filePath,
       { line: 1, column: 1 },
       'File lacks proper documentation header',
-      { severity: 'suggestion', rule: 'file-documentation' }
+      { severity: 'warning', rule: 'file-documentation' }
     ));
   }
   return violations;
@@ -280,7 +281,7 @@ function checkFunctionDocumentation(
       ast.filePath,
       func.location.start,
       reason,
-      { severity: 'suggestion', rule: 'function-documentation', symbol: func.name }
+      { severity: 'warning', rule: 'function-documentation', symbol: func.name }
     ));
     return violations;
   }
@@ -310,7 +311,7 @@ function checkFunctionDocTags(
         file,
         func.location.start,
         `Function '${func.name}' missing documentation for parameter '${param}'`,
-        { severity: 'suggestion', rule: 'parameter-documentation', symbol: func.name }
+        { severity: 'warning', rule: 'parameter-documentation', symbol: func.name }
       ));
     }
   }
@@ -325,7 +326,7 @@ function checkFunctionDocTags(
       file,
       func.location.start,
       `Function '${func.name}' missing return value documentation`,
-      { severity: 'suggestion', rule: 'return-documentation', symbol: func.name }
+      { severity: 'warning', rule: 'return-documentation', symbol: func.name }
     ));
   }
 
@@ -383,7 +384,7 @@ function analyzeClassDocumentation(
         ast.filePath,
         cls.location.start,
         `Class '${cls.name}' lacks proper documentation`,
-        { severity: 'suggestion', rule: 'class-documentation', symbol: cls.name }
+        { severity: 'warning', rule: 'class-documentation', symbol: cls.name }
       ));
     }
 
@@ -419,7 +420,7 @@ function checkClassMethodDocumentation(
         ast.filePath,
         method.location.start,
         `public method '${cls.name}.${method.name}' lacks proper documentation`,
-        { severity: 'suggestion', rule: 'method-documentation', symbol: `${cls.name}.${method.name}` }
+        { severity: 'warning', rule: 'method-documentation', symbol: `${cls.name}.${method.name}` }
       ));
     }
   }

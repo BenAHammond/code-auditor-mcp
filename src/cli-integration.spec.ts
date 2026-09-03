@@ -363,6 +363,7 @@ describe('A2 gate — SKILL.md doc-CLI parity', () => {
     'search', 'audit', 'changed', 'start', 'index', 'config', 'map',
     'codemap', 'tasks', 'hotspots', 'risk', 'ledger', 'conventions',
     'generate-config', 'gen', 'baseline', 'install', 'coverage', 'test',
+    'next-file',
     // config subcommands
     'rules-list', 'rules-check', 'profiles', 'detection',
     // tasks subcommands

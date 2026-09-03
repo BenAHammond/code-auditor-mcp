@@ -224,9 +224,8 @@ describe('Skill file (SKILL.md)', () => {
     expect(content).toContain('rules-list');
   });
 
-  it('references tasks from-audit', () => {
-    expect(content).toContain('tasks');
-    expect(content).toContain('from-audit');
+  it('references next-file (the file-by-file remediation loop)', () => {
+    expect(content).toContain('next-file');
   });
 
   it('teaches hook feedback interpretation', () => {

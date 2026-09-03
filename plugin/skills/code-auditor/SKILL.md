@@ -38,12 +38,25 @@ Run an audit before declaring a task complete:
 
 ```bash
 code-audit audit --path .                           # Full audit
-code-audit changed --json --fail-on critical         # Diff-scoped audit (hook contract)
+code-audit changed --json                            # Diff-scoped audit (hook contract)
 ```
 
-Use `code-audit changed` after edits to confirm you haven't introduced violations. If the hook is active it already runs `code-audit changed --fail-on critical` automatically on Write/Edit — pay attention to its output.
+Use `code-audit changed` after edits to confirm you haven't introduced violations. If the hook is active it already runs `code-audit changed` automatically on Write/Edit — pay attention to its output.
 
-Expected output: JSON violation list (with `--json`) or colored terminal summary. Non-zero exit code means violations at or above `--fail-on` severity were found.
+**Every finding is a defect to resolve, not a suggestion to weigh.** After a full audit, work the violations in severity order — criticals first, then warnings, then suggestions — and fix them all. Severity ranks urgency, never whether a finding is real; there is no "noise" tier. Documentation findings (missing JSDoc) are maintainability defects, not stylistic niceties. If you choose not to fix one, record why before moving on — never silently dismiss it.
+
+Expected output: JSON violation list (with `--json`) or colored terminal summary. The full `audit` command exits non-zero when violations at or above `--fail-on` severity exist; the diff-scoped `changed` hook gates on per-rule `gating: true` flags, not severity.
+
+### `code-audit next-file` — fix violations one file at a time
+
+```bash
+code-audit next-file --path .        # Highest-priority file + all its findings
+code-audit next-file --path . --json # Machine-readable
+```
+
+This is the refactoring loop. `next-file` audits the project and returns the single highest-priority file — ranked by highest-severity finding, then total finding count — with every finding on it, ordered critical → warning → suggestion. Fix that file, then run it again: a still-broken file comes back, otherwise the next-worst file surfaces. `{done:true}` means the tree is clean.
+
+There is **no skip or decline affordance**. A finding leaves the queue only by being fixed, or by editing the rule that produces it in `.codeauditor.json` (your rules editor). If a rule keeps firing on something you judge correct, change the rule — never work around it.
 
 ### `code-audit config` — know the project's laws
 
@@ -76,20 +89,6 @@ Path profiles are an ordered array — files matching multiple profiles merge ov
 A **built-in** `scripts-and-tests` profile ships with every install — it excludes `scripts/**`, `tests/**`, `__tests__/**`, `fixtures/**`, and `*.test.*`/`*.spec.*` files from the gate. Disable it with `"builtin": false` in `.codeauditor.json`.
 
 Invariant violations are **immune** to path profile gate exclusion — invariants enforce declared laws and always block.
-
-### `code-audit tasks` — queue remediation work
-
-```bash
-code-audit tasks list                                # List all tasks
-code-audit tasks create --title "Fix SQL injection" --priority high
-code-audit tasks get <taskId>                        # Get task details
-code-audit tasks update <taskId> --status in_progress
-code-audit tasks complete <taskId>                   # Mark task done
-code-audit tasks delete <taskId>                     # Delete a task
-code-audit tasks from-audit                          # Create tasks from audit violations
-```
-
-Use `tasks from-audit` to convert audit violations into a tracked task list so every finding is resolved, not dropped. Work findings in severity order — criticals first, then warnings, then suggestions. Tasks carry fingerprints so duplicates are automatically deduplicated across audit runs. Every finding should end as fixed, not silently dismissed; if you choose not to fix one, record why before moving on.
 
 ### `code-audit index` — refresh the index after structural changes
 
@@ -181,13 +180,13 @@ When an edit hook blocks your edit with a violation message:
 1. **Read the violation** — it includes the invariant rule's `message` field explaining *why* the edit was blocked
 2. **Fix the violation** — change your approach to comply with the invariant
 3. **Do NOT retry the same edit** — the hook will block it again
-4. The hook runs `code-audit changed --fail-on critical`, so only critical-severity invariant violations block the edit. Warnings and suggestions are still violations and must be fixed — they pass the gate, they are not resolved.
+4. The hook runs `code-audit changed`, and its gate is binary and per-rule: an invariant rule blocks the edit only if it declares `gating: true` (regardless of severity). Warnings and suggestions are still violations and must be fixed — they pass the gate, they are not resolved.
 
 The hook auto-installs the package via npx on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the npx auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
 
 ## Host-specific notes
 
-- **Claude Code**: This skill is bundled in the `code-auditor` plugin (`claude plugin install code-auditor`). The plugin also ships a `PostToolUse` hook on `Write|Edit` that runs `code-audit changed --fail-on critical` automatically — the hook feedback section above describes that behavior. The MCP server is available as `mcp__code-auditor__*` tools for shell-less use.
+- **Claude Code**: This skill is bundled in the `code-auditor` plugin (`claude plugin install code-auditor`). The plugin also ships a `PostToolUse` hook on `Write|Edit` that runs `code-audit changed` automatically — the hook feedback section above describes that behavior. The MCP server is available as `mcp__code-auditor__*` tools for shell-less use.
 - **Cursor**: Skill install via `code-audit install --agent cursor`. Cursor's `afterFileEdit` hook fires after the edit and cannot block retroactively, so violations are reported through the strongest available feedback channel — fix them even though the edit already landed.
 - **Codex**: Skill install via `code-audit install --agent codex`. Codex's `PostToolUse` hook provides blocking feedback via exit code 2, replacing the tool result with violation messages.
 - **Gemini CLI**: Skill install only (`code-audit install --agent gemini`). No hook system exists; MCP covers shell-less use.
@@ -201,11 +200,11 @@ The hook auto-installs the package via npx on first use — no manual npm step n
 | Find by import | `code-audit search "dep:<module>"` |
 | Complex functions | `code-audit search "lang:go complexity:>10"` |
 | Look up symbol | `code-audit search --definition "<name>"` |
-| Diff-scoped audit | `code-audit changed --json --fail-on critical` |
+| Diff-scoped audit | `code-audit changed --json` |
 | List invariant rules | `code-audit config rules-list` |
 | Inspect path profiles | `code-audit config profiles` |
 | Resolve file profiles | `code-audit config profiles --file <path>` |
-| Triage violations | `code-audit tasks from-audit` |
+| Next file to fix | `code-audit next-file` |
 | Sync index | `code-audit index sync --path .` |
 | Codebase map | `code-audit map -p .` |
 | Mine conventions | `code-audit conventions list` |

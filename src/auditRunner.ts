@@ -26,7 +26,7 @@ import {
 } from './types.js';
 import { discoverFiles, discoverFilesDetailed } from './utils/fileDiscovery.js';
 import { FileAccounting } from './services/fileAccounting.js';
-import { loadConfig } from './config/configLoader.js';
+import { loadConfig, findConfigFileUp } from './config/configLoader.js';
 import { mergePathProfiles } from './config/defaults.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
 import { applyPresets, getPreset } from './presets/presets.js';
@@ -113,18 +113,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
    * Run the audit
    */
   async function run(runOptions?: AuditRunnerOptions): Promise<AuditResult> {
-    // Auto-load .codeauditor.json from project root so the programmatic API
-    // respects the same config the CLI surface reads. RunOptions (caller)
-    // override file config, and createAuditRunner options override both.
+    // Auto-load .codeauditor.json so the programmatic API respects the same
+    // config the CLI surface reads. Walk UP from the audit path so a scoped
+    // audit (`--path src`) still finds the project-root config rather than
+    // silently using defaults. RunOptions (caller) override file config, and
+    // createAuditRunner options override both.
     const rootForConfig = runOptions?.projectRoot || options.projectRoot || process.cwd();
-    let fileConfig: Partial<AuditRunnerOptions> = {};
-    try {
-      const configPath = path.join(rootForConfig, '.codeauditor.json');
-      await fs.access(configPath);
-      fileConfig = await loadConfig({ configPath });
-    } catch {
-      // No config file — proceed with defaults
-    }
+    const configPath = await findConfigFileUp(rootForConfig);
+    const fileConfig: Partial<AuditRunnerOptions> = configPath
+      ? await loadConfig({ configPath })
+      : {};
     const mergedOptions = { ...fileConfig, ...options, ...runOptions };
 
     // Spec 36 R5 — a threshold change needs a written rationale. Check the

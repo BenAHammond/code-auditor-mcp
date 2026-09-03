@@ -52,6 +52,30 @@ export async function loadConfig(options?: {
 }
 
 /**
+ * Find the nearest `.codeauditor.json` by walking up from `startDir` to the
+ * filesystem root. Returns the absolute config path, or null when none exists.
+ *
+ * This is what lets a scoped audit (`code-audit audit --path src`) still load
+ * the project-root config instead of silently falling back to defaults: the
+ * config lives at the project root, which is an ancestor of the audit path.
+ */
+export async function findConfigFileUp(startDir: string): Promise<string | null> {
+  let dir = path.resolve(startDir);
+  for (;;) {
+    const candidate = path.join(dir, '.codeauditor.json');
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // not here — continue up
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null; // reached filesystem root
+    dir = parent;
+  }
+}
+
+/**
  * Load configuration from a JSON file
  */
 async function loadFromFile(baseConfig: AuditConfig, configPath: string): Promise<AuditConfig> {

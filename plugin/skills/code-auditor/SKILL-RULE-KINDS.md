@@ -141,13 +141,24 @@ With language and path constraints:
 
 ## Severity Levels
 
-| Severity | Meaning | Hook behavior |
-|----------|---------|---------------|
-| `critical` | Security vulnerabilities, data loss risks | Blocks the edit (`--fail-on critical`) |
-| `warning` | Architecture violations, tech debt | Reported; does not block the edit |
-| `suggestion` | Style issues, minor improvements | Reported; does not block the edit |
+Severity ranks how urgent a finding is to fix. It never decides whether a
+finding is real, and it never licenses leaving one unresolved. Whether an edit
+is *blocked* is a separate axis: the edit hook gates on invariant rules that
+declare `gating: true` (a binary, per-rule flag), not on severity.
 
-> **Severity controls the gate, never the obligation.** A finding that does not block the edit is still a defect to fix — it passes the gate, not the review.
+| Severity | What it means |
+|----------|---------------|
+| `critical` | Security vulnerabilities, data-loss risks |
+| `warning` | Architecture violations, tech debt, missing documentation |
+| `suggestion` | Smaller defects — naming, conventions, minor correctness |
+
+> **Severity ranks urgency, never whether a finding is real.** There is no
+> "noise" tier — every finding is a defect to resolve. A finding that does not
+> block the edit still fails the review unless it is fixed, or the rule that
+> produces it is edited in `.codeauditor.json`. There is no "waive" — a finding
+> leaves the queue only by being resolved or by changing the rule that fires it.
+> Documentation findings are not stylistic: missing
+> JSDoc is a maintainability defect, not a nicety.
 
 ## Validation
 

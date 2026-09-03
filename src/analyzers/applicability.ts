@@ -47,6 +47,8 @@ export interface UnreadStyleSourceInfo {
  * @param dataAccessConfig The namespaced data-access config (may be undefined).
  * @param ddlColumns Aggregated DDL-declared columns from the schema reducer.
  * @param unreadStyleSources Stylesheets the indexer could not read (Spec 42 R2).
+ * @returns The rule's applicability verdict, or null when the rule declares no
+ * applicability predicate and runs unconditionally.
  */
 export function evaluateRuleApplicability(
   ruleId: string,

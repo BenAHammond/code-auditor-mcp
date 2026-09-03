@@ -26,6 +26,8 @@ import { getFilesProcessed, getFactsConsumed, isVisitorStatus, isReducerStatus }
 import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
 import { computeDiffGatingDecision } from './enforcement/gate.js';
 import { computeDiffGate } from './enforcement/diffGate.js';
+import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
+import { runNextFile } from './nextFileIncremental.js';
 
 // Get package.json for version info
 const __filename = fileURLToPath(import.meta.url);
@@ -239,6 +241,7 @@ program
         console.log(`Warnings: ${result.summary.warnings}`);
         console.log(`Suggestions: ${result.summary.suggestions}`);
 
+        console.log(chalk.gray(`\nEvery finding is a defect to resolve — severity ranks urgency, never whether a finding is real.`));
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
       } else {
         // --full with baseline: full itemized inventory (current behavior)
@@ -246,6 +249,8 @@ program
         console.log(`Critical: ${result.summary.criticalIssues}`);
         console.log(`Warnings: ${result.summary.warnings}`);
         console.log(`Suggestions: ${result.summary.suggestions}`);
+
+        console.log(chalk.gray(`\nEvery finding is a defect to resolve — severity ranks urgency, never whether a finding is real.`));
       }
 
       // Spec 44 R4 — file accounting: analyzed/dropped totals + optional breakdown.
@@ -660,6 +665,105 @@ program
           const names = zeroFileWarnings.map((d: any) => d.analyzer).join(', ');
           console.error(`Zero-files failure: ${zeroFileWarnings.length} analyzer(s) matched zero source files (${names})`);
           process.exit(2);
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Next-file command: the refactoring loop's single entry point. The first call
+// seeds a full audit into a snapshot (file → content hash + findings); each
+// subsequent call diffs, re-audits only what changed, merges per-analyzer, and
+// returns the head file with every finding on it. A consuming LLM calls it,
+// fixes the returned file, and calls it again — if the file is still in bad
+// shape it comes back, otherwise the next-worst file surfaces. The queue is
+// derived from the snapshot each invocation, so there is no cursor to corrupt
+// and no decline action: removing a finding means editing the rules, not
+// skipping the file.
+program
+  .command('next-file')
+  .description('Audit and return the highest-priority file with findings (file-by-file refactor loop)')
+  .option('-p, --path <projectPath>', 'Project root path', process.cwd())
+  .option('-c, --config <config>', 'Configuration name')
+  .option('--json', 'Output a single JSON object (or {done:true}) to stdout')
+  .action(async (options) => {
+    try {
+      await initParsers();
+
+      const { violations, summary } = await runNextFile({
+        projectRoot: options.path,
+        configName: options.config,
+      });
+
+      // Rank files worst-first from the (incrementally-merged) violation set.
+      const ranked = rankFilesByPriority(violations);
+
+      if (ranked.length === 0) {
+        if (options.json) {
+          process.stdout.write(JSON.stringify({ done: true, summary }, null, 2) + '\n');
+        } else {
+          console.log(chalk.green('\n✓ No findings — nothing left to refactor.'));
+        }
+        return;
+      }
+
+      const top = ranked[0];
+      // Every issue on the file, ordered critical → warning → suggestion.
+      const ordered = orderFindingsWithinFile(top.violations);
+
+      const projectDir = resolve(options.path || process.cwd());
+      const relativize = (filePath: string): string => {
+        if (!filePath) return '';
+        if (filePath.startsWith('/') || filePath.startsWith('\\\\')) {
+          const rel = relative(projectDir, filePath);
+          if (!rel.startsWith('..') && !isAbsolute(rel)) return rel;
+        }
+        return filePath;
+      };
+
+      if (options.json) {
+        const output = {
+          done: false,
+          file: relativize(top.file),
+          remainingFiles: ranked.length - 1,
+          remainingFindings: violations.length - top.count,
+          summary,
+          findings: ordered.map((v: any) => ({
+            analyzer: v.analyzer || '',
+            rule: v.rule || v.type || '',
+            severity: v.severity,
+            message: v.message,
+            file: relativize(v.file || ''),
+            line: v.line ?? v.start?.line,
+            column: v.column ?? v.start?.column ?? 1,
+            endLine: v.end?.line,
+            endColumn: v.end?.column,
+            enclosingSymbol: v.symbol || v.enclosingFunction || '',
+            suggestion: v.suggestion || '',
+            details: v.details || '',
+            ...(v.new !== undefined && { new: v.new }),
+          })),
+        };
+        process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+      } else {
+        console.log(chalk.blue('🔍 Next File to Refactor'));
+        console.log(chalk.gray('══════════════════════════════════════════════════'));
+        console.log(
+          `\n${chalk.bold(relativize(top.file))} — ${top.count} finding(s), highest severity ${top.maxSeverity}`
+        );
+        console.log(
+          chalk.gray(
+            `${ranked.length - 1} more file(s) with findings · ${violations.length - top.count} remaining finding(s)`
+          )
+        );
+        console.log(chalk.gray('\n── Findings ────────────────────────────────────────'));
+        for (const v of ordered) {
+          const icon = v.severity === 'critical' ? '🔴' : v.severity === 'warning' ? '🟡' : '🔵';
+          console.log(
+            `${icon} ${chalk.bold(relativize(v.file || ''))}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.rule} — ${v.message}`
+          );
         }
       }
     } catch (error) {

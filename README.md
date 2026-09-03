@@ -28,11 +28,11 @@ The hook auto-installs the auditor on first use via npx.
 
 ## Prompt examples
 
-**"Index the codebase and run a full audit. Create tasks from any violations."**
+**"Index the codebase and run a full audit, then walk the violations file-by-file with `code-audit next-file`."**
 
 **"Create a `.codeauditor.json` that bans lodash imports and prevents `src/languages/` from importing anything in `src/analyzers/`."**
 
-**"Run a full code audit and create tasks from the violations."**
+**"Run a full audit, fix the highest-priority file, and repeat `code-audit next-file` until the tree is clean."**
 
 **"Sync the code index and audit only what changed vs main."**
 
@@ -69,7 +69,7 @@ One skill, one CLI, one MCP server. Every agent gets the same audit engine — t
 | VS Code / Copilot | `code-audit install --agent agents` | No | Yes | 2026-07-19 |
 | Other SKILL.md tools | `code-audit install --agent agents` | No | Yes | 2026-07-19 |
 
-Hook behavior: **Blocking** means violations at or above `--fail-on` severity prevent the edit from landing (the agent sees the violation and fixes inline). **Advisory** means violations are reported through the strongest available feedback channel but the edit has already occurred. Cursor's `afterFileEdit` hook is fire-and-forget with no output consumption. MCP is available everywhere for shell-less use.
+Hook behavior: **Blocking** means the diff-scoped `changed` gate is tripped — an invariant rule that declares `gating: true` (a binary, per-rule flag, independent of severity) blocks the edit from landing (the agent sees the violation and fixes inline). **Advisory** means violations are reported through the strongest available feedback channel but the edit has already occurred. Cursor's `afterFileEdit` hook is fire-and-forget with no output consumption. MCP is available everywhere for shell-less use.
 
 ## Findings: Deterministic vs Advisory
 
@@ -116,7 +116,7 @@ The `sql-injection-risk` rule is **disabled by default** (`off`) after recalibra
 }
 ```
 
-With `sql-injection-risk: critical` and `code-audit changed --fail-on critical`, your agent's hook will block edits that introduce AST-level SQL injection patterns.
+With `sql-injection-risk: critical` (and the rule marked `gating`), your agent's hook will block edits that introduce AST-level SQL injection patterns.
 
 ## Style Intelligence
 

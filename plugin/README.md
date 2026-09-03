@@ -17,20 +17,20 @@ If the plugin format iterates in a future Claude Code release, update the manife
 
 | Component | Purpose |
 |-----------|---------|
-| `hooks/hooks.json` | `PostToolUse` on `Write\|Edit` → runs `code-audit changed --stdin --json --fail-on critical` |
-| `skills/code-auditor/SKILL.md` | Teaches the agent when to use `search`, `definition`, `audit`, `config`, `tasks`, and how to interpret hook feedback |
+| `hooks/hooks.json` | `PostToolUse` on `Write\|Edit` → runs `code-audit changed --stdin --json` |
+| `skills/code-auditor/SKILL.md` | Teaches the agent when to use `search`, `definition`, `audit`, `next-file`, `config`, and how to interpret hook feedback |
 | `scripts/hook-audit.sh` | Hook script: extracts file path from event JSON, pipes to `code-audit changed`, degrades cleanly when the package isn't installed |
 
 **No bundled `.mcp.json`.** The hook calls `code-audit` via the CLI, which resolves through the user's `PATH` (global install or `npx`). We deliberately chose not to bundle an MCP server in the plugin manifest: the skill + CLI path is cheaper — no standing tool-schema token cost on every context window — and equivalent to the MCP surface wherever a shell exists. The standalone MCP server (`npx code-auditor-mcp`) remains available for shell-less hosts or users who prefer the MCP transport.
 
 ## The hook
 
-After every Write or Edit, the hook runs `code-audit changed` on the edited file with `--fail-on critical`. The flow:
+After every Write or Edit, the hook runs `code-audit changed` on the edited file. The flow:
 
 1. **File edited** → hook fires with the event JSON on stdin
-2. **Hook extracts the file path** and pipes it to `code-audit changed --stdin --json --fail-on critical`
-3. **No critical violations** → exit 0, agent continues
-4. **Critical violation found** → exit 2, violation JSON is fed back to the agent, agent reads the invariant's `message` and fixes the violation
+2. **Hook extracts the file path** and pipes it to `code-audit changed --stdin --json`
+3. **No gating violations** → exit 0, agent continues
+4. **Gating violation found** → exit 2, violation JSON is fed back to the agent, agent reads the invariant's `message` and fixes the violation
 5. **code-audit not installed** → exit 0 with one-line notice, agent continues uninterrupted
 
 ### Disabling the hook

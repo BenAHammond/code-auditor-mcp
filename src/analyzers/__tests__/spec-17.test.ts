@@ -7,7 +7,7 @@
  * Each test cites the spec section it covers and the fixture file it uses.
  *
  * R7 severity defaults are verified inline:
- *   documentation/*     → suggestion
+ *   documentation/*     → warning
  *   schema/unknown-table → suggestion
  *   dry/duplicate       → warning
  *   dry/structural-similarity → suggestion
@@ -78,8 +78,8 @@ describe('Spec-17 R1 — Documentation Analyzer', () => {
     // R1.6: message should cite "exported" (the audience reason)
     const msg = funcViolations.map(v => v.message).join(' ');
     expect(msg).toMatch(/exported/i);
-    // R7: severity is suggestion
-    funcViolations.forEach(v => expect(v.severity).toBe('suggestion'));
+    // R7: severity is warning (documentation is a maintainability obligation)
+    funcViolations.forEach(v => expect(v.severity).toBe('warning'));
   });
 
   it('R1.2 — private/protected/#/_ methods skipped (fixture 4)', async () => {
@@ -124,8 +124,8 @@ describe('Spec-17 R1 — Documentation Analyzer', () => {
       expect(v.message).not.toMatch(/\barrow\b/i);
     }
 
-    // R7: severity is suggestion
-    funcViolations.forEach(v => expect(v.severity).toBe('suggestion'));
+    // R7: severity is warning (documentation is a maintainability obligation)
+    funcViolations.forEach(v => expect(v.severity).toBe('warning'));
   });
 });
 
