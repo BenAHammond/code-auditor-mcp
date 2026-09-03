@@ -392,6 +392,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // `.css`/`.scss`), so `consumedFiles` is the "any layer read it" evidence
     // for files dropped at stage 2 — threaded into the pipeline below.
     let styleConsumedFiles: string[] = [];
+    // In-scope files that contributed style data during the sync. Undefined when
+    // the sync did not run or failed — the styles reducer must not short-circuit
+    // on that (it falls back to full analysis), so we only assign on success.
+    let styleContributingFiles: string[] | undefined;
     if (enabledAnalyzers.includes('styles')) {
       try {
         const styleDb = CodeIndexDB.getInstance(undefined, root);
@@ -403,6 +407,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           { scoped: isScoped }
         );
         styleConsumedFiles = styleSyncResult.consumedFiles;
+        styleContributingFiles = styleSyncResult.contributingFiles;
         logMcpInfo('style-index', 'style index sync complete', {
           changed: styleSyncResult.changed,
           skipped: styleSyncResult.skipped,
@@ -616,6 +621,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         isScoped,
         fileAccounting,
         consumedFilePaths: styleConsumedFiles,
+        styleContributingFiles,
         onStage2Complete: async (ctx) => {
           // Post-stage-2 setup: rebuild function_calls from the functions table
           // (populated by the function-index visitor), then mine conventions.

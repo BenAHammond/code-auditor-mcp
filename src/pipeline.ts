@@ -501,6 +501,8 @@ async function runStage3(
       indexHandle,
       abortSignal: config.abortSignal,
       readSource,
+      isScoped: config.isScoped,
+      styleContributingFiles: config.styleContributingFiles,
     };
 
     try {
@@ -585,6 +587,8 @@ async function runStage4(
       config: reducerConfig,
       indexHandle,
       abortSignal: config.abortSignal,
+      isScoped: config.isScoped,
+      styleContributingFiles: config.styleContributingFiles,
     };
 
     try {

@@ -750,6 +750,27 @@ export function createStylesReducer(): Stage3Reducer {
             }>;
           }> | undefined;
 
+        // ── Short-circuit on non-style-bearing scoped runs ──────────────────
+        // When the run is scoped (changed/path-filtered) and neither the styles-css
+        // visitor produced facts for an in-scope stylesheet NOR the pre-pipeline style
+        // sync inserted any declaration/token/class-usage for an in-scope file, the
+        // full-corpus query + O(n²) detectors below contribute nothing. Skipping them
+        // removes the ~590ms styles-reducer cost from the scoped gate (820ms → ~155ms
+        // measured on a single non-style `.ts` edit; the remainder is style-index sync,
+        // discovery, and the stage-2 parse).
+        //
+        // `styles-css` facts are `{}` (empty object) when no .css/.scss is in scope
+        // (pipeline.ts seeds every visitor with an empty object), so test key-count
+        // rather than truthiness. `styleContributingFiles` is `undefined` when the
+        // style sync did not run — reducers must NOT short-circuit on `undefined`.
+        const hasCssFacts = !!cssFacts && Object.keys(cssFacts).length > 0;
+        const styleSyncContributedNothing =
+          Array.isArray(context.styleContributingFiles) &&
+          context.styleContributingFiles.length === 0;
+        if (context.isScoped && !hasCssFacts && styleSyncContributedNothing) {
+          return { violations: [], facts: {} };
+        }
+
         if (cssFacts) {
           const run = context.indexHandle.run.bind(context.indexHandle);
           for (const [filePath, facts] of Object.entries(cssFacts)) {

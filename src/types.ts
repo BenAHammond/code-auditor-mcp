@@ -253,6 +253,15 @@ export interface ReducerContext {
   /** On-demand source reader — lets reducers pull file text lazily instead of
    *  retaining every file's full source as a fact through stage 4. */
   readSource?: (filePath: string) => string | undefined;
+  /** True when this run is scoped (changed/path-filtered), not a full audit. */
+  isScoped?: boolean;
+  /**
+   * In-scope files that contributed style declarations, tokens, or class usage
+   * during the pre-pipeline style-index sync. `undefined` means the sync did not
+   * run (or failed) — reducers must NOT short-circuit on `undefined`. An empty
+   * array means the sync ran and no in-scope file contributed style data.
+   */
+  styleContributingFiles?: string[];
 }
 
 /** Return type from stage-2 visitor visit(). */
@@ -375,6 +384,12 @@ export interface PipelineConfig {
    * as `partially analyzed`.
    */
   consumedFilePaths?: string[];
+  /**
+   * In-scope files that contributed style data during the pre-pipeline style
+   * index sync. Threaded to the styles reducer so it can short-circuit a scoped
+   * run that touches no style-bearing file. Undefined when the sync didn't run.
+   */
+  styleContributingFiles?: string[];
 }
 
 /**

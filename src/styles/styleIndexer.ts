@@ -52,6 +52,13 @@ export interface StyleSyncResult {
    * `partially analyzed` — a file the style indexer consumed is not "not analyzed".
    */
   consumedFiles: string[];
+  /**
+   * In-scope files that actually inserted ≥1 declaration, token, or class-usage
+   * row. Empty means the scoped sync found no style data, so the styles reducer
+   * can short-circuit. Distinct from `consumedFiles`, which is every file READ
+   * (a finding-free file the indexer read is still "consumed", not "contributing").
+   */
+  contributingFiles: string[];
 }
 
 export interface StyleSyncOptions {
@@ -77,7 +84,7 @@ export async function syncStyleIndex(
   projectRoot: string,
   options: StyleSyncOptions = {},
 ): Promise<StyleSyncResult> {
-  const result: StyleSyncResult = { changed: 0, skipped: 0, removed: 0, errors: 0, consumedFiles: [] };
+  const result: StyleSyncResult = { changed: 0, skipped: 0, removed: 0, errors: 0, consumedFiles: [], contributingFiles: [] };
   const scoped = options.scoped ?? false;
 
   // Unread stylesheet sources (Spec 42 R2). When any exist, the
@@ -137,21 +144,33 @@ export async function syncStyleIndex(
       // Extract declarations
       const declarations = await extractForFile(filePath, content, registry, tailwindTokens, unreadSources);
 
+      // Whether this file contributed any style data (declaration, token, or
+      // class usage). Feeds `contributingFiles`, the scoped short-circuit signal
+      // for the styles reducer.
+      let contributed = false;
+
       // Insert declarations
       if (declarations.length > 0) {
         insertDeclarations(rawDb, filePath, declarations, contentHash);
+        contributed = true;
       }
 
       // Extract and insert tokens (CSS custom properties)
       const cssTokens = extractTokens(filePath, content);
       if (cssTokens.length > 0) {
         upsertTokens(rawDb, filePath, cssTokens);
+        contributed = true;
       }
 
       // Extract and insert class usage
       const classUsage = extractClassUsage(filePath, content);
       if (classUsage.length > 0) {
         upsertClassUsage(rawDb, filePath, classUsage);
+        contributed = true;
+      }
+
+      if (contributed) {
+        result.contributingFiles.push(filePath);
       }
 
       result.changed++;
