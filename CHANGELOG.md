@@ -2,6 +2,32 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.4.18] — 2026-09-03
+
+### Index relocation
+- The persisted code index now lives under `node_modules/.cache/code-auditor`
+  (gitignored by universal convention) instead of a project-local `.code-index`
+  directory — consumers no longer touch their own `.gitignore` for an internal
+  detail. When `node_modules` is hoisted (monorepo), the path is scoped by a
+  project hash; without `node_modules` it falls back to the OS cache dir.
+
+### False-positive fixes
+- `data-access/unfiltered-query` now treats reads scoped by `WHERE`, `HAVING`,
+  `LIMIT`, or `ON` as filtered, so only genuinely unbound reads are flagged.
+  Drops three false positives in the data-access fixture (baseline 12 → 9).
+- React analyzer flags `rawElementCheck` and `requireErrorBoundaries` are now
+  honored when set to `false` in `.codeauditor.json`, instead of being ignored.
+- React class-component detection is fixed across `class_heritage` /
+  `extends_clause` / `generic_type` tree-sitter nesting, and error-boundary
+  method detection now covers `property_identifier` and
+  `private_property_identifier` nodes.
+
+### Defaults
+- `minSeverity` now defaults to `suggestion` (was `warning`) across the MCP
+  server, CLI, and pipeline surfaces.
+- Plugin docs clarify the severity model: severity controls the edit gate, never
+  the obligation to fix.
+
 ## [3.4.17] — 2026-08-26
 
 ### False-positive fixes
