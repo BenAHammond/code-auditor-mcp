@@ -35,20 +35,46 @@ with reasoning. Nothing in this spec patches a finding or writes into a corpus.
 - **Per-rule cold==warm determinism** as a run-time assertion
   (`scripts/verify-cold-warm.mjs`).
 
-## R1 — The capability gap is one finding, resolved by cloning, not a note
+## R1 — A dropped language is silent; the guard is a fixture, not a note
 
-The Go adapter and the Svelte stylesheet support are code that has never been
-exercised against real input: shipped, tested only against fixtures, unverified.
-This is the `.mjs` situation and the `schema-prisma` situation again — capability
-present, never run, nothing in the output saying so. It is **one finding**, not
-two: *the tool claims a dimension it cannot demonstrate.*
+The Go handler was **built**, not missing. A native Go analyzer sits on disk
+(`src/languages/go/analyzer-src/` — a full SOLID/indexer/parser program, compiled
+to `analyzer-binary`) with zero remaining TypeScript references. It was validated
+against cloned repos, then dropped without an announcement across a series of
+individually-reasonable refactors: `functionScanner.ts`'s `getLanguageFromPath`
+stopped mapping `.go`, and `CrossLanguageSOLIDAnalyzer` was deleted in Spec 33
+*because it appeared in no run* — which reads, in hindsight, as removing something
+already orphaned, not something dead. Not unbuilt: **abandoned silently**.
 
-The resolution is not to record the gap and stop. It is to clone the input:
+That is the file-accounting failure one level up. A file silently dropped is a
+hard error; a *language* silently dropped is not. `.go` files were discovered,
+parsed, and handed to nobody — and nothing said so.
+
+Today the tree-sitter `TreeSitterGoAdapter` plus the universal SOLID and
+documentation analyzers still emit findings on Go (verified: a `.go` and a `.ts`
+file each report `documentation::function-documentation`), but the chain —
+`getLanguageFromPath` → adapter registration → analyzer dispatch — has no guard.
+The fix is a permanent one, not a re-wire:
+
+- **`verify:languages`** (wired into `verify:self`): a mixed-language fixture with
+  one `.go` and one `.ts` file, each an undocumented exported function, asserting
+  both produce findings **and** share a rule. Any refactor that unwires Go makes
+  the `.go` file emit nothing and fails the gate. This is the language-level
+  analogue of the file-accounting hard error — the loss becomes unshippable
+  instead of discoverable months later.
+
+Svelte is the genuinely-never-run half of the same finding: spec 42 added `.svelte`
+stylesheet extraction and it has never been run against a real SvelteKit app. It is
+new code awaiting its first real input, not a re-wire to be rediscovered.
+
+The fixture proves the *wiring*; real code proves the *rules*. So the corpus run
+still clones the real inputs:
 
 - **A mid-size Go project** — `gin-gonic/gin`, pinned at a recorded SHA (already
-  named as the Go corpus in spec 11 R4). This is the Go adapter's first real input.
-- **A SvelteKit application** — `sveltejs/realworld`, pinned at a recorded SHA.
-  This is the spec 42 Svelte stylesheet dialect's first real input.
+  named as the Go corpus in spec 11 R4) — exercises the Go rules the fixture only
+  proves are reachable.
+- **A SvelteKit application** — `sveltejs/realworld`, pinned at a recorded SHA —
+  gives spec 42's `.svelte` extraction its first real codebase.
 
 Both are cloned into a gitignored corpus location (`bench/real/`, per spec 11 R4),
 never vendored into the repo. A corpus found too thin to be meaningful at run time
@@ -141,15 +167,18 @@ noisy kind" versus "this finding is a defect."
    (9) / own (3) split is visible in the table itself, not only in prose.
 2. The two R1 clones exist in `bench/real/` at a recorded SHA and are gitignored;
    the Go adapter and the Svelte dialect have each run against real input once.
-3. Per-rule cold==warm passes on all twelve corpora; transcripts posted. Any corpus
+3. `verify:languages` is green in `verify:self` — the mixed-language fixture proves
+   `.go` and `.ts` both emit findings from a shared rule, so a future language drop
+   fails the gate rather than surfacing months later.
+4. Per-rule cold==warm passes on all twelve corpora; transcripts posted. Any corpus
    where it fails is fixed before triage begins, and the fix is a code change, not
    a skipped assertion.
-4. The full classified finding set — every advisory finding (or its stated sample)
+5. The full classified finding set — every advisory finding (or its stated sample)
    across all twelve corpora, each with `true`/`false`/`true-but-useless` and a
    rationale — is committed, not summarized.
-5. The per-rule judged-true table from R5, external and own rates shown as separate
+6. The per-rule judged-true table from R5, external and own rates shown as separate
    columns, with the false-positive signature per rule.
-6. `npx tsc --noEmit` exit 0; suite and integration suite green (the only code
+7. `npx tsc --noEmit` exit 0; suite and integration suite green (the only code
    touched by this spec is, at most, a run harness and the determinism script).
 
 ## Explicitly out of scope

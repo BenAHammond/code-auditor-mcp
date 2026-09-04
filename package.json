@@ -31,7 +31,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest watch",
     "verify:dist": "npm pack --silent && bash scripts/verify-dist.sh && rm -f code-auditor-mcp-*.tgz",
-    "verify:self": "node scripts/verify-self.mjs",
+    "verify:self": "node scripts/verify-self.mjs && node scripts/verify-languages.mjs",
+    "verify:languages": "node scripts/verify-languages.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
     "verify:close": "npm run test && npm run test:integration && npm run verify:gate-budget && npm run verify:dist && npm run verify:self"
   },
