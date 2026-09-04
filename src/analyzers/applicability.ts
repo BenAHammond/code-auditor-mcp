@@ -68,6 +68,12 @@ export function evaluateRuleApplicability(
       reason: 'endpoint/call extraction does not populate response/auth metadata — rule unreachable until extraction is implemented',
     };
   }
+  if (FABRICATED_API_CONTRACT_RULES.has(ruleId)) {
+    return {
+      applicable: false,
+      reason: 'endpoint/call extraction derives method and URL from function names (placeholder stubs) — findings are fabricated, not real, until extraction is implemented',
+    };
+  }
   return null;
 }
 
@@ -85,6 +91,22 @@ const UNREACHABLE_API_CONTRACT_RULES = new Set([
   'api-extra-field',
   'api-missing-field',
   'auth-mismatch',
+]);
+
+/**
+ * api-contract rules that DO fire with the current extraction, but fire on
+ * fabricated data. `extractAPICalls`/`extractEndpoints` derive `method` and
+ * `url`/`path` from the entity NAME (e.g. `getJson` → `GET /api/getjson`) — the
+ * "would extract … in real implementation" stubs. `missing-endpoint` therefore
+ * reported a fabricated `/api/<name>` for every function whose name contains
+ * "api"/"request" or purpose contains "fetch"/"axios" (78 on recall, all
+ * false); `method-mismatch` compares the same name-derived verb against a
+ * name-derived endpoint method and is equally unreal. Report `notApplicable`
+ * rather than a fabricated 78 or a misleading clean zero.
+ */
+const FABRICATED_API_CONTRACT_RULES = new Set([
+  'missing-endpoint',
+  'method-mismatch',
 ]);
 
 /**

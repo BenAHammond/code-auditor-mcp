@@ -116,6 +116,24 @@ describe('evaluateRuleApplicability — missing-org-filter (R3)', () => {
   });
 });
 
+describe('evaluateRuleApplicability — api-contract rules', () => {
+  it('marks the four unreachable rules notApplicable', () => {
+    for (const ruleId of ['api-type-mismatch', 'api-extra-field', 'api-missing-field', 'auth-mismatch']) {
+      const app = evaluateRuleApplicability(ruleId, undefined, undefined);
+      expect(app?.applicable).toBe(false);
+      expect(app?.reason).toContain('unreachable');
+    }
+  });
+
+  it('marks missing-endpoint and method-mismatch notApplicable as fabricated', () => {
+    for (const ruleId of ['missing-endpoint', 'method-mismatch']) {
+      const app = evaluateRuleApplicability(ruleId, undefined, undefined);
+      expect(app?.applicable).toBe(false);
+      expect(app?.reason).toContain('fabricated');
+    }
+  });
+});
+
 describe('evaluateRuleApplicability — passthrough', () => {
   it('returns null for rules without an applicability predicate', () => {
     expect(evaluateRuleApplicability('solid/srp', undefined, undefined)).toBeNull();

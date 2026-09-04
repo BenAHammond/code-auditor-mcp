@@ -330,10 +330,17 @@ export class APIContractAnalyzer {
 // `api-missing-field` and the deprecated check require
 // `responseSchema`/`expectedResponseType`/`deprecated`. None of those fields
 // are populated by extractEndpoints/extractAPICalls (the "would extract … in
-// real implementation" stubs below). The only reachable rules today are
-// `missing-endpoint` and `method-mismatch`. These dead rules are a follow-up
+// real implementation" stubs below). These dead rules are a follow-up
 // requiring real endpoint/call extraction, not a threshold fix — do not read
 // their zero count as "clean"; they are structurally unreachable.
+//
+// FABRICATED RULES: the remaining two, `missing-endpoint` and `method-mismatch`,
+// DO fire, but on fabricated data. `extractMethodFrom*`/`extractPathFromGo`
+// derive method and URL/path from the entity NAME (`getJson` → `GET /api/getjson`),
+// so `missing-endpoint` flags every name-matched function and `method-mismatch`
+// compares two name-derived strings. Both report `notApplicable` via
+// applicability.ts (FABRICATED_API_CONTRACT_RULES) until real endpoint/call
+// extraction exists — do not read their counts as real API-contract findings.
 
 /**
  * Extract API endpoints from code entities
