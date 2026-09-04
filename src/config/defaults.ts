@@ -3,6 +3,7 @@
  */
 
 import { AuditConfig, PathProfile } from '../types.js';
+import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
 
 /**
  * Get default configuration
@@ -19,7 +20,7 @@ export function getDefaultConfig(): AuditConfig {
       '**/*.test.{ts,tsx,js,jsx}',
       '**/*.spec.{ts,tsx,js,jsx}'
     ],
-    enabledAnalyzers: ['solid', 'dry', 'react', 'data-access', 'documentation', 'schema', 'styles', 'conventions', 'cross-domain', 'invariants'],
+    enabledAnalyzers: [...ALL_ANALYZERS],
     outputFormats: ['html', 'json'],
     outputDirectory: './audit-reports',
     minSeverity: 'suggestion',

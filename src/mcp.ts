@@ -70,6 +70,7 @@ import { searchFunctions, findDefinition, syncFileIndex, getDatabase } from './c
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
+import { MCP_DEFAULT_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
 import { CodeIndexDB } from './codeIndexDB.js';
@@ -219,7 +220,7 @@ function registerProcessReliabilityHandlers(): void {
 
 // ── Tool registration ────────────────────────────────────────────────────────
 
-const DEFAULT_ANALYZERS = ['solid', 'dry', 'documentation', 'react', 'data-access'];
+const DEFAULT_ANALYZERS = [...MCP_DEFAULT_ANALYZERS];
 
 function registerAllTools(registry: ToolRegistry): void {
   // ── audit ──────────────────────────────────────────────────────────────────

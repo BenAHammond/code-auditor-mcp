@@ -1,11 +1,14 @@
 /**
- * Guard: the shipped enabledAnalyzers list must agree with the analyzer
- * registry. Ghost names (in defaults but not registered) produce silent
- * no-ops. Absent names (registered but not in defaults) mean users never
- * see that analyzer — the schema bug (3.0.0–3.5.x).
+ * Guard: the shipped enabledAnalyzers list must agree with the canonical
+ * analyzer set — which is now DERIVED from RULE_REGISTRY (the unique `analyzer`
+ * values) rather than hand-typed. Ghost names (in defaults but not registered)
+ * produce silent no-ops; absent names (registered but not in defaults) mean
+ * users never see that analyzer — the schema bug (3.0.0–3.5.x), which recurred
+ * as the four-list drift (RULE_REGISTRY 13 vs defaults 10 vs registry 10 vs
+ * validateConfig 7).
  *
- * invariants is exempt from the default list: it is conditional and only
- * runs when invariant rules are configured (Spec 05 R3.1).
+ * This test asserts the DEFAULT list is *exactly* the canonical ALL_ANALYZERS,
+ * so a divergent hand-maintained list can never sneak back in.
  *
  * Guard 2 (Spec 22 Item 3): the config objects in DEFAULT_ANALYZER_CONFIGS
  * must be structurally consistent with each analyzer's own DEFAULT_*_CONFIG.
@@ -17,58 +20,23 @@
  */
 import { describe, it, expect } from 'vitest';
 import { getDefaultConfig, DEFAULT_ANALYZER_CONFIGS } from '../config/defaults.js';
-/** All known analyzer keys in the audit pipeline — the single source of truth for
- *  the registry guard. When a new analyzer is added, update this list. */
-const ALL_ANALYZERS = new Set([
-  'solid', 'dry', 'data-access', 'react', 'documentation',
-  'invariants', 'schema', 'styles', 'conventions', 'cross-domain',
-]);
+import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
 // Analyzer defaults — used by each analyzer's constructor/analyzeAST
 import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 
-/** Analyzers that are intentionally excluded from the default list. */
-const CONDITIONAL_ANALYZERS = new Set(['invariants']);
-
-const REGISTRY_KEYS = ALL_ANALYZERS;
-const NON_CONDITIONAL_REGISTRY = new Set(
-  [...REGISTRY_KEYS].filter((k) => !CONDITIONAL_ANALYZERS.has(k)),
-);
-
 describe('defaults ≡ registry guard', () => {
   const defaults = getDefaultConfig().enabledAnalyzers!;
-  const defaultsSet = new Set(defaults);
 
-  it('contains no ghost analyzer names (present in defaults, missing from registry)', () => {
-    const ghosts = defaults.filter((name) => !REGISTRY_KEYS.has(name));
-    expect(ghosts).toEqual([]);
+  it('equals the canonical ALL_ANALYZERS (derived from RULE_REGISTRY, not hand-typed)', () => {
+    expect(defaults).toEqual([...ALL_ANALYZERS]);
   });
 
   it('contains no duplicate entries', () => {
-    expect(defaults.length).toBe(defaultsSet.size);
+    expect(defaults.length).toBe(new Set(defaults).size);
   });
 
-  it('includes every non-conditional registry key', () => {
-    const absent = [...NON_CONDITIONAL_REGISTRY].filter(
-      (key) => !defaultsSet.has(key),
-    );
-    expect(absent).toEqual([]);
-  });
-
-  it('matches the canonical order: solid, dry, react, data-access, documentation, schema, styles, conventions, cross-domain, invariants', () => {
-    // Order matters — the first enabled analyzer runs first, and the
-    // progress display reflects this order.
-    expect(defaults).toEqual([
-      'solid',
-      'dry',
-      'react',
-      'data-access',
-      'documentation',
-      'schema',
-      'styles',
-      'conventions',
-      'cross-domain',
-      'invariants',
-    ]);
+  it('ALL_ANALYZERS itself is de-duplicated and sorted (canonical form)', () => {
+    expect([...ALL_ANALYZERS]).toEqual([...new Set(ALL_ANALYZERS)].sort());
   });
 });
 

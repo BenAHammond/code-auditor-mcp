@@ -24,6 +24,7 @@ import { CodeIndexDB } from './codeIndexDB.js';
 import type { Severity, AuditScope, SearchOptions } from './types.js';
 import { getFilesProcessed, getFactsConsumed, isVisitorStatus, isReducerStatus } from './pipeline.js';
 import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
+import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { computeDiffGatingDecision } from './enforcement/gate.js';
 import { computeDiffGate } from './enforcement/diffGate.js';
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
@@ -2091,20 +2092,9 @@ ledgerCmd
 // the persisted ledger. One job model (the ledger run), one write path — these
 // are thin wrappers over ledger.ts + mcpAuditJobs.ts, not a second store.
 
-/** Full analyzer set — matches createAuditRunner's registry, so `--detach` produces
- *  the same per-rule coverage as a synchronous `audit` (73 rows on recall). */
-const DETACHED_DEFAULT_ANALYZERS = [
-  'solid',
-  'dry',
-  'data-access',
-  'react',
-  'documentation',
-  'invariants',
-  'schema',
-  'styles',
-  'conventions',
-  'cross-domain',
-];
+/** Full analyzer set — derives from createAuditRunner's registry so `--detach`
+ *  produces the same per-rule coverage as a synchronous `audit`. */
+const DETACHED_DEFAULT_ANALYZERS = [...ALL_ANALYZERS];
 
 /** Lease TTL used by read-path reclaim, mirroring mcpAuditJobs.jobLeaseTtlMs. */
 const CLI_JOB_LEASE_TTL_MS = Number(process.env.CODE_AUDITOR_JOB_LEASE_TTL_MS) || 30_000;

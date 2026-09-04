@@ -7,6 +7,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { AuditConfig, PathProfile } from '../types.js';
 import { getDefaultConfig, DEFAULT_CODE_INDEX_CONFIG, mergePathProfiles } from './defaults.js';
+import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
 
 /**
  * Load configuration from multiple sources
@@ -197,8 +198,10 @@ export function validateConfig(config: AuditConfig): string[] {
     errors.push(`Invalid severity: ${config.minSeverity}`);
   }
   
-  // Validate analyzers
-  const validAnalyzers = ['solid', 'dry', 'react', 'documentation', 'data-access', 'schema', 'invariants'];
+  // Validate analyzers against the canonical registry-derived set, so a user
+  // naming any registered analyzer (including the cross-language trio) is never
+  // rejected for an analyzer that is valid but was missing from a hand-typed list.
+  const validAnalyzers = ALL_ANALYZERS;
   if (config.enabledAnalyzers) {
     const invalid = config.enabledAnalyzers.filter(a => !validAnalyzers.includes(a));
     if (invalid.length > 0) {

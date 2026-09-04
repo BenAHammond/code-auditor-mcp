@@ -27,6 +27,7 @@ import fs from 'node:fs/promises';
 import chalk from 'chalk';
 import { assertAuditPathExists } from './mcpToolErrors.js';
 import { makeVisitorStatus } from './pipeline.js';
+import { MCP_DEFAULT_ANALYZERS } from './analyzers/ruleRegistry.js';
 
 export interface ToolParameter {
   name: string;
@@ -699,7 +700,7 @@ export class ToolHandlers {
 
     const runner = createAuditRunner({
       projectRoot: auditPath,
-      enabledAnalyzers: ['solid', 'dry', 'documentation', 'react', 'data-access'],
+      enabledAnalyzers: [...MCP_DEFAULT_ANALYZERS],
       minSeverity: 'suggestion',
       verbose: false,
       indexFunctions,
