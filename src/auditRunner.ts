@@ -822,50 +822,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // dry_pair_history persistence is advisory — non-fatal
     }
 
-    // ── Baseline classification (Spec 18 R1) ────────────────────────────
-    const projectRoot = path.resolve(mergedOptions.projectRoot || process.cwd());
-    const baseline = loadBaseline(projectRoot);
-    let baselineMetadata: {
-      present: boolean;
-      hash?: string;
-      newCount: number;
-      fixedCount: number;
-      knownCount: number;
-      previousKnownCount?: number;
-    } | undefined;
-
-    if (baseline) {
-      const allViolations = Object.values(orderedAnalyzerResults).flatMap(
-        (r) => r.violations
-      );
-      // For scoped runs, limit "fixed" to in-scope files
-      const scopedFiles = isScoped ? files : undefined;
-      const classified = matchFindings(allViolations, baseline, scopedFiles);
-
-      // Tag violations with their baseline status
-      for (const v of classified.new) {
-        (v as any).new = true;
-      }
-      for (const v of classified.known) {
-        (v as any).new = false;
-      }
-
-      baselineMetadata = {
-        present: true,
-        hash: hashBaseline(baseline),
-        newCount: classified.new.length,
-        fixedCount: classified.fixed.length,
-        knownCount: classified.known.length,
-        previousKnownCount: baseline.metadata.totalFindings,
-      };
-
-      logMcpInfo('baseline', 'baseline classification complete', {
-        new: classified.new.length,
-        fixed: classified.fixed.length,
-        known: classified.known.length,
-      });
-    }
-
     // ── Spec 36 R7 — suppression decay ──────────────────────────────────
     // Inline `code-audit-disable-*` directives suppress a finding only while
     // it fires, carry a required reason, and are themselves an error when
@@ -1069,6 +1025,56 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // violations. Operates on the originals (via splice), not a copy.
     for (const ar of Object.values(orderedAnalyzerResults)) {
       validateHookContract(ar.violations);
+    }
+
+    // ── Baseline classification (Spec 18 R1) ────────────────────────────
+    // Runs AFTER validateHookContract (and after divergence tracking) so it
+    // classifies exactly the violation set that reaches the report. Previously
+    // this ran before the hook-contract guard spliced out malformed violations
+    // (empty file / line 0 / missing line), so newCount+knownCount over-counted
+    // by the number of spliced findings and no longer reconciled with
+    // summary.totalViolations.
+    const projectRoot = path.resolve(mergedOptions.projectRoot || process.cwd());
+    const baseline = loadBaseline(projectRoot);
+    let baselineMetadata: {
+      present: boolean;
+      hash?: string;
+      newCount: number;
+      fixedCount: number;
+      knownCount: number;
+      previousKnownCount?: number;
+    } | undefined;
+
+    if (baseline) {
+      const allViolations = Object.values(orderedAnalyzerResults).flatMap(
+        (r) => r.violations
+      );
+      // For scoped runs, limit "fixed" to in-scope files
+      const scopedFiles = isScoped ? files : undefined;
+      const classified = matchFindings(allViolations, baseline, scopedFiles);
+
+      // Tag violations with their baseline status
+      for (const v of classified.new) {
+        (v as any).new = true;
+      }
+      for (const v of classified.known) {
+        (v as any).new = false;
+      }
+
+      baselineMetadata = {
+        present: true,
+        hash: hashBaseline(baseline),
+        newCount: classified.new.length,
+        fixedCount: classified.fixed.length,
+        knownCount: classified.known.length,
+        previousKnownCount: baseline.metadata.totalFindings,
+      };
+
+      logMcpInfo('baseline', 'baseline classification complete', {
+        new: classified.new.length,
+        fixed: classified.fixed.length,
+        known: classified.known.length,
+      });
     }
 
     // Generate summary
