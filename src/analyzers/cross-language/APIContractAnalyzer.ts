@@ -228,9 +228,12 @@ export class APIContractAnalyzer {
    * Find matching endpoint for an API call
    */
   private findMatchingEndpoint(call: APICall): APIEndpoint | null {
+    // Match on path only. HTTP method is validated separately in
+    // validateMatchedPairs so a path hit with the wrong verb surfaces as
+    // method-mismatch — matching on method here would make that check dead,
+    // since every matched pair would then already have equal methods.
     for (const endpoint of this.endpoints) {
-      if (this.pathsMatch(endpoint.path, call.url) &&
-          endpoint.method === call.method.toUpperCase()) {
+      if (this.pathsMatch(endpoint.path, call.url)) {
         return endpoint;
       }
     }

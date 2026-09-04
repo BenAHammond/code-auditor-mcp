@@ -97,37 +97,24 @@ export class SchemaValidator {
   async validateSchemas(schemas: SchemaDefinition[]): Promise<SchemaViolation[]> {
     const violations: SchemaViolation[] = [];
 
-    // Group schemas by name (different language implementations of same schema)
+    // Cross-language comparison only. Group schemas by normalized name, then
+    // compare one representative per language against the reference language.
+    // Same-language duplicates (e.g. two TypeScript interfaces sharing a name
+    // in different modules) are not a cross-language contract and are out of
+    // scope; per-schema naming/deprecation hygiene is owned by the conventions
+    // analyzer, not this validator.
     const schemaGroups = groupSchemasByName(schemas);
-
-    for (const [schemaName, groupSchemas] of schemaGroups) {
-      if (groupSchemas.length > 1) {
-        violations.push(...await this.validateSchemaGroup(schemaName, groupSchemas));
+    for (const groupSchemas of schemaGroups.values()) {
+      const byLanguage = new Map<string, SchemaDefinition>();
+      for (const schema of groupSchemas) {
+        if (!byLanguage.has(schema.language)) byLanguage.set(schema.language, schema);
       }
-    }
+      if (byLanguage.size < 2) continue;
 
-    // Validate individual schema consistency
-    for (const schema of schemas) {
-      violations.push(...await this.validateIndividualSchema(schema));
-    }
-    return violations;
-  }
-
-  /**
-   * Validate a group of schemas that should be equivalent
-   */
-  private async validateSchemaGroup(
-    schemaName: string,
-    schemas: SchemaDefinition[]
-  ): Promise<SchemaViolation[]> {
-    const violations: SchemaViolation[] = [];
-
-    // Use the first schema as the reference
-    const reference = schemas[0];
-
-    for (let i = 1; i < schemas.length; i++) {
-      const current = schemas[i];
-      violations.push(...await this.compareSchemas(reference, current));
+      const [reference, ...others] = [...byLanguage.values()];
+      for (const current of others) {
+        violations.push(...await this.compareSchemas(reference, current));
+      }
     }
 
     return violations;
@@ -244,38 +231,6 @@ export class SchemaValidator {
 
       violations.push(...this.compareFieldConstraints(cmp));
     }
-
-    return violations;
-  }
-
-  /**
-   * Validate individual schema for internal consistency
-   */
-  private async validateIndividualSchema(schema: SchemaDefinition): Promise<SchemaViolation[]> {
-    const violations: SchemaViolation[] = [];
-
-    // Check for deprecated field usage
-    if (this.options.checkDeprecated) {
-      const deprecatedFields = schema.fields.filter(f => f.deprecated);
-      if (deprecatedFields.length > 0) {
-        violations.push({
-          file: schema.file,
-          line: schema.line,
-          severity: 'warning',
-          message: `Schema ${schema.name} contains ${deprecatedFields.length} deprecated fields`,
-          rule: "field-mismatch",
-          violationType: 'field-mismatch',
-          schemas: [schema],
-          suggestion: 'Review and migrate away from deprecated fields',
-          analyzer: 'schema-validator',
-          category: 'cross-language-schema'
-        });
-      }
-    }
-
-    // Check for naming consistency
-    const namingViolations = this.checkFieldNaming(schema);
-    violations.push(...namingViolations);
 
     return violations;
   }
@@ -414,34 +369,6 @@ export class SchemaValidator {
   }
 
   /**
-   * Check field naming consistency
-   */
-  private checkFieldNaming(schema: SchemaDefinition): SchemaViolation[] {
-    const violations: SchemaViolation[] = [];
-
-    for (const field of schema.fields) {
-      // Check for consistent naming convention
-      if (!isConsistentNaming(field.name, schema.language)) {
-        violations.push({
-          file: schema.file,
-          line: schema.line,
-          severity: 'suggestion',
-          message: `Field '${field.name}' doesn't follow ${schema.language} naming conventions`,
-          rule: "field-mismatch",
-          violationType: 'field-mismatch',
-          schemas: [schema],
-          fieldName: field.name,
-          suggestion: `Use ${getRecommendedNaming(field.name, schema.language)} naming convention`,
-          analyzer: 'schema-validator',
-          category: 'cross-language-schema'
-        });
-      }
-    }
-
-    return violations;
-  }
-
-  /**
    * Check if versions are compatible
    */
   private areVersionsCompatible(v1: any, v2: any): boolean {
@@ -483,9 +410,12 @@ function groupSchemasByName(schemas: SchemaDefinition[]): Map<string, SchemaDefi
  * Normalize schema name for comparison
  */
 function normalizeSchemaName(name: string): string {
-  return name.toLowerCase()
-    .replace(/[-_]/g, '')
-    .replace(/request|response|dto|model/g, '');
+  // Lowercase and strip separators only, so snake_case (TS) and PascalCase (Go)
+  // spellings of the same logical schema group together. Do NOT strip
+  // request/response/dto/model suffixes — those are distinct schemas, and
+  // stripping them collapsed e.g. User, UserDto, and UserRequest into one
+  // group, producing false missing/extra-field pairs.
+  return name.toLowerCase().replace(/[-_]/g, '');
 }
 
 /**
@@ -554,40 +484,6 @@ function parseVersion(version: string): { major: number; minor: number; patch: n
     minor: parts[1] || 0,
     patch: parts[2] || 0
   };
-}
-
-/**
- * Check if field name follows language conventions
- */
-function isConsistentNaming(fieldName: string, language: string): boolean {
-  switch (language) {
-    case 'typescript':
-    case 'javascript':
-      return /^[a-z][a-zA-Z0-9]*$/.test(fieldName); // camelCase
-    case 'go':
-      return /^[A-Z][a-zA-Z0-9]*$/.test(fieldName); // PascalCase for exported
-    case 'python':
-      return /^[a-z][a-z0-9_]*$/.test(fieldName); // snake_case
-    default:
-      return true;
-  }
-}
-
-/**
- * Get recommended naming convention
- */
-function getRecommendedNaming(fieldName: string, language: string): string {
-  switch (language) {
-    case 'typescript':
-    case 'javascript':
-      return 'camelCase';
-    case 'go':
-      return 'PascalCase';
-    case 'python':
-      return 'snake_case';
-    default:
-      return 'consistent';
-  }
 }
 
 // ---------------------------------------------------------------------------

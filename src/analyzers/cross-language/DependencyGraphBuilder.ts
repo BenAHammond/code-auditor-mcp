@@ -195,22 +195,39 @@ class DependencyGraphBuilderCore {
     // Group nodes by cluster
     for (const node of graph.nodes) {
       const cluster = node.cluster || 'default';
-      if (!clusters.has(cluster)) {
-        clusters.set(cluster, []);
-      }
-      clusters.get(cluster)!.push(node.id);
+      const ids = clusters.get(cluster);
+      if (ids) ids.push(node.id);
+      else clusters.set(cluster, [node.id]);
     }
 
     const tightlyCoupled: { nodes: string[]; coupling: number }[] = [];
 
-    for (const [clusterName, nodeIds] of clusters) {
-      const internalEdges = graph.edges.filter(edge =>
-        nodeIds.includes(edge.from) && nodeIds.includes(edge.to)
-      );
+    for (const nodeIds of clusters.values()) {
+      if (nodeIds.length < 3) continue; // coupling over a tiny cluster is meaningless
+      const member = new Set(nodeIds);
 
-      const coupling = internalEdges.length / (nodeIds.length * (nodeIds.length - 1));
+      // Cohesion: the fraction of a cluster's incident edges that stay internal.
+      // A raw internal-density threshold (internalEdges / N×(N−1) > 0.7) is
+      // unreachable for any real sparse graph — it would require ~70% of all
+      // possible edges to exist — so tight-coupling never fired. Cohesion
+      // instead flags clusters whose nodes mostly talk to each other, which is
+      // what "tightly coupled" actually means.
+      let internalEdges = 0;
+      let incidentEdges = 0;
+      for (const edge of graph.edges) {
+        const fromIn = member.has(edge.from);
+        const toIn = member.has(edge.to);
+        if (fromIn && toIn) {
+          internalEdges++;
+          incidentEdges++;
+        } else if (fromIn || toIn) {
+          incidentEdges++;
+        }
+      }
 
-      if (coupling > 0.7) { // High coupling threshold
+      if (incidentEdges === 0) continue;
+      const coupling = internalEdges / incidentEdges;
+      if (coupling > 0.7) {
         tightlyCoupled.push({ nodes: nodeIds, coupling });
       }
     }
@@ -222,16 +239,25 @@ class DependencyGraphBuilderCore {
    * Find hub nodes with too many dependencies
    */
   protected findHubNodes(graph: DependencyGraph): DependencyNode[] {
-    const dependencyCounts = new Map<string, number>();
+    const outDegree = new Map<string, number>();
 
     for (const edge of graph.edges) {
-      dependencyCounts.set(edge.from, (dependencyCounts.get(edge.from) || 0) + 1);
+      outDegree.set(edge.from, (outDegree.get(edge.from) || 0) + 1);
     }
 
-    const threshold = Math.max(5, graph.nodes.length * 0.1); // 10% of nodes or minimum 5
+    // Derive the hub threshold from the actual out-degree distribution rather
+    // than a fixed fraction of corpus size. The old `max(5, N×0.1)` required
+    // >830 outgoing edges on an ~8306-node corpus — effectively unreachable, so
+    // hub-nodes could never fire (and when it did, only via name collisions).
+    // A hub is an outlier: out-degree above a small multiple of the mean.
+    const degrees = [...outDegree.values()];
+    const mean = degrees.length
+      ? degrees.reduce((sum, d) => sum + d, 0) / degrees.length
+      : 0;
+    const threshold = Math.max(10, Math.ceil(mean * 3));
 
     return graph.nodes.filter(node =>
-      (dependencyCounts.get(node.id) || 0) > threshold
+      (outDegree.get(node.id) || 0) > threshold
     );
   }
 

@@ -1584,12 +1584,33 @@ function clBuildReferences(entities: CrossLanguageEntity[]): CrossReference[] {
   const refs: CrossReference[] = [];
   for (const e of entities) {
     const callees = (e.metadata?.callees as string[] | undefined) ?? [];
+    const eDir = e.file.split('/').slice(0, -1).join('/');
     for (const callee of callees) {
-      const name = callee.split('.').pop() ?? callee;
-      const targets = byName.get(name.toLowerCase());
-      if (!targets) continue;
-      for (const t of targets) {
-        if (t.id === e.id) continue; // skip self-loops (not a cycle signal)
+      const name = (callee.split('.').pop() ?? callee).toLowerCase();
+      const others = (byName.get(name) ?? []).filter((t) => t.id !== e.id);
+      if (others.length === 0) continue;
+
+      // A bare call-expression name (`log`) can collide with many entities
+      // across the corpus. Resolving it to *every* entity of that name
+      // fabricates a dense graph (125k edges / 5.9k false cycles on a ~7.8k
+      // node corpus) that corrupts cycle/hub/coupling detection. Narrow the
+      // resolution to an unambiguous match — same file, then same directory,
+      // then a unique global match — and drop the edge when the name is still
+      // ambiguous: a missing edge is safer than a fabricated one for
+      // structural analysis.
+      const sameFile = others.filter((t) => t.file === e.file);
+      const sameDir = sameFile.length === 0
+        ? others.filter((t) => t.file.split('/').slice(0, -1).join('/') === eDir)
+        : [];
+      const uniqueGlobal = others.length === 1 ? others : [];
+
+      const chosen = sameFile.length === 1
+        ? sameFile
+        : sameDir.length === 1
+          ? sameDir
+          : uniqueGlobal;
+
+      for (const t of chosen) {
         refs.push({
           sourceId: e.id,
           targetId: t.id,
@@ -1705,7 +1726,6 @@ export function createDependencyGraphReducer(): Stage4Reducer {
         const references = clBuildReferences(entities);
         const graph = await builder.buildGraph(entities, references);
         const health = await builder.analyzeDependencyHealth(graph);
-
         const idToEntity = new Map(entities.map((e) => [e.id, e] as const));
         const violations: Violation[] = [];
         for (const issue of health.issues) {
