@@ -56,6 +56,15 @@ function insertDecl(fields: DeclFields): number {
     fields.variant_context ?? null,
     fields.token_ref ?? null,
     'hash-' + id,]);
+  // Mirror the style indexer (Spec 45): populate the defined-class catalog from
+  // any class selectors in `context` so undefined-class resolves via the
+  // `style_defined_classes` table exactly as it does in production.
+  if (fields.context) {
+    for (const m of fields.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
+      db.run('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
+        [m[1], fields.file_path ?? 'src/test.css']);
+    }
+  }
   return id;
 }
 
@@ -133,6 +142,7 @@ beforeEach(() => {
   db.exec('DELETE FROM style_declarations');
   db.exec('DELETE FROM style_tokens');
   db.exec('DELETE FROM style_class_usage');
+  db.exec('DELETE FROM style_defined_classes');
   _declId = 0;
   _tokenId = 0;
   _classId = 0;

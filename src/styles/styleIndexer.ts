@@ -12,9 +12,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type Database from 'better-sqlite3';
-import { LanguageRegistry } from '../languages/LanguageRegistry.js';
-import type { LanguageAdapter } from '../languages/types.js';
-import { extractDeclarations, extractTokens, getOrLoadTailwindTokens } from './styleExtractor.js';
+import { extractDeclarations } from './styleExtractor.js';
 import { loadTailwindConfig, tokensToStyleTokens } from './tailwindConfigLoader.js';
 import {
   findFiles,
@@ -30,6 +28,12 @@ import type {
   StyleClassUsage,
   UnreadStyleSource,
 } from './types.js';
+
+// TS/JS source extensions are handled by the styles-source stage-2 visitor
+// (Spec 26 Phase 2 follow-up): stage 1 parses every TS/JS file for the other
+// visitors regardless, so the indexer no longer re-parses them here — that
+// second parse was ~55ms of the scoped short-circuit gate's remaining cost.
+const PIPELINE_SOURCE_EXTENSIONS = new Set([...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS]);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,19 +100,16 @@ export async function syncStyleIndex(
   const tailwindResult = loadTailwindConfig(projectRoot);
   const tailwindTokens = tailwindResult.tokens;
 
-  // Get the language registry for adapters (needed by TS/JSX extraction)
-  let registry: LanguageRegistry | null = null;
-  try {
-    registry = LanguageRegistry.getInstance();
-  } catch {
-    // Registry not initialized — TS/JSX extraction will use source-only fallback
-  }
-
   // Process each file
   for (const filePath of files) {
     // Skip .css and .scss files — handled by styles-css pipeline visitor (Spec 26 Phase 2).
     // .scss is parsed by tree-sitter-scss which extends the CSS grammar.
     if (filePath.endsWith('.css') || filePath.endsWith('.scss')) continue;
+
+    // Skip TS/JS source — handled by the styles-source stage-2 visitor, which
+    // reuses the AST stage 1 already parsed (no re-parse here).
+    const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
+    if (PIPELINE_SOURCE_EXTENSIONS.has(ext)) continue;
 
     let content: string;
     try {
@@ -142,7 +143,7 @@ export async function syncStyleIndex(
       deleteFileEntries(rawDb, filePath);
 
       // Extract declarations
-      const declarations = await extractForFile(filePath, content, registry, tailwindTokens, unreadSources);
+      const declarations = extractForFile(filePath, content, tailwindTokens, unreadSources);
 
       // Whether this file contributed any style data (declaration, token, or
       // class usage). Feeds `contributingFiles`, the scoped short-circuit signal
@@ -152,13 +153,6 @@ export async function syncStyleIndex(
       // Insert declarations
       if (declarations.length > 0) {
         insertDeclarations(rawDb, filePath, declarations, contentHash);
-        contributed = true;
-      }
-
-      // Extract and insert tokens (CSS custom properties)
-      const cssTokens = extractTokens(filePath, content);
-      if (cssTokens.length > 0) {
-        upsertTokens(rawDb, filePath, cssTokens);
         contributed = true;
       }
 
@@ -212,54 +206,17 @@ export async function syncStyleIndex(
 // ---------------------------------------------------------------------------
 
 /**
- * Extract declarations for a single file, dispatching to the appropriate
- * extractor based on file extension.
+ * Extract declarations for a single markup/component file. TS/JS source is
+ * handled by the styles-source stage-2 visitor; .css/.scss by the styles-css
+ * visitor — so only markup reaches this dispatcher.
  */
-async function extractForFile(
+function extractForFile(
   filePath: string,
   sourceCode: string,
-  registry: LanguageRegistry | null,
   tailwindTokens: any,
   unreadSources?: UnreadStyleSource[],
-): Promise<NormalizedDeclaration[]> {
+): NormalizedDeclaration[] {
   const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
-
-  // CSS/SCSS can be extracted without an adapter
-  if (ext === '.css' || ext === '.scss') {
-    return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
-  }
-
-  // TS/JS/TSX/JSX need a language adapter (derived from the discovery constants)
-  if ([...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS].includes(ext)) {
-    let adapter: LanguageAdapter | null = null;
-    try {
-      if (registry) {
-        adapter = registry.getAdapterForFile(filePath);
-      }
-    } catch {
-      // Adapter not available — skip extraction for this file
-    }
-
-    if (adapter) {
-      try {
-        const ast = await adapter.parse(filePath, sourceCode);
-        try {
-          return extractDeclarations(filePath, adapter, sourceCode, ast, tailwindTokens, unreadSources);
-        } finally {
-          // Free the WASM tree. The style index parses every TS/JS file to pull
-          // out class/style declarations; without this the tree (and, for TSX/JSX,
-          // the one-off parser) leaks in the shared Emscripten arena and exhausts
-          // the 2 GB wasm ceiling — the trigger for Aborted() on large corpora.
-          ast.dispose?.();
-        }
-      } catch {
-        // Parse error — skip
-      }
-    }
-
-    // Try extraction without AST (regex-only for class attributes)
-    return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
-  }
 
   // Markup/component files — extractor handles these with regex. Derived from
   // the shared STYLE_MARKUP_EXTENSIONS so it can't drift from extractDeclarations
@@ -269,10 +226,10 @@ async function extractForFile(
   }
 
   // Not a style-bearing extension. Known source (`.css`/`.scss` — handled by the
-  // AST pipeline — plus JSON/Go/SQL/TOML/Prisma owned by other analyzers) is
-  // skipped silently; any *other* extension is unhandled — record it so
-  // undefined-class surfaces the gap instead of silently dropping the file type
-  // (Spec 42 R2 backstop).
+  // styles-css visitor — plus TS/JS handled by styles-source, plus JSON/Go/SQL/
+  // TOML/Prisma owned by other analyzers) is skipped silently; any *other*
+  // extension is unhandled — record it so undefined-class surfaces the gap
+  // instead of silently dropping the file type (Spec 42 R2 backstop).
   if (ext && !KNOWN_SOURCE_EXTENSIONS.includes(ext)) {
     unreadSources?.push({ filePath, reason: `unsupported source extension: ${ext}` });
   }
@@ -422,6 +379,7 @@ function deleteFileEntries(rawDb: Database.Database, filePath: string): void {
   rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(filePath);
   rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(filePath);
   rawDb.prepare('DELETE FROM style_unread_sources WHERE file_path = ?').run(filePath);
+  rawDb.prepare('DELETE FROM style_defined_classes WHERE file_path = ?').run(filePath);
 }
 
 function removeStaleEntries(rawDb: Database.Database, currentFiles: string[]): number {
@@ -434,7 +392,9 @@ function removeStaleEntries(rawDb: Database.Database, currentFiles: string[]): n
      UNION
      SELECT DISTINCT file_path FROM style_class_usage
      UNION
-     SELECT DISTINCT file_path FROM style_tokens`,
+     SELECT DISTINCT file_path FROM style_tokens
+     UNION
+     SELECT DISTINCT file_path FROM style_defined_classes`,
   ).all() as { file_path: string }[];
 
   let removed = 0;
@@ -443,6 +403,7 @@ function removeStaleEntries(rawDb: Database.Database, currentFiles: string[]): n
       rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?').run(file_path);
       rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(file_path);
       rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(file_path);
+      rawDb.prepare('DELETE FROM style_defined_classes WHERE file_path = ?').run(file_path);
       removed++;
     }
   }
@@ -463,6 +424,9 @@ function insertDeclarations(
       (@property, @rawValue, @normalizedValue, @mechanism, @filePath, @line,
        @context, @variantContext, @tokenRef, @contentHash)
   `);
+  const insertClass = rawDb.prepare(
+    'INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
+  );
 
   const txn = rawDb.transaction(() => {
     for (const d of declarations) {
@@ -478,6 +442,15 @@ function insertDeclarations(
         tokenRef: d.tokenRef ?? null,
         contentHash,
       });
+
+      // Populate the defined-class catalog (Spec 45) from each declaration's
+      // selector context so styles/undefined-class can resolve names via an
+      // indexed `class_name IN (...)` lookup instead of a full-corpus scan.
+      if (d.context) {
+        for (const m of d.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
+          insertClass.run(m[1], filePath);
+        }
+      }
     }
   });
 

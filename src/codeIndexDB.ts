@@ -298,7 +298,7 @@ export class CodeIndexDB {
   private stmts: Map<string, Database.Statement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 11;
+  private static readonly SCHEMA_VERSION = 12;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -773,6 +773,41 @@ export class CodeIndexDB {
       `);
     }
 
+    // Migration 11 → 12: defined-class catalog (Spec 45 — styles/undefined-class).
+    // A dedicated (class_name, file_path) table so the undefined-class detector
+    // can resolve a class name with an indexed `class_name IN (...)` lookup
+    // instead of loading every style_declarations row and regex-extracting
+    // selectors from `context` in JS. Populated by the style indexer on insert;
+    // backfilled here once so an in-place upgrade does not leave the catalog
+    // empty (unchanged-file hashing would otherwise skip the re-extract).
+    if (currentVersion < 12) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS style_defined_classes (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          class_name TEXT NOT NULL,
+          file_path  TEXT NOT NULL,
+          created_at TEXT DEFAULT (datetime('now')),
+          UNIQUE(class_name, file_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_style_defined_class_name ON style_defined_classes(class_name);
+      `);
+
+      const definedRows = this.db
+        .prepare('SELECT DISTINCT context, file_path FROM style_declarations WHERE context IS NOT NULL')
+        .all() as Array<{ context: string; file_path: string }>;
+      const insertDefined = this.db.prepare(
+        'INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
+      );
+      const backfill = this.db.transaction(() => {
+        for (const r of definedRows) {
+          for (const m of r.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
+            insertDefined.run(m[1], r.file_path);
+          }
+        }
+      });
+      backfill();
+    }
+
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -826,6 +861,7 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_functions_entity_type ON functions(entity_type);
       CREATE INDEX IF NOT EXISTS idx_functions_complexity ON functions(complexity);
       CREATE INDEX IF NOT EXISTS idx_functions_content_hash ON functions(content_hash);
+      CREATE INDEX IF NOT EXISTS idx_functions_is_exported ON functions(is_exported);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS functions_fts USING fts5(
@@ -944,6 +980,7 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_schema_usage_table ON schema_usage(table_name);
       CREATE INDEX IF NOT EXISTS idx_schema_usage_file ON schema_usage(file_path);
       CREATE INDEX IF NOT EXISTS idx_schema_usage_function ON schema_usage(function_name);
+      CREATE INDEX IF NOT EXISTS idx_schema_usage_usage_type ON schema_usage(usage_type);
 
       CREATE TABLE IF NOT EXISTS coverage_data (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1127,6 +1164,7 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_conv_domain ON conventions(domain);
       CREATE INDEX IF NOT EXISTS idx_conv_rule_id ON conventions(rule_id);
       CREATE INDEX IF NOT EXISTS idx_conv_directory ON conventions(directory);
+      CREATE INDEX IF NOT EXISTS idx_conv_file_path ON conventions(file_path);
       CREATE INDEX IF NOT EXISTS idx_conv_hash ON conventions(hash);
 
       -- Spec 13: Hotspots & temporal analysis
