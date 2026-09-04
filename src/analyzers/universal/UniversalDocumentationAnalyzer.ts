@@ -14,6 +14,7 @@
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, ClassInfo, FunctionInfo } from '../../languages/types.js';
+import { isTestFile, isTestFunction } from '../../languages/testConventions.js';
 import picomatch from 'picomatch';
 
 /**
@@ -110,8 +111,10 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
     // Resolve fileHeaders: prefer new key, fall back to deprecated requireFileDocs
     const fileHeaders = finalConfig.fileHeaders ?? finalConfig.requireFileDocs ?? false;
 
-    // Check if file is exempt (name-based patterns)
-    if (this.isExempt(ast.filePath, finalConfig.exemptPatterns)) {
+    // Check if file is exempt (name-based patterns) or is a test file under the
+    // language's native convention (Go `*_test.go`, TS/JS `.test.`/`.spec.`, …).
+    if (this.isExempt(ast.filePath, finalConfig.exemptPatterns) ||
+        isTestFile(adapter.name, ast.filePath)) {
       return [];
     }
 
@@ -231,6 +234,13 @@ function shouldSkipFunction(
 
   // R1.1 — Skip anonymous/inline callables
   if (node && isAnonymousOrCallback(node, adapter)) {
+    return true;
+  }
+
+  // Language-native test functions (Go Test*/Benchmark*/Example*/Fuzz*) are
+  // exempt from documentation regardless of path or export status — they are
+  // test entry points, not public API.
+  if (isTestFunction(adapter.name, func.name)) {
     return true;
   }
 
