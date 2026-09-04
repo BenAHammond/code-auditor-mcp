@@ -323,6 +323,17 @@ export class APIContractAnalyzer {
 // ---------------------------------------------------------------------------
 // Endpoint/call extraction (pure functions — no analyzer state)
 // ---------------------------------------------------------------------------
+//
+// UNREACHABLE RULES: four of the six api-contract rules never fire with the
+// extraction below. `api-type-mismatch` and `auth-mismatch` require
+// `responseSchema`/`authentication` on the endpoint; `api-extra-field` /
+// `api-missing-field` and the deprecated check require
+// `responseSchema`/`expectedResponseType`/`deprecated`. None of those fields
+// are populated by extractEndpoints/extractAPICalls (the "would extract … in
+// real implementation" stubs below). The only reachable rules today are
+// `missing-endpoint` and `method-mismatch`. These dead rules are a follow-up
+// requiring real endpoint/call extraction, not a threshold fix — do not read
+// their zero count as "clean"; they are structurally unreachable.
 
 /**
  * Extract API endpoints from code entities

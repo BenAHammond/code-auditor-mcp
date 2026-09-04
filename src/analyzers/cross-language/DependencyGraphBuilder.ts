@@ -179,11 +179,55 @@ class DependencyGraphBuilderCore {
   }
 
   /**
-   * Count strongly connected components (simplified)
+   * Count strongly connected components using Tarjan's algorithm.
+   *
+   * The previous implementation returned `Math.ceil(nodes.length / 10)` — a
+   * fabricated number with no relationship to the graph. That value surfaced in
+   * `graph.metrics.stronglyConnectedComponents` as if it were measured. This
+   * runs Tarjan over the same adjacency list `detectCycles` uses so the count
+   * is real: singleton nodes are their own component, and each cycle of k nodes
+   * is one component.
    */
   protected countStronglyConnectedComponents(nodes: DependencyNode[], edges: DependencyEdge[]): number {
-    // Simplified implementation - would use Tarjan's algorithm in practice
-    return Math.ceil(nodes.length / 10); // Rough estimate
+    const adjList = this.buildAdjacencyList(edges);
+    const index = new Map<string, number>();
+    const lowLink = new Map<string, number>();
+    const onStack = new Set<string>();
+    const stack: string[] = [];
+    let nextIndex = 0;
+    let sccCount = 0;
+
+    const strongConnect = (v: string): void => {
+      index.set(v, nextIndex);
+      lowLink.set(v, nextIndex);
+      nextIndex++;
+      stack.push(v);
+      onStack.add(v);
+
+      for (const w of adjList.get(v) ?? []) {
+        if (!index.has(w)) {
+          strongConnect(w);
+          lowLink.set(v, Math.min(lowLink.get(v)!, lowLink.get(w)!));
+        } else if (onStack.has(w)) {
+          lowLink.set(v, Math.min(lowLink.get(v)!, index.get(w)!));
+        }
+      }
+
+      if (lowLink.get(v) === index.get(v)) {
+        let w: string;
+        do {
+          w = stack.pop()!;
+          onStack.delete(w);
+        } while (w !== v);
+        sccCount++;
+      }
+    };
+
+    for (const node of nodes) {
+      if (!index.has(node.id)) strongConnect(node.id);
+    }
+
+    return sccCount;
   }
 
   /**
@@ -262,9 +306,17 @@ class DependencyGraphBuilderCore {
   }
 
   /**
-   * Find orphaned nodes with no dependencies
+   * Find orphaned nodes with no dependencies.
+   *
+   * A node is only genuinely orphaned when all three hold: it has no edges in
+   * the graph, it is not exported (an exported entity is an entry point called
+   * from outside the graph — a different fact than "nothing calls it"), and
+   * nothing in the corpus calls anything by its name. The last guard matters
+   * because the reference resolver drops ambiguous edges: a bare call name that
+   * collides with many entities is treated as "unknown", not "absent", so the
+   * dropped edge must not become evidence that the target is unreferenced.
    */
-  protected findOrphanedNodes(graph: DependencyGraph): DependencyNode[] {
+  protected findOrphanedNodes(graph: DependencyGraph, referencedNames: Set<string>): DependencyNode[] {
     const connectedNodes = new Set<string>();
 
     for (const edge of graph.edges) {
@@ -272,7 +324,12 @@ class DependencyGraphBuilderCore {
       connectedNodes.add(edge.to);
     }
 
-    return graph.nodes.filter(node => !connectedNodes.has(node.id));
+    return graph.nodes.filter(node => {
+      if (connectedNodes.has(node.id)) return false;
+      if (node.exported) return false;
+      if (referencedNames.has(node.name.toLowerCase())) return false;
+      return true;
+    });
   }
 
   /**
@@ -374,7 +431,8 @@ class DependencyGraphBuilderTraversal extends DependencyGraphBuilderCore {
       type: entity.type,
       file: entity.file,
       weight: this.calculateNodeWeight(entity),
-      cluster: this.determineCluster(entity)
+      cluster: this.determineCluster(entity),
+      exported: entity.visibility === 'public' || entity.metadata?.isExported === true
     }));
   }
 
@@ -623,7 +681,17 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
       implementation: 'Apply Single Responsibility Principle to break down large modules',
     });
 
-    const orphanedNodes = this.findOrphanedNodes(graph);
+    // Bare names referenced as callees anywhere in the corpus (resolved or
+    // not). Used by orphan detection to distinguish "no one calls this" from
+    // "the resolver couldn't disambiguate a call to this name".
+    const referencedNames = new Set<string>();
+    for (const e of this.entities) {
+      for (const callee of (e.metadata?.callees as string[] | undefined) ?? []) {
+        referencedNames.add((callee.split('.').pop() ?? callee).toLowerCase());
+      }
+    }
+
+    const orphanedNodes = this.findOrphanedNodes(graph, referencedNames);
     this.recordCheck({ issues, suggestions }, orphanedNodes.length, orphanedNodes.map(n => n.id), {
       issueType: 'orphaned-nodes', severity: 'suggestion', impact: 'low',
       issueDesc: n => `Found ${n} orphaned nodes with no dependencies`,

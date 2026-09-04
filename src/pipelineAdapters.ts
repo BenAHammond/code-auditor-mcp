@@ -1644,10 +1644,20 @@ export function createSchemaValidatorReducer(): Stage4Reducer {
       const entities = clFlattenEntities(allFacts);
       if (entities.length === 0) return { violations: [], facts: {}, factsConsumed: 0 };
       try {
-        const { SchemaValidator, extractSchemas } = await import(
+        const { SchemaValidator, extractSchemas, countCrossLanguagePairs } = await import(
           './analyzers/cross-language/SchemaValidator.js'
         );
         const schemas = extractSchemas(entities);
+        // A zero here would otherwise surface as `clean` in coverage — which
+        // reads as "compared everything and found no mismatch" when the truth
+        // is "there is nothing to compare". Distinguish the two: no schemas at
+        // all, or schemas all in one language, is `notApplicable`, not `clean`.
+        if (schemas.length === 0) {
+          return { violations: [], facts: {}, notRunReason: 'no schema definitions found (no interfaces/structs to compare)' };
+        }
+        if (countCrossLanguagePairs(schemas) === 0) {
+          return { violations: [], facts: {}, notRunReason: 'no cross-language pairs found (schema comparison requires ≥2 languages)' };
+        }
         const validator = new SchemaValidator();
         const violations = await validator.validateSchemas(schemas);
         return { violations, facts: {}, factsConsumed: schemas.length };

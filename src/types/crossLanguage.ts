@@ -296,6 +296,7 @@ export interface DependencyNode {
   file: string;
   weight?: number;                       // Node importance
   cluster?: string;                      // Logical grouping
+  exported?: boolean;                    // Public/exported — called from outside the graph
 }
 
 export interface DependencyEdge {

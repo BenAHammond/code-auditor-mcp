@@ -419,6 +419,23 @@ function normalizeSchemaName(name: string): string {
 }
 
 /**
+ * Count cross-language schema pairs — groups of the same logical schema name
+ * implemented in ≥2 languages. Returns the number of comparisons
+ * {@link SchemaValidator.validateSchemas} would perform (one reference plus
+ * every additional language per group). A single-language corpus (or one with
+ * no schemas at all) yields zero, which the caller uses to report "no
+ * cross-language pairs found" instead of a misleadingly clean zero.
+ */
+export function countCrossLanguagePairs(schemas: SchemaDefinition[]): number {
+  let pairs = 0;
+  for (const groupSchemas of groupSchemasByName(schemas).values()) {
+    const languages = new Set(groupSchemas.map(s => s.language));
+    if (languages.size >= 2) pairs += languages.size - 1;
+  }
+  return pairs;
+}
+
+/**
  * Normalize type names across languages
  */
 function normalizeType(type: string, language: string): string {
