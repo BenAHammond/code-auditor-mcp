@@ -96,6 +96,25 @@ interface StyleClassUsageRow {
   unresolvable: number;  // SQLite bool as 0/1
 }
 
+/**
+ * Stable symbol for a value-scoped finding: `<property>: <value>`.
+ *
+ * The baseline fingerprint is `[analyzer, rule, file, symbol]`. Without a
+ * symbol, every finding for a `(rule, file)` pair collapses into one entry and
+ * the ratchet can no longer tell one distinct finding from forty. The value is
+ * what separates one finding about a property from another — an outlier
+ * `margin-top: 12px` must not share a fingerprint with a different outlier
+ * `margin-top: 14px`, and two mechanism-fragmented properties inside the same
+ * selector must not share a fingerprint just because they share a selector.
+ * `normalized_value` is the canonical bucket (may be a JSON-encoded object for
+ * complex values); `raw_value` is the resolved spelling fallback.
+ */
+function declValueKey(d: StyleDeclRow): string {
+  const prop = d.property ?? '';
+  const val = d.normalized_value ?? d.raw_value ?? '';
+  return val ? `${prop}: ${val}` : prop;
+}
+
 // ---------------------------------------------------------------------------
 // Analyzer — decomposed leaf-first into a three-class inheritance chain:
 //
@@ -453,7 +472,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
           `(${list.length} of ${total} usages, ${(share * 100).toFixed(1)}%). ` +
           `The dominant value "${modeList[0].raw_value}" is used ${modeList.length} times. ` +
           `Consider using a consistent value or design token.`,
-          { severity: 'warning', rule: 'styles/value-drift', symbol: 'exact' },
+          { severity: 'warning', rule: 'styles/value-drift', symbol: declValueKey(sample) },
         ));
       }
     }
@@ -507,7 +526,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
             `does not align with the inferred ${step}px scale step. ` +
             `Nearby scale values: ${Math.floor(px / step) * step}px or ` +
             `${Math.ceil(px / step) * step}px.`,
-            { severity: 'warning', rule: 'styles/off-scale' },
+            { severity: 'warning', rule: 'styles/off-scale', symbol: declValueKey(decl) },
           ));
         }
       }
@@ -670,7 +689,7 @@ function flagColorDriftStragglers(
         `(used ${cluster.length} time${cluster.length === 1 ? '' : 's'}, ` +
         `${(share * 100).toFixed(1)}% of ${total} usages). ` +
         `Dominant cluster has ${dominantSize} values. Consider using a design token.`,
-        { severity: 'warning', rule: 'styles/value-drift', symbol: 'color' },
+        { severity: 'warning', rule: 'styles/value-drift', symbol: declValueKey(item.decl) },
       ));
     }
   }
@@ -865,6 +884,7 @@ function flagUnresolvedClasses(
         {
           severity: 'warning',
           rule: 'styles/undefined-class',
+          symbol: u.class_name,
           resolution: {
             action: nearest ? 'use-defined-class' : 'define-or-remove-class',
             summary: nearest
@@ -958,7 +978,7 @@ function flagPropertyValueFragmentation(
       `Mechanism fragmentation: "${prop}: ${sample.raw_value}" is applied via ` +
       `${mechs.size} different mechanisms (${[...mechs].sort().join(', ')}). ` +
       `Consolidate to a single mechanism or design token.`,
-      { severity: 'warning', rule: 'styles/mechanism-fragmentation' },
+      { severity: 'warning', rule: 'styles/mechanism-fragmentation', symbol: declValueKey(sample) },
     ));
   }
 
@@ -1113,7 +1133,7 @@ function flagSimilarBlockPairs(
         `in ${b.filePath} share ${intersection.size} of ${union.size} ` +
         `declarations (${(similarity * 100).toFixed(0)}%). ` +
         `Consider consolidating these rules or extracting a shared mixin.`,
-        { severity: 'suggestion', rule: 'styles/declaration-set-similarity' },
+        { severity: 'suggestion', rule: 'styles/declaration-set-similarity', symbol: `${a.context} & ${b.context}` },
       ));
     }
   }
@@ -1265,7 +1285,7 @@ class StylesStructureDetectors {
         `Token bypass: "${d.raw_value}" for "${d.property}" matches design ` +
         `token "${tokenInfo.name}" but was used as a raw value. ` +
         `Use the token reference instead to keep styles consistent.`,
-        { severity: 'warning', rule: 'styles/token-bypass' },
+        { severity: 'warning', rule: 'styles/token-bypass', symbol: declValueKey(d) },
       ));
     }
 
@@ -1349,7 +1369,7 @@ class StylesStructureDetectors {
         `Z-index sprawl: ${values.size} distinct z-index values ` +
         `(${sortedVals.join(', ')}). Consider defining a z-index scale ` +
         `(e.g., $z-layers: (dropdown: 100, modal: 200, toast: 300)).`,
-        { severity: 'warning', rule: 'styles/z-index-sprawl' },
+        { severity: 'warning', rule: 'styles/z-index-sprawl', symbol: declValueKey(sample) },
       ));
     }
 
@@ -1362,7 +1382,7 @@ class StylesStructureDetectors {
           d.line,
           `Singleton z-index: z-index: ${val} is used only once. ` +
           `Consider whether this value belongs in a shared z-index scale.`,
-          { severity: 'suggestion', rule: 'styles/z-index-singleton' },
+          { severity: 'suggestion', rule: 'styles/z-index-singleton', symbol: declValueKey(d) },
         ));
       }
     }

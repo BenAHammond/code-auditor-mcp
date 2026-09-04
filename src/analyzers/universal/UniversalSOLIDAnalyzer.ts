@@ -94,6 +94,26 @@ interface SolidContext {
 }
 
 /**
+ * Stable per-function identity for the baseline fingerprint.
+ *
+ * Named functions use their name. Anonymous functions carry `name === '<anonymous>'`
+ * from the adapters — if we used that as-is, every anonymous function in a file would
+ * collapse into a single `<anonymous>` baseline entry, so the ratchet could not tell
+ * one anonymous function from many. Fall back to a source-location identity instead:
+ * it is less stable than a name (an edit shifting the line above changes it), but it
+ * is strictly better than the collapse — and anonymous functions have no name to key
+ * on, so location is the best identity the adapter currently surfaces.
+ */
+function functionSymbol(func: FunctionInfo): string {
+  if (func.name && func.name !== '<anonymous>') {
+    return func.name;
+  }
+  const prefix = func.className ? `${func.className}.` : '';
+  const { line, column } = func.location.start;
+  return `${prefix}anonymous@${line}:${column}`;
+}
+
+/**
  * Universal solid analyzer.
  */
 export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
@@ -290,7 +310,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           func.location.start,
           `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 4}. Consider using an options object.`,
-          { severity: 'warning', rule: 'solid/single-responsibility', symbol: func.name,
+          { severity: 'warning', rule: 'solid/single-responsibility', symbol: functionSymbol(func),
             resolution: {
               action: 'bundle-params',
               summary: `Bundle the ${func.parameters.length} parameters of "${func.name}" into an options object.`,
@@ -309,7 +329,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           func.location.start,
           `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 50}. Consider breaking it down.`,
-          { severity: 'warning', rule: 'solid/single-responsibility', symbol: func.name,
+          { severity: 'warning', rule: 'solid/single-responsibility', symbol: functionSymbol(func),
             resolution: {
               action: 'break-down-function',
               summary: `Break "${func.name}" (${lineCount} lines) into smaller functions, extracting named helper blocks.`,
@@ -337,7 +357,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         func.location.start,
         `Function "${func.name}" has cyclomatic complexity ${cyclomaticComplexity}, ` +
         `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller functions.`,
-        { severity: 'warning', rule: 'solid/method-complexity', symbol: func.name }  // R7: method-complexity → warning
+        { severity: 'warning', rule: 'solid/method-complexity', symbol: functionSymbol(func) }  // R7: method-complexity → warning
       ));
     }
   }

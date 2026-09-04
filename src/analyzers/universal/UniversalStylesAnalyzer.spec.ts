@@ -225,7 +225,7 @@ describe('Detector 1 — Value Drift', () => {
     expect(drifts.length).toBeGreaterThanOrEqual(1);
     const outlier = drifts.find((v: any) => v.file.includes('outlier'));
     expect(outlier).toBeDefined();
-    expect(outlier.functionName).toBe('exact');
+    expect(outlier.functionName).toBe('margin-top: 99px');
   });
 
   it('does NOT fire when corpus is below minCorpus', async () => {
