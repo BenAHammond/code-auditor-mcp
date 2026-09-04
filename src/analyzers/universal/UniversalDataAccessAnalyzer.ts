@@ -191,12 +191,14 @@ interface DatabaseCall {
    *  broader than the tenant-isolation org filter, used for the performance
    *  `unfiltered-query` rule. */
   hasFilter: boolean;
-  /** True when the statement contains a SELECT (a read component) — either a
-   *  bare SELECT or an INSERT...SELECT / WITH...SELECT whose source rows are
-   *  read.  Drives the `unfiltered-query` filter gate, which only suppresses
-   *  statements that both read and carry a limiting clause; pure writes are
-   *  always surfaced so INSERT-only/DELETE-only tables stay visible. */
-  hasSelectSource: boolean;
+  /** True when the statement is a pure write — carries an INSERT/DELETE/UPDATE
+   *  verb and no SELECT read component.  Drives the `unfiltered-query` gate:
+   *  pure writes (`INSERT ... VALUES`, `DELETE`, `UPDATE`) have no result set
+   *  to sweep, so they are never "unfiltered reads" and must not be surfaced
+   *  by a rule about unbounded reads.  A statement with no DML verb (an ORM
+   *  query-builder read like `.find()` / `.select().from(...)`) is NOT a pure
+   *  write and stays eligible for the gate. */
+  isPureWrite: boolean;
   hasParameterizedQuery: boolean;
   hasSqlInjectionRisk: boolean;
   /** Enclosing function name for stable fingerprinting (Spec 18 Gap 2). */
@@ -397,7 +399,7 @@ function buildDatabaseCall(
 
   const tables = extractTables(nodeText, config);
   const hasOrgFilter = hasOrganizationFilter(nodeText, config);
-  const { hasFilter, hasSelectSource } = detectQueryFiltering(nodeText);
+  const { hasFilter, isPureWrite } = detectQueryFiltering(nodeText);
   const security = withRuleTiming('sql-injection-risk', () =>
     checkQuerySecurity(node, nodeText, ast, scan));
 
@@ -422,7 +424,7 @@ function buildDatabaseCall(
     tables,
     hasOrganizationFilter: hasOrgFilter,
     hasFilter,
-    hasSelectSource,
+    isPureWrite,
     hasParameterizedQuery: security.parameterized,
     hasSqlInjectionRisk: security.injectionRisk,
     enclosingFunction: findEnclosingFunctionName(node, adapter),
@@ -1156,36 +1158,48 @@ function hasQueryFilter(text: string): boolean {
 }
 
 /**
- * True when a SQL statement contains a SELECT — a read component.  This is true
- * for a bare `SELECT`, an `INSERT ... SELECT`, and a `WITH ... SELECT`, whose
- * source rows are read and therefore subject to the WHERE/HAVING/LIMIT/ON filter
- * gate.  It is false for pure writes (`INSERT ... VALUES`, `DELETE`, `UPDATE`),
- * which have no read component.  Text with no DML verb (ORM fragments, raw
- * query-builder text) has no SELECT and is therefore treated as a pure write.
+ * True when a SQL statement contains a SELECT — a read verb.  True for a bare
+ * `SELECT`, an `INSERT ... SELECT`, and a `WITH ... SELECT`, whose source rows
+ * are read.  Combined with `hasWriteVerb` it distinguishes a pure write from a
+ * read: a statement with a write verb but no SELECT is a pure write, while
+ * anything else (a bare SELECT, or text with no DML verb such as an ORM
+ * query-builder read) is a read for the `unfiltered-query` gate.
  */
 function hasSelectComponent(text: string): boolean {
   return /\bSELECT\b/.test(text.toUpperCase());
 }
 
 /**
- * Filter/read shape of a SQL statement, computed together for the
- * `unfiltered-query` gate (keeps `buildDatabaseCall` under its line budget).
+ * True when a SQL statement carries a write verb (INSERT/DELETE/UPDATE).
  */
-function detectQueryFiltering(text: string): { hasFilter: boolean; hasSelectSource: boolean } {
-  return { hasFilter: hasQueryFilter(text), hasSelectSource: hasSelectComponent(text) };
+function hasWriteVerb(text: string): boolean {
+  const upper = text.toUpperCase();
+  return /\bINSERT\b/.test(upper) || /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper);
 }
 
 /**
- * True when a call should be surfaced by the `unfiltered-query` rule.  Pure
- * writes (`INSERT ... VALUES`, `DELETE`, `UPDATE`) are always surfaced — they
- * have no read component for the WHERE/HAVING/LIMIT/ON gate to scope, so a
- * scoped DELETE still surfaces its table, which the INSERT-only / DELETE-only
- * table-extraction path depends on.  Statements with a SELECT component (a bare
- * `SELECT`, or an `INSERT ... SELECT`) are surfaced only when that read lacks a
- * limiting clause.
+ * Filter/write shape of a SQL statement, computed together for the
+ * `unfiltered-query` gate (keeps `buildDatabaseCall` under its line budget).
+ * `isPureWrite` is true only for a statement with a write verb and no SELECT —
+ * those have no result set to sweep and are out of scope for a rule about
+ * unbounded reads.
+ */
+function detectQueryFiltering(text: string): { hasFilter: boolean; isPureWrite: boolean } {
+  const isPureWrite = hasWriteVerb(text) && !hasSelectComponent(text);
+  return { hasFilter: hasQueryFilter(text), isPureWrite };
+}
+
+/**
+ * True when a call should be surfaced by the `unfiltered-query` rule: a read
+ * (a bare `SELECT`, an `INSERT ... SELECT` / `WITH ... SELECT`, or an ORM
+ * query-builder read such as `.find()` / `.select().from(...)`) that lacks any
+ * row-limiting clause (WHERE/HAVING/LIMIT/ON).  Pure writes (`INSERT ... VALUES`,
+ * `DELETE`, `UPDATE`) have no result set to sweep and are therefore never
+ * "unfiltered reads" — they are out of scope for a rule about reads that sweep
+ * an unbounded result set, so they are not surfaced.
  */
 function isUnfilteredQuery(call: DatabaseCall): boolean {
-  return !call.hasSelectSource || !call.hasFilter;
+  return !call.hasFilter && !call.isPureWrite;
 }
 
 /**

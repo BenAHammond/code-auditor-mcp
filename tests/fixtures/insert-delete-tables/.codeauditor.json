@@ -1,5 +1,10 @@
 {
   "$schema": "https://code-auditor.vercel.app/schemas/config.json",
   "projectType": "nextjs",
-  "rules": {}
+  "rules": {},
+  "analyzerConfigs": {
+    "data-access": {
+      "orgFilterTables": ["audit_log", "expired_sessions", "migration_log"]
+    }
+  }
 }

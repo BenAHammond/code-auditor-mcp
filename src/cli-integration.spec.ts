@@ -579,6 +579,14 @@ describe('A2 gate — SKILL.md doc-CLI parity', () => {
 //   - expired_sessions: only DELETEd from (invisible without DELETE FROM pattern)
 //   - migration_log: INSERTed/DELETEd via locally-defined d1Exec() wrapper
 //                     (invisible without dbWrapperNames provenance fix)
+//
+// The tables are declared org-scoped via analyzerConfigs["data-access"]
+// .orgFilterTables so the extracted tables surface through `missing-org-filter`
+// — the semantically correct consumer of "this write touches a tenant-scoped
+// table". Before the unfiltered-query adjudication (which removed pure writes
+// from that rule), these INSERT/DELETE-only tables were instead surfaced by
+// `unfiltered-query` labeling a pure write as an "unfiltered read" — a false
+// positive this fixture no longer depends on.
 
 describe('INSERT/DELETE table patterns + provenance fixture', () => {
   let testDir: string;
