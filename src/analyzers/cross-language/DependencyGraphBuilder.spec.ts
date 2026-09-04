@@ -78,4 +78,24 @@ describe('DependencyGraphBuilder orphan detection', () => {
     expect(orphaned).toBeDefined();
     expect(orphaned!.affectedNodes).toEqual(['d']);
   });
+
+  it('does not flag type declarations (interfaces/structs) as orphaned — they are never call targets', async () => {
+    // A private interface with no edges is not dead code: it is referenced via
+    // type annotations/implements, which the call graph does not model.
+    const entities = [
+      entity('fn', 'alpha', { visibility: 'private', metadata: { callees: ['beta'] } }),
+      entity('b', 'beta', { visibility: 'private' }),
+      entity('iface', 'User', { visibility: 'private', type: 'interface' }),
+      entity('st', 'Config', { visibility: 'private', type: 'struct' }),
+    ];
+    const references = [ref('fn', 'b')];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    const orphaned = health.issues.find(i => i.type === 'orphaned-nodes');
+    // Only beta is a candidate but it has an incoming edge; nothing is orphaned.
+    expect(orphaned?.affectedNodes ?? []).toEqual([]);
+  });
 });

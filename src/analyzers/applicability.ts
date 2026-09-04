@@ -62,8 +62,30 @@ export function evaluateRuleApplicability(
   if (ruleId === 'missing-org-filter') {
     return evaluateMissingOrgFilterApplicability(dataAccessConfig, ddlColumns);
   }
+  if (UNREACHABLE_API_CONTRACT_RULES.has(ruleId)) {
+    return {
+      applicable: false,
+      reason: 'endpoint/call extraction does not populate response/auth metadata — rule unreachable until extraction is implemented',
+    };
+  }
   return null;
 }
+
+/**
+ * api-contract rules that cannot fire with the current endpoint/call
+ * extraction. `api-type-mismatch` and `auth-mismatch` read
+ * `responseSchema`/`expectedResponseType`/`authentication`, which
+ * extractEndpoints/extractAPICalls never populate; `api-extra-field` and
+ * `api-missing-field` have no emission site at all. See the "UNREACHABLE RULES"
+ * note in APIContractAnalyzer.ts. They report `notApplicable` here rather than a
+ * misleadingly clean zero. Remove an id when extraction begins emitting it.
+ */
+const UNREACHABLE_API_CONTRACT_RULES = new Set([
+  'api-type-mismatch',
+  'api-extra-field',
+  'api-missing-field',
+  'auth-mismatch',
+]);
 
 /**
  * Spec 42 R2 — whole-run scope: if any stylesheet went unread, a class this

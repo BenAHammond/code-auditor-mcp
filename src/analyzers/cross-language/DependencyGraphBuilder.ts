@@ -325,6 +325,12 @@ class DependencyGraphBuilderCore {
     }
 
     return graph.nodes.filter(node => {
+      // Type declarations (interfaces, structs) are never call targets — they
+      // are referenced via implements/extends/type-annotations, which the call
+      // graph does not model. "No call edges" is therefore not evidence of dead
+      // code for them; flagging them orphaned produced a flood of 1081
+      // interfaces on a corpus whose actual signal was ~139 functions.
+      if (node.type === 'interface' || node.type === 'struct') return false;
       if (connectedNodes.has(node.id)) return false;
       if (node.exported) return false;
       if (referencedNames.has(node.name.toLowerCase())) return false;
