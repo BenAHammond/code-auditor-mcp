@@ -783,6 +783,23 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       }
     }
 
+    // ── Normalize the analyzer field on every violation to its result key ──
+    // Violations are emitted by analyzers that don't always stamp `analyzer`
+    // correctly: the react analyzer omits it entirely, and the schema sub-visitor
+    // helpers (createSchemaViolation) hardcode `analyzer: 'schema'` for every
+    // sub-visitor, collapsing schema-code/schema-sql/schema-prisma/schema-json
+    // into the parent 'schema'. Both surface in the baseline metadata as
+    // `unknown: 338` / an over-broad `schema` bucket. The result key IS the
+    // analyzer that emitted the finding, so stamp it here as the single source
+    // of truth — a no-op for every analyzer that already labels itself, and it
+    // also fixes any future analyzer that forgets. Runs before baseline
+    // classification (Spec 18) so fingerprints and analyzerCounts are correct.
+    for (const [resultName, result] of Object.entries(orderedAnalyzerResults)) {
+      for (const v of result.violations) {
+        v.analyzer = resultName;
+      }
+    }
+
     // ── Spec 13 R5 Phase 1: Persist seeded DRY pairs ──────────────────
     // Store pairs from DRY analysis in dry_pair_history for divergence tracking.
     // Pair identity is fingerprint-based (file + nodeType + line),
