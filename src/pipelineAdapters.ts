@@ -31,7 +31,7 @@ import type {
 } from './types.js';
 import type { AST, LanguageAdapter } from './languages/types.js';
 import type { MigrationOp } from './analyzers/universal/UniversalSchemaAnalyzer.js';
-import { TYPESCRIPT_EXTENSIONS, JAVASCRIPT_EXTENSIONS } from './utils/fileDiscovery.js';
+import { TYPESCRIPT_EXTENSIONS, JAVASCRIPT_EXTENSIONS, getLanguageFromPath } from './utils/fileDiscovery.js';
 import {
   walkAST,
   isExported,
@@ -221,26 +221,6 @@ export function createDocumentationVisitor(): Stage2Visitor {
 // to mine — even on a cold run with no prior `index sync`.
 // The function_calls table is rebuilt post-pipeline after functions rows have
 // their auto-increment IDs assigned.
-
-function getLanguageFromPath(filePath: string): string {
-  const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
-  switch (ext) {
-    case '.ts':
-    case '.tsx':
-    case '.mts':
-    case '.cts':
-      return 'typescript';
-    case '.js':
-    case '.jsx':
-    case '.mjs':
-    case '.cjs':
-      return 'javascript';
-    case '.go':
-      return 'go';
-    default:
-      return 'unknown';
-  }
-}
 
 function computeContentHash(body: string | undefined, signature: string | undefined): string {
   const normalized = (body ?? '').replace(/\s+/g, ' ').trim() + '|' + (signature ?? '').trim();

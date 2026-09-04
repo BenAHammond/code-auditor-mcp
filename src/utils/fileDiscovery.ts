@@ -167,6 +167,22 @@ export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSION
 // non-style source and `.css`/`.scss` (handled by the AST pipeline) stay silent.
 export const KNOWN_SOURCE_EXTENSIONS = [...ALL_EXTENSIONS, '.html'];
 
+/**
+ * Single source of truth for extension → language-id mapping. Both the audit
+ * pipeline (`pipelineAdapters.ts`) and the index/scan path (`functionScanner.ts`)
+ * used to carry their own private copies; the index copy dropped `.go` (and the
+ * `.mts`/`.cts`/`.mjs`/`.cjs` variants) and silently handed Go files a language
+ * of `unknown`. Consolidating to one function means a language is either mapped
+ * here for everyone or not at all — it cannot be forgotten in one call path.
+ */
+export function getLanguageFromPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (TYPESCRIPT_EXTENSIONS.includes(ext)) return 'typescript';
+  if (JAVASCRIPT_EXTENSIONS.includes(ext)) return 'javascript';
+  if (GO_EXTENSIONS.includes(ext)) return 'go';
+  return 'unknown';
+}
+
 export interface FileDiscoveryOptions {
   extensions?: string[];
   excludeDirs?: string[];

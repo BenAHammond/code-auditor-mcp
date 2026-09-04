@@ -9,7 +9,7 @@
  */
 
 import { FunctionMetadata, AuditOptions } from './types.js';
-import { discoverFiles } from './utils/fileDiscovery.js';
+import { discoverFiles, getLanguageFromPath } from './utils/fileDiscovery.js';
 import { parseTypeScriptFile } from './utils/astParser.js';
 import {
   findNodesByKind,
@@ -572,23 +572,6 @@ function isComponentExported(node: ASTNode): boolean {
   }
 
   return false;
-}
-
-/**
- * Get language from file path
- */
-function getLanguageFromPath(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
-    case '.ts':
-    case '.tsx':
-      return 'typescript';
-    case '.js':
-    case '.jsx':
-      return 'javascript';
-    default:
-      return 'unknown';
-  }
 }
 
 // Aliases for MCP server compatibility

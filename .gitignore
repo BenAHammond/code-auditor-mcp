@@ -125,6 +125,10 @@ bug-reports/
 # Local validation corpora (large, contain nested .git — never commit)
 corpus-expansion/
 
+# Real external repos cloned for corpus runs (spec 43 R1) — never vendored into
+# the repo. bench/corpus (committed fixtures) is unaffected; only real/ is ignored.
+bench/real/
+
 .claude/
 claude.backup-*
 
