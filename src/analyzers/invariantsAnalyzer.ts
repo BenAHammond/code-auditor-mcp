@@ -117,6 +117,7 @@ function runRuleEngine(args: InvariantCheckArgs): Violation[] {
     readSource: args.config.readSource,
     knownFiles: args.config.knownFiles,
     fileData: args.config.fileData,
+    isScoped: args.config.isScoped,
   });
 
   return [

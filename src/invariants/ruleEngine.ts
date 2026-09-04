@@ -34,6 +34,9 @@ export { hasRules } from './ruleValidator.js';
 
 // ── Globbing helpers ──────────────────────────────────────────────────────
 
+/** Chunked IN-clause bound (SQLite max host params, conservative). */
+const SQLITE_MAX_VARIABLES = 900;
+
 /** Cache compiled matchers keyed by pattern */
 const matcherCache = new Map<string, ReturnType<typeof picomatch>>();
 
@@ -548,6 +551,14 @@ export interface RuleEngineOptions {
    * Keys are repo-relative file paths. When provided, regex extraction is skipped.
    */
   fileData?: Map<string, { imports: FileImport[]; exports: Array<{ name: string; line: number }> }>;
+  /**
+   * True when this is a diff-scoped audit (`code-audit changed`). When set, the
+   * in-scope file set is pushed into the call-graph query as a `file_path IN (...)`
+   * clause instead of a JS post-filter (which would still be a no-op over the full
+   * corpus on a full audit). When unset, `files` is the full discovered list and
+   * the query is not restricted.
+   */
+  isScoped?: boolean;
 }
 
 /**
@@ -556,7 +567,7 @@ export interface RuleEngineOptions {
  * call-constraint queries the full index for callers.
  */
 export function checkRules(options: RuleEngineOptions): RuleCheckResult {
-  const { rules, files, indexHandle, projectDir, readSource, knownFiles, fileData: preExtractedFileData } = options;
+  const { rules, files, indexHandle, projectDir, readSource, knownFiles, fileData: preExtractedFileData, isScoped } = options;
   const violations: RuleViolation[] = [];
   const errors: string[] = [];
 
@@ -630,7 +641,7 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   // 4. call-constraint checks — requires DB
   if (callConstraints.length > 0 && indexHandle) {
     try {
-      const scopedCallers = getScopedCallers(indexHandle, files);
+      const scopedCallers = getScopedCallers(indexHandle, files, isScoped);
       for (const rule of callConstraints) {
         violations.push(...checkCallConstraint(rule, scopedCallers));
       }
@@ -683,11 +694,42 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
 /**
  * Get all callers from the DB that are within the scoped files.
  * Returns [caller, callee] pairs for checking against constraints.
+ *
+ * When `isScoped` is true (diff audit), the in-scope file set is pushed into the
+ * SQL as a chunked `f.file_path IN (...)` clause so out-of-scope callers are
+ * never fetched. On a full audit `isScoped` is false and `files` is the full
+ * discovered list, so a JS filter would be a no-op; the query is left
+ * unrestricted (equivalent result, fewer bind params).
  */
 function getScopedCallers(
   indexHandle: IndexHandle,
-  scopedFiles: string[]
+  scopedFiles: string[],
+  isScoped?: boolean
 ): Array<{ filePath: string; callerName: string; calleeName: string }> {
+  const mapRows = (rows: Array<{ caller_name: string; file_path: string; callee_name: string }>) =>
+    rows.map(r => ({
+      filePath: r.file_path,
+      callerName: r.caller_name,
+      calleeName: r.callee_name,
+    }));
+
+  if (isScoped && scopedFiles.length > 0) {
+    const chunks: string[][] = [];
+    for (let i = 0; i < scopedFiles.length; i += SQLITE_MAX_VARIABLES) {
+      chunks.push(scopedFiles.slice(i, i + SQLITE_MAX_VARIABLES));
+    }
+    const clause = chunks
+      .map(c => `f.file_path IN (${c.map(() => '?').join(', ')})`)
+      .join(' OR ');
+    const rows = indexHandle.query(`
+      SELECT DISTINCT f.name as caller_name, f.file_path, fc.callee_name
+      FROM function_calls fc
+      JOIN functions f ON f.id = fc.caller_id
+      WHERE ${clause}
+    `, scopedFiles) as Array<{ caller_name: string; file_path: string; callee_name: string }>;
+    return mapRows(rows);
+  }
+
   const rows = indexHandle.query(`
     SELECT DISTINCT f.name as caller_name, f.file_path, fc.callee_name
     FROM function_calls fc
@@ -697,20 +739,10 @@ function getScopedCallers(
   // If scoped files provided, filter to those files
   if (scopedFiles.length > 0) {
     const fileSet = new Set(scopedFiles.map(f => f.replace(/^\.\//, '')));
-    return rows
-      .filter(r => fileSet.has(r.file_path))
-      .map(r => ({
-        filePath: r.file_path,
-        callerName: r.caller_name,
-        calleeName: r.callee_name,
-      }));
+    return mapRows(rows.filter(r => fileSet.has(r.file_path)));
   }
 
-  return rows.map(r => ({
-    filePath: r.file_path,
-    callerName: r.caller_name,
-    calleeName: r.callee_name,
-  }));
+  return mapRows(rows);
 }
 
 /** Clear the matcher cache (useful for tests) */

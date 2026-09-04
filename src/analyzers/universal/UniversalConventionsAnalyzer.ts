@@ -28,6 +28,9 @@ import {
 } from '../../conventions/conventionMiner.js';
 import type { ExportInfo } from '../../languages/types.js';
 
+// SQLite bind-parameter ceiling (see UniversalStylesAnalyzer for the same bound).
+const SQLITE_MAX_VARIABLES = 900;
+
 // ---------------------------------------------------------------------------
 // Default configuration
 // ---------------------------------------------------------------------------
@@ -131,14 +134,18 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     const readSource: ((filePath: string) => string | undefined) | undefined = config.readSource;
     // B2: exportsMap comes from function-index visitor facts (AST-extracted)
     const exportsMap: Map<string, ExportInfo[]> | undefined = config.exportsMap;
+    // Scoped/diff audit: only flag conventions deviations whose finding anchors to
+    // an in-scope file. The `conventions` table (the corpus baseline) is always read
+    // whole; only the function/file queries that emit findings are scoped.
+    const scope = buildFileScope(config.scopedFiles, config.isScoped);
 
     // Detect violations per domain
     const byDomain = groupConventionsByDomain(conventions);
     const scanCtx: ConventionsScanContext = { projectRoot, readSource, exportsMap };
-    violations.push(...this.detectPerDomain(byDomain, indexHandle, scanCtx));
+    violations.push(...this.detectPerDomain(byDomain, indexHandle, scanCtx, scope));
 
     // Count unique files that conventions apply to (from the function index)
-    const uniqueFiles = countUniqueFiles(indexHandle, projectRoot);
+    const uniqueFiles = countUniqueFiles(indexHandle, projectRoot, scope);
 
     return this.makeResult(violations, uniqueFiles, startTime);
   }
@@ -176,32 +183,33 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     byDomain: Map<string, ConventionRow[]>,
     indexHandle: IndexHandle,
     scanCtx: ConventionsScanContext,
+    scope: FileScope,
   ): Violation[] {
     const { projectRoot, readSource, exportsMap } = scanCtx;
     const violations: Violation[] = [];
     for (const [domain, domainConventions] of byDomain) {
       switch (domain) {
         case 'usage-pair':
-          violations.push(...this.detectUsagePairViolations(indexHandle, domainConventions));
+          violations.push(...this.detectUsagePairViolations(indexHandle, domainConventions, scope));
           break;
         case 'import-form':
           violations.push(
-            ...this.detectImportFormViolations(indexHandle, domainConventions, projectRoot, readSource),
+            ...this.detectImportFormViolations(indexHandle, domainConventions, projectRoot, readSource, scope),
           );
           break;
         case 'error-handling':
           violations.push(
-            ...this.detectErrorHandlingViolations(indexHandle, domainConventions),
+            ...this.detectErrorHandlingViolations(indexHandle, domainConventions, scope),
           );
           break;
         case 'export-shape':
           violations.push(
-            ...this.detectExportShapeViolations(indexHandle, domainConventions, exportsMap),
+            ...this.detectExportShapeViolations(indexHandle, domainConventions, exportsMap, scope),
           );
           break;
         case 'naming':
           violations.push(
-            ...this.detectNamingViolations(indexHandle, domainConventions),
+            ...this.detectNamingViolations(indexHandle, domainConventions, scope),
           );
           break;
       }
@@ -218,6 +226,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   private detectUsagePairViolations(
     indexHandle: IndexHandle,
     conventions: ConventionRow[],
+    scope: FileScope,
   ): Violation[] {
     const violations: Violation[] = [];
 
@@ -227,9 +236,12 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     ) as FunctionCallRow[];
     const { callerCalls, antecedentCallers } = buildCallMaps(allCalls);
 
-    // Query all functions for file/line info
+    // Query functions for file/line info. Scoped: only callers in in-scope files
+    // are looked up, so out-of-scope callers are skipped in detectUsagePairForConvention.
+    const funcScope = scope.apply('file_path');
     const funcRows = indexHandle.query(
-      'SELECT id, name, file_path, line_number FROM functions',
+      `SELECT id, name, file_path, line_number FROM functions${funcScope ? ` WHERE ${funcScope.clause}` : ''}`,
+      funcScope?.params,
     ) as FunctionRow[];
     const funcById = buildFuncById(funcRows);
 
@@ -258,15 +270,18 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     conventions: ConventionRow[],
     projectRoot?: string,
     readSource?: (filePath: string) => string | undefined,
+    scope?: FileScope,
   ): Violation[] {
     const violations: Violation[] = [];
 
     // Build directory → Map<source, ImportConv>
     const dirImports = buildDirImports(conventions);
 
-    // Get unique file paths
+    // Get unique file paths. Scoped: only read source for in-scope files.
+    const fileScope = scope?.apply('file_path');
     const fileRows = indexHandle.query(
-      'SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL',
+      `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+      fileScope?.params,
     ) as Array<{ file_path: string }>;
 
     const seenFiles = new Set<string>();
@@ -279,7 +294,15 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       const importConvs = dirImports.get(directory);
       if (!importConvs) continue;
 
-      const fullPath = projectRoot ? path.join(projectRoot, fp) : fp;
+      // Mirror the miner's absolute-path guard (conventionMiner.ts:503/729):
+      // `functions.file_path` is absolute in the pipeline flow (function-index
+      // visitor stores `context.filePath`), so `path.join(projectRoot, fp)` would
+      // produce a doubled-root path and the source read would silently fail —
+      // zeroing import-form on every run. Only join when fp is relative.
+      const fullPath =
+        projectRoot && !path.isAbsolute(fp)
+          ? path.join(projectRoot, fp)
+          : fp;
       const content = readSource?.(fullPath);
       if (content === undefined) continue;
 
@@ -300,16 +323,19 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   private detectErrorHandlingViolations(
     indexHandle: IndexHandle,
     conventions: ConventionRow[],
+    scope: FileScope,
   ): Violation[] {
     const violations: Violation[] = [];
 
     // directory → dominantShape
     const dirShapes = buildDirShapes(conventions);
 
+    const fileScope = scope.apply('file_path');
     const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, metadata_json
          FROM functions
-         WHERE metadata_json IS NOT NULL`,
+         WHERE metadata_json IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+        fileScope?.params,
       ) as FunctionRow[];
 
     for (const row of rows) {
@@ -330,16 +356,19 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     indexHandle: IndexHandle,
     conventions: ConventionRow[],
     exportsMap?: Map<string, ExportInfo[]>,
+    scope?: FileScope,
   ): Violation[] {
     const violations: Violation[] = [];
 
     // directory → dominantForm
     const dirForms = buildDirForms(conventions);
 
+    const fileScope = scope?.apply('file_path');
     const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, is_exported
          FROM functions
-         WHERE is_exported = 1`,
+         WHERE is_exported = 1${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+        fileScope?.params,
       ) as FunctionRow[];
 
     for (const row of rows) {
@@ -360,16 +389,19 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   private detectNamingViolations(
     indexHandle: IndexHandle,
     conventions: ConventionRow[],
+    scope: FileScope,
   ): Violation[] {
     const violations: Violation[] = [];
 
     // directory → kind → convention
     const dirKindCases = buildDirKindCases(conventions);
 
+    const fileScope = scope.apply('file_path');
     const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, is_exported, entity_type, component_type
          FROM functions
-         WHERE is_exported = 1`,
+         WHERE is_exported = 1${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+        fileScope?.params,
       ) as NamingFunctionRow[];
 
     for (const row of rows) {
@@ -449,11 +481,42 @@ function groupConventionsByDomain(conventions: ConventionRow[]): Map<string, Con
 }
 
 /** Count distinct file paths in the function index (files conventions apply to). */
-function countUniqueFiles(indexHandle: IndexHandle, projectRoot?: string): number {
+function countUniqueFiles(indexHandle: IndexHandle, projectRoot?: string, scope?: FileScope): number {
+  const fileScope = scope?.apply('file_path');
   const rows = indexHandle.query(
-    'SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL',
+    `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+    fileScope?.params,
   ) as Array<{ file_path: string }>;
   return rows.length;
+}
+
+/**
+ * Chunked `column IN (...)` scope for scoped/diff audits.
+ *
+ * Builds a parameterized IN clause over the in-scope file set, chunked at
+ * SQLITE_MAX_VARIABLES (900) so a large diff can't exceed the bind limit.
+ * Returns a non-scoped (no-op) scope when there is no in-scope set — the
+ * convention corpus is then read whole, preserving full-run behaviour.
+ */
+interface FileScope {
+  isScoped: boolean;
+  apply(column: string): { clause: string; params: string[] } | null;
+}
+
+function buildFileScope(scopedFiles: string[] | undefined, isScoped: boolean | undefined): FileScope {
+  const files = isScoped && Array.isArray(scopedFiles) && scopedFiles.length > 0 ? scopedFiles : [];
+  if (files.length === 0) {
+    return { isScoped: false, apply: () => null };
+  }
+  const chunks: string[][] = [];
+  for (let i = 0; i < files.length; i += SQLITE_MAX_VARIABLES) chunks.push(files.slice(i, i + SQLITE_MAX_VARIABLES));
+  return {
+    isScoped: true,
+    apply: (column: string) => ({
+      clause: chunks.map((c) => `${column} IN (${c.map(() => '?').join(', ')})`).join(' OR '),
+      params: files,
+    }),
+  };
 }
 
 /** Index call rows in both directions: caller→callees and callee→callers. */

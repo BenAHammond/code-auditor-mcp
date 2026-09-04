@@ -40,9 +40,46 @@ interface SchemaUsageRow {
   usage_type: string;
 }
 
-interface FilePathClause {
-  clause: string;
-  param: string;
+/** Chunked IN-clause bound (SQLite max host params, conservative). */
+const SQLITE_MAX_VARIABLES = 900;
+
+/**
+ * File-scope filter applied to cross-domain queries. Two modes:
+ *  - Scoped (diff audit): `column IN (changed files)` — chunked to stay under
+ *    SQLite's bind-parameter limit. Absolute paths, matching the absolute
+ *    `file_path` columns of schema_usage / functions.
+ *  - Unscoped (full audit): `column LIKE '<projectRoot>%'` — bounds the corpus
+ *    to the indexed project (test isolation + keeps stale foreign rows out).
+ */
+interface FileScope {
+  apply(column: string): { clause: string; params: string[] };
+}
+
+function resolveFileScope(config: any): FileScope {
+  const scopedFiles = config.isScoped ? ((config.scopedFiles as string[] | undefined) ?? []) : [];
+  if (scopedFiles.length > 0) {
+    const chunks: string[][] = [];
+    for (let i = 0; i < scopedFiles.length; i += SQLITE_MAX_VARIABLES) {
+      chunks.push(scopedFiles.slice(i, i + SQLITE_MAX_VARIABLES));
+    }
+    return {
+      apply: (column) => ({
+        clause: `AND (${chunks.map((c) => `${column} IN (${c.map(() => '?').join(', ')})`).join(' OR ')})`,
+        params: scopedFiles,
+      }),
+    };
+  }
+  const projectRoot = config.projectRoot as string | undefined;
+  const resolvedRoot = projectRoot ? path.resolve(projectRoot) : undefined;
+  if (!resolvedRoot) {
+    return { apply: () => ({ clause: '', params: [] }) };
+  }
+  return {
+    apply: (column) => ({
+      clause: `AND ${column} LIKE ?`,
+      params: [`${resolvedRoot}%`],
+    }),
+  };
 }
 
 /** Call-graph infrastructure availability for depth-1 callee expansion. */
@@ -275,9 +312,9 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
       };
     }
 
-    const filePathClause = this.resolveFilePathClause(config);
-    const violations = this.runDetectors(indexHandle, config, filePathClause);
-    const uniqueFiles = this.countDistinctFiles(indexHandle, filePathClause);
+    const scope = resolveFileScope(config);
+    const violations = this.runDetectors(indexHandle, config, scope);
+    const uniqueFiles = this.countDistinctFiles(indexHandle, scope);
 
     return {
       violations,
@@ -293,57 +330,46 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     };
   }
 
-  /**
-   * Project root scoping: in test environments the in-memory DB singleton is
-   * shared across tests, so schema_usage entries from previous test cases leak
-   * into subsequent queries. Build a file-path LIKE clause scoped to root.
-   */
-  private resolveFilePathClause(config: any): FilePathClause | undefined {
-    const projectRoot = config.projectRoot as string | undefined;
-    const resolvedRoot = projectRoot ? path.resolve(projectRoot) : undefined;
-    return resolvedRoot
-      ? { clause: 'AND file_path LIKE ?', param: `${resolvedRoot}%` }
-      : undefined;
-  }
-
   /** Run the R1/R3/R4 detectors and collect their violations. */
-  private runDetectors(indexHandle: IndexHandle, config: any, filePathClause?: FilePathClause): Violation[] {
+  private runDetectors(indexHandle: IndexHandle, config: any, scope: FileScope): Violation[] {
     const violations: Violation[] = [];
 
     // R1 — Schema lifecycle detectors
     const lifecycle = config.schemaLifecycle ?? {};
     if (lifecycle.enableWrittenNeverRead !== false) {
-      violations.push(...detectWrittenNeverRead(indexHandle, filePathClause));
+      violations.push(...detectWrittenNeverRead(indexHandle, scope));
     }
     if (lifecycle.enableReadNeverWritten !== false) {
-      violations.push(...detectReadNeverWritten(indexHandle, filePathClause));
+      violations.push(...detectReadNeverWritten(indexHandle, scope));
     }
     if (lifecycle.enableTransactionBoundaryRisk !== false) {
       const txnTableMax = lifecycle.txnTableMax ?? 4;
-      violations.push(...detectTransactionBoundaryRisk(indexHandle, txnTableMax, filePathClause));
+      violations.push(...detectTransactionBoundaryRisk(indexHandle, txnTableMax, scope));
     }
 
     // R3 — Validation-bypass detection
     const bypass = config.validatorBypass as ValidatorBypassConfig | undefined;
     if (bypass) {
-      violations.push(...detectValidationBypass(indexHandle, bypass, filePathClause));
+      violations.push(...detectValidationBypass(indexHandle, bypass, scope));
     }
 
     // R4 — Coverage by importance
     const coverage = config.coverage as CoverageConfig | undefined;
     if (coverage) {
-      violations.push(...detectUncoveredRisk(indexHandle, coverage, filePathClause));
+      violations.push(...detectUncoveredRisk(indexHandle, coverage, scope));
     }
 
     return violations;
   }
 
   /** Count distinct files with schema_usage entries. */
-  private countDistinctFiles(indexHandle: IndexHandle, filePathClause?: FilePathClause): number {
+  private countDistinctFiles(indexHandle: IndexHandle, scope: FileScope): number {
+    const fp = scope.apply('file_path');
     const rows = indexHandle
-      .query(filePathClause
-          ? `SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage WHERE 1=1 ${filePathClause.clause}`
-          : 'SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage', (filePathClause ? [filePathClause.param] : [])) as Array<{ cnt: number }>;
+      .query(
+        `SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage WHERE 1=1 ${fp.clause}`,
+        fp.params,
+      ) as Array<{ cnt: number }>;
     return rows[0]?.cnt ?? 0;
   }
 
@@ -359,20 +385,20 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
  * Detect tables that are written to (INSERT/UPDATE/DELETE/CREATE) but
  * never read from (SELECT). These might be dead writes or missed read paths.
  */
-function detectWrittenNeverRead(indexHandle: IndexHandle, filePath?: FilePathClause): Violation[] {
+function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Violation[] {
   const violations: Violation[] = [];
 
-  const fpWhere = filePath ? filePath.clause : '';
+  const fp = scope.apply('file_path');
 
   const rows = indexHandle
     .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
        FROM schema_usage
        WHERE usage_type IN ('insert', 'update', 'delete', 'create')
-         ${fpWhere}
+         ${fp.clause}
          AND table_name NOT IN (
-           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type = 'select' ${fpWhere}
+           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type = 'select' ${fp.clause}
          )
-       ORDER BY table_name, file_path`, (filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
+       ORDER BY table_name, file_path`, [...fp.params, ...fp.params]) as SchemaUsageRow[];
 
   // Deduplicate by table_name — one violation per table, anchored to
   // the first writing file encountered.
@@ -403,21 +429,21 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, filePath?: FilePathCla
  * (INSERT/UPDATE/DELETE/CREATE). These may be external/managed tables
  * or indicate missing write coverage.
  */
-function detectReadNeverWritten(indexHandle: IndexHandle, filePath?: FilePathClause): Violation[] {
+function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Violation[] {
   const violations: Violation[] = [];
 
-  const fpWhere = filePath ? filePath.clause : '';
+  const fp = scope.apply('file_path');
 
   const rows = indexHandle
     .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
        FROM schema_usage
        WHERE usage_type = 'select'
-         ${fpWhere}
+         ${fp.clause}
          AND table_name NOT IN (
            SELECT DISTINCT table_name FROM schema_usage
-           WHERE usage_type IN ('insert', 'update', 'delete', 'create') ${fpWhere}
+           WHERE usage_type IN ('insert', 'update', 'delete', 'create') ${fp.clause}
          )
-       ORDER BY table_name, file_path`, (filePath ? [filePath.param, filePath.param] : [])) as SchemaUsageRow[];
+       ORDER BY table_name, file_path`, [...fp.params, ...fp.params]) as SchemaUsageRow[];
 
   const seen = new Set<string>();
   for (const row of rows) {
@@ -452,10 +478,9 @@ function detectReadNeverWritten(indexHandle: IndexHandle, filePath?: FilePathCla
 function detectTransactionBoundaryRisk(
   indexHandle: IndexHandle,
   txnTableMax: number,
-  filePath?: FilePathClause,
+  scope: FileScope,
 ): Violation[] {
-  const fpWhere = filePath ? filePath.clause : '';
-  const fpParams = filePath ? [filePath.param] : [];
+  const fp = scope.apply('su.file_path');
 
   // Query schema_usage directly (no JOIN on functions) so this detector
   // works whether or not deepSync has populated the functions table.
@@ -463,9 +488,9 @@ function detectTransactionBoundaryRisk(
     .query(`SELECT su.function_name, su.file_path, su.table_name, MIN(su.line) as line
        FROM schema_usage su
        WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
-       ${fpWhere}
+       ${fp.clause}
        GROUP BY su.function_name, su.file_path, su.table_name
-       ORDER BY su.function_name, su.file_path`, fpParams) as Array<{
+       ORDER BY su.function_name, su.file_path`, fp.params) as Array<{
     function_name: string;
     file_path: string;
     table_name: string;
@@ -584,7 +609,7 @@ function resolveCallGraphContext(indexHandle: IndexHandle): CallGraphContext {
 function detectValidationBypass(
   indexHandle: IndexHandle,
   config: ValidatorBypassConfig,
-  filePath?: FilePathClause,
+  scope: FileScope,
 ): Violation[] {
   const violations: Violation[] = [];
   const {
@@ -597,7 +622,7 @@ function detectValidationBypass(
   const validatorIds = buildValidatorIds(indexHandle, userValidators);
   if (validatorIds.size === 0) return violations;
 
-  const fpAliasWhere = filePath ? `AND su.${filePath.clause.slice(4)}` : '';
+  const fp = scope.apply('su.file_path');
 
   const writers = indexHandle
     .query(`SELECT DISTINCT su.function_name, su.file_path, su.line, f.id as function_id
@@ -605,8 +630,8 @@ function detectValidationBypass(
        JOIN functions f ON f.name = su.function_name
                         AND f.file_path = su.file_path
        WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
-       ${fpAliasWhere}
-       ORDER BY su.file_path, su.function_name`, (filePath ? [filePath.param] : [])) as WriterRow[];
+       ${fp.clause}
+       ORDER BY su.file_path, su.function_name`, fp.params) as WriterRow[];
 
   if (writers.length === 0) return violations;
 
@@ -790,7 +815,7 @@ function flagUnvalidatedWriters(
 function detectUncoveredRisk(
   indexHandle: IndexHandle,
   coverage: CoverageConfig,
-  filePath?: FilePathClause,
+  scope: FileScope,
 ): Violation[] {
   const topRiskDecile = coverage.topRiskDecile ?? 0.1;
 
@@ -803,7 +828,7 @@ function detectUncoveredRisk(
   if (measuredCount > 0) {
     return detectMeasuredUncovered(indexHandle, topRiskDecile);
   }
-  return detectStaticReachUncovered(indexHandle, coverage, filePath);
+  return detectStaticReachUncovered(indexHandle, coverage, scope);
 }
 
 /**
@@ -865,10 +890,10 @@ function detectMeasuredUncovered(indexHandle: IndexHandle, topRiskDecile: number
 function detectStaticReachUncovered(
   indexHandle: IndexHandle,
   coverage: CoverageConfig,
-  filePath?: FilePathClause,
+  scope: FileScope,
 ): Violation[] {
   const topRiskDecile = coverage.topRiskDecile ?? 0.1;
-  const highRiskFns = queryHighRiskFunctions(indexHandle, topRiskDecile, filePath);
+  const highRiskFns = queryHighRiskFunctions(indexHandle, topRiskDecile, scope);
 
   if (highRiskFns.length === 0) return [];
 
@@ -880,12 +905,12 @@ function detectStaticReachUncovered(
 function queryHighRiskFunctions(
   indexHandle: IndexHandle,
   topRiskDecile: number,
-  filePath?: FilePathClause,
+  scope: FileScope,
 ): HighRiskFn[] {
-  const fpWhere = filePath ? 'AND f.file_path LIKE ?' : '';
-  const params: any[] = [topRiskDecile];
-  if (filePath) params.push(filePath.param);
+  const fp = scope.apply('f.file_path');
 
+  // Param order matters: the CTE's `f.file_path` scope binds first (it appears
+  // first in the SQL text), then the outer `pct <= ?` binds topRiskDecile.
   return indexHandle.query(
       `WITH ranked AS (
         SELECT
@@ -899,12 +924,12 @@ function queryHighRiskFunctions(
         LEFT JOIN hotspot_scores hs ON hs.target = (f.file_path || ':' || f.name)
           AND hs.type = 'function'
         WHERE f.is_exported = 1
-          ${fpWhere}
+          ${fp.clause}
       )
       SELECT id, name, file_path, line_number, risk_score
       FROM ranked
       WHERE pct <= ?
-      ORDER BY risk_score DESC`, params) as HighRiskFn[];
+      ORDER BY risk_score DESC`, [...fp.params, topRiskDecile]) as HighRiskFn[];
 }
 
 /** Flag high-risk functions not in the reachable set. */
