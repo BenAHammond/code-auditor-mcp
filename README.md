@@ -44,7 +44,7 @@ The hook auto-installs the auditor on first use via npx.
 
 ## Rule kinds
 
-Five kinds. The agent writes them to `.codeauditor.json`. Bad configs fail the audit, not silently.
+Seven kinds. The agent writes them to `.codeauditor.json`. Bad configs fail the audit, not silently.
 
 | Kind | What it blocks |
 |------|---------------|

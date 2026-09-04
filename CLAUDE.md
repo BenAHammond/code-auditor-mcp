@@ -63,7 +63,7 @@ Code Auditor enforces architectural invariants and code quality rules inside an 
 
 4. **Invariant Rules** (`app/src/invariants/`)
    - `.codeauditor.json` in the project root defines project-specific rules
-   - Five rule kinds: `import-ban`, `call-constraint`, `module-boundary`, `naming`, `ast-pattern`
+   - Seven rule kinds: `import-ban`, `call-constraint`, `module-boundary`, `naming`, `ast-pattern`, `style-mechanism`, `no-raw-values`
    - JSON Schema validation on startup — bad configs fail the audit, not silently skipped
    - `ruleEngine.ts` runs rules per-file; `ast-pattern` uses `@ast-grep/napi`
 
@@ -118,9 +118,10 @@ over tarball reluctance: it is the only check that proves native binaries
 and WASM grammars survive packaging.
 
 ## Repository boundary — hard constraint
-The ONLY repository you may modify is this one (code-auditor). All other
-directories on this machine — including recall-protocol and any project
-used for validation — are READ-ONLY REFERENCE. You may read files and run
+The repositories you may modify are this one (code-auditor) and the docs
+site (`../code-auditor-docs/`, authorized by Ben). All other directories
+on this machine — including recall-protocol and any project used for
+validation — are READ-ONLY REFERENCE. You may read files and run
 `code-audit` against them; you may NEVER edit, create, delete, git-touch,
 or install into them. recall-protocol is the validation corpus: modifying
 it corrupts the measurement this project depends on. If a task appears to

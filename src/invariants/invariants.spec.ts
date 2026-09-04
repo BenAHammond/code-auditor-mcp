@@ -313,7 +313,7 @@ describe('ruleValidator', async () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('validates all five rule kinds in the same config', async () => {
+    it('validates all seven rule kinds in the same config', async () => {
       const errors = validateRulesConfig({
         rules: [
           { id: 'r1', kind: 'import-ban', severity: 'critical', module: 'lodash' },
@@ -321,6 +321,8 @@ describe('ruleValidator', async () => {
           { id: 'r3', kind: 'module-boundary', severity: 'critical', from: 'src/a/**', to: 'src/b/**' },
           { id: 'r4', kind: 'naming', severity: 'suggestion', path: 'src/**', exports: '^I[A-Z]' },
           { id: 'r5', kind: 'ast-pattern', severity: 'critical', pattern: 'new Function($$$)' },
+          { id: 'r6', kind: 'style-mechanism', severity: 'warning', allow: ['tailwind'] },
+          { id: 'r7', kind: 'no-raw-values', severity: 'warning', properties: ['color'] },
         ],
       });
       expect(errors).toHaveLength(0);

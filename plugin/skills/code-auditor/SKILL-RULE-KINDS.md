@@ -1,6 +1,6 @@
 # Invariant Rule Kinds
 
-Five rule kinds are available in `.codeauditor.json`. Rules are validated at startup — bad configs fail the audit, not silently skipped.
+Seven rule kinds are available in `.codeauditor.json`. Rules are validated at startup — bad configs fail the audit, not silently skipped.
 
 ## Rule Kinds
 
@@ -139,6 +139,41 @@ With language and path constraints:
 
 `$$$` matches zero or more nodes (like `...` in rest patterns). `$$$ARGS` is a named meta-variable. See the [ast-grep pattern guide](https://ast-grep.github.io/guide/pattern-syntax.html) for full syntax.
 
+### `style-mechanism`
+
+Enforce which styling mechanisms are allowed in files matching an optional `path` glob. A style declaration using an unapproved mechanism is flagged.
+
+```json
+{
+  "id": "tailwind-only-in-components",
+  "kind": "style-mechanism",
+  "severity": "warning",
+  "allow": ["tailwind"],
+  "path": "src/components/**",
+  "message": "Only Tailwind utilities in src/components/ — use the project's CSS modules elsewhere"
+}
+```
+
+`allow` lists the permitted mechanisms (`tailwind`, `css-modules`, `styled-components`, `inline`, `css`). `path` is optional — omit it to apply the rule to every file.
+
+### `no-raw-values`
+
+Require designated CSS properties to reference a design token instead of a raw value. A declaration whose normalized value has no token reference (and is not in `allowValues`) is flagged.
+
+```json
+{
+  "id": "no-raw-colors-in-pages",
+  "kind": "no-raw-values",
+  "severity": "warning",
+  "properties": ["color", "background-color"],
+  "allowValues": ["inherit", "transparent"],
+  "path": "src/pages/**",
+  "message": "No raw colors in src/pages/ — use design tokens"
+}
+```
+
+`properties` lists the CSS properties to check. `allowValues` names values that are always permitted without a token reference. `path` is optional.
+
 ## Severity Levels
 
 Severity ranks how urgent a finding is to fix. It never decides whether a
@@ -166,7 +201,7 @@ Rules are validated against `invariant-rules.schema.json` on startup. Common err
 
 - **Missing required field**: each kind has required fields (e.g., `import-ban` requires `module`)
 - **Invalid severity**: must be one of `critical`, `warning`, `suggestion`
-- **Invalid kind**: must be one of the five kinds above
+- **Invalid kind**: must be one of the seven kinds above
 - **Both allowFrom and denyFrom**: `call-constraint` requires exactly one
 - **Empty pattern**: `ast-pattern` requires a non-empty `pattern` string
 - **Invalid language**: `ast-pattern` language must be `typescript`, `javascript`, or `go`
