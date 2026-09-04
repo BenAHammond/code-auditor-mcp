@@ -1132,6 +1132,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'field-mismatch': {
     analyzer: 'schema-validator',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Field mismatch: {detail}.',
@@ -1149,6 +1150,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'schema-field-mismatch': {
     analyzer: 'schema-validator',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Schema field mismatch: {detail}.',
@@ -1166,6 +1168,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'missing-field': {
     analyzer: 'schema-validator',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Missing field: {field}.',
@@ -1183,6 +1186,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'extra-field': {
     analyzer: 'schema-validator',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Extra field: {field}.',
@@ -1200,6 +1204,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'constraint-mismatch': {
     analyzer: 'schema-validator',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Constraint mismatch: {detail}.',
@@ -1217,6 +1222,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'version-mismatch': {
     analyzer: 'schema-validator',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Version mismatch: {detail}.',
@@ -1236,6 +1242,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'api-type-mismatch': {
     analyzer: 'api-contract',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'API type mismatch: {detail}.',
@@ -1253,6 +1260,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'missing-endpoint': {
     analyzer: 'api-contract',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Missing API endpoint: {endpoint}.',
@@ -1270,6 +1278,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'api-extra-field': {
     analyzer: 'api-contract',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Extra field in API response: {field}.',
@@ -1287,6 +1296,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'api-missing-field': {
     analyzer: 'api-contract',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Missing field in API response: {field}.',
@@ -1304,6 +1314,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'method-mismatch': {
     analyzer: 'api-contract',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'HTTP method mismatch: {detail}.',
@@ -1321,6 +1332,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'auth-mismatch': {
     analyzer: 'api-contract',
     field: 'rule',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Authentication mismatch: {detail}.',
@@ -1340,6 +1352,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'circular-dependency': {
     analyzer: 'dependency-graph',
     field: 'type',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Circular dependency detected: {cycle}.',
@@ -1357,6 +1370,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'break-cycles': {
     analyzer: 'dependency-graph',
     field: 'type',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Break dependency cycle: {cycle}.',
@@ -1374,6 +1388,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'tight-coupling': {
     analyzer: 'dependency-graph',
     field: 'type',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Tight coupling detected between {a} and {b}.',
@@ -1391,6 +1406,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'reduce-coupling': {
     analyzer: 'dependency-graph',
     field: 'type',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Reduce coupling between {a} and {b}.',
@@ -1408,6 +1424,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'hub-nodes': {
     analyzer: 'dependency-graph',
     field: 'type',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Hub node "{node}" has {count} dependencies.',
@@ -1425,6 +1442,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'split-responsibilities': {
     analyzer: 'dependency-graph',
     field: 'type',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Split responsibilities of node "{node}".',
@@ -1442,6 +1460,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'orphaned-nodes': {
     analyzer: 'dependency-graph',
     field: 'type',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Orphaned node "{node}" has no connections.',
@@ -1459,6 +1478,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'review-orphans': {
     analyzer: 'dependency-graph',
     field: 'type',
+    input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
     message: 'Review orphaned nodes: {nodes}.',
@@ -1846,6 +1866,37 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
 };
+
+/**
+ * Canonical set of every analyzer ID that emits at least one rule in
+ * {@link RULE_REGISTRY}, derived from the registry itself. An analyzer "exists"
+ * iff it emits a rule, so this is the single source of truth for analyzer
+ * identity.
+ *
+ * Every other analyzer list — the audit-runner registry, config validation,
+ * default-enabled analyzers, the detached runner, and the MCP default set —
+ * must derive from this rather than re-type names. Adding an analyzer is then a
+ * registry edit plus an enable decision, never a hunt across hand-maintained
+ * arrays that drift out of sync (the historical failure: four lists at 13, 10,
+ * 10, and 7).
+ */
+export const ALL_ANALYZERS: readonly string[] = [
+  ...new Set(Object.values(RULE_REGISTRY).map((e) => e.analyzer)),
+].sort();
+
+/**
+ * The reduced analyzer set the MCP `audit.run` surface enables by default —
+ * a deliberate subset of {@link ALL_ANALYZERS} (the MCP path favors a lighter,
+ * latency-sensitive audit). The full CLI `audit` default is {@link ALL_ANALYZERS}.
+ * Referenced here so mcp.ts and mcp-tools-shared.ts don't each re-type the list.
+ */
+export const MCP_DEFAULT_ANALYZERS: readonly string[] = [
+  'solid',
+  'dry',
+  'documentation',
+  'react',
+  'data-access',
+];
 
 /**
  * A violation in the loose shape the gate and baseline code handle (a Violation

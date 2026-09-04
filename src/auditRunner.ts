@@ -29,6 +29,7 @@ import { FileAccounting } from './services/fileAccounting.js';
 import { loadConfig, findConfigFileUp } from './config/configLoader.js';
 import { mergePathProfiles } from './config/defaults.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
+import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { applyPresets, getPreset } from './presets/presets.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
@@ -55,6 +56,7 @@ import {
   createDocumentationVisitor,
   createFunctionIndexVisitor,
   createStylesCssVisitor,
+  createStylesSourceVisitor,
   createReactVisitor,
   createStylesReducer,
   createConventionsReducer,
@@ -65,6 +67,10 @@ import {
   createSchemaPrismaVisitor,
   createSchemaJsonVisitor,
   createSchemaReducer,
+  createCrossLanguageEntityVisitor,
+  createSchemaValidatorReducer,
+  createAPIContractReducer,
+  createDependencyGraphReducer,
 } from './pipelineAdapters.js';
 import type { DryVisitorBundle, ReactVisitorBundle } from './pipelineAdapters.js';
 import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer } from './types.js';
@@ -88,18 +94,9 @@ const SCHEMA_SUB_VISITORS = ['schema-sql', 'schema-code', 'schema-prisma', 'sche
  * Create an audit runner with the given options
  */
 export function createAuditRunner(options: AuditRunnerOptions = {}) {
-  const analyzerRegistry: Record<string, { name: string }> = {
-    solid: { name: 'solid' },
-    dry: { name: 'dry' },
-    'data-access': { name: 'data-access' },
-    react: { name: 'react' },
-    documentation: { name: 'documentation' },
-    invariants: { name: 'invariants' },
-    schema: { name: 'schema' },
-    styles: { name: 'styles' },
-    conventions: { name: 'conventions' },
-    'cross-domain': { name: 'cross-domain' },
-  };
+  const analyzerRegistry: Record<string, { name: string }> = Object.fromEntries(
+    ALL_ANALYZERS.map((name) => [name, { name }])
+  );
   
   /**
    * Load configuration from file
@@ -484,6 +481,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         exec: (sql) => auditIndex!.rawDb.exec(sql),
         getMeta: (key) => auditIndex!.getMeta(key),
         getUntestedTopDecile: (td) => auditIndex!.getUntestedTopDecile(td),
+        rawDb: auditIndex!.rawDb,
       };
     }
 
@@ -502,6 +500,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
     // styles-css visitor — AST-extracts .css files into style_* tables (Spec 26 Phase 2)
     if (enabledAnalyzers.includes('styles')) pipelineVisitors.push(createStylesCssVisitor());
+    // styles-source visitor — AST-extracts TS/JS CSS-in-JS into style_* tables,
+    // reusing the stage-1 parse (eliminates the style-index re-parse).
+    if (enabledAnalyzers.includes('styles')) pipelineVisitors.push(createStylesSourceVisitor());
 
     if (enabledAnalyzers.includes('solid')) pipelineVisitors.push(createSolidVisitor());
     if (enabledAnalyzers.includes('dry')) {
@@ -525,6 +526,20 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       pipelineVisitors.push(createSchemaJsonVisitor());
       pipelineReducers.push(createSchemaReducer());
     }
+
+    // Cross-language analyzers (SchemaValidator, APIContractAnalyzer,
+    // DependencyGraphBuilder) — three Stage-4 reducers fed by one shared
+    // entity-extraction visitor. The visitor is cheap (per-file) and runs
+    // whenever ANY cross-language analyzer is enabled; the corpus-wide reducers
+    // short-circuit on scoped/diff runs.
+    const crossLanguageEnabled = ['schema-validator', 'api-contract', 'dependency-graph']
+      .some((a) => enabledAnalyzers.includes(a));
+    if (crossLanguageEnabled) {
+      pipelineVisitors.push(createCrossLanguageEntityVisitor());
+    }
+    if (enabledAnalyzers.includes('schema-validator')) pipelineDerivedReducers.push(createSchemaValidatorReducer());
+    if (enabledAnalyzers.includes('api-contract')) pipelineDerivedReducers.push(createAPIContractReducer());
+    if (enabledAnalyzers.includes('dependency-graph')) pipelineDerivedReducers.push(createDependencyGraphReducer());
 
     // ── 2. Safeguard warnings ────────────────────────────────────────────
     if (auditIndex) {

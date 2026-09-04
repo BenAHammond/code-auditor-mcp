@@ -142,26 +142,40 @@ class DependencyGraphBuilderCore {
   }
 
   /**
-   * Calculate maximum depth from a node
+   * Calculate maximum depth from a node.
+   *
+   * Bounded longest-path estimate: capped at `maxDepth` and memoized across the
+   * whole metrics computation via the shared `depthCache`, so a corpus with many
+   * entities sharing one dependency subtree is O(V+E) rather than re-exploring
+   * the subtree once per source node. The result feeds only the cosmetic
+   * health-score `maxDepth > 15` penalty, so a capped estimate is sufficient.
    */
-  protected calculateMaxDepth(nodeId: string, adjList: Map<string, string[]>): number {
-    const visited = new Set<string>();
+  protected calculateMaxDepth(
+    nodeId: string,
+    adjList: Map<string, string[]>,
+    depthCache: Map<string, number>,
+  ): number {
+    const cap = this.options.maxDepth ?? 10;
+    const onStack = new Set<string>();
 
-    const dfs = (currentId: string): number => {
-      if (visited.has(currentId)) return 0; // Avoid cycles
-
-      visited.add(currentId);
-      const neighbors = adjList.get(currentId) || [];
-
-      if (neighbors.length === 0) return 1;
-
-      const maxChildDepth = Math.max(...neighbors.map(neighbor => dfs(neighbor)));
-      visited.delete(currentId);
-
-      return 1 + maxChildDepth;
+    const dfs = (id: string, depth: number): number => {
+      if (depth >= cap) return depth;
+      const cached = depthCache.get(id);
+      if (cached !== undefined) return cached;
+      if (onStack.has(id)) return depth; // back-edge — do not recurse into a cycle
+      onStack.add(id);
+      const neighbors = adjList.get(id) || [];
+      let maxChild = depth;
+      for (const neighbor of neighbors) {
+        maxChild = Math.max(maxChild, dfs(neighbor, depth + 1));
+        if (maxChild >= cap) break;
+      }
+      onStack.delete(id);
+      depthCache.set(id, maxChild);
+      return maxChild;
     };
 
-    return dfs(nodeId);
+    return dfs(nodeId, 0);
   }
 
   /**
@@ -357,34 +371,43 @@ class DependencyGraphBuilderTraversal extends DependencyGraphBuilderCore {
     const recursionStack = new Set<string>();
     const adjList = this.buildAdjacencyList(edges);
 
-    const dfs = (nodeId: string, path: string[]): void => {
+    // Shared mutable path (push/pop) + an index map for O(1) cycle-start lookup.
+    // Avoids the previous `[...path]` snapshot on every recursion — that made a
+    // deep graph O(E · path-length) and re-allocated a path array per edge.
+    const path: string[] = [];
+    const pathIndex = new Map<string, number>();
+
+    const dfs = (nodeId: string): void => {
       visited.add(nodeId);
       recursionStack.add(nodeId);
+      pathIndex.set(nodeId, path.length);
       path.push(nodeId);
 
       const neighbors = adjList.get(nodeId) || [];
       for (const neighbor of neighbors) {
         if (!visited.has(neighbor)) {
-          dfs(neighbor, [...path]);
+          dfs(neighbor);
         } else if (recursionStack.has(neighbor)) {
           // Found a cycle
-          const cycleStart = path.indexOf(neighbor);
+          const cycleStart = pathIndex.get(neighbor) ?? 0;
           const cycleNodes = path.slice(cycleStart);
 
           cycles.push({
             nodes: cycleNodes,
-            severity: cycleNodes.length > 5 ? 'warning' : 'warning',
+            severity: 'warning',
             suggestion: this.generateCycleSuggestion(cycleNodes)
           });
         }
       }
 
+      path.pop();
+      pathIndex.delete(nodeId);
       recursionStack.delete(nodeId);
     };
 
     for (const node of nodes) {
       if (!visited.has(node.id)) {
-        dfs(node.id, []);
+        dfs(node.id);
       }
     }
 
@@ -401,8 +424,9 @@ class DependencyGraphBuilderTraversal extends DependencyGraphBuilderCore {
   ): DependencyMetrics {
     const adjList = this.buildAdjacencyList(edges);
 
-    // Calculate depths from each node
-    const depths = nodes.map(node => this.calculateMaxDepth(node.id, adjList));
+    // Shared memo so the depth from each node is computed once, not per-source.
+    const depthCache = new Map<string, number>();
+    const depths = nodes.map(node => this.calculateMaxDepth(node.id, adjList, depthCache));
 
     return {
       totalNodes: nodes.length,

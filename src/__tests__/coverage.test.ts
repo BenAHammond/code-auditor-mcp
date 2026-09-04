@@ -264,9 +264,10 @@ describe('buildCoverageReport', () => {
     expect(orphaned!.state).toBe('fired');
     expect(orphaned!.count).toBe(1);
 
-    // Other dep-graph rules should be unassessed
+    // Other dep-graph rules have their input (`cross-language-entities`) absent
+    // in this synthetic run, so they resolve to notApplicable — not unassessed.
     const tightCoupling = coverage.find(c => c.ruleId === 'tight-coupling');
-    expect(tightCoupling!.state).toBe('unassessed');
+    expect(tightCoupling!.state).toBe('notApplicable');
   });
 
   it('covers every rule in RULE_REGISTRY when all analyzers are configured and run', () => {
@@ -431,7 +432,7 @@ describe('buildCoverageReport', () => {
     expect(uncoveredPresent!.state).toBe('clean');
   });
 
-  it('keeps rules with no input mapping as unassessed', () => {
+  it('classifies cross-language rules by their entity-fact input', () => {
     const results: Record<string, AnalyzerResult> = {
       'schema-validator': {
         violations: [],
@@ -441,14 +442,25 @@ describe('buildCoverageReport', () => {
       },
     };
 
-    const coverage = buildCoverageReport(
+    // Input absent: the entity visitor produced no facts → notApplicable.
+    const absent = buildCoverageReport(
       results,
       makeConfigWith(['schema-validator']),
       { factKeys: [], indexTables: [] },
     );
+    for (const c of absent) {
+      expect(c.state).toBe('notApplicable');
+      expect(c.reason).toContain('cross-language-entities');
+    }
 
-    for (const c of coverage) {
-      expect(c.state).toBe('unassessed');
+    // Input present: the entity visitor produced facts → clean.
+    const present = buildCoverageReport(
+      results,
+      makeConfigWith(['schema-validator']),
+      { factKeys: ['cross-language-entities'], indexTables: [] },
+    );
+    for (const c of present) {
+      expect(c.state).toBe('clean');
     }
   });
 });
