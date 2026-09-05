@@ -281,7 +281,7 @@ export class SchemaValidator {
           file: curSchema.file,
           line: curSchema.line,
           severity: 'warning',
-          message: `Type mismatch for field '${fieldName}': expected ${normalizedRefType}, got ${normalizedCurType}`,
+          message: `Type-name strings differ for field '${fieldName}': expected ${normalizedRefType}, got ${normalizedCurType}`,
           rule: "schema-field-mismatch",
           violationType: 'schema-field-mismatch',
           schemas: [refSchema, curSchema],

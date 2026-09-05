@@ -57,7 +57,7 @@ func (s *SOLIDAnalyzer) analyzeSRP() []Violation {
 				File:     function.File,
 				Line:     function.StartLine,
 				Severity: "warning",
-				Message:  "Function has too many responsibilities",
+				Message:  "Function has many parameters, returns, or high complexity",
 				Details: map[string]interface{}{
 					"function":        function.Name,
 					"responsibilities": responsibilities,
@@ -78,7 +78,7 @@ func (s *SOLIDAnalyzer) analyzeSRP() []Violation {
 				File:     structInfo.File,
 				Line:     structInfo.StartLine,
 				Severity: "warning",
-				Message:  "Struct has too many responsibilities",
+				Message:  "Struct has many fields",
 				Details: map[string]interface{}{
 					"struct":          structInfo.Name,
 					"responsibilities": responsibilities,
@@ -184,7 +184,7 @@ func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 				File:     interfaceInfo.File,
 				Line:     interfaceInfo.StartLine,
 				Severity: "warning",
-				Message:  "Interface has too many methods",
+				Message:  "Interface has many methods",
 				Details: map[string]interface{}{
 					"interface":   interfaceInfo.Name,
 					"methodCount": len(interfaceInfo.Methods),
@@ -212,7 +212,7 @@ func (s *SOLIDAnalyzer) analyzeDIP() []Violation {
 				File:     structInfo.File,
 				Line:     structInfo.StartLine,
 				Severity: "suggestion",
-				Message:  "Struct has many concrete dependencies",
+				Message:  "Struct has many concrete-typed fields",
 				Details: map[string]interface{}{
 					"struct":             structInfo.Name,
 					"concreteDependencies": concreteDeps,

@@ -542,12 +542,12 @@ function checkViolations(
 
   // Performance: Complex Query
   if (analysis.performanceRisk === 'high') {
-    push(`Complex query with ${call.tables.length} tables may have performance issues`, { severity: 'warning', rule: 'complex-query' });
+    push(`Query references ${call.tables.length} tables`, { severity: 'warning', rule: 'complex-query' });
   }
 
   // Performance: Unfiltered Query
   if (isUnfilteredQuery(call) && analysis.performanceRisk === 'medium') {
-    push(`Unfiltered query on ${call.tables.join(', ')} may cause performance issues`, { severity: 'suggestion', rule: 'unfiltered-query' });
+    push(`Query on ${call.tables.join(', ')} has no filter`, { severity: 'suggestion', rule: 'unfiltered-query' });
   }
 
   return violations;

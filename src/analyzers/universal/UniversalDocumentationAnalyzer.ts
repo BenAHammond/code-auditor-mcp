@@ -282,10 +282,11 @@ function checkFunctionDocumentation(
       return violations;
     }
 
-    // R1.6 — Audience-reason message
+    // R1.6 — Audience-reason message (a doc comment shorter than the minimum
+    // length is reported as missing; the check measures presence + length).
     const reason = func.isExported
-      ? `exported function '${func.name}' lacks proper documentation`
-      : `function '${func.name}' lacks proper documentation`;
+      ? `exported function '${func.name}' lacks a doc comment of at least ${config.minDescriptionLength} characters`
+      : `function '${func.name}' lacks a doc comment of at least ${config.minDescriptionLength} characters`;
 
     violations.push(makeViolation(
       ast.filePath,
@@ -393,7 +394,7 @@ function analyzeClassDocumentation(
       violations.push(makeViolation(
         ast.filePath,
         cls.location.start,
-        `Class '${cls.name}' lacks proper documentation`,
+        `Class '${cls.name}' lacks a doc comment of at least ${config.minDescriptionLength} characters`,
         { severity: 'warning', rule: 'class-documentation', symbol: cls.name }
       ));
     }
@@ -429,7 +430,7 @@ function checkClassMethodDocumentation(
       violations.push(makeViolation(
         ast.filePath,
         method.location.start,
-        `public method '${cls.name}.${method.name}' lacks proper documentation`,
+        `public method '${cls.name}.${method.name}' lacks a doc comment of at least ${config.minDescriptionLength} characters`,
         { severity: 'warning', rule: 'method-documentation', symbol: `${cls.name}.${method.name}` }
       ));
     }

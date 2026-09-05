@@ -215,7 +215,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['files'],
     gating: false,
     resolvable: false,
-    message: 'Interface "{name}" violates the Interface Segregation Principle.',
+    message: 'Interface "{name}" has many members.',
     docs: 'solid/interface-segregation',
     thresholds: [],
     samples: {
@@ -390,7 +390,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['files'],
     gating: false,
     resolvable: false,
-    message: 'Complex query with {tables} tables may have performance issues.',
+    message: 'Query references {tables} tables.',
     docs: 'complex-query',
     thresholds: ['performanceThresholds.joinedTableCount'],
     samples: {
@@ -408,7 +408,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['files'],
     gating: false,
     resolvable: false,
-    message: 'Unfiltered query on {tables} may cause performance issues.',
+    message: 'Query on {tables} has no filter.',
     docs: 'unfiltered-query',
     thresholds: [],
     samples: {
@@ -464,7 +464,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['files'],
     gating: false,
     resolvable: false,
-    message: 'File is missing a documentation header comment.',
+    message: 'File is missing a leading documentation comment.',
     docs: 'file-documentation',
     thresholds: ['minDescriptionLength'],
     samples: {
@@ -482,7 +482,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['files'],
     gating: false,
     resolvable: false,
-    message: 'Function "{name}" is missing a JSDoc comment.',
+    message: 'Function "{name}" is missing a doc comment.',
     docs: 'function-documentation',
     thresholds: ['minDescriptionLength'],
     samples: {
@@ -536,7 +536,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['files'],
     gating: false,
     resolvable: false,
-    message: 'Class "{name}" is missing a JSDoc comment.',
+    message: 'Class "{name}" is missing a doc comment.',
     docs: 'class-documentation',
     thresholds: ['minDescriptionLength', 'docsMinLines'],
     samples: {
@@ -554,7 +554,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['files'],
     gating: false,
     resolvable: false,
-    message: 'Method "{name}" is missing a JSDoc comment.',
+    message: 'Method "{name}" is missing a doc comment.',
     docs: 'method-documentation',
     thresholds: ['minDescriptionLength'],
     samples: {
@@ -1153,7 +1153,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['cross-language-entities'],
     gating: false,
     resolvable: false,
-    message: 'Schema field mismatch: {detail}.',
+    message: 'Schema field type-name strings differ: {detail}.',
     docs: 'schema-field-mismatch',
     thresholds: [],
     samples: {
