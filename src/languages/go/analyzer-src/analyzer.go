@@ -24,6 +24,10 @@ func NewAnalyzer(options AnalysisOptions) *Analyzer {
 func (a *Analyzer) Analyze(files []string) (*AnalysisResult, error) {
 	startTime := time.Now()
 
+	// Exclude *_test.go files before parsing: test code is not production API.
+	// Mirrors languages/testConventions.ts go.filePatterns.
+	files = excludeTestFiles(files)
+
 	// Parse all files
 	if err := a.parser.ParseFiles(files); err != nil {
 		return nil, err
@@ -77,6 +81,20 @@ func (a *Analyzer) runEnabledAnalyzers(result *AnalysisResult) {
 // AnalyzeContent performs analysis of Go content from a string
 func (a *Analyzer) AnalyzeContent(filePath, content string) (*AnalysisResult, error) {
 	startTime := time.Now()
+
+	// A *_test.go file is test code, not production API — exempt it the same
+	// way the multi-file path does (languages/testConventions.ts go.filePatterns).
+	if isTestFile(filePath) {
+		return &AnalysisResult{
+			Violations:   []Violation{},
+			IndexEntries: []IndexEntry{},
+			Metrics: Metrics{
+				FilesAnalyzed: 0,
+				ExecutionTime: 0,
+			},
+			Errors: []Error{},
+		}, nil
+	}
 
 	// Parse content instead of file
 	if err := a.parser.ParseContent(filePath, content); err != nil {
@@ -346,6 +364,20 @@ func splitReturnTypes(returnType string) []string {
 	if current != "" {
 		parts = append(parts, strings.TrimSpace(current))
 	}
-	
+
 	return parts
+}
+
+// excludeTestFiles removes *_test.go files from a file list. Test files are
+// compiled only by `go test`, never as production API — they are exempt from
+// analysis and indexing the same way the TypeScript pipeline excludes test
+// files at discovery (see testconventions.go).
+func excludeTestFiles(files []string) []string {
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if !isTestFile(f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }

@@ -49,10 +49,16 @@ export interface PolyglotAnalysisResult {
   // Metrics and statistics
   metrics: PolyglotMetrics;
   languageStats: Map<string, LanguageStats>;
-  
+
   // Index updates
   indexEntries?: any[];
   crossReferences?: CrossReference[];
+
+  // Languages discovered on disk but not analyzed because no runtime could run
+  // them. Each entry names the language and the reason — a stated skip, not the
+  // silent absence the orchestrator used to produce when Go files were present
+  // but the Go toolchain (or analyzer) was missing.
+  notApplicable?: Array<{ language: string; reason: string }>;
 }
 
 export interface CrossLanguageViolation extends Violation {
@@ -188,8 +194,8 @@ export class LanguageOrchestrator {
     }
 
     // 3. Run language-specific analyses in parallel
-    const analysisPromises = languagesToAnalyze.map(language => 
-      this.analyzeLanguage(language, filesByLanguage[language] || [], options)
+    const analysisPromises = languagesToAnalyze.map(language =>
+      this.analyzeLanguage(language, filesByLanguage[language] || [], options, projectPath)
     );
 
     const analysisResults = await Promise.all(analysisPromises);
@@ -197,6 +203,10 @@ export class LanguageOrchestrator {
 
     // 4. Merge results
     const mergedResult = this.mergeLanguageResults(analysisResults, languagesToAnalyze);
+
+    // 4.5. Record discovered-but-skipped languages so a silent skip becomes a
+    // stated notApplicable (Go files present + no Go toolchain → named, not zero).
+    mergedResult.notApplicable = this.collectNotApplicable(filesByLanguage, languagesToAnalyze);
 
     await this.applyPolyglotPostProcessing(analysisResults, mergedResult, options, startTime);
 
@@ -332,6 +342,33 @@ export class LanguageOrchestrator {
   }
 
   /**
+   * Build the list of discovered languages that were NOT analyzed, each with
+   * the reason. Turns "Go files present but no runtime" into a stated
+   * notApplicable entry instead of the orchestrator silently analyzing zero
+   * files — the exact silent-degradation shape this restore removes.
+   */
+  private collectNotApplicable(
+    filesByLanguage: Record<string, string[]>,
+    languagesToAnalyze: string[]
+  ): Array<{ language: string; reason: string }> {
+    const languageToRuntime = this.mapLanguageToRuntime();
+    const notApplicable: Array<{ language: string; reason: string }> = [];
+
+    for (const [language, files] of Object.entries(filesByLanguage)) {
+      if (files.length === 0) continue;
+      if (languagesToAnalyze.includes(language)) continue;
+
+      const runtimeName = languageToRuntime[language] || language;
+      const runtime = this.runtimeManager.getRuntime(runtimeName);
+      const reason = runtime?.failureReason
+        ?? `no ${runtimeName} runtime available to analyze ${language}`;
+      notApplicable.push({ language, reason });
+    }
+
+    return notApplicable;
+  }
+
+  /**
    * Map language names to runtime names
    */
   private mapLanguageToRuntime(): Record<string, string> {
@@ -348,22 +385,26 @@ export class LanguageOrchestrator {
    * Analyze files for a specific language
    */
   private async analyzeLanguage(
-    language: string, 
-    files: string[], 
-    options: PolyglotAnalysisOptions
+    language: string,
+    files: string[],
+    options: PolyglotAnalysisOptions,
+    projectRoot: string
   ): Promise<{ language: string; result: AnalysisResult }> {
     console.log(`[LanguageOrchestrator] Analyzing ${files.length} ${language} files`);
-    
+
     // Map language to runtime name
     const languageToRuntime = this.mapLanguageToRuntime();
     const runtimeName = languageToRuntime[language] || language;
-    
-    // Use the mapped runtime name for analysis
+
+    // Use the mapped runtime name for analysis. `projectRoot` is passed so the
+    // TypeScript analyzer can run the in-process audit against the audited
+    // project rather than the tool's own cwd (see TypeScriptAnalyzer.analyze).
     const result = await this.runtimeManager.spawnAnalyzer(runtimeName, files, {
       analyzers: options.analyzers,
       minSeverity: options.minSeverity,
       timeout: options.timeout,
-      language: language // Pass original language for context
+      language: language, // Pass original language for context
+      projectRoot: projectRoot
     });
 
     return {
@@ -397,7 +438,8 @@ export class LanguageOrchestrator {
         apiContractsChecked: 0
       },
       languageStats: new Map(),
-      indexEntries: []
+      indexEntries: [],
+      notApplicable: []
     };
 
     for (const { language, result } of results) {

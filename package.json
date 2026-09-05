@@ -11,7 +11,7 @@
     "code-auditor-mcp": "dist/mcp.js"
   },
   "scripts": {
-    "build": "tsc && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
+    "build": "tsc && pnpm run build:go && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
     "download:natives": "bash scripts/download-natives.sh",
     "build:grammars": "cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm node_modules/tree-sitter-css/tree-sitter-css.wasm node_modules/tree-sitter-scss/tree-sitter-scss.wasm dist/grammars/",
     "build:skills": "cp -r plugin/skills/* ../skills/",
@@ -34,7 +34,8 @@
     "verify:self": "node scripts/verify-self.mjs && node scripts/verify-languages.mjs",
     "verify:languages": "node scripts/verify-languages.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
-    "verify:close": "npm run test && npm run test:integration && npm run verify:gate-budget && npm run verify:dist && npm run verify:self"
+    "verify:close": "npm run test && npm run test:integration && npm run verify:gate-budget && npm run verify:dist && npm run verify:self",
+    "build:go": "bash scripts/build-go.sh"
   },
   "keywords": [
     "mcp",

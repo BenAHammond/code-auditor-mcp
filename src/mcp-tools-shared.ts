@@ -6,10 +6,9 @@
  */
 
 import { createAuditRunner } from './auditRunner.js';
+import { runAuditDispatch } from './auditRouter.js';
 import type { Severity, AuditResult, AuditRunnerOptions, Violation } from './types.js';
-import { LanguageOrchestrator } from './languages/LanguageOrchestrator.js';
-import { RuntimeManager } from './languages/RuntimeManager.js';
-import { 
+import {
   registerFunctions, 
   searchFunctions, 
   findDefinition,
@@ -23,10 +22,8 @@ import { DEFAULT_SERVER_URL } from './constants.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import chalk from 'chalk';
 import { assertAuditPathExists } from './mcpToolErrors.js';
-import { makeVisitorStatus } from './pipeline.js';
 import { MCP_DEFAULT_ANALYZERS } from './analyzers/ruleRegistry.js';
 
 export interface ToolParameter {
@@ -551,35 +548,11 @@ export class ToolHandlers {
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
     };
 
-    // Check if this is a multi-language project by detecting Go files
-    const hasGoFiles = await ToolHandlers.hasFilesWithExtensions(auditPath, ['.go']);
-
-    let auditResult: AuditResult;
-
-    if (hasGoFiles) {
-      // Use multi-language orchestrator for projects with Go files
-      
-      const runtimeManager = new RuntimeManager();
-      await runtimeManager.initialize();
-      const codeIndex = CodeIndexDB.getInstance();
-      await codeIndex.initialize();
-      const orchestrator = new LanguageOrchestrator(runtimeManager, codeIndex);
-      
-      const polyglotResult = await orchestrator.analyzePolyglotProject(auditPath, {
-        analyzers: options.enabledAnalyzers,
-        minSeverity: options.minSeverity as any,
-        updateIndex: indexFunctions,
-        enableCrossLanguageAnalysis: true,
-        buildCrossReferences: true,
-      });
-      
-      // Convert polyglot result to legacy audit result format
-      auditResult = ToolHandlers.convertPolyglotToAuditResult(polyglotResult, auditPath);
-    } else {
-      // Use legacy audit system for TypeScript-only projects
-      const runner = createAuditRunner(options);
-      auditResult = await runner.run();
-    }
+    // Route through the single audit entry point. Whether `.go` files route to
+    // the Go subprocess or fall through to the TypeScript pipeline is decided
+    // in one place (`runAuditDispatch`), shared with the CLI — not re-detected
+    // here as a second copy that can drift from the CLI.
+    const auditResult: AuditResult = await runAuditDispatch(options);
 
     // Handle function indexing if enabled and functions were collected
     let indexingResult = null;
@@ -1332,99 +1305,5 @@ export class ToolHandlers {
     if (score >= 90) return 'Excellent code health!';
     if (score >= 70) return 'Good code health with room for improvement';
     return 'Code health needs attention - run detailed audit';
-  }
-
-  static async hasFilesWithExtensions(dirPath: string, extensions: string[]): Promise<boolean> {
-    try {
-      const stats = await fs.stat(dirPath);
-      if (stats.isFile()) {
-        const ext = path.extname(dirPath).toLowerCase();
-        return extensions.includes(ext);
-      }
-
-      // Use simple readdir and walk manually to avoid recursive option issues
-      const entries = await fs.readdir(dirPath, { withFileTypes: true });
-
-      for (const entry of entries) {
-        if (entry.isFile()) {
-          const ext = path.extname(entry.name).toLowerCase();
-          if (extensions.includes(ext)) {
-            return true;
-          }
-        } else if (entry.isDirectory()) {
-          // Recursively check subdirectories
-          const subDirPath = path.join(dirPath, entry.name);
-          const hasInSubdir = await ToolHandlers.hasFilesWithExtensions(subDirPath, extensions);
-          if (hasInSubdir) {
-            return true;
-          }
-        }
-      }
-
-      return false;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  static convertPolyglotToAuditResult(polyglotResult: any, auditPath: string): AuditResult {
-    // Convert polyglot result to legacy AuditResult format
-    const violations = polyglotResult.violations || [];
-    const criticalIssues = violations.filter((v: any) => v.severity === 'critical').length;
-    const warnings = violations.filter((v: any) => v.severity === 'warning').length;
-    const suggestions = violations.filter((v: any) => v.severity === 'suggestion').length;
-
-    return {
-      timestamp: new Date(),
-      summary: {
-        totalViolations: violations.length,
-        criticalIssues,
-        warnings,
-        suggestions,
-        totalFiles: polyglotResult.metrics?.totalFiles || 0,
-        violationsByCategory: {},
-        topIssues: violations.slice(0, 5)
-      },
-      analyzerResults: {
-        solid: {
-          violations: violations.filter((v: any) => v.analyzer === 'solid'),
-          status: makeVisitorStatus(polyglotResult.metrics?.totalFiles || 0),
-          executionTime: polyglotResult.metrics?.executionTime || 0,
-          analyzerName: 'solid',
-        },
-        dry: {
-          violations: violations.filter((v: any) => v.analyzer === 'dry'),
-          status: makeVisitorStatus(polyglotResult.metrics?.totalFiles || 0),
-          executionTime: polyglotResult.metrics?.executionTime || 0,
-          analyzerName: 'dry',
-        },
-        go: {
-          violations: violations.filter((v: any) => v.analyzer === 'go'),
-          status: makeVisitorStatus(polyglotResult.metrics?.totalFiles || 0),
-          executionTime: polyglotResult.metrics?.executionTime || 0,
-          analyzerName: 'go',
-        }
-      },
-      recommendations: [],
-      metadata: {
-        auditDuration: polyglotResult.metrics?.executionTime || 0,
-        filesAnalyzed: polyglotResult.metrics?.totalFiles || 0,
-        analyzersRun: polyglotResult.metrics?.analyzersRun || ['solid', 'dry'],
-        fileToFunctionsMap: polyglotResult.indexEntries ? ToolHandlers.createFileToFunctionsMap(polyglotResult.indexEntries) : {}
-      }
-    };
-  }
-
-  static createFileToFunctionsMap(indexEntries: any[]): Record<string, any[]> {
-    const fileMap: Record<string, any[]> = {};
-    
-    for (const entry of indexEntries) {
-      if (!fileMap[entry.file]) {
-        fileMap[entry.file] = [];
-      }
-      fileMap[entry.file].push(entry);
-    }
-    
-    return fileMap;
   }
 }

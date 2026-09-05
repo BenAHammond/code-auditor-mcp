@@ -257,6 +257,59 @@ else
   fail "Some WASM grammars are missing from the distributed package"
 fi
 
+# --- Guard 8: Go analyzer subprocess (source + binary) ships ------------------
+# The Go analysis runs in a subprocess (JSON-RPC over stdio), not in-process.
+# `tsc` does NOT copy main.go, go.mod, the analyzer-src/ module, or the prebuilt
+# `analyzer` binary into dist — scripts/build-go.sh does. If any of these is
+# absent from the tarball, the Go subprocess is unbuildable/unrunnable for the
+# stranger who installed it, and the runtime degrades to a silent "no Go
+# analyzer". Same file-accounting as the WASM grammars above: a file silently
+# dropped from dist is a hard error.
+echo ""
+echo "Checking Go analyzer subprocess shipped..."
+GO_DIR="node_modules/code-auditor-mcp/dist/languages/go"
+GO_FILES=(
+  "main.go"
+  "go.mod"
+  "analyzer"
+  "analyzer-src/analyzer.go"
+  "analyzer-src/indexer.go"
+  "analyzer-src/parser.go"
+  "analyzer-src/solid.go"
+  "analyzer-src/types.go"
+  "analyzer-src/testconventions.go"
+  "analyzer-src/go.mod"
+)
+GO_MISSING=0
+for f in "${GO_FILES[@]}"; do
+  if [ -f "$GO_DIR/$f" ]; then
+    echo "  OK: $f"
+  else
+    echo "  MISSING: $f"
+    GO_MISSING=1
+  fi
+done
+if [ "$GO_MISSING" -eq 0 ]; then
+  pass "Go analyzer subprocess source + binary present in dist/languages/go/"
+else
+  fail "Go analyzer subprocess is incomplete in the distributed package"
+fi
+
+# Runtime ping check — only meaningful on the platform the prebuilt binary
+# targets (darwin/amd64). On other platforms the source is present so
+# ensureGoAnalyzerBuilt's `go build` fallback still works; a non-pong here is a
+# warn, not a fail.
+if [ -f "$GO_DIR/analyzer" ] && [ -x "$GO_DIR/analyzer" ]; then
+  echo ""
+  echo "Checking Go analyzer responds to ping..."
+  PONG=$(printf '{"method":"ping","params":{},"id":1}\n' | "$GO_DIR/analyzer" 2>/dev/null | head -1)
+  if echo "$PONG" | grep -q '"pong"'; then
+    pass "Go analyzer subprocess responds to ping"
+  else
+    warn "Go analyzer binary did not respond to ping (prebuilt for a different platform — 'go build' source fallback remains available)"
+  fi
+fi
+
 # --- Done ---------------------------------------------------------------------
 echo ""
 echo -e "${GREEN}========================================${NC}"

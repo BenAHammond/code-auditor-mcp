@@ -10,7 +10,13 @@ import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
  */
 export function getDefaultConfig(): AuditConfig {
   return {
-    includePaths: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.mts', '**/*.cts', '**/*.mjs', '**/*.cjs', '**/*.go', '**/*.css', '**/*.scss', '**/*.sql', '**/*.prisma'],
+    // Spec 42 — markup/component extensions carry embedded `<style>` blocks and
+    // class attributes. They were in fileDiscovery's MARKUP_EXTENSIONS (so they
+    // were discovered) but absent from this positive-selection includePaths glob
+    // list, which silently dropped them before the style indexer could read
+    // them. A `.svelte`/`.astro`/`.vue` file in a project was therefore never
+    // style-indexed — Svelte support that never saw real input.
+    includePaths: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.mts', '**/*.cts', '**/*.mjs', '**/*.cjs', '**/*.go', '**/*.css', '**/*.scss', '**/*.svelte', '**/*.astro', '**/*.vue', '**/*.sql', '**/*.prisma'],
     excludePaths: [
       '**/node_modules/**',
       '**/.next/**',

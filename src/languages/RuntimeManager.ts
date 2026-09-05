@@ -7,8 +7,24 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { fileURLToPath } from 'node:url';
 
 const execAsync = promisify(exec);
+
+// This module is ESM, so `__dirname` is undefined at runtime. Derive the
+// directory of this file (src/languages in dev, dist/languages when compiled)
+// from import.meta.url, the same way tree-sitter/parser.ts resolves grammars.
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Normalize an unknown thrown value into a stable one-line reason for a runtime
+ * failure. Keeps the `failureReason` on `RuntimeInfo` a plain string rather than
+ * a serialized Error (which would read as "[object Object]" in a report).
+ */
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
 
 export interface RuntimeInfo {
   name: string;
@@ -18,6 +34,10 @@ export interface RuntimeInfo {
   minVersion?: string;
   analyzer?: LanguageAnalyzer;
   executablePath?: string;
+  /** Why detection failed when `available` is false. Absence is the old silent
+   *  shape; presence makes "no Go analyzer" into "the Go analyzer failed
+   *  because X". */
+  failureReason?: string;
 }
 
 export interface LanguageAnalyzer {
@@ -113,40 +133,70 @@ class RuntimeManagerDetection {
   }
 
   /**
-   * Detect Go runtime
+   * Detect Go runtime.
+   *
+   * Split into two steps so each failure mode carries its own reason instead of
+   * collapsing into a single `available: false` that reads identically whether
+   * the toolchain is absent, the path resolution broke, or the analyzer binary
+   * is missing. The orchestrator relays `failureReason` as a stated notApplicable
+   * rather than a silent skip (see LanguageOrchestrator.collectNotApplicable).
    */
   private async detectGoRuntime(): Promise<void> {
+    console.error('[RuntimeManager] Detecting Go runtime...');
+
+    // Step 1 — toolchain presence. `go version` failing means Go is not
+    // installed (or not on PATH); that is the "Go analysis skipped" case.
+    let version: string;
     try {
-      console.error('[RuntimeManager] Detecting Go runtime...');
       const { stdout } = await execAsync('go version');
       const versionMatch = stdout.match(/go(\d+\.\d+\.\d+)/);
-      const version = versionMatch ? versionMatch[1] : stdout.trim();
+      version = versionMatch ? versionMatch[1] : stdout.trim();
       console.error('[RuntimeManager] Go version detected:', version);
-
-      // Check if our Go analyzer exists
-      const analyzerPath = path.join(__dirname, 'go', 'analyzer');
-      console.error('[RuntimeManager] Looking for Go analyzer at:', analyzerPath);
-      const analyzerExists = await this.fileExists(analyzerPath) || await this.fileExists(analyzerPath + '.exe');
-      console.error('[RuntimeManager] Go analyzer exists:', analyzerExists);
-
-      this.runtimes.set('go', {
-        name: 'Go',
-        command: 'go',
-        version,
-        available: true,
-        minVersion: '1.18.0',
-        executablePath: analyzerExists ? analyzerPath : undefined,
-        analyzer: new GoAnalyzer(analyzerPath)
-      });
-      console.error('[RuntimeManager] Go runtime configured successfully');
     } catch (error) {
+      console.error('[RuntimeManager] Go toolchain not found:', error);
       this.runtimes.set('go', {
         name: 'Go',
         command: 'go',
         version: 'unknown',
-        available: false
+        available: false,
+        failureReason: 'Go toolchain not found (go version failed)'
       });
+      return;
     }
+
+    // Step 2 — analyzer binary presence. A missing binary is NOT a detection
+    // failure: `ensureGoAnalyzerBuilt` compiles it from shipped source on first
+    // use. Only a path-resolution failure (which this step also guards against)
+    // marks the runtime unavailable.
+    let analyzerPath: string;
+    let analyzerExists: boolean;
+    try {
+      analyzerPath = path.join(moduleDir, 'go', 'analyzer');
+      console.error('[RuntimeManager] Looking for Go analyzer at:', analyzerPath);
+      analyzerExists = (await this.fileExists(analyzerPath)) || (await this.fileExists(analyzerPath + '.exe'));
+      console.error('[RuntimeManager] Go analyzer exists:', analyzerExists);
+    } catch (error) {
+      console.error('[RuntimeManager] Go analyzer path resolution failed:', error);
+      this.runtimes.set('go', {
+        name: 'Go',
+        command: 'go',
+        version,
+        available: false,
+        failureReason: `Go analyzer path resolution failed: ${describeError(error)}`
+      });
+      return;
+    }
+
+    this.runtimes.set('go', {
+      name: 'Go',
+      command: 'go',
+      version,
+      available: true,
+      minVersion: '1.18.0',
+      executablePath: analyzerExists ? analyzerPath : undefined,
+      analyzer: new GoAnalyzer(analyzerPath)
+    });
+    console.error('[RuntimeManager] Go runtime configured successfully');
   }
 
   /**
@@ -283,7 +333,8 @@ class RuntimeManagerDetection {
     for (const [name, runtime] of this.runtimes) {
       const status = runtime.available ? '✅' : '❌';
       const analyzer = runtime.analyzer ? '(analyzer available)' : '(no analyzer)';
-      console.log(`  ${status} ${runtime.name} ${runtime.version} ${analyzer}`);
+      const reason = !runtime.available && runtime.failureReason ? ` — ${runtime.failureReason}` : '';
+      console.log(`  ${status} ${runtime.name} ${runtime.version} ${analyzer}${reason}`);
     }
     console.log('');
   }
@@ -766,10 +817,14 @@ class TypeScriptAnalyzer implements LanguageAnalyzer {
       const { TreeSitterTypeScriptAdapter } = await import('./typescript/TreeSitterTypeScriptAdapter.js');
       const { runAudit } = await import('../auditRunner.js');
 
-      // Run the existing audit process
+      // Run the existing audit process. `projectRoot` is required — without it
+      // `runAudit` falls back to `process.cwd()`, which is the *tool's* cwd, not
+      // the audited project, so discovery finds nothing and the TypeScript half
+      // of a mixed-language project silently returns zero findings.
       const auditResult = await runAudit({
+        projectRoot: options?.projectRoot,
         includePaths: files,
-        enabledAnalyzers: options?.analyzers || ['solid', 'dry', 'documentation', 'dataAccess'],
+        enabledAnalyzers: options?.analyzers || ['solid', 'dry', 'documentation', 'data-access'],
         minSeverity: options?.minSeverity || 'suggestion',
         verbose: false
       });
@@ -885,7 +940,7 @@ class GoAnalyzer implements LanguageAnalyzer {
 
     try {
       // Build the Go analyzer if needed
-      const goAnalyzerDir = path.join(__dirname, 'go');
+      const goAnalyzerDir = path.join(moduleDir, 'go');
       await this.ensureGoAnalyzerBuilt(goAnalyzerDir);
 
       // Prepare analysis options
@@ -919,7 +974,8 @@ class GoAnalyzer implements LanguageAnalyzer {
         },
         errors: [{
           message: error instanceof Error ? error.message : String(error),
-          type: 'go_analyzer_error'
+          type: 'go_analysis_skipped',
+          language: 'go'
         }]
       };
     }
@@ -927,25 +983,36 @@ class GoAnalyzer implements LanguageAnalyzer {
 
   private async ensureGoAnalyzerBuilt(goDir: string): Promise<void> {
     const binaryPath = path.join(goDir, 'analyzer');
-    const mainGoPath = path.join(goDir, 'main.go');
 
     try {
       // Check if binary exists
       await fs.access(binaryPath);
       console.log(`[GoAnalyzer] Binary already exists at ${binaryPath}`);
+      return;
     } catch {
-      // Binary doesn't exist, build it
-      console.log(`[GoAnalyzer] Building Go analyzer binary...`);
+      // Binary absent — fall through to build-from-source.
+    }
 
-      try {
-        const { stdout, stderr } = await execAsync(`cd "${goDir}" && go build -o analyzer main.go`);
-        if (stderr) {
-          console.warn(`[GoAnalyzer] Build warnings: ${stderr}`);
-        }
-        console.log(`[GoAnalyzer] Successfully built Go analyzer binary`);
-      } catch (buildError) {
-        throw new Error(`Failed to build Go analyzer: ${buildError}`);
+    console.log(`[GoAnalyzer] Building Go analyzer binary...`);
+
+    // A missing toolchain here is a stated, distinct failure — not a silent
+    // zero. `detectGoRuntime` normally precludes this (it only registers Go as
+    // available when `go version` succeeds), but a direct call or a toolchain
+    // removed mid-run reaches this branch and must say why.
+    try {
+      await execAsync('go version');
+    } catch {
+      throw new Error('Go toolchain not found — Go analysis skipped');
+    }
+
+    try {
+      const { stderr } = await execAsync(`cd "${goDir}" && go build -o analyzer main.go`);
+      if (stderr) {
+        console.warn(`[GoAnalyzer] Build warnings: ${stderr}`);
       }
+      console.log(`[GoAnalyzer] Successfully built Go analyzer binary`);
+    } catch (buildError) {
+      throw new Error(`Go analyzer build failed: ${describeError(buildError)}`);
     }
   }
 

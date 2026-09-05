@@ -16,11 +16,13 @@
  * This script is the language-level analogue of that accounting. It has two
  * phases, because the wiring has two call paths that used to diverge:
  *
- *   Phase A — the AUDIT path. A fixture with one `.go` and one `.ts` file, each
- *   carrying the same known violation, must BOTH produce findings from a shared
- *   analyzer::rule. Catches a language dropped from the analyzer dispatch
- *   (`createFunctionIndexVisitor` / the universal SOLID + documentation
- *   analyzers).
+ *   Phase A — the AUDIT path. A fixture with one `.go` and one `.ts` file must
+ *   route them to *different* analyzers: the `.ts` file to the TypeScript
+ *   pipeline (`documentation::function-documentation`), the `.go` file to the
+ *   Go subprocess (`analyzer` in solid/imports/errors/…, and *no* `rule` field,
+ *   which only the Go subprocess's `Violation` shape omits). Catches the Go file
+ *   being silently fed to the TypeScript-tuned analyzers (the 762-finding gin
+ *   result) instead of the Go subprocess.
  *
  *   Phase B — the INDEX path. The same fixture is run through `index sync`,
  *   which uses a *different* `getLanguageFromPath` (the one that used to return
@@ -52,16 +54,30 @@ if (!existsSync(CLI)) {
   process.exit(1);
 }
 
-// Both files carry the same violation: an exported function with no doc
-// comment, which must trigger `documentation::function-documentation` on each.
-// Exported = capitalized in Go, `export` keyword in TypeScript.
+// The two files now deliberately carry *different* findings, because the two
+// paths are supposed to differ:
+//
+//   - index.ts  → the TypeScript pipeline. An exported function with no doc
+//     comment triggers `documentation::function-documentation`.
+//
+//   - main.go   → the Go subprocess. A dot import (`import . "fmt"`) triggers
+//     the Go `imports` analyzer (`analyzer: "imports"`, category
+//     `import-style`), a finding only the Go subprocess can emit. The same file
+//     still declares an exported `ProcessOrder` so Phase B has a function to
+//     index.
+//
+// The old fixture had both files carry the *same* `documentation` violation and
+// asserted they shared an `analyzer::rule` — that asserted the very defect this
+// restore removes (Go fed to the TypeScript-tuned documentation analyzer). The
+// correct invariant is divergence: `.go` findings come from the Go subprocess
+// analyzers (`solid`/`imports`/`errors`/…), never from `documentation`.
 const GO_SOURCE = `package sample
 
-import "fmt"
+import . "fmt"
 
 func ProcessOrder(orderID string) error {
 	if orderID == "" {
-		return fmt.Errorf("empty order id")
+		return nil
 	}
 	return nil
 }
@@ -75,6 +91,22 @@ const TS_SOURCE = `export function ProcessOrder(orderID: string): Error | null {
 }
 `;
 
+// A `*_test.go` fixture. Under `go test` this file is compiled only by the test
+// binary, never as production API, so the Go subprocess must exempt it the same
+// way languages/testConventions.ts exempts `*_test.go`. It carries the same dot
+// import that flags `main.go`, plus a `Test*` function — so if the exemption
+// regresses, this file produces findings and the guard below fails.
+const GO_TEST_SOURCE = `package sample
+
+import . "fmt"
+
+func TestProcessOrder(t *testing.T) {
+	if ProcessOrder("") != nil {
+		Println("bad")
+	}
+}
+`;
+
 // NOTE: the source dir name must not contain `fixture`, `mock`, `test`,
 // `spec`, or `__tests__` — `documentation.exemptPatterns` (src/config/defaults.ts)
 // matches those as bare substrings against the file path, so a `fixture/` dir
@@ -82,6 +114,7 @@ const TS_SOURCE = `export function ProcessOrder(orderID: string): Error | null {
 const outDir = mkdtempSync(join(tmpdir(), 'ca-verify-langs-out-'));
 const fixtureDir = mkdtempSync(join(tmpdir(), 'ca-verify-langs-src-'));
 writeFileSync(join(fixtureDir, 'main.go'), GO_SOURCE);
+writeFileSync(join(fixtureDir, 'sample_test.go'), GO_TEST_SOURCE);
 writeFileSync(join(fixtureDir, 'index.ts'), TS_SOURCE);
 
 // ── Phase A: the audit path ─────────────────────────────────────────────────
@@ -103,26 +136,39 @@ try {
   report = JSON.parse(readFileSync(reportPath, 'utf8'));
 }
 
-// Collect `analyzer::rule` per fixture file.
-function rulesForFile(file) {
-  const rules = new Set();
+// Collect per-file `{ analyzer, rule }` pairs from the JSON report.
+function findingsForFile(file) {
+  const findings = [];
   for (const result of Object.values(report.analyzerResults ?? {})) {
     for (const v of result.violations ?? result.findings ?? []) {
       if ((v.file ?? '').endsWith(file)) {
-        rules.add(`${v.analyzer ?? result.analyzer ?? '?'}::${v.rule ?? ''}`);
+        findings.push({
+          analyzer: v.analyzer ?? result.analyzer ?? '?',
+          rule: v.rule ?? '',
+        });
       }
     }
   }
-  return rules;
+  return findings;
 }
 
-const goRules = rulesForFile('main.go');
-const tsRules = rulesForFile('index.ts');
+// The analyzers only the Go subprocess emits. `documentation` is deliberately
+// NOT in this set — a `.go` finding labeled `documentation` means the file was
+// fed to the TypeScript-tuned documentation analyzer, i.e. the routing regressed.
+const GO_ANALYZERS = new Set(['solid', 'imports', 'errors', 'goroutines', 'channels']);
+
+const goFindings = findingsForFile('main.go');
+const tsFindings = findingsForFile('index.ts');
+const goTestFindings = findingsForFile('sample_test.go');
 
 console.log('');
-console.log('verify:languages — mixed-language fixture (.go + .ts)');
-console.log('  [audit] main.go  →', goRules.size, 'rule(s):', [...goRules].sort().join(', ') || '(none)');
-console.log('  [audit] index.ts →', tsRules.size, 'rule(s):', [...tsRules].sort().join(', ') || '(none)');
+console.log('verify:languages — mixed-language fixture (.go + .ts + _test.go)');
+console.log('  [audit] main.go        →', goFindings.length, 'finding(s):',
+  goFindings.map(f => `${f.analyzer}${f.rule ? '::' + f.rule : ''}`).join(', ') || '(none)');
+console.log('  [audit] index.ts       →', tsFindings.length, 'finding(s):',
+  tsFindings.map(f => `${f.analyzer}${f.rule ? '::' + f.rule : ''}`).join(', ') || '(none)');
+console.log('  [audit] sample_test.go →', goTestFindings.length, 'finding(s):',
+  goTestFindings.map(f => `${f.analyzer}${f.rule ? '::' + f.rule : ''}`).join(', ') || '(none — exempt)');
 
 // ── Phase B: the index path ─────────────────────────────────────────────────
 // `index sync` stores function rows through functionScanner.ts, which used to
@@ -173,15 +219,32 @@ rmSync(dataDir, { recursive: true, force: true });
 const failures = [];
 
 // Phase A assertions.
-if (tsRules.size === 0) {
+if (tsFindings.length === 0) {
   failures.push('the .ts control file produced no audit findings — the audit is not emitting findings at all; fix that first.');
+} else if (!tsFindings.some(f => f.analyzer === 'documentation' && f.rule === 'function-documentation')) {
+  failures.push('the .ts control file did not produce documentation::function-documentation — the TypeScript pipeline is not running its documentation analyzer.');
 }
-if (goRules.size === 0) {
-  failures.push('the .go file produced no audit findings — Go has been silently dropped from the analyzer dispatch.');
+
+if (goFindings.length === 0) {
+  failures.push('the .go file produced no audit findings — Go has been silently dropped from the analyzer dispatch (no Go subprocess output).');
+} else if (!goFindings.some(f => GO_ANALYZERS.has(f.analyzer))) {
+  failures.push(`the .go file produced findings but none from the Go subprocess (analyzer in ${[...GO_ANALYZERS].join('/')}) — the .go file is being analyzed by the TypeScript-tuned analyzers instead.`);
 }
-const shared = [...goRules].filter((r) => tsRules.has(r));
-if (tsRules.size > 0 && goRules.size > 0 && shared.length === 0) {
-  failures.push('.go and .ts produced findings but share no analyzer::rule — cross-language analyzer parity has been lost.');
+
+// The routing regression guard: if the .go file produced a documentation::*
+// finding, it was fed to the TypeScript-tuned documentation analyzer, not the
+// Go subprocess. This is the exact defect the restore removes.
+if (goFindings.some(f => f.analyzer === 'documentation')) {
+  failures.push('the .go file produced a documentation finding — Go is being routed to the TypeScript-tuned documentation analyzer instead of the Go subprocess.');
+}
+
+// The `_test.go` exemption guard: `*_test.go` files are test code, compiled only
+// by `go test`, never production API. The Go subprocess must exempt them (the
+// same per-language convention as languages/testConventions.ts). A finding here
+// means test files are being analyzed again — the exact noise that re-dominates
+// any Go corpus run.
+if (goTestFindings.length !== 0) {
+  failures.push('the .go _test.go file produced findings — Go test files are being analyzed instead of exempted (go.filePatterns regression).');
 }
 
 // Phase B assertions.
@@ -206,5 +269,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`PASS — audit: both languages emit findings and share ${shared.sort().join(', ')}; index: .go→go, .ts→typescript.`);
+console.log('PASS — audit: .ts → documentation (TS pipeline), .go → Go subprocess, _test.go → exempt; index: .go→go, .ts→typescript.');
 process.exit(0);

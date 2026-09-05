@@ -65,6 +65,12 @@ func (p *Parser) ExtractFunctions() []Function {
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.FuncDecl:
+				// Skip test functions (Test*/Benchmark*/Example*/Fuzz*): they are
+				// `go test` entry points, not production API. Mirrors the Go
+				// test-function convention in languages/testConventions.ts.
+				if isTestFunction(node.Name.Name) {
+					return true
+				}
 				function := p.extractFunction(node, filePath, file)
 				functions = append(functions, function)
 			}
