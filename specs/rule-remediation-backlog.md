@@ -149,9 +149,13 @@ The honest version needs inputs the pipeline doesn't currently produce. Score ea
 | `schema-validator/missing-field` | real Go requiredness (pointer-vs-value / proto labels) | **decide** — extractor has neither |
 | `schema-validator/schema-field-mismatch` | cross-language type lattice | **cut-keep-as-renamed** — string equality is honest |
 
+**Applied 2026-09-05**: `solid/liskov-substitution` (TS) rebuilt — within-file parent resolution + throw-contract comparison (this also fixed a latent `extends`-extraction bug in `buildClassInfo` that made the old rule never fire). `schema/sql-injection` verified already honest (taint-aware `isAllDynamicPartsSafe`). `cross-domain/transaction-boundary` verified honest (message already hedged "may indicate / consider"). `react/accessibility` + `react/performance` rewritten to per-element JSX detection against the full component `body`. `schema-validator/missing-field` built — Go requiredness is now value-type → required, nilable reference (pointer/slice/map/chan/func/interface) → optional via `isGoValueType`. The five `cut-keep-as-renamed` rows were handled in buckets 3/6.
+
 ## Cross-cutting: the near-miss executor
 
 `nearMiss: true` on ~94 registry rules is a *declaration*; only a handful are *executed* (`UniversalStylesAnalyzer.spec.ts`, `UniversalSchemaAnalyzer.spec.ts`, `solid/dependency-inversion`, and the 6 historical-FP guards). A declared-but-unexecuted sample is a guard that cannot fail. Build one executor that runs **every declared near-miss sample through its real analyzer** and asserts zero findings. This is what makes every future rule change falsifiable, and it's the same shape as the coverage-input-mapping defect the audit already caught (declared, never checked).
+
+**Applied 2026-09-05**: `src/__tests__/nearMissExecutor.spec.ts`. 27 near-misses are wired through their real analyzer and asserted zero (solid, dry, data-access, documentation, schema *code* path, react `complexity`); the remaining 67 are classified per-rule with the precise missing input (cross-language pair / seeded index corpus / schema↔data file pair / JSX-fragment-not-a-component) and `it.skip`ped so the gap is visible, not silently faked. A self-audit test fails the suite if any registry near-miss is neither wired nor classified. Wiring a sample also surfaced one already-invalid near-miss — `file-documentation` declared `/** Core utilities… */` as valid when the guard requires `@fileoverview`/`@purpose`; the sample was corrected rather than the analyzer silently widened.
 
 ## Order of work (cost-to-value)
 
