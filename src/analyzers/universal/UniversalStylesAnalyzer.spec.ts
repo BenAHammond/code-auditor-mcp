@@ -714,6 +714,28 @@ describe('Detector 4 — Token Bypass', () => {
     expect(bypasses[0].message).toContain('Token bypass');
   });
 
+  it('flags a non-color (length) token bypass — raw length where a spacing token exists', async () => {
+    // Spec 44 bucket 5: the valueType !== 'color' gate previously suppressed
+    // non-color tokens, so a raw `320px` matching --card-width never fired.
+    // (`width` is a length property that is not a scale property, so it reaches
+    // the bypass match.)
+    insertToken('--card-width', '320px');
+    insertDecl({
+      property: 'width',
+      raw_value: '320px',
+      normalized_value: JSON.stringify({ type: 'length', value: 320, unit: 'px' }),
+      token_ref: null,
+      file_path: 'src/component.css',
+      line: 12,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(1);
+    expect(bypasses[0].message).toContain('--card-width');
+    expect(bypasses[0].message).toContain('Token bypass');
+  });
+
   it('does NOT fire on SCSS $variable definition sites', async () => {
     // SCSS $variable definitions ($accent: #22d3ee) are token-value
     // definition sites, just like CSS --custom properties. Zero findings.

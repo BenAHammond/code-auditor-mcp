@@ -942,8 +942,6 @@ function matchBypassToken(
     if (declType !== null && declType !== tokenInfo.valueType) return null;
   }
 
-  if (tokenInfo.valueType !== 'color') return null;
-
   return tokenInfo;
 }
 
