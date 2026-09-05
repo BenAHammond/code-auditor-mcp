@@ -14,15 +14,6 @@ export interface JSONReportConfig {
 }
 
 /**
- * Resolve the rule identity for a violation.
- *
- * `rule` is now required on the Violation type — no fallback chain needed.
- */
-function resolveViolationRule(violation: Record<string, any>): string {
-  return violation.rule ?? '';
-}
-
-/**
  * Generate a JSON report from audit results
  */
 export function generateJSONReport(
@@ -94,28 +85,17 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
         filesProcessed: getFilesProcessed(result.status),
         executionTime: result.executionTime
       },
-      violations: result.violations.map(violation => {
-        const rule = resolveViolationRule(violation);
-        return {
-          file: violation.file,
-          line: violation.line,
-          column: violation.column,
-          severity: violation.severity,
-          message: violation.message,
-          type: violation.type,
-          ...(rule && { rule }),
-          ...(violation.rule && { rule: violation.rule }),
-          ...(violation.analyzer && { analyzer: violation.analyzer }),
-          ...(violation.functionName && { functionName: violation.functionName }),
-          ...(violation.symbol && { symbol: violation.symbol }),
-          ...(violation.profile && { profile: violation.profile }),
-          ...(violation.hotspot !== undefined && violation.hotspot > 0 && { hotspot: Math.round(violation.hotspot * 1000) / 1000 }),
-          ...(violation.recommendation && { recommendation: violation.recommendation }),
-          ...(violation.estimatedEffort && { estimatedEffort: violation.estimatedEffort }),
-          ...(violation.snippet && { snippet: violation.snippet }),
-          ...(violation.new !== undefined && { new: violation.new })
-        };
-      }),
+      violations: result.violations.map(violation => ({
+        // Spread the violation verbatim: fields the reporter doesn't know
+        // (the Go subprocess's `category`, `details`, `suggestion`) were
+        // previously dropped by a TypeScript-only allowlist below. A seam that
+        // silently discards what it doesn't recognize is the same defect as the
+        // old `analyzerResults.go` bucket filtering on `v.analyzer === 'go'` —
+        // which never matched the subprocess's real labels. Preserve everything;
+        // only normalize the one field that needs it.
+        ...violation,
+        ...(violation.hotspot !== undefined && violation.hotspot > 0 && { hotspot: Math.round(violation.hotspot * 1000) / 1000 }),
+      })),
       ...(result.errors && { errors: result.errors })
     };
   }

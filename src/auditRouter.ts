@@ -61,6 +61,21 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
   const totalFiles = polyglotResult.metrics?.totalFiles || 0;
   const executionTime = polyglotResult.metrics?.executionTime || 0;
 
+  // Bucket violations by their category for the summary. The Go subprocess
+  // labels findings with `category` (open-closed, import-style, …); the
+  // TypeScript pipeline uses `type` for the same purpose. Fall back to the
+  // analyzer label so a categoryless finding still lands in a real bucket
+  // rather than vanishing into an empty `violationsByCategory`.
+  const violationsByCategory: Record<string, number> = {};
+  for (const v of violations) {
+    const category = v.category || v.type || v.analyzer || 'unknown';
+    violationsByCategory[category] = (violationsByCategory[category] || 0) + 1;
+  }
+  const topIssues = Object.entries(violationsByCategory)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5)
+    .map(([type, count]) => ({ type, count }));
+
   // Build analyzerResults dynamically from the actual analyzer labels on the
   // violations. The Go subprocess labels findings with the analyzer that
   // produced them (`solid`, and potentially `imports`/`errors`/`goroutines`/
@@ -103,8 +118,8 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
       warnings,
       suggestions,
       totalFiles,
-      violationsByCategory: {},
-      topIssues: violations.slice(0, 5),
+      violationsByCategory,
+      topIssues,
     },
     analyzerResults,
     recommendations: [],
