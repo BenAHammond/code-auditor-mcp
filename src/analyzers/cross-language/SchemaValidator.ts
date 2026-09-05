@@ -573,6 +573,8 @@ function extractTypeScriptInterface(entity: CrossLanguageEntity): SchemaDefiniti
  * True when a Go field type is a non-nilable value type (hence always present),
  * i.e. "required". Nilable reference types — pointers, slices, maps, channels,
  * functions, and the built-in interface types — are optional.
+ * @param type
+ * @returns
  */
 export function isGoValueType(type: string | undefined): boolean {
   if (!type) return false;
