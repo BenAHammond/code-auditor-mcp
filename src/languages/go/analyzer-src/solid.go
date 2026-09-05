@@ -147,27 +147,47 @@ func (s *SOLIDAnalyzer) analyzeOCP() []Violation {
 	return violations
 }
 
-// analyzeLSP analyzes Liskov Substitution Principle violations
+// analyzeLSP analyzes Liskov Substitution Principle violations.
+//
+// A method that calls panic() breaks substitutability: a caller holding the
+// interface (or embedding) has no way to recover from a panic the way it can
+// from an error return. The honest, directly-observable signal is "the method
+// body contains a panic() call" — we walk the AST for exactly that. We do not
+// (yet) resolve whether the method overrides a parent, so the message claims
+// only the panic, never the override.
 func (s *SOLIDAnalyzer) analyzeLSP() []Violation {
 	var violations []Violation
 
-	// Check for methods that panic or return errors in ways that violate LSP
-	for _, function := range s.functions {
-		if s.functionThrowsUnexpectedPanic(function) {
+	for filePath, file := range s.parser.files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			funcDecl, ok := n.(*ast.FuncDecl)
+			if !ok {
+				return true
+			}
+			// LSP governs methods only — a free function has no supertype to
+			// violate. Test functions are test entry points, not production API.
+			if funcDecl.Recv == nil || funcDecl.Body == nil || isTestFunction(funcDecl.Name.Name) {
+				return true
+			}
+			if !methodCallsPanic(funcDecl) {
+				return true
+			}
+			pos := s.parser.fileSet.Position(funcDecl.Pos())
 			violations = append(violations, Violation{
-				File:     function.File,
-				Line:     function.StartLine,
+				File:     filePath,
+				Line:     pos.Line,
 				Severity: "warning",
-				Message:  "Method may violate Liskov Substitution Principle by panicking",
+				Message:  "Method calls panic()",
 				Details: map[string]interface{}{
-					"function":  function.Name,
+					"function":  funcDecl.Name.Name,
 					"principle": "LSP",
 				},
-				Suggestion: "Consider returning an error instead of panicking to maintain substitutability",
+				Suggestion: "Return an error instead of panicking so the method stays substitutable",
 				Analyzer:   "solid",
 				Category:   "liskov-substitution",
 			})
-		}
+			return true
+		})
 	}
 
 	return violations
@@ -321,13 +341,6 @@ func (s *SOLIDAnalyzer) countTypeSwitchCases(typeSwitchStmt *ast.TypeSwitchStmt)
 	return caseCount
 }
 
-func (s *SOLIDAnalyzer) functionThrowsUnexpectedPanic(function Function) bool {
-	// This is a simplified check - in a real implementation,
-	// we would analyze the AST for panic() calls
-	return strings.Contains(strings.ToLower(function.Name), "panic") ||
-		strings.Contains(strings.ToLower(function.Purpose), "panic")
-}
-
 func (s *SOLIDAnalyzer) countConcreteDependencies(structInfo Struct) int {
 	concreteDeps := 0
 
@@ -357,4 +370,26 @@ func (s *SOLIDAnalyzer) isBuiltinType(typeName string) bool {
 	}
 
 	return false
+}
+
+// methodCallsPanic reports whether a function body contains a direct panic()
+// call. It matches the exact call shape — a call expression whose function is
+// the identifier `panic` — so a helper that merely has "panic" in its name or
+// a doc comment does not trip it (the near-miss the old name-substring check
+// false-positived on).
+func methodCallsPanic(funcDecl *ast.FuncDecl) bool {
+	callsPanic := false
+	ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if ok && ident.Name == "panic" {
+			callsPanic = true
+			return false
+		}
+		return true
+	})
+	return callsPanic
 }

@@ -5,5 +5,10 @@
   "dataAccess": {
     "enabled": true
   },
+  "analyzerConfigs": {
+    "data-access": {
+      "orgFilterTables": ["projects", "users"]
+    }
+  },
   "enabledAnalyzers": ["data-access", "schema"]
 }

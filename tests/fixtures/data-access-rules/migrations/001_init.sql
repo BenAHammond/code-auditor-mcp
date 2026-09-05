@@ -17,3 +17,12 @@ CREATE TABLE tags (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL
 );
+
+-- `teams` is a near-miss for the removed English fallback list: its name was in
+-- the old `fallbackOrgTables`, but it is a single-tenant table (no org/tenant
+-- column). It is NOT declared in orgFilterTables, so a query on it must not
+-- trigger missing-org-filter.
+CREATE TABLE teams (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL
+);

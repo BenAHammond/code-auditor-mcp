@@ -1118,7 +1118,6 @@ function extractTables(text: string, config: DataAccessAnalyzerConfig): string[]
 
 function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): boolean {
   const patterns = config.organizationPatterns ?? [];
-  const lowerText = text.toLowerCase();
 
   // No patterns → hardcoded common fallback set.
   const candidates = patterns.length
@@ -1126,19 +1125,29 @@ function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): 
     : ['organizationid', 'organization_id', 'orgid', 'org_id',
        'tenantid', 'tenant_id', 'companyid', 'company_id'];
 
-  return candidates.some(p => matchesOrganizationPattern(lowerText, p.toLowerCase()));
-}
+  // An org-scoping column is a *filter* only when it is used as a predicate
+  // operand — the left-hand side of a comparison/IN/IS/LIKE (`org_id = ?`,
+  // `tenant_id IN (...)`), the key side of a filter object (`where({ org_id })`),
+  // or the column argument of a positional where (`where('org_id', x)`).
+  // A column that merely appears in the SELECT list (`SELECT org_id FROM …`) or
+  // an INSERT column list is NOT a filter. This replaces the old substring
+  // proxy that treated any occurrence of the column name — a SELECT column, a
+  // comment, a property name — as evidence of tenant isolation.
+  const alt = candidates.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
 
-/** True when `p` appears in `lowerText` as a bare token, object property, or SQL clause. */
-function matchesOrganizationPattern(lowerText: string, p: string): boolean {
-  return (
-    lowerText.includes(p) ||
-    lowerText.includes(`${p}:`) ||
-    lowerText.includes(`"${p}"`) ||
-    lowerText.includes(`'${p}'`) ||
-    lowerText.includes(`where ${p} =`) || lowerText.includes(`where ${p}=`) ||
-    lowerText.includes(`and ${p} =`) || lowerText.includes(`and ${p}=`)
+  // SQL comparison operand / object-literal key.
+  const comparisonRe = new RegExp(
+    `\\b${alt}\\b\\s*(?:=|!=|<>|<=|>=|<|>|\\bIS\\b|\\bIN\\b|\\bLIKE\\b|:)`,
+    'i',
   );
+  if (comparisonRe.test(text)) return true;
+
+  // Positional ORM where: `.where('org_id', x)` / `.andWhere("org_id", x)`.
+  const positionalRe = new RegExp(
+    `\\b(?:where|andWhere|orWhere|whereEq|whereNot|having|on)\\s*\\(\\s*['"\`]\\s*${alt}\\s*['"\`]`,
+    'i',
+  );
+  return positionalRe.test(text);
 }
 
 /**
@@ -1371,30 +1380,34 @@ function extractMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: 
 }
 
 /**
- * Spec 21 R6.2: Three-tier org-filter detection.
+ * Spec 21 R6.2 (reworked for Spec 44 — rule authenticity): two-tier org-filter
+ * detection, keyed on *declared tenancy* rather than a guessed English name.
  *
  * Tier 1 (config-primary): `orgFilterTables` — the user's explicit declaration
  *   of which tables are multi-tenant. Tenancy is policy; this is the
  *   declaration of record.
  *
- * Tier 2 (usage-inference secondary): A table requires the filter if the
- *   project's own corpus shows it scoped — i.e., a column matching
- *   `orgFilterColumns` (default: org_id/tenant_id/organization_id/workspace_id)
- *   exists on it in the schema definitions in config.
- *   This is what makes non-English table names (e.g., 注文) detectable
- *   with zero explicit orgFilterTables declaration.
+ * Tier 2 (schema-inference): A table requires the filter when a configured
+ *   schema definition carries a column matching `orgFilterColumns`
+ *   (default: org_id/tenant_id/organization_id/workspace_id) on it. This is
+ *   what makes non-English table names (e.g., 注文) detectable with zero
+ *   explicit orgFilterTables declaration.
  *
- * Tier 3 (fallback): English table list retained as defaults, evidence-tagged
- *   `fallback` like every other name list in Spec 21.
+ * The old Tier 3 — a hardcoded English fallback list (`users`, `projects`,
+ * `orders`, `customers`, `accounts`, `teams`) — was dishonest: it accused
+ * queries on those tables of missing a tenant filter even when the project
+ * declared no such tenancy (a `users` table with no org column is a legitimate
+ * single-tenant table). It is deleted: a table requires an org filter only
+ * when tenancy is *declared*, never when its name happens to be in an English
+ * word list.
  */
 function requiresOrgFilter(tables: string[], config: DataAccessAnalyzerConfig): boolean {
   const orgFilterTables = config.orgFilterTables ?? [];
   const orgFilterColumns = config.orgFilterColumns ?? ['org_id', 'tenant_id', 'organization_id', 'workspace_id'];
   const schemas = config.schemas ?? [];
-  const fallbackOrgTables = ['users', 'projects', 'orders', 'customers', 'accounts', 'teams'];
 
   // Build a lookup set of tables from schema definitions that have an
-  // org-filter column — this is the usage-inference tier.
+  // org-filter column — this is the schema-inference tier.
   const schemaOrgTables = new Set<string>();
   for (const schema of schemas) {
     for (const table of schema.tables) {
@@ -1413,12 +1426,7 @@ function requiresOrgFilter(tables: string[], config: DataAccessAnalyzerConfig): 
     }
 
     // Tier 2: schema-based inference — table has an org-filter column
-    if (schemaOrgTables.has(tableLower)) {
-      return true;
-    }
-
-    // Tier 3: English fallback
-    return fallbackOrgTables.includes(tableLower);
+    return schemaOrgTables.has(tableLower);
   });
 }
 

@@ -114,6 +114,14 @@ describe('data-access-rules fixture', () => {
       expect(mofViolations.length).toBe(1);
       expect(mofViolations[0].line).toBe(12);
     });
+
+    it('near-miss negative: fallback-named but un-tenanted table (teams) does NOT trigger missing-org-filter', () => {
+      // `teams` was in the old dishonest English fallback list but is not
+      // tenant-scoped (no org/tenant column, not in orgFilterTables). The old
+      // proxy would have fired on its name alone; the honest predicate must not.
+      const violations = runAndGetViolations(testDir);
+      expect(ruleCount(violations, 'untenanted-table.ts', 'missing-org-filter')).toBe(0);
+    });
   });
 
   // ══════════════════════════════════════════════════════════════════
