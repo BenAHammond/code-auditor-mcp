@@ -188,7 +188,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         violations.push(this.createViolation(
           ast.filePath,
           cls.location.start,
-          `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting responsibilities.`,
+          `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting into smaller classes.`,
           { severity: 'suggestion', rule: 'solid/class-size', symbol: cls.name,  // R7: class-size → suggestion
             resolution: {
               action: 'split-class',
@@ -266,7 +266,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
       violations.push(this.createViolation(
         ctx.ast.filePath,
         cls.location.start,
-        `Class "${cls.name}" appears to be frequently modified. Consider using composition or inheritance for extension.`,
+        `Class "${cls.name}" uses instanceof against a user-defined type. Consider composition or inheritance for extension.`,
         { severity: 'suggestion', rule: 'solid/open-closed', symbol: cls.name }
       ));
     }
@@ -462,7 +462,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
           violations.push(this.createViolation(
             ast.filePath,
             method.location.start,
-            `Method "${cls.name}.${method.name}" throws exceptions. Ensure this doesn't violate parent class contract.`,
+            `Method "${cls.name}.${method.name}" throws exceptions. Ensure callers handle it.`,
             { severity: 'suggestion', rule: 'solid/liskov-substitution', symbol: `${cls.name}.${method.name}` }
           ));
         }

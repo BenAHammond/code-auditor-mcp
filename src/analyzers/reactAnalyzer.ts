@@ -297,7 +297,7 @@ function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
         file: component.filePath,
         line: component.lineNumber,
         severity: 'warning',
-        message: `Component '${component.name}' has onClick on non-interactive element <${element}>`,
+        message: `Component '${component.name}' may have onClick on a non-interactive element (contains <${element}>)`,
         componentName: component.name,
         rule: 'accessibility',
         violationType: 'accessibility',

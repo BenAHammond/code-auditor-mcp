@@ -144,7 +144,7 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 				File:     filePath,
 				Line:     1,
 				Severity: "suggestion",
-				Message:  "File has many imports - consider organizing or reducing dependencies",
+				Message:  "File has many imports - consider organizing or reducing import count",
 				Details: map[string]interface{}{
 					"importCount": len(file.Imports),
 				},
@@ -247,7 +247,7 @@ func (a *Analyzer) runChannelAnalysis() []Violation {
 				File:     function.File,
 				Line:     function.StartLine,
 				Severity: "suggestion",
-				Message:  "Complex function uses channels - review for potential deadlocks",
+				Message:  "Complex function uses channels - review for proper synchronization",
 				Details: map[string]interface{}{
 					"function":   function.Name,
 					"complexity": function.Complexity,

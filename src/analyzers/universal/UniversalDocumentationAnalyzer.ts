@@ -216,7 +216,7 @@ function checkFileHeader(
     violations.push(makeViolation(
       ast.filePath,
       { line: 1, column: 1 },
-      'File lacks proper documentation header',
+      'File lacks a leading documentation comment',
       { severity: 'warning', rule: 'file-documentation' }
     ));
   }
