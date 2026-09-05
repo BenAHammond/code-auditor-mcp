@@ -53,18 +53,22 @@ dependency's `node_modules` as a source file — a pure-TS project with such a
 dependency is no longer misrouted through the Go analyzer (which dropped every
 non-Go analyzer).
 
-### Release note — known red `verify:self` gate
-`verify:close` ships green on every stage except `verify:self`, which reports
-**30** scoped `critical`+`warning` findings in `src/analyzers/` +
-`src/languages/`. Every one predates this release: 19 sit in files byte-identical
-to 3.4.18, and this release adds zero net-new findings (the one it introduced is
-fixed). This release is tagged and published with that gate red because it fixes
-four dishonest rules and a misrouting bug without making the self-audit worse;
-the drift is tracked for a dedicated self-audit-to-zero pass. Breakdown by rule:
-`dry/duplicate` 16, `solid/single-responsibility` 8,
-`solid/dependency-inversion` 3, `solid/class-size` 1,
-`parameter-documentation` 1, `return-documentation` 1. Full record in
-`specs/evidence/spec-44-release-blocked-verify-self.md`.
+### Self-audit remediation — `verify:self` to zero
+The 30 pre-existing `critical`+`warning` findings in `src/analyzers/` +
+`src/languages/` are remediated honestly — duplicated logic collapsed into shared
+helpers (`resolveReceiverText`, `enqueueCallNeighbors`, `filterByFilePatterns`,
+`collectPatternTables`, `pushExportedSpec`, `resolveDeclaration`, …) and the
+missing `@param`/`@returns` docs added — not via severity/threshold calibration.
+`verify:close` now passes end-to-end, including `verify:self` at zero scoped
+blocking findings.
+
+### Edit-time self-audit hook
+A new PostToolUse hook (`plugin/scripts/hook-self-audit.sh`) runs the same
+self-audit scope over edited `src/analyzers/` + `src/languages/` files and blocks
+the edit (exit 2) on any blocking finding, so self-audit findings fail at edit
+time instead of recurring to the release gate. The shipped CLI gains a
+`self-audit` command, and the hook resolves the plugin's own bundled CLI rather
+than a stale PATH binary.
 
 ## [3.4.18] — 2026-09-03
 
