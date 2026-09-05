@@ -345,6 +345,13 @@ func (a *Analyzer) functionDropsError(funcDecl *ast.FuncDecl) bool {
 	var assignPositions []token.Pos
 	var checkPositions []token.Pos
 
+	// A function with a named `err` result propagates that error on a bare
+	// `return` — Go returns the current value of the named result. Treating
+	// bare returns as a check is what keeps `func (w *W) Write(...) (n int,
+	// err error) { n, err = io.Write(...); return }` from being flagged as a
+	// dropped error (the dominant named-return idiom).
+	hasNamedErr := funcDeclHasNamedErr(funcDecl)
+
 	ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
@@ -371,6 +378,9 @@ func (a *Analyzer) functionDropsError(funcDecl *ast.FuncDecl) bool {
 				}
 			}
 		case *ast.ReturnStmt:
+			if len(node.Results) == 0 && hasNamedErr {
+				checkPositions = append(checkPositions, node.Pos())
+			}
 			for _, res := range node.Results {
 				if ident, ok := res.(*ast.Ident); ok && ident.Name == "err" {
 					checkPositions = append(checkPositions, ident.Pos())
@@ -407,6 +417,22 @@ func (a *Analyzer) functionDropsError(funcDecl *ast.FuncDecl) bool {
 		}
 		if !handled {
 			return true
+		}
+	}
+	return false
+}
+
+// funcDeclHasNamedErr reports whether the function's result list names an
+// error result `err` (the `(err error)` named-return shape).
+func funcDeclHasNamedErr(funcDecl *ast.FuncDecl) bool {
+	if funcDecl.Type == nil || funcDecl.Type.Results == nil {
+		return false
+	}
+	for _, field := range funcDecl.Type.Results.List {
+		for _, name := range field.Names {
+			if name.Name == "err" {
+				return true
+			}
 		}
 	}
 	return false

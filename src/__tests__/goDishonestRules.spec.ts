@@ -167,6 +167,47 @@ func read() (int, error) { return 0, nil }
     const eh = violations.filter((v) => v.category === 'error-handling');
     expect(eh.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('does NOT flag a named-return error propagated by a bare return', async () => {
+    // The dominant Go idiom: `func (w *W) Write(...) (n int, err error) {
+    // n, err = io.Write(...); return }`. The error IS returned via the named
+    // result even though no explicit `return err` appears.
+    const code = `package main
+
+import "io"
+
+type W struct{ out io.Writer }
+
+func (w *W) Write(data []byte) (n int, err error) {
+	n, err = w.out.Write(data)
+	n++
+	return
+}
+`;
+    const violations = await analyzeContent(code, ['errors']);
+    const eh = violations.filter((v) => v.category === 'error-handling');
+    expect(eh).toHaveLength(0);
+  });
+
+  it('still flags a named-return function that drops an intermediate error', async () => {
+    // Two assignments: the first `err` is overwritten by the second before the
+    // bare return, so the first error is genuinely dropped.
+    const code = `package main
+
+import "io"
+
+type W struct{ a, b io.Writer }
+
+func (w *W) Write(data []byte) (err error) {
+	_, err = w.a.Write(data)
+	_, err = w.b.Write(data)
+	return
+}
+`;
+    const violations = await analyzeContent(code, ['errors']);
+    const eh = violations.filter((v) => v.category === 'error-handling');
+    expect(eh.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════
