@@ -91,9 +91,9 @@ export async function syncStyleIndex(
   const result: StyleSyncResult = { changed: 0, skipped: 0, removed: 0, errors: 0, consumedFiles: [], contributingFiles: [] };
   const scoped = options.scoped ?? false;
 
-  // Unread stylesheet sources (Spec 42 R2). When any exist, the
-  // styles/undefined-class detector reports notApplicable rather than
-  // asserting a class is undefined (it may live in the unread source).
+  // Unread stylesheet sources (Spec 45 R5). When any exist, the
+  // styles/undefined-class detector still fires and carries them as context
+  // rather than asserting a class is undefined against the whole project.
   const unreadSources: UnreadStyleSource[] = [];
 
   // Load Tailwind config once for the project
@@ -305,14 +305,15 @@ export function extractClassUsage(
 }
 
 // ---------------------------------------------------------------------------
-// Unread stylesheet sources (Spec 42 R2)
+// Unread stylesheet sources (Spec 45 R5)
 // ---------------------------------------------------------------------------
 
 /**
  * Discover stylesheet files whose dialect the indexer cannot read (Sass indented
  * syntax, Less, Stylus). Each is recorded as an unread source so that
- * `styles/undefined-class` reports `notApplicable` instead of asserting a class
- * is undefined when it could be defined in one of these files.
+ * `styles/undefined-class` findings carry them as context: a class may be
+ * defined in one of these files, so "undefined" means "not defined in any read
+ * stylesheet".
  */
 async function findUnreadStyleFiles(projectRoot: string): Promise<UnreadStyleSource[]> {
   const files = await findFiles(projectRoot, { extensions: UNREAD_STYLE_EXTENSIONS });

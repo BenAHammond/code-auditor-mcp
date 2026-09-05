@@ -197,6 +197,21 @@ export function validateConfig(config: AuditConfig): string[] {
   if (config.minSeverity && !['critical', 'warning', 'suggestion'].includes(config.minSeverity)) {
     errors.push(`Invalid severity: ${config.minSeverity}`);
   }
+
+  // Validate gateSeverities (Spec 45 R2) — the blocking severities must name
+  // real severities and never include `off` (a disabled severity cannot block).
+  if (config.gateSeverities !== undefined) {
+    const valid = ['critical', 'warning', 'suggestion'];
+    if (!Array.isArray(config.gateSeverities) || config.gateSeverities.length === 0) {
+      errors.push('gateSeverities must be a non-empty array of severities');
+    } else {
+      for (const s of config.gateSeverities) {
+        if (!valid.includes(s)) {
+          errors.push(`Invalid gateSeverities entry: ${s} (expected critical, warning, or suggestion)`);
+        }
+      }
+    }
+  }
   
   // Validate analyzers against the canonical registry-derived set, so a user
   // naming any registered analyzer (including the cross-language trio) is never

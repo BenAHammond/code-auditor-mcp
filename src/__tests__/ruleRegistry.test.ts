@@ -4,17 +4,18 @@
  * Every consumer (the gate, print-config, threshold reporting) relies on the
  * registry carrying the full rule metadata; a rule that drops a field silently
  * changes what the gate and reports can rely on. These tests make a missing
- * field a build failure rather than a warning, and enforce the two substantive
+ * field a build failure rather than a warning, and enforce the substantive
  * invariants that make the contract meaningful:
  *
- *   - `gating: true` ⇒ `resolvable: true` (Spec 36 R6 / Spec 37 R2) — a rule
- *     that gates without being able to name a next action is a defect.
  *   - a rule with `thresholds` names real config keys in its analyzer's default
  *     config (Spec 37 R2 / Spec 36 R5) — a threshold that names a ghost key
  *     makes threshold reporting and `--print-config` lie.
  *   - every rule ships inline valid/invalid samples, at least one valid sample
  *     is a near-miss, and resolvable rules assert a `resolution` on each invalid
  *     sample (Spec 37 R3).
+ *
+ * Spec 45 R1 removes the per-rule `gating` opt-in: every registered rule gates.
+ * There is no `gating` field to assert, and no `gating ⇒ resolvable` invariant.
  */
 import { describe, it, expect } from 'vitest';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
@@ -26,7 +27,6 @@ describe('rule registry contract — Spec 37 R2/R3', () => {
   it('carries every required field on every entry (missing = build failure)', () => {
     const missing: string[] = [];
     for (const [id, e] of ENTRIES) {
-      if (typeof e.gating !== 'boolean') missing.push(`${id}.gating`);
       if (typeof e.resolvable !== 'boolean') missing.push(`${id}.resolvable`);
       if (typeof e.message !== 'string' || e.message.trim() === '') missing.push(`${id}.message`);
       if (typeof e.docs !== 'string' || e.docs.trim() === '') missing.push(`${id}.docs`);
@@ -36,13 +36,6 @@ describe('rule registry contract — Spec 37 R2/R3', () => {
       }
     }
     expect(missing).toEqual([]);
-  });
-
-  it('every gating rule is resolvable (Spec 36 R6 / Spec 37 R2)', () => {
-    const violations = ENTRIES
-      .filter(([, e]) => e.gating && !e.resolvable)
-      .map(([id]) => id);
-    expect(violations).toEqual([]);
   });
 
   it('every rule ships both valid and invalid samples (Spec 37 R3)', () => {

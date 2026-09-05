@@ -1442,11 +1442,11 @@ describe('Rule Registry', () => {
   });
 
   // ── Spec 37 R2 — the rule contract ─────────────────────────────────────────
-  // A rule must declare its gating role, resolvability, message template, docs
-  // handle and threshold keys. A gating rule that cannot name an action is a
-  // contract violation (Spec 36 R6); a threshold that does not resolve to a key
-  // the analyzer actually reads is a lie in the config surface (Spec 38 R1).
-  it('Spec 37 R2 — every entry carries the contract; gating⇒resolvable; thresholds name real config keys', () => {
+  // A rule must declare its resolvability, message template, docs handle and
+  // threshold keys. A threshold that does not resolve to a key the analyzer
+  // actually reads is a lie in the config surface (Spec 38 R1). There is no
+  // `gating` field to assert: Spec 45 R1 makes every rule gate.
+  it('Spec 37 R2 — every entry carries the contract; thresholds name real config keys', () => {
     // Authoritative config-key source is each analyzer's own DEFAULT_*_CONFIG —
     // the shape the analyzer actually reads at runtime — NOT the flat
     // DEFAULT_ANALYZER_CONFIGS blob in defaults.ts. That blob has drifted: its
@@ -1495,20 +1495,12 @@ describe('Rule Registry', () => {
       // Field completeness — missing any is a build failure (tsc enforces the
       // required interface fields; this re-asserts it at runtime for the case
       // where the literal is built dynamically).
-      expect(typeof entry.gating, `Registry entry "${id}" must declare gating (boolean)`).toBe('boolean');
       expect(typeof entry.resolvable, `Registry entry "${id}" must declare resolvable (boolean)`).toBe('boolean');
       expect(typeof entry.message, `Registry entry "${id}" must declare message (string)`).toBe('string');
       expect(entry.message.trim().length, `Registry entry "${id}" message must be non-empty`).toBeGreaterThan(0);
       expect(typeof entry.docs, `Registry entry "${id}" must declare docs (string)`).toBe('string');
       expect(entry.docs.trim().length, `Registry entry "${id}" docs must be non-empty`).toBeGreaterThan(0);
       expect(Array.isArray(entry.thresholds), `Registry entry "${id}" thresholds must be an array`).toBe(true);
-
-      // gating ⇒ resolvable. A gating rule that cannot produce a resolution is
-      // a contract violation (Spec 36 R6 / Spec 37 R2).
-      expect(
-        !entry.gating || entry.resolvable,
-        `gating rule "${id}" must be resolvable — declare resolvable: true or drop it from the gating set`,
-      ).toBe(true);
 
       // Thresholds name real config keys the analyzer reads.
       if (entry.thresholds.length === 0) continue;

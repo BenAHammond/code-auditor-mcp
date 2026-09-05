@@ -38,17 +38,22 @@ Requirements:
 - A finding the edit introduced blocks, including one introduced at an untouched line by a change elsewhere in the file — moving a method past a threshold counts.
 - Non-blocking findings still appear in the full report. This scopes enforcement, not visibility.
 
-## R3 — No bare counts in agent-facing output
+## R3 — No bare counts in agent-facing output — REVERTED by Spec 45 Amendment A (A2)
+
+> **Reverted.** Spec 45 Amendment A (A2) removes this requirement. Counts are now
+> emitted where they are useful — per analyzer, per rule, per severity, and the
+> before/after gating count — on agent-facing surfaces as well as human ones.
+> The original R3 text is kept below for history.
 
 The tool never emits "727 findings" to an agent. Only findings, each with file and line.
 
 This is the direct fix for what happened here. If the aggregate is not available, it cannot be tracked instead of the items.
 
-Requirements:
+Requirements (all reverted by A2):
 
-- Agent-facing surfaces — the hook, `changed`, the MCP tool response — emit findings, never a total.
-- Human-facing report surfaces may aggregate. A person reading a report needs shape; an agent deciding what to do next does not.
-- No "N remaining" progress figure anywhere an agent reads.
+- ~~Agent-facing surfaces — the hook, `changed`, the MCP tool response — emit findings, never a total.~~
+- ~~Human-facing report surfaces may aggregate. A person reading a report needs shape; an agent deciding what to do next does not.~~
+- ~~No "N remaining" progress figure anywhere an agent reads.~~
 
 ## R4 — The gate is binary
 

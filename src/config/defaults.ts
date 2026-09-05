@@ -2,8 +2,16 @@
  * Default configurations for the code auditor
  */
 
-import { AuditConfig, PathProfile } from '../types.js';
+import { AuditConfig, PathProfile, Severity } from '../types.js';
 import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
+
+/**
+ * Spec 45 R2 — the severities that participate in the blocking gate by default.
+ * `critical` + `warning` block; `suggestion` is reported but does not block.
+ * Configurable via `gateSeverities` in `.codeauditor.json`; never hardcoded to
+ * a narrower set.
+ */
+export const DEFAULT_BLOCKING_SEVERITIES: Severity[] = ['critical', 'warning'];
 
 /**
  * Get default configuration
@@ -55,7 +63,9 @@ export function getDefaultConfig(): AuditConfig {
       'unknown-table': 'suggestion',
       'solid/class-size': 'warning',
       'solid/dependency-inversion': 'warning',
-    }
+    },
+    // Spec 45 R2 — severity gate default: critical + warning block.
+    gateSeverities: DEFAULT_BLOCKING_SEVERITIES,
   };
 }
 

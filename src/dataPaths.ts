@@ -84,7 +84,24 @@ function getFallbackCacheRoot(): string {
   return path.join(os.homedir(), '.cache', 'code-auditor');
 }
 
+/**
+ * Resolve symlinks (and other path aliases) so the same physical project
+ * hashes identically regardless of how it was spelled. On macOS `/tmp` is a
+ * symlink to `/private/tmp`, so `-p /tmp/foo` and `process.cwd()` (which
+ * returns `/private/tmp/foo`) would otherwise hash to different cache keys and
+ * detached jobs would not be found across the parent/child boundary.
+ */
+function resolveRealPath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    // The path may not exist yet (fresh cache dir, brand-new project) — fall
+    // back to lexical resolution so we still get a stable key.
+    return path.resolve(p);
+  }
+}
+
 /** Stable per-project identifier used to scope cache/data paths. */
 function projectHash(root: string): string {
-  return createHash('sha256').update(path.resolve(root)).digest('hex').substring(0, 16);
+  return createHash('sha256').update(resolveRealPath(root)).digest('hex').substring(0, 16);
 }

@@ -35,7 +35,6 @@ import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
 import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
-import { collectSuppressionDirectives, applySuppressions, type SuppressionDirective } from './enforcement/suppressions.js';
 import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
 
 // Import universal analyzers
@@ -839,36 +838,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // dry_pair_history persistence is advisory — non-fatal
     }
 
-    // ── Spec 36 R7 — suppression decay ──────────────────────────────────
-    // Inline `code-audit-disable-*` directives suppress a finding only while
-    // it fires, carry a required reason, and are themselves an error when
-    // unnecessary or reasonless. Computed here (not in the gate) so the
-    // suppressed/unnecessary/reasonless triage is reported, never silent.
-    let suppressionMetadata:
-      | { total: number; suppressed: number; unnecessary: SuppressionDirective[]; reasonless: SuppressionDirective[] }
-      | undefined;
-    {
-      const directives = collectSuppressionDirectives(files);
-      if (directives.length > 0) {
-        const allViolations = Object.values(orderedAnalyzerResults).flatMap(
-          (r) => r.violations
-        );
-        const applied = applySuppressions(allViolations, directives);
-        suppressionMetadata = {
-          total: directives.length,
-          suppressed: applied.suppressed.length,
-          unnecessary: applied.unnecessary,
-          reasonless: applied.reasonless,
-        };
-        logMcpInfo('suppressions', 'suppression triage complete', {
-          total: directives.length,
-          suppressed: applied.suppressed.length,
-          unnecessary: applied.unnecessary.length,
-          reasonless: applied.reasonless.length,
-        });
-      }
-    }
-
     // ── Spec 13 R2 — Hotspot scoring & finding reordering ──────────────
     // Attach hotspot scores to violations and reorder within severity tiers.
     // Falls back gracefully when no churn/hotspot data exists.
@@ -1124,7 +1093,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(pipelineInputPresence && { inputPresence: pipelineInputPresence }),
         ...(pipelineRuleTiming && { ruleTiming: pipelineRuleTiming }),
         ...(pipelineFileAccounting && { fileAccounting: pipelineFileAccounting }),
-        ...(suppressionMetadata && { suppressions: suppressionMetadata }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
           fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)

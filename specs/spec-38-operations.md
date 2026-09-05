@@ -42,7 +42,7 @@ An agent will not complain that the hook is slow. It will work in a way that avo
 Requirements:
 
 - Measure the current figure before optimizing. Report it.
-- A rule exceeding its share of the budget is reported by R2 and either optimized or removed from the gating set.
+- A rule exceeding its share of the budget is reported by R2 and optimized — never removed from the gating set (Spec 45 Amendment A, A1).
 - The budget is asserted in CI against a representative file, so a regression fails rather than silently degrading.
 - If the budget cannot be met, report the actual number and what dominates it. Do not quietly widen it.
 

@@ -190,13 +190,24 @@ describe('Hook script (hook-audit.sh)', () => {
     expect(content).toContain('code-audit changed --stdin --json');
   });
 
-  it('degrades cleanly when code-audit is missing', () => {
+  it('fails loudly when the CLI breaks (never a silent no-op)', () => {
     const content = readFileSync(
       resolve(PLUGIN_DIR, 'scripts', 'hook-audit.sh'),
       'utf-8',
     );
-    expect(content).toContain('could not run');
-    expect(content).toContain('exit 0');
+    // A non-zero CLI exit that isn't a finding (2) must be reported and exit 1,
+    // not swallowed as a clean pass.
+    expect(content).toContain('HOOK BROKEN');
+    expect(content).toContain('exit 1');
+  });
+
+  it('sources the shared resolver and pins to a compatible CLI', () => {
+    const content = readFileSync(
+      resolve(PLUGIN_DIR, 'scripts', 'hook-audit.sh'),
+      'utf-8',
+    );
+    expect(content).toContain('hook-common.sh');
+    expect(content).toContain('assert_compatible');
   });
 });
 

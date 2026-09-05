@@ -81,7 +81,7 @@ Code Auditor enforces architectural invariants and code quality rules inside an 
 - **Functional analyzers**: Pure functions returning arrays of violations; compose via `analyzerUtils.ts`
 - **adapterBridge**: Synchronous facade asserting parser is initialized; throws on uninitialized use
 - **Diff-scoped auditing**: `detectChangedFunctions()` uses content hashes to find only what changed since last sync
-- **Agent hook contract**: `code-audit changed --json --fail-on critical` — exit code 2 on violations at or above specified severity
+- **Agent hook contract**: `code-audit changed --json` — exit code 2 when a gating rule fires on a new finding; a non-zero exit that is not 2 is a broken hook, reported loudly
 
 ### Working Directory Structure
 

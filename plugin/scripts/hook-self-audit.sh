@@ -4,14 +4,23 @@
 #
 # Reads the PostToolUse event JSON from stdin, extracts the edited file path,
 # and — only when that file is production source in the self-audit scope — runs
-# `code-audit self-audit --stdin --json` against it. Exit code 2 blocks the edit
-# and feeds the finding JSON back to the agent.
+# `code-audit self-audit` against it. Exit code 2 blocks the edit and feeds the
+# finding JSON back to the agent.
 #
 # This hook is a no-op for every edit outside the self-audit scope (consumer
 # projects, tests, fixtures, and the declarative ruleRegistry table), so it adds
 # no latency to ordinary edits. It runs *in addition to* hook-audit.sh, whose
 # diff-gate enforces invariant rules on every edit.
+#
+# Exit codes:
+#   0 — clean pass or out of scope
+#   2 — a blocking self-audit finding (Claude Code feeds stdout back)
+#   1 — the hook itself broke (binary missing, version mismatch, CLI error) —
+#       reported loudly, never a silent no-op.
 set -euo pipefail
+
+# Shared resolver + compatibility pinning (see hook-common.sh).
+. "${CLAUDE_PLUGIN_ROOT}/scripts/hook-common.sh"
 
 # Read event JSON from stdin
 event="$(cat)"
@@ -60,33 +69,12 @@ case "${file_abs}" in
   *"__tests__"*|*".test."*|*".spec."*|*"fixtures"*|*"ruleRegistry.ts"*) exit 0 ;;
 esac
 
-# Resolve the code-audit binary. The `self-audit` command is new in 3.5.0, so a
-# stale PATH/global binary would silently lack it — prefer the plugin's own
-# bundled CLI first (guaranteed to be the version that ships with this hook),
-# then fall back to project-local → PATH → npx auto-install.
-resolve_code_audit() {
-  # 1. The plugin's own bundled CLI (ships alongside this script in the package;
-  #    dist/cli.js is the `code-audit` bin target, so npm marks it executable).
-  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js" ]; then
-    echo "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js"
-    return
-  fi
-  # 2. Project-local install (consumer project's own node_modules).
-  if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -x "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit" ]; then
-    echo "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit"
-    return
-  fi
-  # 3. Global install or PATH.
-  if command -v code-audit &>/dev/null; then
-    echo "code-audit"
-    return
-  fi
-  # 4. npx auto-install (first use downloads the package; subsequent runs use the npx cache).
-  echo "npx -y -p code-auditor-mcp@^3.0.0 code-audit"
-}
 CODE_AUDIT_BIN="$(resolve_code_audit)"
 
-# Run the self-audit on the edited file. stdout/stderr are fed back to the agent.
+# Pin the plugin to a compatible CLI version — fail loudly on mismatch.
+assert_compatible "${CODE_AUDIT_BIN}" || exit 1
+
+# Run the self-audit on the edited file. stdout/stderr feed back to the agent.
 set +e
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
   echo "${file_abs}" | ${CODE_AUDIT_BIN} self-audit --stdin --json -p "${CLAUDE_PROJECT_DIR}"
@@ -96,12 +84,16 @@ fi
 exit_code=$?
 set -e
 
-# Exit code 2 = a blocking self-audit finding; let it propagate so Claude Code
-# feeds the finding back to the agent.
+# Exit 2 = a blocking self-audit finding; propagate so Claude Code feeds it back.
 if [ ${exit_code} -eq 2 ]; then
   exit 2
 fi
 
-# Non-zero exit (npx auto-install failure, network issue, etc.) degrades
-# gracefully — never wedge the agent loop.
+# Any other non-zero exit is the hook breaking, not a clean pass. Report loudly
+# and fail — a silent no-op here is exactly the failure mode this guards.
+if [ ${exit_code} -ne 0 ]; then
+  echo "[code-auditor] HOOK BROKEN: self-audit exited ${exit_code} (neither clean nor a finding). Fix the install — do not treat this as a clean pass." >&2
+  exit 1
+fi
+
 exit 0

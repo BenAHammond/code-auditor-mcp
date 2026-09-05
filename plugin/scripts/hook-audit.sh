@@ -5,9 +5,14 @@
 # and runs `code-audit changed --stdin --json` against it.
 #
 # Exit codes:
-#   0 — all clear or degraded (binary not found, no index, no gating findings)
-#   2 — a new gating-rule finding was introduced (Claude Code feeds stdout back)
+#   0 — clean pass
+#   2 — a gating finding was introduced (Claude Code feeds stdout back)
+#   1 — the hook itself broke (binary missing, version mismatch, CLI error) —
+#       reported loudly, never a silent no-op.
 set -euo pipefail
+
+# Shared resolver + compatibility pinning (see hook-common.sh).
+. "${CLAUDE_PLUGIN_ROOT}/scripts/hook-common.sh"
 
 # Read event JSON from stdin
 event="$(cat)"
@@ -43,46 +48,31 @@ if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -n "${file}" ]; then
   esac
 fi
 
-# Resolve the code-audit binary: project-local → PATH → npx auto-install
-resolve_code_audit() {
-  # 1. Project-local install (plugin project's own node_modules)
-  if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -x "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit" ]; then
-    echo "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit"
-    return
-  fi
-
-  # 2. Global install or PATH
-  if command -v code-audit &>/dev/null; then
-    echo "code-audit"
-    return
-  fi
-
-  # 3. npx auto-install (first use downloads the package; subsequent runs use the npx cache)
-  echo "npx -y -p code-auditor-mcp@^3.0.0 code-audit"
-}
 CODE_AUDIT_BIN="$(resolve_code_audit)"
 
-# Run diff-scoped audit on the changed file
-# stdout/stderr are fed back to the agent by Claude Code
+# Pin the plugin to a compatible CLI version — fail loudly on mismatch.
+assert_compatible "${CODE_AUDIT_BIN}" || exit 1
+
+# Run diff-scoped audit on the changed file. stdout/stderr feed back to the agent.
 set +e
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-	  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json -p "${CLAUDE_PROJECT_DIR}"
-	else
-	  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json
-	fi
+  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json -p "${CLAUDE_PROJECT_DIR}"
+else
+  echo "${file}" | ${CODE_AUDIT_BIN} changed --stdin --json
+fi
 exit_code=$?
 set -e
 
-# Exit code 2 = binary gate triggered (a new gating-rule finding)
-# Let it propagate so Claude Code feeds the finding back to the agent
+# Exit 2 = a finding blocked the edit; propagate so Claude Code feeds it back.
 if [ ${exit_code} -eq 2 ]; then
   exit 2
 fi
 
-# Non-zero exit: npx auto-install failed, network issue, unsupported platform, etc.
-# Degrade gracefully — never wedge the agent loop.
+# Any other non-zero exit is the hook breaking, not a clean pass. Report loudly
+# and fail — a silent no-op here is exactly the failure mode this guards.
 if [ ${exit_code} -ne 0 ]; then
-  echo "[code-auditor] code-audit could not run (exit ${exit_code}). If npx auto-install failed, check your network or install manually: npm install code-auditor-mcp" >&2
+  echo "[code-auditor] HOOK BROKEN: code-audit exited ${exit_code} (neither clean nor a finding). Fix the install — do not treat this as a clean pass." >&2
+  exit 1
 fi
 
 exit 0

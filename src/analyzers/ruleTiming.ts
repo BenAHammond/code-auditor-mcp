@@ -4,8 +4,8 @@
  * ESLint ships `TIMING=1` for per-rule cost. The pipeline already times each
  * *visitor* (`visitorDurationMs` in pipeline.ts); this module is the finer
  * granularity — one accumulated timer per rule ID — so a rule making the
- * blocking gate too slow to keep can be identified and either optimized or
- * removed from the gating set (Spec 38 R3).
+ * blocking gate too slow can be identified and optimized. A slow rule is
+ * never removed from the gate (Spec 38 R3, Spec 45 A1).
  *
  * Timing is opt-in via `CODE_AUDIT_RULE_TIMING=1`. When the variable is unset
  * (the default, and every baseline/CI run), `withRuleTiming` calls the wrapped

@@ -1,42 +1,18 @@
 /**
- * Unit tests for derived rule applicability (Spec 42 R2/R3, Spec 39).
+ * Unit tests for derived rule applicability (Spec 45 R5, Spec 42 R3, Spec 39).
  *
- * R2 — styles/undefined-class must not assert a class is undefined when any
- *      stylesheet source went unread; it reports notApplicable naming them.
+ * Spec 45 R5 — styles/undefined-class has no applicability predicate: it always
+ *      runs. Unread stylesheets are reported as context on its findings, not as
+ *      notApplicable.
  * R3 — missing-org-filter derives its own applicability from the table catalog;
  *      no tenant-scoping column anywhere → notApplicable, no config flag.
  */
 import { describe, it, expect } from 'vitest';
 import { evaluateRuleApplicability } from './applicability.js';
 
-describe('evaluateRuleApplicability — styles/undefined-class (R2)', () => {
-  it('returns null (runs unconditionally) when no stylesheets were unread', () => {
-    expect(evaluateRuleApplicability('styles/undefined-class', undefined, undefined, [])).toBeNull();
-    expect(evaluateRuleApplicability('styles/undefined-class', undefined, undefined, undefined)).toBeNull();
-  });
-
-  it('reports notApplicable naming every unread source when any exist', () => {
-    const app = evaluateRuleApplicability(
-      'styles/undefined-class',
-      undefined,
-      undefined,
-      [
-        { filePath: 'styles/theme.sass', reason: 'unsupported style dialect: .sass' },
-        { filePath: 'styles/legacy.less', reason: 'unsupported style dialect: .less' },
-      ],
-    );
-    expect(app).not.toBeNull();
-    expect(app!.applicable).toBe(false);
-    expect(app!.reason).toBe(
-      'stylesheets were not read: styles/theme.sass (unsupported style dialect: .sass), styles/legacy.less (unsupported style dialect: .less)',
-    );
-  });
-
-  it('is a whole-run predicate: one unread source anywhere disables the rule', () => {
-    const app = evaluateRuleApplicability('styles/undefined-class', undefined, undefined, [
-      { filePath: 'a.styl', reason: 'unsupported style dialect: .styl' },
-    ]);
-    expect(app!.applicable).toBe(false);
+describe('evaluateRuleApplicability — styles/undefined-class (Spec 45 R5)', () => {
+  it('returns null (runs unconditionally) — unread stylesheets never disable it', () => {
+    expect(evaluateRuleApplicability('styles/undefined-class', undefined, undefined)).toBeNull();
   });
 });
 

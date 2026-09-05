@@ -127,13 +127,14 @@ export interface StyleClassUsage {
 }
 
 // ---------------------------------------------------------------------------
-// Unread Stylesheet Source (Spec 42 R2)
+// Unread Stylesheet Source (Spec 45 R5)
 // ---------------------------------------------------------------------------
 
 /**
  * A stylesheet source the indexer could not read. When any exist, the
- * `styles/undefined-class` detector reports `notApplicable` rather than
- * asserting a class is undefined (the class may live in the unread source).
+ * `styles/undefined-class` detector still fires, but each finding carries this
+ * list as context so "undefined" reads as "not defined in any *read* stylesheet"
+ * rather than a definitive whole-project assertion.
  */
 export interface UnreadStyleSource {
   /** File path (project-relative or absolute, as recorded). */

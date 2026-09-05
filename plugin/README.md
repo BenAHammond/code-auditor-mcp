@@ -19,9 +19,11 @@ If the plugin format iterates in a future Claude Code release, update the manife
 |-----------|---------|
 | `hooks/hooks.json` | `PostToolUse` on `Write\|Edit` → runs `code-audit changed --stdin --json` |
 | `skills/code-auditor/SKILL.md` | Teaches the agent when to use `search`, `definition`, `audit`, `next-file`, `config`, and how to interpret hook feedback |
-| `scripts/hook-audit.sh` | Hook script: extracts file path from event JSON, pipes to `code-audit changed`, degrades cleanly when the package isn't installed |
+| `scripts/hook-audit.sh` | Hook script: extracts file path from event JSON, pipes to `code-audit changed`, fails loudly if the CLI itself breaks |
+| `scripts/hook-self-audit.sh` | Edit-time self-audit gate over `analyzers/` + `languages/` (the tool's own source) |
+| `scripts/hook-common.sh` | Shared binary resolver + version-compatibility pinning for both hooks |
 
-**No bundled `.mcp.json`.** The hook calls `code-audit` via the CLI, which resolves through the user's `PATH` (global install or `npx`). We deliberately chose not to bundle an MCP server in the plugin manifest: the skill + CLI path is cheaper — no standing tool-schema token cost on every context window — and equivalent to the MCP surface wherever a shell exists. The standalone MCP server (`npx code-auditor-mcp`) remains available for shell-less hosts or users who prefer the MCP transport.
+**No bundled `.mcp.json`.** The hook prefers the plugin's own bundled CLI (`dist/cli.js`, shipped in the same npm package, so it is always the exact version the plugin was built against), then falls back to a project-local install, then `PATH`, then `npx`. We deliberately chose not to bundle an MCP server in the plugin manifest: the skill + CLI path is cheaper — no standing tool-schema token cost on every context window — and equivalent to the MCP surface wherever a shell exists. The standalone MCP server (`npx code-auditor-mcp`) remains available for shell-less hosts or users who prefer the MCP transport.
 
 ## The hook
 
@@ -31,7 +33,7 @@ After every Write or Edit, the hook runs `code-audit changed` on the edited file
 2. **Hook extracts the file path** and pipes it to `code-audit changed --stdin --json`
 3. **No gating violations** → exit 0, agent continues
 4. **Gating violation found** → exit 2, violation JSON is fed back to the agent, agent reads the invariant's `message` and fixes the violation
-5. **code-audit not installed** → exit 0 with one-line notice, agent continues uninterrupted
+5. **The hook itself broke** (binary missing, version mismatch, CLI error) → exit 1 with a loud `[code-auditor] HOOK BROKEN: …` message. A broken hook is *not* a clean pass and is never silently swallowed.
 
 ### Disabling the hook
 

@@ -26,8 +26,8 @@ import type { Severity, AuditScope, SearchOptions } from './types.js';
 import { getFilesProcessed, getFactsConsumed, isVisitorStatus, isReducerStatus } from './pipeline.js';
 import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
 import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
-import { computeDiffGatingDecision } from './enforcement/gate.js';
-import { computeDiffGate } from './enforcement/diffGate.js';
+import { computeGatingDecision } from './enforcement/gate.js';
+import { DEFAULT_BLOCKING_SEVERITIES } from './config/defaults.js';
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 
@@ -281,29 +281,6 @@ program
         console.log(`  ${parts.join(', ')}`);
       }
 
-      // Spec 36 R7 — suppressions are reported: how many exist, where, and how
-      // many are unnecessary (or reasonless). Both are errors, surfaced here.
-      const suppressions = result.metadata?.suppressions;
-      if (suppressions) {
-        console.log(chalk.gray(`\n── Suppressions ──────────────────────────────`));
-        console.log(
-          `  ${suppressions.total} directive${suppressions.total !== 1 ? 's' : ''}, ` +
-          `${suppressions.suppressed} finding${suppressions.suppressed !== 1 ? 's' : ''} suppressed`
-        );
-        if (suppressions.unnecessary.length > 0) {
-          console.error(chalk.red(`  ❌ ${suppressions.unnecessary.length} unnecessary (finding no longer fires):`));
-          for (const d of suppressions.unnecessary) {
-            console.error(`    ${d.rule} @ ${d.file}:${d.line}`);
-          }
-        }
-        if (suppressions.reasonless.length > 0) {
-          console.error(chalk.red(`  ❌ ${suppressions.reasonless.length} missing a required reason:`));
-          for (const d of suppressions.reasonless) {
-            console.error(`    ${d.rule} @ ${d.file}:${d.line}`);
-          }
-        }
-      }
-
       // Per-analyzer activity (read from result data, not serialized summary)
       // — surfaces zero-scan failures that would otherwise be invisible.
       if (!options.json) {
@@ -515,6 +492,19 @@ program
         (r: any) => r.violations || []
       );
 
+      // Blocking gate decision (Spec 45 R1/R2/R4), computed once so the
+      // agent-facing before/after count (Spec 45 A2) and the exit code agree on
+      // the same number. Every registered rule participates (R1); severity
+      // decides (R2); enforcement is not diff-scoped (R4). No rule is removed
+      // from the gate for speed (Spec 45 A1).
+      const configuredGateSeverities = (result.metadata.configUsed as any)?.gateSeverities;
+      const blockingSeverities = new Set(
+        Array.isArray(configuredGateSeverities) && configuredGateSeverities.length > 0
+          ? (configuredGateSeverities as Severity[])
+          : DEFAULT_BLOCKING_SEVERITIES
+      );
+      const { blocking, resolutionGaps } = computeGatingDecision(violations as any, blockingSeverities);
+
       // JSON output
       if (options.format === 'sarif') {
         const { generateSARIFReport } = await import('./reporting/sarifReportGenerator.js');
@@ -552,16 +542,18 @@ program
         });
         process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
       } else if (!options.quiet || violations.length > 0) {
-        // Console output — Spec 36 R3: agent-facing output emits findings,
-        // never an aggregate total. The hook and the `changed` command are the
-        // agent's surface; a finding total is exactly the representation the
-        // consumer routes around. Findings only, each with file:line.
+        // Console output — Spec 45 A2: agent-facing output emits counts (per
+        // analyzer/rule/severity, plus the before/after gate figure) alongside
+        // findings. The hook and the `changed` command are the agent's surface.
         console.log(chalk.blue('🔍 Diff-Scoped Code Audit'));
         console.log(chalk.gray('══════════════════════════════════════════════════'));
         printFileAccounting(result, !!options.explainSkipped);
 
         if (violations.length > 0) {
-          console.log(chalk.gray('\n── Violations ────────────────────────────────────'));
+          console.log('');
+          printCountSummary(violations);
+          console.log(chalk.bold(`gate before/after: ${violations.length} → ${blocking.length} blocking`));
+          console.log(chalk.gray('── Violations ────────────────────────────────────'));
           for (const v of violations) {
             const icon =
               v.severity === 'critical' ? '🔴' :
@@ -594,38 +586,24 @@ program
             lines.push(`  ${t.ruleId.padEnd(28)} ${t.totalMs.toFixed(2).padStart(9)} ms  ×${t.calls}`);
           }
         } else {
-          lines.push('  (no gating rules recorded)');
+          lines.push('  (no rules recorded)');
         }
         process.stderr.write(lines.join('\n') + '\n');
       }
 
-      // Binary gate (Spec 36 R2/R4/R6): exit 2 when a gating finding is present.
-      // The `changed` command is the edit-boundary gate, so it compares against
-      // the file's prior state (git HEAD) via the touched-line diff gate (R2),
-      // NOT against a stored baseline. Gate-excluded files and non-gating rules
-      // never block. Severity does NOT factor in (R4). A gating rule that cannot
-      // name a next action for an occurrence emits non-blocking and the gap is
-      // recorded (R6), surfaced below to stderr.
+      // Blocking gate (Spec 45 R1/R2/R4): exit 2 when a finding at a blocking
+      // severity is present. Every registered rule participates (R1); severity
+      // decides (R2); enforcement is not diff-scoped (R4) — a pre-existing
+      // finding in the audited file blocks exactly like a new one. Gate-excluded
+      // files never block. A rule that cannot name a next action still blocks;
+      // the missing action is recorded below (R1). The decision is computed
+      // above so the before/after count and the exit code share one number.
       {
-        const analyzedFiles = (result.metadata as any)?.analyzedFiles as string[] | undefined;
-        // The `changed` command is always scoped, so the runner records the
-        // analyzed file list. If it is somehow absent we still derive the gate
-        // from the files that actually produced findings rather than falling
-        // back to the baseline gate — a silent soft-fail is the one outcome R1
-        // forbids.
-        const gateFiles = analyzedFiles && analyzedFiles.length > 0
-          ? analyzedFiles
-          : [...new Set(
-              (violations as any[]).map((v) => v.file).filter(Boolean)
-            )];
-        const diffGate = computeDiffGate(options.path, gateFiles);
-        const { blocking, resolutionGaps } = computeDiffGatingDecision(violations as any, diffGate);
-
         if (resolutionGaps.length > 0) {
-          // Spec 36 R6 — a gating rule that could not name an action is a defect
-          // in the rule. Record it loudly so it cannot route around as a count.
+          // Spec 45 R1 — a rule that could not name an action is a defect in the
+          // rule. Record it loudly so it cannot route around as a count.
           const lines = [
-            '⚠️  resolution gap — gating rule produced no next action for these occurrences (Spec 36 R6):',
+            '⚠️  resolution gap — rule produced no next action for these occurrences (Spec 45 R1):',
             ...resolutionGaps.map(
               (g) => `  - ${g.rule} @ ${g.file}${g.line ? `:${g.line}` : ''}`
             ),
@@ -634,31 +612,6 @@ program
         }
 
         if (blocking.length > 0) {
-          process.exit(2);
-        }
-
-        // Spec 36 R7 — an unnecessary or reasonless suppression is itself an
-        // error. It is reported loudly and fails the write, exactly like an
-        // unused `@ts-expect-error`. A suppression that outlives its finding is
-        // a baseline entry with better branding unless it errors here.
-        const suppressions = (result.metadata as any)?.suppressions as
-          | { total: number; suppressed: number; unnecessary: any[]; reasonless: any[] }
-          | undefined;
-        if (suppressions && (suppressions.unnecessary.length > 0 || suppressions.reasonless.length > 0)) {
-          const lines: string[] = [];
-          if (suppressions.reasonless.length > 0) {
-            lines.push('❌ suppression missing a required reason (Spec 36 R7):');
-            for (const d of suppressions.reasonless) {
-              lines.push(`  - ${d.rule} @ ${d.file}:${d.line}`);
-            }
-          }
-          if (suppressions.unnecessary.length > 0) {
-            lines.push('❌ unnecessary suppression — the finding no longer fires (Spec 36 R7):');
-            for (const d of suppressions.unnecessary) {
-              lines.push(`  - ${d.rule} @ ${d.file}:${d.line}`);
-            }
-          }
-          process.stderr.write(lines.join('\n') + '\n');
           process.exit(2);
         }
       }
@@ -680,6 +633,45 @@ program
       process.exit(1);
     }
   });
+
+// Spec 45 A2 — counts are emitted where useful (per analyzer, per rule, per
+// severity), on agent-facing surfaces as well as human ones. This reverts Spec
+// 36 R3's "no bare counts": an agent now sees the shape of what fired instead
+// of a single aggregate it could route around. The `before/after` gate figure
+// is Spec 45 R1's "report count before/after".
+function summarizeFindings(
+  violations: Array<{ severity?: string; analyzer?: string; rule?: string; type?: string }>
+): { bySeverity: Map<string, number>; byAnalyzer: Map<string, number>; byRule: Map<string, number> } {
+  const bySeverity = new Map<string, number>();
+  const byAnalyzer = new Map<string, number>();
+  const byRule = new Map<string, number>();
+  for (const v of violations) {
+    const severity = v.severity ?? 'unknown';
+    bySeverity.set(severity, (bySeverity.get(severity) ?? 0) + 1);
+    const analyzer = v.analyzer ?? 'unknown';
+    byAnalyzer.set(analyzer, (byAnalyzer.get(analyzer) ?? 0) + 1);
+    const rule = v.rule || v.type || 'unknown';
+    byRule.set(rule, (byRule.get(rule) ?? 0) + 1);
+  }
+  return { bySeverity, byAnalyzer, byRule };
+}
+
+function groupedCounts(map: Map<string, number>, sep = ', '): string {
+  return [...map.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([k, n]) => `${k} ${n}`)
+    .join(sep);
+}
+
+function printCountSummary(
+  violations: Array<{ severity?: string; analyzer?: string; rule?: string; type?: string }>
+): void {
+  const { bySeverity, byAnalyzer, byRule } = summarizeFindings(violations);
+  console.log(chalk.gray('── Findings ────────────────────────────────────'));
+  console.log(`${violations.length} total · ${groupedCounts(bySeverity, ' · ')}`);
+  console.log(`by analyzer: ${groupedCounts(byAnalyzer)}`);
+  console.log(`by rule: ${groupedCounts(byRule)}`);
+}
 
 // Self-audit gate (Spec 33 Item 15 + Spec 44 remediation). Runs the full
 // analyzer pipeline over the tool's own production source and asserts zero
@@ -800,8 +792,9 @@ program
         });
         process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
       } else if (blocking.length > 0) {
-        // Spec 36 R3: emit findings only, never an aggregate total.
-        console.log(chalk.red(`\n${blocking.length} self-audit blocking finding(s):`));
+        // Spec 45 A2 — counts plus findings (per analyzer/rule/severity).
+        console.log(chalk.red('\nSelf-audit blocking findings:'));
+        printCountSummary(blocking);
         for (const v of blocking) {
           const icon =
             v.severity === 'critical' ? '🔴' :
@@ -3251,23 +3244,21 @@ program
             line: v.line ?? v.start?.line,
             message: v.message,
             resolution: v.resolution ?? null,
-            suppressed: (v as any).suppressed === true,
-            ...((v as any).suppressionReason && { suppressionReason: (v as any).suppressionReason }),
           };
         });
         process.stdout.write(JSON.stringify(out, null, 2) + '\n');
         return;
       }
 
-      // Spec 36 R3 — findings, never a total. Each line is a file:line finding;
-      // there is no count anywhere in this output to route around.
+      // Spec 45 A2 — counts plus findings (per analyzer/rule/severity).
+      printCountSummary(sorted);
+      console.log('');
       for (const v of sorted) {
         const icon =
           v.severity === 'critical' ? '🔴' :
           v.severity === 'warning' ? '🟡' : '🔵';
-        const suppressed = (v as any).suppressed ? chalk.dim(' [suppressed]') : '';
         console.log(
-          `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.rule || v.severity}] ${v.message}${suppressed}`
+          `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.rule || v.severity}] ${v.message}`
         );
       }
     } catch (error) {

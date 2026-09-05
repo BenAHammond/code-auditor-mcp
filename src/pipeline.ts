@@ -780,8 +780,9 @@ export async function runPipeline(
   const dataAccessConfig = (config.config ?? {})['data-access'] as Record<string, unknown> | undefined;
   const schemaReducerFacts = combinedFacts['schema'] as Record<string, unknown> | undefined;
   const ddlColumns = schemaReducerFacts?.ddlColumns as string[] | undefined;
-  // Spec 42 R2 — stylesheet sources the indexer could not read. Whole-run scope:
-  // if any exist, styles/undefined-class reports notApplicable naming them.
+  // Spec 45 R5 — stylesheet sources the indexer could not read. These do NOT
+  // silence styles/undefined-class; they become reportable context attached to
+  // each undefined-class finding below.
   let unreadStyleSources: UnreadStyleSourceInfo[] = [];
   if (indexHandle) {
     try {
@@ -795,7 +796,7 @@ export async function runPipeline(
   }
   const ruleApplicability = new Map<string, RuleApplicability>();
   for (const ruleId of Object.keys(RULE_REGISTRY)) {
-    const app = evaluateRuleApplicability(ruleId, dataAccessConfig, ddlColumns, unreadStyleSources);
+    const app = evaluateRuleApplicability(ruleId, dataAccessConfig, ddlColumns);
     if (app) ruleApplicability.set(ruleId, app);
   }
   for (const [ruleId, app] of ruleApplicability) {
@@ -804,6 +805,26 @@ export async function runPipeline(
     const result = analyzerResults[entry.analyzer];
     if (result?.violations) {
       result.violations = result.violations.filter((v) => !violationMatchesRule(v, ruleId, entry.field));
+    }
+  }
+
+  // Spec 45 R5 — undefined-class reports, does not go silent, when stylesheets
+  // were unread. Each finding carries the unread-source list as
+  // `details.incompleteDefinitions` so "undefined" reads as "not defined in any
+  // *read* stylesheet", while the finding itself still fires and blocks.
+  if (unreadStyleSources.length > 0) {
+    const entry = RULE_REGISTRY['styles/undefined-class'];
+    const result = entry ? analyzerResults[entry.analyzer] : undefined;
+    const context = unreadStyleSources.map((s) =>
+      s.reason ? `${s.filePath} (${s.reason})` : s.filePath
+    );
+    if (result?.violations) {
+      for (const v of result.violations) {
+        if (!violationMatchesRule(v, 'styles/undefined-class', entry!.field)) continue;
+        const existing =
+          typeof v.details === 'object' && v.details !== null ? v.details : {};
+        v.details = { ...existing, incompleteDefinitions: context };
+      }
     }
   }
 

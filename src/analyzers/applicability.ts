@@ -37,9 +37,11 @@ export interface RuleApplicability {
 const DEFAULT_ORG_FILTER_COLUMNS = ['org_id', 'tenant_id', 'organization_id', 'workspace_id'];
 
 /**
- * A stylesheet source the style indexer could not read (Spec 42 R2). When any
- * exist, styles/undefined-class must not assert a class is undefined because it
- * may be defined in one of these files.
+ * A stylesheet source the style indexer could not read (Spec 45 R5). When any
+ * exist, `styles/undefined-class` still fires — the class has no matching
+ * definition in any *read* stylesheet — but each finding carries this list as
+ * `details.incompleteDefinitions` so "undefined" reads as "not defined in any
+ * read stylesheet", not as a definitive assertion about the whole project.
  */
 export interface UnreadStyleSourceInfo {
   filePath: string;
@@ -57,7 +59,6 @@ export interface UnreadStyleSourceInfo {
  * @param ruleId The registry rule id.
  * @param dataAccessConfig The namespaced data-access config (may be undefined).
  * @param ddlColumns Aggregated DDL-declared columns from the schema reducer.
- * @param unreadStyleSources Stylesheets the indexer could not read (Spec 42 R2).
  * @returns The rule's applicability verdict, or null when the rule declares no
  * applicability predicate and runs unconditionally.
  */
@@ -65,11 +66,7 @@ export function evaluateRuleApplicability(
   ruleId: string,
   dataAccessConfig: Record<string, unknown> | undefined,
   ddlColumns: string[] | undefined,
-  unreadStyleSources?: UnreadStyleSourceInfo[],
 ): RuleApplicability | null {
-  if (ruleId === 'styles/undefined-class') {
-    return evaluateUndefinedClassApplicability(unreadStyleSources);
-  }
   if (ruleId === 'missing-org-filter') {
     return evaluateMissingOrgFilterApplicability(dataAccessConfig, ddlColumns);
   }
@@ -110,30 +107,6 @@ const CANNOT_FIRE_RULES: ReadonlyMap<string, string> = new Map([
   ['constraint-mismatch', 'cannot fire — extractSchemas never assigns `constraints` on fields, the input this rule reads'],
   ['version-mismatch', 'cannot fire — extractSchemas never assigns `version` on schemas, the input this rule reads'],
 ]);
-
-/**
- * Spec 42 R2 — whole-run scope: if any stylesheet went unread, a class this
- * detector would otherwise flag undefined may in fact be defined there. Report
- * notApplicable naming what was unread rather than assert undefined.
- */
-function evaluateUndefinedClassApplicability(
-  unreadStyleSources?: UnreadStyleSourceInfo[],
-): RuleApplicability | null {
-  if (unreadStyleSources && unreadStyleSources.length > 0) {
-    // Surface the per-source reason (which encodes the offending extension for
-    // the Spec 43 R5 fallthrough, or the unsupported dialect for Spec 42 R2)
-    // rather than only the file path, so a "loud" fallthrough stays loud end to
-    // end instead of being collapsed back to a bare path list.
-    const names = unreadStyleSources
-      .map((s) => (s.reason ? `${s.filePath} (${s.reason})` : s.filePath))
-      .join(', ');
-    return {
-      applicable: false,
-      reason: `stylesheets were not read: ${names}`,
-    };
-  }
-  return null;
-}
 
 /**
  * Spec 39/42 R3 — `missing-org-filter` is applicable when the project declares a

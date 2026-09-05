@@ -5,7 +5,7 @@ description: Audit code quality, search the codebase semantically, enforce invar
 
 # Code Auditor Skill
 
-> **Version 3.4.8** • Run `code-audit --version` to check your installed version.
+> **Version 3.5.0** • Run `code-audit --version` to check your installed version.
 > If versions differ, the CLI is authoritative — use `code-audit <command> --help` to see what your install actually supports.
 
 You have the `code-audit` CLI available. It indexes every function, component, and struct in the codebase for semantic search and invariant enforcement. Use these commands instead of raw grep/find whenever possible.
@@ -171,7 +171,7 @@ Use `--format dot` to generate a directed call-graph diagram (Graphviz DOT forma
 
 Terminal output shows rank, function name, file path, PageRank percentile, betweenness percentile, complexity percentile, untested status, and composite risk score. JSON output fields: `functionName`, `filePath`, `pageRankPercentile`, `betweennessPercentile`, `complexityPercentile`, `untested`, `riskScore`.
 
-> **Release checklist**: When bumping the version on a release, update the version stamp on line 8 of all three canonical SKILL.md copies. `npm run verify:close` gates on test + integration + dist verification — the tag cannot move without all three green.
+> **Release checklist**: The version banner above is stamped by `npm run build:skills` from `package.json` (the single source of truth) — do not hand-edit it. Bump the version in `package.json`, run the build, and the skill copies it. `npm run verify:close` gates on test + integration + dist verification — the tag cannot move without all three green.
 
 ## Interpreting hook feedback
 

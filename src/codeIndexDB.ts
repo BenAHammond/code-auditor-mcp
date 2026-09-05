@@ -758,10 +758,10 @@ export class CodeIndexDB {
       }
     }
 
-    // Migration 10 → 11: unread stylesheet sources (Spec 42 R2).
+    // Migration 10 → 11: unread stylesheet sources (Spec 45 R5).
     // Records stylesheets whose dialect the style indexer cannot read, so
-    // styles/undefined-class can report notApplicable instead of asserting a
-    // class is undefined when it may live in one of these files.
+    // styles/undefined-class findings can carry them as incomplete-definition
+    // context instead of asserting a class is undefined against the whole project.
     if (currentVersion < 11) {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS style_unread_sources (
@@ -1131,9 +1131,9 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_style_class_usage_file   ON style_class_usage(file_path);
       CREATE INDEX IF NOT EXISTS idx_style_class_usage_unres  ON style_class_usage(unresolvable);
 
-      -- Spec 42 R2: Stylesheet sources the style indexer could not read.
-      -- When any rows exist, styles/undefined-class reports notApplicable
-      -- instead of asserting a class is undefined (it may live in one of these).
+      -- Spec 45 R5: Stylesheet sources the style indexer could not read.
+      -- When any rows exist, styles/undefined-class findings carry them as
+      -- incomplete-definition context instead of going silent.
       CREATE TABLE IF NOT EXISTS style_unread_sources (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         file_path  TEXT NOT NULL UNIQUE,

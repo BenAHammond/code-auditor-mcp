@@ -73,8 +73,8 @@ export function extractDeclarations(
       // Not a style-bearing extension. Known source (`.css`/`.scss` — handled by
       // the AST pipeline — plus JSON/Go/SQL/TOML/Prisma owned by other analyzers)
       // is skipped silently; any *other* extension is unhandled — record it so
-      // undefined-class surfaces the gap (whole-run notApplicable) instead of
-      // silently dropping the file type. This is the loud backstop for the next
+      // undefined-class findings carry it as incomplete-definition context instead
+      // of silently dropping the file type. This is the loud backstop for the next
       // dialect that isn't added to the known set.
       if (unreadSources && ext && !KNOWN_SOURCE_EXTENSIONS.includes(ext)) {
         unreadSources.push({ filePath, reason: `unsupported source extension: ${ext}` });

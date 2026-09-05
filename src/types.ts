@@ -126,21 +126,12 @@ export interface Violation {
   /** Suggested fix — either a string description or a structured {oldText, newText} patch. */
   fix?: string | { oldText: string; newText: string };
   /**
-   * Spec 37 R1 — structured next action for gating findings. Present on every
-   * gating finding; absent on non-gating findings.
+   * Spec 37 R1 — structured next action for a finding the rule can make
+   * actionable. Present when the rule is `resolvable` and computed a next step;
+   * absent otherwise. Every rule gates (Spec 45 R1), but a rule that cannot
+   * name a resolution still blocks and records the gap.
    */
   resolution?: Resolution;
-  /**
-   * Spec 36 R7 — true when an inline `code-audit-disable-*` directive with a
-   * required reason suppressed this finding. Suppressed findings never block
-   * (the directive is the block-removal mechanism); they still appear in
-   * reports with the reason attached.
-   */
-  suppressed?: boolean;
-  /** The required reason from the directive that suppressed this finding. */
-  suppressionReason?: string;
-  /** Which directive form (`disable-line` / `disable-next-line`) suppressed it. */
-  suppressionKind?: 'disable-line' | 'disable-next-line';
 }
 
 /**
@@ -539,6 +530,12 @@ export interface AuditOptions {
   };
   /** Per-rule severity overrides applied globally (before per-file path profile caps). */
   severityOverrides?: Record<string, Severity>;
+  /**
+   * Spec 45 R2 — the severities that participate in the blocking gate. Defaults
+   * to `['critical', 'warning']`. `suggestion` may be added to make every
+   * finding block; `off` is never a blocking severity.
+   */
+  gateSeverities?: Severity[];
 }
 
 export interface ProgressCallback {
@@ -615,15 +612,6 @@ export interface AuditResult {
      *  buildCoverageReport to promote zero-violation rules from `unassessed` to
      *  `clean` (input present) or `notApplicable` (all inputs absent). */
     inputPresence?: InputPresence;
-    /** Spec 36 R7 — suppression triage: how many directives, how many findings
-     *  they suppressed, and which directives were unnecessary or reasonless
-     *  (both are errors). */
-    suppressions?: {
-      total: number;
-      suppressed: number;
-      unnecessary: Array<{ file: string; line: number; rule: string }>;
-      reasonless: Array<{ file: string; line: number; rule: string }>;
-    };
     /** Spec 44: per-file accounting (analyzed vs. dropped, with reasons). */
     fileAccounting?: FileAccountingSummary;
   };
@@ -764,6 +752,12 @@ export interface AuditConfig {
   builtin?: boolean;
   /** Per-rule severity overrides applied globally (before per-file path profile caps). */
   severityOverrides?: Record<string, Severity>;
+  /**
+   * Spec 45 R2 — the severities that participate in the blocking gate. Defaults
+   * to `['critical', 'warning']`; `suggestion` may be added to make every
+   * finding block. `off` is never a blocking severity.
+   */
+  gateSeverities?: Severity[];
   /** Spec 13 — Churn extraction config. */
   churn?: ChurnConfig;
   /** Spec 13 — Diverging-clone detection config. */
