@@ -24,10 +24,17 @@ import { RuntimeManager } from './languages/RuntimeManager.js';
 import { LanguageOrchestrator, PolyglotAnalysisOptions } from './languages/LanguageOrchestrator.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { makeVisitorStatus } from './pipeline.js';
+import { DEFAULT_EXCLUDED_ANY_DEPTH_DIRS } from './utils/fileDiscovery.js';
 
 /**
  * True when `target` (a file or directory) is, or contains, a file with the
  * given extension. Walked recursively for directories.
+ *
+ * The walk skips the same any-depth excluded dirs discovery skips
+ * (`node_modules`, `.git`, `dist`, …). Without that, a single `.go` file
+ * buried in a dependency's `node_modules` (e.g. `flatted`'s golang port) would
+ * route an otherwise pure-TS project through the Go subprocess — which drops
+ * every non-Go analyzer and collapses the audit to a fraction of its findings.
  */
 export async function hasFilesWithExtension(target: string, ext: string): Promise<boolean> {
   try {
@@ -40,6 +47,7 @@ export async function hasFilesWithExtension(target: string, ext: string): Promis
       if (entry.isFile()) {
         if (path.extname(entry.name).toLowerCase() === ext) return true;
       } else if (entry.isDirectory()) {
+        if (DEFAULT_EXCLUDED_ANY_DEPTH_DIRS.has(entry.name)) continue;
         if (await hasFilesWithExtension(path.join(target, entry.name), ext)) return true;
       }
     }
