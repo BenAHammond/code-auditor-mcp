@@ -255,21 +255,19 @@ function checkNumericRangeField(schema: any, ctx: ValidationCtx, path: string): 
 }
 
 function identifySchemaFiles(files: string[], config: SchemaAnalyzerConfig): string[] {
-  if (!config.schemaFilePatterns) return [];
-  return files.filter(file => {
-    const fileName = file.split('/').pop() || '';
-    return config.schemaFilePatterns!.some(pattern => {
-      const regex = new RegExp(pattern.replace('*', '.*'));
-      return regex.test(fileName);
-    });
-  });
+  return filterByFilePatterns(files, config.schemaFilePatterns);
 }
 
 function identifyDataFiles(files: string[], config: SchemaAnalyzerConfig): string[] {
-  if (!config.dataFilePatterns) return [];
+  return filterByFilePatterns(files, config.dataFilePatterns);
+}
+
+/** Keep files whose basename matches any of the given `*`-style patterns. */
+function filterByFilePatterns(files: string[], patterns: string[] | undefined): string[] {
+  if (!patterns) return [];
   return files.filter(file => {
     const fileName = file.split('/').pop() || '';
-    return config.dataFilePatterns!.some(pattern => {
+    return patterns.some(pattern => {
       const regex = new RegExp(pattern.replace('*', '.*'));
       return regex.test(fileName);
     });

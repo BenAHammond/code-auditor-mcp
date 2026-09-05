@@ -192,24 +192,26 @@ function matchesValidatorPackage(specifier: string): boolean {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Extract all DB-provenanced identifiers from a file's import statements.
- *
- * An import like `import Database from 'better-sqlite3'` produces
- * `Database` as DB-provenanced with reason "package".
- * @param adapter
+ * Extract the identifiers imported from any package matched by `matchesPackage`.
+ * An import like `import Database from 'better-sqlite3'` produces `Database` as
+ * provenanced with reason "package". Shared by the DB and validator variants,
+ * which differ only in the package predicate.
  * @param ast
+ * @param adapter
+ * @param matchesPackage
  * @returns
  */
-export function extractDBProvenancedImports(
+function extractProvenancedImports(
   ast: AST,
   adapter: LanguageAdapter,
+  matchesPackage: (specifier: string) => boolean,
 ): Map<string, ProvenanceEvidence> {
   const seedMap = new Map<string, ProvenanceEvidence>();
   const imports = adapter.extractImports(ast);
 
   for (const imp of imports) {
     const specifier = imp.source;
-    if (!matchesDBPackage(specifier)) continue;
+    if (!matchesPackage(specifier)) continue;
 
     for (const spec of imp.specifiers) {
       const localName = spec.alias ?? spec.name;
@@ -235,43 +237,31 @@ export function extractDBProvenancedImports(
 }
 
 /**
+ * Extract all DB-provenanced identifiers from a file's import statements.
+ *
+ * @param ast the parsed source file
+ * @param adapter the language adapter providing import extraction
+ * @returns a map of local identifier → DB-provenance evidence
+ */
+export function extractDBProvenancedImports(
+  ast: AST,
+  adapter: LanguageAdapter,
+): Map<string, ProvenanceEvidence> {
+  return extractProvenancedImports(ast, adapter, matchesDBPackage);
+}
+
+/**
  * Extract all validator-provenanced identifiers from a file's imports.
- * Same pattern as extractDBProvenancedImports but for validator packages.
- * @param adapter
- * @param ast
- * @returns
+ *
+ * @param ast the parsed source file
+ * @param adapter the language adapter providing import extraction
+ * @returns a map of local identifier → validator-provenance evidence
  */
 export function extractValidatorProvenancedImports(
   ast: AST,
   adapter: LanguageAdapter,
 ): Map<string, ProvenanceEvidence> {
-  const seedMap = new Map<string, ProvenanceEvidence>();
-  const imports = adapter.extractImports(ast);
-
-  for (const imp of imports) {
-    const specifier = imp.source;
-    if (!matchesValidatorPackage(specifier)) continue;
-
-    for (const spec of imp.specifiers) {
-      const localName = spec.alias ?? spec.name;
-      const label = spec.isDefault
-        ? `default import from ${specifier}`
-        : spec.isNamespace
-          ? `namespace import from ${specifier}`
-          : `named import from ${specifier}`;
-
-      if (!seedMap.has(localName)) {
-        seedMap.set(localName, {
-          identifier: localName,
-          reason: 'package',
-          source: label,
-          chain: [],
-        });
-      }
-    }
-  }
-
-  return seedMap;
+  return extractProvenancedImports(ast, adapter, matchesValidatorPackage);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -550,9 +540,8 @@ function tryPropagateFromExpression(
     ]);
     if (constructorNode) {
       const name = extractIdentifierName(constructorNode, adapter, sourceCode);
-      if (name && provenanceMap.has(name)) {
-        return provenanceMap.get(name)!;
-      }
+      const evidence = lookupEvidence(provenanceMap, name);
+      if (evidence) return evidence;
     }
   }
 
@@ -566,19 +555,30 @@ function tryPropagateFromExpression(
   // ── Simple identifier reference (for destructuring sources) ──
   if (node.type === 'identifier') {
     const name = adapter.getNodeText(node, sourceCode);
-    if (name && provenanceMap.has(name)) {
-      return provenanceMap.get(name)!;
-    }
+    const evidence = lookupEvidence(provenanceMap, name);
+    if (evidence) return evidence;
   }
 
   // ── Member expression on DB-provenanced source (for non-call uses) ──
   if (node.type === 'member_expression') {
     const receiver = getMemberExpressionReceiver(node, adapter, sourceCode);
-    if (receiver && provenanceMap.has(receiver)) {
-      return provenanceMap.get(receiver)!;
-    }
+    const evidence = lookupEvidence(provenanceMap, receiver);
+    if (evidence) return evidence;
   }
 
+  return null;
+}
+
+/**
+ * Look up a provenanced identifier's evidence, or null when the name is empty
+ * or unprovenanced. Centralizes the repeated "if name is in the map, return it"
+ * pattern shared by every rule-1/2/3 receiver check.
+ */
+function lookupEvidence(
+  provenanceMap: Map<string, ProvenanceEvidence>,
+  name: string | null,
+): ProvenanceEvidence | null {
+  if (name && provenanceMap.has(name)) return provenanceMap.get(name)!;
   return null;
 }
 
@@ -599,9 +599,8 @@ function tryCallProvenance(
   // Case: simple identifier call — drizzle(...)
   if (calleeNode.type === 'identifier') {
     const name = adapter.getNodeText(calleeNode, sourceCode);
-    if (name && provenanceMap.has(name)) {
-      return provenanceMap.get(name)!;
-    }
+    const evidence = lookupEvidence(provenanceMap, name);
+    if (evidence) return evidence;
   }
 
   // Case: member expression — db.prepare(...)
@@ -609,9 +608,8 @@ function tryCallProvenance(
     const receiver = getMemberExpressionReceiver(
       calleeNode, adapter, sourceCode,
     );
-    if (receiver && provenanceMap.has(receiver)) {
-      return provenanceMap.get(receiver)!;
-    }
+    const evidence = lookupEvidence(provenanceMap, receiver);
+    if (evidence) return evidence;
   }
 
   return null;
@@ -655,14 +653,11 @@ function splitVariableDeclarator(
       ) {
         nameNode = child;
       }
-    } else if (pastEquals && !valueNode) {
-      // First non-syntax child after equals is the value
-      if (child.type !== 'type_annotation') {
-        valueNode = child;
-      }
-    } else if (!pastEquals && nameNode && !valueNode) {
-      // No '=' child in this grammar (e.g., TypeScript tree-sitter);
-      // the expression AFTER the name is the value.
+    } else if ((pastEquals || nameNode) && !valueNode) {
+      // First non-syntax child after `=` or after the name is the value. Both
+      // grammars collapse here: with an explicit `=` child (`pastEquals`) the
+      // value follows it; without one (e.g. TypeScript tree-sitter), the
+      // expression after the name is the value.
       if (child.type !== 'type_annotation') {
         valueNode = child;
       }
@@ -756,6 +751,32 @@ function collectChildren(
 }
 
 /**
+ * Resolve a member/selector chain's object child to its receiver text: a bare
+ * identifier or nested member/selector returns its source text (so
+ * `env.DB.prepare` yields "env.DB", not "env"); a `this`/`super` child returns
+ * `thisSuperResult` (null for the receiver walker, 'this' for the root walker);
+ * any other child returns null.
+ */
+function resolveReceiverText(
+  firstChild: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  thisSuperResult: string | null,
+): string | null {
+  if (
+    firstChild.type === 'identifier' ||
+    firstChild.type === 'member_expression' ||
+    firstChild.type === 'selector_expression'
+  ) {
+    return adapter.getNodeText(firstChild, sourceCode);
+  }
+  if (firstChild.type === 'this' || firstChild.type === 'super') {
+    return thisSuperResult;
+  }
+  return null;
+}
+
+/**
  * Extract the "receiver" identifier from a member expression chain.
  * For `db.prepare` → "db"
  * For `this.db.prepare` → "db" (walk to the deepest non-member identifier)
@@ -782,26 +803,7 @@ function getMemberExpressionReceiver(
       firstChild.type !== '.' &&
       firstChild.type !== 'property_identifier' && firstChild.type !== 'field_identifier'
     ) {
-      if (
-        firstChild.type === 'member_expression' ||
-        firstChild.type === 'selector_expression'
-      ) {
-        // Compound receiver: env.DB.prepare → receiver is "env.DB", not "env".
-        // Return the full text of the inner member expression so fallback
-        // entries like dbBindingNames: ['env.DB'] match the provenance check.
-        return adapter.getNodeText(firstChild, sourceCode);
-      }
-      if (firstChild.type === 'identifier') {
-        return adapter.getNodeText(firstChild, sourceCode);
-      }
-      // e.g., this.db → member_expression(this, db)
-      if (firstChild.type === 'this' || firstChild.type === 'super') {
-        // This is a member expression on `this` — check the property side
-        // We need to check if `this.X` is provenanced... but `this` itself isn't.
-        // For propagation, this means looking at the full chain.
-        // For now, return null — this is handled by the caller
-        return null;
-      }
+      return resolveReceiverText(firstChild, adapter, sourceCode, null);
     }
     break;
   }
@@ -1200,38 +1202,29 @@ function findRootReceiver(
     const firstChild = children[0];
     if (!firstChild) break;
 
-    if (firstChild.type === 'identifier') {
-      return adapter.getNodeText(firstChild, sourceCode);
-    }
-    if (firstChild.type === 'member_expression' || firstChild.type === 'selector_expression') {
-      // Compound receiver: env.DB.prepare → root is "env.DB", not "env".
-      // Returning the full text of the inner member expression ensures
-      // fallback entries match (e.g. dbBindingNames: ['env.DB']).
-      return adapter.getNodeText(firstChild, sourceCode);
-    }
-    // this.db.prepare → root is a chain on `this`, check `this.xxx`
-    if (firstChild.type === 'this' || firstChild.type === 'super') {
-      return 'this';
-    }
-    break;
+    return resolveReceiverText(firstChild, adapter, sourceCode, 'this');
   }
 
   return null;
 }
 
 /**
- * Check if a call through a member expression uses a DB method
- * (exec, prepare, all, etc.) or an ORM method (find, insert, etc.).
+ * Walk a member/selector-expression chain, returning true when any property in
+ * the chain is a DB or ORM method. Shared by isDBMethodCall and
+ * isDBMethodOnThis, which differ only in how they read a node's children.
  */
-function isDBMethodCall(node: ASTNode, query: DBProvenanceQuery): boolean {
+function dbMethodInMemberChain(
+  node: ASTNode,
+  query: DBProvenanceQuery,
+  getChildren: (n: ASTNode) => ASTNode[],
+): boolean {
   const { adapter, sourceCode, methods } = query;
-  // Walk the member expression chain and check each property
   let current: ASTNode = node;
   while (
     current.type === 'member_expression' ||
     current.type === 'selector_expression'
   ) {
-    const children = current.children ?? [];
+    const children = getChildren(current);
     // The property is typically the second or third child
     for (const child of children) {
       if (
@@ -1260,41 +1253,19 @@ function isDBMethodCall(node: ASTNode, query: DBProvenanceQuery): boolean {
 }
 
 /**
- * For `this.xxx.method()` calls — check if the method chain suggests
- * DB access. Used when the receiver is `this` (not directly DB-provenanced).
+ * Check if a call through a member expression uses a DB method
+ * (exec, prepare, all, etc.) or an ORM method (find, insert, etc.).
+ */
+function isDBMethodCall(node: ASTNode, query: DBProvenanceQuery): boolean {
+  return dbMethodInMemberChain(node, query, (n) => n.children ?? []);
+}
+
+/**
+ * For `this.xxx.method()` calls — check if the method chain suggests DB access.
+ * Used when the receiver is `this` (not directly DB-provenanced).
  */
 function isDBMethodOnThis(node: ASTNode, query: DBProvenanceQuery): boolean {
-  const { adapter, sourceCode, methods } = query;
-  // Walk the chain: this.db.prepare → check if any property matches DB methods
-  let current: ASTNode = node;
-  while (
-    current.type === 'member_expression' ||
-    current.type === 'selector_expression'
-  ) {
-    const children = adapter.getChildren(current);
-    for (const child of children) {
-      if (
-        child.type === 'property_identifier' ||
-        child.type === 'field_identifier'
-      ) {
-        const propName = adapter.getNodeText(child, sourceCode);
-        const lower = propName.toLowerCase();
-        if (methods.has(lower) || ORM_METHODS.has(lower)) {
-          return true;
-        }
-      }
-    }
-    const firstChild = children[0];
-    if (
-      firstChild?.type === 'member_expression' ||
-      firstChild?.type === 'selector_expression'
-    ) {
-      current = firstChild;
-    } else {
-      break;
-    }
-  }
-  return false;
+  return dbMethodInMemberChain(node, query, (n) => query.adapter.getChildren(n));
 }
 
 /**

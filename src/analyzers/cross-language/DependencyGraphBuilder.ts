@@ -665,68 +665,13 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
   }> {
     const issues: DependencyIssue[] = [];
     const suggestions: DependencySuggestion[] = [];
-
-    // Resolve node ids to human-readable names for the rendered descriptions.
+    const sink = { issues, suggestions };
     const idToName = new Map(graph.nodes.map(n => [n.id, n.name] as const));
-    const label = (ids: string[]): string[] => ids.map(id => idToName.get(id) ?? id);
 
-    // Cycle paths are rendered node-by-node so a consumer can see the loop, not
-    // just a count.
-    this.recordCheck({ issues, suggestions }, graph.cycles.length, graph.cycles.flatMap(c => c.nodes), {
-      issueType: 'circular-dependency', severity: 'warning', impact: 'high',
-      issueDesc: () =>
-        graph.cycles.map(c => c.nodes.map(id => idToName.get(id) ?? id).join(' → ')).join('; '),
-      suggestionType: 'break-cycles', priority: 'high',
-      suggestionDesc: 'Break circular dependencies by introducing interfaces or dependency injection',
-      implementation: 'Consider using dependency inversion principle to break cycles',
-    }, {
-      cycles: graph.cycles.map(c => ({ nodes: c.nodes, path: c.nodes.map(id => idToName.get(id) ?? id).join(' → ') })),
-    });
-
-    const clusters = this.findTightlyCoupledClusters(graph);
-    this.recordCheck({ issues, suggestions }, clusters.length, clusters.flatMap(c => c.nodes), {
-      issueType: 'tight-coupling', severity: 'warning', impact: 'medium',
-      issueDesc: () =>
-        clusters.map(c => `${label(c.nodes).join(', ')} (${(c.coupling * 100).toFixed(0)}%)`).join('; '),
-      suggestionType: 'reduce-coupling', priority: 'medium',
-      suggestionDesc: 'Reduce coupling between modules using interfaces and abstractions',
-      implementation: 'Extract common interfaces and use dependency injection',
-    }, {
-      clusters: clusters.map(c => ({ nodes: c.nodes, coupling: c.coupling })),
-    });
-
-    const hubNodes = this.findHubNodes(graph);
-    this.recordCheck({ issues, suggestions }, hubNodes.length, hubNodes.map(h => h.node.id), {
-      issueType: 'hub-nodes', severity: 'warning', impact: 'medium',
-      issueDesc: () =>
-        hubNodes.map(h => `${h.node.name} (${h.outDegree})`).join(', '),
-      suggestionType: 'split-responsibilities', priority: 'medium',
-      suggestionDesc: 'Split large modules to reduce their dependency burden',
-      implementation: 'Apply Single Responsibility Principle to break down large modules',
-    }, {
-      hubs: hubNodes.map(h => ({ id: h.node.id, name: h.node.name, outDegree: h.outDegree })),
-    });
-
-    // Bare names referenced as callees anywhere in the corpus (resolved or
-    // not). Used by orphan detection to distinguish "no one calls this" from
-    // "the resolver couldn't disambiguate a call to this name".
-    const referencedNames = new Set<string>();
-    for (const e of this.entities) {
-      for (const callee of (e.metadata?.callees as string[] | undefined) ?? []) {
-        referencedNames.add((callee.split('.').pop() ?? callee).toLowerCase());
-      }
-    }
-
-    const orphanedNodes = this.findOrphanedNodes(graph, referencedNames);
-    this.recordCheck({ issues, suggestions }, orphanedNodes.length, orphanedNodes.map(n => n.id), {
-      issueType: 'orphaned-nodes', severity: 'suggestion', impact: 'low',
-      issueDesc: () => orphanedNodes.map(n => n.name).join(', '),
-      suggestionType: 'review-orphans', priority: 'low',
-      suggestionDesc: 'Review orphaned nodes to ensure they are still needed',
-      implementation: 'Consider removing unused code or integrating orphaned modules',
-    }, {
-      orphans: orphanedNodes.map(n => ({ id: n.id, name: n.name })),
-    });
+    this.recordCycleCheck(sink, graph, idToName);
+    this.recordClusterCheck(sink, graph, idToName);
+    this.recordHubCheck(sink, graph);
+    this.recordOrphanCheck(sink, graph);
 
     return {
       healthScore: this.calculateHealthScore(graph, issues),
@@ -735,19 +680,91 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     };
   }
 
+  /** Record the circular-dependency check (cycles rendered node-by-node). */
+  private recordCycleCheck(sink: CheckSink, graph: DependencyGraph, idToName: Map<string, string>): void {
+    this.recordCheck(sink, graph.cycles.length, graph.cycles.flatMap(c => c.nodes), {
+      issueType: 'circular-dependency', severity: 'warning', impact: 'high',
+      issueDesc: () =>
+        graph.cycles.map(c => c.nodes.map(id => idToName.get(id) ?? id).join(' → ')).join('; '),
+      suggestionType: 'break-cycles', priority: 'high',
+      suggestionDesc: 'Break circular dependencies by introducing interfaces or dependency injection',
+      implementation: 'Consider using dependency inversion principle to break cycles',
+      details: {
+        cycles: graph.cycles.map(c => ({ nodes: c.nodes, path: c.nodes.map(id => idToName.get(id) ?? id).join(' → ') })),
+      },
+    });
+  }
+
+  /** Record the tight-coupling check (clusters rendered with their coupling %). */
+  private recordClusterCheck(sink: CheckSink, graph: DependencyGraph, idToName: Map<string, string>): void {
+    const label = (ids: string[]): string[] => ids.map(id => idToName.get(id) ?? id);
+    const clusters = this.findTightlyCoupledClusters(graph);
+    this.recordCheck(sink, clusters.length, clusters.flatMap(c => c.nodes), {
+      issueType: 'tight-coupling', severity: 'warning', impact: 'medium',
+      issueDesc: () =>
+        clusters.map(c => `${label(c.nodes).join(', ')} (${(c.coupling * 100).toFixed(0)}%)`).join('; '),
+      suggestionType: 'reduce-coupling', priority: 'medium',
+      suggestionDesc: 'Reduce coupling between modules using interfaces and abstractions',
+      implementation: 'Extract common interfaces and use dependency injection',
+      details: {
+        clusters: clusters.map(c => ({ nodes: c.nodes, coupling: c.coupling })),
+      },
+    });
+  }
+
+  /** Record the hub-node check. */
+  private recordHubCheck(sink: CheckSink, graph: DependencyGraph): void {
+    const hubNodes = this.findHubNodes(graph);
+    this.recordCheck(sink, hubNodes.length, hubNodes.map(h => h.node.id), {
+      issueType: 'hub-nodes', severity: 'warning', impact: 'medium',
+      issueDesc: () => hubNodes.map(h => `${h.node.name} (${h.outDegree})`).join(', '),
+      suggestionType: 'split-responsibilities', priority: 'medium',
+      suggestionDesc: 'Split large modules to reduce their dependency burden',
+      implementation: 'Apply Single Responsibility Principle to break down large modules',
+      details: {
+        hubs: hubNodes.map(h => ({ id: h.node.id, name: h.node.name, outDegree: h.outDegree })),
+      },
+    });
+  }
+
+  /** Collect bare callee names referenced anywhere in the corpus (for orphan detection). */
+  private collectReferencedNames(): Set<string> {
+    const referencedNames = new Set<string>();
+    for (const e of this.entities) {
+      for (const callee of (e.metadata?.callees as string[] | undefined) ?? []) {
+        referencedNames.add((callee.split('.').pop() ?? callee).toLowerCase());
+      }
+    }
+    return referencedNames;
+  }
+
+  /** Record the orphaned-node check. */
+  private recordOrphanCheck(sink: CheckSink, graph: DependencyGraph): void {
+    const orphanedNodes = this.findOrphanedNodes(graph, this.collectReferencedNames());
+    this.recordCheck(sink, orphanedNodes.length, orphanedNodes.map(n => n.id), {
+      issueType: 'orphaned-nodes', severity: 'suggestion', impact: 'low',
+      issueDesc: () => orphanedNodes.map(n => n.name).join(', '),
+      suggestionType: 'review-orphans', priority: 'low',
+      suggestionDesc: 'Review orphaned nodes to ensure they are still needed',
+      implementation: 'Consider removing unused code or integrating orphaned modules',
+      details: {
+        orphans: orphanedNodes.map(n => ({ id: n.id, name: n.name })),
+      },
+    });
+  }
+
   /** Push an issue+suggestion pair when `count` is non-zero. */
   private recordCheck(
     sink: CheckSink,
     count: number,
     affectedNodes: string[],
     spec: CheckSpec,
-    details?: Record<string, unknown>,
   ): void {
     if (count === 0) return;
     sink.issues.push({
       type: spec.issueType, severity: spec.severity, impact: spec.impact,
       description: spec.issueDesc(count), affectedNodes,
-      details,
+      details: spec.details,
     });
     sink.suggestions.push({
       type: spec.suggestionType, priority: spec.priority,
@@ -794,4 +811,6 @@ interface CheckSpec {
   priority: DependencySuggestion['priority'];
   suggestionDesc: string;
   implementation: string;
+  /** Structured resolution data attached to the issue (cycle paths, cluster coupling, …). */
+  details?: Record<string, unknown>;
 }

@@ -135,6 +135,27 @@ interface HighRiskFn {
 // ---------------------------------------------------------------------------
 
 /**
+ * Advance a call-graph BFS frontier by one node: query `funcId`'s call
+ * neighbors and enqueue any not yet visited. Shared by the two BFS walks.
+ */
+function enqueueCallNeighbors(
+  indexHandle: IndexHandle,
+  nextLevel: number[],
+  funcId: number,
+  visited: Set<number>,
+): void {
+  const callees = indexHandle
+    .query(`SELECT neighbor_key FROM graph_cache
+       WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
+  for (const callee of callees) {
+    const calleeId = parseInt(callee.neighbor_key, 10);
+    if (!isNaN(calleeId) && !visited.has(calleeId)) {
+      nextLevel.push(calleeId);
+    }
+  }
+}
+
+/**
  * BFS through the call graph (graph_cache) up to maxDepth to check if
  * any path from startFuncId reaches a validator function ID.
  */
@@ -156,16 +177,7 @@ function bfsReachesValidator(
       visited.add(funcId);
 
       // Get callees from graph_cache call edges
-      const callees = indexHandle
-        .query(`SELECT neighbor_key FROM graph_cache
-           WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
-
-      for (const callee of callees) {
-        const calleeId = parseInt(callee.neighbor_key, 10);
-        if (!isNaN(calleeId) && !visited.has(calleeId)) {
-          nextLevel.push(calleeId);
-        }
-      }
+      enqueueCallNeighbors(indexHandle, nextLevel, funcId, visited);
     }
 
     currentLevel = nextLevel;
@@ -248,15 +260,7 @@ function collectReachableIds(
         visited.add(funcId);
         reachableIds.add(funcId);
 
-        const callees = indexHandle
-          .query(`SELECT neighbor_key FROM graph_cache
-             WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
-        for (const callee of callees) {
-          const calleeId = parseInt(callee.neighbor_key, 10);
-          if (!isNaN(calleeId) && !visited.has(calleeId)) {
-            nextLevel.push(calleeId);
-          }
-        }
+        enqueueCallNeighbors(indexHandle, nextLevel, funcId, visited);
       }
       currentLevel = nextLevel;
     }

@@ -319,13 +319,8 @@ function isDbCallCandidate(
   const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
 
   // Check if it's a function call whose callee is DB-related
-  if (isFunctionCall(node, adapter)) {
-    // Spec 21: Use provenance when available, fall back to name-based check
-    if (provenanceContext) {
-      if (isDBProvenanced(node, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS })) {
-        return true;
-      }
-    }
+  if (provenanceContext && isDBProvenancedFunctionCall(node, adapter, sourceCode, provenanceContext)) {
+    return true;
   }
 
   // Spec 17 R2: Template literals are SQL candidates because of where they sit
@@ -1075,24 +1070,26 @@ function isOrmPattern(text: string): boolean {
   return ormPatterns.some(pattern => pattern.test(text));
 }
 
+/** Add capture-group 1 of every match of `patterns` to `tables`. */
+function collectPatternTables(
+  text: string,
+  patterns: RegExp[] | undefined,
+  tables: Set<string>,
+): void {
+  patterns?.forEach(pattern => {
+    const matches = text.matchAll(pattern);
+    for (const match of matches) {
+      if (match[1]) tables.add(match[1]);
+    }
+  });
+}
+
 function extractTables(text: string, config: DataAccessAnalyzerConfig): string[] {
   const tables = new Set<string>();
 
-  // Check ORM patterns
-  config.tablePatterns?.orm?.forEach(pattern => {
-    const matches = text.matchAll(pattern);
-    for (const match of matches) {
-      if (match[1]) tables.add(match[1]);
-    }
-  });
-
-  // Check SQL patterns
-  config.tablePatterns?.sql?.forEach(pattern => {
-    const matches = text.matchAll(pattern);
-    for (const match of matches) {
-      if (match[1]) tables.add(match[1]);
-    }
-  });
+  // Check ORM and SQL patterns
+  collectPatternTables(text, config.tablePatterns?.orm, tables);
+  collectPatternTables(text, config.tablePatterns?.sql, tables);
 
   // Additional check for common ORM patterns that might be missed
   // Handle patterns like db.select().from(users) where 'users' is a variable
@@ -1497,6 +1494,17 @@ function checkLoopQueries(
   return violations;
 }
 
+/** True when `node` is a function call whose callee is DB-provenanced. */
+function isDBProvenancedFunctionCall(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceContext: ProvenanceContext,
+): boolean {
+  return isFunctionCall(node, adapter) &&
+    isDBProvenanced(node, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS });
+}
+
 /**
  * R4.1: Determine if a node is a database call expression.
  * Spec 21: When provenance context is available, uses provenance-based detection
@@ -1512,10 +1520,8 @@ function isDbCallNode(
   // Spec 21: Provenance-first detection when context is available
   if (provenanceContext && provenanceContext.mode !== 'names') {
     // In provenance or hybrid mode, use provenance check
-    if (isFunctionCall(node, adapter)) {
-      if (isDBProvenanced(node, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS })) {
-        return true;
-      }
+    if (isDBProvenancedFunctionCall(node, adapter, sourceCode, provenanceContext)) {
+      return true;
     }
     // Spec 17 R2: Template literal is a DB node only when it sits
     // inside a DB-provenanced call's arguments — no content scan.
@@ -1524,7 +1530,7 @@ function isDbCallNode(
       if (parent && adapter.getNodeType(parent) === 'arguments') {
         const callExpr = adapter.getParent(parent);
         if (callExpr && adapter.getNodeType(callExpr) === 'call_expression') {
-          return isDBProvenanced(callExpr, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS });
+          return isDBProvenancedFunctionCall(callExpr, adapter, sourceCode, provenanceContext);
         }
       }
       return false;

@@ -1039,14 +1039,19 @@ function buildDeclarationBlocks(
     .filter(b => b.declCount >= minDeclarations);
 }
 
+/** A declaration block ordered rarest-first, ready for prefix indexing. */
+type OrderedBlock = DeclarationBlock & { values: string[]; size: number };
+
+/** Prefix length for the Xiao et al. set-similarity join (see flagSimilarBlockPairs). */
+const prefixLen = (threshold: number, s: number) => s - Math.ceil(threshold * s) + 1;
+
 function flagSimilarBlockPairs(
   blockEntries: DeclarationBlock[],
   threshold: number,
   report: StylesViolationReporter,
 ): Violation[] {
-  const violations: Violation[] = [];
   const n = blockEntries.length;
-  if (n < 2) return violations;
+  if (n < 2) return [];
 
   // Count filter (Xiao et al. "Efficient Exact Set-Similarity Joins"): with a
   // size filter (Jaccard >= t implies min/max >= t) and a rarest-first global
@@ -1064,7 +1069,7 @@ function flagSimilarBlockPairs(
   }
 
   // 2. Order each block's values rarest-first (tie-broken for determinism).
-  const ordered = blockEntries.map((b) => ({
+  const ordered: OrderedBlock[] = blockEntries.map((b) => ({
     ...b,
     values: [...b.valueSet].sort(
       (x, y) => (freq.get(x)! - freq.get(y)!) || (x < y ? -1 : 1),
@@ -1072,12 +1077,17 @@ function flagSimilarBlockPairs(
     size: b.valueSet.size,
   }));
 
-  const prefixLen = (s: number) => s - Math.ceil(threshold * s) + 1;
+  // 3–5. Inverted prefix index → candidate generation → exact Jaccard verify.
+  const inverted = buildInvertedIndex(ordered, threshold);
+  const candidates = generateCandidates(ordered, inverted, threshold, n);
+  return verifyCandidates(ordered, candidates, threshold, report);
+}
 
-  // 3. Inverted index over prefix elements only.
+/** Phase 3: inverted index over prefix elements only. */
+function buildInvertedIndex(ordered: OrderedBlock[], threshold: number): Map<string, number[]> {
   const inverted = new Map<string, number[]>();
   ordered.forEach((b, i) => {
-    const p = Math.max(1, Math.min(prefixLen(b.size), b.size));
+    const p = Math.max(1, Math.min(prefixLen(threshold, b.size), b.size));
     for (let k = 0; k < p; k++) {
       const v = b.values[k];
       const list = inverted.get(v);
@@ -1085,12 +1095,21 @@ function flagSimilarBlockPairs(
       else inverted.set(v, [i]);
     }
   });
+  return inverted;
+}
 
-  // 4. Candidate generation + size filter. The epsilon guards against a FP
-  //    rounding edge dropping a borderline pair (a false positive is harmless —
-  //    it is re-verified by the exact Jaccard below — a false negative is not).
-  const candidates = new Set<number>();
+/** Phase 4: candidate generation + size filter. */
+function generateCandidates(
+  ordered: OrderedBlock[],
+  inverted: Map<string, number[]>,
+  threshold: number,
+  n: number,
+): Set<number> {
+  // The epsilon guards against a FP rounding edge dropping a borderline pair
+  // (a false positive is harmless — it is re-verified by the exact Jaccard
+  // below — a false negative is not).
   const E = 1e-6;
+  const candidates = new Set<number>();
   for (const [, idxs] of inverted) {
     for (let a = 0; a < idxs.length; a++) {
       for (let b = a + 1; b < idxs.length; b++) {
@@ -1103,9 +1122,22 @@ function flagSimilarBlockPairs(
       }
     }
   }
+  return candidates;
+}
 
-  // 5. Verify the exact Jaccard for each candidate, in the same (i, j) ascending
-  //    order as the naive all-pairs loop so the output is byte-identical.
+/**
+ * Phase 5: verify the exact Jaccard for each candidate and report, in the same
+ * (i, j) ascending order as the naive all-pairs loop so the output is
+ * byte-identical.
+ */
+function verifyCandidates(
+  ordered: OrderedBlock[],
+  candidates: Set<number>,
+  threshold: number,
+  report: StylesViolationReporter,
+): Violation[] {
+  const n = ordered.length;
+  const violations: Violation[] = [];
   const reported = new Set<string>();
   const sortedCandidates = [...candidates].sort((x, y) => x - y);
   for (const enc of sortedCandidates) {
@@ -1135,7 +1167,6 @@ function flagSimilarBlockPairs(
       ));
     }
   }
-
   return violations;
 }
 
@@ -1212,8 +1243,6 @@ class StylesStructureDetectors {
    */
   async detectUndefinedClasses(
     classUsage: StyleClassUsageRow[],
-    _declarations: StyleDeclRow[],
-    _byProperty: Map<string, StyleDeclRow[]>,
     cfg?: StylesAnalyzerConfig & { projectRoot?: string },
     definedClassIndex?: DefinedClassIndex,
   ): Promise<Violation[]> {
@@ -1402,10 +1431,19 @@ class StylesStructureDetectors {
 // ---------------------------------------------------------------------------
 
 /**
+ * Construct the structure detectors for the analyzer. Lives as a factory so the
+ * analyzer depends on a seam rather than directly instantiating the concrete
+ * detector class (the dependency-inversion signal).
+ */
+function createStylesStructureDetectors(makeViolation: StylesViolationReporter): StylesStructureDetectors {
+  return new StylesStructureDetectors(makeViolation);
+}
+
+/**
  * Universal styles analyzer.
  */
 export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
-  private readonly structure = new StylesStructureDetectors(this.makeViolation.bind(this));
+  private readonly structure = createStylesStructureDetectors(this.makeViolation.bind(this));
 
   /**
    * Override analyze() to query the full style index in one pass instead
@@ -1446,17 +1484,7 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
       });
     }
 
-    const violations = await this.runDetectors({
-      byProperty: groupDeclarationsByProperty(declarations),
-      cfg,
-      declarations,
-      classUsage: this.queryClassUsage(indexHandle),
-      tokenValueMap: buildTokenValueMap(this.queryTokens(indexHandle)),
-      definedClassIndex: {
-        lookup: createDefinedClassLookup(indexHandle),
-        suggest: createDefinedClassSuggester(indexHandle),
-      },
-    });
+    const violations = await this.runAllDetectors(indexHandle, cfg, declarations);
 
     applySeverityOverrides(violations, config);
 
@@ -1468,13 +1496,32 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
     });
   }
 
+  /** Assemble detector inputs from the style index and run all detectors. */
+  private async runAllDetectors(
+    indexHandle: IndexHandle,
+    cfg: StylesAnalyzerConfig,
+    declarations: StyleDeclRow[],
+  ): Promise<Violation[]> {
+    return this.runDetectors({
+      byProperty: groupDeclarationsByProperty(declarations),
+      cfg,
+      declarations,
+      classUsage: this.queryClassUsage(indexHandle),
+      tokenValueMap: buildTokenValueMap(this.queryTokens(indexHandle)),
+      definedClassIndex: {
+        lookup: createDefinedClassLookup(indexHandle),
+        suggest: createDefinedClassSuggester(indexHandle),
+      },
+    });
+  }
+
   /** Run all detectors and return their combined violations. */
   private async runDetectors(inputs: StyleDetectorInputs): Promise<Violation[]> {
     const { byProperty, cfg, declarations, classUsage, tokenValueMap, definedClassIndex } = inputs;
     const violations: Violation[] = [];
     violations.push(...this.detectValueDrift(byProperty, cfg, declarations));
     violations.push(...this.detectOffScaleValues(byProperty, cfg));
-    violations.push(...await this.structure.detectUndefinedClasses(classUsage, declarations, byProperty, cfg, definedClassIndex));
+    violations.push(...await this.structure.detectUndefinedClasses(classUsage, cfg, definedClassIndex));
     violations.push(...this.structure.detectTokenBypass(declarations, tokenValueMap, cfg));
     violations.push(...this.structure.detectMechanismFragmentation(declarations, cfg));
     violations.push(...this.structure.detectDeclarationSetSimilarity(declarations, cfg));

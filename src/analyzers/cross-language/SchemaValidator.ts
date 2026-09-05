@@ -425,6 +425,8 @@ function normalizeSchemaName(name: string): string {
  * every additional language per group). A single-language corpus (or one with
  * no schemas at all) yields zero, which the caller uses to report "no
  * cross-language pairs found" instead of a misleadingly clean zero.
+ * @param schemas
+ * @returns
  */
 export function countCrossLanguagePairs(schemas: SchemaDefinition[]): number {
   let pairs = 0;

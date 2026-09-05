@@ -169,7 +169,6 @@ export class LanguageOrchestrator {
     // relative `--path` (e.g. `code-audit audit --path bench/real/gin`) would
     // not resolve from the subprocess cwd and the analysis collapses to zero.
     projectPath = path.resolve(projectPath);
-
     console.error(`[LanguageOrchestrator] Starting polyglot analysis of: ${projectPath}`);
     const startTime = Date.now();
 
@@ -179,43 +178,27 @@ export class LanguageOrchestrator {
       await this.runtimeManager.initialize();
     }
 
-    // 1. Discover and group files by language
-    console.error(`[LanguageOrchestrator] Discovering files in: ${projectPath}`);
+    // 1–2.5. Discover, group, and select languages; note any without a runtime.
     const filesByLanguage = await this.discoverAndGroupFiles(projectPath, options);
-    console.error(`[LanguageOrchestrator] Discovered files:`, 
-      Object.fromEntries(
-        Object.entries(filesByLanguage).map(([lang, files]) => [lang, files.length])
-      )
-    );
-
-    // 2. Determine which languages to analyze
+    logDiscoveredFiles(filesByLanguage);
     const languagesToAnalyze = this.selectLanguages(filesByLanguage, options);
     console.log(`[LanguageOrchestrator] Languages to analyze:`, languagesToAnalyze);
-    
-    // 2.5. Validate runtime compatibility for selected languages
-    for (const language of languagesToAnalyze) {
-      if (!this.runtimeManager.hasRuntime(language)) {
-        console.warn(`[LanguageOrchestrator] No runtime available for ${language}, skipping...`);
-      }
-    }
+    warnMissingRuntimes(this.runtimeManager, languagesToAnalyze);
 
-    // 3. Run language-specific analyses in parallel
+    // 3. Run language-specific analyses in parallel.
     const analysisPromises = languagesToAnalyze.map(language =>
       this.analyzeLanguage(language, filesByLanguage[language] || [], options, projectPath)
     );
-
     const analysisResults = await Promise.all(analysisPromises);
     console.log(`[LanguageOrchestrator] Completed ${analysisResults.length} language analyses`);
 
-    // 4. Merge results
+    // 4–4.5. Merge, then record discovered-but-skipped languages so a silent
+    // skip becomes a stated notApplicable (Go files present + no Go toolchain
+    // → named, not zero).
     const mergedResult = this.mergeLanguageResults(analysisResults, languagesToAnalyze);
-
-    // 4.5. Record discovered-but-skipped languages so a silent skip becomes a
-    // stated notApplicable (Go files present + no Go toolchain → named, not zero).
     mergedResult.notApplicable = this.collectNotApplicable(filesByLanguage, languagesToAnalyze);
 
     await this.applyPolyglotPostProcessing(analysisResults, mergedResult, options, startTime);
-
     return mergedResult;
   }
 
@@ -252,7 +235,7 @@ export class LanguageOrchestrator {
 
     // 8. Generate dependency graph
     if (options.generateDependencyGraph) {
-      mergedResult.dependencyGraph = await this.generateDependencyGraph(
+      mergedResult.dependencyGraph = await generateDependencyGraph(
         analysisResults,
         mergedResult.crossReferences || []
       );
@@ -281,7 +264,7 @@ export class LanguageOrchestrator {
     const filesByLanguage: Record<string, string[]> = {};
 
     for (const file of allFiles) {
-      const language = this.detectLanguage(file);
+      const language = detectLanguageFromPath(file);
       if (language) {
         if (!filesByLanguage[language]) {
           filesByLanguage[language] = [];
@@ -294,32 +277,6 @@ export class LanguageOrchestrator {
   }
 
   /**
-   * Detect programming language from file extension
-   */
-  private detectLanguage(filePath: string): string | null {
-    const ext = path.extname(filePath).toLowerCase();
-    
-    const languageMap: Record<string, string> = {
-      '.ts': 'typescript',
-      '.tsx': 'typescript', 
-      '.js': 'javascript',
-      '.jsx': 'javascript',
-      '.go': 'go',
-      '.py': 'python',
-      '.rs': 'rust',
-      '.java': 'java',
-      '.kt': 'kotlin',
-      '.cs': 'csharp',
-      '.cpp': 'cpp',
-      '.c': 'c',
-      '.h': 'c',
-      '.hpp': 'cpp'
-    };
-
-    return languageMap[ext] || null;
-  }
-
-  /**
    * Select which languages to analyze based on options and availability
    */
   private selectLanguages(
@@ -329,7 +286,7 @@ export class LanguageOrchestrator {
     const discoveredLanguages = Object.keys(filesByLanguage);
     
     // Map discovered languages to runtime names
-    const languageToRuntime = this.mapLanguageToRuntime();
+    const languageToRuntime = mapLanguageToRuntime();
     
     // If specific languages requested, filter to those
     if (options.languages && options.languages.length > 0) {
@@ -357,7 +314,7 @@ export class LanguageOrchestrator {
     filesByLanguage: Record<string, string[]>,
     languagesToAnalyze: string[]
   ): Array<{ language: string; reason: string }> {
-    const languageToRuntime = this.mapLanguageToRuntime();
+    const languageToRuntime = mapLanguageToRuntime();
     const notApplicable: Array<{ language: string; reason: string }> = [];
 
     for (const [language, files] of Object.entries(filesByLanguage)) {
@@ -375,19 +332,6 @@ export class LanguageOrchestrator {
   }
 
   /**
-   * Map language names to runtime names
-   */
-  private mapLanguageToRuntime(): Record<string, string> {
-    return {
-      'typescript': 'node',
-      'javascript': 'node',
-      'go': 'go',
-      'python': 'python',
-      'rust': 'rust'
-    };
-  }
-
-  /**
    * Analyze files for a specific language
    */
   private async analyzeLanguage(
@@ -399,7 +343,7 @@ export class LanguageOrchestrator {
     console.log(`[LanguageOrchestrator] Analyzing ${files.length} ${language} files`);
 
     // Map language to runtime name
-    const languageToRuntime = this.mapLanguageToRuntime();
+    const languageToRuntime = mapLanguageToRuntime();
     const runtimeName = languageToRuntime[language] || language;
 
     // Use the mapped runtime name for analysis. `projectRoot` is passed so the
@@ -502,13 +446,8 @@ export class LanguageOrchestrator {
     const violations: CrossLanguageViolation[] = [];
     
     // Collect all entities from results
-    const allEntities: any[] = [];
-    for (const { result } of results) {
-      if (result.indexEntries) {
-        allEntities.push(...result.indexEntries);
-      }
-    }
-    
+    const allEntities = collectAllEntities(results);
+
     // Import and run API contract analysis + schema validation
     violations.push(...await runAPIContractAnalysis(allEntities));
     violations.push(...await runSchemaValidation(allEntities));
@@ -526,57 +465,6 @@ export class LanguageOrchestrator {
     // Placeholder for API contract validation
     console.log('[LanguageOrchestrator] Validating API contracts (placeholder)');
     return [];
-  }
-
-  /**
-   * Generate dependency graph across languages
-   */
-  private async generateDependencyGraph(
-    results: Array<{ language: string; result: AnalysisResult }>,
-    crossReferences: CrossReference[]
-  ): Promise<DependencyGraph> {
-    console.log('[LanguageOrchestrator] Generating cross-language dependency graph...');
-    
-    try {
-      const { DependencyGraphBuilder } = await import('../analyzers/cross-language/DependencyGraphBuilder.js');
-      
-      // Collect all entities
-      const allEntities: any[] = [];
-      for (const { result } of results) {
-        if (result.indexEntries) {
-          allEntities.push(...result.indexEntries);
-        }
-      }
-      
-      // Build the dependency graph
-      const graphBuilder = new DependencyGraphBuilder({
-        includeInternalDependencies: true,
-        includeExternalDependencies: true,
-        includeTestFiles: false,
-        clusterByPackage: true
-      });
-      
-      const graph = await graphBuilder.buildGraph(allEntities, crossReferences);
-      
-      console.log(`[LanguageOrchestrator] Generated dependency graph with ${graph.nodes.length} nodes and ${graph.edges.length} edges`);
-      return graph;
-      
-    } catch (error) {
-      console.warn('[LanguageOrchestrator] Failed to generate dependency graph:', error);
-      return {
-        nodes: [],
-        edges: [],
-        cycles: [],
-        metrics: {
-          totalNodes: 0,
-          totalEdges: 0,
-          cycleCount: 0,
-          averageDepth: 0,
-          maxDepth: 0,
-          stronglyConnectedComponents: 0
-        }
-      };
-    }
   }
 
   /**
@@ -603,6 +491,106 @@ export class LanguageOrchestrator {
         apiContractValidation: true,
         dependencyGraphGeneration: true,
         unifiedIndexing: true
+      }
+    };
+  }
+}
+
+// --- Module-level helpers (stateless — extracted from LanguageOrchestrator) ---
+
+/** Map a language name to the runtime that analyzes it. */
+function mapLanguageToRuntime(): Record<string, string> {
+  return {
+    'typescript': 'node',
+    'javascript': 'node',
+    'go': 'go',
+    'python': 'python',
+    'rust': 'rust'
+  };
+}
+
+/** Detect a programming language from a file extension. */
+function detectLanguageFromPath(filePath: string): string | null {
+  const ext = path.extname(filePath).toLowerCase();
+  const languageMap: Record<string, string> = {
+    '.ts': 'typescript',
+    '.tsx': 'typescript',
+    '.js': 'javascript',
+    '.jsx': 'javascript',
+    '.go': 'go',
+    '.py': 'python',
+    '.rs': 'rust',
+    '.java': 'java',
+    '.kt': 'kotlin',
+    '.cs': 'csharp',
+    '.cpp': 'cpp',
+    '.c': 'c',
+    '.h': 'c',
+    '.hpp': 'cpp'
+  };
+  return languageMap[ext] || null;
+}
+
+/** Log a one-line per-language count of discovered files. */
+function logDiscoveredFiles(filesByLanguage: Record<string, string[]>): void {
+  const counts = Object.fromEntries(
+    Object.entries(filesByLanguage).map(([lang, files]) => [lang, files.length])
+  );
+  console.error(`[LanguageOrchestrator] Discovered files:`, counts);
+}
+
+/** Warn for each selected language that has no runtime, so a skip is stated. */
+function warnMissingRuntimes(runtimeManager: RuntimeManager, languagesToAnalyze: string[]): void {
+  for (const language of languagesToAnalyze) {
+    if (!runtimeManager.hasRuntime(language)) {
+      console.warn(`[LanguageOrchestrator] No runtime available for ${language}, skipping...`);
+    }
+  }
+}
+
+/** Flatten index entries across all analysis results into one list. */
+function collectAllEntities(results: Array<{ language: string; result: AnalysisResult }>): any[] {
+  const allEntities: any[] = [];
+  for (const { result } of results) {
+    if (result.indexEntries) allEntities.push(...result.indexEntries);
+  }
+  return allEntities;
+}
+
+/**
+ * Generate the cross-language dependency graph. Lives as a free function because
+ * it references no orchestrator state — only the analysis results it is handed.
+ */
+async function generateDependencyGraph(
+  results: Array<{ language: string; result: AnalysisResult }>,
+  crossReferences: CrossReference[]
+): Promise<DependencyGraph> {
+  console.log('[LanguageOrchestrator] Generating cross-language dependency graph...');
+
+  try {
+    const { DependencyGraphBuilder } = await import('../analyzers/cross-language/DependencyGraphBuilder.js');
+    const graphBuilder = new DependencyGraphBuilder({
+      includeInternalDependencies: true,
+      includeExternalDependencies: true,
+      includeTestFiles: false,
+      clusterByPackage: true
+    });
+    const graph = await graphBuilder.buildGraph(collectAllEntities(results), crossReferences);
+    console.log(`[LanguageOrchestrator] Generated dependency graph with ${graph.nodes.length} nodes and ${graph.edges.length} edges`);
+    return graph;
+  } catch (error) {
+    console.warn('[LanguageOrchestrator] Failed to generate dependency graph:', error);
+    return {
+      nodes: [],
+      edges: [],
+      cycles: [],
+      metrics: {
+        totalNodes: 0,
+        totalEdges: 0,
+        cycleCount: 0,
+        averageDepth: 0,
+        maxDepth: 0,
+        stronglyConnectedComponents: 0
       }
     };
   }

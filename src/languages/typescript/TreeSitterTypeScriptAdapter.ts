@@ -1706,6 +1706,21 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     return { declNode: null, constant: null };
   }
 
+  /** Resolve `name` in `scopeRoot`, falling back to the root scope when the
+   *  local lookup misses and an enclosing non-root scope exists. */
+  protected resolveDeclaration(
+    scopeRoot: ASTNode,
+    enclosing: ASTNode | null,
+    ast: AST,
+    name: string,
+  ): ASTNode | null {
+    let decl = this.findDeclarationInScope(scopeRoot, name);
+    if (!decl && enclosing && enclosing !== ast.root) {
+      decl = this.findDeclarationInScope(ast.root, name);
+    }
+    return decl;
+  }
+
   /** Trace a `for…in`/`for…of` loop variable whose identifier appears directly
    *  under a `for_in_statement` `left` child.  tree-sitter-typescript (v0.x)
    *  parses both loop forms as `for_in_statement`; the loop variable is a bare
@@ -1731,10 +1746,7 @@ class TsConstantResolution extends TsDynamicStringConstruction {
           const right = (tsCurrent as any).childForFieldName?.('right') as TreeSitterNode | null;
           if (right && right.type === 'identifier') {
             const iterName = right.text;
-            let iterDecl = this.findDeclarationInScope(scopeRoot, iterName);
-            if (!iterDecl && enclosing && enclosing !== ast.root) {
-              iterDecl = this.findDeclarationInScope(ast.root, iterName);
-            }
+            let iterDecl = this.resolveDeclaration(scopeRoot, enclosing, ast, iterName);
             if (iterDecl) {
               const iterRaw = iterDecl.raw as TreeSitterNode;
               const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
@@ -1770,10 +1782,7 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     const iterable = (forRaw as any).childForFieldName?.('right') as TreeSitterNode | null;
     if (!iterable || iterable.type !== 'identifier') return false;
     const iterName = iterable.text;
-    let iterDecl = this.findDeclarationInScope(scopeRoot, iterName);
-    if (!iterDecl && enclosing && enclosing !== ast.root) {
-      iterDecl = this.findDeclarationInScope(ast.root, iterName);
-    }
+    let iterDecl = this.resolveDeclaration(scopeRoot, enclosing, ast, iterName);
     if (!iterDecl) return false;
     const iterRaw = iterDecl.raw as TreeSitterNode;
     const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;

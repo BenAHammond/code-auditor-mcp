@@ -194,7 +194,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
           break;
         case 'import-form':
           violations.push(
-            ...this.detectImportFormViolations(indexHandle, domainConventions, projectRoot, readSource, scope),
+            ...this.detectImportFormViolations(indexHandle, domainConventions, { projectRoot, readSource, scope }),
           );
           break;
         case 'error-handling':
@@ -268,9 +268,11 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   private detectImportFormViolations(
     indexHandle: IndexHandle,
     conventions: ConventionRow[],
-    projectRoot?: string,
-    readSource?: (filePath: string) => string | undefined,
-    scope?: FileScope,
+    options: {
+      projectRoot?: string;
+      readSource?: (filePath: string) => string | undefined;
+      scope?: FileScope;
+    },
   ): Violation[] {
     const violations: Violation[] = [];
 
@@ -278,7 +280,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     const dirImports = buildDirImports(conventions);
 
     // Get unique file paths. Scoped: only read source for in-scope files.
-    const fileScope = scope?.apply('file_path');
+    const fileScope = options.scope?.apply('file_path');
     const fileRows = indexHandle.query(
       `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
       fileScope?.params,
@@ -300,10 +302,10 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
       // produce a doubled-root path and the source read would silently fail —
       // zeroing import-form on every run. Only join when fp is relative.
       const fullPath =
-        projectRoot && !path.isAbsolute(fp)
-          ? path.join(projectRoot, fp)
+        options.projectRoot && !path.isAbsolute(fp)
+          ? path.join(options.projectRoot, fp)
           : fp;
-      const content = readSource?.(fullPath);
+      const content = options.readSource?.(fullPath);
       if (content === undefined) continue;
 
       violations.push(...detectImportFormForFile(fp, content, importConvs, this.name));

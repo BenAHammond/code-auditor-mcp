@@ -612,32 +612,27 @@ class GoExtraction extends GoParserCore {
             isDefault: false,
           });
         }
-      } else if (node.type === 'type_declaration') {
-        for (const spec of this.findNamedChildren(node, 'type_spec')) {
-          const nameNode = spec.childForFieldName?.('name');
-          if (nameNode && this.isExportedGo(nameNode.text)) {
-            exports.push({
-              name: nameNode.text,
-              location: toSourceLocation(nameNode),
-              isDefault: false,
-            });
-          }
-        }
-      } else if (node.type === 'var_declaration') {
-        for (const spec of this.findNamedChildren(node, 'var_spec')) {
-          const nameNode = spec.childForFieldName?.('name');
-          if (nameNode && this.isExportedGo(nameNode.text)) {
-            exports.push({
-              name: nameNode.text,
-              location: toSourceLocation(nameNode),
-              isDefault: false,
-            });
-          }
+      } else if (node.type === 'type_declaration' || node.type === 'var_declaration') {
+        const specType = node.type === 'type_declaration' ? 'type_spec' : 'var_spec';
+        for (const spec of this.findNamedChildren(node, specType)) {
+          this.pushExportedSpec(exports, spec);
         }
       }
     });
 
     return exports;
+  }
+
+  /** Push a type/var spec's exported name into `exports`. */
+  private pushExportedSpec(exports: ExportInfo[], spec: TreeSitterNode): void {
+    const nameNode = spec.childForFieldName?.('name');
+    if (nameNode && this.isExportedGo(nameNode.text)) {
+      exports.push({
+        name: nameNode.text,
+        location: toSourceLocation(nameNode),
+        isDefault: false,
+      });
+    }
   }
 }
 

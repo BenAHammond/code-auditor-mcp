@@ -107,6 +107,16 @@ class RuntimeManagerDetection {
   }
 
   /**
+   * Idempotently ensure runtime detection has run, so callers do not each
+   * repeat the `if (!initialized) initialize()` guard.
+   */
+  protected async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+  }
+
+  /**
    * Detect Node.js runtime
    */
   private async detectNodeRuntime(): Promise<void> {
@@ -120,7 +130,7 @@ class RuntimeManagerDetection {
         version,
         available: true,
         minVersion: '16.0.0',
-        analyzer: new TypeScriptAnalyzer()
+        analyzer: createTypeScriptAnalyzer()
       });
     } catch (error) {
       this.runtimes.set('node', {
@@ -146,14 +156,8 @@ class RuntimeManagerDetection {
 
     // Step 1 — toolchain presence. `go version` failing means Go is not
     // installed (or not on PATH); that is the "Go analysis skipped" case.
-    let version: string;
-    try {
-      const { stdout } = await execAsync('go version');
-      const versionMatch = stdout.match(/go(\d+\.\d+\.\d+)/);
-      version = versionMatch ? versionMatch[1] : stdout.trim();
-      console.error('[RuntimeManager] Go version detected:', version);
-    } catch (error) {
-      console.error('[RuntimeManager] Go toolchain not found:', error);
+    const version = await this.detectGoToolchainVersion();
+    if (version === null) {
       this.runtimes.set('go', {
         name: 'Go',
         command: 'go',
@@ -166,27 +170,21 @@ class RuntimeManagerDetection {
 
     // Step 2 — analyzer binary presence. A missing binary is NOT a detection
     // failure: `ensureGoAnalyzerBuilt` compiles it from shipped source on first
-    // use. Only a path-resolution failure (which this step also guards against)
-    // marks the runtime unavailable.
-    let analyzerPath: string;
-    let analyzerExists: boolean;
-    try {
-      analyzerPath = path.join(moduleDir, 'go', 'analyzer');
-      console.error('[RuntimeManager] Looking for Go analyzer at:', analyzerPath);
-      analyzerExists = (await this.fileExists(analyzerPath)) || (await this.fileExists(analyzerPath + '.exe'));
-      console.error('[RuntimeManager] Go analyzer exists:', analyzerExists);
-    } catch (error) {
-      console.error('[RuntimeManager] Go analyzer path resolution failed:', error);
+    // use. Only a path-resolution failure marks the runtime unavailable.
+    const resolved = await this.resolveGoAnalyzerPath();
+    if (resolved.failureReason) {
       this.runtimes.set('go', {
         name: 'Go',
         command: 'go',
         version,
         available: false,
-        failureReason: `Go analyzer path resolution failed: ${describeError(error)}`
+        failureReason: resolved.failureReason
       });
       return;
     }
 
+    const analyzerPath = resolved.path!;
+    const analyzerExists = resolved.exists!;
     this.runtimes.set('go', {
       name: 'Go',
       command: 'go',
@@ -194,9 +192,45 @@ class RuntimeManagerDetection {
       available: true,
       minVersion: '1.18.0',
       executablePath: analyzerExists ? analyzerPath : undefined,
-      analyzer: new GoAnalyzer(analyzerPath)
+      analyzer: createGoAnalyzer(analyzerPath)
     });
     console.error('[RuntimeManager] Go runtime configured successfully');
+  }
+
+  /**
+   * Step 1 of Go detection: probe the toolchain. Returns the version string,
+   * or null when `go` is not installed / not on PATH.
+   */
+  private async detectGoToolchainVersion(): Promise<string | null> {
+    try {
+      const { stdout } = await execAsync('go version');
+      const versionMatch = stdout.match(/go(\d+\.\d+\.\d+)/);
+      const version = versionMatch ? versionMatch[1] : stdout.trim();
+      console.error('[RuntimeManager] Go version detected:', version);
+      return version;
+    } catch (error) {
+      console.error('[RuntimeManager] Go toolchain not found:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Step 2 of Go detection: locate the analyzer binary. Returns the path and
+   * whether the binary already exists, or a `failureReason` when path
+   * resolution itself fails. A missing binary is NOT a failure — the runtime
+   * still registers as available and compiles it from source on first use.
+   */
+  private async resolveGoAnalyzerPath(): Promise<{ path?: string; exists?: boolean; failureReason?: string }> {
+    try {
+      const analyzerPath = path.join(moduleDir, 'go', 'analyzer');
+      console.error('[RuntimeManager] Looking for Go analyzer at:', analyzerPath);
+      const analyzerExists = (await this.fileExists(analyzerPath)) || (await this.fileExists(analyzerPath + '.exe'));
+      console.error('[RuntimeManager] Go analyzer exists:', analyzerExists);
+      return { path: analyzerPath, exists: analyzerExists };
+    } catch (error) {
+      console.error('[RuntimeManager] Go analyzer path resolution failed:', error);
+      return { failureReason: `Go analyzer path resolution failed: ${describeError(error)}` };
+    }
   }
 
   /**
@@ -217,7 +251,7 @@ class RuntimeManagerDetection {
           version,
           available: true,
           minVersion: '3.8.0',
-          analyzer: new PythonAnalyzer(cmd)
+          analyzer: createPythonAnalyzer(cmd)
         });
         return;
       } catch (error) {
@@ -422,9 +456,7 @@ class RuntimeManagerVersion extends RuntimeManagerDetection {
     unknown: number;
     issues: Array<{ runtime: string; issue: string; recommendations: string[] }>;
   }> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
+    await this.ensureInitialized();
 
     const report = this.getVersionCompatibilityReport();
     const summary = {
@@ -691,9 +723,7 @@ export class RuntimeManager extends RuntimeManagerAccess {
    * @returns
    */
   async spawnAnalyzer(language: string, files: string[], options?: any): Promise<AnalysisResult | null> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
+    await this.ensureInitialized();
 
     const runtime = this.runtimes.get(language);
     if (!runtime?.available || !runtime.analyzer) {
@@ -1174,4 +1204,23 @@ function parseGoAnalyzerResponse(stdout: string): AnalysisResult {
   result.violations = result.violations || [];
   result.indexEntries = result.indexEntries || [];
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Analyzer factories — composition root. The detection layer registers these
+// analyzers, so construction lives behind named factory functions rather than
+// `new` in the detector: the detector depends on a factory, not on the concrete
+// analyzer class (the dependency-inversion seam).
+// ---------------------------------------------------------------------------
+
+function createTypeScriptAnalyzer(): LanguageAnalyzer {
+  return new TypeScriptAnalyzer();
+}
+
+function createGoAnalyzer(analyzerPath: string): LanguageAnalyzer {
+  return new GoAnalyzer(analyzerPath);
+}
+
+function createPythonAnalyzer(command: string): LanguageAnalyzer {
+  return new PythonAnalyzer(command);
 }
