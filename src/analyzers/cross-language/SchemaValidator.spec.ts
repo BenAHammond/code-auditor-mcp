@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SchemaValidator, countCrossLanguagePairs } from './SchemaValidator.js';
+import { SchemaValidator, countCrossLanguagePairs, isGoValueType } from './SchemaValidator.js';
 import type { SchemaDefinition } from './SchemaValidator.js';
 
 function tsInterface(overrides: Partial<SchemaDefinition> = {}): SchemaDefinition {
@@ -67,6 +67,32 @@ describe('SchemaValidator (cross-language pairs)', () => {
 
     const violations = await validator.validateSchemas([tsInterface(), otherTs]);
     expect(violations).toHaveLength(0);
+  });
+});
+
+describe('isGoValueType — required = non-nilable value type (pointer-vs-value, not exportedness)', () => {
+  it('treats value types as required', () => {
+    expect(isGoValueType('string')).toBe(true);
+    expect(isGoValueType('int64')).toBe(true);
+    expect(isGoValueType('bool')).toBe(true);
+    expect(isGoValueType('time.Time')).toBe(true);
+    expect(isGoValueType('[4]byte')).toBe(true);
+  });
+
+  it('treats nilable reference types as optional', () => {
+    expect(isGoValueType('*string')).toBe(false);
+    expect(isGoValueType('[]string')).toBe(false);
+    expect(isGoValueType('map[string]int')).toBe(false);
+    expect(isGoValueType('chan int')).toBe(false);
+    expect(isGoValueType('func()')).toBe(false);
+    expect(isGoValueType('interface{}')).toBe(false);
+    expect(isGoValueType('any')).toBe(false);
+    expect(isGoValueType('error')).toBe(false);
+  });
+
+  it('treats an absent type as optional (unknown, cannot prove presence)', () => {
+    expect(isGoValueType(undefined)).toBe(false);
+    expect(isGoValueType('')).toBe(false);
   });
 });
 

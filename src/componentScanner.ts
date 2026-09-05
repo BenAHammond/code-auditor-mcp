@@ -171,7 +171,8 @@ export async function scanFile(
         dependencies: [], // Will be populated later from imports
         purpose: `React ${componentType} component`,
         context: extractComponentContext(node, content),
-        isExported: isComponentExported(node)
+        isExported: isComponentExported(node),
+        body: rawText(node)
       };
 
       // Extract hooks if functional component

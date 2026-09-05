@@ -233,15 +233,15 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     input: ['files'],
     gating: false,
     resolvable: false,
-    message: 'Class "{name}" violates the Liskov Substitution Principle.',
+    message: 'Method "{name}" overrides a parent method and throws where the parent does not.',
     docs: 'solid/liskov-substitution',
     thresholds: [],
     samples: {
       valid: [
-        { code: 'class Bird {\n  fly() { return "flying"; }\n}', nearMiss: true },
+        { code: 'class Bird {\n  fly() { return "flying"; }\n}\nclass Sparrow extends Bird {\n  fly() { return "flying"; }\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'class Ostrich extends Bird {\n  fly() { throw new Error("cannot fly"); }\n}' },
+        { code: 'class Bird {\n  fly() { return "flying"; }\n}\nclass Ostrich extends Bird {\n  fly() { throw new Error("cannot fly"); }\n}' },
       ],
     },
   },
@@ -469,7 +469,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: ['minDescriptionLength'],
     samples: {
       valid: [
-        { code: '/** Core utilities for this module. */\nexport const a = 1;', nearMiss: true },
+        { code: '/** @fileoverview Core utilities for this module. */\nexport const a = 1;', nearMiss: true },
       ],
       invalid: [
         { code: 'export const a = 1;' },

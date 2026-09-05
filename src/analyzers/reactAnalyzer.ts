@@ -221,9 +221,9 @@ function checkPerformanceIssues(
   config: ReactAnalyzerConfig
 ): ReactViolation[] {
   const violations: ReactViolation[] = [];
-  
+
   // Check for missing memoization in complex functional components
-  if (config.requireMemoization && 
+  if (config.requireMemoization &&
       component.componentType === 'functional' &&
       component.complexity && component.complexity > 5) {
     violations.push({
@@ -241,26 +241,27 @@ function checkPerformanceIssues(
       suggestion: `Wrap component with React.memo() or convert to use React.memo`
     });
   }
-  
-  // Check for inline function props (causes re-renders)
-  // Use /\bonClick\s*=\s*\{/ instead of context.includes('onClick') to avoid
-  // matching string literals ('onClick triggered') or module-level code.
-  // Combined with the '=>' check this catches real inline arrow functions
-  // (onClick={() => ...}) without flagging identifier references.
-  if (component.jsxElements && component.context?.includes('=>') &&
-      /\bonClick\s*=\s*\{/.test(component.context ?? '')) {
+
+  // Check for inline function props (causes re-renders).
+  // Honest, per-element signal: an `onClick` attribute whose value is an inline
+  // arrow/function expression (`onClick={() => …}` / `onClick={function …}`),
+  // not a bare identifier reference (`onClick={handleClick}`). The old check
+  // (a `=>` anywhere in a truncated context window + `onClick={`) fired on
+  // unrelated arrows and identifier handlers alike.
+  const source = componentSource(component);
+  if (source && hasInlineFunctionProp(source, 'onClick')) {
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
       severity: 'warning',
-      message: `Component '${component.name}' may have inline function props causing unnecessary re-renders`,
+      message: `Component '${component.name}' passes an inline function prop (onClick) causing unnecessary re-renders`,
       componentName: component.name,
       rule: 'performance',
       violationType: 'performance',
       suggestion: 'Use useCallback to memoize event handlers passed as props'
     });
   }
-  
+
   return violations;
 }
 
@@ -269,35 +270,39 @@ function checkPerformanceIssues(
  */
 function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
   const violations: ReactViolation[] = [];
-  
-  if (!component.jsxElements) return violations;
-  
-  // Check for img without alt
-  if (component.jsxElements.includes('img') && 
-      !component.context?.includes('alt=')) {
+
+  const source = componentSource(component);
+  if (!source) return violations;
+
+  // Per-element <img> alt check: flag only when a specific <img> opening tag
+  // lacks an alt attribute. The old check (`jsxElements.includes('img')` &&
+  // `!context.includes('alt=')`) suppressed a finding whenever ANY `alt=` text
+  // appeared anywhere in a truncated context window — one <img> with alt hid a
+  // second <img> without it.
+  if (hasImgWithoutAlt(source)) {
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
       severity: 'warning',
-      message: `Component '${component.name}' may have <img> elements without alt attributes`,
+      message: `Component '${component.name}' has an <img> element without an alt attribute`,
       componentName: component.name,
       rule: 'accessibility',
       violationType: 'accessibility',
       suggestion: 'All <img> elements should have descriptive alt attributes for screen readers'
     });
   }
-  
-  // Check for click handlers on non-interactive elements
+
+  // Per-element click-handler check on non-interactive elements: the element's
+  // own opening tag carries `onClick`. The old check matched `onClick` anywhere
+  // in the component, not on the specific element.
   const nonInteractiveElements = ['div', 'span', 'section'];
   for (const element of nonInteractiveElements) {
-    if (component.jsxElements.includes(element) && 
-        component.context?.includes(`<${element}`) &&
-        component.context?.includes('onClick')) {
+    if (hasOnClickOnElement(source, element)) {
       violations.push({
         file: component.filePath,
         line: component.lineNumber,
         severity: 'warning',
-        message: `Component '${component.name}' may have onClick on a non-interactive element (contains <${element}>)`,
+        message: `Component '${component.name}' has onClick on a non-interactive <${element}> element`,
         componentName: component.name,
         rule: 'accessibility',
         violationType: 'accessibility',
@@ -305,7 +310,7 @@ function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
       });
     }
   }
-  
+
   return violations;
 }
 
@@ -314,11 +319,14 @@ function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
  */
 function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
   const violations: ReactViolation[] = [];
-  
-  // Simple heuristic: if component uses .map() and renders JSX, it should use keys
-  if (component.context?.includes('.map(') && 
+
+  // Heuristic: a component that maps over an array and renders JSX should key
+  // the rendered elements. Reported on the full component source (not a
+  // truncated context window) so a `.map(` call in the body is not missed.
+  const source = componentSource(component);
+  if (source && source.includes('.map(') &&
       component.jsxElements && component.jsxElements.length > 0 &&
-      !component.context?.includes('key=')) {
+      !source.includes('key=')) {
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
@@ -330,8 +338,88 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
       suggestion: 'Add a unique key prop to elements rendered in arrays/lists'
     });
   }
-  
+
   return violations;
+}
+
+/** Full component source for per-element JSX checks, falling back to context. */
+function componentSource(component: ComponentMetadata): string {
+  return component.body ?? component.context ?? '';
+}
+
+/**
+ * True when any `<img ...>` opening tag in the source lacks an `alt` attribute.
+ * Each tag is scanned in isolation, so a component with two images — one with
+ * alt and one without — is correctly flagged.
+ */
+function hasImgWithoutAlt(source: string): boolean {
+  const imgRe = /<img\b/ig;
+  let match: RegExpExecArray | null;
+  while ((match = imgRe.exec(source)) !== null) {
+    const tag = source.slice(match.index, findJsxTagEnd(source, match.index));
+    if (!/\balt\b\s*=/.test(tag)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when an opening tag `<element … onClick …>` carries an onClick handler.
+ * Scans each `<element` opening tag's own attribute span (skipping nested
+ * braces/strings/arrow `=>`) so an onClick on a *different* element never
+ * counts.
+ */
+function hasOnClickOnElement(source: string, element: string): boolean {
+  const openRe = new RegExp(`<${element}\\b`, 'ig');
+  let match: RegExpExecArray | null;
+  while ((match = openRe.exec(source)) !== null) {
+    const tag = source.slice(match.index, findJsxTagEnd(source, match.index));
+    if (/\bonClick\b/.test(tag)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when an event handler attribute (`onClick={…}`) is assigned an inline
+ * function — an arrow or `function` expression — rather than an identifier
+ * reference. Identifiers (`onClick={handleClick}`) are not inline props.
+ */
+function hasInlineFunctionProp(source: string, prop: string): boolean {
+  const attrRe = new RegExp(`\\b${prop}\\s*=\\s*\\{`, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = attrRe.exec(source)) !== null) {
+    const rest = source.slice(match.index + match[0].length);
+    // Inline arrow `() =>` / `(...) =>` / `x =>` or `function` expression.
+    if (/^\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/.test(rest) || /^\s*function\b/.test(rest)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Find the index just past the `>` that closes a JSX opening tag starting at
+ * `start`, skipping over string literals, `{…}` expression braces, and the `>`
+ * of an arrow function (`=>`) nested inside an expression. Returns the source
+ * length when no unbraced `>` is found (a malformed tag).
+ */
+function findJsxTagEnd(source: string, start: number): number {
+  let i = start;
+  let inString: '"' | "'" | '`' | null = null;
+  let braceDepth = 0;
+  while (i < source.length) {
+    const ch = source[i];
+    if (inString) {
+      if (ch === inString) inString = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = ch; i++; continue; }
+    if (ch === '{') { braceDepth++; i++; continue; }
+    if (ch === '}') { braceDepth = Math.max(0, braceDepth - 1); i++; continue; }
+    if (ch === '>' && braceDepth === 0) return i + 1;
+    i++;
+  }
+  return source.length;
 }
 
 /** Mutable traversal state threaded through the cycle-detection recursion. */

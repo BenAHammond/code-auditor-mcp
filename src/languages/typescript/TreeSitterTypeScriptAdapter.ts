@@ -584,21 +584,25 @@ class TsExtraction extends TsNameDocumentation {
     const isExported = this.isNodeExported(node);
     const jsDoc = this.extractDocumentation(node);
 
-    // Extract extends
+    // Extract extends / implements.
+    // tree-sitter-typescript nests these under a `class_heritage` child whose
+    // `extends_clause`/`implements_clause` children carry no field name, so
+    // `node.childForFieldName('extends')` returns undefined. Navigate by node
+    // type instead.
     let extendsName: string | undefined;
-    const extendsClause = node.childForFieldName?.('extends');
-    if (extendsClause) {
-      const firstTypeChild = extendsClause.namedChildren[0];
+    let implementsList: string[] | undefined;
+    const heritage = node.namedChildren.find((c: TreeSitterNode) => c.type === 'class_heritage');
+    if (heritage) {
+      const extendsClause = heritage.namedChildren.find((c: TreeSitterNode) => c.type === 'extends_clause');
+      const firstTypeChild = extendsClause?.namedChildren[0];
       if (firstTypeChild) {
         extendsName = firstTypeChild.text;
       }
-    }
 
-    // Extract implements
-    let implementsList: string[] | undefined;
-    const implementsClause = node.childForFieldName?.('implements');
-    if (implementsClause) {
-      implementsList = implementsClause.namedChildren.map((c: TreeSitterNode) => c.text);
+      const implementsClause = heritage.namedChildren.find((c: TreeSitterNode) => c.type === 'implements_clause');
+      if (implementsClause) {
+        implementsList = implementsClause.namedChildren.map((c: TreeSitterNode) => c.text);
+      }
     }
 
     const classBody = node.childForFieldName?.('body');

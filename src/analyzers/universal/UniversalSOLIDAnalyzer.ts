@@ -277,7 +277,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
    */
   private checkLiskov(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): void {
     if (ctx.config.checkLiskovSubstitution && cls.extends) {
-      violations.push(...this.checkLiskovSubstitution(cls, ctx.ast, ctx.adapter));
+      violations.push(...this.checkLiskovSubstitution(cls, ctx));
     }
   }
   
@@ -432,44 +432,59 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   }
   
   /**
-   * Check Liskov Substitution Principle
+   * Check Liskov Substitution Principle.
+   *
+   * The honest signal is an *override* that breaks the parent contract: a
+   * subclass method that throws where the same-named parent method does not.
+   * The old proxy flagged any subclass method containing a `throw_statement`,
+   * regardless of whether it actually overrode a parent method or whether the
+   * parent also threw. Parent resolution is within-file only (no type checker);
+   * an unresolvable (cross-file/imported) parent means we cannot establish the
+   * contract, and we do not fire — claim less rather than accuse blindly.
    */
-  private checkLiskovSubstitution(
-    cls: ClassInfo,
-    ast: AST,
-    adapter: LanguageAdapter
-  ): Violation[] {
+  private checkLiskovSubstitution(cls: ClassInfo, ctx: SolidContext): Violation[] {
     const violations: Violation[] = [];
-    
-    // Check if class overrides parent methods with incompatible signatures
-    // This would require more sophisticated type analysis
-    // For now, we'll check basic patterns
-    
+    const { ast, adapter } = ctx;
+
+    const parent = adapter.extractClasses(ast).find((c) => c.name === cls.extends);
+    if (!parent) return violations;
+
+    const parentMethods = new Map(parent.methods.map((m) => [m.name, m]));
+
     for (const method of cls.methods) {
       if (method.name === 'constructor') continue;
-      
-      // Check for methods that throw exceptions when parent doesn't
+      const parentMethod = parentMethods.get(method.name);
+      if (!parentMethod) continue; // a new method, not an override
+
       const methodNode = findNodeByLocation(ast.root, method.location.start);
-      if (methodNode) {
-        let hasThrow = false;
-        walkAST(methodNode, node => {
-          if (node.type === 'throw_statement') {
-            hasThrow = true;
-          }
-        });
-        
-        if (hasThrow) {
-          violations.push(this.createViolation(
-            ast.filePath,
-            method.location.start,
-            `Method "${cls.name}.${method.name}" throws exceptions. Ensure callers handle it.`,
-            { severity: 'suggestion', rule: 'solid/liskov-substitution', symbol: `${cls.name}.${method.name}` }
-          ));
-        }
+      const parentNode = findNodeByLocation(ast.root, parentMethod.location.start);
+      if (!methodNode || !parentNode) continue;
+
+      const childThrows = this.methodThrows(methodNode, adapter);
+      const parentThrows = this.methodThrows(parentNode, adapter);
+
+      if (childThrows && !parentThrows) {
+        violations.push(this.createViolation(
+          ast.filePath,
+          method.location.start,
+          `Method "${cls.name}.${method.name}" overrides "${parent.name}.${method.name}" and throws where the parent does not. Callers of the parent contract cannot handle it.`,
+          { severity: 'suggestion', rule: 'solid/liskov-substitution', symbol: `${cls.name}.${method.name}` }
+        ));
       }
     }
-    
+
     return violations;
+  }
+
+  /** True when the given method/function node contains a `throw` statement. */
+  private methodThrows(methodNode: ASTNode, adapter: LanguageAdapter): boolean {
+    let hasThrow = false;
+    walkAST(methodNode, (node) => {
+      if (node.type === 'throw_statement') {
+        hasThrow = true;
+      }
+    });
+    return hasThrow;
   }
   
   /**

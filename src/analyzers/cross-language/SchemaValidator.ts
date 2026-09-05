@@ -569,13 +569,40 @@ function extractTypeScriptInterface(entity: CrossLanguageEntity): SchemaDefiniti
   };
 }
 
+/**
+ * True when a Go field type is a non-nilable value type (hence always present),
+ * i.e. "required". Nilable reference types — pointers, slices, maps, channels,
+ * functions, and the built-in interface types — are optional.
+ */
+export function isGoValueType(type: string | undefined): boolean {
+  if (!type) return false;
+  const t = type.trim();
+  if (t === 'interface' || t === 'interface{}' || t === 'any' || t === 'error') {
+    return false;
+  }
+  // Nilable reference types. `[]` is a slice (nilable); `[N]` is a fixed-size
+  // array (value type), so only the empty-bracket form is nilable.
+  if (t.startsWith('*')) return false;       // pointer
+  if (t.startsWith('[]')) return false;       // slice
+  if (t.startsWith('map[')) return false;     // map
+  if (t.startsWith('chan') || t.startsWith('<-chan')) return false; // channel
+  if (t.startsWith('func')) return false;     // function
+  return true;
+}
+
 function extractGoStruct(entity: CrossLanguageEntity): SchemaDefinition | null {
   if (entity.type !== 'struct') return null;
 
   const fields = entity.metadata?.fields?.map((field: any) => ({
     name: field.name,
     type: field.type,
-    required: field.isExported, // Simplified assumption
+    // A Go field is required iff it is a non-nilable value type. Pointers
+    // (`*T`), slices, maps, channels, functions, and interfaces are nilable and
+    // therefore optional. The old `isExported` proxy was inverted: an exported
+    // pointer (`Email *string`) is optional, and an unexported value (`id int`)
+    // is always present — exportedness is a visibility signal, not a
+    // requiredness one.
+    required: isGoValueType(field.type),
     description: field.tag
   })) || [];
 

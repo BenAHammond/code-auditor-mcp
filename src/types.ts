@@ -1136,6 +1136,10 @@ export interface ComponentMetadata extends FunctionMetadata {
   hasErrorBoundary?: boolean;
   complexity?: number;
   isExported: boolean;
+  /** Full source text of the component node (untruncated), so per-element
+   *  JSX checks (accessibility/performance) can inspect each element's own
+   *  attributes rather than a 500-char context window. */
+  body?: string;
 }
 
 export interface PropDefinition {
