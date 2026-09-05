@@ -2,6 +2,57 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.5.0] — 2026-09-05
+
+### Rule authenticity — the dishonest rules now do what they claim
+The authenticity audit found four rules whose predicates matched a name or a
+doc-comment proxy instead of the thing their message claimed. All four are
+reimplemented against the real AST:
+
+- **Go `solid/liskov-substitution`** — walks method bodies for `panic()` calls
+  instead of matching "panic" in the name.
+- **Go `errors/error-handling`** — an errcheck-style walk: an `err` assigned from
+  a call and never checked/returned/passed/ignored is a dropped error (bare
+  returns in named-`err` functions count as a check).
+- **Go `goroutines/concurrency`** — a `go` statement with no sync primitive or
+  channel handoff, instead of matching "go"/"async"/"concurrent" in the name.
+- **TS `data-access/missing-org-filter`** — derives tenant-scoped tables from the
+  schema catalog; the hardcoded English `fallbackOrgTables` list is deleted.
+
+### Cannot-fire reporting
+Ten rules that can never fire (their extractor never populates the field they
+read) now emit an explicit `cannot-fire` diagnostic naming the missing extractor
+and field, distinct from `notApplicable` — a standing record of a broken rule,
+not a per-project "nothing to see here."
+
+### Crude / overclaim rule cleanup
+- Reworded seven messages that asserted more than the predicate computed.
+- Renamed crude size-proxies (`single-responsibility`, `interface-segregation`,
+  `dependency-inversion`, `complex-query`, `unfiltered-query`, documentation
+  length checks, …) to claim only what is measured.
+- `schema/table-naming-convention` replaced its uppercase-proxy with an explicit
+  `/^[a-z][a-z0-9_]*$/` conformance check.
+- `styles/token-bypass` now fires on non-color tokens (the `valueType !== 'color'`
+  gate is removed), so length/spacing token bypasses are caught.
+- `dependency-graph` (circular-dependency, tight-coupling, hub-nodes, …) renders
+  the cycle/node data it already computed instead of flattening to "Found N".
+
+### Decide — built the tractable ones, cut the rest
+`solid/liskov-substitution` (TS), `react/accessibility`, `react/performance`, and
+`schema-validator/missing-field` are built against real inputs; the cohesion/
+dataflow-dependent rules are cut or kept-as-renamed.
+
+### Near-miss executor
+Every declared near-miss sample now runs through its real analyzer and asserts
+zero findings (28 wired); the remaining 66 are classified per-rule with the
+precise missing input and `it.skip`ped, so the gap is visible rather than faked.
+
+### Go routing fix
+The Go-subprocess routing decision no longer counts a `.go` file buried in a
+dependency's `node_modules` as a source file — a pure-TS project with such a
+dependency is no longer misrouted through the Go analyzer (which dropped every
+non-Go analyzer).
+
 ## [3.4.18] — 2026-09-03
 
 ### Index relocation
