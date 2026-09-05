@@ -438,7 +438,13 @@ export function checkNamingConventions(
   const violations: Violation[] = [];
 
   for (const ref of references) {
-    if (/[A-Z]/.test(ref.table) && !ref.table.endsWith('Table')) {
+    // Conformance check instead of an uppercase-proxy: a table name is valid
+    // when it is snake_case (`/^[a-z][a-z0-9_]*$/`), or when it is an ORM
+    // class name following the `Table`-suffix policy (e.g. `UsersTable` for
+    // table `users`).
+    const isSnakeCase = /^[a-z][a-z0-9_]*$/.test(ref.table);
+    const isTableSuffix = ref.table.endsWith('Table');
+    if (!isSnakeCase && !isTableSuffix) {
       violations.push(createSchemaViolation(
         filePath,
         ref.location,
