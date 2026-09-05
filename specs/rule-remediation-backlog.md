@@ -129,6 +129,8 @@ The proxy measures a real, named, cheap thing (size/count/presence); only the la
 | `documentation/*` (4) | `jsDoc.length < N` | "missing a doc comment ≥ N chars" |
 | `dry/duplicate-import` | same-source count | "module imported N times" |
 
+**Applied 2026-09-04** (commits `7c39259` + `13dd2cb`): Go (func/struct SRP, interface-segregation, dependency-inversion), data-access (complex-query, unfiltered-query), schema-validator (schema-field-mismatch), documentation (function/class/method) messages renamed to state what is computed; registry templates updated to match. `schema/table-naming-convention` was a **logic** change (uppercase-proxy → explicit `/^[a-z][a-z0-9_]*$/` + `Table`-suffix), committed separately. TS `single-responsibility`/`interface-segregation`, `conventions/error-handling`, and `dry/duplicate-import` messages already described the proxy and were left as-is (`duplicate-import`'s fabricated `{line:1,column:1}` location is a render fix, tracked separately).
+
 ## Bucket 7 — `decide` (crude: invest or cut)
 
 The honest version needs inputs the pipeline doesn't currently produce. Score each against the criterion; build the ones that pass, cut/keep-as-renamed the rest.
