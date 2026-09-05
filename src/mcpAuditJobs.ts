@@ -742,6 +742,19 @@ function mergeCoverage(
       merged.push({ ruleId, analyzer, state: 'clean', count: 0 });
       continue;
     }
+    // Spec 44 bucket 2 — a `cannot-fire` rule is broken in the tool (same verdict
+    // every shard), so it outranks a per-shard `unassessed`/`notApplicable`.
+    const cannotFire = src.find((r) => r.state === 'cannot-fire');
+    if (cannotFire) {
+      merged.push({
+        ruleId,
+        analyzer,
+        state: 'cannot-fire',
+        count: 0,
+        reason: cannotFire.reason,
+      });
+      continue;
+    }
     const unassessed = src.find((r) => r.state === 'unassessed');
     if (unassessed) {
       merged.push({ ruleId, analyzer, state: 'unassessed', count: 0 });

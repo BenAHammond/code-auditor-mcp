@@ -147,15 +147,17 @@ export interface Violation {
  * Per-rule coverage classification — emitted on every audit.
  * @see buildCoverageReport() in pipeline.ts
  */
-export type RuleCoverageState = 'fired' | 'clean' | 'notApplicable' | 'unassessed';
+export type RuleCoverageState = 'fired' | 'clean' | 'notApplicable' | 'cannot-fire' | 'unassessed';
 
 export interface RuleCoverage {
   ruleId: string;
   analyzer: string;
   state: RuleCoverageState;
-  /** Violation count for this rule (0 for notApplicable/unassessed/clean). */
+  /** Violation count for this rule (0 for notApplicable/unassessed/clean/cannot-fire). */
   count: number;
-  /** For notApplicable: what input was missing. For unassessed: why applicability couldn't be confirmed. */
+  /** For notApplicable: what input was missing. For cannot-fire: why the rule is
+   *  broken in the tool (the extractor/field that never emits). For unassessed:
+   *  why applicability couldn't be confirmed. */
   reason?: string;
 }
 
@@ -503,8 +505,9 @@ export interface PipelineResult {
     ruleTiming?: Array<{ ruleId: string; totalMs: number; calls: number }>;
     /** Spec 39: per-rule derived applicability evaluated over the pipeline's
      *  computed inputs. Consumed by buildCoverageReport to report inapplicable
-     *  rules as `notApplicable` with a reason. */
-    ruleApplicability?: Array<{ ruleId: string; applicable: boolean; reason?: string }>;
+     *  rules as `notApplicable` (or `cannot-fire`, Spec 44 bucket 2) with a
+     *  reason. */
+    ruleApplicability?: Array<{ ruleId: string; applicable: boolean; reason?: string; kind?: 'notApplicable' | 'cannot-fire' }>;
     /** Spec 44: per-file accounting (analyzed vs. dropped, with reasons). */
     fileAccounting?: FileAccountingSummary;
   };

@@ -207,7 +207,7 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
 // Spec 28 Part B — Report-shape contract assertions
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const VALID_COVERAGE_STATES = new Set(['fired', 'clean', 'notApplicable', 'unassessed']);
+const VALID_COVERAGE_STATES = new Set(['fired', 'clean', 'notApplicable', 'cannot-fire', 'unassessed']);
 const VALID_STATUS_DISCRIMINANTS = new Set(['visitor-ran', 'reducer-ran', 'notRun']);
 
 describe('Spec 28 — report-shape contract (real audit result)', () => {

@@ -4,6 +4,9 @@
  * A rule's applicability is a predicate over its declared inputs, evaluated
  * before the rule runs. A rule whose predicate is false reports `notApplicable`
  * with a reason naming the absent input — not silence, and not zero findings.
+ * A rule that is structurally unreachable (its predicate reads a field no
+ * extractor populates) reports `cannot-fire` instead, distinct from a per-corpus
+ * `notApplicable`.
  *
  * This module is intentionally free of analyzer imports: pipeline.ts imports it
  * statically, and the analyzer classes pull in pipeline.js (via
@@ -15,6 +18,14 @@
 export interface RuleApplicability {
   applicable: boolean;
   reason?: string;
+  /**
+   * Discriminates a rule that is *inapplicable to this corpus* (`notApplicable`,
+   * the default) from one that is *broken in the tool* (`cannot-fire`). A
+   * `cannot-fire` rule has no emission site — the extractor its predicate reads
+   * never populates the field — so it reports the same verdict on every project,
+   * not just this one. Defaults to `notApplicable` when omitted.
+   */
+  kind?: 'notApplicable' | 'cannot-fire';
 }
 
 /**
@@ -62,51 +73,42 @@ export function evaluateRuleApplicability(
   if (ruleId === 'missing-org-filter') {
     return evaluateMissingOrgFilterApplicability(dataAccessConfig, ddlColumns);
   }
-  if (UNREACHABLE_API_CONTRACT_RULES.has(ruleId)) {
-    return {
-      applicable: false,
-      reason: 'endpoint/call extraction does not populate response/auth metadata — rule unreachable until extraction is implemented',
-    };
-  }
-  if (FABRICATED_API_CONTRACT_RULES.has(ruleId)) {
-    return {
-      applicable: false,
-      reason: 'endpoint/call extraction derives method and URL from function names (placeholder stubs) — findings are fabricated, not real, until extraction is implemented',
-    };
+  const cannotFireReason = CANNOT_FIRE_RULES.get(ruleId);
+  if (cannotFireReason !== undefined) {
+    return { applicable: false, reason: cannotFireReason, kind: 'cannot-fire' };
   }
   return null;
 }
 
 /**
- * api-contract rules that cannot fire with the current endpoint/call
- * extraction. `api-type-mismatch` and `auth-mismatch` read
- * `responseSchema`/`expectedResponseType`/`authentication`, which
- * extractEndpoints/extractAPICalls never populate; `api-extra-field` and
- * `api-missing-field` have no emission site at all. See the "UNREACHABLE RULES"
- * note in APIContractAnalyzer.ts. They report `notApplicable` here rather than a
- * misleadingly clean zero. Remove an id when extraction begins emitting it.
+ * Spec 44 bucket 2 — rules that are structurally unreachable: their predicate
+ * reads a field no extractor populates (or they are a legacy alias with no
+ * emission site). Unlike `notApplicable` ("this corpus has no input for me"),
+ * a `cannot-fire` rule reports the same verdict on every project — it is a
+ * standing finding about the analyzer, so it stays visible rather than folding
+ * into a per-project "nothing to see here".
+ *
+ * Each reason names the specific extractor and the specific field (or absence
+ * of an emission site) so a reader can tell *why* it cannot fire. Remove an id
+ * here when its extraction begins emitting it.
  */
-const UNREACHABLE_API_CONTRACT_RULES = new Set([
-  'api-type-mismatch',
-  'api-extra-field',
-  'api-missing-field',
-  'auth-mismatch',
-]);
+const CANNOT_FIRE_RULES: ReadonlyMap<string, string> = new Map([
+  // api-contract — reads response/auth metadata that extractEndpoints /
+  // extractAPICalls never populate, or has no emission site at all.
+  ['api-type-mismatch', 'cannot fire — extractEndpoints/extractAPICalls never populate responseSchema/expectedResponseType/deprecated, the fields this rule reads'],
+  ['missing-endpoint', 'cannot fire — gated: extractMethodFrom*/extractPathFromGo derive method and URL from function names (name proxy), so any finding is fabricated'],
+  ['api-extra-field', 'cannot fire — no emission site: the analyzer has no code that produces this rule'],
+  ['api-missing-field', 'cannot fire — no emission site: the analyzer has no code that produces this rule'],
+  ['method-mismatch', 'cannot fire — gated: extractMethodFrom* derives the verb from function names (name proxy), so any finding is fabricated'],
+  ['auth-mismatch', 'cannot fire — extractEndpoints never sets `authentication`, the field this rule reads'],
 
-/**
- * api-contract rules that DO fire with the current extraction, but fire on
- * fabricated data. `extractAPICalls`/`extractEndpoints` derive `method` and
- * `url`/`path` from the entity NAME (e.g. `getJson` → `GET /api/getjson`) — the
- * "would extract … in real implementation" stubs. `missing-endpoint` therefore
- * reported a fabricated `/api/<name>` for every function whose name contains
- * "api"/"request" or purpose contains "fetch"/"axios" (78 on recall, all
- * false); `method-mismatch` compares the same name-derived verb against a
- * name-derived endpoint method and is equally unreal. Report `notApplicable`
- * rather than a fabricated 78 or a misleading clean zero.
- */
-const FABRICATED_API_CONTRACT_RULES = new Set([
-  'missing-endpoint',
-  'method-mismatch',
+  // schema — file errors are routed to state.errors, never a file-error violation.
+  ['file-error', 'cannot fire — schema file errors are routed to state.errors, never emitted as a `file-error` violation'],
+
+  // schema-validator — legacy alias or reads constraints/version the extractor never assigns.
+  ['field-mismatch', 'cannot fire — legacy alias: the validator emits `schema-field-mismatch`, never `field-mismatch`'],
+  ['constraint-mismatch', 'cannot fire — extractSchemas never assigns `constraints` on fields, the input this rule reads'],
+  ['version-mismatch', 'cannot fire — extractSchemas never assigns `version` on schemas, the input this rule reads'],
 ]);
 
 /**

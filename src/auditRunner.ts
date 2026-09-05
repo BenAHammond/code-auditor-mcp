@@ -717,7 +717,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           new Map(
             (pipelineResult.metadata?.ruleApplicability ?? []).map((a) => [
               a.ruleId,
-              { applicable: a.applicable, reason: a.reason },
+              { applicable: a.applicable, reason: a.reason, kind: a.kind },
             ]),
           ),
         );

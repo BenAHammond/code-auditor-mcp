@@ -330,6 +330,7 @@ program
           const clean = coverage.filter(c => c.state === 'clean');
           const unassessed = coverage.filter(c => c.state === 'unassessed');
           const notApplicable = coverage.filter(c => c.state === 'notApplicable');
+          const cannotFire = coverage.filter(c => c.state === 'cannot-fire');
           const firedCount = fired.reduce((s, c) => s + c.count, 0);
 
           console.log(chalk.gray(`\n── Coverage ─────────────────────────────────`));
@@ -337,10 +338,17 @@ program
             `  ${fired.length} fired (${firedCount.toLocaleString()} violations), ` +
             `${clean.length} clean, ` +
             `${unassessed.length} unassessed, ` +
-            `${notApplicable.length} notApplicable ` +
+            `${notApplicable.length} notApplicable, ` +
+            `${cannotFire.length} cannot-fire ` +
             `(${coverage.length} rules registered)`
           );
 
+          if (cannotFire.length > 0) {
+            console.log(chalk.yellow(`  ── Cannot Fire (broken in the tool) ──`));
+            for (const c of cannotFire) {
+              console.log(`    ${c.ruleId}: ${c.reason ?? 'unknown'}`);
+            }
+          }
           if (notApplicable.length > 0) {
             console.log(chalk.gray(`  ── Not Applicable ──`));
             for (const c of notApplicable) {
@@ -2277,7 +2285,7 @@ program
   .option('--analyzer <analyzer>', 'Filter by analyzer')
   .option('--file <file>', 'Filter by file path (substring match)')
   .option('--severity <severity>', 'Filter by severity (critical|warning|suggestion)')
-  .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|unassessed); omit value for all')
+  .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|cannot-fire|unassessed); omit value for all')
   .option('--count', 'Group findings by analyzer/rule with counts')
   .option('--limit <n>', 'Max findings to return (0 = unbounded)', '50')
   .option('--offset <n>', 'Findings offset', '0')

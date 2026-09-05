@@ -888,6 +888,7 @@ export async function runPipeline(
         ruleId,
         applicable: app.applicable,
         reason: app.reason,
+        kind: app.kind,
       })),
       tableCatalog,
       ...(skippedFiles.length > 0 && { skippedFiles }),
@@ -1119,6 +1120,22 @@ export function buildCoverageReport(
       continue;
     }
 
+    // Spec 44 bucket 2 — a `cannot-fire` rule is broken in the tool (its
+    // predicate reads a field no extractor populates). That verdict holds on
+    // every run regardless of whether the analyzer found input, so it precedes
+    // the run-status checks below.
+    const cannotFire = ruleApplicability?.get(ruleId);
+    if (cannotFire && !cannotFire.applicable && cannotFire.kind === 'cannot-fire') {
+      coverage.push({
+        ruleId,
+        analyzer: analyzerName,
+        state: 'cannot-fire',
+        count: 0,
+        reason: cannotFire.reason,
+      });
+      continue;
+    }
+
     const result = analyzerResults[analyzerName];
 
     // Analyzer not in results → notRun-equivalent
@@ -1190,6 +1207,8 @@ export function buildCoverageReport(
 
     // Spec 39 — derived applicability. A rule whose predicate evaluated false is
     // `notApplicable` with the predicate's reason, before any finding is counted.
+    // (`cannot-fire` was already reported above; only per-corpus `notApplicable`
+    // reaches this branch.)
     const applicability = ruleApplicability?.get(ruleId);
     if (applicability && !applicability.applicable) {
       coverage.push({

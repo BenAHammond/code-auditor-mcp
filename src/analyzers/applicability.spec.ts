@@ -116,21 +116,51 @@ describe('evaluateRuleApplicability — missing-org-filter (R3)', () => {
   });
 });
 
-describe('evaluateRuleApplicability — api-contract rules', () => {
-  it('marks the four unreachable rules notApplicable', () => {
-    for (const ruleId of ['api-type-mismatch', 'api-extra-field', 'api-missing-field', 'auth-mismatch']) {
+describe('evaluateRuleApplicability — cannot-fire rules (Spec 44 bucket 2)', () => {
+  it('marks the four unreachable api-contract rules cannot-fire naming the field', () => {
+    const expected: Record<string, string> = {
+      'api-type-mismatch': 'responseSchema',
+      'api-extra-field': 'no emission site',
+      'api-missing-field': 'no emission site',
+      'auth-mismatch': 'authentication',
+    };
+    for (const [ruleId, needle] of Object.entries(expected)) {
       const app = evaluateRuleApplicability(ruleId, undefined, undefined);
       expect(app?.applicable).toBe(false);
-      expect(app?.reason).toContain('unreachable');
+      expect(app?.kind).toBe('cannot-fire');
+      expect(app?.reason).toContain(needle);
     }
   });
 
-  it('marks missing-endpoint and method-mismatch notApplicable as fabricated', () => {
+  it('marks the two fabricated api-contract rules cannot-fire naming the name proxy', () => {
     for (const ruleId of ['missing-endpoint', 'method-mismatch']) {
       const app = evaluateRuleApplicability(ruleId, undefined, undefined);
       expect(app?.applicable).toBe(false);
-      expect(app?.reason).toContain('fabricated');
+      expect(app?.kind).toBe('cannot-fire');
+      expect(app?.reason).toContain('name proxy');
     }
+  });
+
+  it('marks the schema/schema-validator rules cannot-fire naming the missing extractor', () => {
+    const expected: Record<string, string> = {
+      'file-error': 'state.errors',
+      'field-mismatch': 'schema-field-mismatch',
+      'constraint-mismatch': 'constraints',
+      'version-mismatch': 'version',
+    };
+    for (const [ruleId, needle] of Object.entries(expected)) {
+      const app = evaluateRuleApplicability(ruleId, undefined, undefined);
+      expect(app?.applicable).toBe(false);
+      expect(app?.kind).toBe('cannot-fire');
+      expect(app?.reason).toContain(needle);
+    }
+  });
+
+  it('keeps cannot-fire distinct from notApplicable (missing-org-filter)', () => {
+    const cannotFire = evaluateRuleApplicability('file-error', undefined, undefined);
+    const notApplicable = evaluateRuleApplicability('missing-org-filter', undefined, []);
+    expect(cannotFire?.kind).toBe('cannot-fire');
+    expect(notApplicable?.kind).toBeUndefined();
   });
 });
 
