@@ -1165,5 +1165,13 @@ function parseGoAnalyzerResponse(stdout: string): AnalysisResult {
     throw new Error(`Go analyzer error: ${response.error.message}`);
   }
 
-  return response.result;
+  // A Go nil slice marshals to JSON `null`; normalize to [] so a zero-finding
+  // run (e.g. a target whose only .go files are *_test.go and were all
+  // exempted) reports "0 violations" rather than crashing downstream callers
+  // that read `.length` on null. The Go source now returns non-nil empty
+  // slices too; this is defense-in-depth for any older binary.
+  const result = response.result;
+  result.violations = result.violations || [];
+  result.indexEntries = result.indexEntries || [];
+  return result;
 }

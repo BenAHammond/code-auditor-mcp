@@ -19,7 +19,8 @@ func NewIndexer(parser *Parser) *Indexer {
 
 // GenerateIndexEntries creates index entries for all parsed entities
 func (i *Indexer) GenerateIndexEntries() []IndexEntry {
-	var entries []IndexEntry
+	// Non-nil empty slice so zero entries serialize to [] not null.
+	entries := make([]IndexEntry, 0)
 
 	// Index functions
 	functions := i.parser.ExtractFunctions()

@@ -279,7 +279,11 @@ func (a *Analyzer) filterViolationsBySeverity(violations []Violation) []Violatio
 		return violations
 	}
 
-	var filtered []Violation
+	// A non-nil empty slice so "no violations" serializes to [] not null — a
+	// nil slice marshals to JSON null, which the TypeScript caller reads as a
+	// crash rather than an empty result (the same silent-empty class this whole
+	// subprocess boundary is built to remove).
+	filtered := make([]Violation, 0, len(violations))
 	for _, violation := range violations {
 		if severityOrder[violation.Severity] >= minLevel {
 			filtered = append(filtered, violation)
