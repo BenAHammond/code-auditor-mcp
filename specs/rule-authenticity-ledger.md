@@ -146,3 +146,42 @@ Append-only. One row per rule/check, seven fields. Running total updated in the 
 **solid — placeholder comment.** `UniversalSOLIDAnalyzer.ts:445-446` — "Check if class overrides parent methods with incompatible signatures / This would require more sophisticated type analysis / For now, we'll check basic patterns" (the LSP check). This is the one live placeholder; the `maxClassComplexity` heuristic is DEPRECATED, not live (`:14-22`).
 
 **solid — no near-miss test.** Only `solid/dependency-inversion` has an execution-level near-miss suite (`UniversalSOLIDAnalyzer.spec.ts` — 7 tests, all DIP: builtins/self/lowercase, member-access, constructor-injection, unresolved bare type). The other six rules declare registry near-miss samples but are never executed against the real analyzer.
+
+## Notes — data-access
+**No near-miss test.** No dedicated spec file. Four of its six rules are exercised execution-level only through the historical-false-positive suite `src/__tests__/nearMissGuards.spec.ts` (pool.length receiver, COUNT/WHERE receiver, `createTable` module-provenance, `escapeSql` sanitizer gate); the remaining rules (`missing-org-filter`, `complex-query`, `unfiltered-query`, `hardcoded-connection`) declare registry near-miss samples but have no execution-level test.
+
+## Notes — conventions
+**No near-miss test.** No spec file exists — all five rules (`usage-pair`, `import-form`, `error-handling`, `export-shape`, `naming`) declare registry near-miss samples but are never executed against the real analyzer. All five are honest, driven by the mined `conventions` table rather than hardcoded proxies.
+
+## Notes — styles
+**Placeholders / dead code.** `parseLengthToPx` documents "Approximate conversions (assuming 16px base for rem/em)" (`UniversalStylesAnalyzer.ts:301-302`). `TAILWIND_SPACING_PX` / `TAILWIND_SCALE_VALUES` (`:55-67`) are defined but never used — `inferScaleStep` uses a hardcoded `[2,4,8,16]` list, contradicting its own "Uses the Tailwind scale" doc comment.
+**No near-miss test.** Has a large spec (`UniversalStylesAnalyzer.spec.ts`, 47.3K) plus one guard in `nearMissGuards.spec.ts` (CSS-comment class). `token-bypass` and `off-scale` carry the color-only gate / dead-scale defects above but their near-miss coverage is not separately asserted.
+
+## Notes — schema
+**No placeholders** in the emission paths. `file-error` is the only `cannot-fire` rule. The JSON-schema family's registry `message` strings are, as a group, template paraphrases that do not match the emitted strings (which use `at ${path}` / `expected…got` phrasing and drop the `{field}` placeholder). Every other rule's predicate is a direct comparison of parsed schema/data.
+
+## Notes — schema-validator
+**Placeholders.** `required: field.isExported, // Simplified assumption` (`SchemaValidator.ts:578`); sibling extraction stubs `// Simplified protobuf extraction` (`:594`), `// Simplified GraphQL extraction` (`:607`), `// Simplified JSON Schema extraction` (`:620`) leave `fields: []` with no constraints. These stubs are why `constraint-mismatch` and `version-mismatch` cannot fire — no extractor populates `constraints`/`version`.
+**Legacy alias.** `field-mismatch` survives only in the type union and registry; the renamed check emits under `schema-field-mismatch`.
+
+## Notes — cross-domain
+**Placeholder.** `"R3 — Validation Bypass (future):"` (`CrossDomainAnalyzer.ts:12`).
+**No near-miss test.** No spec file. Both `written-never-read`/`read-never-written` are honest set comparisons; `transaction-boundary` and `validation-bypass` are the crude/overclaim pair (reachability ≠ validation, write-count ≠ boundary).
+
+## Notes — dependency-graph
+**No placeholders.** All eight rules share one defect: the registry `message` strings are template-only and none matches the emitted aggregate `issueDesc`/`suggestionDesc` text. The `{cycle}/{node}/{count}/{a}/{b}/{nodes}` placeholders overreach what is rendered — and in `tight-coupling`/`reduce-coupling`, what is computed (cluster-level cohesion, not pairwise coupling). The four `break-cycles`/`reduce-coupling`/`split-responsibilities`/`review-orphans` are not independent predicates — they are static remediation strings gated only by the paired issue's count.
+
+## Notes — api-contract
+**All six `cannot-fire`.** Four (`api-type-mismatch`, `api-extra-field`, `api-missing-field`, `auth-mismatch`) are unreachable because `extractEndpoints` never populates `responseSchema`/`expectedResponseType`/`deprecated`/`authentication`/field sets. Two (`missing-endpoint`, `method-mismatch`) are gated to `notApplicable` via `FABRICATED_API_CONTRACT_RULES` because their computation is a name proxy (URL/method fabricated from function names) — gating was the correct response; ungating would emit dishonest findings. `applicability.spec.ts` tests the gating, not near-misses.
+
+## Notes — documentation
+**No placeholders.** Every function/class/method rule reduces to `jsDoc.length < minDescriptionLength` — presence + character length, not content. `parameter-documentation` and `return-documentation` are the two honest regex-based checks. `file-documentation` is default-OFF. The legacy `documentationAnalyzer.ts` path (MCP tools) emits still-different messages and never emits `method-documentation`.
+
+## Notes — react
+**No dedicated spec file.** One guard in `nearMissGuards.spec.ts` (`createElement(Button)` raw-element). `complexity` and `performance` rule ids are each overloaded with multiple distinct claims (complexity also emits "circular dependency"; performance emits memoization + inline-function-props + missing-keys), while the registry message maps to only one. `missing-props` and the memoization branch of `performance` are default-disabled. `accessibility` is the weakest — pure substring tests over a 500-char context string with no element/attribute attribution. Upstream NOTE `reactDetection.ts:296-300` documents the missing TypeChecker capability.
+
+## Notes — dry
+**No spec file.** Two honest exact-equality detections (`dry/duplicate`, `duplicate-string-literal`) and two flagged: `dry/structural-similarity` never computes the `{similarity}%` its registry message claims (and ignores its own `similarityThreshold`), and `duplicate-import` fabricates its location at 1:1. `checkStructuralSimilarity`, `checkStrings`, `checkImports` all default `false`. Structural mask regex-literal normalization is annotated "approximate — /pattern/flags" (`:197`).
+
+## Notes — invariants
+**No placeholders; both honest.** The two rules emit a violation only when a real validation/engine error string exists. Both share the same message-envelope defect: the registry's `Invalid invariant config: ` / `Invariant rule engine error: ` prefixes are never emitted (the code emits `Rule "<id>": <msg>` and the raw `result.errors` string). A one-line prefix wrap fixes each.
