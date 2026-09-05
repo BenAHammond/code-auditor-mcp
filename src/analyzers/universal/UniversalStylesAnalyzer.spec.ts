@@ -626,6 +626,25 @@ describe('Detector 4 — Token Bypass', () => {
     expect(bypasses.length).toBe(0);
   });
 
+  it('does NOT fire against the bundled Tailwind defaults (no project config)', async () => {
+    // The Tailwind loader seeds `built-in defaults` tokens when the project has
+    // no Tailwind config. Those are not the project's tokens — a plain-CSS
+    // project must not have raw `#fff` flagged as "bypassing colors.white".
+    db.run(`INSERT INTO style_tokens (id, name, value, file_path, mechanism)
+      VALUES (9999, 'colors.white', '#ffffff', 'built-in defaults', 'tailwind-theme')`);
+    insertDecl({
+      property: 'background',
+      raw_value: '#fff',
+      token_ref: null,
+      file_path: 'src/plain.css',
+      line: 1,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(0);
+  });
+
   it('matches shorthand hex against expanded token values', async () => {
     // Token stores #ffffff (expanded), raw is #fff
     insertToken('--color-white', '#ffffff');

@@ -1144,6 +1144,13 @@ function buildTokenValueMap(
 ): Map<string, { name: string; valueType: string | null }> {
   const tokenValueMap = new Map<string, { name: string; valueType: string | null }>();
   for (const t of tokens) {
+    // The Tailwind loader falls back to the bundled v4 default palette when a
+    // project has no Tailwind config, seeding those tokens with
+    // `file_path === 'built-in defaults'`. Those are not the project's tokens —
+    // a plain-CSS project that never opted into a token system would otherwise
+    // have every raw `#fff` flagged as "bypassing colors.white", a fabricated
+    // finding. Only tokens the project actually defined can be bypassed.
+    if (t.file_path === 'built-in defaults') continue;
     const normalizedTokenVal = normalizeValue(t.value, '__token__');
     tokenValueMap.set(t.value, { name: t.name, valueType: normalizedTokenVal?.type ?? null });
   }
