@@ -681,6 +681,146 @@ program
     }
   });
 
+// Self-audit gate (Spec 33 Item 15 + Spec 44 remediation). Runs the full
+// analyzer pipeline over the tool's own production source and asserts zero
+// *blocking* (critical/warning) findings in the self-audit scope — the same
+// scope + severity contract as scripts/verify-self.mjs, but callable from the
+// shipped CLI so the edit-time plugin hook can enforce it. `verify:self` (the
+// release gate) stays authoritative; this command is its per-edit sibling.
+//
+// Scope semantics: a file is a self-audit target iff its path is under
+// `analyzers/` or `languages/` (relative to the project's `src/`) and is not a
+// test/spec/fixture or the declarative `ruleRegistry.ts` data table. Mirroring
+// verify-self.mjs keeps the two gates from drifting.
+function selfAuditScopePath(file: string): string | null {
+  const idx = file.lastIndexOf('/src/');
+  if (idx === -1) return null;
+  return file.slice(idx + '/src/'.length);
+}
+
+function isSelfAuditInScope(file: string): boolean {
+  const rel = selfAuditScopePath(file);
+  if (!rel) return false;
+  if (!(rel.startsWith('analyzers/') || rel.startsWith('languages/'))) return false;
+  if (/(__tests__|\.test\.|\.spec\.|fixtures)/.test(rel)) return false;
+  if (rel === 'analyzers/ruleRegistry.ts') return false;
+  return true;
+}
+
+program
+  .command('self-audit [paths...]')
+  .description('Audit the tool\'s own analyzers/ + languages/ source and fail on blocking findings')
+  .option('--json', 'Output violations as machine-readable JSON to stdout')
+  .option('--stdin', 'Read file paths from stdin (one per line)')
+  .option('-p, --path <projectPath>', 'Project root path', process.cwd())
+  .option('--fail-on <severity>', 'Blocking severity floor: critical, warning, or suggestion', 'warning')
+  .action(async (paths: string[], options: Record<string, any>) => {
+    try {
+      await initParsers();
+
+      const validSeverities: Severity[] = ['critical', 'warning', 'suggestion'];
+      const failOnSeverity = options.failOn as Severity;
+      if (!validSeverities.includes(failOnSeverity)) {
+        console.error(
+          chalk.red(`Invalid --fail-on severity: "${failOnSeverity}". Must be one of: ${validSeverities.join(', ')}`)
+        );
+        process.exit(1);
+      }
+
+      const fileSet = new Set<string>();
+
+      if (options.stdin) {
+        const rl = createInterface({
+          input: process.stdin,
+          output: undefined as any,
+          terminal: false
+        });
+        for await (const line of rl) {
+          const trimmed = line.trim();
+          if (trimmed) fileSet.add(trimmed);
+        }
+      }
+
+      for (const p of paths) fileSet.add(p);
+
+      // No explicit paths → audit the whole `src` tree (mirrors verify:self).
+      if (fileSet.size === 0) {
+        fileSet.add(join(options.path, 'src'));
+      }
+
+      // Resolve to absolute paths; `createAuditRunner` treats an array scope as
+      // explicit files/globs (directories included) and, for scoped runs, still
+      // loads the full function index so cross-file DRY duplicates are caught.
+      const resolved = [...fileSet].map((f) =>
+        isAbsolute(f) ? f : resolve(process.cwd(), f)
+      );
+      const scope = resolved as unknown as AuditScope;
+
+      const runner = createAuditRunner({
+        projectRoot: options.path,
+        scope,
+        analyzerConcurrency: 4
+      });
+      const result = await runner.run();
+
+      const violations = Object.values(result.analyzerResults).flatMap(
+        (r: any) => r.violations || []
+      );
+
+      const severityOrder: Severity[] = ['critical', 'warning', 'suggestion'];
+      const failIndex = severityOrder.indexOf(failOnSeverity);
+      const blocking = violations.filter((v: any) => {
+        if (!isSelfAuditInScope(v.file ?? '')) return false;
+        const vIndex = severityOrder.indexOf(v.severity);
+        return vIndex >= 0 && vIndex <= failIndex;
+      });
+
+      if (options.json) {
+        const projectDir = resolve(options.path || process.cwd());
+        const jsonOutput = blocking.map((v: any) => {
+          let filePath = v.file || '';
+          if (filePath.startsWith('/') || filePath.startsWith('\\\\')) {
+            const rel = relative(projectDir, filePath);
+            if (!rel.startsWith('..') && !isAbsolute(rel)) filePath = rel;
+          }
+          return {
+            analyzer: v.analyzer || '',
+            rule: v.rule || v.type || '',
+            severity: v.severity,
+            message: v.message,
+            file: filePath,
+            line: v.line ?? v.start?.line,
+            column: v.column ?? v.start?.column ?? 1,
+            endLine: v.end?.line,
+            endColumn: v.end?.column,
+            enclosingSymbol: v.symbol || v.enclosingFunction || '',
+            suggestion: v.suggestion || '',
+            details: v.details || ''
+          };
+        });
+        process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
+      } else if (blocking.length > 0) {
+        // Spec 36 R3: emit findings only, never an aggregate total.
+        console.log(chalk.red(`\n${blocking.length} self-audit blocking finding(s):`));
+        for (const v of blocking) {
+          const icon =
+            v.severity === 'critical' ? '🔴' :
+            v.severity === 'warning' ? '🟡' : '🔵';
+          console.log(
+            `${icon} ${v.file}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}`
+          );
+        }
+      } else {
+        console.log(chalk.green('\n✓ Self-audit clean — zero blocking findings in scope.'));
+      }
+
+      if (blocking.length > 0) process.exit(2);
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
 // Next-file command: the refactoring loop's single entry point. The first call
 // seeds a full audit into a snapshot (file → content hash + findings); each
 // subsequent call diffs, re-audits only what changed, merges per-analyzer, and
