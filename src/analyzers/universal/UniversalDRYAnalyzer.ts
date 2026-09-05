@@ -566,10 +566,17 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
         // R3.1: Span-overlap check
         if (spansOverlap(original, block)) continue;
 
+        // Compute the Jaccard similarity up front so the message can render the
+        // actual percentage ({similarity}% in the registry template), rather
+        // than a line count standing in for it.
+        const jaccardSim = computeJaccardSimilarity(
+          original.normalizedText, block.normalizedText
+        );
+
         const violation = this.createViolation(
           block.file,
           block.start,
-          `Structurally similar code block detected (${block.lineCount} lines). ` +
+          `Structurally similar code block detected (${Math.round(jaccardSim * 100)}% similar). ` +
           `First occurrence at ${original.file}:${original.start.line}`,
           { severity: 'suggestion', rule: 'dry/structural-similarity', symbol: block.hash }  // R7
         );
@@ -580,9 +587,6 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
         violations.push(violation);
 
         // Spec 13 R5 — seed pair for diverging-clone tracking
-        const jaccardSim = computeJaccardSimilarity(
-          original.normalizedText, block.normalizedText
-        );
         this.seedPair(original, block, jaccardSim, 'dry/structural-similarity');
       }
     }

@@ -99,3 +99,60 @@ describe('DependencyGraphBuilder orphan detection', () => {
     expect(orphaned?.affectedNodes ?? []).toEqual([]);
   });
 });
+
+describe('DependencyGraphBuilder rendered finding data (Spec 44 render)', () => {
+  it('renders cycle paths into the circular-dependency description and details', async () => {
+    // a → b → a is a 2-cycle; c → d → c is another 2-cycle.
+    const entities = [
+      entity('a', 'alpha'),
+      entity('b', 'beta'),
+      entity('c', 'gamma'),
+      entity('d', 'delta'),
+    ];
+    const references = [ref('a', 'b'), ref('b', 'a'), ref('c', 'd'), ref('d', 'c')];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    const issue = health.issues.find(i => i.type === 'circular-dependency');
+    expect(issue).toBeDefined();
+    // The description names the loop, not just a count.
+    expect(issue!.description).toMatch(/alpha → beta/);
+    expect(issue!.description).toMatch(/gamma → delta/);
+    // The structured details carry the same path.
+    const cycles = issue!.details?.cycles as Array<{ path: string }>;
+    expect(cycles.some(c => c.path.includes('alpha → beta'))).toBe(true);
+  });
+
+  it('renders hub node name + out-degree, and orphan names', async () => {
+    // hub has out-edges to 12 sinks → a hub (out-degree 12 ≫ the mean, which is
+    // ~1.9 once the sinks form a chain). deadcode is a private function with no
+    // edges and no name reference → orphaned.
+    const entities = [
+      entity('hub', 'hub', { visibility: 'private' }),
+      ...Array.from({ length: 12 }, (_, i) => entity(`s${i}`, `sink${i}`, { visibility: 'private' })),
+      entity('dead', 'deadcode', { visibility: 'private' }),
+    ];
+    const references = [
+      ...Array.from({ length: 12 }, (_, i) => ref('hub', `s${i}`)),
+      // sink0 → sink1 → … → sink11: every sink has out-degree 1, so the hub's
+      // out-degree 12 is a genuine outlier above 3×mean rather than the whole graph.
+      ...Array.from({ length: 11 }, (_, i) => ref(`s${i}`, `s${i + 1}`)),
+    ];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    const hub = health.issues.find(i => i.type === 'hub-nodes');
+    expect(hub).toBeDefined();
+    expect(hub!.description).toMatch(/hub \(12\)/);
+    expect(hub!.details).toEqual({ hubs: [{ id: 'hub', name: 'hub', outDegree: 12 }] });
+
+    const orphan = health.issues.find(i => i.type === 'orphaned-nodes');
+    expect(orphan).toBeDefined();
+    expect(orphan!.description).toContain('deadcode');
+    expect(orphan!.details).toEqual({ orphans: [{ id: 'dead', name: 'deadcode' }] });
+  });
+});

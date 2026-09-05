@@ -1729,6 +1729,7 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             type: issue.type, // dependency-graph rules match on field: 'type'
             analyzer: 'dependency-graph',
             category: 'cross-language-dependency',
+            details: issue.details,
           } as Violation);
         }
         for (const s of health.suggestions) {
@@ -1741,6 +1742,7 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             type: s.type,
             analyzer: 'dependency-graph',
             category: 'cross-language-dependency',
+            details: s.affectedNodes ? { affectedNodes: s.affectedNodes } : undefined,
           } as Violation);
         }
         return { violations, facts: {}, factsConsumed: entities.length };

@@ -280,9 +280,14 @@ class DependencyGraphBuilderCore {
   }
 
   /**
-   * Find hub nodes with too many dependencies
+   * Find hub nodes with too many dependencies.
+   *
+   * Returns each hub together with its out-degree so the reducer can render the
+   * degree in the finding — the previous signature dropped it, forcing the
+   * message to read "Found N hub nodes" with no way to see which node or how
+   * dependent it was.
    */
-  protected findHubNodes(graph: DependencyGraph): DependencyNode[] {
+  protected findHubNodes(graph: DependencyGraph): Array<{ node: DependencyNode; outDegree: number }> {
     const outDegree = new Map<string, number>();
 
     for (const edge of graph.edges) {
@@ -300,9 +305,9 @@ class DependencyGraphBuilderCore {
       : 0;
     const threshold = Math.max(10, Math.ceil(mean * 3));
 
-    return graph.nodes.filter(node =>
-      (outDegree.get(node.id) || 0) > threshold
-    );
+    return graph.nodes
+      .map(node => ({ node, outDegree: outDegree.get(node.id) || 0 }))
+      .filter(({ outDegree: d }) => d > threshold);
   }
 
   /**
@@ -661,30 +666,45 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     const issues: DependencyIssue[] = [];
     const suggestions: DependencySuggestion[] = [];
 
+    // Resolve node ids to human-readable names for the rendered descriptions.
+    const idToName = new Map(graph.nodes.map(n => [n.id, n.name] as const));
+    const label = (ids: string[]): string[] => ids.map(id => idToName.get(id) ?? id);
+
+    // Cycle paths are rendered node-by-node so a consumer can see the loop, not
+    // just a count.
     this.recordCheck({ issues, suggestions }, graph.cycles.length, graph.cycles.flatMap(c => c.nodes), {
       issueType: 'circular-dependency', severity: 'warning', impact: 'high',
-      issueDesc: n => `Found ${n} circular dependencies`,
+      issueDesc: () =>
+        graph.cycles.map(c => c.nodes.map(id => idToName.get(id) ?? id).join(' → ')).join('; '),
       suggestionType: 'break-cycles', priority: 'high',
       suggestionDesc: 'Break circular dependencies by introducing interfaces or dependency injection',
       implementation: 'Consider using dependency inversion principle to break cycles',
+    }, {
+      cycles: graph.cycles.map(c => ({ nodes: c.nodes, path: c.nodes.map(id => idToName.get(id) ?? id).join(' → ') })),
     });
 
     const clusters = this.findTightlyCoupledClusters(graph);
     this.recordCheck({ issues, suggestions }, clusters.length, clusters.flatMap(c => c.nodes), {
       issueType: 'tight-coupling', severity: 'warning', impact: 'medium',
-      issueDesc: n => `Found ${n} tightly coupled clusters`,
+      issueDesc: () =>
+        clusters.map(c => `${label(c.nodes).join(', ')} (${(c.coupling * 100).toFixed(0)}%)`).join('; '),
       suggestionType: 'reduce-coupling', priority: 'medium',
       suggestionDesc: 'Reduce coupling between modules using interfaces and abstractions',
       implementation: 'Extract common interfaces and use dependency injection',
+    }, {
+      clusters: clusters.map(c => ({ nodes: c.nodes, coupling: c.coupling })),
     });
 
     const hubNodes = this.findHubNodes(graph);
-    this.recordCheck({ issues, suggestions }, hubNodes.length, hubNodes.map(n => n.id), {
+    this.recordCheck({ issues, suggestions }, hubNodes.length, hubNodes.map(h => h.node.id), {
       issueType: 'hub-nodes', severity: 'warning', impact: 'medium',
-      issueDesc: n => `Found ${n} hub nodes with excessive dependencies`,
+      issueDesc: () =>
+        hubNodes.map(h => `${h.node.name} (${h.outDegree})`).join(', '),
       suggestionType: 'split-responsibilities', priority: 'medium',
       suggestionDesc: 'Split large modules to reduce their dependency burden',
       implementation: 'Apply Single Responsibility Principle to break down large modules',
+    }, {
+      hubs: hubNodes.map(h => ({ id: h.node.id, name: h.node.name, outDegree: h.outDegree })),
     });
 
     // Bare names referenced as callees anywhere in the corpus (resolved or
@@ -700,10 +720,12 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     const orphanedNodes = this.findOrphanedNodes(graph, referencedNames);
     this.recordCheck({ issues, suggestions }, orphanedNodes.length, orphanedNodes.map(n => n.id), {
       issueType: 'orphaned-nodes', severity: 'suggestion', impact: 'low',
-      issueDesc: n => `Found ${n} orphaned nodes with no dependencies`,
+      issueDesc: () => orphanedNodes.map(n => n.name).join(', '),
       suggestionType: 'review-orphans', priority: 'low',
       suggestionDesc: 'Review orphaned nodes to ensure they are still needed',
       implementation: 'Consider removing unused code or integrating orphaned modules',
+    }, {
+      orphans: orphanedNodes.map(n => ({ id: n.id, name: n.name })),
     });
 
     return {
@@ -719,15 +741,18 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     count: number,
     affectedNodes: string[],
     spec: CheckSpec,
+    details?: Record<string, unknown>,
   ): void {
     if (count === 0) return;
     sink.issues.push({
       type: spec.issueType, severity: spec.severity, impact: spec.impact,
       description: spec.issueDesc(count), affectedNodes,
+      details,
     });
     sink.suggestions.push({
       type: spec.suggestionType, priority: spec.priority,
       description: spec.suggestionDesc, implementation: spec.implementation,
+      affectedNodes,
     });
   }
 }
@@ -740,6 +765,8 @@ export interface DependencyIssue {
   description: string;
   affectedNodes: string[];
   impact: 'high' | 'medium' | 'low';
+  /** Structured resolution data (cycle paths, cluster coupling, hub degrees, orphan names). */
+  details?: Record<string, unknown>;
 }
 
 export interface DependencySuggestion {
@@ -747,6 +774,8 @@ export interface DependencySuggestion {
   priority: 'high' | 'medium' | 'low';
   description: string;
   implementation: string;
+  /** Node ids this suggestion applies to, for downstream resolution. */
+  affectedNodes?: string[];
 }
 
 /** The issue+suggestion sinks a {@link DependencyGraphBuilder.recordCheck} call writes into. */
