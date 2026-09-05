@@ -135,7 +135,13 @@ function createFileToFunctionsMap(indexEntries: any[]): Record<string, any[]> {
  * the CLI and MCP surfaces make that decision.
  */
 export async function runAuditDispatch(options: AuditRunnerOptions): Promise<AuditResult> {
-  const projectRoot = options.projectRoot || process.cwd();
+  // Resolve to an absolute path up front. The Go subprocess is spawned with a
+  // cwd of its own (dist/languages/go), so relative file paths produced by
+  // discovery (e.g. `bench/real/gin/auth.go`) would not resolve from its cwd —
+  // the subprocess errors "no such file or directory" and the whole audit
+  // collapses to zero findings. Absolute paths make discovery absolute, which
+  // works for both the in-process TS half and the Go subprocess.
+  const projectRoot = path.resolve(options.projectRoot || process.cwd());
 
   const hasGo = await hasFilesWithExtension(projectRoot, '.go');
 

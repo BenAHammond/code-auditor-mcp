@@ -161,9 +161,15 @@ export class LanguageOrchestrator {
    * @returns
    */
   async analyzePolyglotProject(
-    projectPath: string, 
+    projectPath: string,
     options: PolyglotAnalysisOptions = {}
   ): Promise<PolyglotAnalysisResult> {
+    // Resolve to an absolute path so discovery returns absolute file paths.
+    // The Go subprocess runs with a cwd of its own, so relative paths from a
+    // relative `--path` (e.g. `code-audit audit --path bench/real/gin`) would
+    // not resolve from the subprocess cwd and the analysis collapses to zero.
+    projectPath = path.resolve(projectPath);
+
     console.error(`[LanguageOrchestrator] Starting polyglot analysis of: ${projectPath}`);
     const startTime = Date.now();
 
