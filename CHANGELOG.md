@@ -2,6 +2,37 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.6.0] — 2026-09-05
+
+### Enforcement — Spec 45 reverts the unauthorized narrowings
+The R6 survey found ten enforcement/gating/reporting narrowings written into
+specs 36–42 without agreement. Spec 45 reverts them all. Corpus baselines are
+unchanged — the finding set is identical across all six corpora.
+
+- **Every rule gates (R1)** — the per-rule `gating` opt-in is removed; a finding
+  gates regardless of which rule produced it, with no requirement that the rule
+  name a resolution first.
+- **Severity-scoped gate (R2)** — severity returns to the gating decision; the
+  gate blocks `critical` and `warning`, recording a resolution gap rather than
+  dropping the finding to non-blocking.
+- **No decaying suppressions (R3)** — the decaying-suppression mechanism is
+  removed (it was never built).
+- **Enforcement is not diff-scoped (R4)** — the gate compares against the full
+  finding set, not only the lines the current edit touched.
+- **`styles/undefined-class` reports on unread stylesheets (R5)** — a
+  `.sass`/`.less`/`.styl` stylesheet no longer silences the rule with
+  `notApplicable`; the finding still fires and carries the unread source as
+  `details.incompleteDefinitions`, so "undefined" reads as "not defined in any
+  *read* stylesheet".
+
+### Amendment A
+- **A1** — a slow rule is optimized, never dropped from the gate (Spec 38 R3's
+  "removed from the gating set" is struck). The budget is reported, never
+  silently widened.
+- **A2** — counts are emitted in agent-facing output: per analyzer, per rule,
+  per severity, and the before/after gating figure (Spec 36 R3's "no bare
+  counts" is struck).
+
 ## [3.5.0] — 2026-09-05
 
 ### Rule authenticity — the dishonest rules now do what they claim
