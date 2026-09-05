@@ -19,7 +19,7 @@ This axis is vetoable. Pick a different one and the `decide` column re-sorts; no
 |---|---|---|
 | `rework` | dishonest — build the real predicate; the proxy is a different claim | 4 |
 | `report` | cannot-fire — emit an explicit "rule is broken in the tool" diagnostic, do not delete | 10 |
-| `reword` | overclaim — claim less; predicate is already sound | ~16 |
+| `reword` | overclaim — claim less; predicate is already sound | 7 applied, 9 already-honest |
 | `render` | overclaim — emit data that is computed then discarded | 9 |
 | `logic` | small logic change, not a reword — separate commit + attribution | 1 |
 | `rename` | crude — rename to what is actually measured (always, cheap) | ~14 |
@@ -70,26 +70,19 @@ The two gated ones (`missing-endpoint`, `method-mismatch`) read as **"gated: com
 
 ## Bucket 3 — `reword` (overclaim: claim less)
 
-Predicate is sound; the sentence over it asserts more than was computed. Change the message, not the computation.
+Predicate is sound; the sentence over it asserts more than was computed. Change the message, not the computation. **Applied 2026-09-04** (commit `fdd8c81`): 7 messages reworded.
 
 | rule | says | should say |
 |---|---|---|
-| `solid/class-size` (TS) | "split responsibilities" | "split large class" |
-| `solid/open-closed` (TS) | "frequently modified" | "uses `instanceof` against a user-defined type" |
-| `solid/liskov-substitution` (TS) | "violate parent contract" | "throws exceptions" |
-| `solid/dependency-inversion` (TS) | "concrete dependency" | "concrete type" |
-| `solid/open-closed` (Go, both) | "consider polymorphism/interfaces" | "large switch — consider polymorphism" |
-| `imports/import-organization` (Go) | "reducing dependencies" | "reducing import count" |
-| `channels/concurrency` (Go) | "review for potential deadlocks" | "complex function uses channels" |
-| `styles/value-drift` | "dominant token" | "dominant value" |
-| `styles/off-scale` | "off the project's design scale" | "off the inferred grid" |
-| `schema/invalid-format` | "invalid format" | "unsupported format" (email/uuid only) — or promote to `render` |
-| `schema/sql-injection` | "via string interpolation" | "via string interpolation/concatenation" |
-| `cross-domain/transaction-boundary` | "transaction boundary spans N tables" | "writes to N distinct tables" |
-| `cross-domain/validation-bypass` | "is not validated" | "no validator reachable (depth ≤ N)" |
-| `react/performance` | "missing memoization" | "complexity exceeds the memoization threshold" |
-| `react/accessibility` | "onClick on non-interactive `<X>`" | "contains `<X>` and an onClick handler" |
-| `documentation/file-documentation` | "documentation header comment" | "leading comment" |
+| `solid/class-size` (TS) | "split responsibilities" | "split into smaller classes" ✅ |
+| `solid/open-closed` (TS) | "frequently modified" | "uses `instanceof` against a user-defined type" ✅ |
+| `solid/liskov-substitution` (TS) | "violate parent class contract" | "Ensure callers handle it" ✅ |
+| `imports/import-organization` (Go) | "reducing dependencies" | "reducing import count" ✅ |
+| `channels/concurrency` (Go) | "review for potential deadlocks" | "review for proper synchronization" ✅ |
+| `react/accessibility` | "onClick on non-interactive `<X>`" | "may have onClick … (contains `<X>`)" ✅ |
+| `documentation/file-documentation` | "proper documentation header" | "leading documentation comment" ✅ |
+
+**Already honest on inspection — no change needed** (the ledger's `[overclaim]` flag was against an ID/doc-comment claim, not the emitted message): `solid/dependency-inversion` (TS — message already says "directly instantiates a concrete dependency"), `solid/open-closed` (Go — already "large switch … consider"), `styles/value-drift` (already "dominant value"), `styles/off-scale` (already "inferred Npx scale step"), `schema/invalid-format` (already "Invalid email/UUID format"), `schema/sql-injection` (message is "Potential SQL injection vulnerability", no interpolation claim), `cross-domain/transaction-boundary` (already "may indicate … risk"), `cross-domain/validation-bypass` (already "BFS depth ≤ N" in the message), `react/performance` (message is "Consider memoizing", a suggestion not an assertion).
 
 ## Bucket 4 — `render` (overclaim: emit what's already computed)
 
