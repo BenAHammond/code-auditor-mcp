@@ -153,6 +153,18 @@ const runReactComponent: Runner = async (code) => {
   return ruleIds(analyzeComponent(component, DEFAULT_REACT_CONFIG, scan));
 };
 
+/** React `accessibility` — the near-miss is a bare JSX element (`<img alt=…>`);
+ *  wrap it in a functional component so `scanFile` detects it and
+ *  `checkAccessibility` runs `hasImgWithoutAlt` against real source. */
+const runReactAccessibility: Runner = async (code) => {
+  const wrapped = `function Img() {\n  return ${code};\n}`;
+  const p = await writeTemp(wrapped, 'tsx');
+  const scan = await scanFile(p);
+  const component = scan.components.find((c) => c.name !== 'AnonymousComponent');
+  if (!component) return [];
+  return ruleIds(analyzeComponent(component, DEFAULT_REACT_CONFIG, scan));
+};
+
 /**
  * Wired runners, keyed by rule ID. Only rules whose near-miss is a
  * self-contained single-file input appear here.
@@ -189,8 +201,10 @@ const RUNNERS: Record<string, Runner> = {
   'sql-injection': runSchemaCode,
   'table-naming-convention': runSchemaCode,
   'unknown-table': runSchemaCode,
-  // react — the one per-component near-miss that is a complete component
+  // react — the per-component near-misses that are a complete component, plus
+  // `accessibility` whose bare-JSX near-miss is wrapped into one.
   complexity: runReactComponent,
+  accessibility: runReactAccessibility,
 };
 
 /**
@@ -226,7 +240,6 @@ const SKIP_RULES: Record<string, string> = {
   'missing-props': 'react — `hasPropsValidation` treats destructured params as validation, so the near-miss (propTypes) and invalid (none) are indistinguishable; needs a non-destructured-prop fixture',
   'no-error-boundary': 'react — sample is a JSX fragment (`<ErrorBoundary><App/></ErrorBoundary>`) needing a multi-file scan tree',
   performance: 'react — sample is a `memo(...)` statement needing requireMemoization config + a detected memo component',
-  accessibility: 'react — sample is a JSX fragment (`<img … />`) not a standalone component',
   'raw-element': 'react — sample is a `return <Button …>` fragment needing a wrapper-component scan to classify `Button` as non-raw',
 };
 
