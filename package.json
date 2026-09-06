@@ -13,7 +13,7 @@
   "scripts": {
     "build": "tsc && pnpm run build:go && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
     "download:natives": "bash scripts/download-natives.sh",
-    "build:grammars": "cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm node_modules/tree-sitter-css/tree-sitter-css.wasm node_modules/tree-sitter-scss/tree-sitter-scss.wasm dist/grammars/",
+    "build:grammars": "mkdir -p dist/grammars && cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm node_modules/tree-sitter-css/tree-sitter-css.wasm node_modules/tree-sitter-scss/tree-sitter-scss.wasm dist/grammars/",
     "build:skills": "node scripts/build-skills.mjs",
     "watch": "tsc --watch",
     "dev": "tsx src/cli.ts",
