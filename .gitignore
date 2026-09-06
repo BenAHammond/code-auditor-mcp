@@ -9,7 +9,7 @@ build/
 *.tsbuildinfo
 
 # Testing
-coverage/
+/coverage/
 .nyc_output/
 test-bad-code/
 
