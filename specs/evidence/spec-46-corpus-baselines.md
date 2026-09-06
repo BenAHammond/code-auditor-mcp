@@ -1,6 +1,6 @@
 # Spec 46 — Corpus Baseline Re-pin (post-3.6.0 analyzer hardening)
 
-Four commits after the 3.6.0 release change *what fires* on real code, so the
+Five commits after the 3.6.0 release change *what fires* on real code, so the
 Spec 45 baseline is stale:
 
 - `064b013` — post-3.6.0 analyzer hardening: `solid/single-responsibility`
@@ -13,6 +13,9 @@ Spec 45 baseline is stale:
 - `c7db3d5` — dependency-graph orphan fix: receiver-dispatched methods (class +
   object-literal) are no longer flagged orphaned. This reverses most of the
   #124/#125 orphan flood; see *Adjudication note*.
+- `4e52d20` — dry floor fix: fluent library chains (query/schema builders, Zod,
+  commander, promises, DOM/stdlib methods) and language-agnostic test files are
+  excluded from `similar-expression`; see *Dry adjudication note*.
 
 This re-pins the six validation corpora and attributes every delta to the named
 cause. Measurement is read-only: `runAuditDispatch` (the same entry point the CLI
@@ -24,8 +27,8 @@ into any reference repo (see *Boundary* at the end).
 
 | corpus | stack | Spec 45 baseline | Spec 46 (now) | Δ |
 |---|---|---|---|---|
-| recall-protocol | TS + SQL | 5,042 | **3,798** | −1,244 |
-| knex | TS/SQL builder | 397 | **658** | +261 |
+| recall-protocol | TS + SQL | 5,042 | **3,516** | −1,526 |
+| knex | TS/SQL builder | 397 | **404** | +7 |
 | primer/css | plain CSS | 18 | **23** | +5 |
 | blitz | Next.js/TS/React | 898 | **867** | −31 |
 | gin | Go | 29 | **29** | 0 |
@@ -37,6 +40,7 @@ into any reference repo (see *Boundary* at the end).
 |---|---|---|---|
 | single-responsibility split | #131 | `solid/single-responsibility` → `function-length` + `parameter-count` | **0** (rename/split only) |
 | similar-expression default-on | #133 | `dry/dry/similar-expression` | **+** (new rule fires) |
+| similar-expression fluent-chain + test-file exclusion | #133 | `dry/dry/similar-expression` | **−** (fluent API surface + test fixtures excluded) |
 | orphan + unreferenced-module | #124/#125 | `dependency-graph/orphaned-nodes`, `dependency-graph/unreferenced-module` | **+** (detection expanded) |
 | secrets analyzer | #134 | `secrets/hardcoded-secret` | **+** (new analyzer) |
 | documentation noise cut | #135 | `documentation/*` | **−** (param/return off; `.tsx`/`.jsx`/framework exempt) |
@@ -48,7 +52,7 @@ only the rule-ID axis moves.
 
 ---
 
-## recall-protocol — 3,798 (was 5,042, −1,244)
+## recall-protocol — 3,516 (was 5,042, −1,526)
 
 Per-analyzer:
 
@@ -59,7 +63,7 @@ Per-analyzer:
 | styles | 560 | 560 | 0 |
 | react | 388 | 388 | 0 |
 | data-access | 339 | 339 | 0 |
-| dry | 6 | 309 | **+303** |
+| dry | 6 | 27 | **+21** |
 | dependency-graph | 4 | 231 | **+227** |
 | conventions | 125 | 125 | 0 |
 | schema-code | 95 | 95 | 0 |
@@ -72,7 +76,7 @@ Per-rule (current):
 solid::function-length                         902
 documentation::function-documentation          574
 styles::styles/token-bypass                    423
-dry::dry/similar-expression                    303
+dry::dry/similar-expression                     21
 data-access::loop-query                        301
 dependency-graph::orphaned-nodes               104
 dependency-graph::unreferenced-module          124
@@ -122,8 +126,13 @@ styles::styles/z-index-sprawl                    1
   exemption. A user no longer sees "missing an exhaustive `@param`" or "undocumented
   React component" as a defect; what remains is undocumented *logic* in `.ts`
   service/repo/utility files.
-- **dry +303** (#133). `dry/similar-expression` 0 → 303 (near-identical clone
-  detection, default-on). `dry/duplicate` unchanged at 6.
+- **dry +21** (#133, re-measured after `4e52d20`). `dry/similar-expression`
+  0 → 21 (near-identical clone detection, default-on). The pre-fix count of 303
+  was fluent-library noise — Zod validator chains (`string,trim,min,max` ×121,
+  `number,int,nullable,default` ×62, …) and stdlib method chains — excluded by
+  the fluent-chain guard; see *Dry adjudication note*. All 21 remaining are
+  genuine "object built twice" signals (`terminalOutcome` 5-field outcome object,
+  `frame` in the build-editor reducer, …). `dry/duplicate` unchanged at 6.
 - **dependency-graph +227** (#124/#125, re-measured after `c7db3d5`).
   `orphaned-nodes` 1 → 104 (+103) — down from the pre-fix 139 after receiver-
   dispatched methods stopped being flagged; `unreferenced-module` 0 → 124 (+124).
@@ -135,14 +144,14 @@ styles::styles/z-index-sprawl                    1
 
 ---
 
-## knex — 658 (was 397, +261)
+## knex — 404 (was 397, +7)
 
 Per-analyzer:
 
 | analyzer | Spec 45 | now | Δ |
 |---|---|---|---|
 | dependency-graph | 4 | 20 | **+16** |
-| dry | 10 | 255 | **+245** |
+| dry | 10 | 1 | **−9** |
 | schema-code | 182 | 182 | 0 |
 | solid | 137 | 137 | 0 |
 | data-access | 41 | 41 | 0 |
@@ -155,7 +164,6 @@ Per-rule (current):
 
 ```
 dependency-graph::orphaned-nodes         17
-dry::dry/similar-expression              245
 schema-code::too-many-queries            181
 solid::function-length                    60
 solid::solid/class-size                   31
@@ -164,13 +172,13 @@ schema::unknown-table                     17
 data-access::hardcoded-connection         16
 data-access::unfiltered-query             14
 solid::solid/open-closed                  12
-dry::dry/duplicate                        10
 solid::solid/interface-segregation         8
 data-access::loop-query                    6
 solid::parameter-count                     6
 data-access::sql-injection-risk            5
 cross-domain::cross-domain/read-never-written   4
 cross-domain::cross-domain/written-never-read   1
+dry::dry/similar-expression                1
 dependency-graph::hub-nodes               1
 dependency-graph::circular-dependency     1
 dependency-graph::tight-coupling          1
@@ -186,7 +194,14 @@ secrets::hardcoded-secret                 1
   a genuine finding about knex's structure; see *Adjudication note*. The three
   graph-shape rules (`circular-dependency`, `tight-coupling`, `hub-nodes`) are
   unchanged at 1 each.
-- **dry +245** (#133) — `similar-expression` 0 → 245; `duplicate` unchanged at 10.
+- **dry −9** (#133, re-measured after `4e52d20`) — `similar-expression` 245 → 1
+  and `duplicate` 10 → 0. The 245 pre-fix were fluent-library noise (commander
+  `command,option,description,action`, promise `then,then,catch`, knex
+  query/schema-builder chains) plus 132 expected-output fixtures in
+  `test/unit/schema-builder/*.js` that the TS-only test-file patterns missed; the
+  fluent-chain guard and language-agnostic test-file exclusion close both. The
+  one remaining finding is a genuine production object (`analytic` built twice in
+  `lib/query/querybuilder.js`).
 - **secrets +1** (#134) — one hardcoded credential flagged in a test/example.
 - **documentation −1** (#135) — `parameter-documentation` 1 → 0.
 - **solid 0** (#131) — `single-responsibility` 66 → `function-length` 60 +
@@ -361,13 +376,54 @@ than silently suppressed.
 
 ---
 
+## Dry adjudication note — similar-expression at corpus scale
+
+`dry/similar-expression` shipped default-on at floor 4 with only read-query
+chains (`select`/`selectDistinct`) excluded, on the theory that *mutation* chains
+(`update().set().where().returning()`) are the duplication signal. The corpus
+measurement disproved that theory: the chains that actually fire are library
+fluent APIs, not duplicated domain logic.
+
+- **recall (303)** — Zod validator chains dominate: `string,trim,min,max` ×121,
+  `number,int,nullable,default` ×62, `string,min,max,describe` ×20, … plus a few
+  stdlib method chains (`split,map,filter,slice`, `replace,replace,replace,trim`).
+- **knex (245)** — commander registrations (`command,option,description,action`),
+  promise flows (`transaction,then,then,then,then,catch`), knex query/schema-builder
+  chains (`insert,onConflict,ignore,testSql`, `integer,unsigned,references,inTable`,
+  `where,orderBy,forUpdate,first`), and 132 expected-output fixtures in
+  `test/unit/schema-builder/*.js`.
+
+`4e52d20` closes both. The read-query exclusion becomes a fluent-chain guard: any
+chain built from a known fluent API verb (query/schema builders, Zod/Valibot,
+commander, promises, DOM traversal, stdlib array/string methods) is excluded as
+"structurally similar by design". Test-file exclusion is broadened from TS-only to
+language-agnostic (`.test.*`/`.spec.*` across TS/TSX/JS/JSX plus `test/`/`tests/`
+directories) — knex is a JS library whose tests are `.js` under `test/`, which the
+TS-only patterns missed. `__tests__/` is deliberately *not* excluded: this repo
+keeps analyzable source fixtures under `__tests__/fixtures/`, and Jest's
+`__tests__` files are still `.test.*`/`.spec.*` named.
+
+What survives is the rule's intended signal — a *specific* object literal built
+twice for the same target:
+
+- recall's 21: `terminalOutcome` (the 5-field outcome object), `frame` (the
+  build-editor reducer's 11-field frame), `gameplayMetrics`, `payload`, `log`, …
+- knex's 1: the `analytic` object in `lib/query/querybuilder.js`.
+
+The honest conclusion: the chain half of `similar-expression` fires on fluent API
+surface by default, so it is excluded; the object-literal half is where the real
+"built twice" signal lives and remains default-on.
+
+---
+
 ## Supplementary corpora (not part of the six pinned baselines)
 
 **hhra-org** — tracked specifically for #135 (documentation is the user's stated
-concern). `documentation` 1,044 → **159** (−885); total 2,136 → **1,280** (−856).
-The −856 is documentation −885 offset by `dry/similar-expression` +29 (#133) and
-the dependency-graph expansion (#124/#125); hhra-org has no per-rule "before"
-record in Spec 44/45, so only the documentation delta is precisely attributable.
+concern). `documentation` 1,044 → **159** (−885); total 2,136 → **1,213** (−923).
+The −923 is documentation −885 offset by `dry/similar-expression` +5 (#133, after
+`4e52d20` cut the fluent-chain noise) and the dependency-graph expansion
+(#124/#125); hhra-org has no per-rule "before" record in Spec 44/45, so only the
+documentation delta is precisely attributable.
 
 **job-search** — the #134 reference corpus. `secrets/hardcoded-secret` **1** (the
 hardcoded `page.type('#password', 'vyy8AUVvish34Fq')`), plus `dependency-graph`
@@ -384,6 +440,6 @@ re-pinned record.
 
 The one corpus whose *committed* baseline file remains stale is unchanged from
 Spec 44/45's note: `recall-protocol/.codeauditor.baseline.json` (toolVersion
-3.4.18, total 4,589) still does not reflect the tool's current 3,798. Re-pinning
+3.4.18, total 4,589) still does not reflect the tool's current 3,516. Re-pinning
 that file into recall-protocol requires Ben's authorization (the same rule as
 publishing); it is deliberately left untouched here.
