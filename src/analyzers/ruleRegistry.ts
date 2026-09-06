@@ -190,9 +190,11 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: true,
-    message: 'Function "{name}" has {count} {metric}, exceeding the maximum of {max}. Break it down.',
+    message: 'Function "{name}" mixes unrelated responsibilities. Split it into one function per concern.',
     docs: 'solid/single-responsibility',
-    thresholds: ['maxParametersPerMethod', 'maxLinesPerMethod'],
+    // #131: the mixed-concern check has no tunable threshold. The size proxies
+    // (line count, parameter count) moved to function-length / parameter-count.
+    thresholds: [],
     samples: {
       valid: [
         { code: 'function parse(input) {\n  return input.trim().split(",");\n}', nearMiss: true },
@@ -201,6 +203,46 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         {
           code: 'function handler(req) {\n  const user = db.find(req.id);\n  sendEmail(user);\n  logEvent(req);\n  render(user);\n  audit(user);\n  notify(user);\n}',
           resolution: { action: 'split-function', summary: 'Split handler into one function per responsibility and compose them at the call site.', symbols: ['handler'] },
+        },
+      ],
+    },
+  },
+  'function-length': {
+    analyzer: 'solid',
+    field: 'rule',
+    input: ['files'],
+    resolvable: true,
+    message: 'Function "{name}" has {lines} lines, exceeding the maximum of {max}. Consider breaking it down.',
+    docs: 'function-length',
+    thresholds: ['maxLinesPerMethod'],
+    samples: {
+      valid: [
+        { code: 'function short(x) {\n  const a = transform(x);\n  const b = validate(a);\n  return b;\n}', nearMiss: true },
+      ],
+      invalid: [
+        {
+          code: 'function long(input) {\n  let a = step1(input);\n  let b = step2(a);\n  let c = step3(b);\n  let d = step4(c);\n  let e = step5(d);\n  let f = step6(e);\n  let g = step7(f);\n  let h = step8(g);\n  let i = step9(h);\n  let j = step10(i);\n  let k = step11(j);\n  let l = step12(k);\n  let m = step13(l);\n  let n = step14(m);\n  let o = step15(n);\n  let p = step16(o);\n  let q = step17(p);\n  let r = step18(q);\n  let s = step19(r);\n  let t = step20(s);\n  let u = step21(t);\n  let v = step22(u);\n  let w = step23(v);\n  let x = step24(w);\n  let y = step25(x);\n  let z = step26(y);\n  let aa = step27(z);\n  let ab = step28(aa);\n  let ac = step29(ab);\n  let ad = step30(ac);\n  let ae = step31(ad);\n  let af = step32(ae);\n  let ag = step33(af);\n  let ah = step34(ag);\n  let ai = step35(ah);\n  let aj = step36(ai);\n  let ak = step37(aj);\n  let al = step38(ak);\n  let am = step39(al);\n  let an = step40(am);\n  let ao = step41(an);\n  let ap = step42(ao);\n  let aq = step43(ap);\n  let ar = step44(aq);\n  let as = step45(ar);\n  let at = step46(as);\n  let au = step47(at);\n  let av = step48(au);\n  let aw = step49(av);\n  let ax = step50(aw);\n  let ay = step51(ax);\n  return ay;\n}',
+          resolution: { action: 'break-down-function', summary: 'Break "long" into smaller functions, extracting named helper blocks for each pipeline stage.', symbols: ['long'] },
+        },
+      ],
+    },
+  },
+  'parameter-count': {
+    analyzer: 'solid',
+    field: 'rule',
+    input: ['files'],
+    resolvable: true,
+    message: 'Function "{name}" has {params} parameters, exceeding the maximum of {max}. Consider using an options object.',
+    docs: 'parameter-count',
+    thresholds: ['maxParametersPerMethod'],
+    samples: {
+      valid: [
+        { code: 'function combine(a, b, c, d) {\n  return a + b + c + d;\n}', nearMiss: true },
+      ],
+      invalid: [
+        {
+          code: 'function combine(a, b, c, d, e) {\n  return a + b + c + d + e;\n}',
+          resolution: { action: 'bundle-params', summary: 'Bundle the 5 parameters of "combine" into an options object.', symbols: ['a', 'b', 'c', 'd', 'e'] },
         },
       ],
     },
@@ -293,6 +335,41 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
       invalid: [
         { code: 'function a(x) {\n  return fetch(x).then((r) => r.json());\n}\nfunction b(y) {\n  return fetch(y).then((r) => r.json());\n}' },
+      ],
+    },
+  },
+  'dry/similar-expression': {
+    analyzer: 'dry',
+    field: 'rule',
+    configGate: 'checkExpressionSimilarity',
+    input: ['files'],
+    resolvable: true,
+    message: 'Near-identical expression detected ({shared} shared {unit}: {names}). First occurrence at {file}:{line}.',
+    docs: 'dry/similar-expression',
+    // #133: on by default. The floor (minShapeNames) counts the field/method
+    // names two fragments must share. Query-builder chains are excluded and
+    // object literals must target the same identifier, so default-on stays
+    // quiet on idiomatic reads and schema literals while still firing on the
+    // `resultSummary` object built twice and repeated mutation chains.
+    thresholds: ['minShapeNames'],
+    samples: {
+      valid: [
+        {
+          // Same target assigned twice, but the field lists share nothing — a
+          // "built twice" shape that is not actually near-identical.
+          code: 'const state = {};\nstate.summary = { a: 1, b: 2, c: 3, d: 4 };\nstate.summary = { e: 5, f: 6, g: 7, h: 8 };',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        {
+          code: 'const info = {};\ninfo.resultSummary = { completedAt: now, tables: t, tableCounts: tc, stagingCounts: sc, steps: st };\ninfo.resultSummary = { completedAt: now, tables: t, tableCounts: tc, stagingCounts: sc, steps: st, durationMs: d };',
+          resolution: {
+            action: 'extract-shared-expression',
+            summary: 'Extract the shared field list (completedAt, tables, tableCounts, stagingCounts, steps) into a shared builder or constant both sites use.',
+            symbols: ['info.resultSummary'],
+          },
+        },
       ],
     },
   },
@@ -1417,6 +1494,23 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
       invalid: [
         { code: 'export const dead = 1;' },
+      ],
+    },
+  },
+  'unreferenced-module': {
+    analyzer: 'dependency-graph',
+    field: 'type',
+    input: ['cross-language-entities'],
+    resolvable: false,
+    message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
+    docs: 'unreferenced-module',
+    thresholds: [],
+    samples: {
+      valid: [
+        { code: 'export function used() {}', nearMiss: true },
+      ],
+      invalid: [
+        { code: '// file exports symbols but nothing imports it' },
       ],
     },
   },

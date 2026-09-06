@@ -49,6 +49,20 @@ export interface DRYAnalyzerConfig {
   checkStrings?: boolean;
   /** R4.2: Enables dry/structural-similarity analysis. Default false. */
   checkStructuralSimilarity?: boolean;
+  /**
+   * #132: Enables dry/similar-expression analysis — near-identical object
+   * literals and fluent call chains that share a field/method sequence. Default
+   * false: query-builder chains are structurally similar by design, so this is
+   * opt-in like structural-similarity.
+   */
+  checkExpressionSimilarity?: boolean;
+  /**
+   * #132: Minimum number of field/method names two fragments must share (as a
+   * common subsequence) before they count as "near-identical". Default 4, so a
+   * 3-method chain (.select().from().where()) never fires, but a 4-method chain
+   * (.update().set().where().returning()) and the 5-field resultSummary do.
+   */
+  minShapeNames?: number;
   ignoreComments?: boolean;
   ignoreWhitespace?: boolean;
   /** Full function index (all functions in codebase) for cross-file duplicate detection in scoped audits */
@@ -67,6 +81,13 @@ export const DEFAULT_DRY_CONFIG: DRYAnalyzerConfig = {
   ignoreWhitespace: true,
   // R4.2: structural similarity off by default
   checkStructuralSimilarity: false,
+  // #132: expression similarity ON by default. Idiomatic query-builder chains
+  // and unrelated schema literals are filtered out of the signal (query chains
+  // are excluded; object literals must target the same identifier), so the rule
+  // fires on real duplication — `resultSummary` built twice, repeated mutation
+  // chains — without flooding a default audit.
+  checkExpressionSimilarity: true,
+  minShapeNames: 4,
 };
 
 interface CodeBlock {
@@ -154,6 +175,233 @@ function deduplicateBlocks(blocks: CodeBlock[]): CodeBlock[] {
     last = block;
   }
   return result;
+}
+
+// ── #132: Expression-similarity helpers ────────────────────────────────
+
+/**
+ * A "shape fragment" is a compact, order-sensitive fingerprint of a small
+ * expression: an object literal's field names, or a fluent call chain's method
+ * names. The block extractor only sees functions/classes/control-flow ≥15
+ * lines, so near-identical *expressions* — the 5-field `resultSummary` object
+ * built twice, the five `.update().set().where().returning()` switch arms —
+ * were invisible to `dry/duplicate` and `dry/structural-similarity`.
+ */
+interface ShapeFragment {
+  file: string;
+  start: { line: number; column: number };
+  end: { line: number; column: number };
+  kind: 'object' | 'chain';
+  /**
+   * For object literals: the assignment/declaration target (`info.resultSummary`,
+   * `const config`) the literal is built for. Two object literals only count as
+   * "the same object built twice" when they target the *same* identifier — this
+   * is what distinguishes the real `resultSummary` duplication from the flood of
+   * near-identical `pgTable(...)` schema literals, which share column names
+   * (`id`, `createdAt`) across entirely different targets. Chains leave this
+   * undefined (chains are compared across the whole file).
+   */
+  target?: string;
+  /** Field names (object) or method names (chain), in source order. */
+  names: string[];
+  /** Raw source text, used for the fix patch. */
+  text: string;
+}
+
+/** True when `outer`'s span fully contains `inner`'s span in the same file. */
+function shapeSpansContain(outer: ShapeFragment, inner: ShapeFragment): boolean {
+  if (outer.file !== inner.file) return false;
+  const startLte =
+    outer.start.line < inner.start.line ||
+    (outer.start.line === inner.start.line && outer.start.column <= inner.start.column);
+  const endGte =
+    outer.end.line > inner.end.line ||
+    (outer.end.line === inner.end.line && outer.end.column >= inner.end.column);
+  return startLte && endGte;
+}
+
+/**
+ * Drop nested fragments, keeping the outermost. A fluent chain visits its outer
+ * call first, then each suffix chain (`a().b()` vs `a().b().c()` share a start
+ * position but the outer span is longer); a nested object literal is fully
+ * contained in its parent. Sort puts the widest span first so the inner suffix
+ * is skipped as contained.
+ */
+function dedupeShapeFragments(fragments: ShapeFragment[]): ShapeFragment[] {
+  const sorted = [...fragments].sort((a, b) => {
+    if (a.file !== b.file) return a.file.localeCompare(b.file);
+    if (a.start.line !== b.start.line) return a.start.line - b.start.line;
+    if (a.start.column !== b.start.column) return a.start.column - b.start.column;
+    // Same start → outermost (largest end) first.
+    if (a.end.line !== b.end.line) return b.end.line - a.end.line;
+    return b.end.column - a.end.column;
+  });
+
+  const kept: ShapeFragment[] = [];
+  for (const f of sorted) {
+    if (!kept.some((k) => shapeSpansContain(k, f))) kept.push(f);
+  }
+  return kept;
+}
+
+/** Strip one layer of quotes from a string-literal object key. */
+function bareKeyName(key: ASTNode, getText: (node: ASTNode) => string): string {
+  let t = getText(key).trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    t = t.slice(1, -1);
+  }
+  return t;
+}
+
+/**
+ * Field names of an object literal, in source order. Handles `{ a: 1 }`
+ * (`pair` → key child) and `{ a }` (`shorthand_property_identifier`).
+ */
+function objectFieldNames(node: ASTNode, getText: (n: ASTNode) => string): string[] {
+  const names: string[] = [];
+  for (const child of node.children ?? []) {
+    if (child.type === 'pair') {
+      const key = child.children?.[0];
+      if (key) {
+        const name = bareKeyName(key, getText);
+        if (name) names.push(name);
+      }
+    } else if (child.type === 'shorthand_property_identifier') {
+      const name = getText(child).trim();
+      if (name) names.push(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Method names of a fluent call chain (`db.update().set().where().returning()`),
+ * in call order. Walks `call_expression` → `member_expression` callee chain,
+ * collecting each `.method` name and recursing into the chain's receiver until
+ * a bare identifier is reached. Returns [] for a bare (non-member) call.
+ */
+function callChainMethodNames(node: ASTNode, getText: (n: ASTNode) => string): string[] {
+  const names: string[] = [];
+  let current: ASTNode | undefined = node;
+  while (current && current.type === 'call_expression') {
+    const callee: ASTNode | undefined = current.children?.[0];
+    if (!callee) break;
+    if (callee.type === 'member_expression') {
+      const prop: ASTNode | undefined = callee.children?.find((c) => c.type === 'property_identifier');
+      if (!prop) break;
+      names.push(getText(prop).trim());
+      current = callee.children?.[0];
+    } else if (callee.type === 'call_expression') {
+      current = callee; // curried/IIFE — skip the anonymous level, keep walking
+    } else {
+      break; // bare identifier callee — end of the chain
+    }
+  }
+  return names.reverse();
+}
+
+/**
+ * SQL query-building verbs. A chain that contains one of these is a read query
+ * (`.select().from().where().orderBy()`), and two such chains are "structurally
+ * similar by design" — the ORM's API surface, not duplicated logic. Excluding
+ * them keeps the default-on rule quiet on idiomatic reads while still flagging
+ * the mutation chains (`update().set().where().returning()`) that are the real
+ * duplication signal.
+ */
+const QUERY_CHAIN_METHODS = new Set(['select', 'selectDistinct']);
+
+/** True when the chain is a query builder (contains a read-query verb). */
+function isQueryChain(names: string[]): boolean {
+  return names.some((n) => QUERY_CHAIN_METHODS.has(n));
+}
+
+/**
+ * Extract shape fragments (object literals + fluent call chains) from the AST.
+ *
+ * Object literals are only collected as the *direct value* of a declaration
+ * (`const x = {...}`) or assignment (`info.resultSummary = {...}`), and carry
+ * that target. Two literals must target the same identifier to be compared —
+ * this keeps `pgTable('users', {...})` / `pgTable('orders', {...})` (different
+ * targets, shared `id`/`createdAt` column names) out of the "built twice" set.
+ *
+ * Chains are collected from every `call_expression`, excluding query builders.
+ * Fragments are filtered to `minShapeNames` names and deduplicated to the
+ * outermost span.
+ */
+function extractShapeFragments(ctx: BlockContext, minShapeNames: number): ShapeFragment[] {
+  const fragments: ShapeFragment[] = [];
+  const getText = (node: ASTNode): string => ctx.adapter.getNodeText(node, ctx.sourceCode);
+
+  const collectObject = (node: ASTNode, target: string): void => {
+    const names = objectFieldNames(node, getText);
+    if (names.length < minShapeNames) return;
+    fragments.push({
+      file: ctx.ast.filePath,
+      start: node.location.start,
+      end: node.location.end,
+      kind: 'object',
+      target,
+      names,
+      text: getText(node),
+    });
+  };
+
+  walkAST(ctx.ast.root, (node) => {
+    if (node.type === 'variable_declarator') {
+      // `const name: T = value` — target is the declarator name, value the last child.
+      const name = node.children?.[0];
+      const value = node.children?.[node.children.length - 1];
+      if (name && value?.type === 'object') collectObject(value, getText(name));
+    } else if (node.type === 'assignment_expression') {
+      // `target = value` — target is the left-hand side, value the last child.
+      const left = node.children?.[0];
+      const value = node.children?.[node.children.length - 1];
+      if (left && value?.type === 'object') collectObject(value, getText(left));
+    } else if (node.type === 'call_expression') {
+      const names = callChainMethodNames(node, getText);
+      if (names.length < minShapeNames || isQueryChain(names)) return;
+      fragments.push({
+        file: ctx.ast.filePath,
+        start: node.location.start,
+        end: node.location.end,
+        kind: 'chain',
+        names,
+        text: getText(node),
+      });
+    }
+  });
+
+  return dedupeShapeFragments(fragments);
+}
+
+/**
+ * Longest common subsequence of two string arrays, returned as the actual
+ * shared sequence (so the violation message can name the shared fields/methods).
+ */
+function longestCommonSubsequence(a: string[], b: string[]): string[] {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  const seq: string[] = [];
+  let i = m;
+  let j = n;
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1]) {
+      seq.push(a[i - 1]);
+      i--;
+      j--;
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+  return seq.reverse();
 }
 
 // ── R3.3: Structural similarity helpers ──────────────────────────────
@@ -482,6 +730,11 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     if (finalConfig.checkStructuralSimilarity) {
       this.reportStructuralDuplicates(deduped, violations);
     }
+    // #132: near-identical object literals and fluent call chains
+    if (finalConfig.checkExpressionSimilarity) {
+      const fragments = extractShapeFragments(ctx, finalConfig.minShapeNames || 4);
+      this.reportExpressionSimilarities(fragments, finalConfig, violations);
+    }
     this.reportCrossFileDuplicates(blocks, finalConfig, violations);
 
     // Check for duplicate string literals if enabled
@@ -590,6 +843,72 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
         this.seedPair(original, block, jaccardSim, 'dry/structural-similarity');
       }
     }
+  }
+
+  /**
+   * Report near-identical expression shapes (dry/similar-expression, suggestion).
+   *
+   * Two fragments are "near-identical" when their field/method-name sequence
+   * shares a common subsequence of at least `minShapeNames` names — the same
+   * `resultSummary` object built twice, the same `.update().set().where()`
+   * chain repeated across switch arms. Each later fragment is reported at most
+   * once, against the earliest fragment it resembles.
+   */
+  private reportExpressionSimilarities(
+    fragments: ShapeFragment[],
+    config: DRYAnalyzerConfig,
+    violations: Violation[]
+  ): void {
+    withRuleTiming('dry/similar-expression', () => {
+      const min = config.minShapeNames || 4;
+      const reported = new Set<number>();
+
+      for (let j = 1; j < fragments.length; j++) {
+        if (reported.has(j)) continue;
+        for (let i = 0; i < j; i++) {
+          // Only compare like-with-like: a field list and a method chain are
+          // different shapes and should never be flagged as "near-identical".
+          if (fragments[i].kind !== fragments[j].kind) continue;
+          // Object literals must target the same identifier (`info.resultSummary`
+          // built twice), not merely two unrelated literals that share column
+          // names. Chains have no target (undefined === undefined).
+          if (fragments[i].target !== fragments[j].target) continue;
+          const shared = longestCommonSubsequence(fragments[i].names, fragments[j].names);
+          if (shared.length < min) continue;
+
+          const isObject = fragments[j].kind === 'object';
+          const label = isObject ? 'object literal' : 'call chain';
+          const unit = isObject ? 'fields' : 'methods';
+          const targetClause = isObject && fragments[j].target
+            ? ` built for "${fragments[j].target}"`
+            : '';
+          const violation = this.createViolation(
+            fragments[j].file,
+            fragments[j].start,
+            `Near-identical ${label}${targetClause} detected (${shared.length} shared ${unit}: ${shared.join(', ')}). ` +
+            `First occurrence at ${fragments[i].file}:${fragments[i].start.line}`,
+            {
+              severity: 'suggestion',
+              rule: 'dry/similar-expression',
+              symbol: shared.join('.'),
+              resolution: {
+                action: 'extract-shared-expression',
+                summary: `Extract the shared ${isObject ? 'field list' : 'method chain'} (${shared.join(', ')}) into a shared helper, builder, or constant both sites use.`,
+                files: [fragments[j].file, fragments[i].file],
+                lines: [fragments[j].start.line, fragments[i].start.line],
+              },
+            }
+          );
+          violation.fix = {
+            oldText: fragments[j].text,
+            newText: `// Consider extracting the shared ${unit} into a shared helper`,
+          };
+          violations.push(violation);
+          reported.add(j);
+          break;
+        }
+      }
+    });
   }
 
   /**

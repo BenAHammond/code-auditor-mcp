@@ -22,6 +22,8 @@ import {
   detectCommunities,
   computeDirectoryPurity,
   computeMartinMetrics,
+  resolveDependency,
+  basenameNoExt,
 } from '../importGraph.js';
 import type { ImportGraph, CommunityResult, PurityResult } from '../importGraph.js';
 
@@ -112,6 +114,57 @@ describe('buildImportGraph', () => {
     const graph = buildImportGraph(empty);
     expect(graph.filePaths.size).toBe(0);
     expect(graph.adjacency.size).toBe(0);
+  });
+});
+
+// ── resolveDependency — relative imports against absolute paths ─────────
+//
+// `findFiles` discovers absolute paths, and `functions.file_path` stores them
+// absolute. A relative import (`./db`) must resolve to the sibling's absolute
+// path. normalizePath was dropping the leading `/` (treating the root's empty
+// first segment like a stray `.`), so every relative import resolved to nothing
+// and the import graph had almost no edges — the root cause of the
+// unreferenced-module false positives on hhra-org.
+
+describe('resolveDependency — absolute paths', () => {
+  const filePaths = new Set([
+    '/repo/queue-worker/src/queue-worker.ts',
+    '/repo/queue-worker/src/db.ts',
+    '/repo/queue-worker/src/processing-service.ts',
+    '/repo/queue-worker/util.ts',
+  ]);
+  const moduleToFile = new Map<string, Set<string>>();
+  for (const fp of filePaths) {
+    const bn = basenameNoExt(fp);
+    if (!moduleToFile.has(bn)) moduleToFile.set(bn, new Set());
+    moduleToFile.get(bn)!.add(fp);
+  }
+
+  it('resolves a sibling relative import to its absolute path', () => {
+    const targets = resolveDependency('./db', filePaths, moduleToFile, '/repo/queue-worker/src/queue-worker.ts');
+    expect(targets).toEqual(['/repo/queue-worker/src/db.ts']);
+  });
+
+  it('resolves a parent-relative import (../) to its absolute path', () => {
+    const targets = resolveDependency('../util', filePaths, moduleToFile, '/repo/queue-worker/src/db.ts');
+    expect(targets).toEqual(['/repo/queue-worker/util.ts']);
+  });
+
+  it('still resolves exact file paths and relative paths without a leading slash', () => {
+    // Exact path (strategy 1)
+    expect(resolveDependency('/repo/queue-worker/util.ts', filePaths, moduleToFile, '/repo/x.ts'))
+      .toEqual(['/repo/queue-worker/util.ts']);
+
+    // Relative path on a repo-relative corpus (no leading slash) must keep working.
+    const relPaths = new Set(['src/util.ts', 'src/consumer.ts']);
+    const relModuleToFile = new Map<string, Set<string>>();
+    for (const fp of relPaths) {
+      const bn = basenameNoExt(fp);
+      if (!relModuleToFile.has(bn)) relModuleToFile.set(bn, new Set());
+      relModuleToFile.get(bn)!.add(fp);
+    }
+    expect(resolveDependency('./util', relPaths, relModuleToFile, 'src/consumer.ts'))
+      .toEqual(['src/util.ts']);
   });
 });
 

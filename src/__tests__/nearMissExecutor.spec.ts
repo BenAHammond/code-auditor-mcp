@@ -97,6 +97,7 @@ const DRY_FULL_CONFIG = {
   checkStrings: true,
   checkImports: true,
   checkStructuralSimilarity: true,
+  checkExpressionSimilarity: true,
 };
 const runDry: Runner = async (code) => {
   const ast = parseFile('dry-nearmiss.ts', code)!;
@@ -175,12 +176,15 @@ const RUNNERS: Record<string, Runner> = {
   'solid/method-complexity': runSolid,
   'solid/open-closed': runSolid,
   'solid/single-responsibility': runSolid,
+  'function-length': runSolid,
+  'parameter-count': runSolid,
   'solid/interface-segregation': runSolid,
   'solid/liskov-substitution': runSolid,
   'solid/dependency-inversion': runSolid,
   // dry
   'dry/duplicate': runDry,
   'dry/structural-similarity': runDry,
+  'dry/similar-expression': runDry,
   'duplicate-string-literal': runDry,
   'duplicate-import': runDry,
   // data-access

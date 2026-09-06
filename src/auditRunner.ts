@@ -591,6 +591,12 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           dbCallMethods: scConfig.dbCallMethods,
           dbBindingNames: scConfig.dbBindingNames ?? ['env.DB'],
           fileGateGlobs: scConfig.fileGateGlobs,
+          // Forward the per-function query ceiling + query-pattern/naming gates
+          // so the configured value reaches checkQueryPatterns instead of being
+          // dropped (which made the too-many-queries message print "undefined").
+          maxQueriesPerFunction: scConfig.maxQueriesPerFunction,
+          validateQueryPatterns: scConfig.validateQueryPatterns,
+          checkNamingConventions: scConfig.checkNamingConventions,
           // Declarative ORM table-source registry (Spec 29 R2). Defaults to the
           // Drizzle builders in the visitor when unset; presets (drizzle, typeorm,
           // knex) supply their own, and it must not be dropped before the visitor.
@@ -841,6 +847,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // ── Spec 13 R2 — Hotspot scoring & finding reordering ──────────────
     // Attach hotspot scores to violations and reorder within severity tiers.
     // Falls back gracefully when no churn/hotspot data exists.
+    //
+    // Reachability (live vs dead code) is a second ranking axis written by the
+    // dependency-graph reducer to graph_cache. Within a severity tier, dead
+    // code sinks below live code, so a finding in an unreferenced module drops
+    // while a finding on a framework entry point rises.
     try {
       const indexDb = CodeIndexDB.getInstance(undefined, root);
       await indexDb.initialize();
@@ -850,60 +861,74 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         .prepare('SELECT target, type, score FROM hotspot_scores')
         .all() as Array<{ target: string; type: string; score: number }>;
 
-      if (hotspotRows.length > 0) {
-        const hotspotByTarget = new Map<string, number>();
-        const hotspotByFile = new Map<string, number>();
-        for (const row of hotspotRows) {
-          hotspotByTarget.set(row.target, row.score);
-          if (row.type === 'file') {
-            hotspotByFile.set(row.target, row.score);
-          }
-        }
-
-        // Attach hotspot to each violation and reorder within each analyzer
-        for (const analyzerName of Object.keys(orderedAnalyzerResults)) {
-          const result = orderedAnalyzerResults[analyzerName];
-          const violations = result.violations;
-
-          // Attach hotspot scores
-          for (const v of violations) {
-            const funcName = v.functionName as string | undefined;
-            const file = v.file as string;
-
-            // Try function-level hotspot first: "filePath::functionName"
-            const funcTarget = funcName ? `${file}::${funcName}` : undefined;
-            v.hotspot = (funcTarget ? hotspotByTarget.get(funcTarget) : undefined)
-              ?? hotspotByFile.get(file)
-              ?? 0;
-          }
-
-          // Reorder within severity tiers: sort by hotspot descending,
-          // preserving original order as tiebreaker.
-          const severityOrder: Record<string, number> = {
-            critical: 0,
-            warning: 1,
-            suggestion: 2,
-            info: 3,
-          };
-
-          const indexed = violations.map((v, i) => ({ v, i }));
-          indexed.sort((a, b) => {
-            const sevA = severityOrder[a.v.severity] ?? 99;
-            const sevB = severityOrder[b.v.severity] ?? 99;
-            if (sevA !== sevB) return sevA - sevB;
-            // Within same severity: higher hotspot first
-            const hsA = a.v.hotspot ?? 0;
-            const hsB = b.v.hotspot ?? 0;
-            if (hsA !== hsB) return hsB - hsA;
-            // Tiebreaker: original order
-            return a.i - b.i;
-          });
-
-          result.violations = indexed.map(x => x.v);
+      const hotspotByTarget = new Map<string, number>();
+      const hotspotByFile = new Map<string, number>();
+      for (const row of hotspotRows) {
+        hotspotByTarget.set(row.target, row.score);
+        if (row.type === 'file') {
+          hotspotByFile.set(row.target, row.score);
         }
       }
+
+      // Build reachability lookup: file -> score (0 dead, 0.5 imported, 1 entry)
+      const reachabilityByFile = new Map<string, number>();
+      const reachRows = indexDb.rawDb
+        .prepare("SELECT node_key, weight FROM graph_cache WHERE graph_type = 'reachability'")
+        .all() as Array<{ node_key: string; weight: number }>;
+      for (const row of reachRows) {
+        reachabilityByFile.set(row.node_key, row.weight);
+      }
+
+      // Attach hotspot + reachability to each violation and reorder within each analyzer
+      for (const analyzerName of Object.keys(orderedAnalyzerResults)) {
+        const result = orderedAnalyzerResults[analyzerName];
+        const violations = result.violations;
+
+        for (const v of violations) {
+          const funcName = v.functionName as string | undefined;
+          const file = v.file as string;
+
+          // Try function-level hotspot first: "filePath::functionName"
+          const funcTarget = funcName ? `${file}::${funcName}` : undefined;
+          v.hotspot = (funcTarget ? hotspotByTarget.get(funcTarget) : undefined)
+            ?? hotspotByFile.get(file)
+            ?? 0;
+
+          // Files with no cross-language entities (no reachability data) get a
+          // neutral 0.5 so we never demote a finding we know nothing about.
+          v.reachability = reachabilityByFile.get(file) ?? 0.5;
+        }
+
+        // Reorder within severity tiers: reachability descending, then hotspot
+        // descending, preserving original order as tiebreaker.
+        const severityOrder: Record<string, number> = {
+          critical: 0,
+          warning: 1,
+          suggestion: 2,
+          info: 3,
+        };
+
+        const indexed = violations.map((v, i) => ({ v, i }));
+        indexed.sort((a, b) => {
+          const sevA = severityOrder[a.v.severity] ?? 99;
+          const sevB = severityOrder[b.v.severity] ?? 99;
+          if (sevA !== sevB) return sevA - sevB;
+          // Within same severity: live code first, dead code last
+          const reachA = a.v.reachability ?? 0.5;
+          const reachB = b.v.reachability ?? 0.5;
+          if (reachA !== reachB) return reachB - reachA;
+          // Then higher hotspot first
+          const hsA = a.v.hotspot ?? 0;
+          const hsB = b.v.hotspot ?? 0;
+          if (hsA !== hsB) return hsB - hsA;
+          // Tiebreaker: original order
+          return a.i - b.i;
+        });
+
+        result.violations = indexed.map(x => x.v);
+      }
     } catch {
-      // Hotspot reordering is advisory — failure is non-fatal
+      // Hotspot/reachability reordering is advisory — failure is non-fatal
     }
 
     // ── Spec 13 R5 Phase 2: Divergence tracking pass ──────────────────

@@ -7,6 +7,7 @@ import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, ClassInfo, FunctionInfo, InterfaceInfo } from '../../languages/types.js';
+import { detectFunctionConcerns, countConcernGroups, CONCERN_LABELS, isFunctionNodeType } from './functionConcerns.js';
 
 /**
  * Configuration for SOLID analyzer
@@ -80,6 +81,17 @@ const BUILTIN_TYPES = new Set<string>([
   'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder', 'Buffer',
   'FormData', 'Blob', 'AbortController', 'AbortSignal',
 ]);
+
+/**
+ * #128 — the single-responsibility rule fires on a function that spans three or
+ * more *unrelated* concern groups (data access, messaging, logging, rendering,
+ * data transformation), not merely on size. Three is the floor that separates a
+ * god-function from a cohesive pipeline: a repository method (load + shape) is
+ * one group, and a handler that queries, logs, and emails is three. This is a
+ * qualitative heuristic with no config key, like the open-closed and
+ * dependency-inversion checks — see `functionConcerns.ts` for the taxonomy.
+ */
+const MIN_MIXED_CONCERN_GROUPS = 3;
 
 /**
  * Bundled per-file inputs for the SOLID checks. `ast`, `adapter`, `sourceCode`,
@@ -288,6 +300,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
 
     this.checkFunctionSize(func, ctx, violations);
+    this.checkMixedResponsibilities(func, ctx, violations);
 
     // R5.1: Cyclomatic complexity for standalone functions (not methods — those are
     // already checked in analyzeClass). Skip methods to avoid double-reporting.
@@ -299,18 +312,24 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * R5.1/R5.2: Function size checks (parameter count + line count).
+   * #131: Function-size checks, split into two honest rule IDs.
+   *
+   * `parameter-count` (parameter count) and `function-length` (line count) say
+   * what they measure. Neither is a SOLID principle — a 52-line function is
+   * "2 lines over a length threshold," dismissible on its own terms, not an SRP
+   * violation. `solid/single-responsibility` is reserved for the mixed-concern
+   * check in {@link checkMixedResponsibilities}, which is the actual principle.
    */
   private checkFunctionSize(func: FunctionInfo, ctx: SolidContext, violations: Violation[]): void {
     const { ast, config } = ctx;
 
-    withRuleTiming('solid/single-responsibility', () => {
+    withRuleTiming('parameter-count', () => {
       if (func.parameters.length > (config.maxParametersPerMethod || 4)) {
         violations.push(this.createViolation(
           ast.filePath,
           func.location.start,
           `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 4}. Consider using an options object.`,
-          { severity: 'warning', rule: 'solid/single-responsibility', symbol: functionSymbol(func),
+          { severity: 'warning', rule: 'parameter-count', symbol: functionSymbol(func),
             resolution: {
               action: 'bundle-params',
               summary: `Bundle the ${func.parameters.length} parameters of "${func.name}" into an options object.`,
@@ -322,14 +341,14 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
       }
     });
 
-    withRuleTiming('solid/single-responsibility', () => {
+    withRuleTiming('function-length', () => {
       const lineCount = func.location.end.line - func.location.start.line + 1;
       if (lineCount > (config.maxLinesPerMethod || 50)) {
         violations.push(this.createViolation(
           ast.filePath,
           func.location.start,
           `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 50}. Consider breaking it down.`,
-          { severity: 'warning', rule: 'solid/single-responsibility', symbol: functionSymbol(func),
+          { severity: 'warning', rule: 'function-length', symbol: functionSymbol(func),
             resolution: {
               action: 'break-down-function',
               summary: `Break "${func.name}" (${lineCount} lines) into smaller functions, extracting named helper blocks.`,
@@ -339,6 +358,45 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             } }
         ));
       }
+    });
+  }
+
+  /**
+   * #128/#131: Single-responsibility by mixed-concern detection.
+   *
+   * This is now the *only* signal under `solid/single-responsibility`. A function
+   * that spans three or more unrelated concern categories (data access,
+   * messaging, logging, rendering) is doing too much even when it is short. The
+   * concern taxonomy and the load-and-shape collapse live in `functionConcerns.ts`.
+   *
+   * The size proxies moved to their own rules in #131 — `parameter-count` and
+   * `function-length` — so a length finding no longer masquerades as an SRP
+   * violation.
+   */
+  private checkMixedResponsibilities(func: FunctionInfo, ctx: SolidContext, violations: Violation[]): void {
+    const { ast, adapter, sourceCode } = ctx;
+    const funcNode = findFunctionNode(ast.root, func.location.start);
+    if (!funcNode) return;
+
+    withRuleTiming('solid/single-responsibility', () => {
+      const concerns = detectFunctionConcerns(funcNode, (node) => adapter.getNodeText(node, sourceCode));
+      const groupCount = countConcernGroups(concerns);
+      if (groupCount < MIN_MIXED_CONCERN_GROUPS) return;
+
+      const labels = [...concerns].sort().map((c) => CONCERN_LABELS[c]);
+      violations.push(this.createViolation(
+        ast.filePath,
+        func.location.start,
+        `Function "${func.name}" mixes ${groupCount} unrelated concerns (${labels.join(', ')}). Split it into one function per concern.`,
+        { severity: 'warning', rule: 'solid/single-responsibility', symbol: functionSymbol(func),
+          resolution: {
+            action: 'split-function',
+            summary: `Split "${func.name}" into one function per concern (${labels.join(', ')}) and compose them at the call site.`,
+            symbols: [func.name],
+            files: [ast.filePath],
+            lines: [func.location.start.line],
+          } }
+      ));
     });
   }
 
@@ -585,6 +643,28 @@ function findNodeByLocation(root: ASTNode, location: { line: number; column: num
   }
 
   return null;
+}
+
+/**
+ * Find the function/method node at `location`.
+ *
+ * `findNodeByLocation` is ambiguous when a function is the first token in a
+ * file: the root `program` node also starts at (1,1), and a breadth-first
+ * search returns it before the `function_declaration` it contains. Matching on
+ * the function node type disambiguates — the root is never a function node, so
+ * the outer function is returned even at the top of a file.
+ */
+function findFunctionNode(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
+  let found: ASTNode | null = null;
+  walkAST(root, (node) => {
+    if (found) return;
+    if (node.location.start.line === location.line &&
+        node.location.start.column === location.column &&
+        isFunctionNodeType(node.type)) {
+      found = node;
+    }
+  });
+  return found;
 }
 
 /** Depth-first walk over a subtree, invoking `callback` on every node. */

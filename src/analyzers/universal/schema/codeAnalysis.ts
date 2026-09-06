@@ -13,7 +13,7 @@ import type { Violation } from '../../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../../languages/types.js';
 import { isDBProvenanced, DB_CALL_METHODS, type ProvenanceContext } from '../../provenance.js';
 import { OrmAdapterRegistry } from '../../orm/index.js';
-import { SQL_TAG_NAMES, DB_CALL_METHOD_NAMES, DB_RECEIVER_NAMES } from './config.js';
+import { SQL_TAG_NAMES, DB_CALL_METHOD_NAMES, DB_RECEIVER_NAMES, DEFAULT_SCHEMA_CONFIG } from './config.js';
 import type { SchemaAnalyzerConfig, TableReference } from './types.js';
 import { createSchemaViolation } from './violations.js';
 
@@ -484,6 +484,12 @@ export function checkQueryPatterns(
 ): Violation[] {
   const violations: Violation[] = [];
 
+  // Resolve the ceiling once — the pipeline's schema config can omit it, and
+  // the message must never print "undefined". Falls back to the analyzer's
+  // default (DEFAULT_SCHEMA_CONFIG.maxQueriesPerFunction) so the condition and
+  // message can never disagree.
+  const maxQueries = config.maxQueriesPerFunction ?? DEFAULT_SCHEMA_CONFIG.maxQueriesPerFunction ?? 5;
+
   const functions = adapter.extractFunctions(ast);
 
   for (const func of functions) {
@@ -493,11 +499,11 @@ export function checkQueryPatterns(
     const funcText = adapter.getNodeText(funcNode, sourceCode);
     const queryCount = countQueries(funcText);
 
-    if (queryCount > (config.maxQueriesPerFunction || 5)) {
+    if (queryCount > maxQueries) {
       violations.push(createSchemaViolation(
         ast.filePath,
         func.location.start,
-        `Function '${func.name}' has ${queryCount} queries, exceeding the maximum of ${config.maxQueriesPerFunction}`,
+        `Function '${func.name}' has ${queryCount} queries, exceeding the maximum of ${maxQueries}`,
         { severity: 'warning', rule: 'too-many-queries', symbol: func.name }
       ));
     }
@@ -942,6 +948,7 @@ export function isSqlKeyword(word: string): boolean {
     'table', 'alter', 'drop', 'index', 'view', 'if', 'exists', 'primary',
     'key', 'foreign', 'references', 'constraint', 'default', 'unique',
     'check', 'asc', 'desc', 'count', 'sum', 'avg', 'min', 'max',
+    'skip', 'locked', 'nowait',
     'integer', 'text', 'varchar', 'text', 'boolean', 'float', 'blob',
     'real', 'timestamp', 'date', 'time', 'datetime', 'serial', 'bigint',
     'the', 'a', 'an',

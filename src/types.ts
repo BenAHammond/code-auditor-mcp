@@ -77,6 +77,13 @@ export interface Violation {
   profile?: string;
   /** Hotspot score [0,1] — churn percentile × complexity percentile. */
   hotspot?: number;
+  /**
+   * Reachability score for the finding's file — 1.0 = framework entry point
+   * (live), 0.5 = imported by another file (live) or unknown, 0.0 = referenced
+   * by nothing (dead code). Set by the dependency-graph reducer and used to
+   * rank findings within a severity tier: dead code sinks, live code rises.
+   */
+  reachability?: number;
 
   // ── Transitional fields (previously leaked via [key: string]: any) ──────
   /** @deprecated Read from AnalyzerResult.analyzerName instead. */

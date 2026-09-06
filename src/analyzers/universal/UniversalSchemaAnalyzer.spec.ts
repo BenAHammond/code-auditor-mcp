@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../../languages/index.js';
 import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { extractTablesFromRegistry } from './schema/discovery.js';
-import { parseSqlTables } from './schema/codeAnalysis.js';
+import { parseSqlTables, checkQueryPatterns } from './schema/codeAnalysis.js';
 import type { TableSourceEntry, TableProvenance } from './schema/types.js';
 import type { LanguageAdapter, AST } from '../../languages/types.js';
 
@@ -423,5 +423,35 @@ describe('parseSqlTables — table-valued function and module-import guards', ()
   it('does not suppress a table named after a SQL comment mentioning import', () => {
     // The `-- import data` comment must not be read as a module statement.
     expect(tables('SELECT * FROM users\n-- import data')).toEqual(['users']);
+  });
+
+  it('does not read FOR UPDATE SKIP LOCKED as a table', () => {
+    // `UPDATE` inside a locking clause must not capture `SKIP`/`LOCKED` as a
+    // table name (isSqlKeyword covers them).
+    expect(tables('SELECT * FROM users WHERE id = 1 FOR UPDATE SKIP LOCKED')).toEqual(['users']);
+  });
+
+  it('does not read FOR UPDATE NOWAIT as a table', () => {
+    expect(tables('SELECT * FROM users WHERE id = 1 FOR UPDATE NOWAIT')).toEqual(['users']);
+  });
+});
+
+describe('checkQueryPatterns — ceiling fallback', () => {
+  it('uses the analyzer default, not "undefined", when maxQueriesPerFunction is absent', async () => {
+    const source = [
+      'function f() {',
+      '  db.query("SELECT 1");',
+      '  db.query("SELECT 2");',
+      '  db.query("SELECT 3");',
+      '  db.query("SELECT 4");',
+      '  db.query("SELECT 5");',
+      '  db.query("SELECT 6");',
+      '}',
+    ].join('\n');
+    const ast = await parseSource(source);
+    const violations = checkQueryPatterns(ast, getAdapter(), source, {} as any);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].message).toContain('exceeding the maximum of 5');
+    expect(violations[0].message).not.toContain('undefined');
   });
 });

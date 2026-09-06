@@ -774,7 +774,7 @@ export class TailwindProbe {
  *
  * Uses hyphens for separators to match Tailwind CSS class naming.
  */
-function flattenThemeSection(
+export function flattenThemeSection(
   obj: Record<string, unknown>,
 ): Record<string, string> {
   const result: Record<string, string> = {};
@@ -782,6 +782,14 @@ function flattenThemeSection(
   function walk(prefix: string, value: unknown): void {
     if (typeof value === 'string') {
       result[prefix] = value;
+    } else if (Array.isArray(value)) {
+      // Tailwind v3 array-valued theme keys (fontSize: '3xl': ['1.875rem',
+      // { lineHeight: '2.25rem' }]). The first string element is the size;
+      // trailing line-height objects are not class tokens. Without this branch
+      // the array falls through to the object walk and iterates numeric
+      // indices, producing garbage keys like "3xl-0-lineHeight".
+      const size = value.find((v): v is string => typeof v === 'string');
+      if (size !== undefined) result[prefix] = size;
     } else if (typeof value === 'object' && value !== null) {
       for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
         if (key === 'DEFAULT') {

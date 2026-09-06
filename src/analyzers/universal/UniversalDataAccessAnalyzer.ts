@@ -21,6 +21,7 @@ import {
   DB_BINDING_NAMES,
   DB_WRAPPER_NAMES,
 } from './UniversalSchemaAnalyzer.js';
+import { isSqlKeyword } from './schema/codeAnalysis.js';
 
 /**
  * SQL keywords recognized as evidence that a string is a SQL query.
@@ -1038,6 +1039,30 @@ function findEnclosingFunctionNode(
   return null;
 }
 
+/**
+ * JS built-in static `.from(...)` calls — array/buffer construction, NOT a SQL
+ * FROM clause.  `Array.from(x)`, `Buffer.from(x)`, `Uint8Array.from(x)`, and
+ * any `*Array.from(x)` are matched; without scrubbing these, `Array.from(
+ * accessibleOrgIds)` is read as `.from(accessibleOrgIds)` and its argument is
+ * extracted as a table, fabricating `unfiltered-query` findings.
+ */
+const JS_FROM_CALL = /\b(?:Buffer|String|[A-Za-z0-9_]*Array)\s*\.\s*from\s*\(/gi;
+
+/**
+ * Drizzle's `sql.join(fragments, separator)` joins SQL fragments, not tables.
+ * Without scrubbing it, the ORM `join\s*\(` pattern reads its first argument
+ * (`conditions`) as a table, fabricating `Query on conditions has no filter`.
+ */
+const SQL_FRAGMENT_JOIN = /\bsql\s*\.\s*join\s*\(/gi;
+
+/** Blank out JS `.from(...)` construction and Drizzle `sql.join(...)` fragment
+ *  joins so the table/ORM patterns below cannot read their arguments as tables. */
+function scrubNonTableCalls(text: string): string {
+  return text
+    .replace(JS_FROM_CALL, (m) => ' '.repeat(m.length))
+    .replace(SQL_FRAGMENT_JOIN, (m) => ' '.repeat(m.length));
+}
+
 function isOrmPattern(text: string): boolean {
   // Common ORM method patterns
   const ormPatterns = [
@@ -1067,7 +1092,7 @@ function isOrmPattern(text: string): boolean {
     /\.distinct\s*\(/
   ];
 
-  return ormPatterns.some(pattern => pattern.test(text));
+  return ormPatterns.some(pattern => pattern.test(scrubNonTableCalls(text)));
 }
 
 /** Add capture-group 1 of every match of `patterns` to `tables`. */
@@ -1084,17 +1109,21 @@ function collectPatternTables(
   });
 }
 
-function extractTables(text: string, config: DataAccessAnalyzerConfig): string[] {
+export function extractTables(text: string, config: DataAccessAnalyzerConfig): string[] {
+  // JS `.from(...)` construction (Array.from / Buffer.from / Uint8Array.from)
+  // and Drizzle `sql.join(...)` are not SQL table references; blank them out
+  // first so their arguments aren't read as tables.
+  const scrubbed = scrubNonTableCalls(text);
   const tables = new Set<string>();
 
   // Check ORM and SQL patterns
-  collectPatternTables(text, config.tablePatterns?.orm, tables);
-  collectPatternTables(text, config.tablePatterns?.sql, tables);
+  collectPatternTables(scrubbed, config.tablePatterns?.orm, tables);
+  collectPatternTables(scrubbed, config.tablePatterns?.sql, tables);
 
   // Additional check for common ORM patterns that might be missed
   // Handle patterns like db.select().from(users) where 'users' is a variable
   const ormVariablePattern = /\.from\s*\(\s*([\p{L}_][\p{L}\p{N}_]*)\s*\)/gu;
-  const ormMatches = text.matchAll(ormVariablePattern);
+  const ormMatches = scrubbed.matchAll(ormVariablePattern);
   for (const match of ormMatches) {
     if (match[1] && !match[1].includes('"') && !match[1].includes("'")) {
       tables.add(match[1]);
@@ -1103,14 +1132,17 @@ function extractTables(text: string, config: DataAccessAnalyzerConfig): string[]
 
   // Handle patterns like db.users.find() or db.orders.findOne()
   const dbTablePattern = /db\.([\p{L}_][\p{L}\p{N}_]*)\.\p{L}[\p{L}\p{N}_]*\s*\(/gu;
-  const dbMatches = text.matchAll(dbTablePattern);
+  const dbMatches = scrubbed.matchAll(dbTablePattern);
   for (const match of dbMatches) {
     if (match[1]) {
       tables.add(match[1]);
     }
   }
 
-  return Array.from(tables);
+  // Drop SQL keywords/aggregates captured as tables — `FROM MIN(...)` in
+  // `EXTRACT(YEAR FROM MIN(...))` yields `MIN`, and `FOR UPDATE SKIP LOCKED`
+  // yields `SKIP`; neither is a table.
+  return Array.from(tables).filter(t => !isSqlKeyword(t));
 }
 
 function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): boolean {

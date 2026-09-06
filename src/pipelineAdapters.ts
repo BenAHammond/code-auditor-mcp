@@ -45,6 +45,7 @@ import {
   buildImportMap,
   extractFunctionCalls,
 } from './utils/dependencyExtractor.js';
+import { resolveDependency, basenameNoExt } from './graph/importGraph.js';
 import {
   isReactComponent,
   detectComponentType,
@@ -1269,6 +1270,47 @@ function clMakeFunction(
   };
 }
 
+interface ClFileInfo {
+  imports: string[];
+  hasExports: boolean;
+}
+
+/**
+ * Collect a file's import specifiers and whether it declares any exports.
+ *
+ * Feeds file-level reachability: an `import_statement` (TS/JS) or
+ * `import_declaration` (Go) records a dependency; an `export_statement`
+ * (TS/JS) records that the file exposes symbols to importers. Go exports are
+ * computed separately from the extracted entities (capitalized top-level
+ * names), since Go has no `export` keyword.
+ */
+function clCollectFileInfo(root: any, lang: string): ClFileInfo {
+  const imports = new Set<string>();
+  let hasExports = false;
+  walkAST(root, (node) => {
+    const raw = (node as any).raw as any;
+    if (node.type === 'import_statement') {
+      const source = clRawField(raw, 'source');
+      if (source?.text) imports.add(source.text.replace(/^['"]|['"]$/g, ''));
+    } else if (node.type === 'import_declaration') {
+      for (const spec of raw?.namedChildren ?? []) {
+        if (spec.type === 'import_spec') {
+          const p = clRawField(spec, 'path');
+          if (p?.text) imports.add(p.text.replace(/^['"]|['"]$/g, ''));
+        }
+      }
+    } else if (node.type === 'export_statement') {
+      hasExports = true;
+      // Re-exports (`export { x } from './y'`, `export * from './y'`) are import
+      // edges for reachability: a barrel re-exporting a module marks it live,
+      // not dead. The `source` field is present only on the `from` form.
+      const source = clRawField(raw, 'source');
+      if (source?.text) imports.add(source.text.replace(/^['"]|['"]$/g, ''));
+    }
+  });
+  return { imports: [...imports], hasExports };
+}
+
 // ── TS/JS extraction ─────────────────────────────────────────────────────────
 
 function clExtractTSParams(raw: any): any[] {
@@ -1521,9 +1563,16 @@ export function createCrossLanguageEntityVisitor(): Stage2Visitor {
         clExtractTSEntities(root, filePath, sourceCode, lang, entities);
       }
 
+      const fileInfo = clCollectFileInfo(root, lang);
+      // Go has no `export` keyword — an exported symbol is a capitalized
+      // top-level name, which the entity extractor already records as public.
+      const hasExports = lang === 'go'
+        ? entities.some((e) => e.visibility === 'public')
+        : fileInfo.hasExports;
+
       return {
         violations: [],
-        facts: { [filePath]: { entities } },
+        facts: { [filePath]: { entities, imports: fileInfo.imports, hasExports } },
       };
     },
     defaultConfig: {},
@@ -1544,6 +1593,88 @@ function clFlattenEntities(allFacts: Readonly<Record<string, unknown>>): CrossLa
     if (data?.entities) entities.push(...data.entities);
   }
   return entities;
+}
+
+/** Extract per-file `{ imports, hasExports }` from the cross-language facts. */
+function clFileFacts(allFacts: Readonly<Record<string, unknown>>): Map<string, ClFileInfo> {
+  const facts = allFacts['cross-language-entities'] as
+    | Record<string, { entities?: CrossLanguageEntity[]; imports?: string[]; hasExports?: boolean }>
+    | undefined;
+  const map = new Map<string, ClFileInfo>();
+  if (!facts) return map;
+  for (const [filePath, data] of Object.entries(facts)) {
+    if (!data) continue;
+    map.set(filePath, { imports: data.imports ?? [], hasExports: data.hasExports ?? false });
+  }
+  return map;
+}
+
+function clIsTestFile(fp: string): boolean {
+  const lower = fp.toLowerCase();
+  return lower.includes('.test.') || lower.includes('.spec.') ||
+    lower.includes('__tests__') || lower.includes('/test/') || lower.includes('/tests/') ||
+    lower.endsWith('_test.go');
+}
+
+// Files the framework loads directly rather than via an import from sibling
+// code. Skipped when flagging unreferenced modules — a route/page/entry file
+// that nothing imports is an entry point, not dead code.
+const CL_ENTRY_BASENAMES = new Set([
+  'route', 'page', 'layout', 'loading', 'error', 'not-found', 'template', 'default',
+  'middleware', 'instrumentation', 'server', 'client', 'cli', 'main', 'app', 'index', 'worker',
+  'setup', 'seed',
+]);
+
+function clIsEntryPointFile(fp: string): boolean {
+  const segments = fp.replace(/\\/g, '/').split('/').filter(Boolean);
+  const base = segments[segments.length - 1] ?? '';
+  const stem = base.replace(/\.[^.]+$/, '');
+  if (CL_ENTRY_BASENAMES.has(stem)) return true;
+  if (stem.endsWith('.config')) return true; // next.config, vite.config, tailwind.config, …
+  const joined = '/' + segments.join('/') + '/';
+  if (joined.includes('/app/api/') || joined.includes('/pages/api/')) return true;
+  if (joined.includes('/scripts/') || joined.includes('/bin/') || joined.includes('/cmd/')) return true;
+  return false;
+}
+
+/**
+ * Compute file-level reachability from per-file imports.
+ *
+ * A file is a framework entry point (live → 1.0), imported by another file
+ * (live → 0.5), or referenced by nothing (dead → 0.0). The resolver mirrors
+ * importGraph.ts and handles relative paths, npm/alias basenames, and fuzzy
+ * path-segment matches.
+ */
+function clComputeReachability(
+  fileFacts: Map<string, ClFileInfo>,
+): { reachability: Map<string, number>; importersOf: Map<string, Set<string>> } {
+  const filePaths = new Set(fileFacts.keys());
+  const moduleToFile = new Map<string, Set<string>>();
+  for (const fp of filePaths) {
+    const bn = basenameNoExt(fp);
+    if (!moduleToFile.has(bn)) moduleToFile.set(bn, new Set());
+    moduleToFile.get(bn)!.add(fp);
+  }
+
+  const importersOf = new Map<string, Set<string>>();
+  for (const [fp, info] of fileFacts) {
+    for (const dep of info.imports) {
+      const targets = resolveDependency(dep, filePaths, moduleToFile, fp);
+      for (const t of targets) {
+        if (t === fp) continue;
+        if (!importersOf.has(t)) importersOf.set(t, new Set());
+        importersOf.get(t)!.add(fp);
+      }
+    }
+  }
+
+  const reachability = new Map<string, number>();
+  for (const fp of filePaths) {
+    const entry = clIsEntryPointFile(fp);
+    const imported = (importersOf.get(fp)?.size ?? 0) > 0;
+    reachability.set(fp, entry ? 1 : imported ? 0.5 : 0);
+  }
+  return { reachability, importersOf };
 }
 
 /**
@@ -1719,6 +1850,29 @@ export function createDependencyGraphReducer(): Stage4Reducer {
         const idToEntity = new Map(entities.map((e) => [e.id, e] as const));
         const violations: Violation[] = [];
         for (const issue of health.issues) {
+          if (issue.type === 'orphaned-nodes') {
+            // Emit one violation per orphan so each is attributed to its own
+            // file/line. The aggregated form anchored every orphan to the first
+            // node's location while the message listed all of them — foreign
+            // symbols leaked into the wrong file.
+            for (const id of issue.affectedNodes) {
+              const orphan = idToEntity.get(id);
+              if (!orphan) continue;
+              violations.push({
+                file: orphan.file,
+                line: orphan.startLine,
+                severity: issue.severity,
+                message: `Orphaned node "${orphan.name}" has no connections.`,
+                rule: issue.type,
+                type: issue.type, // dependency-graph rules match on field: 'type'
+                analyzer: 'dependency-graph',
+                category: 'cross-language-dependency',
+                functionName: orphan.name,
+                details: { orphanId: id },
+              } as Violation);
+            }
+            continue;
+          }
           const anchor = issue.affectedNodes.map((id) => idToEntity.get(id)).find(Boolean);
           violations.push({
             file: anchor?.file ?? '(unknown)',
@@ -1732,6 +1886,57 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             details: issue.details,
           } as Violation);
         }
+
+        // ── File-level reachability: unreferenced modules + ranking axis ──
+        const fileFacts = clFileFacts(allFacts);
+        if (fileFacts.size > 0) {
+          const { reachability, importersOf } = clComputeReachability(fileFacts);
+
+          // Persist reachability to graph_cache so the post-pipeline reorder
+          // (auditRunner hotspot block) can rank every finding by live/dead.
+          if (context.indexHandle?.rawDb) {
+            try {
+              const db = context.indexHandle.rawDb as any;
+              const del = db.prepare("DELETE FROM graph_cache WHERE graph_type = 'reachability'");
+              const ins = db.prepare(
+                "INSERT OR REPLACE INTO graph_cache (graph_type, node_key, neighbor_key, weight) VALUES ('reachability', ?, '', ?)"
+              );
+              const tx = db.transaction(() => {
+                del.run();
+                for (const [fp, score] of reachability) {
+                  ins.run(fp, score);
+                }
+              });
+              tx();
+            } catch {
+              // Reachability persistence is advisory — ranking falls back to a
+              // neutral default without it.
+            }
+          }
+
+          // Flag files that export symbols yet are imported by nothing and are
+          // not framework entry points — a dead module. This is the signal the
+          // orphaned-nodes check missed: a whole unreferenced file whose every
+          // internal symbol still forms a connected component.
+          for (const [fp, info] of fileFacts) {
+            if (!info.hasExports) continue;
+            if (clIsTestFile(fp)) continue;
+            if (clIsEntryPointFile(fp)) continue;
+            if ((importersOf.get(fp)?.size ?? 0) > 0) continue;
+            violations.push({
+              file: fp,
+              line: 1,
+              severity: 'suggestion',
+              message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
+              rule: 'unreferenced-module',
+              type: 'unreferenced-module',
+              analyzer: 'dependency-graph',
+              category: 'cross-language-dependency',
+              details: { imports: info.imports },
+            } as Violation);
+          }
+        }
+
         for (const s of health.suggestions) {
           violations.push({
             file: '(multiple)',

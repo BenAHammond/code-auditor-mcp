@@ -16,7 +16,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TailwindProbe } from './tailwindProbe.js';
+import { TailwindProbe, flattenThemeSection } from './tailwindProbe.js';
 
 describe('TailwindProbe — extractBareImports', () => {
   const probe = new TailwindProbe();
@@ -111,5 +111,30 @@ describe('TailwindProbe — resolveCssImport', () => {
     expect(fn('no-such-plugin', root)).toBeNull();
     expect(fn('tw-animate-css/nope.css', root)).toBeNull();
     expect(fn('', root)).toBeNull();
+  });
+});
+
+describe('flattenThemeSection — Tailwind v3 array-valued keys', () => {
+  it('collapses a fontSize array to its size string, not numeric indices', () => {
+    // Tailwind v3: fontSize '3xl' => ['1.875rem', { lineHeight: '2.25rem' }].
+    // flattenThemeSection receives the section itself (theme.fontSize), so
+    // the key is '3xl', not 'fontSize-3xl'.
+    const out = flattenThemeSection({
+      '3xl': ['1.875rem', { lineHeight: '2.25rem' }],
+      'sm': '0.875rem',
+    } as Record<string, unknown>);
+
+    expect(out['3xl']).toBe('1.875rem');
+    expect(out['sm']).toBe('0.875rem');
+    // The old object-walk produced garbage keys like these:
+    expect(Object.keys(out)).not.toContain('3xl-0');
+    expect(Object.keys(out)).not.toContain('3xl-1-lineHeight');
+  });
+
+  it('still flattens nested color objects with dotted keys', () => {
+    const out = flattenThemeSection({
+      blue: { 500: '#3b82f6' },
+    } as Record<string, unknown>);
+    expect(out['blue-500']).toBe('#3b82f6');
   });
 });

@@ -123,7 +123,7 @@ export function buildImportGraph(db: Database.Database): ImportGraph {
   return { adjacency, filePaths };
 }
 
-function basenameNoExt(fp: string): string {
+export function basenameNoExt(fp: string): string {
   const segments = fp.replace(/\\/g, '/').split('/');
   const basename = segments[segments.length - 1];
   const dot = basename.lastIndexOf('.');
@@ -139,7 +139,7 @@ function basenameNoExt(fp: string): string {
  * 3. Relative import resolution
  * 4. Basename matching
  */
-function resolveDependency(
+export function resolveDependency(
   dep: string,
   filePaths: Set<string>,
   moduleToFile: Map<string, Set<string>>,
@@ -209,6 +209,13 @@ function resolveDependency(
 }
 
 function normalizePath(p: string): string {
+  // Preserve a leading slash so absolute paths survive normalization. Dropping
+  // the empty first segment (the root) here was silently turning
+  // `/abs/src/db` into `abs/src/db`, which then never matched the absolute
+  // file paths in `filePaths` — so every relative import (`./db`,
+  // `./processing-service`) resolved to nothing and live modules were flagged
+  // as unreferenced (dead).
+  const isAbsolute = p.startsWith('/');
   const parts = p.replace(/\\/g, '/').split('/');
   const result: string[] = [];
   for (const part of parts) {
@@ -218,7 +225,8 @@ function normalizePath(p: string): string {
       result.push(part);
     }
   }
-  return result.join('/');
+  const joined = result.join('/');
+  return isAbsolute ? '/' + joined : joined;
 }
 
 /**

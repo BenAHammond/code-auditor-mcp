@@ -148,7 +148,9 @@ describe('Oracle: SOLID false positives', () => {
     expect(r.methodComplexity.length,
       `Item 11 is complexity 1 — method-complexity MUST NOT fire (got ${r.methodComplexity.length})`
     ).toBe(0);
-    // 52 lines but maxLinesPerMethod=200 suppresses single-responsibility
+    // `singleResponsibility` now filters only the mixed-concern check (#131):
+    // the item's query + map collapses to one concern group, so it is 0.
+    // The 52-line length would fire `function-length`, not this rule.
     expect(r.singleResponsibility.length).toBe(0);
   });
 
