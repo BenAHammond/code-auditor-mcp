@@ -120,10 +120,9 @@ export async function runInstall(options: InstallOptions): Promise<void> {
   }
 
   const results: InstallResult[] = [];
-  const packageVersion = await getPackageVersion();
 
   for (const agent of agentsToInstall) {
-    const result = await installForAgent(agent, options.scope, options.hooks, packageVersion);
+    const result = await installForAgent(agent, options.scope, options.hooks);
     results.push(result);
   }
 
@@ -199,7 +198,6 @@ async function installForAgent(
   agent: AgentInfo,
   scope: 'user' | 'project',
   offerHooks: boolean,
-  version: string,
 ): Promise<InstallResult> {
   const result: InstallResult = {
     agent: agent.name,
@@ -253,9 +251,6 @@ async function installForAgent(
       if (file === 'SKILL.md') throw err;
     }
   }
-
-  // Write version marker
-  await fs.writeFile(join(targetDir, '.code-auditor-version'), `${version}\n`);
 
   result.skillPath = targetDir;
   result.installed = true;
