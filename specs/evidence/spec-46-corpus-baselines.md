@@ -17,8 +17,9 @@ Spec 45 baseline is stale:
   commander, promises, DOM/stdlib methods) and language-agnostic test files are
   excluded from `similar-expression`; see *Dry adjudication note*.
 
-This re-pins the six validation corpora and attributes every delta to the named
-cause. Measurement is read-only: `runAuditDispatch` (the same entry point the CLI
+This re-pins the six validation corpora — and promotes hhra-org from a
+supplementary #135 reference to a seventh pinned baseline — attributing every
+delta to the named cause. Measurement is read-only: `runAuditDispatch` (the same entry point the CLI
 uses) with `CODE_AUDITOR_DATA_DIR` pointed at `/tmp/ca-corpus-*`, so no index DB,
 ledger, or report lands in any corpus. No `.codeauditor.baseline.json` is written
 into any reference repo (see *Boundary* at the end).
@@ -53,6 +54,7 @@ by the tool's own data directories.
 | blitz | Next.js/TS/React | 898 | **867** | −31 |
 | gin | Go | 29 | **29** | 0 |
 | svelte-realworld | SvelteKit | 23 | **36** | +13 |
+| hhra-org | Next.js/TS/React + SQL | 2,136 (pre-#135) | **1,213** | −923 |
 
 ## Named causes
 
@@ -352,6 +354,89 @@ findings are byte-identical to Spec 44.
 
 ---
 
+## hhra-org — 1,213 (promoted from supplementary; was 2,136 pre-#135, −923)
+
+hhra-org (`neon-auth-demo-app` — Next.js / TypeScript / React, Drizzle + Postgres,
+117 SQL files, 610 TS/TSX files) is the second *real project with accumulated
+debt* in the set, alongside recall-protocol. Spec 46 recorded it as a
+supplementary #135 reference with only a documentation delta; this re-measure
+promotes it to a pinned baseline with a full per-rule record so the next re-pin
+can attribute every delta precisely.
+
+Determinism check: the re-measure reproduces Spec 46's supplementary numbers
+exactly — total 1,213, documentation 159. No drift.
+
+Per-analyzer (current):
+
+| analyzer | count |
+|---|---|
+| solid | 399 |
+| styles | 346 |
+| react | 173 |
+| documentation | 159 |
+| dependency-graph | 80 |
+| data-access | 18 |
+| schema-code | 18 |
+| conventions | 11 |
+| dry | 5 |
+| cross-domain | 3 |
+| schema | 1 |
+
+Per-rule (current):
+
+```
+solid::function-length                        381
+styles::styles/undefined-class                346
+react::no-error-boundary                       79
+documentation::method-documentation            69
+dependency-graph::unreferenced-module          60
+react::performance                             57
+documentation::function-documentation          51
+documentation::class-documentation             39
+react::complexity                              36
+data-access::loop-query                        18
+dependency-graph::orphaned-nodes               17
+schema-code::too-many-queries                  17
+solid::solid/dependency-inversion               8
+solid::solid/method-complexity                  7
+conventions::conventions/naming                 6
+conventions::conventions/usage-pair             5
+dry::dry/similar-expression                     5
+cross-domain::cross-domain/written-never-read   2
+solid::parameter-count                          2
+cross-domain::cross-domain/read-never-written   1
+dependency-graph::circular-dependency           1
+dependency-graph::tight-coupling                1
+dependency-graph::hub-nodes                     1
+react::accessibility                            1
+schema::invalid-json                            1
+schema-code::sql-injection                      1
+solid::solid/class-size                         1
+```
+
+**Delta attribution:**
+
+- **documentation −885** (#135) — the only precisely attributable delta, because
+  Spec 44/45 recorded no per-rule "before" for hhra-org. `parameter-documentation`
+  and `return-documentation` fell to 0 (tag completeness off by default); the 159
+  that remain are undocumented *logic* in `.ts` service/repo/utility files
+  (`method-documentation` 69, `function-documentation` 51, `class-documentation`
+  39).
+- **non-documentation −38** (1,092 → 1,054) — a net of `dry/similar-expression`
+  +5 (#133; the five genuine "object built twice" signals after the fluent-chain
+  floor fix) and the `dependency-graph` expansion (#124/#125 — `unreferenced-module`
+  60 + `orphaned-nodes` 17 + the three graph-shape rules at 1 each), offset by
+  movements in the remaining analyzers that cannot be attributed without a
+  per-rule "before". This table is the first full per-rule record, so the next
+  re-pin attributes every delta.
+- **debt signal** — solid 399 / styles 346 / react 173 are the accumulated debt
+  this corpus exists to exercise: `function-length` 381, `styles/undefined-class`
+  346, and the react trio (`no-error-boundary` 79, `performance` 57, `complexity`
+  36) dominate. These are structural findings in a real, actively-developed app,
+  not corpus artifacts.
+
+---
+
 ## Adjudication note — orphaned-nodes at corpus scale
 
 The `+884` knex orphan jump was the largest single movement of this re-pin and was
@@ -436,14 +521,11 @@ surface by default, so it is excluded; the object-literal half is where the real
 
 ---
 
-## Supplementary corpora (not part of the six pinned baselines)
+## Supplementary corpora (not part of the pinned baselines)
 
-**hhra-org** — tracked specifically for #135 (documentation is the user's stated
-concern). `documentation` 1,044 → **159** (−885); total 2,136 → **1,213** (−923).
-The −923 is documentation −885 offset by `dry/similar-expression` +5 (#133, after
-`4e52d20` cut the fluent-chain noise) and the dependency-graph expansion
-(#124/#125); hhra-org has no per-rule "before" record in Spec 44/45, so only the
-documentation delta is precisely attributable.
+**hhra-org** — promoted to a pinned baseline (section above); no longer
+supplementary. The #135 documentation concern it was tracked for is now covered
+by the full per-rule record.
 
 **job-search** — the #134 reference corpus. `secrets/hardcoded-secret` **1** (the
 hardcoded `page.type('#password', 'vyy8AUVvish34Fq')`), plus `dependency-graph`
