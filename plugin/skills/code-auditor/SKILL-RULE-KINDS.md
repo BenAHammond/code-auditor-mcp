@@ -178,8 +178,10 @@ Require designated CSS properties to reference a design token instead of a raw v
 
 Severity ranks how urgent a finding is to fix. It never decides whether a
 finding is real, and it never licenses leaving one unresolved. Whether an edit
-is *blocked* is a separate axis: the edit hook gates on invariant rules that
-declare `gating: true` (a binary, per-rule flag), not on severity.
+is *blocked* is decided by severity: the edit hook blocks on any finding at a
+blocking severity (`critical` and `warning` by default, configurable via
+`gateSeverities` in `.codeauditor.json`), from any rule — there is no per-rule
+opt-in.
 
 | Severity | What it means |
 |----------|---------------|

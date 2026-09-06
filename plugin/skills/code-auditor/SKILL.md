@@ -45,7 +45,7 @@ Use `code-audit changed` after edits to confirm you haven't introduced violation
 
 **Every finding is a defect to resolve, not a suggestion to weigh.** After a full audit, work the violations in severity order — criticals first, then warnings, then suggestions — and fix them all. Severity ranks urgency, never whether a finding is real; there is no "noise" tier. Documentation findings (missing JSDoc) are maintainability defects, not stylistic niceties. If you choose not to fix one, record why before moving on — never silently dismiss it.
 
-Expected output: JSON violation list (with `--json`) or colored terminal summary. The full `audit` command exits non-zero when violations at or above `--fail-on` severity exist; the diff-scoped `changed` hook gates on per-rule `gating: true` flags, not severity.
+Expected output: JSON violation list (with `--json`) or colored terminal summary. The full `audit` command exits non-zero when violations at or above `--fail-on` severity exist; the `changed` hook blocks on any finding at a blocking severity — `critical` and `warning` by default, configurable via `gateSeverities` in `.codeauditor.json` — from any rule, and enforcement is not diff-scoped (a pre-existing finding in the audited file blocks exactly like a new one).
 
 ### `code-audit next-file` — fix violations one file at a time
 
@@ -88,7 +88,7 @@ Path profiles are an ordered array — files matching multiple profiles merge ov
 
 A **built-in** `scripts-and-tests` profile ships with every install — it excludes `scripts/**`, `tests/**`, `__tests__/**`, `fixtures/**`, and `*.test.*`/`*.spec.*` files from the gate. Disable it with `"builtin": false` in `.codeauditor.json`.
 
-Invariant violations are **immune** to path profile gate exclusion — invariants enforce declared laws and always block.
+Invariant violations are **immune** to path profile gate exclusion — invariants enforce declared laws and block on the same severity gate as every other rule (`critical` and `warning` by default).
 
 ### `code-audit index` — refresh the index after structural changes
 
@@ -180,7 +180,7 @@ When an edit hook blocks your edit with a violation message:
 1. **Read the violation** — it includes the invariant rule's `message` field explaining *why* the edit was blocked
 2. **Fix the violation** — change your approach to comply with the invariant
 3. **Do NOT retry the same edit** — the hook will block it again
-4. The hook runs `code-audit changed`, and its gate is binary and per-rule: an invariant rule blocks the edit only if it declares `gating: true` (regardless of severity). Warnings and suggestions are still violations and must be fixed — they pass the gate, they are not resolved.
+4. The hook runs `code-audit changed`, and its gate is severity-scoped: any finding at a blocking severity (`critical` and `warning` by default, configurable via `gateSeverities` in `.codeauditor.json`) blocks the edit, from any rule. Suggestions are still violations and must be fixed — they report but do not block by default.
 
 The hook auto-installs the package via npx on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the npx auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
 

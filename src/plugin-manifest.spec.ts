@@ -249,6 +249,60 @@ describe('Skill file (SKILL.md)', () => {
 });
 
 /**
+ * Spec 46 R1 — guard the skill docs against re-teaching the reverted gate model.
+ *
+ * Spec 45 reverted the per-rule `gating: true` opt-in, the binary (severity-free)
+ * gate, and diff-scoped enforcement. Those three ideas live in the gate code at
+ * `src/enforcement/gate.ts` + `src/config/defaults.ts` (`DEFAULT_BLOCKING_SEVERITIES`
+ * = critical + warning). The skill files are what a consuming agent reads to learn
+ * how the gate behaves, so a drift here is the highest-leverage place the reverted
+ * model could survive. This test fails if any of the three skill files re-mentions
+ * the pre-Spec-45 model, so the docs and the code cannot silently diverge again.
+ */
+describe('Skill gate-model drift guard (Spec 46 R1)', () => {
+  const SKILL_FILES = ['SKILL.md', 'SKILL-RULE-KINDS.md', 'SKILL-SEARCH.md'];
+  const SKILL_DIR = resolve(PLUGIN_DIR, 'skills', 'code-auditor');
+
+  // Phrases that describe the reverted (pre-Spec-45) gate. Each is a specific
+  // claim a consuming agent would act on wrongly. Kept as literal substrings so
+  // the test fails on the exact regression, not on fuzzy prose. (The bare word
+  // "per-rule" is deliberately NOT here: the corrected SKILL-RULE-KINDS.md
+  // legitimately says "there is no per-rule opt-in", and that negation must pass.)
+  const REVERTED_PHRASES = [
+    'gating: true', // the per-rule opt-in (removed — every rule gates)
+    'gating:true',
+    'pass the gate', // warnings/suggestions "pass the gate" (removed — severity gates)
+    'regardless of severity', // binary gate (removed — severity decides)
+    'per-rule gating', // per-rule gating flag (removed)
+    'per-rule flag', // per-rule gating flag (removed)
+  ];
+
+  for (const file of SKILL_FILES) {
+    it(`${file} does not teach the reverted gate model`, () => {
+      const content = readFileSync(resolve(SKILL_DIR, file), 'utf-8');
+      for (const phrase of REVERTED_PHRASES) {
+        expect(
+          content.toLowerCase().includes(phrase.toLowerCase()),
+          `${file} re-mentions the reverted gate model: "${phrase}". ` +
+            'Spec 45 reverted it — every rule gates, severity decides blocking ' +
+            '(critical + warning by default), and enforcement is not diff-scoped.',
+        ).toBe(false);
+      }
+    });
+  }
+
+  it('SKILL.md teaches the current gate model', () => {
+    const content = readFileSync(resolve(SKILL_DIR, 'SKILL.md'), 'utf-8');
+    // Severity-scoped, not per-rule, and explicitly not diff-scoped.
+    expect(content).toContain('not diff-scoped');
+    expect(content).toContain('gateSeverities');
+    // Both corrected passages name critical + warning as the default block set.
+    expect(content).toContain('critical');
+    expect(content).toContain('warning');
+  });
+});
+
+/**
  * SKILL.md deduplication — Spec-16 R1 + task #19.
  *
  * app/plugin/skills/code-auditor/ is the canonical source (shipped in the npm
