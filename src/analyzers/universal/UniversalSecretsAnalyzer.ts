@@ -259,8 +259,7 @@ export class UniversalSecretsAnalyzer extends UniversalAnalyzer {
 
     withRuleTiming('hardcoded-secret', () => {
       walkAST(ast.root, (node) => {
-        const violation = this.inspectNode(node, adapter, sourceCode, ast.filePath);
-        if (violation) violations.push(violation);
+        violations.push(...this.inspectNode(node, adapter, sourceCode, ast.filePath));
       });
     });
 
@@ -268,23 +267,23 @@ export class UniversalSecretsAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * Inspect one AST node for a hardcoded credential in a credential position;
-   * returns the violation to report, or null.
+   * Inspect one AST node for hardcoded credentials in a credential position;
+   * returns the violations to report (possibly empty).
    */
   private inspectNode(
     node: ASTNode,
     adapter: LanguageAdapter,
     sourceCode: string,
     filePath: string,
-  ): Violation | null {
+  ): Violation[] {
     // 1. `const <name> = '<value>'`
     if (node.type === 'variable_declarator') {
       const name = declaratorName(node, adapter, sourceCode);
       const value = directStringChild(node, adapter, sourceCode);
       if (name && value !== null && isSecretName(name) && looksLikeRealSecret(value)) {
-        return this.makeViolation(filePath, node, name, value);
+        return [this.makeViolation(filePath, node, name, value)];
       }
-      return null;
+      return [];
     }
 
     // 2. `<obj>.<field> = '<value>'` / `<field> = '<value>'`
@@ -292,18 +291,18 @@ export class UniversalSecretsAnalyzer extends UniversalAnalyzer {
       const key = assignmentKey(node, adapter, sourceCode);
       const value = directStringChild(node, adapter, sourceCode);
       if (key && value !== null && isSecretName(key) && looksLikeRealSecret(value)) {
-        return this.makeViolation(filePath, node, key, value);
+        return [this.makeViolation(filePath, node, key, value)];
       }
-      return null;
+      return [];
     }
 
     // 3. `{ <key>: '<value>' }`
     if (node.type === 'pair') {
       const pv = pairKeyAndValue(node, adapter, sourceCode);
       if (pv && isSecretName(pv.key) && looksLikeRealSecret(pv.value)) {
-        return this.makeViolation(filePath, node, pv.key, pv.value);
+        return [this.makeViolation(filePath, node, pv.key, pv.value)];
       }
-      return null;
+      return [];
     }
 
     // 4. `fn('<selector>', '<secret>')` — a credential selector string plus a
@@ -312,7 +311,7 @@ export class UniversalSecretsAnalyzer extends UniversalAnalyzer {
       return this.checkCredentialCall(node, adapter, sourceCode, filePath);
     }
 
-    return null;
+    return [];
   }
 
   private checkCredentialCall(
@@ -320,23 +319,24 @@ export class UniversalSecretsAnalyzer extends UniversalAnalyzer {
     adapter: LanguageAdapter,
     sourceCode: string,
     filePath: string,
-  ): Violation | null {
+  ): Violation[] {
     const argsNode = node.children?.find((c) => c.type === 'arguments');
-    if (!argsNode) return null;
+    if (!argsNode) return [];
     const stringArgs = (argsNode.children ?? []).filter((c) => c.type === 'string');
-    if (stringArgs.length < 2) return null;
+    if (stringArgs.length < 2) return [];
 
     const hasSelector = stringArgs.some((a) => isCredentialSelector(stringValue(a, adapter, sourceCode)));
-    if (!hasSelector) return null;
+    if (!hasSelector) return [];
 
+    const found: Violation[] = [];
     for (const a of stringArgs) {
       const value = stringValue(a, adapter, sourceCode);
       if (isCredentialSelector(value)) continue; // the selector is not the secret
       if (looksLikeRealSecret(value)) {
-        return this.makeViolation(filePath, node, undefined, value);
+        found.push(this.makeViolation(filePath, node, undefined, value));
       }
     }
-    return null;
+    return found;
   }
 
   private makeViolation(file: string, node: ASTNode, name: string | undefined, value: string): Violation {
