@@ -435,6 +435,11 @@ solid::solid/class-size                         1
   36) dominate. These are structural findings in a real, actively-developed app,
   not corpus artifacts.
 
+**Ratchet scope:** hhra-org is read-only reference, so unlike recall-protocol it
+is never exercised by the `new`/`known`/`fixed` ratchet or the baseline-file diff
+— this corpus proves measurement stability and per-rule attribution, not baseline
+classification.
+
 ---
 
 ## Adjudication note — orphaned-nodes at corpus scale
