@@ -23,6 +23,26 @@ uses) with `CODE_AUDITOR_DATA_DIR` pointed at `/tmp/ca-corpus-*`, so no index DB
 ledger, or report lands in any corpus. No `.codeauditor.baseline.json` is written
 into any reference repo (see *Boundary* at the end).
 
+## Disk hygiene
+
+Repeated measurement runs write the index DB + ledger into the
+`CODE_AUDITOR_DATA_DIR` scratch dir. Pointed at `/tmp/ca-corpus-*`, that
+accumulates — six corpora × several runs grew to ~1.6 GB and filled the Data
+volume, which then failed `verify:dist` (`npm pack`) with **ENOSPC**. That is the
+second time disk exhaustion has interrupted this project, and it is self-inflicted
+by the tool's own data directories.
+
+- `scripts/measure-corpus-counts.ts` now deletes its own scratch dir on exit when
+  it resolves under `/tmp` (or `/private/tmp`, `/var/tmp`, `os.tmpdir()`); a
+  non-temp data dir is a real project index and is never touched.
+- If running the raw CLI or an older script, clear scratch between runs:
+  `rm -rf /tmp/ca-corpus-* /tmp/code-auditor-corpus`.
+- **ENOSPC mid-gate is a disk symptom, not a test failure.** Before debugging a
+  failing `verify:dist`/`verify:close` run, check `df -h /` — if the volume is at
+  or near 100%, free space first (`rm -rf /tmp/ca-*` scratch, `.fcc` rotated
+  logs, leftover `.tgz` tarballs) and re-run before treating any red test as a
+  code regression.
+
 ## Headline — totals
 
 | corpus | stack | Spec 45 baseline | Spec 46 (now) | Δ |

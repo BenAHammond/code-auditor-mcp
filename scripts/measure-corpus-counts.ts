@@ -15,16 +15,47 @@
  * Writes nothing into the target project. The index DB and ledger go to
  * CODE_AUDITOR_DATA_DIR (elsewhere), and no report file is emitted — only
  * stdout. The target is read as read-only reference.
+ *
+ * The scratch dir in CODE_AUDITOR_DATA_DIR is deleted on exit when it resolves
+ * under a temp location (/tmp, /private/tmp, /var/tmp, os.tmpdir()) — repeated
+ * measurement runs used to accumulate GBs of index/ledger scratch in
+ * `/tmp/ca-corpus-*` and fill the disk (see spec-46 *Disk hygiene* note). A
+ * non-temp data dir is a real project index and is never touched.
  */
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runAuditDispatch } from '../src/auditRouter.js';
 import type { Violation } from '../src/types.js';
+import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const projectRoot = process.argv[2];
 if (!projectRoot) {
   console.error('usage: measure-corpus-counts.ts <projectRoot>');
   process.exit(2);
+}
+
+/**
+ * Delete the measurement scratch dir after a run. Only ever deletes a directory
+ * under a temp location — the `CODE_AUDITOR_DATA_DIR` the usage block points at.
+ * A non-temp data dir is a real project index and is left untouched.
+ */
+function cleanupScratch(): void {
+  const dir = process.env.CODE_AUDITOR_DATA_DIR?.trim();
+  if (!dir) return; // unset → shared default (node_modules/.cache); never delete.
+  const resolved = path.resolve(dir);
+  const tempRoots = [path.resolve(os.tmpdir()), '/tmp', '/private/tmp', '/var/tmp'];
+  const isScratch = tempRoots.some(
+    (root) => resolved === root || resolved.startsWith(root + path.sep),
+  );
+  if (!isScratch) return;
+  try {
+    fs.rmSync(resolved, { recursive: true, force: true });
+    console.error(`[measure] cleaned scratch dir ${resolved}`);
+  } catch {
+    // Best-effort: a lingering scratch dir is an annoyance, not a failure.
+  }
 }
 
 async function main() {
@@ -63,7 +94,9 @@ async function main() {
   for (const [rule, count] of sortedRules) console.log(`${rule}: ${count}`);
 }
 
-main().catch((err) => {
-  console.error('FATAL:', err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error('FATAL:', err);
+    process.exitCode = 1;
+  })
+  .finally(() => cleanupScratch());
