@@ -319,7 +319,7 @@ function registerAllTools(registry: ToolRegistry): void {
             violations: auditResult.analyzerResults,
             metadata: auditResult.metadata,
             guidance:
-              'Every finding is a defect to resolve, not a suggestion to weigh. Severity ranks urgency, never whether a finding is real — there is no "noise" tier. Work criticals first, then warnings, then suggestions. Documentation findings (missing JSDoc) are maintainability defects. If you decline a finding, record why instead of silently dismissing it.',
+              'The audit takes readings, not verdicts. Severity is triage — the order to act, never a judgment on whether a reading is real; there is no "noise" tier. Work criticals first, then warnings, then suggestions. The coverage panel tells you what was actually measured. Documentation readings (missing JSDoc) are maintainability gaps. If you decline a reading, record why instead of silently dismissing it.',
           };
         });
       },

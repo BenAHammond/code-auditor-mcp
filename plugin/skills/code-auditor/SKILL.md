@@ -10,6 +10,14 @@ description: Audit code quality, search the codebase semantically, enforce invar
 
 You have the `code-audit` CLI available. It indexes every function, component, and struct in the codebase for semantic search and invariant enforcement. Use these commands instead of raw grep/find whenever possible.
 
+## The diagnostic frame
+
+`code-audit` is a diagnostic instrument, not a judge. Three terms carry that:
+
+- **Reading** — one rule observation (a "finding" in the JSON). The audit *takes* readings; it does not issue verdicts.
+- **Coverage panel** — the report leads with what was measured (which rules fired, which were clean, which were not applicable), so a zero-reading run is not mistaken for a clean tree.
+- **Triage** — severity is the order to act (`critical` → `warning` → `suggestion`), not a truth score. A suggestion reading is as real as a critical one; it is just lower in the queue.
+
 ## When to use which command
 
 ### `code-audit search` — find code by meaning, not just text
@@ -43,20 +51,20 @@ code-audit changed --json                            # Diff-scoped audit (hook c
 
 Use `code-audit changed` after edits to confirm you haven't introduced violations. If the hook is active it already runs `code-audit changed` automatically on Write/Edit — pay attention to its output.
 
-**Every finding is a defect to resolve, not a suggestion to weigh.** After a full audit, work the violations in severity order — criticals first, then warnings, then suggestions — and fix them all. Severity ranks urgency, never whether a finding is real; there is no "noise" tier. Documentation findings (missing JSDoc) are maintainability defects, not stylistic niceties. If you choose not to fix one, record why before moving on — never silently dismiss it.
+**Every reading is a measurement, not a verdict.** The audit is a diagnostic instrument: it reports what it measured (the coverage panel) and takes one reading per rule violation. Work readings in triage order — critical first, then warning, then suggestion — and resolve them all. Severity is triage, the order to act, never a judgment on whether a reading is real; there is no "noise" tier. Documentation readings (missing JSDoc) are maintainability gaps, not stylistic niceties. If you choose not to resolve one, record why before moving on — never silently dismiss it.
 
-Expected output: JSON violation list (with `--json`) or colored terminal summary. The full `audit` command exits non-zero when violations at or above `--fail-on` severity exist; the `changed` hook blocks on any finding at a blocking severity — `critical` and `warning` by default, configurable via `gateSeverities` in `.codeauditor.json` — from any rule, and enforcement is not diff-scoped (a pre-existing finding in the audited file blocks exactly like a new one).
+Expected output: JSON violation list (with `--json`) or colored terminal summary. The full `audit` command exits non-zero when violations at or above `--fail-on` severity exist; the `changed` hook blocks on any reading at a blocking severity — `critical` and `warning` by default, configurable via `gateSeverities` in `.codeauditor.json` — from any rule, and enforcement is not diff-scoped (a pre-existing reading in the audited file blocks exactly like a new one).
 
 ### `code-audit next-file` — fix violations one file at a time
 
 ```bash
-code-audit next-file --path .        # Highest-priority file + all its findings
+code-audit next-file --path .        # Highest-priority file + all its readings
 code-audit next-file --path . --json # Machine-readable
 ```
 
-This is the refactoring loop. `next-file` audits the project and returns the single highest-priority file — ranked by highest-severity finding, then total finding count — with every finding on it, ordered critical → warning → suggestion. Fix that file, then run it again: a still-broken file comes back, otherwise the next-worst file surfaces. `{done:true}` means the tree is clean.
+This is the refactoring loop. `next-file` audits the project and returns the single highest-priority file — ranked by highest-severity reading, then total reading count — with every reading on it, ordered critical → warning → suggestion. Fix that file, then run it again: a still-broken file comes back, otherwise the next-worst file surfaces. `{done:true}` means the tree is clean.
 
-There is **no skip or decline affordance**. A finding leaves the queue only by being fixed, or by editing the rule that produces it in `.codeauditor.json` (your rules editor). If a rule keeps firing on something you judge correct, change the rule — never work around it.
+There is **no skip or decline affordance**. A reading leaves the queue only by being fixed, or by editing the rule that produces it in `.codeauditor.json` (your rules editor). If a rule keeps firing on something you judge correct, change the rule — never work around it.
 
 ### `code-audit config` — know the project's laws
 
@@ -73,7 +81,7 @@ These are the codebase's declared constraints — "no importing X from Y," "modu
 
 ### Path Profiles — "my scripts directory is noisy"
 
-When an audit produces too many findings in scripts, tests, or fixtures, use **path profiles** in `.codeauditor.json` to exclude a directory from the blocking gate:
+When an audit produces too many readings in scripts, tests, or fixtures, use **path profiles** in `.codeauditor.json` to exclude a directory from the blocking gate:
 
 ```json
 {
@@ -84,7 +92,7 @@ When an audit produces too many findings in scripts, tests, or fixtures, use **p
 }
 ```
 
-Path profiles are an ordered array — files matching multiple profiles merge overrides (later wins). The `excludeFromGate: true` key excludes all findings in matching files from the blocking gate. Findings still report at their real severity — a path profile excludes a file from the gate, it never softens a finding within it.
+Path profiles are an ordered array — files matching multiple profiles merge overrides (later wins). The `excludeFromGate: true` key excludes all readings in matching files from the blocking gate. Readings still report at their real severity — a path profile excludes a file from the gate, it never softens a reading within it.
 
 A **built-in** `scripts-and-tests` profile ships with every install — it excludes `scripts/**`, `tests/**`, `__tests__/**`, `fixtures/**`, and `*.test.*`/`*.spec.*` files from the gate. Disable it with `"builtin": false` in `.codeauditor.json`.
 
@@ -138,7 +146,7 @@ code-audit conventions propose --json                # JSON proposal array
 
 **Usage:** Run a full audit or `code-audit index sync` to mine conventions from the codebase index. Then `code-audit conventions list` to see what was found, and `code-audit conventions propose` to get the rules. Paste the proposals into the `rules` array in `.codeauditor.json`.
 
-Convention violations ship at `suggestion` severity by default. Severity ranks how a finding blocks the edit gate, not whether it matters — resolve suggestions the same way you resolve warnings, and promote them with `severityOverrides` if your team wants them to block edits too.
+Convention readings ship at `suggestion` severity by default. Severity is triage — how a reading blocks the edit gate, not whether it matters. Resolve suggestions the same way you resolve warnings, and promote them with `severityOverrides` if your team wants them to block edits too.
 
 ### `code-audit hotspots` — identify churn-prone code
 
@@ -180,7 +188,7 @@ When an edit hook blocks your edit with a violation message:
 1. **Read the violation** — it includes the invariant rule's `message` field explaining *why* the edit was blocked
 2. **Fix the violation** — change your approach to comply with the invariant
 3. **Do NOT retry the same edit** — the hook will block it again
-4. The hook runs `code-audit changed`, and its gate is severity-scoped: any finding at a blocking severity (`critical` and `warning` by default, configurable via `gateSeverities` in `.codeauditor.json`) blocks the edit, from any rule. Suggestions are still violations and must be fixed — they report but do not block by default.
+4. The hook runs `code-audit changed`, and its gate is severity-scoped: any reading at a blocking severity (`critical` and `warning` by default, configurable via `gateSeverities` in `.codeauditor.json`) blocks the edit, from any rule. Suggestions are still readings and must be resolved — they report but do not block by default.
 
 The hook auto-installs the package via npx on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the npx auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
 

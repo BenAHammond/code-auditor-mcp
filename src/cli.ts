@@ -171,6 +171,25 @@ program
       );
       const baseline = result.metadata?.baseline;
 
+      // ── Coverage panel leads the report (Spec 47 R2) ─────────────
+      // A diagnostic report opens with what was measured before it lists any
+      // readings, so a zero-reading report can't be mistaken for a clean tree.
+      const coverage = result.metadata?.coverage;
+      if (coverage && coverage.length > 0) {
+        const covFired = coverage.filter(c => c.state === 'fired').length;
+        const covClean = coverage.filter(c => c.state === 'clean').length;
+        const covUnassessed = coverage.filter(c => c.state === 'unassessed').length;
+        const covNotApplicable = coverage.filter(c => c.state === 'notApplicable').length;
+        const covCannotFire = coverage.filter(c => c.state === 'cannot-fire').length;
+        console.log(
+          chalk.gray(
+            `── Coverage panel ── ${covFired} fired · ${covClean} clean · ` +
+            `${covUnassessed} unassessed · ${covNotApplicable} not-applicable · ` +
+            `${covCannotFire} cannot-fire`
+          )
+        );
+      }
+
       // ── Delta output (Spec 18 R2) ─────────────────────────────────
       if (baseline && !options.full) {
         const newViolations = violations.filter((v: any) => v.new === true);
@@ -189,7 +208,7 @@ program
         console.log(`\n📊 Delta: +${newViolations.length} new · −${fixedCount} fixed · ${knownCount} known  ${trendIcon} ${trendLabel}`);
 
         if (newViolations.length > 0) {
-          console.log(chalk.gray(`\n── New Findings (${newViolations.length}) ──────────────────────────`));
+          console.log(chalk.gray(`\n── New readings (${newViolations.length}) ──────────────────────────`));
           for (const v of newViolations) {
             const icon =
               v.severity === 'critical' ? '🔴' :
@@ -199,9 +218,9 @@ program
             );
           }
         } else {
-          console.log(chalk.green('\n✓ No new findings since last baseline.'));
+          console.log(chalk.green('\n✓ No new readings since last baseline.'));
           if (knownCount > 0) {
-            console.log(chalk.gray(`  ${knownCount} known finding(s) are still open — recorded, not fixed.`));
+            console.log(chalk.gray(`  ${knownCount} known reading(s) are still open — recorded, not resolved.`));
           }
         }
 
@@ -230,27 +249,27 @@ program
           .sort((a, b) => b[1] - a[1])
           .slice(0, 5);
         for (const [file, count] of topFiles) {
-          console.log(`${file} — ${count} finding${count !== 1 ? 's' : ''}`);
+          console.log(`${file} — ${count} reading${count !== 1 ? 's' : ''}`);
         }
 
-        console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit --full')} to see all ${currentDebt.toLocaleString()} findings.`));
+        console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit --full')} to see all ${currentDebt.toLocaleString()} readings.`));
       } else if (!baseline) {
         // No baseline: current behavior + hint
-        console.log(`\nFound ${result.summary.totalViolations} violations`);
+        console.log(`\nFound ${result.summary.totalViolations} readings`);
         console.log(`Critical: ${result.summary.criticalIssues}`);
         console.log(`Warnings: ${result.summary.warnings}`);
         console.log(`Suggestions: ${result.summary.suggestions}`);
 
-        console.log(chalk.gray(`\nEvery finding is a defect to resolve — severity ranks urgency, never whether a finding is real.`));
+        console.log(chalk.gray(`\nEvery reading is a measurement, not a verdict — severity is triage, the order to act.`));
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
       } else {
         // --full with baseline: full itemized inventory (current behavior)
-        console.log(`\nFound ${result.summary.totalViolations} violations`);
+        console.log(`\nFound ${result.summary.totalViolations} readings`);
         console.log(`Critical: ${result.summary.criticalIssues}`);
         console.log(`Warnings: ${result.summary.warnings}`);
         console.log(`Suggestions: ${result.summary.suggestions}`);
 
-        console.log(chalk.gray(`\nEvery finding is a defect to resolve — severity ranks urgency, never whether a finding is real.`));
+        console.log(chalk.gray(`\nEvery reading is a measurement, not a verdict — severity is triage, the order to act.`));
       }
 
       // Spec 44 R4 — file accounting: analyzed/dropped totals + optional breakdown.
@@ -339,7 +358,7 @@ program
             }
           }
           if (unassessed.length > 0) {
-            console.log(chalk.gray(`  ── Unassessed (zero findings, applicability unknown) ──`));
+            console.log(chalk.gray(`  ── Unassessed (zero readings, applicability unknown) ──`));
             for (const c of unassessed) {
               console.log(`    ${c.ruleId} (0)`);
             }
@@ -352,7 +371,7 @@ program
       const builtinCapped = Object.values(result.analyzerResults)
         .reduce((count, ar) => count + ar.violations.filter(v => v.profile === 'scripts-and-tests').length, 0);
       if (builtinCapped > 0) {
-        console.log(chalk.blue(`\nℹ️  ${builtinCapped.toLocaleString()} findings capped by built-in profile "scripts-and-tests" (scripts/tests/fixtures → suggestion).`));
+        console.log(chalk.blue(`\nℹ️  ${builtinCapped.toLocaleString()} readings capped by built-in profile "scripts-and-tests" (scripts/tests/fixtures → suggestion).`));
         console.log(chalk.gray(`   Set ${chalk.cyan('"builtin": false')} in .codeauditor.json to disable.`));
       }
 
@@ -381,7 +400,7 @@ program
         const snapshotDebt = baseline.previousKnownCount ?? 0;
         if (currentDebt > snapshotDebt) {
           console.error(
-            chalk.red(`Debt regression: ${currentDebt - snapshotDebt} findings added without re-baselining.`)
+            chalk.red(`Debt regression: ${currentDebt - snapshotDebt} readings added without re-baselining.`)
           );
           process.exit(2);
         }
@@ -566,7 +585,7 @@ program
             );
           }
         } else {
-          console.log(chalk.green('\n✓ No findings.'));
+          console.log(chalk.green('\n✓ No readings.'));
         }
       }
 
@@ -701,7 +720,7 @@ function isSelfAuditInScope(file: string): boolean {
 
 program
   .command('self-audit [paths...]')
-  .description('Audit the tool\'s own analyzers/ + languages/ source and fail on blocking findings')
+  .description('Audit the tool\'s own analyzers/ + languages/ source and fail on blocking readings')
   .option('--json', 'Output violations as machine-readable JSON to stdout')
   .option('--stdin', 'Read file paths from stdin (one per line)')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
@@ -793,7 +812,7 @@ program
         process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
       } else if (blocking.length > 0) {
         // Spec 45 A2 — counts plus findings (per analyzer/rule/severity).
-        console.log(chalk.red('\nSelf-audit blocking findings:'));
+        console.log(chalk.red('\nSelf-audit blocking readings:'));
         printCountSummary(blocking);
         for (const v of blocking) {
           const icon =
@@ -804,7 +823,7 @@ program
           );
         }
       } else {
-        console.log(chalk.green('\n✓ Self-audit clean — zero blocking findings in scope.'));
+        console.log(chalk.green('\n✓ Self-audit clean — zero blocking readings in scope.'));
       }
 
       if (blocking.length > 0) process.exit(2);
@@ -825,7 +844,7 @@ program
 // skipping the file.
 program
   .command('next-file')
-  .description('Audit and return the highest-priority file with findings (file-by-file refactor loop)')
+  .description('Audit and return the highest-priority file with readings (file-by-file refactor loop)')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
   .option('-c, --config <config>', 'Configuration name')
   .option('--json', 'Output a single JSON object (or {done:true}) to stdout')
@@ -845,7 +864,7 @@ program
         if (options.json) {
           process.stdout.write(JSON.stringify({ done: true, summary }, null, 2) + '\n');
         } else {
-          console.log(chalk.green('\n✓ No findings — nothing left to refactor.'));
+          console.log(chalk.green('\n✓ No readings — nothing left to refactor.'));
         }
         return;
       }
@@ -892,14 +911,14 @@ program
         console.log(chalk.blue('🔍 Next File to Refactor'));
         console.log(chalk.gray('══════════════════════════════════════════════════'));
         console.log(
-          `\n${chalk.bold(relativize(top.file))} — ${top.count} finding(s), highest severity ${top.maxSeverity}`
+          `\n${chalk.bold(relativize(top.file))} — ${top.count} reading(s), highest severity ${top.maxSeverity}`
         );
         console.log(
           chalk.gray(
-            `${ranked.length - 1} more file(s) with findings · ${violations.length - top.count} remaining finding(s)`
+            `${ranked.length - 1} more file(s) with readings · ${violations.length - top.count} remaining reading(s)`
           )
         );
-        console.log(chalk.gray('\n── Findings ────────────────────────────────────────'));
+        console.log(chalk.gray('\n── Readings ────────────────────────────────────────'));
         for (const v of ordered) {
           const icon = v.severity === 'critical' ? '🔴' : v.severity === 'warning' ? '🟡' : '🔵';
           console.log(
@@ -916,7 +935,7 @@ program
 // Baseline command (Spec 18 R1)
 program
   .command('baseline')
-  .description('Snapshot current advisory findings as the baseline (excludes invariants)')
+  .description('Snapshot current advisory readings as the baseline (excludes invariants)')
   .option('-p, --path <path>', 'Project path', process.cwd())
   .option('--json', 'Output as JSON')
   .action(async (options) => {
@@ -976,7 +995,7 @@ program
         const absorbed = diff?.absorbed ?? newBaseline.entries.length;
         const fixed = diff?.fixed ?? 0;
         const totalKnown = newBaseline.entries.length;
-        console.log(chalk.green(`\n✓ Baseline updated: ${absorbed} finding${absorbed !== 1 ? 's' : ''} absorbed, ${fixed} fixed, ${totalKnown} total known.`));
+        console.log(chalk.green(`\n✓ Baseline updated: ${absorbed} reading${absorbed !== 1 ? 's' : ''} absorbed, ${fixed} fixed, ${totalKnown} total known.`));
         console.log(chalk.gray('Invariants excluded (they always enforce).'));
         if (totalKnown > 0) {
           console.log(chalk.gray(`\nRun ${chalk.cyan('code-audit')} to see your delta view.`));
@@ -2163,7 +2182,7 @@ ledgerCmd
 
 ledgerCmd
   .command('trends')
-  .description('Compare consecutive full-audit runs and report new vs fixed findings per rule')
+  .description('Compare consecutive full-audit runs and report new vs fixed readings per rule')
   .option('--since <runId>', 'Only consider runs after this run ID')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
@@ -3198,9 +3217,9 @@ program
 // tracked count, no state that can drift from the code.
 program
   .command('outstanding')
-  .description('List outstanding findings, re-derived from the codebase (never a stored list)')
+  .description('List outstanding readings, re-derived from the codebase (never a stored list)')
   .option('-p, --path <path>', 'Path to audit', process.cwd())
-  .option('--json', 'Output findings as machine-readable JSON')
+  .option('--json', 'Output readings as machine-readable JSON')
   .action(async (options) => {
     try {
       await initParsers();
@@ -3448,7 +3467,7 @@ async function generateConfigurations(options: any): Promise<void> {
   console.log(chalk.blue('\nNext steps:'));
   console.log(chalk.gray('  1. Edit .codeauditor.json to match your codebase conventions'));
   console.log(chalk.gray('  2. Run ') + chalk.cyan('code-audit') + chalk.gray(' to enforce your rules'));
-  console.log(chalk.gray('  3. Use ') + chalk.cyan('code-audit changed') + chalk.gray(' in your agent hook (gating rules block on new findings)'));
+  console.log(chalk.gray('  3. Use ') + chalk.cyan('code-audit changed') + chalk.gray(' in your agent hook (gating rules block on new readings)'));
 }
 
 /**
