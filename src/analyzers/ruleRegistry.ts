@@ -347,10 +347,11 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Near-identical expression detected ({shared} shared {unit}: {names}). First occurrence at {file}:{line}.',
     docs: 'dry/similar-expression',
     // #133: on by default. The floor (minShapeNames) counts the field/method
-    // names two fragments must share. Query-builder chains are excluded and
-    // object literals must target the same identifier, so default-on stays
-    // quiet on idiomatic reads and schema literals while still firing on the
-    // `resultSummary` object built twice and repeated mutation chains.
+    // names two fragments must share. Fluent library/builder chains (query and
+    // schema builders, Zod validators, commander, promises, DOM and stdlib
+    // method chains) are excluded and object literals must target the same
+    // identifier, so default-on stays quiet on idiomatic API surface and schema
+    // literals while still firing on the `resultSummary` object built twice.
     thresholds: ['minShapeNames'],
     samples: {
       valid: [

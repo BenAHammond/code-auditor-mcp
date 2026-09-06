@@ -73,7 +73,21 @@ export const DEFAULT_DRY_CONFIG: DRYAnalyzerConfig = {
   // R3.2: floor raised from 5 → 15
   minLineThreshold: 15,
   similarityThreshold: 0.85,
-  excludePatterns: ['**/*.test.ts', '**/*.spec.ts'],
+  // Test files and test directories are excluded by convention in any language:
+  // `.test.*`/`.spec.*` in TS/TSX/JS/JSX, plus `test/` and `tests/` directories.
+  // Expected-output fixtures and repeated setup are not production duplication,
+  // and a JS library (knex) names its tests `.js` under `test/`, which the
+  // earlier TS-only patterns missed (132 fixture-object findings). `__tests__/`
+  // is deliberately NOT excluded: this very repo keeps analyzable source
+  // fixtures under `__tests__/fixtures/`, and Jest's `__tests__` files are
+  // still `.test.*`/`.spec.*` named, so the filename patterns cover them.
+  excludePatterns: [
+    '**/*.test.ts', '**/*.spec.ts',
+    '**/*.test.tsx', '**/*.spec.tsx',
+    '**/*.test.js', '**/*.spec.js',
+    '**/*.test.jsx', '**/*.spec.jsx',
+    '**/test/**', '**/tests/**',
+  ],
   // R4.1: sub-rules disabled by default
   checkImports: false,
   checkStrings: false,
@@ -81,11 +95,13 @@ export const DEFAULT_DRY_CONFIG: DRYAnalyzerConfig = {
   ignoreWhitespace: true,
   // R4.2: structural similarity off by default
   checkStructuralSimilarity: false,
-  // #132: expression similarity ON by default. Idiomatic query-builder chains
-  // and unrelated schema literals are filtered out of the signal (query chains
-  // are excluded; object literals must target the same identifier), so the rule
-  // fires on real duplication — `resultSummary` built twice, repeated mutation
-  // chains — without flooding a default audit.
+  // #132: expression similarity ON by default. Fluent library/builder chains
+  // (query builders, schema builders, Zod validators, commander, promises, DOM
+  // and stdlib method chains) are filtered out of the signal — they are the
+  // library's API surface, not duplicated logic — and unrelated schema literals
+  // are excluded by requiring object literals to target the same identifier. So
+  // the rule fires on real duplication — `resultSummary` built twice — without
+  // flooding a default audit.
   checkExpressionSimilarity: true,
   minShapeNames: 4,
 };
@@ -301,18 +317,58 @@ function callChainMethodNames(node: ASTNode, getText: (n: ASTNode) => string): s
 }
 
 /**
- * SQL query-building verbs. A chain that contains one of these is a read query
- * (`.select().from().where().orderBy()`), and two such chains are "structurally
- * similar by design" — the ORM's API surface, not duplicated logic. Excluding
- * them keeps the default-on rule quiet on idiomatic reads while still flagging
- * the mutation chains (`update().set().where().returning()`) that are the real
- * duplication signal.
+ * Method names from well-known fluent APIs. A chain built from these verbs is
+ * "structurally similar by design" — it is the library's public surface, not
+ * duplicated domain logic — so the default-on rule stays quiet on it.
+ *
+ * The first version excluded only `select`/`selectDistinct` on the theory that
+ * read queries are idiomatic but mutation chains (`update().set().where()`)
+ * are the real signal. Corpus measurement disproved that theory: the chains
+ * that actually fire are Zod validators (`string().trim().min().max()`),
+ * query/schema builders (`insert().onConflict().ignore()`,
+ * `integer().unsigned().references()`), commander registrations
+ * (`command().option().action()`), promise flows (`then().then().catch()`),
+ * DOM/JQuery traversal (`closest().find().first().text()`), and stdlib
+ * array/string method chains — all library API, none duplicated logic. The
+ * object-literal half of the rule (a *specific* object built twice, keyed by
+ * target) is where the real signal lives and is unaffected by this exclusion.
  */
-const QUERY_CHAIN_METHODS = new Set(['select', 'selectDistinct']);
+const FLUENT_CHAIN_METHODS = new Set([
+  // SQL query builders (knex, Kysely, Drizzle, …)
+  'select', 'selectDistinct', 'from', 'where', 'andWhere', 'orWhere', 'whereRaw',
+  'whereIn', 'whereNotIn', 'whereNull', 'whereNotNull', 'whereExists', 'whereBetween',
+  'orderBy', 'groupBy', 'having', 'join', 'innerJoin', 'leftJoin', 'rightJoin',
+  'crossJoin', 'fullOuterJoin', 'limit', 'offset', 'distinct', 'count', 'sum', 'avg',
+  'first', 'pluck', 'forUpdate', 'forShare', 'skipLocked', 'union', 'unionAll',
+  'insert', 'update', 'del', 'delete', 'into', 'returning', 'onConflict', 'ignore',
+  'merge', 'increment', 'decrement', 'transacting', 'using', 'updateFrom', 'testSql',
+  'toSQL', 'toQuery', 'raw', 'table', 'schemaBuilder', 'queryBuilder', 'partitionBy',
+  // Schema builders (knex `table.integer().unsigned().references()`)
+  'createTable', 'alterTable', 'dropTable', 'dropTableIfExists', 'renameTable',
+  'renameColumn', 'dropColumn', 'integer', 'bigInteger', 'text', 'boolean', 'float',
+  'double', 'decimal', 'date', 'dateTime', 'timestamp', 'timestamps', 'time',
+  'binary', 'json', 'jsonb', 'uuid', 'unsigned', 'references', 'inTable', 'defaultTo',
+  'index', 'unique', 'primary', 'comment', 'foreign', 'onDelete', 'onUpdate',
+  'deferrable', 'withKeyName', 'notNullable', 'collate', 'check',
+  // Zod / Valibot schema validators
+  'trim', 'min', 'max', 'length', 'int', 'positive', 'nonnegative', 'negative',
+  'regex', 'email', 'url', 'datetime', 'optional', 'nullish', 'nullable', 'default',
+  'describe', 'refine', 'superRefine', 'transform', 'safeParse', 'parse', 'array',
+  'object', 'enum', 'record', 'union', 'intersection', 'tuple', 'literal', 'number',
+  'string', 'nativeEnum', 'lazy', 'preprocess', 'brand',
+  // commander / CLI builders
+  'command', 'description', 'option', 'requiredOption', 'action', 'argument',
+  'version', 'usage', 'name', 'alias', 'allowUnknownOption', 'exitOverride',
+  // Promises
+  'then', 'catch', 'finally',
+  // DOM / jQuery traversal and JS stdlib array/string method chains
+  'closest', 'find', 'text', 'map', 'filter', 'reduce', 'forEach', 'slice', 'split',
+  'join', 'replace', 'replaceAll', 'toLowerCase', 'toUpperCase', 'flatMap', 'concat',
+]);
 
-/** True when the chain is a query builder (contains a read-query verb). */
-function isQueryChain(names: string[]): boolean {
-  return names.some((n) => QUERY_CHAIN_METHODS.has(n));
+/** True when the chain is a fluent library/builder API (not duplicated logic). */
+function isFluentChain(names: string[]): boolean {
+  return names.some((n) => FLUENT_CHAIN_METHODS.has(n));
 }
 
 /**
@@ -324,9 +380,9 @@ function isQueryChain(names: string[]): boolean {
  * this keeps `pgTable('users', {...})` / `pgTable('orders', {...})` (different
  * targets, shared `id`/`createdAt` column names) out of the "built twice" set.
  *
- * Chains are collected from every `call_expression`, excluding query builders.
- * Fragments are filtered to `minShapeNames` names and deduplicated to the
- * outermost span.
+ * Chains are collected from every `call_expression`, excluding fluent
+ * library/builder APIs. Fragments are filtered to `minShapeNames` names and
+ * deduplicated to the outermost span.
  */
 function extractShapeFragments(ctx: BlockContext, minShapeNames: number): ShapeFragment[] {
   const fragments: ShapeFragment[] = [];
@@ -359,7 +415,7 @@ function extractShapeFragments(ctx: BlockContext, minShapeNames: number): ShapeF
       if (left && value?.type === 'object') collectObject(value, getText(left));
     } else if (node.type === 'call_expression') {
       const names = callChainMethodNames(node, getText);
-      if (names.length < minShapeNames || isQueryChain(names)) return;
+      if (names.length < minShapeNames || isFluentChain(names)) return;
       fragments.push({
         file: ctx.ast.filePath,
         start: node.location.start,
@@ -576,13 +632,44 @@ function findNodeByLocation(root: ASTNode, location: { line: number; column: num
 }
 
 /**
- * Check whether a file path matches any of the given glob-ish exclude patterns.
+ * Translate a minimal glob (`*`, `**`, `?`) to an anchored regex. A globstar
+ * (`**`) matches any run of characters including the path separator, and a
+ * globstar followed by a slash becomes an optional segment prefix so it also
+ * matches zero path segments (e.g. `test/` at the root of a relative path).
+ * `*` and `?` match within a single segment.
  */
+function globToRegExp(pattern: string): RegExp {
+  const out: string[] = ['^'];
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === '*') {
+      if (pattern[i + 1] === '*') {
+        i += 1; // consume the second `*`
+        if (pattern[i + 1] === '/') {
+          i += 1; // fold a trailing `/` into the globstar
+          out.push('(?:.*/)?');
+        } else {
+          out.push('.*');
+        }
+      } else {
+        out.push('[^/]*');
+      }
+    } else if (ch === '?') {
+      out.push('[^/]');
+    } else if ('^$\\.+?()[]{}|'.includes(ch)) {
+      out.push('\\', ch);
+    } else {
+      out.push(ch);
+    }
+  }
+  out.push('$');
+  return new RegExp(out.join(''));
+}
+
+/** Check whether a file path matches any of the given glob-ish exclude patterns. */
 function isExcluded(filePath: string, patterns: string[]): boolean {
-  return patterns.some(pattern => {
-    const regex = new RegExp(pattern.replace(/\*/g, '.*'));
-    return regex.test(filePath);
-  });
+  const normalized = filePath.replace(/\\/g, '/');
+  return patterns.some(pattern => globToRegExp(pattern).test(normalized));
 }
 
 /**
