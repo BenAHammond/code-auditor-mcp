@@ -201,8 +201,11 @@ export const DEFAULT_ANALYZER_CONFIGS = {
   documentation: {
     requireFunctionDocs: true,
     requireClassDocs: true,
-    requireParamDocs: true,
-    requireReturnDocs: true,
+    // #135 — tag completeness (parameter-documentation / return-documentation)
+    // is opt-in strict mode; off by default so a documented function that omits
+    // exhaustive @param/@returns tags is not flagged as a defect.
+    requireParamDocs: false,
+    requireReturnDocs: false,
     minDescriptionLength: 2,       // Spec 11 R3 sweep: 10 → 2 (precision-first)
     exemptPatterns: [
       '\\.test\\.',
@@ -212,6 +215,12 @@ export const DEFAULT_ANALYZER_CONFIGS = {
       'fixture',
       '__tests__',
       '/tests?/',
+      // #135 — UI component files and Next.js framework entry points are not
+      // library API surface; skip them so the documentation signal is
+      // undocumented *logic*, not undocumented markup.
+      '\\.tsx$',
+      '\\.jsx$',
+      '/(page|layout|loading|error|route|template|not-found|default|middleware)\\.(ts|tsx|js|jsx|mjs|cjs)$',
     ],
     scope: 'public',
     docsMinLines: 5,

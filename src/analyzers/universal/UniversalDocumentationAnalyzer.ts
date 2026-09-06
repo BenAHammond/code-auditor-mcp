@@ -40,8 +40,11 @@ export const DEFAULT_DOCUMENTATION_CONFIG: DocumentationAnalyzerConfig = {
   requireFunctionDocs: true,
   requireClassDocs: true,
   requireFileDocs: true,
-  requireParamDocs: true,
-  requireReturnDocs: true,
+  // #135 — a doc comment that exists but lacks exhaustive @param/@returns tags
+  // is not a default defect. Tag completeness is opt-in strict mode; enabling
+  // these re-surfaces parameter-documentation / return-documentation.
+  requireParamDocs: false,
+  requireReturnDocs: false,
   minDescriptionLength: 10,
   checkExportedOnly: false,
   exemptPatterns: [
@@ -52,6 +55,14 @@ export const DEFAULT_DOCUMENTATION_CONFIG: DocumentationAnalyzerConfig = {
     'fixture',
     '__tests__',
     '/tests?/',
+    // #135 — UI component files and Next.js framework entry points are not
+    // library API surface: they are self-describing by name/location and belong
+    // to the react analyzer's concern space, not the documentation analyzer.
+    // Skip them by default so the documentation signal is undocumented *logic*
+    // (services, repositories, utilities), not undocumented markup.
+    '\\.tsx$',
+    '\\.jsx$',
+    '/(page|layout|loading|error|route|template|not-found|default|middleware)\\.(ts|tsx|js|jsx|mjs|cjs)$',
   ],
   // Spec-17 defaults
   scope: 'public',
