@@ -31,11 +31,12 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest watch",
     "verify:dist-fresh": "node scripts/verify-dist-fresh.mjs",
+    "verify:clean-install": "bash scripts/verify-clean-install.sh",
     "verify:dist": "npm pack --silent && bash scripts/verify-dist.sh && rm -f code-auditor-mcp-*.tgz",
     "verify:self": "node scripts/verify-self.mjs && node scripts/verify-languages.mjs",
     "verify:languages": "node scripts/verify-languages.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
-    "verify:close": "npm run verify:dist-fresh && npm run test && npm run test:integration && npm run verify:gate-budget && npm run verify:dist && npm run verify:self",
+    "verify:close": "npm run verify:dist-fresh && npm run test && npm run test:integration && npm run verify:gate-budget && npm run verify:clean-install && npm run verify:dist && npm run verify:self",
     "build:go": "bash scripts/build-go.sh"
   },
   "keywords": [
@@ -58,6 +59,12 @@
   "packageManager": "pnpm@10.12.1",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
   },
   "dependencies": {
     "@ast-grep/napi": "^0.44.1",
