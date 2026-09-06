@@ -297,6 +297,7 @@ export interface DependencyNode {
   weight?: number;                       // Node importance
   cluster?: string;                      // Logical grouping
   exported?: boolean;                    // Public/exported — called from outside the graph
+  isMethod?: boolean;                    // method_definition — dispatched via `this.`/receiver, invisible to the name-only call graph
 }
 
 export interface DependencyEdge {

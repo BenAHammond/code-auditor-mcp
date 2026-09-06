@@ -1275,6 +1275,7 @@ function clMakeFunction(
   callees: string[],
   exported: boolean,
   complexity: number,
+  isMethod = false,
 ): CrossLanguageEntity {
   return {
     id: clEntityId(filePath, 'function', name, line),
@@ -1292,7 +1293,7 @@ function clMakeFunction(
     purpose,
     context: '',
     searchTokens: [name.toLowerCase()],
-    metadata: { callees },
+    metadata: { callees, isMethod },
   };
 }
 
@@ -1403,6 +1404,7 @@ function clExtractTSEntities(
         clCollectCallees(raw),
         isExported(node),
         calculateComplexity(node),
+        node.type === 'method_definition',
       ));
       return;
     }

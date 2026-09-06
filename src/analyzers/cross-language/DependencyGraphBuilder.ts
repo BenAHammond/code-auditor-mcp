@@ -336,6 +336,15 @@ class DependencyGraphBuilderCore {
       // code for them; flagging them orphaned produced a flood of 1081
       // interfaces on a corpus whose actual signal was ~139 functions.
       if (node.type === 'interface' || node.type === 'struct') return false;
+      // Methods are invoked via `this.` / receiver / prototype dispatch, which a
+      // name-only call graph cannot model. Class-prefixed names (`Client.formatter`,
+      // Go `Foo.Bar`) never resolve — the reference resolver matches a bare callee
+      // (`formatter`) against the full entity name. Object-literal methods
+      // (`{ renameColumn() {} }` merged onto a prototype) carry a bare name and so
+      // evade the `.` guard, but are dispatched the same way; `isMethod` covers
+      // both. "No call edges" is therefore not evidence of dead code for a method —
+      // treating it as such produced 857 false orphans on knex alone (97% of 885).
+      if (node.isMethod || node.name.includes('.')) return false;
       if (connectedNodes.has(node.id)) return false;
       if (node.exported) return false;
       if (referencedNames.has(node.name.toLowerCase())) return false;
@@ -443,7 +452,8 @@ class DependencyGraphBuilderTraversal extends DependencyGraphBuilderCore {
       file: entity.file,
       weight: this.calculateNodeWeight(entity),
       cluster: this.determineCluster(entity),
-      exported: entity.visibility === 'public' || entity.metadata?.isExported === true
+      exported: entity.visibility === 'public' || entity.metadata?.isExported === true,
+      isMethod: entity.metadata?.isMethod === true
     }));
   }
 

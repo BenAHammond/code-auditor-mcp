@@ -98,6 +98,44 @@ describe('DependencyGraphBuilder orphan detection', () => {
     // Only beta is a candidate but it has an incoming edge; nothing is orphaned.
     expect(orphaned?.affectedNodes ?? []).toEqual([]);
   });
+
+  it('does not flag methods (class-prefixed names) as orphaned — receiver dispatch is invisible to the call graph', async () => {
+    // `Client.formatter` is invoked via `this.formatter(...)`/`client.formatter(...)`,
+    // which the bare-name reference resolver cannot model. It has no call edges and
+    // is unexported, but "no call edges" is not evidence of dead code for a method.
+    const entities = [
+      entity('fn', 'alpha', { visibility: 'private', metadata: { callees: ['formatter'] } }),
+      entity('method', 'Client.formatter', { visibility: 'private' }),
+      entity('dead', 'deadcode', { visibility: 'private' }),
+    ];
+    const references = [ref('fn', 'method')];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    const orphaned = health.issues.find(i => i.type === 'orphaned-nodes');
+    // Only deadcode (bare name, no edges, no reference) is orphaned; the method is skipped.
+    expect(orphaned?.affectedNodes ?? []).toEqual(['dead']);
+  });
+
+  it('does not flag object-literal methods (bare name + isMethod) as orphaned', async () => {
+    // `{ renameColumn() {} }` merged onto a prototype carries a bare name (no `.`
+    // prefix), but `isMethod` marks it as receiver-dispatched — same invisibility.
+    const entities = [
+      entity('fn', 'alpha', { visibility: 'public' }),
+      entity('obj', 'renameColumn', { visibility: 'private', metadata: { isMethod: true } }),
+      entity('dead', 'deadcode', { visibility: 'private' }),
+    ];
+    const references: CrossReference[] = [];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    const orphaned = health.issues.find(i => i.type === 'orphaned-nodes');
+    expect(orphaned?.affectedNodes ?? []).toEqual(['dead']);
+  });
 });
 
 describe('DependencyGraphBuilder rendered finding data (Spec 44 render)', () => {
