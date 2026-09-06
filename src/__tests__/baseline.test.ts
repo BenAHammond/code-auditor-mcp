@@ -1423,7 +1423,7 @@ describe('Rule Registry', () => {
     const reachableAnalyzers = new Set([
       // CLI pipeline (auditRunner analyzerRegistry)
       'solid', 'dry', 'data-access', 'react', 'documentation',
-      'invariants', 'schema', 'styles', 'conventions', 'cross-domain',
+      'invariants', 'schema', 'styles', 'conventions', 'cross-domain', 'secrets',
       // MCP polyglot path (LanguageOrchestrator instantiates these)
       'schema-validator', 'api-contract', 'dependency-graph',
     ]);

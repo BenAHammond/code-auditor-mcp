@@ -192,6 +192,11 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     },
   },
 
+  // Secrets analyzer defaults — hardcoded credentials / API keys / tokens
+  secrets: {
+    checkHardcodedSecrets: true,
+  },
+
   // Spec-17: documentation analyzer defaults
   documentation: {
     requireFunctionDocs: true,

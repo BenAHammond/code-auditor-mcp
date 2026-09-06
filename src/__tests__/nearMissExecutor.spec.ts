@@ -38,6 +38,7 @@ import type { LanguageAdapter } from '../languages/types.js';
 import { UniversalSOLIDAnalyzer, DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
 import { UniversalDRYAnalyzer, DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
 import { UniversalDataAccessAnalyzer, DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { UniversalSecretsAnalyzer, DEFAULT_SECRETS_CONFIG } from '../analyzers/universal/UniversalSecretsAnalyzer.js';
 import { analyzeDocumentation } from '../analyzers/documentationAnalyzer.js';
 import { UniversalSchemaAnalyzer, DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/UniversalSchemaAnalyzer.js';
 import { scanFile } from '../componentScanner.js';
@@ -50,6 +51,7 @@ let tsAdapter: LanguageAdapter;
 let solid: UniversalSOLIDAnalyzer;
 let dry: UniversalDRYAnalyzer;
 let dataAccess: UniversalDataAccessAnalyzer;
+let secrets: UniversalSecretsAnalyzer;
 let schema: UniversalSchemaAnalyzer;
 let tmpDir: string;
 
@@ -61,6 +63,7 @@ beforeAll(async () => {
   solid = new UniversalSOLIDAnalyzer();
   dry = new UniversalDRYAnalyzer();
   dataAccess = new UniversalDataAccessAnalyzer();
+  secrets = new UniversalSecretsAnalyzer();
   schema = new UniversalSchemaAnalyzer();
   tmpDir = await mkdtemp(join(tmpdir(), 'ca-nearmiss-exec-'));
 }, 30_000);
@@ -111,6 +114,16 @@ const runDataAccess: Runner = async (code) => {
   const ast = parseFile('data-access-nearmiss.ts', code)!;
   if (!ast) throw new Error('failed to parse data-access near-miss');
   const vs = await (dataAccess as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, code);
+  return ruleIds(vs);
+};
+
+/** Secrets — hardcoded-credential guard. Placeholder/env-var near-misses are
+ *  self-contained single-file source (the test-fixture near-miss needs a
+ *  test-file path and is exercised in UniversalSecretsAnalyzer.spec.ts). */
+const runSecrets: Runner = async (code) => {
+  const ast = parseFile('secrets-nearmiss.ts', code)!;
+  if (!ast) throw new Error('failed to parse secrets near-miss');
+  const vs = await (secrets as any).analyzeAST(ast, tsAdapter, DEFAULT_SECRETS_CONFIG, code);
   return ruleIds(vs);
 };
 
@@ -194,6 +207,8 @@ const RUNNERS: Record<string, Runner> = {
   'unfiltered-query': runDataAccess,
   'hardcoded-connection': runDataAccess,
   'loop-query': runDataAccess,
+  // secrets
+  'hardcoded-secret': runSecrets,
   // documentation
   'file-documentation': runDocumentation,
   'function-documentation': runDocumentation,

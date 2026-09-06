@@ -517,6 +517,43 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
 
+  // ── secrets (UniversalSecretsAnalyzer) ──────────────────────────────────
+  'hardcoded-secret': {
+    analyzer: 'secrets',
+    field: 'rule',
+    configGate: 'checkHardcodedSecrets',
+    input: ['files'],
+    resolvable: true,
+    message: 'Hardcoded secret detected: a credential value is embedded in source. Move it to an environment variable or secret store.',
+    docs: 'hardcoded-secret',
+    thresholds: [],
+    samples: {
+      valid: [
+        // Placeholder value — named like a secret, but the value is a known placeholder.
+        { code: "const apiKey = 'your-api-key';", nearMiss: true },
+        // Env var reference — not a string literal, so never a candidate.
+        { code: 'const apiKey = process.env.API_KEY;', nearMiss: true },
+      ],
+      invalid: [
+        {
+          code: "const password = 'hunter2Secret9';",
+          resolution: {
+            action: 'remove-hardcoded-secret',
+            summary: 'Replace the hardcoded "password" credential with a reference to an environment variable or secret store (e.g. process.env.PASSWORD).',
+            symbols: ['password'],
+          },
+        },
+        {
+          code: "await page.type('#password', 'vyy8AUVvish34Fq');",
+          resolution: {
+            action: 'remove-hardcoded-secret',
+            summary: 'Replace the hardcoded credential with a reference to an environment variable or secret store (e.g. process.env.SECRET).',
+          },
+        },
+      ],
+    },
+  },
+
   // ── documentation (UniversalDocumentationAnalyzer) ─────────────────────
   'file-documentation': {
     analyzer: 'documentation',

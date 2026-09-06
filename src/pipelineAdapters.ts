@@ -216,6 +216,32 @@ export function createDocumentationVisitor(): Stage2Visitor {
   };
 }
 
+// ── Secrets visitor ──────────────────────────────────────────────────────────
+
+export function createSecretsVisitor(): Stage2Visitor {
+  const getAnalyzer = lazySingleton<any>(() =>
+    import('./analyzers/universal/UniversalSecretsAnalyzer.js').then(
+      (m) => new m.UniversalSecretsAnalyzer(),
+    ),
+  );
+
+  return {
+    name: 'secrets',
+    stage: 'visitor',
+    getRuleIds: () => getRuleIdsFor('secrets'),
+    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
+      const a = await getAnalyzer();
+      const violations: Violation[] = await a.analyzeAST(
+        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
+      );
+      return { violations, facts: {} };
+    },
+    defaultConfig: {},
+    description: 'Detects hardcoded credentials, API keys, and tokens',
+    category: 'security',
+  };
+}
+
 // ── Function-Index visitor (infrastructure) ──────────────────────────────────
 // Always-on Stage 2 visitor that populates the `functions` table with
 // per-file definitions so the conventions and cross-domain reducers have data

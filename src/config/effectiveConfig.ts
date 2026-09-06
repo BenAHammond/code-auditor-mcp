@@ -20,6 +20,7 @@ import type { Preset } from '../presets/presets.js';
 import { DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
 import { DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
 import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { DEFAULT_SECRETS_CONFIG } from '../analyzers/universal/UniversalSecretsAnalyzer.js';
 import { DEFAULT_DOCUMENTATION_CONFIG } from '../analyzers/universal/UniversalDocumentationAnalyzer.js';
 import { DEFAULT_STYLES_CONFIG } from '../analyzers/universal/UniversalStylesAnalyzer.js';
 import { DEFAULT_CONVENTIONS_CONFIG } from '../analyzers/universal/UniversalConventionsAnalyzer.js';
@@ -99,6 +100,7 @@ export const RUNTIME_DEFAULT_CONFIGS: Record<string, Record<string, unknown>> = 
   solid: DEFAULT_SOLID_CONFIG as unknown as Record<string, unknown>,
   dry: DEFAULT_DRY_CONFIG as unknown as Record<string, unknown>,
   'data-access': DEFAULT_DATA_ACCESS_CONFIG as unknown as Record<string, unknown>,
+  secrets: DEFAULT_SECRETS_CONFIG as unknown as Record<string, unknown>,
   documentation: DEFAULT_DOCUMENTATION_CONFIG as unknown as Record<string, unknown>,
   react: DEFAULT_REACT_CONFIG as unknown as Record<string, unknown>,
   styles: DEFAULT_STYLES_CONFIG as unknown as Record<string, unknown>,

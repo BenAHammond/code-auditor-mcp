@@ -53,6 +53,7 @@ import {
   createDryVisitor,
   createDataAccessVisitor,
   createDocumentationVisitor,
+  createSecretsVisitor,
   createFunctionIndexVisitor,
   createStylesCssVisitor,
   createStylesSourceVisitor,
@@ -509,6 +510,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       pipelineVisitors.push(dryBundle.visitor);
     }
     if (enabledAnalyzers.includes('data-access')) pipelineVisitors.push(createDataAccessVisitor());
+    if (enabledAnalyzers.includes('secrets')) pipelineVisitors.push(createSecretsVisitor());
     if (enabledAnalyzers.includes('react')) {
       reactBundle = createReactVisitor();
       pipelineVisitors.push(reactBundle.visitor);
