@@ -1109,6 +1109,11 @@ function collectPatternTables(
   });
 }
 
+/**
+ * Extract the set of table names referenced in a SQL/ORM fragment, via the
+ * configured `tablePatterns` plus the `.from(...)` / `db.<table>.<method>()`
+ * ORM shapes. SQL keywords and aggregates captured in passing are filtered out.
+ */
 export function extractTables(text: string, config: DataAccessAnalyzerConfig): string[] {
   // JS `.from(...)` construction (Array.from / Buffer.from / Uint8Array.from)
   // and Drizzle `sql.join(...)` are not SQL table references; blank them out

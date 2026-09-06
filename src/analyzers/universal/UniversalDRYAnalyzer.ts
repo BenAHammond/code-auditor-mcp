@@ -876,39 +876,51 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           const shared = longestCommonSubsequence(fragments[i].names, fragments[j].names);
           if (shared.length < min) continue;
 
-          const isObject = fragments[j].kind === 'object';
-          const label = isObject ? 'object literal' : 'call chain';
-          const unit = isObject ? 'fields' : 'methods';
-          const targetClause = isObject && fragments[j].target
-            ? ` built for "${fragments[j].target}"`
-            : '';
-          const violation = this.createViolation(
-            fragments[j].file,
-            fragments[j].start,
-            `Near-identical ${label}${targetClause} detected (${shared.length} shared ${unit}: ${shared.join(', ')}). ` +
-            `First occurrence at ${fragments[i].file}:${fragments[i].start.line}`,
-            {
-              severity: 'suggestion',
-              rule: 'dry/similar-expression',
-              symbol: shared.join('.'),
-              resolution: {
-                action: 'extract-shared-expression',
-                summary: `Extract the shared ${isObject ? 'field list' : 'method chain'} (${shared.join(', ')}) into a shared helper, builder, or constant both sites use.`,
-                files: [fragments[j].file, fragments[i].file],
-                lines: [fragments[j].start.line, fragments[i].start.line],
-              },
-            }
-          );
-          violation.fix = {
-            oldText: fragments[j].text,
-            newText: `// Consider extracting the shared ${unit} into a shared helper`,
-          };
-          violations.push(violation);
+          violations.push(this.buildSimilarityViolation(fragments[j], fragments[i], shared));
           reported.add(j);
           break;
         }
       }
     });
+  }
+
+  /**
+   * Build the `dry/similar-expression` violation for `fragment` (the later
+   * fragment) resembling `first` (the earliest).
+   */
+  private buildSimilarityViolation(
+    fragment: ShapeFragment,
+    first: ShapeFragment,
+    shared: string[],
+  ): Violation {
+    const isObject = fragment.kind === 'object';
+    const label = isObject ? 'object literal' : 'call chain';
+    const unit = isObject ? 'fields' : 'methods';
+    const targetClause = isObject && fragment.target
+      ? ` built for "${fragment.target}"`
+      : '';
+    const violation = this.createViolation(
+      fragment.file,
+      fragment.start,
+      `Near-identical ${label}${targetClause} detected (${shared.length} shared ${unit}: ${shared.join(', ')}). ` +
+      `First occurrence at ${first.file}:${first.start.line}`,
+      {
+        severity: 'suggestion',
+        rule: 'dry/similar-expression',
+        symbol: shared.join('.'),
+        resolution: {
+          action: 'extract-shared-expression',
+          summary: `Extract the shared ${isObject ? 'field list' : 'method chain'} (${shared.join(', ')}) into a shared helper, builder, or constant both sites use.`,
+          files: [fragment.file, first.file],
+          lines: [fragment.start.line, first.start.line],
+        },
+      }
+    );
+    violation.fix = {
+      oldText: fragment.text,
+      newText: `// Consider extracting the shared ${unit} into a shared helper`,
+    };
+    return violation;
   }
 
   /**

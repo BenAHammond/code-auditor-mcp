@@ -182,7 +182,11 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
 
     this.checkClassSize(cls, ctx, violations);
     this.checkOpenClosed(cls, ctx, violations);
-    this.checkLiskov(cls, ctx, violations);
+    // Liskov Substitution Principle — only when a superclass is declared and the
+    // check is enabled.
+    if (ctx.config.checkLiskovSubstitution && cls.extends) {
+      violations.push(...this.checkLiskovSubstitution(cls, ctx));
+    }
     this.checkDependencyInversion(cls, ctx, violations);
 
     return violations;
@@ -284,15 +288,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     }
   }
 
-  /**
-   * Liskov Substitution Principle.
-   */
-  private checkLiskov(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): void {
-    if (ctx.config.checkLiskovSubstitution && cls.extends) {
-      violations.push(...this.checkLiskovSubstitution(cls, ctx));
-    }
-  }
-  
   /**
    * Analyze a function for SOLID violations
    */
