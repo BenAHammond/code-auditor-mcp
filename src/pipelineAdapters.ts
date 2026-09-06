@@ -1954,7 +1954,12 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             violations.push({
               file: fp,
               line: 1,
-              severity: 'suggestion',
+              // Promoted suggestion → warning (Spec 11 R5, one tier). The
+              // method-dispatch fix removed the class-prefixed / isMethod false
+              // positives, so a module that exports and is imported by nothing
+              // is a genuine dead-module signal — a defect that should block,
+              // not a suggestion to weigh. Validated across four corpora.
+              severity: 'warning',
               message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
               rule: 'unreferenced-module',
               type: 'unreferenced-module',
