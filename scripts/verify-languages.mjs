@@ -43,7 +43,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
@@ -189,7 +189,18 @@ try {
 // Replicate dataPaths.ts resolvePersistedIndexPath(projectRoot) for the
 // CODE_AUDITOR_DATA_DIR-scoped layout: <dataDir>/projects/<sha256(root)[:16]>/index.db
 function indexDbPath(dataDirRoot, projectRoot) {
-  const hash = createHash('sha256').update(resolve(projectRoot)).digest('hex').substring(0, 16);
+  // dataPaths.ts projectHash hashes the *realpath*, not the lexical path. On
+  // macOS `/var` is a symlink to `/private/var`, so the two hash to different
+  // keys — the DB is written under one and this guard would look it up under the
+  // other. Mirror the realpath resolution (with the same lexical fallback for a
+  // path that doesn't exist yet) so the lookup key matches the write key.
+  let real = projectRoot;
+  try {
+    real = realpathSync(projectRoot);
+  } catch {
+    real = resolve(projectRoot);
+  }
+  const hash = createHash('sha256').update(real).digest('hex').substring(0, 16);
   return join(resolve(dataDirRoot), 'projects', hash, 'index.db');
 }
 

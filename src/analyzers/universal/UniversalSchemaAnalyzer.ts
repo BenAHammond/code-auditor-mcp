@@ -66,6 +66,7 @@ import {
   discoverTablesFromSchemaFiles,
   discoverTablesFromOrmSchemas,
   passesFileGate,
+  anyFileHasDbContext,
   extractTablesFromRegistry,
 } from './schema/discovery.js';
 
@@ -268,7 +269,10 @@ async function resolveSchemasViaAutoDiscovery(config: any, codeFiles: string[]):
   const fromSchemaFiles = schemaFiles && schemaFiles.length > 0
     ? await discoverTablesFromSchemaFiles(schemaFiles, projectRoot)
     : new Set<string>();
-  const fromMigrations = await discoverTablesFromMigrations(projectRoot, config);
+  // Skip the full-repo migration walk when no analyzed file shows DB context.
+  const fromMigrations = await anyFileHasDbContext(codeFiles, config)
+    ? await discoverTablesFromMigrations(projectRoot, config)
+    : new Set<string>();
   const fromOrm = await discoverTablesFromOrmSchemas(codeFiles);
   const discovered = new Set([
     ...fromWrangler,

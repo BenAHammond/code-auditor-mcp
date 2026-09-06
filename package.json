@@ -30,11 +30,12 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:watch": "vitest watch",
+    "verify:dist-fresh": "node scripts/verify-dist-fresh.mjs",
     "verify:dist": "npm pack --silent && bash scripts/verify-dist.sh && rm -f code-auditor-mcp-*.tgz",
     "verify:self": "node scripts/verify-self.mjs && node scripts/verify-languages.mjs",
     "verify:languages": "node scripts/verify-languages.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
-    "verify:close": "npm run test && npm run test:integration && npm run verify:gate-budget && npm run verify:dist && npm run verify:self",
+    "verify:close": "npm run verify:dist-fresh && npm run test && npm run test:integration && npm run verify:gate-budget && npm run verify:dist && npm run verify:self",
     "build:go": "bash scripts/build-go.sh"
   },
   "keywords": [

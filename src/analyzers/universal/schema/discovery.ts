@@ -8,8 +8,10 @@
  */
 
 import fs from 'fs/promises';
+import type { Dirent } from 'node:fs';
 import path from 'path';
 import picomatch from 'picomatch';
+import { DEFAULT_EXCLUDED_ANY_DEPTH_DIRS } from '../../../utils/fileDiscovery.js';
 import type { AST, LanguageAdapter, ASTNode, ImportInfo } from '../../../languages/types.js';
 import type { ProvenanceContext } from '../../provenance.js';
 import type {
@@ -35,7 +37,19 @@ import { getCallee } from './codeAnalysis.js';
 
 /**
  * Walk project root recursively, returning files matching any of the given
- * picomatch globs. Skips node_modules and dot-directories.
+ * picomatch globs.
+ *
+ * Uses `readdir` with `withFileTypes` so the entry type comes from the dirent
+ * rather than a per-entry `fs.stat`. A migration walk over a large project
+ * (or a project with a large local corpus) otherwise performs one `stat`
+ * syscall per file — 10k+ syscalls that contend under concurrent test workers
+ * and were the load-induced source of the Spec-17 timeout.
+ *
+ * Skips infra/transient directories (the same `DEFAULT_EXCLUDED_ANY_DEPTH_DIRS`
+ * set file discovery uses — `node_modules`, `dist`, `coverage`, …) and
+ * dot-directories. Symlinks report as neither file nor directory under
+ * `withFileTypes`, so they are not followed — which avoids walking a symlinked
+ * corpus out of the project root.
  *
  * @param root The directory to walk.
  * @param globs Picomatch globs to match relative paths against.
@@ -45,30 +59,23 @@ export async function walkFiles(root: string, globs: string[]): Promise<string[]
   const results: string[] = [];
 
   async function walk(dir: string) {
-    let names: string[];
+    let dirents: Dirent[];
     try {
-      names = await fs.readdir(dir);
+      dirents = await fs.readdir(dir, { withFileTypes: true });
     } catch {
       return; // Skip unreadable directories
     }
 
-    for (const name of names) {
-      const fullPath = path.join(dir, name);
-      // Skip node_modules and dot-directories
-      if (name === 'node_modules' || name.startsWith('.')) continue;
-
-      let stat;
-      try {
-        stat = await fs.stat(fullPath);
-      } catch {
-        continue; // Skip unstatable
-      }
-      if (stat.isDirectory()) {
-        await walk(fullPath);
-      } else if (stat.isFile()) {
+    for (const entry of dirents) {
+      const name = entry.name;
+      if (entry.isDirectory()) {
+        // Skip infra/transient directories and dot-directories.
+        if (name.startsWith('.') || DEFAULT_EXCLUDED_ANY_DEPTH_DIRS.has(name)) continue;
+        await walk(path.join(dir, name));
+      } else if (entry.isFile()) {
+        const fullPath = path.join(dir, name);
         const relative = path.relative(root, fullPath);
-        const matched = globs.some(g => picomatch.isMatch(relative, g));
-        if (matched) {
+        if (globs.some(g => picomatch.isMatch(relative, g))) {
           results.push(fullPath);
         }
       }
@@ -78,6 +85,16 @@ export async function walkFiles(root: string, globs: string[]): Promise<string[]
   await walk(root);
   return results;
 }
+
+// Migration DDL discovery is a full-repo walk and is the hot path behind
+// schema auto-discovery. A run analyzing many files (or a test suite, or a
+// long-lived MCP server) calls it once per no-schema analyze(). Memoize the
+// result per (projectRoot, gateGlobs) so the walk happens once per project.
+// Bounded to avoid unbounded growth in a long-running server; the oldest entry
+// is evicted when the cap is reached. Callers treat the returned set as
+// read-only.
+const migrationsCache = new Map<string, Set<string>>();
+const MIGRATIONS_CACHE_MAX = 16;
 
 /**
  * Discover tables by replaying DDL from migration files under the project root.
@@ -90,8 +107,12 @@ export async function discoverTablesFromMigrations(
   projectRoot: string,
   config: SchemaAnalyzerConfig,
 ): Promise<Set<string>> {
-  const tables = new Set<string>();
   const gateGlobs = config.fileGateGlobs ?? ['**/*.sql', '**/migrations/**'];
+  const cacheKey = `${projectRoot}\u0000${gateGlobs.join('\u0000')}`;
+  const cached = migrationsCache.get(cacheKey);
+  if (cached) return cached;
+
+  const tables = new Set<string>();
   const walkedFiles = await walkFiles(projectRoot, gateGlobs);
   walkedFiles.sort();
 
@@ -104,6 +125,11 @@ export async function discoverTablesFromMigrations(
     }
   }
 
+  if (migrationsCache.size >= MIGRATIONS_CACHE_MAX) {
+    const oldest = migrationsCache.keys().next().value;
+    if (oldest !== undefined) migrationsCache.delete(oldest);
+  }
+  migrationsCache.set(cacheKey, tables);
   return tables;
 }
 
@@ -372,6 +398,37 @@ export function passesFileGate(
 
   // Check for SQL tagged template literals (syntax feature, not naming convention)
   return hasSqlTag(sourceCode, config);
+}
+
+/**
+ * Cheap pre-gate for schema auto-discovery: does any analyzed file show DB
+ * context (a migration/SQL glob match, a DB import/binding/call, or an SQL
+ * tagged template)?
+ *
+ * `discoverTablesFromMigrations` is a full-repo walk. Running it for files
+ * with no DB context (e.g. `import { spawn } from "node:child_process"`) is
+ * pure wasted I/O: the per-file gate in `analyzeAST` rejects every one of
+ * those files, so no discovered table could ever be referenced. Skip the
+ * walk when there is nothing to discover.
+ *
+ * @param files Candidate file paths.
+ * @param config Schema analyzer configuration.
+ * @returns True when at least one file passes the DB-context file gate.
+ */
+export async function anyFileHasDbContext(
+  files: string[],
+  config: SchemaAnalyzerConfig,
+): Promise<boolean> {
+  for (const file of files) {
+    if (file.endsWith('.json')) continue;
+    try {
+      const source = await fs.readFile(file, 'utf8');
+      if (passesFileGate(file, source, config)) return true;
+    } catch {
+      // Unreadable files can't show DB context.
+    }
+  }
+  return false;
 }
 
 /**

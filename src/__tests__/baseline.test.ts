@@ -1158,9 +1158,11 @@ describe('Spec-18 — CLI end-to-end', () => {
     await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED + '\n// dummy change\n');
 
     // Run changed from /tmp with -p pointing to project — pass the file explicitly
-    // so changed uses it directly rather than relying on code-index change detection
+    // so changed uses it directly rather than relying on code-index change detection.
+    // The known warning-level finding still blocks under Spec 45 R2 (exit 2);
+    // baseline resolution is asserted below via new: false rather than exit 0.
     const r = runCli(`changed "${join(testDir, 'src', 'lib.ts')}" -p "${testDir}" --json`, '/tmp');
-    expect(r.exitCode).toBe(0);
+    expect(r.exitCode).toBe(2);
 
     // changed --json outputs an array of violations
     const parsed = JSON.parse(r.stdout);
@@ -1677,18 +1679,27 @@ describe('JSON output purity', () => {
 
   it('changed --stdin --json produces parseable JSON (hook invocation path)', () => {
     // The hook pipes file paths via stdin — this is the exact invocation path
-    // used by hook-audit.sh
+    // used by hook-audit.sh. The undocumented fixture is a warning-level finding
+    // that Spec 45 R2 blocks (exit 2), but stdout must still be pure JSON.
     const cmd = `${distCli()} changed --stdin --json -p "${testDir}"`;
-    const result = execSync(cmd, {
-      cwd: testDir,
-      encoding: 'utf-8',
-      input: 'src/lib.ts\n',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 60_000,
-      env: { ...process.env, CODE_AUDITOR_DATA_DIR: testDir, NODE_ENV: 'test' },
-    });
+    let stdout = '';
+    let exitCode = 0;
+    try {
+      stdout = execSync(cmd, {
+        cwd: testDir,
+        encoding: 'utf-8',
+        input: 'src/lib.ts\n',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 60_000,
+        env: { ...process.env, CODE_AUDITOR_DATA_DIR: testDir, NODE_ENV: 'test' },
+      });
+    } catch (err: any) {
+      stdout = err.stdout || '';
+      exitCode = err.status ?? 1;
+    }
+    expect(exitCode).toBe(2);
     let parsed: any;
-    expect(() => { parsed = JSON.parse(result.trim()); }).not.toThrow();
+    expect(() => { parsed = JSON.parse(stdout.trim()); }).not.toThrow();
     expect(Array.isArray(parsed)).toBe(true);
   });
 

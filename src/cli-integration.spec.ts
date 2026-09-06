@@ -181,25 +181,35 @@ describe('CLI integration — foreign CWD with -p', () => {
 
     // The 'changed' command with a file list (not 'changed' scope) audits
     // the listed files directly. Pipe an absolute file path via stdin.
-    const result = execSync(
-      cliCommand(`changed --stdin --json -p "${projectDir}"`),
-      {
-        cwd: foreignCwd,
-        encoding: 'utf-8',
-        input: `${srcFile}\n`,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 30_000,
-        env: { ...process.env, CODE_AUDITOR_DATA_DIR: projectDir },
-      }
-    );
-
-    expect(result).toBeDefined();
-    // Even if no violations found, we should get valid JSON or clean stdout
-    const trimmed = result.trim();
-    if (trimmed) {
-      const parsed = JSON.parse(trimmed);
-      expect(Array.isArray(parsed)).toBe(true);
+    // The undocumented `doStuff` is a warning-level finding, which Spec 45 R2
+    // blocks (exit 2) — but the command must still resolve the project via -p
+    // (not the foreign CWD) and emit parseable JSON on stdout.
+    let stdout = '';
+    let exitCode = 0;
+    try {
+      stdout = execSync(
+        cliCommand(`changed --stdin --json -p "${projectDir}"`),
+        {
+          cwd: foreignCwd,
+          encoding: 'utf-8',
+          input: `${srcFile}\n`,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 30_000,
+          env: { ...process.env, CODE_AUDITOR_DATA_DIR: projectDir },
+        }
+      );
+    } catch (err: any) {
+      stdout = err.stdout || '';
+      exitCode = err.status ?? 1;
     }
+
+    // Warning blocks (Spec 45 R2), but the audit still ran against the right
+    // project: the finding path is project-relative, not resolved from the CWD.
+    expect(exitCode).toBe(2);
+    const parsed = JSON.parse(stdout.trim());
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].file).toBe('src/helper.ts');
+    expect(parsed[0].severity).toBe('warning');
   });
 
   it('changed with -p from foreign CWD finds project-specific config', async () => {
@@ -209,11 +219,14 @@ describe('CLI integration — foreign CWD with -p', () => {
       enabledAnalyzers: ['documentation'],
     }));
 
-    // Source file with undocumented exported function
+    // Source file that is fully documented (summary + @param + @returns), so the
+    // documentation analyzer produces no findings and the command exits 0.
     const srcFile = join(projectDir, 'src', 'lib.ts');
     await writeFile(srcFile, [
       '/**',
       ' * A well-documented function.',
+      ' * @param x The input value.',
+      ' * @returns The computed result.',
       ' */',
       'export function documented(x: number): number {',
       '  const a = x + 1;',
