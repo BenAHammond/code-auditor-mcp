@@ -1,6 +1,6 @@
 # Spec 46 — Corpus Baseline Re-pin (post-3.6.0 analyzer hardening)
 
-Three commits after the 3.6.0 release change *what fires* on real code, so the
+Four commits after the 3.6.0 release change *what fires* on real code, so the
 Spec 45 baseline is stale:
 
 - `064b013` — post-3.6.0 analyzer hardening: `solid/single-responsibility`
@@ -10,6 +10,9 @@ Spec 45 baseline is stale:
 - `49eb545` — `secrets` analyzer: `secrets/hardcoded-secret` (critical) (#134).
 - `b6c777b` — documentation noise reduction: param/return tag completeness off by
   default, UI-component / Next.js-framework files exempt (#135).
+- `c7db3d5` — dependency-graph orphan fix: receiver-dispatched methods (class +
+  object-literal) are no longer flagged orphaned. This reverses most of the
+  #124/#125 orphan flood; see *Adjudication note*.
 
 This re-pins the six validation corpora and attributes every delta to the named
 cause. Measurement is read-only: `runAuditDispatch` (the same entry point the CLI
@@ -21,10 +24,10 @@ into any reference repo (see *Boundary* at the end).
 
 | corpus | stack | Spec 45 baseline | Spec 46 (now) | Δ |
 |---|---|---|---|---|
-| recall-protocol | TS + SQL | 5,042 | **3,833** | −1,209 |
-| knex | TS/SQL builder | 397 | **1,526** | +1,129 |
-| primer/css | plain CSS | 18 | **26** | +8 |
-| blitz | Next.js/TS/React | 898 | **875** | −23 |
+| recall-protocol | TS + SQL | 5,042 | **3,798** | −1,244 |
+| knex | TS/SQL builder | 397 | **658** | +261 |
+| primer/css | plain CSS | 18 | **23** | +5 |
+| blitz | Next.js/TS/React | 898 | **867** | −31 |
 | gin | Go | 29 | **29** | 0 |
 | svelte-realworld | SvelteKit | 23 | **36** | +13 |
 
@@ -45,7 +48,7 @@ only the rule-ID axis moves.
 
 ---
 
-## recall-protocol — 3,833 (was 5,042, −1,209)
+## recall-protocol — 3,798 (was 5,042, −1,244)
 
 Per-analyzer:
 
@@ -57,7 +60,7 @@ Per-analyzer:
 | react | 388 | 388 | 0 |
 | data-access | 339 | 339 | 0 |
 | dry | 6 | 309 | **+303** |
-| dependency-graph | 4 | 266 | **+262** |
+| dependency-graph | 4 | 231 | **+227** |
 | conventions | 125 | 125 | 0 |
 | schema-code | 95 | 95 | 0 |
 | cross-domain | 39 | 39 | 0 |
@@ -71,7 +74,7 @@ documentation::function-documentation          574
 styles::styles/token-bypass                    423
 dry::dry/similar-expression                    303
 data-access::loop-query                        301
-dependency-graph::orphaned-nodes               139
+dependency-graph::orphaned-nodes               104
 dependency-graph::unreferenced-module          124
 react::raw-element                             111
 react::no-error-boundary                       103
@@ -121,22 +124,24 @@ styles::styles/z-index-sprawl                    1
   service/repo/utility files.
 - **dry +303** (#133). `dry/similar-expression` 0 → 303 (near-identical clone
   detection, default-on). `dry/duplicate` unchanged at 6.
-- **dependency-graph +262** (#124/#125). `orphaned-nodes` 1 → 139 (+138),
-  `unreferenced-module` 0 → 124 (+124). The three graph-shape rules
-  (`circular-dependency`, `tight-coupling`, `hub-nodes`) are unchanged at 1 each.
+- **dependency-graph +227** (#124/#125, re-measured after `c7db3d5`).
+  `orphaned-nodes` 1 → 104 (+103) — down from the pre-fix 139 after receiver-
+  dispatched methods stopped being flagged; `unreferenced-module` 0 → 124 (+124).
+  The three graph-shape rules (`circular-dependency`, `tight-coupling`,
+  `hub-nodes`) are unchanged at 1 each.
 - **solid 0** (#131) — `single-responsibility` 991 re-emerges as `function-length`
   902 + `parameter-count` 89. Total unchanged.
 - everything else 0.
 
 ---
 
-## knex — 1,526 (was 397, +1,129)
+## knex — 658 (was 397, +261)
 
 Per-analyzer:
 
 | analyzer | Spec 45 | now | Δ |
 |---|---|---|---|
-| dependency-graph | 4 | 888 | **+884** |
+| dependency-graph | 4 | 20 | **+16** |
 | dry | 10 | 255 | **+245** |
 | schema-code | 182 | 182 | 0 |
 | solid | 137 | 137 | 0 |
@@ -149,7 +154,7 @@ Per-analyzer:
 Per-rule (current):
 
 ```
-dependency-graph::orphaned-nodes         885
+dependency-graph::orphaned-nodes         17
 dry::dry/similar-expression              245
 schema-code::too-many-queries            181
 solid::function-length                    60
@@ -175,11 +180,12 @@ secrets::hardcoded-secret                 1
 
 **Delta attribution (knex):**
 
-- **dependency-graph +884** (#124/#125) — `orphaned-nodes` 1 → 885. knex is a
-  library: most internal modules are imported by the single public entry point, so
-  zero-importer detection flags nearly every internal module. This is the largest
-  single-rule movement of the re-pin and the near-miss guard's open question at
-  corpus scale (see *Adjudication note*).
+- **dependency-graph +16** (#124/#125, re-measured after `c7db3d5`) —
+  `orphaned-nodes` 1 → 17. The pre-fix count of 885 was a receiver-dispatch
+  false-positive flood (857 class methods + 11 object-literal mixin methods), not
+  a genuine finding about knex's structure; see *Adjudication note*. The three
+  graph-shape rules (`circular-dependency`, `tight-coupling`, `hub-nodes`) are
+  unchanged at 1 each.
 - **dry +245** (#133) — `similar-expression` 0 → 245; `duplicate` unchanged at 10.
 - **secrets +1** (#134) — one hardcoded credential flagged in a test/example.
 - **documentation −1** (#135) — `parameter-documentation` 1 → 0.
@@ -189,13 +195,13 @@ secrets::hardcoded-secret                 1
 
 ---
 
-## primer/css — 26 (was 18, +8)
+## primer/css — 23 (was 18, +5)
 
 Per-analyzer / per-rule (current):
 
 ```
 styles::styles/z-index-singleton        11
-dependency-graph::orphaned-nodes         8
+dependency-graph::orphaned-nodes         5
 solid::function-length                   3
 dependency-graph::tight-coupling         1
 dependency-graph::unreferenced-module    1
@@ -203,14 +209,15 @@ documentation::function-documentation    1
 styles::styles/z-index-sprawl            1
 ```
 
-**Delta attribution (+8):** `orphaned-nodes` 1 → 8 (+7) and `unreferenced-module`
-0 → 1 (+1), both #124/#125. `solid/single-responsibility` 3 → `function-length` 3
+**Delta attribution (+5):** `orphaned-nodes` 1 → 5 (+4) and `unreferenced-module`
+0 → 1 (+1), both #124/#125 (orphaned re-measured after `c7db3d5`).
+`solid/single-responsibility` 3 → `function-length` 3
 (#131). `documentation/function-documentation` unchanged at 1 (a `.js` docs-site
 helper, not a UI component or framework file).
 
 ---
 
-## blitz — 875 (was 898, −23)
+## blitz — 867 (was 898, −31)
 
 Per-analyzer:
 
@@ -220,7 +227,7 @@ Per-analyzer:
 | styles | 192 | 192 | 0 |
 | solid | 112 | 112 | 0 |
 | react | 82 | 82 | 0 |
-| dependency-graph | 4 | 58 | **+54** |
+| dependency-graph | 4 | 50 | **+46** |
 | data-access | 32 | 32 | 0 |
 | schema | 4 | 4 | 0 |
 | schema-code | 4 | 4 | 0 |
@@ -234,7 +241,7 @@ documentation::function-documentation          190
 documentation::method-documentation            161
 styles::styles/declaration-set-similarity      161
 solid::function-length                          88
-dependency-graph::orphaned-nodes                55
+dependency-graph::orphaned-nodes                47
 react::raw-element                              54
 documentation::class-documentation              34
 data-access::unfiltered-query                   30
@@ -263,7 +270,8 @@ solid::solid/method-complexity                   1
 - **documentation −80** (#135) — `function-documentation` 250 → 190 (−60),
   `method-documentation` 162 → 161 (−1), `parameter-documentation` 14 → 0 (−14),
   `return-documentation` 5 → 0 (−5); `class-documentation` unchanged at 34.
-- **dependency-graph +54** (#124/#125) — `orphaned-nodes` 1 → 55.
+- **dependency-graph +46** (#124/#125, re-measured after `c7db3d5`) —
+  `orphaned-nodes` 1 → 47.
 - **secrets +3** (#134).
 - **solid 0** (#131) — `single-responsibility` 97 → `function-length` 88 +
   `parameter-count` 9.
@@ -283,7 +291,7 @@ imports::import-organization   4
 solid::interface-segregation   2
 ```
 
-The three post-3.6.0 commits touch the TypeScript universal analyzers and the
+The four post-3.6.0 commits touch the TypeScript universal analyzers and the
 dependency-graph index only; the Go analyzer is a separate binary and produces an
 identical set. No delta.
 
@@ -311,16 +319,45 @@ findings are byte-identical to Spec 44.
 
 ## Adjudication note — orphaned-nodes at corpus scale
 
-`dependency-graph/orphaned-nodes` (and its file-level sibling
-`unreferenced-module`) is the one rule whose default-on posture was not the
-explicit subject of #133/#134/#135, but whose expansion (#124/#125) is the dominant
-count driver on `knex` (+884) and the second driver on `recall` (+138). On a
-*library* corpus like knex the rule flags almost every internal module, because the
-public entry point is the only importer. On an *application* corpus (blitz,
-recall) the counts are lower and the signal is real dead exports. This is recorded
-here as an open near-miss question — the rule is correctly implemented against its
-predicate (zero-importer), but "zero importers" is a different defect in a library
-than in an app. No suppression was applied; the count is reported faithfully.
+The `+884` knex orphan jump was the largest single movement of this re-pin and was
+sampled finding-by-finding before accepting it. It is **not** a genuine finding
+about knex's structure — it is the orphan predicate misfiring on receiver dispatch.
+The rule treats "no call edges in the name-only call graph" as evidence of dead
+code, but a name-only call graph cannot model `this.`/receiver/prototype dispatch:
+the reference resolver matches a bare callee (`formatter`) against the full entity
+name (`Client.formatter`) and never resolves it, so every unexported method satisfies
+the orphan predicate. Concretely, 857 of knex's 885 orphans were class-prefixed
+methods (`Client.formatter`, `TableCompiler_SQLite3.output`, …) and a further 11
+were object-literal mixin methods (`{ renameColumn() {} }` merged onto a prototype) —
+all dispatched dynamically and all live.
+
+`c7db3d5` fixes this by marking `method_definition` entities `isMethod` and skipping
+them (class-prefixed names, which also cover Go receiver methods, are skipped by the
+`.` guard). Orphaned-nodes after the fix: knex 885 → **17**, recall 139 → **104**,
+blitz 55 → **47**, primer 8 → **5**, svelte unchanged.
+
+The residual orphans are the *same* root cause — the name-only call graph is
+incomplete — in three further reference forms the rule still cannot model, and are
+recorded as a known near-miss (reported faithfully, not suppressed):
+
+1. **CommonJS exports** (knex's remaining 17): `module.exports = { isUndefined, … }`,
+   prototype assignment (`SchemaCompiler.prototype.build = build`), and `new` /
+   callback references. Every one is verified exported or referenced — knex has no
+   dead code, and the rule's true signal on this corpus is nil. Fixing this is
+   entangled with CJS `require` import tracking (a partial fix would newly flag
+   every CJS file as an unreferenced module).
+2. **Top-level script invocation** (recall): `main`, `shutdown`, `dump` entry points
+   invoked at module top level or via `package.json` scripts, invisible to a call
+   graph keyed on intra-function callees.
+3. **JSX component usage** (recall/blitz): `<FieldInput />` is not a call
+   expression, so same-file subcomponents (`FieldInput`, `StatPill`, `Sparkline`)
+   are flagged orphaned despite being rendered.
+
+The honest conclusion: the orphan rule is a name-only-call-graph *completeness*
+heuristic, and its false positives are the reference forms that graph cannot see —
+not evidence of dead code. After `c7db3d5` the receiver-dispatch class (the
+dominant source) is closed; the remaining categories are documented here rather
+than silently suppressed.
 
 ---
 
@@ -347,6 +384,6 @@ re-pinned record.
 
 The one corpus whose *committed* baseline file remains stale is unchanged from
 Spec 44/45's note: `recall-protocol/.codeauditor.baseline.json` (toolVersion
-3.4.18, total 4,589) still does not reflect the tool's current 3,833. Re-pinning
+3.4.18, total 4,589) still does not reflect the tool's current 3,798. Re-pinning
 that file into recall-protocol requires Ben's authorization (the same rule as
 publishing); it is deliberately left untouched here.
