@@ -7,7 +7,7 @@ import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, ClassInfo, FunctionInfo, InterfaceInfo } from '../../languages/types.js';
-import { detectFunctionConcerns, countConcernGroups, CONCERN_LABELS, isFunctionNodeType } from './functionConcerns.js';
+import { detectFunctionConcerns, countConcernGroups, votingConcerns, CONCERN_LABELS, isFunctionNodeType } from './functionConcerns.js';
 
 /**
  * Configuration for SOLID analyzer
@@ -83,15 +83,16 @@ const BUILTIN_TYPES = new Set<string>([
 ]);
 
 /**
- * #128 — the single-responsibility rule fires on a function that spans three or
- * more *unrelated* concern groups (data access, messaging, logging, rendering,
- * data transformation), not merely on size. Three is the floor that separates a
- * god-function from a cohesive pipeline: a repository method (load + shape) is
- * one group, and a handler that queries, logs, and emails is three. This is a
- * qualitative heuristic with no config key, like the open-closed and
+ * #128 — the single-responsibility rule fires on a function that spans two or
+ * more *irreducible* concerns (data access, messaging, rendering), not merely on
+ * size. Two is the floor: `data-transformation` and `logging` are glue and
+ * annotation, not responsibilities, so they never vote — "shape and send",
+ * "shape and render", and "fetch and log" are each one job. A repository method
+ * (load + shape) is one group; a handler that queries *and* emails is two. This
+ * is a qualitative heuristic with no config key, like the open-closed and
  * dependency-inversion checks — see `functionConcerns.ts` for the taxonomy.
  */
-const MIN_MIXED_CONCERN_GROUPS = 3;
+const MIN_MIXED_CONCERN_GROUPS = 2;
 
 /**
  * Bundled per-file inputs for the SOLID checks. `ast`, `adapter`, `sourceCode`,
@@ -378,7 +379,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
       const groupCount = countConcernGroups(concerns);
       if (groupCount < MIN_MIXED_CONCERN_GROUPS) return;
 
-      const labels = [...concerns].sort().map((c) => CONCERN_LABELS[c]);
+      // List only the *voting* concerns — transformation/logging are glue, not
+      // the reason the function is a god-function.
+      const labels = votingConcerns(concerns).map((c) => CONCERN_LABELS[c]);
       violations.push(this.createViolation(
         ast.filePath,
         func.location.start,

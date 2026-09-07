@@ -49,6 +49,25 @@ export const CONCERN_LABELS: Record<FunctionConcern, string> = {
 };
 
 /**
+ * The *irreducible* concerns — the output / side-effect categories a function
+ * can produce. `data-transformation` (map/filter/reduce/shape) and `logging`
+ * (observability) are glue and annotation, not responsibilities: a function
+ * that "shapes then sends" or "fetches then logs" is a single job, so neither
+ * votes toward the SRP span. Only a function spanning two or more of the three
+ * below is doing two jobs.
+ */
+const VOTING_CONCERNS: ReadonlySet<FunctionConcern> = new Set([
+  'data-access',
+  'messaging',
+  'rendering',
+]);
+
+/** The voting concerns only, sorted for stable messages. */
+export function votingConcerns(concerns: Set<FunctionConcern>): FunctionConcern[] {
+  return [...concerns].filter((c) => VOTING_CONCERNS.has(c)).sort();
+}
+
+/**
  * Node types that introduce a nested function/closure boundary. A call inside
  * one of these belongs to that nested function, not to the function being
  * analyzed, so the walk does not descend into them.
@@ -232,17 +251,14 @@ export function detectFunctionConcerns(
 /**
  * Count the number of *unrelated* concern groups a function spans.
  *
- * `data-access` + `data-transformation` are one cohesive "load and shape" job
- * (a repository method), so they collapse into a single group. Everything else
- * is treated as unrelated. A function that fetches and shapes data spans one
- * concern; a function that fetches, emails, and renders spans three.
+ * Only the irreducible concerns vote (`data-access`, `messaging`, `rendering`).
+ * `data-transformation` and `logging` are glue and annotation, so they never
+ * count: "load and shape" (data-access + transformation), "shape and send"
+ * (transformation + messaging), "shape and render" (transformation + rendering),
+ * and "do the job and log it" are all single jobs. A function spans two or more
+ * irreducible concerns — fetch + email, query + render — and only then is it
+ * doing two jobs.
  */
 export function countConcernGroups(concerns: Set<FunctionConcern>): number {
-  if (concerns.size === 0) return 0;
-
-  const collapsed = new Set(concerns);
-  if (collapsed.has('data-access') && collapsed.has('data-transformation')) {
-    collapsed.delete('data-transformation'); // merge into data-access
-  }
-  return collapsed.size;
+  return votingConcerns(concerns).length;
 }

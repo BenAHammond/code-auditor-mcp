@@ -185,3 +185,78 @@ comments are genuinely descriptive.
 - `class-documentation` — `replaced`
 - `method-documentation` — `replaced`
 - `file-documentation` — `replaced` (marker/content check)
+
+---
+
+## Follow-up — `solid/single-responsibility` concern taxonomy correction
+
+Session 1 marked `solid/single-responsibility` `replaced` by the concern
+engine, but the corpus diagnostic that session cited — **4,308 functions with
+≥1 concern, 14 with ≥2, and 0 with ≥3** on recall — was the real finding, not
+evidence of a working rule. A rule that has never fired on a 15k-function
+corpus hasn't been shown to be precise; it's been shown to be silent. This
+follow-up confronts that silence.
+
+### The diagnostic
+
+Walked recall's functions and listed every one with ≥2 concern groups. All 15
+are cohesive — **none is a god-function**. The secondary "concern" is always
+glue or annotation, never an unrelated job:
+
+- **`logging` as the secondary** (3): `runStadiumOnlySync`, `main` (sync-roster),
+  `main` (sync-stadium-icons) — a sync job that logs its progress is one job.
+- **`data-transformation` + `messaging`** (6): the strategist tool `execute`s,
+  `emitTurnOutcome`, `resumeSession`, the SSE `emit`, `postEntry` — "shape then
+  send/enqueue" is one job.
+- **`data-transformation` + `rendering`** (2): `renderBuildOgPng`,
+  `renderHeroOgPng` — "shape then render" is one job.
+- **`data-access` + `rendering`** (1): `boot` (fetch + mount) — the only
+  genuine two-job border case.
+
+So the **taxonomy** was wrong, not the threshold. `data-transformation` and
+`logging` were treated as sibling responsibilities when they are glue and
+annotation: a function that "shapes then sends", "shapes then renders", or
+"fetches then logs" is a single job.
+
+### The fix
+
+Demote `data-transformation` and `logging` to **non-voting**: they are still
+detected (for future use) but never count toward the SRP span, and they are no
+longer listed in the violation message. The irreducible concerns — the
+output/side-effect categories a function can *produce* — are `data-access`,
+`messaging`, `rendering`. A function spans two or more of those only when it is
+doing two jobs, so the floor drops from 3 to **2**.
+
+- `countConcernGroups` now returns `votingConcerns(concerns).length`, where
+  `VOTING_CONCERNS = { data-access, messaging, rendering }`.
+- The message lists only the voting concerns, so `db.save` + `sendEmail` +
+  `logEvent` reports "mixes 2 unrelated concerns (data access, messaging)" —
+  the two jobs — not a three-way count padded by annotation.
+
+### Tests (updated, TDD-shaped)
+
+`single-responsibility.spec.ts` grows to 10 tests. New near-misses pin the
+demotion: a fetch that logs progress does **not** fire; a shape-then-send
+pipeline (`map` + `publish`) does **not** fire; a shape-then-render pipeline
+(`filter`+`map` + `render`) does **not** fire. The positive (`handler`, 6
+concerns) and the `notifyUser` case now assert the message lists the two/three
+*voting* concerns and omits `logging`/`transformation`. 145 universal-analyzer
+tests green.
+
+### Counts after the correction
+
+`solid/single-responsibility` (before → after): recall 0→**1** · blitz 0→0 ·
+knex 0→0 · primer-css 0→0 · hhra-org 0→0.
+
+### Adjudication
+
+The single survivor is recall's `boot` (`specs/build-editor-rework/support.js`),
+which both `fetch`es the document and `render`s the React root — a defensible
+two-job reading of a boot entry point.
+
+The rule is now technically correct and **narrow by design, not silent by
+accident**: it fires on the clearest god-functions (the fixtures prove the
+engine — `handler`, `notifyUser`, `processOrder` all fire) but the corpora
+genuinely lack functions spanning two irreducible side-effects. It remains a
+high-precision guard, appropriate for a rule that blocks an agent's edit loop
+(a false positive is costlier than a miss).

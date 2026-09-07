@@ -50,7 +50,11 @@ describe('single-responsibility — mixed-concern detection (#128)', () => {
     expect(violations[0].severity).toBe('warning');
     expect(violations[0].resolution.action).toBe('split-function');
     expect(violations[0].message).toContain('messaging');
-    expect(violations[0].message).toContain('logging');
+    expect(violations[0].message).toContain('rendering');
+    // logging and transformation are annotation/glue, not reasons for the split,
+    // so they must not be listed as the unrelated concerns.
+    expect(violations[0].message).not.toContain('logging');
+    expect(violations[0].message).not.toContain('transformation');
   });
 
   it('does not flag the near-miss parse (trim + split only)', async () => {
@@ -70,7 +74,7 @@ describe('single-responsibility — mixed-concern detection (#128)', () => {
     expect(violations).toHaveLength(0);
   });
 
-  it('does not flag two unrelated concerns (fetch + logEvent)', async () => {
+  it('does not flag a fetch that logs progress (logging is annotation, not a concern)', async () => {
     const code = `async function load() {
   const data = await fetch('/api/items');
   logEvent('loaded');
@@ -80,7 +84,7 @@ describe('single-responsibility — mixed-concern detection (#128)', () => {
     expect(violations).toHaveLength(0);
   });
 
-  it('flags three unrelated concerns (db.save + sendEmail + logEvent)', async () => {
+  it('flags two irreducible concerns (db.save + sendEmail); logging is annotation', async () => {
     const code = `function notifyUser(user) {
   db.save(user);
   sendEmail(user.email);
@@ -88,6 +92,28 @@ describe('single-responsibility — mixed-concern detection (#128)', () => {
 }`;
     const violations = await srpViolations(code, 'notify-user');
     expect(violations.length).toBeGreaterThan(0);
+    expect(violations[0].message).toContain('data access');
+    expect(violations[0].message).toContain('messaging');
+    expect(violations[0].message).not.toContain('logging');
+  });
+
+  it('does not flag a shape-then-send pipeline (transform + publish = one job)', async () => {
+    const code = `async function submit(items) {
+  const shaped = items.map((i) => ({ ...i, ts: 1 }));
+  publish('items.ready', shaped);
+  return shaped;
+}`;
+    const violations = await srpViolations(code, 'submit');
+    expect(violations).toHaveLength(0);
+  });
+
+  it('does not flag a shape-then-render pipeline (transform + render = one job)', async () => {
+    const code = `function view(data) {
+  const rows = data.filter((r) => r.active).map((r) => ({ id: r.id, label: r.name }));
+  return render(rows);
+}`;
+    const violations = await srpViolations(code, 'view');
+    expect(violations).toHaveLength(0);
   });
 
   it('does not treat a nested callback\'s calls as the outer function\'s concerns', async () => {
