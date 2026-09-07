@@ -217,7 +217,7 @@ const RUNNERS: Record<string, Runner> = {
   'class-documentation': runDocumentation,
   'method-documentation': runDocumentation,
   // schema — code path only (JSON path classified below)
-  'sql-injection': runSchemaCode,
+  'dynamic-sql-construction': runSchemaCode,
   'table-naming-convention': runSchemaCode,
   'unknown-table': runSchemaCode,
   // react — the per-component near-misses that are a complete component, plus

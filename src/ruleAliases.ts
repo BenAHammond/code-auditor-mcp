@@ -69,6 +69,16 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
     reason:
       'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
   },
+  // Rename: sql-injection → dynamic-sql-construction (Spec-49).
+  // The old ID claimed "SQL injection" but the schema analyzer's regex only
+  // detected dynamic SQL string construction at query()/execute() call sites
+  // without establishing attacker-controlled taint. The honest name is the
+  // vector it measures; taint-aware injection detection is sql-injection-risk.
+  'sql-injection': {
+    to: 'dynamic-sql-construction',
+    reason:
+      'Renamed to dynamic-sql-construction — the schema analyzer detects SQL string built via interpolation/concatenation (the injection vector), not the taint that "injection" asserts; taint-aware detection lives in sql-injection-risk.',
+  },
   // Rename: interface-segregation → interface-size (Spec-49).
   // The old ID claimed to detect the Interface Segregation Principle ("clients
   // forced to depend on methods they do not use") from a raw member count.

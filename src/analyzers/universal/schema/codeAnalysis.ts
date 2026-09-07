@@ -533,7 +533,7 @@ interface InjectionCheckContext {
 
 /**
  * Evaluate a single dangerous-pattern match: skip parameterized queries and
- * taint-safe dynamic strings, else emit an sql-injection violation.
+ * taint-safe dynamic strings, else emit a dynamic-sql-construction violation.
  */
 function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray): void {
   const { ast, adapter, sourceCode, symbolOrdinals, violations } = ctx;
@@ -565,7 +565,7 @@ function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray)
 
   const enclosingFn = node ? findEnclosingFunctionName(node, adapter) : 'top-level';
 
-  const baseSymbol = `${enclosingFn}:sql-injection`;
+  const baseSymbol = `${enclosingFn}:dynamic-sql-construction`;
   const ordinal = (symbolOrdinals.get(baseSymbol) ?? 0) + 1;
   symbolOrdinals.set(baseSymbol, ordinal);
   const symbol = ordinal > 1 ? `${baseSymbol}:${ordinal}` : baseSymbol;
@@ -573,9 +573,9 @@ function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray)
   violations.push(createSchemaViolation(
     ast.filePath,
     location,
-    'Potential SQL injection vulnerability. Use parameterized queries.',
+    `SQL query built via string interpolation or concatenation in ${enclosingFn}; use parameterized queries.`,
     // Spec 11 R4 blanket demotion: all survivors → suggestion
-    { severity: 'suggestion', rule: 'sql-injection', symbol }
+    { severity: 'suggestion', rule: 'dynamic-sql-construction', symbol }
   ));
 }
 

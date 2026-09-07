@@ -535,7 +535,7 @@ describe('Spec-18 — Baseline module', () => {
 
   it('R6.6 — schema fingerprint uses enclosing-function:rule symbol (stable under line drift)', () => {
     // Schema analyzer uses enclosing-function:rule symbols with ordinals
-    for (const rule of ['missing-schemas', 'sql-injection']) {
+    for (const rule of ['missing-schemas', 'dynamic-sql-construction']) {
       const symbol = `fetchUsers:${rule}`;
       const fp1 = fingerprint({ analyzer: 'schema', rule, file: 'src/models.ts', symbol });
       const fp2 = fingerprint({ analyzer: 'schema', rule, file: 'src/models.ts', symbol });
@@ -832,10 +832,10 @@ describe('Spec-18 — Audit pipeline integration', () => {
           severity: 'warning',
           message: 'SQL injection',
           analyzer: 'schema',
-          rule: 'sql-injection',
-          enclosingSymbol: 'buildQuery:sql-injection',
+          rule: 'dynamic-sql-construction',
+          enclosingSymbol: 'buildQuery:dynamic-sql-construction',
         } as any,
-        expectedSymbol: 'buildQuery:sql-injection',
+        expectedSymbol: 'buildQuery:dynamic-sql-construction',
       },
       {
         label: 'no symbol fields at all → empty string',

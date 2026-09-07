@@ -1483,3 +1483,82 @@ validator from a shape regex.
   the two-case switch is gone, and the message names the format actually
   checked. The `partial` bridgeability ("a format registry covering standard
   JSON-Schema formats is missing") is now satisfied.
+
+## Session 18 — `sql-injection` → `dynamic-sql-construction` (interpolation/taint overclaim renamed to the vector it measures) (spec-49 order #7 remainder, row 71)
+
+### The state on arrival
+
+Row 71 marked `sql-injection` crude with an `[overclaim]` gap: the message
+"Potential SQL injection via string interpolation in {method}" overreached in
+three ways — (1) the `DANGEROUS_SQL_PATTERNS` regexes also fire on `+`
+concatenation, not only `${}` interpolation; (2) the emitted message carried no
+method name (the registry promised `{method}`; the code emitted a static
+sentence); (3) "SQL injection" asserts attacker-controlled taint that the
+safety hatch never establishes — it clears provably-safe literals but never
+proves the remainder is attacker-controlled.
+
+### The fix
+
+Renamed `sql-injection` → `dynamic-sql-construction`. The rule now reports the
+*vector* it measures — a SQL query string built via interpolation or
+concatenation at a `query()`/`execute()` call site — rather than the taint
+("injection") it cannot prove. Concretely:
+
+- `codeAnalysis.ts`: emitted message now reads `SQL query built via string
+  interpolation or concatenation in ${enclosingFn}; use parameterized queries.`
+  — the method name is included, and "interpolation or concatenation" replaces
+  the interpolation-only claim. Rule ID and symbol prefix updated.
+- `ruleRegistry.ts`: registry entry renamed; message reworded to match.
+- `ruleAliases.ts`: `sql-injection` → `dynamic-sql-construction` rename recorded
+  so pre-rename baselines still fingerprint identically.
+
+The detection logic is untouched (a rename, not a predicate change): the
+parameterized-query skip and the provably-safe-dynamic-part hatch remain.
+
+### Tests (written before implementation, per the TDD loop)
+
+New `src/analyzers/universal/schema/sqlInjection.spec.ts`, exercising the
+exported `checkSQLInjection`:
+
+- positive — `query("SELECT … " + id)` concatenation fires under the honest
+  rule ID; message includes the function name and "concatenation". **Failed
+  pre-change** (rule `sql-injection`, message omitted the method).
+- near-miss — parameterized `query("SELECT … ?", [id])` does NOT fire. Passed
+  pre-change (locks the parameterized exclusion).
+- inverse near-miss — `query(\`SELECT … ${id}\`)` template interpolation fires;
+  message says "interpolation". **Failed pre-change** (rule `sql-injection`).
+
+### Counts (before → after, per corpus)
+
+- recall 0→0 · knex 0→0 · primer-css 0→0 · blitz 0→0 · hhra-org **1→1** ·
+  gin 0→0 · svelte-realworld 0→0
+
+A rename is a pure relabel, so the count is invariant: the single hhra-org
+finding moves from `schema-code::sql-injection` to
+`schema-code::dynamic-sql-construction`; every other corpus is 0 on both sides.
+"Before" confirmed by stashing the rename and re-measuring (1 on hhra-org, 0
+elsewhere).
+
+### Adjudication
+
+One survivor (hhra-org `app/api/test-db/route.ts`): `orgTrackerDb.query(\`…
+WHERE table_name = '${APP_DEFAULT_SAMPLES_TABLE}' …\`)` — TRUE. The SQL string
+is literally built via template interpolation, so the honest claim "built via
+string interpolation or concatenation" holds. The interpolated value is a
+compile-time constant (`APP_DEFAULT_SAMPLES_TABLE = 'individual_samples_2024_1'`
+in `@/lib/etl/constants.ts`), so it is NOT an injection — exactly the overclaim
+the rename removes: the old "Potential SQL injection" message would have called
+a constant table-name interpolation a vulnerability, while the renamed message
+correctly calls it dynamic construction. The residual (flagging a constant
+interpolation) is a consequence of `resolveLocalConstant` being local-only (it
+cannot see through the `import`), consistent with the ledger's "taint
+provenance missing" gap.
+
+### Verdict
+
+- `sql-injection` — `renamed` to `dynamic-sql-construction`: the three
+  overclaims (interpolation-only wording, omitted method name, unproven taint)
+  are closed by a name and message that say exactly what the rule measures —
+  the dynamic-SQL-construction vector. Taint-aware injection detection remains
+  the job of `sql-injection-risk` (data-access), which the ledger already marks
+  honest. The predicate is unchanged; the name is now true.

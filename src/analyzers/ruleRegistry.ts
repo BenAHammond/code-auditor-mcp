@@ -969,13 +969,13 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   // SQL-injection → emitted by the schema-code visitor over TS/JS source.
-  'sql-injection': {
+  'dynamic-sql-construction': {
     analyzer: 'schema',
     field: 'rule',
     input: ['schema-code'],
     resolvable: false,
-    message: 'Potential SQL injection via string interpolation in {method}.',
-    docs: 'sql-injection',
+    message: 'SQL query built via string interpolation or concatenation in {method}; use parameterized queries.',
+    docs: 'dynamic-sql-construction',
     thresholds: [],
     samples: {
       valid: [

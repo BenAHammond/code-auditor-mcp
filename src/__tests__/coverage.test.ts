@@ -396,7 +396,7 @@ describe('buildCoverageReport', () => {
       { factKeys: ['schema-code'], indexTables: [] },
     );
 
-    const sqlInjection = coverage.find(c => c.ruleId === 'sql-injection');
+    const sqlInjection = coverage.find(c => c.ruleId === 'dynamic-sql-construction');
     expect(sqlInjection!.state).toBe('clean');
 
     // JSON rules have schema-json input, which is absent → notApplicable
