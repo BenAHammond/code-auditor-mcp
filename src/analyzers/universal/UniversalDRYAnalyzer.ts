@@ -115,6 +115,8 @@ interface CodeBlock {
   hash: string;
   /** R3.3 — token-kind structural hash (identifiers→ID, literals→LIT) */
   structuralHash: string;
+  /** R3.3 — the token-kind skeleton itself (pre-hash), for Jaccard similarity. */
+  structuralSkeleton: string;
   nodeType: string;
   lineCount: number;
 }
@@ -706,8 +708,9 @@ function createCodeBlock(ctx: BlockContext, node: ASTNode): CodeBlock | null {
   const normalizedText = normalizeCode(text, ctx.config);
   const lineCount = countLines(text);
 
-  // R3.3: Compute structural hash from token-kind sequence
-  const structuralHash = hashCode(normalizeCodeForStructure(text, ctx.config));
+  // R3.3: Compute structural hash + skeleton from token-kind sequence
+  const structuralSkeleton = normalizeCodeForStructure(text, ctx.config);
+  const structuralHash = hashCode(structuralSkeleton);
 
   return {
     file: ctx.ast.filePath,
@@ -717,6 +720,7 @@ function createCodeBlock(ctx: BlockContext, node: ASTNode): CodeBlock | null {
     normalizedText,
     hash: hashCode(normalizedText),
     structuralHash,
+    structuralSkeleton,
     nodeType: node.type,
     lineCount
   };
@@ -815,7 +819,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
 
     this.reportExactDuplicates(deduped, violations);
     if (finalConfig.checkStructuralSimilarity) {
-      this.reportStructuralDuplicates(deduped, violations);
+      this.reportStructuralDuplicates(deduped, finalConfig, violations);
     }
     // #132: near-identical object literals and fluent call chains
     if (finalConfig.checkExpressionSimilarity) {
@@ -886,50 +890,62 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * Report token-kind-identical duplicates (dry/structural-similarity, suggestion).
+   * Report structurally-similar duplicates (dry/structural-similarity, suggestion).
+   *
+   * Compares every pair of blocks by the Jaccard similarity of their token-kind
+   * skeletons (identifiers→ID, literals→LIT) and reports those at or above
+   * `similarityThreshold`. This is the honest version of the rule: it detects
+   * "≥ N% structurally similar" (as the registry's `{similarity}%` message and
+   * `similarityThreshold` claim), not merely "structurally identical" — and it
+   * reports the structural percentage, not a text percentage computed over the
+   * raw identifiers/literals.
    */
-  private reportStructuralDuplicates(deduped: CodeBlock[], violations: Violation[]): void {
-    const structuralHashmap = groupByHash(deduped, 'structuralHash');
+  private reportStructuralDuplicates(
+    deduped: CodeBlock[],
+    config: DRYAnalyzerConfig,
+    violations: Violation[],
+  ): void {
+    withRuleTiming('dry/structural-similarity', () => {
+      const threshold = config.similarityThreshold ?? 0.85;
 
-    for (const [, group] of structuralHashmap) {
-      if (group.length < 2) continue;
+      // deduped is sorted by (file, line); iterate the upper triangle so each
+      // pair is considered exactly once, earlier block first.
+      for (let i = 0; i < deduped.length; i++) {
+        const original = deduped[i];
+        for (let j = i + 1; j < deduped.length; j++) {
+          const block = deduped[j];
 
-      const sorted = [...group].sort(byFileAndLine);
-      const original = sorted[0];
+          // Skip if these are already exact duplicates (reported above)
+          if (original.hash === block.hash) continue;
 
-      for (let i = 1; i < sorted.length; i++) {
-        const block = sorted[i];
+          // R3.1: Span-overlap check
+          if (spansOverlap(original, block)) continue;
 
-        // Skip if these are already exact duplicates (reported above)
-        if (original.hash === block.hash) continue;
+          // Structural Jaccard over the token-kind skeletons — the percentage the
+          // registry message promises, and the gate the similarityThreshold sets.
+          const similarity = computeJaccardSimilarity(
+            original.structuralSkeleton, block.structuralSkeleton
+          );
+          if (similarity < threshold) continue;
 
-        // R3.1: Span-overlap check
-        if (spansOverlap(original, block)) continue;
+          const violation = this.createViolation(
+            block.file,
+            block.start,
+            `Structurally similar code block detected (${Math.round(similarity * 100)}% similar). ` +
+            `First occurrence at ${original.file}:${original.start.line}`,
+            { severity: 'suggestion', rule: 'dry/structural-similarity', symbol: block.hash }  // R7
+          );
+          violation.fix = {
+            oldText: block.text,
+            newText: `// Consider extracting to a shared function`
+          };
+          violations.push(violation);
 
-        // Compute the Jaccard similarity up front so the message can render the
-        // actual percentage ({similarity}% in the registry template), rather
-        // than a line count standing in for it.
-        const jaccardSim = computeJaccardSimilarity(
-          original.normalizedText, block.normalizedText
-        );
-
-        const violation = this.createViolation(
-          block.file,
-          block.start,
-          `Structurally similar code block detected (${Math.round(jaccardSim * 100)}% similar). ` +
-          `First occurrence at ${original.file}:${original.start.line}`,
-          { severity: 'suggestion', rule: 'dry/structural-similarity', symbol: block.hash }  // R7
-        );
-        violation.fix = {
-          oldText: block.text,
-          newText: `// Consider extracting to a shared function`
-        };
-        violations.push(violation);
-
-        // Spec 13 R5 — seed pair for diverging-clone tracking
-        this.seedPair(original, block, jaccardSim, 'dry/structural-similarity');
+          // Spec 13 R5 — seed pair for diverging-clone tracking
+          this.seedPair(original, block, similarity, 'dry/structural-similarity');
+        }
       }
-    }
+    });
   }
 
   /**

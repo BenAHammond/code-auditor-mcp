@@ -2152,3 +2152,100 @@ child `<button>`.
   which shipped both the per-element predicates and their three-case tests). This
   session verifies the gap is closed with no remaining overclaim and records the
   adjudication; no code or test change was required.
+
+## Session 26 — `dry/structural-similarity` (spec-49 order #10, row 120)
+
+### The state on arrival
+
+Row 120 marked `dry/structural-similarity` crude with an `[overclaim]` gap: the
+registry advertises a `{similarity}%` message and a `similarityThreshold` (0.85),
+but the detection is exact token-kind-sequence equality — `groupByHash(deduped,
+'structuralHash')` fires only when two blocks share a *identical* skeleton hash.
+No similarity percentage is computed, and `config.similarityThreshold` is
+declared but never read anywhere.
+
+The emitted message had drifted one step past the ledger's "carries a line
+count" note: it interpolated `computeJaccardSimilarity(original.normalizedText,
+block.normalizedText)` — a Jaccard over the **text** (identifiers and literals
+still present), not over the token-kind skeleton. So a structurally-identical
+pair with different identifiers would be reported as e.g. "28% similar" because
+the *words* differ, even though the *structure* is 100% identical. The rule's
+name, the `{similarity}%` template, and the `similarityThreshold` config all
+promise a thresholded structural comparison; the code delivered neither.
+
+### The fix
+
+The comparison is rewritten as a pairwise thresholded structural Jaccard, which
+is what the registry claimed all along:
+
+- `CodeBlock` gains `structuralSkeleton` — the token-kind skeleton itself
+  (`normalizeCodeForStructure` output, identifiers→ID / literals→LIT), captured
+  before hashing so `createCodeBlock` doesn't recompute it.
+- `reportStructuralDuplicates(deduped, config, violations)` now reads
+  `threshold = config.similarityThreshold ?? 0.85` and iterates the upper
+  triangle of the (file, line)-sorted block list, reporting every pair whose
+  **structural** Jaccard `≥ threshold`. The exact-hash fast path is subsumed:
+  identical skeletons have Jaccard 1.0 and always clear the threshold.
+- The message interpolates the structural percentage, and `seedPair` records the
+  structural similarity instead of the text similarity.
+
+This turns the rule from "structurally identical" into "≥ N% structurally
+similar" — the honest reading of `{similarity}%` + `similarityThreshold`.
+
+### Tests (written this session — TDD, pre-change failure posted)
+
+New `src/__tests__/dry-structural-similarity.spec.ts` (3 tests, class-wrapped
+method fixtures so the sibling methods survive `deduplicateBlocks`):
+
+- **positive** — two structurally-identical methods fire, and the message reports
+  ≥95% similarity. *Pre-change this failed with `expected 28 to be ≥ 95`* — the
+  smoking gun: the old code reported text similarity (28%) for a 100% structural
+  match.
+- **near-miss** — two structurally-different methods stay silent (below threshold).
+- **inverse near-miss** — two methods ≥85% but not identical fire with an honest
+  <100% percentage. *Pre-change this failed with `expected 0 to be ≥ 1`* — the
+  exact-hash grouping could not see a near-miss pair at all.
+
+All three green after the fix; full unit suite (1318 tests) green, no regressions.
+The `r4` positive-control (exactly 1 structural finding) and the near-miss
+executor (registry near-miss stays silent) both still pass.
+
+### Counts (before → after, per corpus)
+
+`dry/structural-similarity` is **off by default** (`checkStructuralSimilarity:
+false` in both `DEFAULT_DRY_CONFIG` and `config/defaults.ts`), so the default
+audit never runs the rule. Counts are therefore 0 → 0 everywhere:
+
+- recall 0 → 0 (verified; `dry` totals 27 = 21 similar-expression + 6 duplicate,
+  0 structural) · hhra-org 0 → 0 · knex 0 → 0 · primer-css 0 → 0 · blitz 0 → 0 ·
+  gin n/a (Go corpus, not on disk) · svelte-realworld not on disk
+
+The change is gated behind an opt-in flag, so it cannot perturb a default audit;
+the honest behavior is proven by the unit tests, not corpus counts.
+
+### Adjudication
+
+No corpus-level survivors: the rule is opt-in and no corpus enables it. The
+enabled path is adjudicated by the three unit tests — the only cases that fire
+are genuine structural matches (identical or ≥threshold skeletons), and the
+percentage is the structural Jaccard, not a text coincidence. Two pre-existing
+issues surfaced while reading the predicate and are recorded for the post-33
+threshold pass, not fixed here:
+
+1. **`program`-node location collision** — the AST `program` node's `start`
+   location equals its first child's, so `findNodeByLocation` matches `program`
+   (whole-file span) for a file's *first* top-level declaration. That declaration
+   is then absorbed by `deduplicateBlocks`, so a first-vs-later top-level duplicate
+   is never compared. The tests work around it with class-wrapped methods.
+2. **Two disagreeing `similarityThreshold` defaults** — `DEFAULT_DRY_CONFIG`
+   carries `0.85`, while `config/defaults.ts` `dry.similarityThreshold` carries
+   `0.5`. The audit pipeline merges the latter, so *if* structural similarity were
+   ever enabled, the effective threshold would be 0.5, not 0.85.
+
+### Verdict
+
+- `dry/structural-similarity` — `replaced`. The proxy (exact `structuralHash`
+  grouping reporting text similarity) is replaced with a real thresholded
+  structural-Jaccard comparison that reads `similarityThreshold` and reports the
+  structural percentage. The predicate now matches the registry's `{similarity}%`
+  + `similarityThreshold` claim.
