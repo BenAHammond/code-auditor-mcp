@@ -1187,7 +1187,11 @@ function buildTokenValueMap(
     // finding. Only tokens the project actually defined can be bypassed.
     if (t.file_path === 'built-in defaults') continue;
     const normalizedTokenVal = normalizeValue(t.value, '__token__');
-    tokenValueMap.set(t.value, { name: t.name, valueType: normalizedTokenVal?.type ?? null });
+    // Key by the same normalized spelling the lookup uses, so a shorthand or
+    // case-differing token value (`#fff`, `#FFFFFF`) still matches a raw
+    // declaration of the same colour (`#ffffff`). The ledger's key-normalization
+    // asymmetry — raw key vs normalized lookup — was the last crude gap.
+    tokenValueMap.set(normalizeForTokenMatch(t.value), { name: t.name, valueType: normalizedTokenVal?.type ?? null });
   }
   return tokenValueMap;
 }

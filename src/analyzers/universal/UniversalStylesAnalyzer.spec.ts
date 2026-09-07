@@ -847,6 +847,60 @@ describe('Detector 4 — Token Bypass', () => {
     const bypasses = findViolations(violations, 'styles/token-bypass');
     expect(bypasses.length).toBe(0);
   });
+
+  it('matches a shorthand-hex token against an expanded raw value (inverse near-miss)', async () => {
+    // The map key is the token's *raw* value (`#fff`), while the lookup
+    // normalizes the declaration (`#ffffff` → expanded). The two spellings of
+    // the same color must match regardless of which side is shorthand.
+    insertToken('--color-white', '#fff');
+    insertDecl({
+      property: 'color',
+      raw_value: '#ffffff',
+      token_ref: null,
+      file_path: 'src/shorthand-reversed.css',
+      line: 1,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(1);
+    expect(bypasses[0].message).toContain('--color-white');
+  });
+
+  it('matches a case-differing token value (inverse near-miss)', async () => {
+    // `#FFFFFF` and `#ffffff` are the same color; the lookup lowercases but the
+    // map key is stored raw, so the uppercase token must still be matched.
+    insertToken('--color-white', '#FFFFFF');
+    insertDecl({
+      property: 'color',
+      raw_value: '#ffffff',
+      token_ref: null,
+      file_path: 'src/case.css',
+      line: 1,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(1);
+    expect(bypasses[0].message).toContain('--color-white');
+  });
+
+  it('does NOT fire on a value that is off-by-one from a token (near-miss)', async () => {
+    // Exact-match only: `#1e2329` is a different colour than `#1e2328`, not a
+    // bypass of it. The matcher must not fuzzy-match hex.
+    insertToken('--color-primary', '#1e2328');
+    insertDecl({
+      property: 'color',
+      raw_value: '#1e2329',
+      token_ref: null,
+      file_path: 'src/offbyone.css',
+      line: 1,
+    });
+
+    const violations = await runAnalyzer();
+    const bypasses = findViolations(violations, 'styles/token-bypass');
+    expect(bypasses.length).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1326,3 +1326,80 @@ flagged — the scale split is what keeps those from colliding.
   replaced by exact membership in the property's Tailwind design scale, with the
   spacing and font-size scales separated so each property is judged against the
   scale it actually uses.
+
+## Session 16 — `styles/token-bypass` (key-normalization asymmetry → symmetric normalized match) (spec-49 order #7 remainder, row 46)
+
+### The state on arrival
+
+Row 46 marked `styles/token-bypass` crude with two gaps: (1) the
+`valueType !== 'color'` gate that let only colour tokens fire, silently
+skipping length/spacing/other token bypasses; and (2) a key-normalization
+asymmetry — `buildTokenValueMap` keyed the map by the token's *raw* value while
+`matchBypassToken` looked up the declaration's *normalized* spelling. Two
+commits from the Spec-44 sweep had already closed gap (1) (`d4d2f12` removed the
+colour gate) and fixed a separate built-in-defaults false-positive
+(`b2e4ec6`). Gap (2) — the asymmetric key — was still open on arrival.
+
+### The fix
+
+`buildTokenValueMap` now keys the map by `normalizeForTokenMatch(t.value)` — the
+same lowercasing/`#rgb`→`#rrggbb` expansion the lookup applies to the
+declaration. A shorthand or case-differing token value (`#fff`, `#FFFFFF`) now
+matches a raw declaration of the same colour (`#ffffff`), in both directions.
+The comment names the ledger gap it closes.
+
+### Tests (written before implementation, per the TDD loop)
+
+Three tests added to the Token Bypass block:
+
+- inverse near-miss — a shorthand-hex token (`#fff`) matches an expanded raw
+  value (`#ffffff`); failed pre-change (map key `#fff` vs lookup `#ffffff`).
+- inverse near-miss — a case-differing token (`#FFFFFF`) matches a lowercase
+  raw value (`#ffffff`); failed pre-change (map key `#FFFFFF` vs lookup
+  `#ffffff`).
+- near-miss — `#1e2329` does NOT match token `#1e2328` (exact-match only, no
+  fuzzy hex); passed pre-change, kept to lock in the boundary.
+
+The two inverse near-misses posted the pre-change failure (0 findings where 1
+was expected).
+
+### Counts (before → after, per corpus)
+
+- recall **423→456** · knex 0→0 · primer-css 0→0 · blitz 16→16 ·
+  hhra-org 0→0 · gin 0→0 · svelte-realworld **1→5**
+
+The +33 on recall and +4 on svelte-realworld are shorthand/case false negatives
+now caught. blitz's 16 are unaffected (already normalised spellings). The rest
+stay 0.
+
+### Adjudication
+
+Sampled recall (456). Findings split into two classes by the *role* of the
+matched token:
+
+- **TRUE** — raw literal matching a *generic* token: `border-*-width: 8px`
+  matching `--space-2: 8px`, `color: …` matching `--color-rewrite-white` /
+  `--bg-secondary`, `background: …` matching `--surface-card`. The token is the
+  canonical spelling of that value; the raw literal is a genuine bypass.
+- **true-but-useless** — raw literal matching a *specific* token by value
+  coincidence: `border-radius: 4px` / `flex: 4px` matching `--girder-width:
+  4px` (a girder element's width), `max-width` matching `--content-max`,
+  `clip-path` matching `--clip-sm`. The value equals the token's value but the
+  token is not the right one for the property; the "use this token" suggestion
+  is wrong. The `--girder-width` family alone is ~113 of 456.
+
+No on-scale or genuinely-different values are flagged (exact match holds). The
+true-but-useless tail is inherent to value-only matching, surfaced — not caused
+— by the colour-gate removal: small length values (4px/8px) coincide with
+specific tokens far more often than colours do. Eliminating it would require
+token-*role* analysis (distinguish a generic `--space-2` from a specific
+`--girder-width`), which is beyond this rule's ledger gap.
+
+### Verdict
+
+- `styles/token-bypass` — `replaced`: both ledger gaps are closed — the
+  colour-only gate (removed in `d4d2f12`) and the key-normalization asymmetry
+  (this session). The rule now honestly measures "a raw value whose normalised
+  spelling equals a project-defined token's value, type-agnostic and
+  case/shorthand-symmetric". The residual value-coincidence tail is reported as
+  true-but-useless above, not left unstated.
