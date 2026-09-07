@@ -997,3 +997,76 @@ not) and is silent everywhere it cannot prove it.
   throws comparison, with a 6-test suite). The cross-file-parent half is `blocked` —
   it needs type resolution the syntax-only adapter lacks — and the honest rule
   already declines to fire there.
+
+---
+
+## Session 12 — `complex-query` (table-count proxy → subquery-or-many-tables) (spec-49 order #7 remainder, row 31)
+
+The authenticity ledger marked `complex-query` (row 31) crude with one gap:
+"Complex query = count of regex-extracted table names; `hasSubquery`/`hasJoins` are
+computed but not wired into the `high` gate." The rule fired only on
+`tables.length > joinedTableCount` (default 4), so a genuinely complex query built
+around a subquery — `WHERE id IN (SELECT …)`, `NOT EXISTS (SELECT …)`, a scalar
+subquery in the SELECT list — was invisible whenever it touched few tables.
+
+Two defects stacked. First, `hasSubquery` was computed from `sourceCode` (the
+*whole file*): a file with two unrelated simple queries read as "has a subquery",
+so wiring it in as-is would have flagged both simple queries. Second, even that
+(broken) `hasSubquery` was dead — only `performanceRisk === 'high'`
+(`tables.length > joinedTableCount`) drove the violation.
+
+### The fix
+
+- **Query-scoped subquery detection.** `DatabaseCall` gained a `queryText` field
+  (the candidate node's own text, comments stripped). `hasNestedSelect(queryText)`
+  returns true when the query text has ≥2 `SELECT` keywords — a nested SELECT.
+  This replaces the file-scoped `sourceCode.includes('SELECT')` heuristic.
+- **Wire it into the gate.** `performanceRisk === 'high'` is now
+  `hasSubquery || tables.length > joinedTableCount`, not just the table count.
+- **Honest message.** The violation names the reason: "contains a subquery" /
+  "references N tables" / both. The registry message and samples were updated to
+  match (the subquery case added as an invalid sample).
+- The now-unused `sourceCode` parameter was dropped from `analyzeQuery`.
+
+### Tests (written before implementation, per the TDD loop)
+
+`complexQuery.spec.ts` — 4 tests, running the real `UniversalDataAccessAnalyzer`:
+
+- positive — a 6-table join fires (tables > 4)
+- inverse near-miss — a subquery with only two tables fires (the case the old
+  table-count proxy missed: 2 ≤ 4)
+- near-miss — a simple single-table `COUNT(*)` query does not fire
+- file-scope guard — two unrelated simple queries in one file do not fire (proves
+  subquery detection is query-scoped, not file-scoped)
+
+1 red before implementation (the subquery inverse near-miss); 4 green after.
+Contract suites stay green: `nearMissGuards` (9), `ruleRegistry` (5),
+`nearMissExecutor` (101, 67 skipped), `baseline` (70), and the data-access
+integration suite (44).
+
+### Counts (before → after, per corpus)
+
+- recall **1→67** · knex 0→0 · primer-css 0→0 · blitz 0→0 · hhra-org 0→0 ·
+  gin n/a (Go corpus) · svelte-realworld 0→0
+
+The recall delta is the entire point of the fix: the old proxy fired on exactly 1
+finding (a >4-table join); the honest signal surfaces 66 subquery findings the
+proxy was blind to. Every one of the 66 is a genuine subquery (`NOT IN (SELECT …)`,
+`NOT EXISTS (SELECT …)`, scalar `(SELECT COUNT(*) …) AS x` in the SELECT list).
+
+### Adjudication
+
+Sampled 12 of the 66 new recall findings (backfill-strategy-heroes, dedup-strategies,
+builds, nickname, weighting, edit/generate-duo-article, cleanup-impossible-builds,
+edit-build-article): all true — each carries a real subquery. No false positives of
+the "SELECT appears twice for another reason" kind surfaced. The one residual
+imprecision is that a `UNION` (two SELECTs, not a subquery) would also read as
+"contains a subquery"; none appeared in the corpus, and a UNION is itself a
+legitimate complexity signal, so the wording overreach is immaterial.
+
+### Verdict
+
+- `complex-query` — `replaced`: the "count of tables" proxy is replaced by the
+  honest "subquery or many-tables" signal, with subquery detection scoped to the
+  query's own text. The table-count half survives under its own honest reading
+  (a >4-table join *is* complex), now alongside the subquery half it was missing.

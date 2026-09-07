@@ -454,7 +454,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
-    message: 'Query references {tables} tables.',
+    message: 'Query is complex: it contains a subquery or references many tables.',
     docs: 'complex-query',
     thresholds: ['performanceThresholds.joinedTableCount'],
     samples: {
@@ -462,6 +462,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         { code: 'db.query("SELECT COUNT(*) FROM users")', nearMiss: true },
       ],
       invalid: [
+        { code: 'db.query("SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)")' },
         { code: 'db.query("SELECT * FROM a JOIN b JOIN c JOIN d JOIN e JOIN f JOIN g JOIN h JOIN i")' },
       ],
     },

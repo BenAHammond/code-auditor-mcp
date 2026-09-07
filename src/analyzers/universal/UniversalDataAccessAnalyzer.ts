@@ -187,6 +187,11 @@ interface DatabaseCall {
   line: number;
   column: number;
   tables: string[];
+  /** The query statement's own text (the candidate node's text, comments
+   *  stripped) — query-scoped for subquery detection. NOT the whole file: the
+   *  old `analyzeQuery` computed `hasSubquery` from `sourceCode`, so a file with
+   *  two unrelated simple queries read as "has a subquery". */
+  queryText: string;
   hasOrganizationFilter: boolean;
   /** True when the query carries a limiting clause (WHERE/HAVING/LIMIT/ON) —
    *  broader than the tenant-isolation org filter, used for the performance
@@ -418,6 +423,7 @@ function buildDatabaseCall(
     line: node.location.start.line,
     column: node.location.start.column,
     tables,
+    queryText: nodeText,
     hasOrganizationFilter: hasOrgFilter,
     hasFilter,
     isPureWrite,
@@ -464,16 +470,28 @@ function extractDatabaseCalls(
 }
 
 /**
+ * True when the query text contains a nested SELECT — i.e. at least two `SELECT`
+ * keywords. Scoped to a single query statement's text, not the whole file.
+ */
+function hasNestedSelect(queryText: string): boolean {
+  const upper = queryText.toUpperCase();
+  const first = upper.indexOf('SELECT');
+  if (first === -1) return false;
+  return upper.indexOf('SELECT', first + 1) !== -1;
+}
+
+/**
  * Analyze a database query
  */
 function analyzeQuery(
   call: DatabaseCall,
-  sourceCode: string,
   config: DataAccessAnalyzerConfig
 ): QueryAnalysis {
   const hasJoins = call.tables.length > 1;
-  const hasSubquery = sourceCode.includes('SELECT') && sourceCode.includes('FROM') &&
-                     sourceCode.lastIndexOf('SELECT') !== sourceCode.indexOf('SELECT');
+  // A subquery is a nested SELECT — detected on the *query's own text*, not the
+  // whole file (the old `sourceCode` heuristic read two unrelated queries in one
+  // file as a subquery).
+  const hasSubquery = hasNestedSelect(call.queryText);
 
   let complexity: 'simple' | 'moderate' | 'complex' = 'simple';
   if (hasSubquery || call.tables.length > 3) {
@@ -483,7 +501,7 @@ function analyzeQuery(
   }
 
   let performanceRisk: 'low' | 'medium' | 'high' = 'low';
-  if (call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
+  if (hasSubquery || call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
     performanceRisk = 'high';
   } else if (isUnfilteredQuery(call) && call.tables.length > 0) {
     performanceRisk = 'medium';
@@ -536,9 +554,14 @@ function checkViolations(
     push(`Query on ${call.tables.join(', ')} missing organization/tenant filter`, { severity: 'warning', rule: 'missing-org-filter' });
   }
 
-  // Performance: Complex Query
+  // Performance: Complex Query — a subquery or many joined tables, named honestly.
   if (analysis.performanceRisk === 'high') {
-    push(`Query references ${call.tables.length} tables`, { severity: 'warning', rule: 'complex-query' });
+    const reasons: string[] = [];
+    if (analysis.hasSubquery) reasons.push('contains a subquery');
+    if (call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
+      reasons.push(`references ${call.tables.length} tables`);
+    }
+    push(`Query ${reasons.join(' and ')}`, { severity: 'warning', rule: 'complex-query' });
   }
 
   // Performance: Unfiltered Query
@@ -1790,7 +1813,7 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     // Analyze each database call, tracking symbol ordinals for stable fingerprints.
     const symbolOrdinals = new Map<string, number>();
     for (const call of extractDatabaseCalls(ast, scan)) {
-      const analysis = analyzeQuery(call, sourceCode, finalConfig);
+      const analysis = analyzeQuery(call, finalConfig);
       violations.push(...checkViolations(call, analysis, {
         filePath: ast.filePath,
         config: finalConfig,
