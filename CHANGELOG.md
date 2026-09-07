@@ -8,7 +8,7 @@ All notable changes to the Code Auditor MCP project.
 A new analyzer flags credentials embedded in source rather than read from
 environment variables. It gates at `critical` out of the box.
 
-- **`hardcoded-credential`** — pattern-matches connection strings, API-key
+- **`hardcoded-secret`** — pattern-matches connection strings, API-key
   formats, and credential-like string literals; fires `critical` and blocks the
   edit gate.
 - **All-secret-args preserved** — `checkCredentialCall` keeps its

@@ -117,7 +117,7 @@ const runDataAccess: Runner = async (code) => {
   return ruleIds(vs);
 };
 
-/** Secrets — hardcoded-credential guard. Placeholder/env-var near-misses are
+/** Secrets — hardcoded-secret guard. Placeholder/env-var near-misses are
  *  self-contained single-file source (the test-fixture near-miss needs a
  *  test-file path and is exercised in UniversalSecretsAnalyzer.spec.ts). */
 const runSecrets: Runner = async (code) => {
