@@ -2561,3 +2561,79 @@ input is present. The honest statement is "no corpus exercises this rule", not
 - Zero-everywhere pass — `adjudicated`, no code change. 7/7 rules are honest
   zeros (2 off-by-default, 5 no-corpus-instances); `single-responsibility`
   was already adjudicated in its own follow-up. No untested threshold surfaced.
+
+---
+
+## Session 31 — after-33 pass (4/4): close Spec 49 acceptance #9 and #10
+
+Final pass closes the two cross-sweep acceptance criteria.
+
+### #9 — zero `crude` rows remain
+
+All 33 crude rows in the authenticity ledger are closed across Sessions 1–27.
+None remains `crude`; each is `replaced`, `renamed`, or `blocked` with the
+named missing input. Where a rule was `blocked`, the missing input is always a
+type-resolution / call-graph / interprocedural tier the syntax-only
+tree-sitter layer cannot supply — never "hard", per the spec's contract.
+
+| row | rule | session | verdict |
+| --- | --- | --- | --- |
+| 9 | Go `single-responsibility` (function) | 7 | `blocked` (subprocess cannot compute SRP) + `renamed` → `function-size` |
+| 10 | Go `single-responsibility` (struct) | 7 | `renamed` → `struct-size` |
+| 11 | Go `switch` case-count | 4 | `renamed` → `switch-size`; true OCP `blocked` (needs type resolution) |
+| 12 | Go `typeswitch` case-count | 4 | `renamed` → `switch-size` |
+| 14 | Go `interface` method-count | 3 | `renamed` → `interface-size`; true ISP `blocked` (needs call-graph) |
+| 15 | Go dependency-inversion (concrete-field) | 5 | `blocked` (needs type resolution), proxy removed |
+| 16 | Go `imports` count | 8 | `replaced` (grouping, not count) |
+| 20 | Go `channels` concurrency | 9 | `renamed` → `channel-deadlock`; escape-across-goroutines `blocked` |
+| 22 | `solid/class-size` | 6 | `reworded` (registry message matched the predicate) |
+| 24 | `solid/open-closed` (instanceof) | 10 | already `replaced` (honest predicate) |
+| 25 | `solid/single-responsibility` (param+line) | 1 | `renamed` → `function-length`/`parameter-count` + `replaced` (concern engine) |
+| 26 | `solid/interface-segregation` (member-count) | 3 | `renamed` → `interface-size`; true ISP `blocked` |
+| 27 | `solid/liskov-substitution` (throw) | 11 | `replaced` (within-file throw compare); cross-file `blocked` (needs type resolver) |
+| 31 | `data-access/complex-query` (table-count) | 12 | `replaced` (subquery-or-many-tables) |
+| 32 | `data-access/unfiltered-query` | 13 | `replaced` (row-limiting clause) |
+| 38 | `conventions/error-handling` (regex) | 14 | `replaced` (structural AST shape) |
+| 43 | `styles/off-scale` (step proxy) | 15 | `replaced` (Tailwind scale membership) |
+| 46 | `styles/token-bypass` (asymmetric normalize) | 16 | `replaced` (symmetric normalized match) |
+| 63 | `invalid-format` (email+uuid switch) | 17 | `replaced` (full format registry) |
+| 71 | `sql-injection` (interpolation) | 18 | `renamed` → `dynamic-sql-construction` |
+| 72 | `table-naming-convention` (uppercase) | 19 | `replaced` (snake_case conformance) |
+| 76 | `schema-field-mismatch` (type-string) | 20 | `replaced` (structural normalization) |
+| 77 | `missing-field` (isExported) | 21 | `replaced` (non-nilable value type) |
+| 84 | `cross-domain/transaction-boundary` | 22 | `renamed` → `multi-table-write` |
+| 85 | `cross-domain/validation-bypass` | 23 | `renamed` → `no-validator-reachable` |
+| 104 | `file-documentation` | 2 | `replaced` (marker/content check) |
+| 105 | `function-documentation` | 2 | `replaced` (substance heuristic) |
+| 108 | `class-documentation` | 2 | `replaced` |
+| 109 | `method-documentation` | 2 | `replaced` |
+| 115 | `react/performance` | 24 | `replaced` |
+| 116 | `react/accessibility` | 25 | `replaced` |
+| 120 | `dry/structural-similarity` | 26 | `replaced` (thresholded structural Jaccard) |
+| 122 | `duplicate-import` | 27 | `replaced` (real first-import location) |
+
+33/33 closed. Zero rows remain `crude`.
+
+### #10 — corpus baselines re-pinned with full per-rule attribution
+
+Re-measured all five on-disk corpora read-only with
+`scripts/measure-corpus-counts.ts`; the full `analyzer::rule` breakdown for
+each is committed to `specs/corpus-baselines.md`. Totals:
+
+- recall-protocol — 4,351 advisory (42 rules)
+- hhra-org — 1,213 advisory (27 rules)
+- knex — 405 advisory (21 rules)
+- primer-css — 124 advisory (8 rules)
+- blitz — 918 advisory (27 rules)
+
+gin and svelte-realworld are **not on disk** and could not be re-measured;
+their last-known counts stand in the per-session entries (Sessions 5 and 7
+report gin). This is a coverage limitation of the corpus set, not a delta to
+attribute.
+
+### Verdict
+
+- Spec 49 acceptance #9 — `met` (33/33 crude rows closed; none remains).
+- Spec 49 acceptance #10 — `met` (5/5 on-disk corpora re-pinned; full
+  per-rule attribution in `specs/corpus-baselines.md`; 2 off-disk corpora
+  noted).
