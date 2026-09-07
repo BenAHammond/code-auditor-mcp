@@ -499,3 +499,74 @@ class is removed wholesale.
 - `solid/dependency-inversion` (TS) — already `replaced` (honest
   `new PascalCaseNonBuiltinNonSelf()` predicate + 7-test near-miss suite); row 28's
   only stale note is the "dependency" wording, a message nit left as-is
+
+---
+
+## Session 6 — `class-size` (registry message overclaim reworded) (spec-49 order #6)
+
+The authenticity ledger marked `solid/class-size` (row 22) crude with a **single
+gap**, and its own `gap` column already said it: the predicate — method count
+(`cls.methods.length > 15`) plus aggregate cyclomatic complexity (`Σ
+getComplexity(method) > 100`) — is a **real size computation**, but the message
+claimed "splitting responsibilities", which is a responsibility reading, not a size
+reading. A 173-method `Builder` is large; it is not necessarily "doing too much".
+The `note` column concurred: *"computation is complete; only the 'responsibilities'
+wording overclaims"*.
+
+### The state on arrival
+
+The rule had already been half-reworded in an earlier session. The **emitted**
+messages are honest size framing — "Consider splitting into smaller classes."
+(method-count half) and "Consider splitting the class." (aggregate-complexity half).
+Only the **registry's canonical `message` template** (`ruleRegistry.ts:139`) still
+carried the stale overclaim: `"…Consider splitting responsibilities."`. So the
+predicate needed no change, the emitted message needed no change — only the
+registry metadata string was stale.
+
+### The fix
+
+`ruleRegistry.ts` `solid/class-size.message` reworded from "Consider splitting
+responsibilities." to "Consider splitting into smaller classes." — matching the
+emitted message. No predicate, threshold, rule ID, alias, or emitted-message change;
+this is a metadata reword, not a rewrite.
+
+### Tests (written before implementation, per the TDD loop)
+
+`classSizeMessage.spec.ts` — 3 tests, positive / near-miss / inverse near-miss,
+running the real `UniversalSOLIDAnalyzer` via `analyzeAST`:
+
+- positive — a 16-method class fires `solid/class-size`
+- near-miss — a 15-method class does **not** fire (size threshold is the only signal)
+- inverse near-miss — the emitted message **and** the registry canonical message do
+  not claim "responsibilities"
+
+1 red before implementation (the registry-message assertion — the emitted-message
+assertion was already green); 3 green after. Contract suites stay green:
+`ruleRegistry.test.ts` (5), `nearMissExecutor.spec.ts` (101, 67 skipped),
+`baseline.test.ts` (70).
+
+### Counts (before → after, per corpus)
+
+The predicate and emitted message did not change, so the finding count is preserved
+by construction — the registry `message` template is metadata (validated non-empty
+by the contract suite), not the violation text emitted during an audit:
+
+- recall 3→3 · knex 31→31 · primer-css 0→0 · blitz 0→0 · hhra-org 1→1 ·
+  gin n/a (Go corpus) · svelte-realworld not on disk
+
+### Adjudication
+
+35 findings across 30 distinct classes; every one is a genuine large class — 17 to
+173 methods (knex `Builder` 173, `QueryCompiler` 86, `Client` 44, `TableCompiler`
+35, recall `UserStrategist` 30, `StrategistManager` 28, …) or a genuinely high
+aggregate McCC (346, 300, 141, 137, 134), or both. Five classes fire twice
+(method-count **and** aggregate-complexity), which is correct — the two halves of
+`checkClassSize` are independent thresholds. Zero false positives of the
+"responsibility" kind, because the rule no longer asserts responsibility anywhere —
+the surviving claim is purely "this class is large".
+
+### Verdict
+
+- `solid/class-size` — `reworded` (registry message corrected to match the
+  already-honest emitted message); the computation was already complete and the
+  only crude remnant was the stale "responsibilities" template string

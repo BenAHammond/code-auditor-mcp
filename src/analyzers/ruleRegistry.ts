@@ -136,7 +136,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: true,
-    message: 'Class "{name}" has {methods} methods, exceeding the maximum of {max}. Consider splitting responsibilities.',
+    message: 'Class "{name}" has {methods} methods, exceeding the maximum of {max}. Consider splitting into smaller classes.',
     docs: 'solid/class-size',
     thresholds: ['maxMethodsPerClass', 'classMethodsThreshold', 'classAggregateComplexity'],
     samples: {
