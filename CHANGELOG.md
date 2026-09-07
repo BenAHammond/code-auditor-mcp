@@ -2,6 +2,37 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.7.0] — 2026-09-06
+
+### Hardcoded credentials — new critical, gating analyzer
+A new analyzer flags credentials embedded in source rather than read from
+environment variables. It gates at `critical` out of the box.
+
+- **`hardcoded-credential`** — pattern-matches connection strings, API-key
+  formats, and credential-like string literals; fires `critical` and blocks the
+  edit gate.
+- **All-secret-args preserved** — `checkCredentialCall` keeps its
+  all-secret-arguments behavior so a call passing only secret values is not
+  misclassified.
+
+### Analyzer hardening
+- **`unreferenced-module` promoted** — `suggestion` → `warning`, so dead modules
+  now surface at a gating severity.
+- **`dry` quieter on fluent chains** — the default-on similar-expression check no
+  longer fires on fluent library chains (`.map().filter().reduce()`).
+- **`dependency-graph` orphan fix** — receiver-dispatched methods are no longer
+  flagged as orphans; only genuinely unreferenced nodes report.
+- **`documentation` noise cut** — default findings drop 1,044 → 159 on the
+  hhra-org corpus by suppressing low-value defaults.
+- **Self-audit debt cleared** — the new analyzer code passes code-auditor's own
+  gate.
+
+### Release hygiene
+- **`.code-auditor-version` and the repo-root skills copy are dropped** — the
+  plugin reads its version from the single source of truth, `package.json`.
+- **`verify:close` fails fast on low disk** — the gate checks free space before
+  running, instead of failing mid-run.
+
 ## [3.6.0] — 2026-09-05
 
 ### Enforcement — Spec 45 reverts the unauthorized narrowings
