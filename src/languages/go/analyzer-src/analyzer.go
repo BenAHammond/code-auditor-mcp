@@ -166,7 +166,7 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 				},
 				Suggestion: "Group standard library imports first, then third-party imports, each block separated by a blank line",
 				Analyzer:   "imports",
-				Category:   "import-organization",
+				Rule:       "import-organization",
 			})
 		}
 
@@ -184,7 +184,7 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 					},
 					Suggestion: "Use explicit import names instead of dot imports",
 					Analyzer:   "imports",
-					Category:   "import-style",
+					Rule:       "import-style",
 				})
 			}
 		}
@@ -224,7 +224,7 @@ func (a *Analyzer) runErrorAnalysis() []Violation {
 				},
 				Suggestion: "Check the error, return it, or explicitly ignore it with '_ = err'",
 				Analyzer:   "errors",
-				Category:   "error-handling",
+				Rule:       "error-handling",
 			})
 			return true
 		})
@@ -265,7 +265,7 @@ func (a *Analyzer) runGoroutineAnalysis() []Violation {
 				},
 				Suggestion: "Use sync.WaitGroup or a channel to synchronize the goroutine",
 				Analyzer:   "goroutines",
-				Category:   "concurrency",
+				Rule:       "concurrency",
 			})
 			return true
 		})
@@ -313,7 +313,7 @@ func (a *Analyzer) runChannelAnalysis() []Violation {
 				},
 				Suggestion: "Buffer the channel, or run one side (send or receive) in its own goroutine",
 				Analyzer:   "channels",
-				Category:   "channel-deadlock",
+				Rule:       "channel-deadlock",
 			})
 			return true
 		})

@@ -30,7 +30,7 @@ const goDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'languages', '
 const binaryPath = join(goDir, 'analyzer');
 
 interface GoViolation {
-  category?: string;
+  rule?: string;
   message?: string;
   details?: { function?: string; caseCount?: number };
 }
@@ -118,7 +118,7 @@ func dispatch(x int) int {
 }
 `;
     const violations = await analyzeContent(code, ['solid']);
-    const sized = violations.filter((v) => v.category === 'switch-size');
+    const sized = violations.filter((v) => v.rule === 'switch-size');
     expect(sized.length).toBeGreaterThanOrEqual(1);
     // The old proxy's OCP overclaim must not survive the rename.
     expect(sized[0].message ?? '').not.toMatch(/polymorphism/i);
@@ -150,7 +150,7 @@ func describe(v interface{}) {
 }
 `;
     const violations = await analyzeContent(code, ['solid']);
-    const sized = violations.filter((v) => v.category === 'switch-size');
+    const sized = violations.filter((v) => v.rule === 'switch-size');
     expect(sized.length).toBeGreaterThanOrEqual(1);
     expect(sized[0].message ?? '').not.toMatch(/interfaces/i);
   });
@@ -173,7 +173,7 @@ func small(x int) int {
 }
 `;
     const violations = await analyzeContent(code, ['solid']);
-    const sized = violations.filter((v) => v.category === 'switch-size');
+    const sized = violations.filter((v) => v.rule === 'switch-size');
     expect(sized).toHaveLength(0);
   });
 
@@ -201,7 +201,7 @@ func dispatch(x int) int {
 }
 `;
     const violations = await analyzeContent(code, ['solid']);
-    const retired = violations.filter((v) => v.category === 'open-closed');
+    const retired = violations.filter((v) => v.rule === 'open-closed');
     expect(retired).toHaveLength(0);
   });
 });

@@ -19,16 +19,16 @@ type AnalysisResult struct {
 
 // Violation represents a code quality violation
 type Violation struct {
-	File        string                 `json:"file"`
-	Line        int                    `json:"line"`
-	Column      int                    `json:"column"`
-	Severity    string                 `json:"severity"`
-	Message     string                 `json:"message"`
-	Details     map[string]interface{} `json:"details,omitempty"`
-	Snippet     string                 `json:"snippet,omitempty"`
-	Suggestion  string                 `json:"suggestion,omitempty"`
-	Analyzer    string                 `json:"analyzer"`
-	Category    string                 `json:"category"`
+	File       string                 `json:"file"`
+	Line       int                    `json:"line"`
+	Column     int                    `json:"column"`
+	Severity   string                 `json:"severity"`
+	Message    string                 `json:"message"`
+	Details    map[string]interface{} `json:"details,omitempty"`
+	Snippet    string                 `json:"snippet,omitempty"`
+	Suggestion string                 `json:"suggestion,omitempty"`
+	Analyzer   string                 `json:"analyzer"`
+	Rule       string                 `json:"rule"`
 }
 
 // IndexEntry represents an entity in the code index
@@ -137,12 +137,12 @@ type SOLIDViolation struct {
 
 // Package represents a Go package
 type Package struct {
-	Name      string
-	Path      string
-	Files     []string
-	Imports   []string
-	Exports   []string
-	Functions []Function
-	Structs   []Struct
+	Name       string
+	Path       string
+	Files      []string
+	Imports    []string
+	Exports    []string
+	Functions  []Function
+	Structs    []Struct
 	Interfaces []Interface
 }

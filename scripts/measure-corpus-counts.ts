@@ -76,10 +76,8 @@ async function main() {
   const byRule = new Map<string, number>();
   for (const v of advisory) {
     byAnalyzer.set(v.analyzer, (byAnalyzer.get(v.analyzer) ?? 0) + 1);
-    // The Go subprocess labels findings with `category` (liskov-substitution,
-    // import-organization, …) and leaves `rule` unset; the TS pipeline uses
-    // `rule`. Key on whichever is present so both surfaces show up.
-    const rule = `${v.analyzer}::${(v as any).rule || (v as any).category || 'unknown'}`;
+    // `rule` is the single source of truth for rule identity (TS and Go alike).
+    const rule = `${v.analyzer}::${(v as any).rule}`;
     byRule.set(rule, (byRule.get(rule) ?? 0) + 1);
   }
 

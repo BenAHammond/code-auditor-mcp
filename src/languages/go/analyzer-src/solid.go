@@ -7,9 +7,9 @@ import (
 
 // SOLIDAnalyzer analyzes Go code for SOLID principle violations
 type SOLIDAnalyzer struct {
-	parser    *Parser
-	functions []Function
-	structs   []Struct
+	parser     *Parser
+	functions  []Function
+	structs    []Struct
 	interfaces []Interface
 }
 
@@ -74,7 +74,7 @@ func (s *SOLIDAnalyzer) analyzeFunctionSize() []Violation {
 				},
 				Suggestion: "Consider breaking this function into smaller, more focused functions",
 				Analyzer:   "solid",
-				Category:   "function-size",
+				Rule:       "function-size",
 			})
 		}
 	}
@@ -106,7 +106,7 @@ func (s *SOLIDAnalyzer) analyzeStructSize() []Violation {
 				},
 				Suggestion: "Consider splitting this struct into smaller, more focused structs",
 				Analyzer:   "solid",
-				Category:   "struct-size",
+				Rule:       "struct-size",
 			})
 		}
 	}
@@ -144,7 +144,7 @@ func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 						},
 						Suggestion: "Consider consolidating related cases or a table-driven lookup if the switch grows unwieldy",
 						Analyzer:   "solid",
-						Category:   "switch-size",
+						Rule:       "switch-size",
 					})
 				}
 			case *ast.TypeSwitchStmt:
@@ -162,7 +162,7 @@ func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 						},
 						Suggestion: "Consider consolidating related cases; a type switch over a sealed set is maintainable, but an open set grows unwieldy",
 						Analyzer:   "solid",
-						Category:   "switch-size",
+						Rule:       "switch-size",
 					})
 				}
 			}
@@ -210,7 +210,7 @@ func (s *SOLIDAnalyzer) analyzeLSP() []Violation {
 				},
 				Suggestion: "Return an error instead of panicking so the method stays substitutable",
 				Analyzer:   "solid",
-				Category:   "liskov-substitution",
+				Rule:       "liskov-substitution",
 			})
 			return true
 		})
@@ -246,7 +246,7 @@ func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 				},
 				Suggestion: "Consider splitting this large interface into smaller, more focused interfaces",
 				Analyzer:   "solid",
-				Category:   "interface-size",
+				Rule:       "interface-size",
 			})
 		}
 	}

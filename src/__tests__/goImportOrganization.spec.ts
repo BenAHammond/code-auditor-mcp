@@ -34,7 +34,7 @@ const goDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'languages', '
 const binaryPath = join(goDir, 'analyzer');
 
 interface GoViolation {
-  category?: string;
+  rule?: string;
   message?: string;
 }
 
@@ -136,25 +136,25 @@ import (
 describe('Go import-organization — grouping, not count', () => {
   it('flags mis-grouped imports (third-party before stdlib) under import-organization (positive)', async () => {
     const vs = await analyzeContent(UNORGANIZED);
-    const org = vs.filter((v) => v.category === 'import-organization');
+    const org = vs.filter((v) => v.rule === 'import-organization');
     expect(org.length).toBeGreaterThanOrEqual(1);
   });
 
   it('does NOT flag 12 well-grouped imports — count is not the signal (near-miss)', async () => {
     const vs = await analyzeContent(ORGANIZED_MANY);
-    const org = vs.filter((v) => v.category === 'import-organization');
+    const org = vs.filter((v) => v.rule === 'import-organization');
     expect(org).toHaveLength(0);
   });
 
   it('flags a 2-import file with stdlib-after-third-party — grouping is the signal (inverse near-miss)', async () => {
     const vs = await analyzeContent(FEW_UNORGANIZED);
-    const org = vs.filter((v) => v.category === 'import-organization');
+    const org = vs.filter((v) => v.rule === 'import-organization');
     expect(org.length).toBeGreaterThanOrEqual(1);
   });
 
   it('still flags dot imports under import-style — honest check untouched (sanity)', async () => {
     const vs = await analyzeContent(DOT_IMPORT);
-    const style = vs.filter((v) => v.category === 'import-style');
+    const style = vs.filter((v) => v.rule === 'import-style');
     expect(style.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -162,7 +162,7 @@ describe('Go import-organization — grouping, not count', () => {
     for (const code of [ORGANIZED_MANY, UNORGANIZED]) {
       const vs = await analyzeContent(code);
       const retired = vs.filter(
-        (v) => v.category === 'import-count' || v.category === 'many-imports',
+        (v) => v.rule === 'import-count' || v.rule === 'many-imports',
       );
       expect(retired).toHaveLength(0);
     }

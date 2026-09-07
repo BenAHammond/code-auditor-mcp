@@ -128,7 +128,7 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
 
   const violations: HookViolation[] = allViolations.map((v: any) => ({
     analyzer: v.analyzer || '',
-    rule: v.rule || v.type || '',
+    rule: v.rule,
     severity: v.severity,
     message: v.message,
     file: v.file || '',

@@ -69,7 +69,7 @@ async function main() {
   // Phase 5: group violations by rule
   const byRule = new Map<string, number>();
   for (const v of result.violations) {
-    const rule = v.rule || 'unknown';
+    const rule = v.rule;
     byRule.set(rule, (byRule.get(rule) ?? 0) + 1);
   }
 

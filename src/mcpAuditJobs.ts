@@ -630,7 +630,7 @@ function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult
       if (violation.severity === 'critical') criticalIssues++;
       else if (violation.severity === 'warning') warnings++;
       else suggestions++;
-      const category = violation.type || analyzer;
+      const category = violation.rule;
       violationsByCategory[category] = (violationsByCategory[category] || 0) + 1;
     }
   }

@@ -297,7 +297,7 @@ export function summarizeViolations(violations: Violation[]): NextFileSummary {
     if (v.severity === 'critical') criticalIssues++;
     else if (v.severity === 'warning') warnings++;
     else if (v.severity === 'suggestion') suggestions++;
-    const cat = v.analyzer || v.type || 'other';
+    const cat = v.analyzer || 'other';
     violationsByCategory[cat] = (violationsByCategory[cat] || 0) + 1;
   }
   const topIssues = Object.entries(violationsByCategory)

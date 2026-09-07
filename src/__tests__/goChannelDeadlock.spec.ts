@@ -39,7 +39,7 @@ const goDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'languages', '
 const binaryPath = join(goDir, 'analyzer');
 
 interface GoViolation {
-  category?: string;
+  rule?: string;
   message?: string;
 }
 
@@ -144,32 +144,32 @@ func ok() {
 describe('Go channels — same-goroutine unbuffered deadlock, not signature+complexity', () => {
   it('flags an unbuffered send+receive with no goroutine under channel-deadlock (positive)', async () => {
     const vs = await analyzeContent(DEADLOCK);
-    const dl = vs.filter((v) => v.category === 'channel-deadlock');
+    const dl = vs.filter((v) => v.rule === 'channel-deadlock');
     expect(dl.length).toBeGreaterThanOrEqual(1);
   });
 
   it('does NOT flag a safe channel function (chan signature + complexity>3, has go) (near-miss)', async () => {
     const vs = await analyzeContent(SAFE_CHAN_SIGNATURE);
-    const dl = vs.filter((v) => v.category === 'channel-deadlock');
+    const dl = vs.filter((v) => v.rule === 'channel-deadlock');
     expect(dl).toHaveLength(0);
   });
 
   it('flags a simple deadlock the old proxy missed — no chan in signature, complexity 1 (inverse near-miss)', async () => {
     const vs = await analyzeContent(SIMPLE_DEADLOCK);
-    const dl = vs.filter((v) => v.category === 'channel-deadlock');
+    const dl = vs.filter((v) => v.rule === 'channel-deadlock');
     expect(dl.length).toBeGreaterThanOrEqual(1);
   });
 
   it('does NOT flag a buffered channel send+receive — the send does not block (near-miss)', async () => {
     const vs = await analyzeContent(BUFFERED);
-    const dl = vs.filter((v) => v.category === 'channel-deadlock');
+    const dl = vs.filter((v) => v.rule === 'channel-deadlock');
     expect(dl).toHaveLength(0);
   });
 
   it('no longer emits the retired concurrency category for the channels analyzer (rename guard)', async () => {
     for (const code of [DEADLOCK, SAFE_CHAN_SIGNATURE]) {
       const vs = await analyzeContent(code);
-      const retired = vs.filter((v) => v.category === 'concurrency');
+      const retired = vs.filter((v) => v.rule === 'concurrency');
       expect(retired).toHaveLength(0);
     }
   });

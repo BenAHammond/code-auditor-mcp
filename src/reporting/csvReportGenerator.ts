@@ -163,7 +163,7 @@ function generateDataRow(
         value = violation.severity;
         break;
       case 'type':
-        value = violation.type || '';
+        value = violation.rule || '';
         break;
       case 'message':
         value = violation.message;

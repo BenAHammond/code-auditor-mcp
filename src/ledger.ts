@@ -235,14 +235,14 @@ export function writeAuditToLedger(
       const symbol = extractSymbol(v);
       const fp = fingerprint({
         analyzer: (v as any).analyzer || 'unknown',
-        rule: (v as any).rule || 'unknown',
+        rule: (v as any).rule ?? '',
         file: v.file,
         symbol,
       });
       insertFinding.run(
         runId,
         (v as any).analyzer || 'unknown',
-        (v as any).rule || 'unknown',
+        (v as any).rule ?? '',
         v.severity,
         v.message,
         v.file,
@@ -1208,7 +1208,7 @@ export function importLedgerFromDir(db: Database.Database, dirPath: string): { i
         severity: (v.severity as any) || 'suggestion',
         message: v.message || '',
         analyzer: v.analyzer || 'unknown',
-        rule: v.rule || 'unknown',
+        rule: v.rule ?? '',
         symbol: v.symbol || '',
       }));
 

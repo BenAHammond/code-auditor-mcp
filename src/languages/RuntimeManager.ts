@@ -1203,6 +1203,17 @@ function parseGoAnalyzerResponse(stdout: string): AnalysisResult {
   const result = response.result;
   result.violations = result.violations || [];
   result.indexEntries = result.indexEntries || [];
+
+  // The seam rule-identity invariant. The Go subprocess emits its rule ID under
+  // `rule` (the canonical field shared with the TS pipeline); every consumer
+  // downstream reads `v.rule` and assumes it is present. A violation without a
+  // non-empty `rule` is a seam regression — fail loudly here rather than let a
+  // downstream `|| 'unknown'` fallback swallow the mismatch silently.
+  for (const v of result.violations) {
+    if (!v || typeof v.rule !== 'string' || v.rule.length === 0) {
+      throw new Error(`Go analyzer emitted a violation without a canonical rule: ${JSON.stringify(v)}`);
+    }
+  }
   return result;
 }
 

@@ -38,7 +38,7 @@ const goDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'languages', '
 const binaryPath = join(goDir, 'analyzer');
 
 interface GoViolation {
-  category?: string;
+  rule?: string;
   message?: string;
 }
 
@@ -160,32 +160,32 @@ type Small struct {
 describe('Go single-responsibility — split into function-size / struct-size', () => {
   it('flags a big function under function-size (positive)', async () => {
     const vs = await analyzeContent(BIG_FUNCTION);
-    const sized = vs.filter((v) => v.category === 'function-size');
+    const sized = vs.filter((v) => v.rule === 'function-size');
     expect(sized.length).toBeGreaterThanOrEqual(1);
   });
 
   it('flags an 11-field struct under struct-size (positive)', async () => {
     const vs = await analyzeContent(BIG_STRUCT);
-    const sized = vs.filter((v) => v.category === 'struct-size');
+    const sized = vs.filter((v) => v.rule === 'struct-size');
     expect(sized.length).toBeGreaterThanOrEqual(1);
   });
 
   it('does NOT flag a function with only high complexity — all three signals must be elevated (near-miss)', async () => {
     const vs = await analyzeContent(COMPLEXITY_ONLY);
-    const sized = vs.filter((v) => v.category === 'function-size');
+    const sized = vs.filter((v) => v.rule === 'function-size');
     expect(sized).toHaveLength(0);
   });
 
   it('does NOT flag a struct whose field type merely contains "int" as a substring (near-miss)', async () => {
     const vs = await analyzeContent(POINTER_FIELD);
-    const sized = vs.filter((v) => v.category === 'struct-size');
+    const sized = vs.filter((v) => v.rule === 'struct-size');
     expect(sized).toHaveLength(0);
   });
 
   it('no longer emits the retired single-responsibility category (rename guard)', async () => {
     for (const code of [BIG_FUNCTION, BIG_STRUCT]) {
       const vs = await analyzeContent(code);
-      const retired = vs.filter((v) => v.category === 'single-responsibility');
+      const retired = vs.filter((v) => v.rule === 'single-responsibility');
       expect(retired).toHaveLength(0);
     }
   });

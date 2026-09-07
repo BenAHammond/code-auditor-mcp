@@ -32,7 +32,7 @@ const goDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'languages', '
 const binaryPath = join(goDir, 'analyzer');
 
 interface GoViolation {
-  category?: string;
+  rule?: string;
   message?: string;
   details?: { function?: string };
 }
@@ -106,7 +106,7 @@ func (p *Parser) panicRecovery() error {
 }
 `;
     const violations = await analyzeContent(code, ['solid']);
-    const lsp = violations.filter((v) => v.category === 'liskov-substitution');
+    const lsp = violations.filter((v) => v.rule === 'liskov-substitution');
     expect(lsp).toHaveLength(0);
   });
 
@@ -120,7 +120,7 @@ func (p *Parser) parse() {
 }
 `;
     const violations = await analyzeContent(code, ['solid']);
-    const lsp = violations.filter((v) => v.category === 'liskov-substitution');
+    const lsp = violations.filter((v) => v.rule === 'liskov-substitution');
     expect(lsp.length).toBeGreaterThanOrEqual(1);
   });
 });
@@ -147,7 +147,7 @@ func handleResponse() error {
 func read() (int, error) { return 0, nil }
 `;
     const violations = await analyzeContent(code, ['errors']);
-    const eh = violations.filter((v) => v.category === 'error-handling');
+    const eh = violations.filter((v) => v.rule === 'error-handling');
     expect(eh).toHaveLength(0);
   });
 
@@ -164,7 +164,7 @@ func process() {
 func read() (int, error) { return 0, nil }
 `;
     const violations = await analyzeContent(code, ['errors']);
-    const eh = violations.filter((v) => v.category === 'error-handling');
+    const eh = violations.filter((v) => v.rule === 'error-handling');
     expect(eh.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -185,7 +185,7 @@ func (w *W) Write(data []byte) (n int, err error) {
 }
 `;
     const violations = await analyzeContent(code, ['errors']);
-    const eh = violations.filter((v) => v.category === 'error-handling');
+    const eh = violations.filter((v) => v.rule === 'error-handling');
     expect(eh).toHaveLength(0);
   });
 
@@ -205,7 +205,7 @@ func (w *W) Write(data []byte) (err error) {
 }
 `;
     const violations = await analyzeContent(code, ['errors']);
-    const eh = violations.filter((v) => v.category === 'error-handling');
+    const eh = violations.filter((v) => v.rule === 'error-handling');
     expect(eh.length).toBeGreaterThanOrEqual(1);
   });
 });
@@ -226,7 +226,7 @@ func loadConfig() {
 }
 `;
     const violations = await analyzeContent(code, ['goroutines']);
-    const conc = violations.filter((v) => v.category === 'concurrency');
+    const conc = violations.filter((v) => v.rule === 'concurrency');
     expect(conc).toHaveLength(0);
   });
 
@@ -240,7 +240,7 @@ func start() {
 func background() {}
 `;
     const violations = await analyzeContent(code, ['goroutines']);
-    const conc = violations.filter((v) => v.category === 'concurrency');
+    const conc = violations.filter((v) => v.rule === 'concurrency');
     expect(conc.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -114,10 +114,14 @@ for (const analyzerName of Object.keys(report.analyzerResults ?? {})) {
     if (!inScope(v.file ?? '')) continue;
     if (!isBlockingSeverity(v)) continue;
     total++;
-    // The Go subprocess labels findings with `category` and leaves `rule` unset
-    // (the TS pipeline uses `rule`). Key on whichever is present so a blocking
-    // Go finding cannot crash the breakdown with an undefined rule name.
-    const ruleName = v.rule || v.category || 'unknown';
+    // One field, one meaning: every violation carries a canonical `rule` (the Go
+    // subprocess now emits it, matching the TS pipeline). A finding without a
+    // non-empty `rule` is a seam regression — fail loudly rather than key the
+    // breakdown on a silent 'unknown'.
+    if (!v.rule || typeof v.rule !== 'string') {
+      throw new Error(`verify:self: violation missing canonical rule: ${JSON.stringify(v)}`);
+    }
+    const ruleName = v.rule;
     byRule.set(ruleName, (byRule.get(ruleName) ?? 0) + 1);
     byAnalyzer.set(analyzerName, (byAnalyzer.get(analyzerName) ?? 0) + 1);
   }

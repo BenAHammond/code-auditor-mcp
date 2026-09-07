@@ -33,7 +33,7 @@ const goDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'languages', '
 const binaryPath = join(goDir, 'analyzer');
 
 interface GoViolation {
-  category?: string;
+  rule?: string;
   message?: string;
 }
 
@@ -112,7 +112,7 @@ type Service struct {
 }
 `;
     const violations = await analyzeContent(code, ['solid']);
-    const dip = violations.filter((v) => v.category === 'dependency-inversion');
+    const dip = violations.filter((v) => v.rule === 'dependency-inversion');
     expect(dip).toHaveLength(0);
   });
 
@@ -135,7 +135,7 @@ type Service struct {
     // Any category that re-brands the same proxy would show up here; the honest
     // outcome is no dependency/field-count finding at all.
     const proxyish = violations.filter((v) =>
-      /dependency|concrete|field-count/i.test(v.category ?? '')
+      /dependency|concrete|field-count/i.test(v.rule ?? '')
     );
     expect(proxyish).toHaveLength(0);
   });
@@ -154,7 +154,7 @@ type Machine interface {
 }
 `;
     const violations = await analyzeContent(code, ['solid']);
-    const sized = violations.filter((v) => v.category === 'interface-size');
+    const sized = violations.filter((v) => v.rule === 'interface-size');
     expect(sized.length).toBeGreaterThanOrEqual(1);
   });
 });

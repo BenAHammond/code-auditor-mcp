@@ -1365,7 +1365,7 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
           break;
       }
 
-      const category = violation.type || analyzer;
+      const category = violation.rule;
       violationsByCategory[category] = (violationsByCategory[category] || 0) + 1;
     }
 

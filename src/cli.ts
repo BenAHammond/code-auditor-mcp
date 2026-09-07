@@ -545,7 +545,7 @@ program
           const col = v.column ?? v.start?.column ?? 1;
           return {
             analyzer: v.analyzer || '',
-            rule: v.rule || v.type || '',
+            rule: v.rule,
             severity: v.severity,
             message: v.message,
             file: filePath,
@@ -659,7 +659,7 @@ program
 // of a single aggregate it could route around. The `before/after` gate figure
 // is Spec 45 R1's "report count before/after".
 function summarizeFindings(
-  violations: Array<{ severity?: string; analyzer?: string; rule?: string; type?: string }>
+  violations: Array<{ severity?: string; analyzer?: string; rule: string }>
 ): { bySeverity: Map<string, number>; byAnalyzer: Map<string, number>; byRule: Map<string, number> } {
   const bySeverity = new Map<string, number>();
   const byAnalyzer = new Map<string, number>();
@@ -669,7 +669,7 @@ function summarizeFindings(
     bySeverity.set(severity, (bySeverity.get(severity) ?? 0) + 1);
     const analyzer = v.analyzer ?? 'unknown';
     byAnalyzer.set(analyzer, (byAnalyzer.get(analyzer) ?? 0) + 1);
-    const rule = v.rule || v.type || 'unknown';
+    const rule = v.rule;
     byRule.set(rule, (byRule.get(rule) ?? 0) + 1);
   }
   return { bySeverity, byAnalyzer, byRule };
@@ -683,7 +683,7 @@ function groupedCounts(map: Map<string, number>, sep = ', '): string {
 }
 
 function printCountSummary(
-  violations: Array<{ severity?: string; analyzer?: string; rule?: string; type?: string }>
+  violations: Array<{ severity?: string; analyzer?: string; rule: string }>
 ): void {
   const { bySeverity, byAnalyzer, byRule } = summarizeFindings(violations);
   console.log(chalk.gray('── Findings ────────────────────────────────────'));
@@ -796,7 +796,7 @@ program
           }
           return {
             analyzer: v.analyzer || '',
-            rule: v.rule || v.type || '',
+            rule: v.rule,
             severity: v.severity,
             message: v.message,
             file: filePath,
@@ -892,7 +892,7 @@ program
           summary,
           findings: ordered.map((v: any) => ({
             analyzer: v.analyzer || '',
-            rule: v.rule || v.type || '',
+            rule: v.rule,
             severity: v.severity,
             message: v.message,
             file: relativize(v.file || ''),
@@ -3256,7 +3256,7 @@ program
             if (!rel.startsWith('..') && !isAbsolute(rel)) filePath = rel;
           }
           return {
-            rule: v.rule || v.type || '',
+            rule: v.rule,
             analyzer: v.analyzer || '',
             severity: v.severity,
             file: filePath,
