@@ -274,29 +274,49 @@ func (a *Analyzer) runGoroutineAnalysis() []Violation {
 	return violations
 }
 
-// runChannelAnalysis analyzes channel usage for potential deadlocks
+// runChannelAnalysis analyzes channels for the provable same-goroutine deadlock.
+//
+// The old predicate was `containsChannel(function.Signature) && function.Complexity
+// > 3` — a signature substring ("chan") plus a cyclomatic-complexity count standing
+// in for "potential deadlock". Neither is a deadlock: a channel in the signature is
+// not a deadlock, and a 3-statement function can deadlock. The honest, provable
+// signal is a *same-goroutine* deadlock: a channel created unbuffered
+// (`make(chan T)`, no buffer) that is both sent to and received from (or operated
+// on twice) in the same function with no `go` statement in the body. An unbuffered
+// send blocks until a receiver is ready; if the counterpart lives in the same
+// goroutine, the first operation blocks before the second can run — guaranteed,
+// independent of external code. Cross-goroutine deadlock detection is out of scope:
+// it needs inter-procedural escape/dataflow analysis the syntax-only subprocess
+// lacks.
 func (a *Analyzer) runChannelAnalysis() []Violation {
 	var violations []Violation
 
-	// This is a simplified implementation
-	// A full implementation would analyze the AST for channel operations
-	functions := a.parser.ExtractFunctions()
-	for _, function := range functions {
-		if containsChannel(function.Signature) && function.Complexity > 3 {
+	for filePath, file := range a.parser.files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			funcDecl, ok := n.(*ast.FuncDecl)
+			if !ok || funcDecl.Body == nil || isTestFunction(funcDecl.Name.Name) {
+				return true
+			}
+			channel := a.deadlockChannel(funcDecl)
+			if channel == "" {
+				return true
+			}
+			pos := a.parser.fileSet.Position(funcDecl.Pos())
 			violations = append(violations, Violation{
-				File:     function.File,
-				Line:     function.StartLine,
-				Severity: "suggestion",
-				Message:  "Complex function uses channels - review for proper synchronization",
+				File:     filePath,
+				Line:     pos.Line,
+				Severity: "warning",
+				Message:  "Guaranteed deadlock: unbuffered channel is both sent to and received from in the same goroutine",
 				Details: map[string]interface{}{
-					"function":   function.Name,
-					"complexity": function.Complexity,
+					"function": funcDecl.Name.Name,
+					"channel":  channel,
 				},
-				Suggestion: "Ensure proper channel synchronization to avoid deadlocks",
+				Suggestion: "Buffer the channel, or run one side (send or receive) in its own goroutine",
 				Analyzer:   "channels",
-				Category:   "concurrency",
+				Category:   "channel-deadlock",
 			})
-		}
+			return true
+		})
 	}
 
 	return violations
@@ -493,20 +513,72 @@ func (a *Analyzer) analyzeConcurrency(funcDecl *ast.FuncDecl) (hasGo, hasSync bo
 	return hasGo, hasSync
 }
 
-func containsChannel(signature string) bool {
-	return containsSubstring(signature, "chan")
-}
+// deadlockChannel reports the name of an unbuffered channel that is operated on
+// twice (sent to or received from) at the top level of a function body with no
+// `go` statement — a guaranteed same-goroutine deadlock. Returns "" when no such
+// channel exists. A buffered channel (`make(chan T, N)`) never qualifies because
+// its send does not block; and any `go` statement makes the deadlock unprovable
+// (the counterpart could live in the spawned goroutine), so the function is
+// cleared.
+func (a *Analyzer) deadlockChannel(funcDecl *ast.FuncDecl) string {
+	unbuffered := make(map[string]bool)
+	ops := make(map[string]int)
+	hasGo := false
 
-func containsSubstring(str, substr string) bool {
-	if len(str) < len(substr) {
-		return false
-	}
-	for i := 0; i <= len(str)-len(substr); i++ {
-		if str[i:i+len(substr)] == substr {
+	for _, stmt := range funcDecl.Body.List {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.GoStmt:
+				hasGo = true
+			case *ast.AssignStmt:
+				// `ch := make(chan T)` / `ch = make(chan T)` — unbuffered creation.
+				for i, rhs := range node.Rhs {
+					if isUnbufferedMakeChan(rhs) && i < len(node.Lhs) {
+						if ident, ok := node.Lhs[i].(*ast.Ident); ok {
+							unbuffered[ident.Name] = true
+						}
+					}
+				}
+			case *ast.SendStmt:
+				if ident, ok := node.Chan.(*ast.Ident); ok {
+					ops[ident.Name]++
+				}
+			case *ast.UnaryExpr:
+				if node.Op == token.ARROW {
+					if ident, ok := node.X.(*ast.Ident); ok {
+						ops[ident.Name]++
+					}
+				}
+			}
 			return true
+		})
+	}
+
+	if hasGo {
+		return ""
+	}
+	for name := range unbuffered {
+		if ops[name] >= 2 {
+			return name
 		}
 	}
-	return false
+	return ""
+}
+
+// isUnbufferedMakeChan reports whether expr is `make(chan T)` — a single-argument
+// make of a channel type, i.e. an unbuffered channel. `make(chan T, N)` has two
+// arguments (a buffer), so its send does not block.
+func isUnbufferedMakeChan(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || ident.Name != "make" {
+		return false
+	}
+	_, ok = call.Args[0].(*ast.ChanType)
+	return ok
 }
 
 // importGroup classifies an unquoted import path into a grouping tier:

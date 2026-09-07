@@ -738,3 +738,93 @@ protoc-gen-go quirk), exactly the "mixed-up imports" case the rule now names.
   grouping predicate computes the real "stdlib vs third-party vs local" signal the
   ledger's `gap` column named). Category ID unchanged — "import-organization"
   already named the right thing; only the predicate was a proxy.
+
+---
+
+## Session 9 — Go `channels/concurrency` (signature+complexity proxy → same-goroutine deadlock) (spec-49 order #7 remainder, row 20)
+
+The authenticity ledger marked `channels/concurrency` (row 20) crude: the predicate
+was `if containsChannel(function.Signature) && function.Complexity > 3`, where
+`containsChannel` was `strings.Contains(signature, "chan")` — a signature substring
+plus a cyclomatic-complexity count — emitting "Complex function uses channels -
+review for proper synchronization". The `gap` column: *"Potential deadlocks is
+claimed but not computed — no analysis of send/recv blocking."*
+
+Neither signal is a deadlock. A channel in the signature is not a deadlock; a
+3-statement function can deadlock. The honest, provable signal is the
+**same-goroutine deadlock**: a channel created unbuffered (`make(chan T)`, no
+buffer) that is both sent to and received from (or operated on twice) in the same
+function with no `go` statement in the body. An unbuffered send blocks until a
+receiver is ready; if the counterpart lives in the same goroutine, the first
+operation blocks before the second can run — guaranteed, independent of external
+code.
+
+### The fix
+
+The signature-substring + complexity proxy is removed outright. The predicate is
+replaced with `deadlockChannel(funcDecl)`:
+
+- `isUnbufferedMakeChan(expr)` — `make(chan T)` (single-arg make of a channel
+  type); `make(chan T, N)` (buffered) never qualifies because its send does not
+  block.
+- `deadlockChannel` walks the top-level statements of the function body, recording
+  locally-created unbuffered channels and counting sends (`*ast.SendStmt`) and
+  receives (`<-` `*ast.UnaryExpr`) on each. A channel with ≥2 blocking operations
+  and **no** `*ast.GoStmt` anywhere in the body is a guaranteed deadlock.
+
+The category is renamed `concurrency` → `channel-deadlock` (the goroutines analyzer
+keeps `concurrency`; the channels analyzer now honestly names what it detects). The
+"potential deadlock" overclaim is dropped — the message claims only the provable
+same-goroutine deadlock.
+
+### Tests (written before implementation, per the TDD loop)
+
+`goChannelDeadlock.spec.ts` — 5 tests, all spawning the real Go binary:
+
+- positive — an unbuffered send+receive with no `go` fires `channel-deadlock`
+- near-miss — a safe channel function (chan signature + complexity > 3, but has a
+  `go` goroutine) does **not** fire
+- inverse near-miss — a simple deadlock the old proxy missed (no "chan" in
+  signature, complexity 1) **fires**
+- near-miss — a buffered `make(chan int, 1)` send+receive does **not** fire
+- rename guard — the retired `concurrency` category no longer emits from the
+  channels analyzer
+
+3 red before implementation (positive / inverse / rename-guard — the old proxy both
+missed simple deadlocks and fired on safe channel functions); 5 green after. Full Go
+suite 18 passed (`goChannelDeadlock` 5, `goImportOrganization` 5,
+`goSingleResponsibilitySplit` 5, `goDependencyInversionBlock` 3).
+
+### Counts (before → after, per corpus)
+
+The `channels` analyzer is Go-only and **not in the default Go analyzer set**
+(`['solid', 'imports', 'errors']`), so it contributes nothing to the default corpus
+counts; it runs only when `channels` is explicitly enabled. Measured with
+`channels` explicitly enabled:
+
+- gin `channels::concurrency` 0→**0** (`channels::channel-deadlock` — the old proxy
+  fired 0 on gin, and the new detector also finds 0, as gin uses proper
+  goroutine patterns and has no same-goroutine unbuffered deadlocks)
+- recall / knex / primer-css / blitz / hhra-org n/a (TS, untouched) ·
+  svelte-realworld not on disk
+
+"before" was measured against the committed pre-change binary (`65a9d51`, verified
+to still contain the `containsChannel` + `Complexity > 3` proxy), not reconstructed.
+
+### Adjudication
+
+Zero survivors — a count of 0 has nothing to re-examine. The old proxy's 0 on gin
+is not because gin lacks channels, but because no gin function both mentions a
+channel in its signature and has complexity > 3; the proxy's direction was wrong,
+not just its threshold. The new detector's 0 is the honest answer: gin's channel
+usage is either buffered or paired with a `go` statement, so no same-goroutine
+unbuffered deadlock exists.
+
+### Verdict
+
+- `channels/concurrency` — `replaced` with `channel-deadlock`: the provable
+  same-goroutine unbuffered-deadlock signal replaces the signature-substring +
+  complexity proxy. The broader cross-goroutine deadlock detection (channel
+  escape, blocking across spawned goroutines) remains `blocked` — it needs
+  inter-procedural escape/dataflow analysis the syntax-only `go/parser` subprocess
+  lacks.
