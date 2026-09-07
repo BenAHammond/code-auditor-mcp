@@ -2082,3 +2082,73 @@ asserted defect.
   full-source missing-keys), closing the coverage gap. The `partial` bridgeability
   note is satisfied — the memo/memo/key checks are now AST/body-scoped rather than
   truncated-context substrings.
+
+## Session 25 — `react/accessibility` (row 116)
+
+### The state on arrival
+
+Row 116 marked `accessibility` crude with an `[overclaim]` gap: the click
+emission asserted "has onClick on a non-interactive element <X>" from
+`jsxElements.includes(element)` + `context.includes('<${element}')` +
+`context.includes('onClick')` — i.e. "<X> and the string 'onClick' both appear
+somewhere in a 500-char context", not "the element bears the handler". The
+img-alt leg had the mirror defect: `!context.includes('alt=')` suppressed a
+finding whenever *any* `alt=` appeared anywhere in the window, so one labeled
+`<img>` hid a second unlabeled one. The `bridgeable` column read "yes — JSX
+elements already parsed as AST nodes; inspect attributes on the specific node".
+
+### The fix
+
+Already applied in spec-44, not in this sweep. Commit `a60f655` ("react/accessibility
++ react/performance: per-element JSX detection against the full component body")
+replaced both substring proxies with per-element attribute scanning:
+
+- **img-alt** — `hasImgWithoutAlt(source)` scans each `<img>` opening tag in
+  isolation and flags only a tag that lacks `alt=`, so a component with two
+  images (one labeled, one not) is correctly flagged.
+- **click** — `hasOnClickOnElement(source, element)` scans each `<div`/`<span`/
+  `<section` opening tag's own attribute span (skipping nested braces/strings/arrow
+  `=>`) and flags only a tag that bears `onClick`; an `onClick` on a *different*
+  element never counts.
+
+Both tests and implementation were added in the same commit, so there is no
+coverage gap to close this session — the three TDD cases already exist and pass.
+
+### Tests (pre-existing, in a60f655 — all pass on arrival)
+
+`src/analyzers/reactAnalyzer.spec.ts` (the honesty-guard spec added by a60f655):
+
+- img-alt positive — `<img>` without alt fires.
+- img-alt near-miss — `<img>` with alt does not fire.
+- img-alt inverse near-miss — one of two `<img>`s lacks alt → fires (the old
+  proxy suppressed this because `alt=` appeared on the other image).
+- onClick positive — `<div onClick={…}>` fires "non-interactive <div>".
+- onClick inverse near-miss — `<div>text <button onClick={…}>…` does NOT flag the
+  `<div>` (the old proxy would, because `<div` and `onClick` both appear).
+
+7 green (5 accessibility + 2 inline-prop). No new tests were warranted — the
+gap was closed and pinned by the spec-44 commit itself.
+
+### Counts (before → after, per corpus)
+
+No predicate change this session (and none in a60f655 relative to this sweep's
+start), so counts are unchanged:
+
+- recall 13 → 13 · hhra-org 1 → 1 · knex 0 → 0 · primer-css 0 → 0 ·
+  blitz 0 → 0 · gin 0 → 0 · svelte-realworld 0 → 0
+
+### Adjudication (recall-protocol, 13 findings)
+
+13 `accessibility` findings, each "has an <img> element without an alt attribute"
+or "has onClick on a non-interactive <X> element" — both now per-element, so each
+is a true positive for the honest claim (the specific element really does lack
+`alt` / bear `onClick`). No survivors are false positives; no unlabeled `<img>`
+is hidden by a labeled sibling, and no `<div>` is flagged by a handler on a
+child `<button>`.
+
+### Verdict
+
+- `react/accessibility` — `replaced` (already replaced in spec-44, commit `a60f655`,
+  which shipped both the per-element predicates and their three-case tests). This
+  session verifies the gap is closed with no remaining overclaim and records the
+  adjudication; no code or test change was required.
