@@ -173,7 +173,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
-    message: 'Class "{name}" violates the Open/Closed Principle.',
+    message: 'Class "{name}" uses instanceof against a user-defined type.',
     docs: 'solid/open-closed',
     thresholds: [],
     samples: {
@@ -181,7 +181,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         { code: 'class Circle extends Shape {\n  area() { return Math.PI * this.r ** 2; }\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'function area(shape) {\n  if (shape.type === "circle") return Math.PI * shape.r ** 2;\n  else if (shape.type === "square") return shape.s ** 2;\n}' },
+        { code: 'class AreaCalculator {\n  compute(shape) {\n    if (shape instanceof Circle) return Math.PI * shape.r ** 2;\n    else if (shape instanceof Square) return shape.s ** 2;\n  }\n}' },
       ],
     },
   },

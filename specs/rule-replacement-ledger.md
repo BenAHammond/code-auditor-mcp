@@ -828,3 +828,87 @@ unbuffered deadlock exists.
   escape, blocking across spawned goroutines) remains `blocked` — it needs
   inter-procedural escape/dataflow analysis the syntax-only `go/parser` subprocess
   lacks.
+
+---
+
+## Session 10 — `solid/open-closed` (registry message overclaim reworded) (spec-49 order #7 remainder, row 24)
+
+The authenticity ledger marked `solid/open-closed` (row 24) crude with a **single
+gap**, and its own `gap` column already said it: the predicate — `instanceof`
+against a *user-defined* (non-builtin) type — is a **real type-checking smell**
+(dispatch on concrete types instead of polymorphism), but the message claimed
+"frequently modified", which is a *modification-frequency* reading, not a
+type-checking reading. Nothing in the tool measures modification frequency (that
+needs version history), so the claim was fabricated. The `note` column concurred:
+*"instanceof detection is real; 'frequently modified' needs version history, not
+present"*.
+
+### The state on arrival
+
+The rule had already been half-reworded in an earlier session. The **emitted**
+message is honest type-checking framing — "Class "{name}" uses instanceof against a
+user-defined type. Consider composition or inheritance for extension." Only the
+**registry's canonical `message` template** (`ruleRegistry.ts:176`) still carried
+the stale overclaim `"Class "{name}" violates the Open/Closed Principle."`. The
+**invalid** sample (`ruleRegistry.ts:184`) also misdescribed the rule: it showed
+duck-typing (`shape.type === "circle"`), which the predicate does *not* detect, when
+the rule actually fires on `instanceof`. So the predicate needed no change, the
+emitted message needed no change — only the registry metadata string and the sample
+were stale.
+
+### The fix
+
+- `ruleRegistry.ts` `solid/open-closed.message` reworded from `"Class "{name}"
+  violates the Open/Closed Principle."` to `"Class "{name}" uses instanceof against
+  a user-defined type."` — matching the emitted message.
+- `ruleRegistry.ts` `solid/open-closed.samples.invalid[0]` corrected from the
+  duck-typing snippet (`shape.type === "circle"`) to a class whose method
+  type-checks `instanceof` against a user-defined type — so the sample describes the
+  rule it documents.
+
+No predicate, threshold, rule ID, alias, or emitted-message change; this is a
+metadata reword, not a rewrite.
+
+### Tests (written before implementation, per the TDD loop)
+
+`openClosedMessage.spec.ts` — 3 tests, positive / near-miss / inverse near-miss,
+running the real `UniversalSOLIDAnalyzer` via `analyzeAST`:
+
+- positive — a class method `instanceof` a user-defined type fires `solid/open-closed`
+- near-miss — a class method `instanceof` a builtin (`Error`) does **not** fire
+  (builtin types are legitimate runtime concerns, not OCP extension points)
+- inverse near-miss — the emitted message **and** the registry canonical message do
+  not claim "frequently modified" or "violates the Open/Closed Principle", and do
+  match /instanceof/
+
+1 red before implementation (the registry-message assertion — the emitted-message
+assertion was already green); 3 green after. Contract suites stay green:
+`ruleRegistry.test.ts` (5), `baseline.test.ts` (70).
+
+### Counts (before → after, per corpus)
+
+The predicate and emitted message did not change, so the finding count is preserved
+by construction — the registry `message` template is metadata (validated non-empty by
+the contract suite), not the violation text emitted during an audit:
+
+- recall 0→0 · knex 12→12 · primer-css 0→0 · blitz 2→2 · hhra-org 0→0 ·
+  gin n/a (Go corpus) · svelte-realworld 0→0
+
+### Adjudication
+
+14 findings, all genuine `instanceof`-against-a-user-defined-type cases: knex's
+dialect classes (`Client`, `Client_Oracle`, `Client_Oracledb`, `Client_SQLite3`,
+`QueryCompiler_MSSQL`, `ColumnCompiler_Oracle`, `Oracledb_Compiler`, `Runner`,
+`Transaction`, `Migrator`, `Builder`, `QueryCompiler`) and blitz's `SessionContextClass`
+and `Field`. Each is a concrete type being matched against its base/peer class —
+exactly the dispatch-on-concrete-type smell the rule claims. Zero false positives of
+the "frequently modified" or blanket-OCP kind, because the rule no longer asserts
+either anywhere — the surviving claim is purely "this class type-checks against a
+concrete user-defined type".
+
+### Verdict
+
+- `solid/open-closed` — `reworded` (registry message and invalid sample corrected to
+  match the already-honest emitted message and predicate); the computation was
+  already complete and the only crude remnant was the stale "frequently modified" /
+  "Open/Closed Principle" template string and a mismatched sample.
