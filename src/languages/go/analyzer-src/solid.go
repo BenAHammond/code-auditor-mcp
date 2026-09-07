@@ -30,8 +30,8 @@ func (s *SOLIDAnalyzer) Analyze() []Violation {
 	// Analyze Single Responsibility Principle
 	violations = append(violations, s.analyzeSRP()...)
 
-	// Analyze Open/Closed Principle
-	violations = append(violations, s.analyzeOCP()...)
+	// Analyze switch/type-switch size
+	violations = append(violations, s.analyzeSwitchSize()...)
 
 	// Analyze Liskov Substitution Principle
 	violations = append(violations, s.analyzeLSP()...)
@@ -95,11 +95,18 @@ func (s *SOLIDAnalyzer) analyzeSRP() []Violation {
 	return violations
 }
 
-// analyzeOCP analyzes Open/Closed Principle violations
-func (s *SOLIDAnalyzer) analyzeOCP() []Violation {
+// analyzeSwitchSize analyzes switch/type-switch *size* (`switch-size`).
+//
+// Spec-49: the old `open-closed` category claimed to detect the Open/Closed
+// Principle from a raw case count. Case count is a size reading, not an OCP
+// reading — whether a switch is "closed to extension" depends on whether it
+// dispatches over a stable enum vs an extensible type, which the syntax-only
+// go/parser cannot resolve. The honest OCP computation is blocked (needs type
+// resolution); what remains is the size signal under an honest name.
+func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 	var violations []Violation
 
-	// Check for large switch/case statements that could benefit from polymorphism
+	// Check for large switch/type-switch statements (a size reading only).
 	for filePath, file := range s.parser.files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch node := n.(type) {
@@ -111,14 +118,14 @@ func (s *SOLIDAnalyzer) analyzeOCP() []Violation {
 						File:     filePath,
 						Line:     pos.Line,
 						Severity: "suggestion",
-						Message:  "Large switch statement detected - consider using polymorphism",
+						Message:  "Switch statement has many case clauses",
 						Details: map[string]interface{}{
 							"caseCount": caseCount,
-							"principle": "OCP",
+							"kind":      "switch",
 						},
-						Suggestion: "Consider using interfaces and polymorphism instead of large switch statements",
+						Suggestion: "Consider consolidating related cases or a table-driven lookup if the switch grows unwieldy",
 						Analyzer:   "solid",
-						Category:   "open-closed",
+						Category:   "switch-size",
 					})
 				}
 			case *ast.TypeSwitchStmt:
@@ -129,14 +136,14 @@ func (s *SOLIDAnalyzer) analyzeOCP() []Violation {
 						File:     filePath,
 						Line:     pos.Line,
 						Severity: "suggestion",
-						Message:  "Large type switch detected - consider using interfaces",
+						Message:  "Type switch has many case clauses",
 						Details: map[string]interface{}{
 							"caseCount": caseCount,
-							"principle": "OCP",
+							"kind":      "type-switch",
 						},
-						Suggestion: "Consider using interfaces with method dispatch instead of type switches",
+						Suggestion: "Consider consolidating related cases; a type switch over a sealed set is maintainable, but an open set grows unwieldy",
 						Analyzer:   "solid",
-						Category:   "open-closed",
+						Category:   "switch-size",
 					})
 				}
 			}

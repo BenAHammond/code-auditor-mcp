@@ -70,7 +70,7 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
   const executionTime = polyglotResult.metrics?.executionTime || 0;
 
   // Bucket violations by their category for the summary. The Go subprocess
-  // labels findings with `category` (open-closed, import-style, …); the
+  // labels findings with `category` (switch-size, import-style, …); the
   // TypeScript pipeline uses `type` for the same purpose. Fall back to the
   // analyzer label so a categoryless finding still lands in a real bucket
   // rather than vanishing into an empty `violationsByCategory`.

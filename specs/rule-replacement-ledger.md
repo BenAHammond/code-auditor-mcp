@@ -332,3 +332,83 @@ part, and it stays unmade.
 
 - `interface-size` — `renamed` (member-count proxy kept under an honest size name)
 - ISP client-usage-set computation — `blocked` (needs a call-graph / type-resolution tier)
+
+## Session 4 — `open-closed` (Go switch + type-switch) → `switch-size` (spec-49 order #4)
+
+The authenticity ledger marked the Go `open-closed` switch variant (row 11) and
+type-switch variant (row 12) crude: `if caseCount > 5` standing in for the
+Open/Closed Principle ("a module should be open for extension, closed for
+modification"). The `gap` column names the real signal — *extensibility*: whether
+the switch dispatches over a **stable enum** (closed, perfectly fine to switch
+over) versus an **extensible type** (open, the canonical OCP smell). A 6-case
+switch over an enum is not an OCP violation; a 2-case type switch over an open
+interface is. Case count is a **size** reading, not an OCP reading.
+
+The TS `solid/open-closed` variant (row 24) is a different story: its predicate —
+`instanceof` against a user-defined type — is a *real* OCP smell, and its emitted
+message ("uses instanceof against a user-defined type. Consider composition or
+inheritance for extension") is already honest. Row 24's "frequently modified"
+quote is stale — the reword happened in an earlier session — so the TS instanceof
+rule is already `replaced`-shaped and needs no change here. Only the Go
+switch/type-switch proxies were still crude.
+
+### The verdict: rename the size signal, block the OCP reading
+
+Two honest moves, one per half of the lie:
+
+- **`switch-size`** — the case-count predicate is kept, but emitted under an
+  honest name. `solid.go` `analyzeSwitchSize` (was `analyzeOCP`) emits
+  `Category: "switch-size"` (was `open-closed`) for both `*ast.SwitchStmt` and
+  `*ast.TypeSwitchStmt`; the messages drop the "consider using polymorphism /
+  interfaces" overclaim and state the size reading plainly ("Switch statement has
+  many case clauses" / "Type switch has many case clauses"); the `Details`
+  `principle: "OCP"` field is dropped (it falsely claimed a SOLID principle) in
+  favour of a `kind: "switch" | "type-switch"` discriminator.
+- **true OCP** — `blocked`. Extensibility judgment needs type resolution: to know
+  whether a switch's scrutinee is a sealed enum or an open interface, the analyzer
+  must resolve the scrutinee's type and its definition site. The syntax-only
+  `go/parser` subprocess has no type resolution, so the honest OCP reading is
+  blocked, not faked.
+
+### Tests (written before implementation, per the TDD loop)
+
+`goSwitchSize.spec.ts` — 4 tests, positive / near-miss / inverse near-miss, plus
+a rename guard, all spawning the real Go binary:
+
+- positive — a 7-case switch fires `switch-size`, and its message carries no
+  "polymorphism" overclaim
+- positive — a 7-case type switch fires `switch-size`, no "interfaces" overclaim
+- near-miss — a 4-case switch does **not** fire (under the size threshold)
+- rename guard — the retired `open-closed` category no longer fires
+
+3 red before implementation (switch-size absent, open-closed still present);
+4 green after. Full suite 1240 passed / 67 skipped / 90 files.
+
+### Counts (before → after, per corpus)
+
+The predicate did not change — only the emitted category and message — so the
+count is preserved by construction and the row is a pure relabel. The rename is
+Go-only, so the TS corpora are unaffected:
+
+- gin 6→6 (`solid::open-closed` → `solid::switch-size`, verified against a
+  rebuilt pre-rename binary) · recall/knex/primer-css/blitz/hhra-org n/a
+  (TS — the `solid/open-closed` instanceof rule is unchanged) ·
+  svelte-realworld not on disk
+
+### Adjudication
+
+6 survivors on gin, all genuine large `switch` statements (7–18 case clauses) in
+`context.go:1415`, `binding/binding_nomsgpack.go:96`, `binding/form_mapping.go:336`
+(18 cases), `logger.go:114`, `logger.go:136`, `binding/binding.go:100`. Every one
+is exactly what `switch-size` claims to measure — a switch with many cases. Zero
+false positives, because the rename removed the false *claim* (OCP) rather than
+touching the *predicate*: none of these findings now assert that the switch is
+"closed to extension", an assertion the size reading never had grounds to make.
+
+### Verdict
+
+- `switch-size` — `renamed` (case-count proxy kept under an honest size name)
+- true OCP extensibility computation — `blocked` (needs type resolution: scrutinee
+  type + sealed-vs-open judgment)
+- `solid/open-closed` (TS instanceof) — already `replaced` (honest predicate +
+  message); row 24 was stale and needed no change
