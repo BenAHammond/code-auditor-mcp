@@ -24,10 +24,14 @@ beforeAll(async () => {
   analyzer = new UniversalSOLIDAnalyzer();
 }, 30_000);
 
-async function srpViolations(code: string, name: string) {
+async function allViolations(code: string, name: string) {
   const ast = parseFile(`${name}.ts`, code)!;
   if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  const violations = await (analyzer as any).analyzeAST(ast, adapter, DEFAULT_SOLID_CONFIG, code);
+  return (analyzer as any).analyzeAST(ast, adapter, DEFAULT_SOLID_CONFIG, code);
+}
+
+async function srpViolations(code: string, name: string) {
+  const violations = await allViolations(code, name);
   return violations.filter((v: any) => v.rule === 'solid/single-responsibility');
 }
 
@@ -96,5 +100,50 @@ describe('single-responsibility — mixed-concern detection (#128)', () => {
 }`;
     const violations = await srpViolations(code, 'deliver-all');
     expect(violations).toHaveLength(0);
+  });
+
+  it('does not flag a cohesive 180-line handler (near-miss for the old line-count proxy)', async () => {
+    // Spec-49 near-miss. The old `single-responsibility` fired on line count, so
+    // any long function was a "responsibility" violation. This function is long
+    // enough to trip `maxLinesPerMethod` but does a single cohesive job — a
+    // straight-line accumulation with no cross-cutting calls. The honest size
+    // rule `function-length` still fires on it; `solid/single-responsibility`
+    // must stay silent because there is no mixed concern.
+    const body: string[] = [];
+    for (let i = 1; i <= 180; i++) body.push(`  total = total + step${i};`);
+    const code = `function accumulate(steps) {\n  let total = 0;\n${body.join('\n')}\n  return total;\n}`;
+    const violations = await allViolations(code, 'accumulate');
+    const rules = violations.map((v: any) => v.rule);
+    expect(rules).not.toContain('solid/single-responsibility');
+    expect(rules).toContain('function-length');
+  });
+
+  it('flags a short function mixing four concerns (inverse near-miss the old line-count proxy missed)', async () => {
+    // Spec-49 inverse near-miss. The old `single-responsibility` only fired on
+    // size, so a short function doing four unrelated jobs slipped through. This
+    // function is short enough that `function-length` stays silent, but it spans
+    // data access + transformation, messaging, logging, and rendering — four
+    // concern groups — so `solid/single-responsibility` must fire.
+    const code = `function processOrder(order) {
+  const items = db.query('SELECT * FROM items WHERE order_id = $1', order.id);
+  const shaped = items.map((r) => ({ id: r.id, price: r.price, qty: r.qty }));
+  const total = shaped.reduce((sum, r) => sum + r.price * r.qty, 0);
+  const discount = total > 100 ? total * 0.1 : 0;
+  const finalTotal = total - discount;
+  const receipt = { order: order.id, items: shaped, total: finalTotal };
+  const html = render(receipt);
+  sendEmail(order.email, 'Your receipt', html);
+  audit('order_processed', { id: order.id, total: finalTotal });
+  logEvent('order.completed', { id: order.id });
+  const count = shaped.length;
+  const average = count > 0 ? finalTotal / count : 0;
+  const summary = { count, average, discounted: discount > 0 };
+  const out = { html, summary };
+  return out;
+}`;
+    const violations = await allViolations(code, 'process-order');
+    const rules = violations.map((v: any) => v.rule);
+    expect(rules).toContain('solid/single-responsibility');
+    expect(rules).not.toContain('function-length');
   });
 });
