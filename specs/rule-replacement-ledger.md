@@ -1232,3 +1232,97 @@ delta is attributed to a named cause.
   text is replaced by a structural AST walk that classifies `try-catch`,
   `promise-catch`, and `if-err` from real nodes, drops the bogus `go-style`
   shape, and leaves multi-shape bodies unclassified rather than collapsing them.
+
+## Session 15 — `styles/off-scale` (hardcoded [2,4,8,16] step proxy → Tailwind scale membership) (spec-49 order #7 remainder, row 43)
+
+### The state on arrival
+
+`detectOffScaleValues` parsed scale-family values to px, inferred a uniform
+"step" from a hardcoded `[2, 4, 8, 16]` candidate set, and flagged any value
+whose remainder against that step was more than 1px away from both 0 and the
+step. Three defects:
+
+1. **Overclaim** — the registry message was `'Value "{value}" is off the
+   project\'s design scale.'`, but the predicate was a step guess, not a real
+   scale. The actual emitted message at least said "inferred {step}px scale
+   step", but "project's design scale" still named a thing that was never read.
+2. **Cannot-fire** — because every multiple of 4/8/16 is also a multiple of 2,
+   `inferScaleStep` always resolved to step 2 (or null), and step 2's 1px
+   tolerance (`|remainder| > 1`) swallowed every possible remainder. The rule
+   emitted **0 findings on every corpus**.
+3. **Dead code** — `TAILWIND_SPACING_PX` / `TAILWIND_SCALE_VALUES` were defined
+   but never referenced; the scale the rule needed was sitting there unused.
+
+### The fix
+
+The step proxy is gone. The predicate is now **exact membership in the
+property's Tailwind design scale**, fed by the previously dead constant:
+
+- `TAILWIND_SPACING_VALUES` (margin/padding/gap) — the named default spacing
+  steps, completed with the `1.5`/`2.5`/`3.5` steps (6/10/14px) the old table
+  omitted.
+- `TAILWIND_FONT_SIZE_PX` (font-size) — the named `text-xs`…`text-9xl` steps
+  (12/14/16/18/20/24/30/36/48/60/72/96/128). Font-size is judged against its
+  **own** scale, not the spacing scale: `14px` is `text-sm` but not a spacing
+  step, and `28px` is a spacing step but not a font size. The old proxy judged
+  both against one inferred step, which is the category error the split removes.
+
+The message now says exactly what it measures: `is not on the Tailwind
+{spacing|font-size} scale`, with the nearest scale values on either side. The
+registry message is `'Value "{value}" is off the Tailwind spacing scale.'`.
+
+### Tests (written before implementation, per the TDD loop)
+
+`UniversalStylesAnalyzer.spec.ts` — 5 tests, replacing the two proxy-era tests
+(one of which asserted the proxy's null-step no-op):
+
+- positive — `margin-top: 13px` (off the spacing scale) fires
+- near-miss — `8/12/20/24/28/16px` (on-scale values the old step proxy would
+  have mis-flagged at step 8) do not fire
+- inverse near-miss — `margin-top: 100px` (a multiple of 4 the old step-4 proxy
+  passed, but not a spacing step) fires
+- near-miss (font-size) — `font-size: 14/16/18/20/30/24px` (all named font
+  sizes; `30px` is `text-3xl` but not a spacing step) do not fire
+- inverse near-miss (font-size) — `font-size: 28px` (a spacing step but not a
+  named font size) fires
+
+The positive and inverse near-miss tests failed against the old implementation
+(0 findings — the proxy never fired), posting the pre-change failure; the two
+font-size scale-separation tests also failed against any single-scale check.
+
+### Counts (before → after, per corpus)
+
+- recall **0→735** · knex 0→0 · primer-css **0→101** · blitz **0→50** ·
+  hhra-org 0→0 · gin 0→0 · svelte-realworld **0→45**
+
+Every "before" count is 0 because the proxy could not fire at all (step always
+2 or null). The "after" deltas are entirely new findings from the real
+predicate. hhra-org/gin stay 0 because they hold no scale-family declarations;
+knex stays 0 for the same reason. The four positive deltas are real arbitrary
+values in real CSS.
+
+### Adjudication
+
+Sampled from recall (735, the largest): dominated by hand-tuned pixel values in
+a Tailwind v4 project — `margin-top: 3/7/9/11/22/18/30px`,
+`font-size: 11/9/13/13.5/15px`, `row-gap: 7px`. Every sampled value is a
+genuine off-scale magic number (TRUE). `30px` on a margin is off the spacing
+scale (28 or 32, no 30); `30px` as a font size is `text-3xl` and correctly not
+flagged — the scale split is what keeps those from colliding.
+
+- **No false positives** — no on-scale value was flagged. The nearest value I
+  could find on the boundary (`0.5em`, `0.2rem`) converts to a fractional px
+  that is off either scale, so it is correctly flagged.
+- **true-but-useless tail** — negative pixel nudges (`margin: -1px`, `-15px`)
+  and non-Tailwind corpora (Primer's `15px`/`13px`, svelte-realworld's conduit
+  theme) are technically off the Tailwind scale but not token-bypass defects in
+  a project that never used Tailwind. They are a small fraction of the tail,
+  and the message names the Tailwind scale so the reader can dismiss them.
+
+### Verdict
+
+- `styles/off-scale` — `replaced`: the hardcoded `[2,4,8,16]` step proxy
+  (which overclaimed "project's design scale" and, in practice, never fired) is
+  replaced by exact membership in the property's Tailwind design scale, with the
+  spacing and font-size scales separated so each property is judged against the
+  scale it actually uses.

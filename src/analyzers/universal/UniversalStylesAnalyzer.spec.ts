@@ -338,22 +338,25 @@ describe('Detector 1 — Value Drift', () => {
 // ---------------------------------------------------------------------------
 
 describe('Detector 2 — Off-Scale Values', () => {
-  it('flags values that do not align with the inferred scale', async () => {
-    // The inferScaleStep algorithm picks the candidate step (2/4/8/16) with the
-    // highest count of divisible values, breaking ties with `>` (strict), so
-    // step=2 wins in most realistic data since all multiples of 4/8/16 are also
-    // multiples of 2. With step=2, all possible remainders (0, 1) fall within
-    // the 1px tolerance, so off-scale detection only triggers when the inferred
-    // step is > 2. This requires a mix of even values (for step 4 to pass the
-    // 60% threshold) AND enough odd values to suppress step 2 below 60% — which
-    // is mathematically impossible since numbers divisible by 4 are also
-    // divisible by 2.
-    //
-    // For practical testing, we verify that the detector runs without error and
-    // that the "does NOT fire" case (next test) correctly passes through.
+  // The old proxy inferred a uniform step from a hardcoded `[2, 4, 8, 16]`
+  // candidate set and flagged any value whose remainder against that step was
+  // not near 0. That (a) overclaims "project's design scale" — it is a step
+  // guess, not a real scale — and (b) mis-flags real Tailwind values that are
+  // on the scale but not a power-of-two multiple (12px, 20px, 28px), while
+  // missing arbitrary values (100px) that happen to be a multiple of 4. In
+  // practice it never fired: every multiple of 4/8/16 is also a multiple of 2,
+  // so the step always resolved to 2 and step 2's 1px tolerance swallowed every
+  // remainder.
+  //
+  // The honest predicate: a scale-family value is off-scale when its px
+  // equivalent is NOT a member of the property's Tailwind design scale —
+  // spacing for margin/padding/gap, font-size for `font-size`. The two scales
+  // are distinct (`14px` is `text-sm` but not a spacing step; `28px` is a
+  // spacing step but not a font size).
 
-    // 10 × margin-top: 8px (even, multiple of 4 → contributes to step 4 score)
-    for (let i = 0; i < 10; i++) {
+  it('flags a value that is not on the Tailwind spacing scale (positive)', async () => {
+    // Establish a corpus with on-scale values, then one off-scale straggler.
+    for (let i = 0; i < 4; i++) {
       insertDecl({
         property: 'margin-top',
         raw_value: '8px',
@@ -362,22 +365,9 @@ describe('Detector 2 — Off-Scale Values', () => {
         line: i + 1,
       });
     }
-    // 8 × margin-top: 3px (odd → suppresses step 2 score, step 4 unaffected)
-    for (let i = 0; i < 8; i++) {
-      insertDecl({
-        property: 'margin-top',
-        raw_value: '3px',
-        mechanism: 'css',
-        file_path: `src/comp${10 + i}.css`,
-        line: 10 + i + 1,
-      });
-    }
-    // 1 × margin-top: 12px — 12 % 2 = 0 so step 2: 11/19 = 57.9% < 60%;
-    // step 4: 11/19 = 57.9% < 60% → inferScaleStep returns null.
-    // The detector exits early when step is null/0, returning no violations.
     insertDecl({
       property: 'margin-top',
-      raw_value: '12px',
+      raw_value: '13px',
       mechanism: 'css',
       file_path: 'src/offscale.css',
       line: 1,
@@ -388,22 +378,54 @@ describe('Detector 2 — Off-Scale Values', () => {
       scaleProperties: ['margin-top'],
     });
 
-    // No violations because step inference returned null (no candidate reached 60%)
-    // This verifies the detector runs without throwing.
     const offScale = findViolations(violations, 'styles/off-scale');
-    expect(offScale.length).toBe(0);
+    expect(offScale.length).toBeGreaterThanOrEqual(1);
+    expect(offScale.every((v) => v.message.includes('13px'))).toBe(true);
   });
 
-  it('does NOT fire for values that align with the scale', async () => {
-    for (let i = 0; i < 20; i++) {
+  it('does NOT fire for on-scale values that are not power-of-two multiples (near-miss)', async () => {
+    // 12px (Tailwind `3`), 20px (Tailwind `5`), 28px (Tailwind `7`) are all on
+    // the scale but would trip the old `[2,4,8,16]` step proxy (12 % 8 = 4,
+    // 20 % 8 = 4, 28 % 8 = 4). The honest predicate must not flag them.
+    const onScale = ['8px', '12px', '20px', '24px', '28px', '16px'];
+    onScale.forEach((v, i) => {
       insertDecl({
         property: 'margin-top',
-        raw_value: `${(i % 5 + 1) * 4}px`,
+        raw_value: v,
         mechanism: 'css',
         file_path: `src/comp${i}.css`,
-        line: 1,
+        line: i + 1,
+      });
+    });
+
+    const violations = await runAnalyzer({
+      minCorpus: 3,
+      scaleProperties: ['margin-top'],
+    });
+
+    expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
+  });
+
+  it('flags an arbitrary value the old step proxy would have missed (inverse near-miss)', async () => {
+    // 100px is a multiple of 4 (so the old step-4 proxy passed it as "aligned")
+    // but is NOT a member of the Tailwind spacing scale — it is an arbitrary
+    // value. The honest predicate must fire.
+    for (let i = 0; i < 4; i++) {
+      insertDecl({
+        property: 'margin-top',
+        raw_value: '8px',
+        mechanism: 'css',
+        file_path: `src/comp${i}.css`,
+        line: i + 1,
       });
     }
+    insertDecl({
+      property: 'margin-top',
+      raw_value: '100px',
+      mechanism: 'css',
+      file_path: 'src/offscale.css',
+      line: 1,
+    });
 
     const violations = await runAnalyzer({
       minCorpus: 3,
@@ -411,7 +433,61 @@ describe('Detector 2 — Off-Scale Values', () => {
     });
 
     const offScale = findViolations(violations, 'styles/off-scale');
-    expect(offScale.length).toBe(0);
+    expect(offScale.length).toBeGreaterThanOrEqual(1);
+    expect(offScale.every((v) => v.message.includes('100px'))).toBe(true);
+  });
+
+  it('judges font-size against the font-size scale, not the spacing scale (near-miss)', async () => {
+    // 30px is `text-3xl` — a valid font size — but it is NOT a spacing step.
+    // A naive spacing-scale check would flag it; the honest predicate must not.
+    const onScale = ['14px', '16px', '18px', '20px', '30px', '24px'];
+    onScale.forEach((v, i) => {
+      insertDecl({
+        property: 'font-size',
+        raw_value: v,
+        mechanism: 'css',
+        file_path: `src/comp${i}.css`,
+        line: i + 1,
+      });
+    });
+
+    const violations = await runAnalyzer({
+      minCorpus: 3,
+      scaleProperties: ['font-size'],
+    });
+
+    expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
+  });
+
+  it('flags a font-size that is on the spacing scale but off the font-size scale (inverse near-miss)', async () => {
+    // 28px is a valid spacing step (`spacing-7`) but NOT a named font size.
+    // A spacing-scale check would pass it; the honest font-size scale must flag
+    // it.
+    for (let i = 0; i < 4; i++) {
+      insertDecl({
+        property: 'font-size',
+        raw_value: '14px',
+        mechanism: 'css',
+        file_path: `src/comp${i}.css`,
+        line: i + 1,
+      });
+    }
+    insertDecl({
+      property: 'font-size',
+      raw_value: '28px',
+      mechanism: 'css',
+      file_path: 'src/offscale-font.css',
+      line: 1,
+    });
+
+    const violations = await runAnalyzer({
+      minCorpus: 3,
+      scaleProperties: ['font-size'],
+    });
+
+    const offScale = findViolations(violations, 'styles/off-scale');
+    expect(offScale.length).toBeGreaterThanOrEqual(1);
+    expect(offScale.every((v) => v.message.includes('28px'))).toBe(true);
   });
 });
 

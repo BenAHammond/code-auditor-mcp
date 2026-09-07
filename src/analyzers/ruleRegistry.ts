@@ -1577,7 +1577,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['styles-css'],
     resolvable: false,
-    message: 'Value "{value}" is off the project\'s design scale.',
+    message: 'Value "{value}" is off the Tailwind spacing scale.',
     docs: 'styles/off-scale',
     thresholds: ['minCorpus'],
     samples: {

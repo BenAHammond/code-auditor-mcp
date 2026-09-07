@@ -49,12 +49,20 @@ export const DEFAULT_STYLES_CONFIG: StylesAnalyzerConfig = {
 };
 
 // ---------------------------------------------------------------------------
-// Tailwind v4 default spacing scale (px equivalents)
+// Tailwind default design scales (px equivalents)
 // ---------------------------------------------------------------------------
+//
+// Two distinct scales: the *spacing* scale (margin/padding/gap) and the
+// *font-size* scale. They are not interchangeable — `14px` is a valid font size
+// (`text-sm`) but not a named spacing step, and `28px` is a valid spacing step
+// (`spacing-7`) but not a named font size. The old proxy collapsed both onto a
+// single inferred step, which is why `font-size` was silently judged against a
+// spacing step it never uses.
 
 const TAILWIND_SPACING_PX: Record<string, number> = {
   '0': 0, 'px': 1, '0.5': 2,
-  '1': 4, '2': 8, '3': 12, '4': 16,
+  '1': 4, '1.5': 6, '2': 8, '2.5': 10,
+  '3': 12, '3.5': 14, '4': 16,
   '5': 20, '6': 24, '7': 28, '8': 32,
   '9': 36, '10': 40, '11': 44, '12': 48,
   '14': 56, '16': 64, '20': 80, '24': 96,
@@ -64,7 +72,35 @@ const TAILWIND_SPACING_PX: Record<string, number> = {
   '96': 384,
 };
 
-const TAILWIND_SCALE_VALUES = Object.values(TAILWIND_SPACING_PX).sort((a, b) => a - b);
+/** Named Tailwind font-size steps (`text-xs` … `text-9xl`), px equivalents. */
+const TAILWIND_FONT_SIZE_PX: readonly number[] = [
+  12, 14, 16, 18, 20, 24, 30, 36, 48, 60, 72, 96, 128,
+];
+
+const TAILWIND_SPACING_VALUES = Object.values(TAILWIND_SPACING_PX).sort((a, b) => a - b);
+
+/** O(1) membership sets for "is this px value on the Tailwind scale". */
+const TAILWIND_SPACING_SET = new Set(TAILWIND_SPACING_VALUES);
+const TAILWIND_FONT_SIZE_SET = new Set(TAILWIND_FONT_SIZE_PX);
+
+/** The design scale a property belongs to. */
+function scaleForProperty(property: string): { values: readonly number[]; set: Set<number>; label: string } {
+  if (property === 'font-size') {
+    return { values: TAILWIND_FONT_SIZE_PX, set: TAILWIND_FONT_SIZE_SET, label: 'font-size scale' };
+  }
+  return { values: TAILWIND_SPACING_VALUES, set: TAILWIND_SPACING_SET, label: 'spacing scale' };
+}
+
+/** The nearest scale values on either side of `px` (for the suggestion). */
+function nearestScaleValues(px: number, values: readonly number[]): [number, number] {
+  let lower = 0;
+  let upper = values[values.length - 1];
+  for (const s of values) {
+    if (s <= px) lower = s;
+    if (s >= px) { upper = s; break; }
+  }
+  return [lower, upper];
+}
 
 // ---------------------------------------------------------------------------
 // DB row shapes
@@ -485,9 +521,8 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
   // -----------------------------------------------------------------------
 
   /**
-   * For scale-family properties (margin, padding, gap, font-size),
-   * infer the project scale from modal values + Tailwind defaults,
-   * and flag values that don't fit the scale.
+   * For scale-family properties (margin, padding, gap, font-size), flag values
+   * that are not members of the property's Tailwind design scale.
    */
   protected detectOffScaleValues(
     byProperty: Map<string, StyleDeclRow[]>,
@@ -510,22 +545,19 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
 
       if (parsed.length < cfg.minCorpus) continue;
 
-      // Infer the project scale step
-      const step = this.inferScaleStep(parsed.map(p => p.px));
-      if (step === null || step === 0) continue;
-
-      // Flag off-scale values
+      // Flag values that are not members of the property's scale. Spacing
+      // properties are judged against the spacing scale, `font-size` against
+      // the font-size scale — they are not interchangeable.
+      const scale = scaleForProperty(property);
       for (const { decl, px } of parsed) {
-        const remainder = px % step;
-        // Allow near-zero remainders (floating point tolerance: < 1px)
-        if (Math.abs(remainder) > 1 && Math.abs(remainder - step) > 1) {
+        if (!scale.set.has(px)) {
+          const [lower, upper] = nearestScaleValues(px, scale.values);
           violations.push(this.makeViolation(
             decl.file_path,
             decl.line,
             `Off-scale "${property}" value: "${decl.raw_value}" (${px}px) ` +
-            `does not align with the inferred ${step}px scale step. ` +
-            `Nearby scale values: ${Math.floor(px / step) * step}px or ` +
-            `${Math.ceil(px / step) * step}px.`,
+            `is not on the Tailwind ${scale.label}. ` +
+            `Nearest scale values: ${lower}px or ${upper}px.`,
             { severity: 'warning', rule: 'styles/off-scale', symbol: declValueKey(decl) },
           ));
         }
@@ -533,34 +565,6 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
     }
 
     return violations;
-  }
-
-  /**
-   * Infer the dominant scale step from a set of px values.
-   * Uses the Tailwind scale as candidate steps.
-   */
-  protected inferScaleStep(values: number[]): number | null {
-    if (values.length < 3) return null;
-
-    // Count how many values align with each tailwind step
-    const candidates = [2, 4, 8, 16];
-    let bestStep = 4;
-    let bestScore = 0;
-
-    for (const step of candidates) {
-      let score = 0;
-      for (const v of values) {
-        if (v % step === 0) score++;
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        bestStep = step;
-      }
-    }
-
-    // Require at least 60% alignment
-    if (bestScore / values.length < 0.6) return null;
-    return bestStep;
   }
 }
 
