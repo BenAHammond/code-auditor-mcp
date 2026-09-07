@@ -1208,19 +1208,42 @@ function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): 
 }
 
 /**
- * True when a query applies *any* row-limiting filter, not merely a tenant/
- * organization predicate.  The `unfiltered-query` rule is about reads that
- * sweep an unbounded result set; a WHERE/HAVING/LIMIT clause, or a JOIN ... ON
- * predicate (which the organization-pattern heuristic never sees), is enough
- * to show the query is deliberately scoped.  Evaluated on comment-stripped
- * text so prose in `//` or `/* *`/ comments cannot fabricate a filter.
+ * True when a query applies a *row-limiting* filter: a WHERE carrying a real
+ * predicate, a HAVING, or a LIMIT.  The `unfiltered-query` rule is about reads
+ * that sweep an unbounded result set.  A `JOIN ... ON` predicate scopes *how*
+ * rows match, not *which* rows come back, so it is not a filter; and a
+ * tautological `WHERE 1=1` (the placeholder prepended so callers can append
+ * `AND x = ?`) limits nothing, so it is not a filter either.  Evaluated on
+ * comment-stripped text so prose in `//` or `/* *`/ comments cannot fabricate
+ * a filter.
  */
 function hasQueryFilter(text: string): boolean {
   const upper = text.toUpperCase();
-  return /\bWHERE\b/.test(upper)
+  return (/\bWHERE\b/.test(upper) && !whereClauseIsTautology(text))
     || /\bHAVING\b/.test(upper)
-    || /\bLIMIT\b/.test(upper)
-    || /\bON\b/.test(upper);
+    || /\bLIMIT\b/.test(upper);
+}
+
+/**
+ * True when the WHERE clause is a bare tautology — `WHERE 1=1` (or `1 = 1`,
+ * `TRUE`, or the same repeated under `AND`) — that limits nothing.  A WHERE
+ * body carrying any real predicate (`WHERE id = ?`, or `WHERE 1=1 AND
+ * active = ?`) is not a tautology.
+ */
+function whereClauseIsTautology(text: string): boolean {
+  const upper = text.toUpperCase();
+  const whereMatch = /\bWHERE\b/.exec(upper);
+  if (!whereMatch) return false;
+  const afterWhere = upper.slice(whereMatch.index + 'WHERE'.length);
+  // Body up to the next row-limiting clause keyword.
+  const body = afterWhere.split(/\b(?:GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION)\b/)[0];
+  // Drop the SQL-string terminator + call-argument closer (`"), "); …) so the
+  // predicate is judged on the clause text alone.
+  const stripped = body.replace(/["'`)\s;]+$/g, '').replace(/^\s+/, '').replace(/\s+$/, '');
+  // A dangling AND/OR left by a dynamic builder still filters nothing.
+  const clean = stripped.replace(/^(?:AND|OR)\s+/i, '').replace(/\s+(?:AND|OR)$/i, '');
+  const alwaysTrue = '(?:1\\s*=\\s*1|TRUE)';
+  return new RegExp(`^${alwaysTrue}(?:\\s+AND\\s+${alwaysTrue})*$`, 'i').test(clean);
 }
 
 /**

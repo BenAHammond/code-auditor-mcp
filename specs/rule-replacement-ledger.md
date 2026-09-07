@@ -1070,3 +1070,79 @@ legitimate complexity signal, so the wording overreach is immaterial.
   honest "subquery or many-tables" signal, with subquery detection scoped to the
   query's own text. The table-count half survives under its own honest reading
   (a >4-table join *is* complex), now alongside the subquery half it was missing.
+
+---
+
+## Session 13 — `unfiltered-query` (WHERE/HAVING/LIMIT/ON substring proxy → row-limiting clause) (spec-49 order #7 remainder, row 32)
+
+The authenticity ledger marked `unfiltered-query` (row 32) crude with one gap:
+"Unfiltered = absence of WHERE/HAVING/LIMIT/ON keyword substrings; `WHERE 1=1`
+or `JOIN … ON` with no row-limiting WHERE counts as filtered." Two proxy defects:
+
+1. **`ON` is not a filter.** A `JOIN … ON` predicate scopes *how* rows match, not
+   *which* rows come back. `SELECT * FROM a JOIN b ON a.id = b.id` returns every
+   joined row — an unbounded read — yet the `\bON\b` substring read it as
+   "filtered".
+2. **`WHERE 1=1` is not a filter.** The tautology is the placeholder prepended so
+   a caller can append `AND x = ?`; by itself it limits nothing, yet `\bWHERE\b`
+   read it as "filtered".
+
+### The fix
+
+- **Drop `\bON\b`** from `hasQueryFilter`. A filter is now a row-limiting clause
+  only: a WHERE carrying a real predicate, a HAVING, or a LIMIT.
+- **Tautology-aware WHERE.** `whereClauseIsTautology(text)` extracts the WHERE
+  body (up to the next clause keyword, with the SQL-string terminator + call-arg
+  closer stripped) and returns true only for a bare `1=1` / `1 = 1` / `TRUE`
+  (optionally repeated under `AND`). `WHERE 1=1 AND active = ?` is not a
+  tautology. `WHERE 1=1 … LIMIT ?` stays filtered — the LIMIT is the real
+  row-limiting clause.
+
+### Tests (written before implementation, per the TDD loop)
+
+`unfilteredQuery.spec.ts` — 5 tests, running the real `UniversalDataAccessAnalyzer`:
+
+- positive — a bare `SELECT * FROM users` fires
+- near-miss — `SELECT * FROM users WHERE active = ?` does not fire
+- inverse near-miss (ON) — `SELECT * FROM users u JOIN orders o ON u.id = o.user_id`
+  fires (the old proxy called it filtered)
+- inverse near-miss (tautology) — `SELECT * FROM users WHERE 1=1` fires
+- guard — `SELECT * FROM users WHERE 1=1 AND active = ?` does not fire
+
+2 red before implementation (both inverse near-misses); 5 green after. Contract
+suites stay green: full unit suite (98 files, 1273 passed, 67 skipped),
+`nearMissGuards` (9), `ruleRegistry` (5), data-access integration (44).
+
+### Counts (before → after, per corpus)
+
+- recall **32→32** · knex **14→15** · primer-css 0→0 · blitz **30→30** ·
+  hhra-org 0→0 · gin n/a (Go corpus) · svelte-realworld 0→0
+
+The delta is one finding, on knex. The monotonic predicate (removing filters can
+only *add* unfiltered readings, never remove one) means 32→32 and 30→30 are
+identical sets, not a swap.
+
+### Adjudication
+
+- **The +1 (knex)** — `test/tape/raw.js:72`:
+  `raw('select * from "table" join "chair" on :tableCol: = :chairCol:', …)`.
+  A `JOIN … ON` with no WHERE/HAVING/LIMIT. Genuine unbounded read. TRUE.
+- **recall survivors (32)** — sampled `get-static-paths.ts:109`
+  (`db.prepare("SELECT slug, sub_role_name FROM heroes").all()`),
+  `backfill-patch-eras.ts:114`
+  (`d1Query(… SELECT era_id, start_date FROM patch_eras ORDER BY start_date)`),
+  `hero-data-agent.ts:219` (a `storage.sql` builder read), and `data.ts:470`:
+  all bare SELECTs / builder reads with no limiting clause. TRUE.
+- **blitz survivors (30)** — same shape as recall: plain unfiltered reads.
+- **The tautology fix produced zero delta, correctly.** Every `WHERE 1=1` in the
+  corpora is followed by a real clause that *does* bound the result —
+  `stadium-builds.ts:489` (`WHERE 1 = 1 … LIMIT ?`), `hhra-org/compliance.ts:199`
+  (`WHERE 1=1 … LIMIT $N OFFSET …`), `foodPesticideList.ts:120`
+  (`WHERE 1=1${additionalWhere} … LIMIT …`). Each stays filtered because the
+  LIMIT is the row-limiting clause; the honest predicate does not un-filter them.
+
+### Verdict
+
+- `unfiltered-query` — `replaced`: the "absence of WHERE/HAVING/LIMIT/ON
+  substrings" proxy is replaced by "absence of a row-limiting WHERE/HAVING/LIMIT
+  clause", where `ON` and a bare `WHERE 1=1` no longer masquerade as a filter.
