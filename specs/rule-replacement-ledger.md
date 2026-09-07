@@ -1742,3 +1742,80 @@ equality.
   is straightforward; only full semantic cross-language type equivalence (e.g.
   a Go `*sql.NullString` ≡ TS `string | null`) remains out of scope, and that
   is name-resolution territory, not spelling territory.
+
+## Session 21 — `missing-field` (Go required = isExported proxy → non-nilable value type) (spec-49 order #7 remainder, row 77)
+
+### The state on arrival
+
+Row 77 marked `missing-field` crude with an `[overclaim]` gap: the message
+"Missing required field '…'" asserts requiredness, but for Go `required` was
+proxied by `isExported` (capitalization = publicness, not requiredness). Two
+distinct errors followed from that proxy:
+
+- an **exported nilable field** (`Email *string`) was marked required, so a
+  `missing-field` fired when the other language legitimately omitted an optional
+  field — a false positive;
+- an **unexported value field** (`id int`) was marked optional, so a genuinely
+  required field's absence was never reported — a false negative.
+
+### The fix
+
+Already applied in spec-44, not in this sweep. Commit `a60f655` replaced the
+`isExported` proxy with `isGoValueType`: a Go field is required iff it is a
+non-nilable value type (`string`, `int64`, `bool`, `time.Time`, `[4]byte`); a
+nilable reference type — pointer (`*T`), slice (`[]T`), map, channel, function,
+or interface (`interface{}`/`any`/`error`) — is optional. Exportedness is a
+visibility signal and is no longer consulted. The function is exported and
+carries its own unit suite (`SchemaValidator.spec.ts` "isGoValueType" block, 3
+tests / 18 assertions) added in the same commit.
+
+### The fix (this session)
+
+None to the predicate. The spec-44 commit pinned the *helper* (`isGoValueType`)
+but not the *rule*: nothing tested that `extractGoStruct` feeds the helper into
+`checkMissingFields`, i.e. that the honest requiredness actually drives the
+`missing-field` emission end-to-end. This session adds that missing test.
+
+### Tests (written this session; the fix predates the sweep so all pass on arrival)
+
+New `src/analyzers/cross-language/missingField.spec.ts`, exercising the full
+`extractSchemas` → `validateSchemas` path with a Go-reference/TS-current pair:
+
+- positive — `ID int` (exported value type) absent → fires. Passed on arrival.
+- near-miss — `Email *string` (exported nilable) absent → does NOT fire. This is
+  the old `isExported` proxy's false positive, now correctly silent.
+- inverse near-miss — `id int` (unexported value type) absent → fires. This is
+  the old proxy's false negative — it treated unexported as optional and missed
+  a genuinely required field.
+
+3 green. All passed on arrival because the spec-44 fix predates this sweep;
+there is no pre-change failure to post. The tests are new because the spec-44
+suite covered the helper, not the emission path.
+
+### Counts (before → after, per corpus)
+
+- recall 0→0 · knex 0→0 · primer-css 0→0 · blitz 0→0 · hhra-org 0→0 ·
+  gin 0→0 · svelte-realworld 0→0
+
+Unobservable on all seven corpora — none contains a cross-language schema pair,
+so the schema-validator analyzer emits zero findings everywhere. Behaviour is
+pinned by the tests, not by corpus deltas (same as `schema-field-mismatch`,
+Session 20).
+
+### Adjudication
+
+No survivors (0 findings everywhere). Adjudication is carried on the test
+fixtures: `ID int` is a true required-value-type absence; `Email *string` is a
+true optional (not a missing-required); `id int` is a true required that the old
+proxy missed — the sharp edge separating value-type requiredness from
+exportedness.
+
+### Verdict
+
+- `missing-field` — `replaced` (already replaced in spec-44, commit `a60f655`:
+  Go requiredness = non-nilable value type via `isGoValueType`, with its own
+  unit suite). This session adds the end-to-end tests tying that helper to the
+  `missing-field` emission, closing the one coverage gap the spec-44 commit left.
+  The `partial` bridgeability note is satisfied — the TS side was always honest,
+  and the Go side now computes requiredness from nilability rather than
+  exportedness.
