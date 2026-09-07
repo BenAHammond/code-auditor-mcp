@@ -85,3 +85,103 @@ Three emitted rule IDs changed:
   and **0 with ≥3** (the firing threshold). The 991→0 drop is the proxy firing
   on long/param-heavy-but-cohesive functions that were never god-functions.
 - **verdict**: `replaced` (concern engine computes the real signal)
+
+---
+
+## Session 2 — the `documentation` family (spec-49 order #2)
+
+The authenticity ledger marked four documentation rules crude (rows for
+`function-documentation`, `class-documentation`, `method-documentation`,
+`file-documentation`). All four shared one proxy:
+
+```ts
+if (doc.length < minDescriptionLength /* default 10 */) fire;
+```
+
+Presence + character length, not substance. A `/** TODO: implement later */`
+comment (23 chars) passed as "documented"; a `/** Sums. */` comment (8 chars)
+failed despite describing the function. The ledger's `gap` column names the
+real signal: *content* (a word-count / non-boilerplate heuristic for
+function/class/method, a `@fileoverview`-style marker check for file).
+
+### The replacement
+
+`isSubstantiveDoc(doc)` — a comment is documentation iff, after stripping
+comment delimiters and JSDoc tags, it contains at least one descriptive word
+(≥2 chars, non-stopword) **and** does not lead with a placeholder marker
+(`TODO`/`FIXME`/`XXX`/`TBD`/`WIP`/`STUB`/`PLACEHOLDER`, optional `@` sigil).
+File headers additionally require a `@fileoverview`/`@file`/`@module`/
+`@overview`/`@purpose` marker, so a bare license block no longer counts.
+
+Four check sites changed from `doc.length < minDescriptionLength` to
+`!isSubstantiveDoc(doc)`: `checkFileHeader`, `checkFunctionDocumentation`,
+`analyzeClassDocumentation`, `checkClassMethodDocumentation`.
+`minDescriptionLength` is left in the config interface but is now dead for
+these four rules (kept for back-compat, removed from the predicate).
+
+Two latent bugs surfaced and were fixed along the way:
+
+- **`getFileDocumentation` never found a leading comment.** tree-sitter exposes
+  a leading `/** */` as `program.children[0]` (type `comment`); passing it to
+  `adapter.getDocumentation` (which searches *preceding* siblings) returned
+  null, so `file-documentation` fired even on files with a real header whenever
+  `fileHeaders` was enabled. Fixed to read the comment node's raw text directly.
+- **The placeholder word-list was too aggressive.** The first cut matched
+  `PLACEHOLDER`/`STUB` anywhere in the comment, so a descriptive doc like
+  "…falls back to the placeholder card" was misread as a placeholder *comment*
+  (3 false positives on recall: `applyAbilityPileRow`,
+  `handleCommandPlaceholder`, `cdnIcon`/`getIndexedStrategyCount`). Fixed by
+  anchoring the marker to the *start* of the comment; a regression test pins it.
+
+### Tests (written before implementation, per the TDD loop)
+
+`documentation-substance.spec.ts` — 13 tests, positive / near-miss / inverse
+near-miss for each of the four rules:
+
+- function-documentation: positive (undocumented exported fn fires), near-miss
+  (`/** Sums. */` 8 chars does **not** fire — the old length proxy did),
+  inverse near-miss (`/** TODO: implement later */` 23 chars **does** fire),
+  regression near-miss (a descriptive doc *mentioning* "placeholder" does not)
+- class-documentation / method-documentation: same three-way shape
+- file-documentation (`fileHeaders: true`): positive (no leading comment),
+  near-miss (`/** @fileoverview Core utilities. */` does not), inverse
+  near-miss (`/** Copyright 2024 … */` license block **does** fire)
+
+19 tests green across `documentation-substance.spec.ts` + the pre-existing
+`UniversalDocumentationAnalyzer.spec.ts`.
+
+### Counts (before → after, per corpus)
+
+- **function-documentation**: recall 574→574 · knex 0→0 · primer-css 1→1 ·
+  blitz 190→**191** · hhra-org 51→51 · gin n/a (Go corpus) · svelte-realworld
+  not on disk
+- **class-documentation**: recall 16 · knex 0 · primer-css 0 · blitz 34 ·
+  hhra-org 39 (unchanged)
+- **method-documentation**: recall 80 · knex 0 · primer-css 0 · blitz 161 ·
+  hhra-org 69 (unchanged)
+- **file-documentation**: 0 everywhere — defaults off (`fileHeaders: false`)
+
+### Adjudication
+
+One net survivor across all corpora: **blitz
+`packages/blitz-auth/…/parse-url.ts` `parseUrl`** (`+1` function-documentation).
+Its doc leads with `TODO: Can we remove this?` before describing the return
+value, so the substance heuristic no longer counts it as documented. That is a
+genuine reading — the leading signal is a TODO, not a confident description —
+so the survivor stands rather than being tuned away.
+
+The transient `+3` on recall during development (the `PLACEHOLDER`/`STUB`
+word-list bug above) was a self-inflicted false positive, caught by the
+measurement diff and removed; the committed state is `574→574` on recall.
+
+The delta is small by design: `// TODO` line comments never populate `jsDoc`
+(only `/** */` block comments do), so the placeholder effect is confined to
+`/** TODO */` block comments, and the overwhelming majority of block doc
+comments are genuinely descriptive.
+
+### Verdicts
+
+- `function-documentation` — `replaced` (substance heuristic)
+- `class-documentation` — `replaced`
+- `method-documentation` — `replaced`
+- `file-documentation` — `replaced` (marker/content check)

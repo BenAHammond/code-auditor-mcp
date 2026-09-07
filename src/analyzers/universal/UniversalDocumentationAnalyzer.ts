@@ -223,7 +223,10 @@ function checkFileHeader(
   if (matchesAnyGlob(ast.filePath, skipGlobs)) return violations;
 
   const fileDoc = getFileDocumentation(ast, adapter);
-  if (!fileDoc || fileDoc.length < config.minDescriptionLength) {
+  // Spec-49 — a file header is a leading comment that documents the file's
+  // *purpose* (a @fileoverview/@file/@module/@overview/@purpose marker), not any
+  // comment of ≥N characters. A license block is not a header.
+  if (!fileDoc || !isFileHeaderDoc(fileDoc)) {
     violations.push(makeViolation(
       ast.filePath,
       { line: 1, column: 1 },
@@ -285,7 +288,9 @@ function checkFunctionDocumentation(
   const violations: Violation[] = [];
   const doc = func.jsDoc || '';
 
-  if (!doc || doc.length < config.minDescriptionLength) {
+  // Spec-49 — the check measures whether the doc comment is substantive
+  // (descriptive prose, not a placeholder marker), not its character length.
+  if (!isSubstantiveDoc(doc)) {
     // Methods lacking any documentation are reported by the class loop as
     // method-documentation — skip here so a public method is not
     // double-reported as both function-documentation and method-documentation.
@@ -293,11 +298,10 @@ function checkFunctionDocumentation(
       return violations;
     }
 
-    // R1.6 — Audience-reason message (a doc comment shorter than the minimum
-    // length is reported as missing; the check measures presence + length).
+    // R1.6 — Audience-reason message.
     const reason = func.isExported
-      ? `exported function '${func.name}' lacks a doc comment of at least ${config.minDescriptionLength} characters`
-      : `function '${func.name}' lacks a doc comment of at least ${config.minDescriptionLength} characters`;
+      ? `exported function '${func.name}' lacks a documentation comment`
+      : `function '${func.name}' lacks a documentation comment`;
 
     violations.push(makeViolation(
       ast.filePath,
@@ -401,11 +405,12 @@ function analyzeClassDocumentation(
     }
 
     const doc = cls.jsDoc || '';
-    if (!doc || doc.length < config.minDescriptionLength) {
+    // Spec-49 — substantive content, not character length.
+    if (!isSubstantiveDoc(doc)) {
       violations.push(makeViolation(
         ast.filePath,
         cls.location.start,
-        `Class '${cls.name}' lacks a doc comment of at least ${config.minDescriptionLength} characters`,
+        `Class '${cls.name}' lacks a documentation comment`,
         { severity: 'warning', rule: 'class-documentation', symbol: cls.name }
       ));
     }
@@ -437,11 +442,12 @@ function checkClassMethodDocumentation(
     }
 
     const methodDoc = method.jsDoc || '';
-    if (!methodDoc || methodDoc.length < config.minDescriptionLength) {
+    // Spec-49 — substantive content, not character length.
+    if (!isSubstantiveDoc(methodDoc)) {
       violations.push(makeViolation(
         ast.filePath,
         method.location.start,
-        `public method '${cls.name}.${method.name}' lacks a doc comment of at least ${config.minDescriptionLength} characters`,
+        `public method '${cls.name}.${method.name}' lacks a documentation comment`,
         { severity: 'warning', rule: 'method-documentation', symbol: `${cls.name}.${method.name}` }
       ));
     }
@@ -722,10 +728,69 @@ function getFirstChildOfType(node: ASTNode, types: string[]): ASTNode | null {
  */
 function getFileDocumentation(ast: AST, adapter: LanguageAdapter): string | null {
   const firstChild = ast.root.children?.[0];
-  if (firstChild) {
-    return adapter.getDocumentation(firstChild);
+  if (!firstChild) return null;
+  // When the leading node is itself a comment, that comment IS the candidate
+  // file header. `getDocumentation` looks for a comment *preceding* its
+  // argument, so passing the comment node itself would wrongly return null.
+  if (firstChild.type === 'comment') {
+    const text = (firstChild.raw as { text?: string } | undefined)?.text;
+    return text ? text.trim() : null;
   }
-  return null;
+  return adapter.getDocumentation(firstChild);
+}
+
+// ---------------------------------------------------------------------------
+// Spec-49 — documentation substance. The four documentation rules previously
+// reduced to `jsDoc.length < minDescriptionLength` (presence + character
+// length). The real signal is *content*: a comment is documentation only when
+// it says something descriptive, and a placeholder (`TODO`/`FIXME`/…) or a
+// bare license block is not.
+// ---------------------------------------------------------------------------
+
+/**
+ * Placeholder markers that are never documentation, regardless of length.
+ * Anchored to the *start* of the stripped comment so a descriptive doc that
+ * merely mentions "placeholder"/"stub" mid-sentence (e.g. "falls back to the
+ * placeholder card") is not mistaken for a placeholder comment. A bare
+ * `/** TODO *​/` or `/** PLACEHOLDER *​/` leads with the marker and still fires.
+ */
+const PLACEHOLDER_DOC_PATTERN = /^@?\s*(TODO|FIXME|XXX|TBD|WIP|STUB|PLACEHOLDER)\b/i;
+
+/** File-header markers — the signal that a leading comment documents the file's purpose. */
+const FILE_HEADER_PATTERN = /@(fileoverview|file|module|module-desc|overview|purpose)\b/i;
+
+/** Stop words that do not by themselves constitute descriptive content. */
+const DOC_STOP_WORDS = new Set([
+  'the', 'a', 'an', 'this', 'that', 'these', 'those', 'and', 'or', 'of', 'to',
+  'in', 'on', 'for', 'with', 'is', 'are', 'was', 'were', 'be', 'been', 'by',
+  'as', 'at', 'from', 'it', 'its',
+]);
+
+/** True when the leading comment carries a file-header marker. */
+function isFileHeaderDoc(doc: string): boolean {
+  return FILE_HEADER_PATTERN.test(doc);
+}
+
+/** True when the doc comment contains substantive descriptive prose. */
+function isSubstantiveDoc(doc: string): boolean {
+  // Raw prose: strip comment delimiters and leading asterisks only.
+  const raw = doc
+    .replace(/\/\*\*?|\*\//g, ' ')
+    .replace(/^\s*\*+\s?/gm, ' ');
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+
+  // A placeholder marker — with or without the `@` sigil — is never documentation.
+  if (PLACEHOLDER_DOC_PATTERN.test(trimmed)) return false;
+
+  // Strip remaining @tags and punctuation, then require at least one
+  // descriptive word (≥2 chars, not a stop word).
+  const prose = trimmed
+    .replace(/@\w+\s*(\{[^}]*\})?/g, ' ')
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .toLowerCase();
+  const words = prose.split(/\s+/).filter((w) => w.length >= 2 && !DOC_STOP_WORDS.has(w));
+  return words.length > 0;
 }
 
 /**
