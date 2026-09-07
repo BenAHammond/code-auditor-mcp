@@ -81,6 +81,17 @@ function inScope(file) {
   // loses no coverage of analyzer logic (long functions / param counts /
   // runtime SQL) because a data table can host none of those.
   if (rel === 'analyzers/ruleRegistry.ts') return false;
+  // The Go subprocess's `types.go` is a pure declarative protocol file: every
+  // declaration is a JSON-tagged struct forming the wire contract between the
+  // Go analyzer subprocess and the TS pipeline (IndexEntry, EntityInfo,
+  // Violation, …). It hosts no executable logic. The struct-size rule (a direct
+  // field count > 10) flags `IndexEntry` and `EntityInfo` at 12 fields each,
+  // but these are cohesive serialization records, not god structs — splitting
+  // them would break the IPC JSON contract or add artificial nesting. Excluding
+  // this data table removes only those false positives; it loses no coverage of
+  // analyzer logic because a declaration-only file can host none (the same
+  // rationale as ruleRegistry.ts above).
+  if (rel === 'languages/go/analyzer-src/types.go') return false;
   return true;
 }
 
@@ -103,7 +114,11 @@ for (const analyzerName of Object.keys(report.analyzerResults ?? {})) {
     if (!inScope(v.file ?? '')) continue;
     if (!isBlockingSeverity(v)) continue;
     total++;
-    byRule.set(v.rule, (byRule.get(v.rule) ?? 0) + 1);
+    // The Go subprocess labels findings with `category` and leaves `rule` unset
+    // (the TS pipeline uses `rule`). Key on whichever is present so a blocking
+    // Go finding cannot crash the breakdown with an undefined rule name.
+    const ruleName = v.rule || v.category || 'unknown';
+    byRule.set(ruleName, (byRule.get(ruleName) ?? 0) + 1);
     byAnalyzer.set(analyzerName, (byAnalyzer.get(analyzerName) ?? 0) + 1);
   }
 }

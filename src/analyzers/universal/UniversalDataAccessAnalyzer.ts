@@ -404,17 +404,7 @@ function buildDatabaseCall(
   const security = withRuleTiming('sql-injection-risk', () =>
     checkQuerySecurity(node, nodeText, ast, scan));
 
-  let callType = 'unknown';
-  if (isSqlQuery) {
-    callType = 'sql';
-  } else if (isOrmCall) {
-    for (const [dbType, importInfo] of dbImports) {
-      if (importInfo.hasImports) {
-        callType = dbType;
-        break;
-      }
-    }
-  }
+  const callType = classifyCallType(isSqlQuery, isOrmCall, dbImports);
 
   return {
     type: callType,
@@ -431,6 +421,25 @@ function buildDatabaseCall(
     hasSqlInjectionRisk: security.injectionRisk,
     enclosingFunction: findEnclosingFunctionName(node, adapter),
   };
+}
+
+/**
+ * Classify a SQL/ORM candidate as the concrete database call type: `sql` for a
+ * raw SQL query, or the ORM type name (e.g. `knex`) resolved from the first
+ * imported DB driver; `unknown` when neither applies.
+ */
+function classifyCallType(
+  isSqlQuery: boolean,
+  isOrmCall: boolean,
+  dbImports: Map<string, { hasImports: boolean; patterns: string[] }>,
+): string {
+  if (isSqlQuery) return 'sql';
+  if (isOrmCall) {
+    for (const [dbType, importInfo] of dbImports) {
+      if (importInfo.hasImports) return dbType;
+    }
+  }
+  return 'unknown';
 }
 
 /**
