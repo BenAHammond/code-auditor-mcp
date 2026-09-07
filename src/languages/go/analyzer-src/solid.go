@@ -193,11 +193,19 @@ func (s *SOLIDAnalyzer) analyzeLSP() []Violation {
 	return violations
 }
 
-// analyzeISP analyzes Interface Segregation Principle violations
+// analyzeISP analyzes interface *size* (`interface-size`).
+//
+// Spec-49: the old `interface-segregation` category claimed to detect the
+// Interface Segregation Principle ("clients forced to depend on methods they do
+// not use") from a raw method count. Method count is a size reading, not a
+// segregation reading. The honest ISP computation (client-usage sets — which
+// callers use which disjoint subsets of an interface's methods) needs type
+// resolution / a call graph, which the syntax-only go/parser has not, so that
+// reading is blocked (see the ledger). What remains is the size signal under an
+// honest name.
 func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 	var violations []Violation
 
-	// Check for fat interfaces
 	for _, interfaceInfo := range s.interfaces {
 		if len(interfaceInfo.Methods) > 5 {
 			violations = append(violations, Violation{
@@ -210,9 +218,9 @@ func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 					"methodCount": len(interfaceInfo.Methods),
 					"principle":   "ISP",
 				},
-				Suggestion: "Consider splitting this interface into smaller, more focused interfaces",
+				Suggestion: "Consider splitting this large interface into smaller, more focused interfaces",
 				Analyzer:   "solid",
-				Category:   "interface-segregation",
+				Category:   "interface-size",
 			})
 		}
 	}

@@ -247,13 +247,13 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'solid/interface-segregation': {
+  'interface-size': {
     analyzer: 'solid',
     field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Interface "{name}" has many members.',
-    docs: 'solid/interface-segregation',
+    docs: 'interface-size',
     thresholds: [],
     samples: {
       valid: [

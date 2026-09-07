@@ -260,3 +260,75 @@ engine — `handler`, `notifyUser`, `processOrder` all fire) but the corpora
 genuinely lack functions spanning two irreducible side-effects. It remains a
 high-precision guard, appropriate for a rule that blocks an agent's edit loop
 (a false positive is costlier than a miss).
+
+---
+
+## Session 3 — `interface-segregation` → `interface-size` (spec-49 order #3)
+
+The authenticity ledger marked `solid/interface-segregation` (TS row 26) and
+`interface-segregation` (Go row 14) crude: a raw member/method count standing in
+for the Interface Segregation Principle ("clients forced to depend on methods
+they do not use"). The `gap` column names the real signal — *client-usage sets*:
+which callers use which disjoint subsets of an interface's methods. A 21-member
+interface may be perfectly segregated (every caller uses a different slice); a
+3-member interface may be unsegregated (one client depends on all three). Member
+count is a **size** reading, not a segregation reading.
+
+### The verdict: rename the size signal, block the ISP reading
+
+Two honest moves, one per half of the lie:
+
+- **`interface-size`** — the member-count predicate is kept, but emitted under an
+  honest name. TS: `UniversalSOLIDAnalyzer.analyzeInterface` emits `rule:
+  'interface-size'` (was `solid/interface-segregation`); Go: `solid.go`
+  `analyzeISP` emits `Category: "interface-size"` (was `interface-segregation`).
+  The config flag `checkInterfaceSegregation` is renamed `checkInterfaceSize`
+  (`maxInterfaceMembers` was already honestly named). The registry key, its
+  `docs` slug, the near-miss runner key, and the two `RULE_ALIASES` entries
+  (`interface-segregation`, `solid/interface-segregation`) all point at the new
+  ID, so pre-rename baselines still canonicalize through the alias map and do
+  not reshuffle known vs new.
+- **true ISP** — `blocked`. Client-usage-set detection needs type resolution and
+  a call graph (to know, per method, which callers exercise it), which the
+  per-file tree-sitter analyzer and the syntax-only `go/parser` subprocess do
+  not have. No call-graph tier exists today, so the honest segregation reading
+  is blocked, not faked.
+
+### Tests (written before implementation, per the TDD loop)
+
+`interface-size.spec.ts` — 3 tests, positive / near-miss / inverse near-miss:
+
+- positive — a 21-method interface fires `interface-size`
+- near-miss — a data-shape interface of 30 *property* signatures does **not**
+  fire (a record/options bag is not a large behavior interface)
+- inverse near-miss — a small 2-method interface does **not** fire (size is
+  under the threshold)
+
+3 green; 148 universal-analyzer tests green; typecheck clean; the near-miss
+executor and registry-contract suites stay green after the key move.
+
+### Counts (before → after, per corpus)
+
+The predicate did not change — only the emitted ID and the config-flag name —
+so the count is preserved by construction and every row is a pure relabel:
+
+- recall 2→2 · knex 8→8 · primer-css 0→0 · blitz 0→0 · hhra-org 0→0 ·
+  gin 2→2 (`solid::interface-size`) · svelte-realworld not on disk
+
+(gin "before" was `interface-segregation: 2` on the pre-rebuild binary; the
+rebuilt binary now reports `interface-size: 2` on the same corpus — the stale
+binary was the only reason the label lagged the source.)
+
+### Adjudication
+
+12 total survivors (recall 2 · knex 8 · gin 2), all genuinely large interfaces
+with method members — exactly what `interface-size` claims to measure. Zero
+false positives, because the rename removed the false *claim* (ISP) rather than
+touching the *predicate*: none of these findings now assert that any client is
+forced to depend on a method it does not use. That assertion is the blocked
+part, and it stays unmade.
+
+### Verdict
+
+- `interface-size` — `renamed` (member-count proxy kept under an honest size name)
+- ISP client-usage-set computation — `blocked` (needs a call-graph / type-resolution tier)

@@ -69,10 +69,21 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
     reason:
       'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
   },
+  // Rename: interface-segregation → interface-size (Spec-49).
+  // The old ID claimed to detect the Interface Segregation Principle ("clients
+  // forced to depend on methods they do not use") from a raw member count.
+  // Member count is a size reading, not a segregation reading; the honest ISP
+  // computation (client-usage sets) needs the call graph. What remains is the
+  // size signal under an honest name.
   'interface-segregation': {
-    to: 'solid/interface-segregation',
+    to: 'interface-size',
     reason:
-      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+      'Renamed to interface-size — a member count is a size reading, not an Interface Segregation reading (true ISP client-usage detection needs the call graph).',
+  },
+  'solid/interface-segregation': {
+    to: 'interface-size',
+    reason:
+      'Renamed to interface-size — a member count is a size reading, not an Interface Segregation reading (true ISP client-usage detection needs the call graph).',
   },
   'liskov-substitution': {
     to: 'solid/liskov-substitution',

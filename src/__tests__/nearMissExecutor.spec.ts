@@ -191,7 +191,7 @@ const RUNNERS: Record<string, Runner> = {
   'solid/single-responsibility': runSolid,
   'function-length': runSolid,
   'parameter-count': runSolid,
-  'solid/interface-segregation': runSolid,
+  'interface-size': runSolid,
   'solid/liskov-substitution': runSolid,
   'solid/dependency-inversion': runSolid,
   // dry

@@ -29,7 +29,7 @@ export interface SOLIDAnalyzerConfig {
   classMethodsThreshold?: number;
   classAggregateComplexity?: number;
   checkDependencyInversion?: boolean;
-  checkInterfaceSegregation?: boolean;
+  checkInterfaceSize?: boolean;
   checkLiskovSubstitution?: boolean;
   skipTestFiles?: boolean;
 }
@@ -52,7 +52,7 @@ export const DEFAULT_SOLID_CONFIG: SOLIDAnalyzerConfig = {
   classMethodsThreshold: 15,
   classAggregateComplexity: 100,
   checkDependencyInversion: true,
-  checkInterfaceSegregation: true,
+  checkInterfaceSize: true,
   checkLiskovSubstitution: true,
   skipTestFiles: true
 };
@@ -419,13 +419,23 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   }
   
   /**
-   * Analyze an interface for Interface Segregation Principle
+   * Analyze an interface for size (`interface-size`).
+   *
+   * Spec-49: the old `solid/interface-segregation` rule claimed to detect the
+   * Interface Segregation Principle (clients forced to depend on methods they
+   * do not use) from a raw member count. Member count is a *size* reading, not
+   * a segregation reading — a 21-member interface may be perfectly segregated,
+   * and a 3-member interface may be unsegregated. The honest computation for
+   * ISP (client-usage sets: which callers use which disjoint subsets of an
+   * interface's methods) needs the call graph, which the per-file AST analyzer
+   * does not have, so that reading is blocked (see the ledger). What remains is
+   * the size signal under an honest name.
    */
   private analyzeInterface(iface: InterfaceInfo, ctx: SolidContext): Violation[] {
     const { ast, config } = ctx;
     const violations: Violation[] = [];
 
-    if (!config.checkInterfaceSegregation) {
+    if (!config.checkInterfaceSize) {
       return violations;
     }
 
@@ -433,19 +443,18 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     const memberCount = members.length;
     const maxMembers = config.maxInterfaceMembers || 20;
 
-    // ISP governs *behavior* contracts — "clients should not be forced to
-    // depend on methods they do not use." A pure data-shape interface (every
-    // member is an optional `property_signature`, e.g. a config/options bag) is
-    // a record type, not a fat behavior interface; flagging it is a false
-    // positive. Only interfaces that expose methods carry the ISP smell.
+    // A pure data-shape interface (every member is a property signature, e.g. a
+    // config/options bag) is a record type, not a large behavior interface;
+    // flagging it as "large" is a false positive. Only interfaces that expose
+    // methods carry the interface-size smell.
     const hasMethodMembers = members.some(member => member.type === 'method');
 
     if (hasMethodMembers && memberCount > maxMembers) {
       violations.push(this.createViolation(
         ast.filePath,
         iface.location.start,
-        `Interface "${iface.name}" has ${memberCount} members, exceeding the maximum of ${maxMembers}. Consider splitting into smaller interfaces.`,
-        { severity: 'warning', rule: 'solid/interface-segregation', symbol: iface.name }
+        `Interface "${iface.name}" has ${memberCount} members, exceeding the maximum of ${maxMembers}. Consider splitting this large interface into smaller interfaces.`,
+        { severity: 'warning', rule: 'interface-size', symbol: iface.name }
       ));
     }
 

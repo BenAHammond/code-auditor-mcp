@@ -18,7 +18,7 @@
 |----------|-----------|-----|
 | UniversalDocumentationAnalyzer | `rule` (via `createViolation()`) | `file-documentation`, `function-documentation`, `parameter-documentation`, `return-documentation`, `class-documentation`, `method-documentation` |
 | UniversalSchemaAnalyzer | `rule` (via `createViolation()`) | 27 IDs: `missing-schemas`, `unknown-table`, `naming-convention`, `reserved-word`, `too-many-queries`, `sql-injection`, `n-plus-one`, `invalid-json`, `missing-schema-declaration`, `undefined-required-field`, `invalid-type`, `invalid-range`, `type-mismatch`, `string-too-short`, `string-too-long`, `pattern-mismatch`, `invalid-format`, `below-minimum`, `above-minimum`, `too-few-items`, `too-many-items`, `missing-required-field`, `unexpected-property`, `enum-mismatch`, `file-error` |
-| UniversalSOLIDAnalyzer | `rule` (via `createViolation()`) | `solid/class-size`, `solid/method-complexity`, `open-closed`, `single-responsibility`, `interface-segregation`, `liskov-substitution`, `dependency-inversion` |
+| UniversalSOLIDAnalyzer | `rule` (via `createViolation()`) | `solid/class-size`, `solid/method-complexity`, `open-closed`, `single-responsibility`, `interface-size`, `liskov-substitution`, `dependency-inversion` |
 | UniversalDRYAnalyzer | `rule` (via `createViolation()`) | `dry/duplicate`, `dry/structural-similarity`, `duplicate-string-literal`, `duplicate-import` |
 | UniversalDataAccessAnalyzer | `rule` (via `createViolation()`) | `sql-injection-risk`, `missing-org-filter`, `complex-query`, `unfiltered-query`, `hardcoded-connection`, `loop-query` |
 | invariantsAnalyzer | `rule` (direct assignment in conversion) | User-defined IDs from `.codeauditor.json` `rule.id`; hardcoded meta-errors: `config-error`, `engine-error` |
