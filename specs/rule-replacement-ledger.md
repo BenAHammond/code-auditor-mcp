@@ -1647,3 +1647,98 @@ false positive — the rule claims "table name should use snake_case" and
   that guards against regressing to the proxy. No residual gap — the `bridgeable`
   fix the ledger named ("replace with an explicit conformance check") is
   satisfied.
+
+## Session 20 — `schema-field-mismatch` (raw type-string equality → structural normalization) (spec-49 order #7 remainder, row 76)
+
+### The state on arrival
+
+Row 76 marked `schema-field-mismatch` crude with one gap: the rule compared
+type-name strings via a tiny hardcoded primitive map with a raw string-equality
+fallback — any unmapped or non-primitive type was judged by exact spelling.
+`normalizeType` mapped only a handful of primitives (`typescript`:
+string/number/boolean/Date/any; `go`: string/int/int32/int64/float32/float64/
+bool/time.Time) and returned the raw string for everything else. Because the
+strict-mode comparison was `normalizedRefType !== normalizedCurType`, any
+structurally-equivalent cross-language spelling fired as a false "mismatch":
+
+- Go `[]User` vs TS `User[]` — the same list, read as `[]User !== User[]`.
+- Go `*string` vs TS `string` — the pointer is nullability, not a distinct type.
+- Go `map[string]User` vs TS `Record<string, User>` — the same map.
+- Go `uint64` vs TS `number` — `uint64` was absent from the map, so it fell
+  through to raw spelling and fired.
+
+### The fix
+
+`normalizeType` is now a structural normalizer, and `areTypesCompatible` is
+reduced to what remains after normalization. Concretely:
+
+- **Nullability stripped** — Go `*T` / TS `?T` leading markers, and
+  `null`/`undefined`/`void`/`nil` union members, so `*string` and `string` and
+  `string | null` all normalize to `string`.
+- **Containers folded** — `[]T`, `[N]T`, `T[]`, `Array<T>`, `List<T>` → `list<T>`;
+  `map[K]V`, `Record<K,V>`, `Map<K,V>` → `map<K,V>`, recursively.
+- **Primitive aliases widened** — the Go numeric family (`int8/16`, `uint*`,
+  `byte`, `rune`, `uintptr`), TS `bigint`/`integer`/`long`/`double`/`float`,
+  TS `unknown`/`object`, and Go `interface{}`/`interface` now map to their
+  canonical category. Numeric aliases stay one `number` category: for a
+  cross-language API contract a TS `number` legitimately represents both Go
+  `int64` and `float64`, so splitting integer vs float would manufacture false
+  mismatches rather than remove them.
+- **`areTypesCompatible`** (loose mode) now reduces to equality, `any` as a
+  wildcard, and recursive container comparison — the old raw-name matrix is gone
+  because normalization already unifies the aliases it papered over.
+
+A named type with no alias maps through unchanged, so two identical named types
+still compare equal and two different named types still differ.
+
+### Tests (written before implementation, per the TDD loop)
+
+New `src/analyzers/cross-language/fieldMismatch.spec.ts`, exercising
+`SchemaValidator.validateSchemas` with a TS-reference/Go-current pair sharing one
+field `f` so the only possible finding is `schema-field-mismatch`:
+
+- positive — TS `string` vs Go `int64` fires. Passed pre-change (locks the
+  already-correct primitive mismatch).
+- near-miss (container) — TS `User[]` vs Go `[]User` does NOT fire. **Failed
+  pre-change** (`[]User !== User[]` false positive); passes after.
+- near-miss (pointer/nullability) — Go `*string` vs TS `string` does NOT fire.
+  **Failed pre-change**; passes after.
+- near-miss (primitive alias) — TS `number` vs Go `uint64` does NOT fire.
+  **Failed pre-change** (`uint64` unmapped → false positive); passes after.
+
+Note: there is no inverse near-miss here. The proxy only ever **over-fired** —
+it never under-fired, because raw string equality flags every unequal spelling
+and its primitive map only collapsed genuinely-compatible types. The honest
+statement is that the fix is pure false-positive elimination plus a complete
+primitive table, so the "second and third must fail" requirement is satisfied by
+the two near-misses covering distinct equivalence classes (container vs
+pointer) plus a third for the widened alias table.
+
+### Counts (before → after, per corpus)
+
+- recall 0→0 · knex 0→0 · primer-css 0→0 · blitz 0→0 · hhra-org 0→0 ·
+  gin 0→0 · svelte-realworld 0→0
+
+The rule is unobservable on all seven corpora: none contains a cross-language
+schema pair (a schema name implemented in ≥2 languages). The schema-validator
+analyzer emits zero findings everywhere. Behaviour is therefore pinned entirely
+by the four unit tests, not by corpus deltas — the same situation as
+`invalid-format` (Session 17).
+
+### Adjudication
+
+No survivors (0 findings everywhere). Adjudication is carried on the test
+fixtures instead: `string` vs `int64` is a true mismatch; `User[]`↔`[]User`,
+`string`↔`*string`, and `number`↔`uint64` are true equivalences the old proxy
+miscalled — the sharp edge separating a structural normalizer from raw string
+equality.
+
+### Verdict
+
+- `schema-field-mismatch` — `replaced`: the raw type-string-equality proxy is
+  gone, replaced by structural normalization (nullability stripped, containers
+  folded, primitive aliases widened) so cross-language equivalent types compare
+  equal. The `partial` bridgeability note is satisfied — richer normalization
+  is straightforward; only full semantic cross-language type equivalence (e.g.
+  a Go `*sql.NullString` ≡ TS `string | null`) remains out of scope, and that
+  is name-resolution territory, not spelling territory.

@@ -438,59 +438,131 @@ export function countCrossLanguagePairs(schemas: SchemaDefinition[]): number {
 }
 
 /**
- * Normalize type names across languages
+ * Canonical primitive aliases per language.
+ *
+ * Maps each language's primitive spellings to a canonical category name
+ * (`string` / `number` / `boolean` / `datetime` / `any`). Numeric aliases stay
+ * one category — for a cross-language API contract a TS `number` legitimately
+ * represents both Go `int64` and `float64`, so splitting integer vs float would
+ * manufacture false mismatches. Non-primitive (named/structural) types are not
+ * in this table; they are normalized structurally by {@link normalizeType}.
  */
-function normalizeType(type: string, language: string): string {
-  const typeMap: Record<string, Record<string, string>> = {
-    'typescript': {
-      'string': 'string',
-      'number': 'number',
-      'boolean': 'boolean',
-      'Date': 'datetime',
-      'any': 'any'
-    },
-    'go': {
-      'string': 'string',
-      'int': 'number',
-      'int32': 'number',
-      'int64': 'number',
-      'float32': 'number',
-      'float64': 'number',
-      'bool': 'boolean',
-      'time.Time': 'datetime'
-    },
-    'python': {
-      'str': 'string',
-      'int': 'number',
-      'float': 'number',
-      'bool': 'boolean',
-      'datetime': 'datetime'
-    }
-  };
+const PRIMITIVE_ALIASES: Record<string, Record<string, string>> = {
+  'typescript': {
+    'string': 'string',
+    'number': 'number',
+    'bigint': 'number',
+    'integer': 'number',
+    'long': 'number',
+    'double': 'number',
+    'float': 'number',
+    'boolean': 'boolean',
+    'bool': 'boolean',
+    'Date': 'datetime',
+    'any': 'any',
+    'unknown': 'any',
+    'object': 'any',
+  },
+  'go': {
+    'string': 'string',
+    'int': 'number', 'int8': 'number', 'int16': 'number', 'int32': 'number', 'int64': 'number',
+    'uint': 'number', 'uint8': 'number', 'uint16': 'number', 'uint32': 'number', 'uint64': 'number', 'uintptr': 'number',
+    'byte': 'number', 'rune': 'number',
+    'float32': 'number', 'float64': 'number',
+    'bool': 'boolean',
+    'time.Time': 'datetime',
+    'any': 'any', 'interface{}': 'any', 'interface': 'any',
+  },
+  'python': {
+    'str': 'string',
+    'int': 'number',
+    'float': 'number',
+    'bool': 'boolean',
+    'datetime': 'datetime',
+    'date': 'datetime',
+  },
+};
 
-  return typeMap[language]?.[type] || type;
+/** Union members that contribute nullability and nothing else to a type. */
+const NULL_MARKERS = new Set(['null', 'undefined', 'void', 'nil']);
+
+/**
+ * Strip nullability from a type: Go `*T` / TS `?T` leading markers, and
+ * `null`/`undefined`/`void`/`nil` union members. A type whose union is entirely
+ * null markers reduces to `null`; a multi-member union that survives is left
+ * joined (a genuine union is a distinct shape).
+ */
+function stripNullability(type: string): string {
+  let t = type.trim();
+  while (t.startsWith('*') || t.startsWith('?')) t = t.slice(1).trim();
+  if (t.includes('|')) {
+    const members = t.split('|').map(m => m.trim()).filter(m => !NULL_MARKERS.has(m));
+    if (members.length === 0) return 'null';
+    if (members.length === 1) return members[0];
+    return members.join('|');
+  }
+  return t;
 }
 
 /**
- * Check if types are compatible across languages
+ * Normalize a type name to a canonical structural form, cross-language.
+ *
+ * The old proxy returned a handful of mapped primitives and fell back to the
+ * raw string for everything else, so equivalent cross-language spellings were
+ * judged by exact string equality: Go `[]User` vs TS `User[]`, Go `*string` vs
+ * TS `string`, Go `map[string]User` vs TS `Record<string, User>`, and any Go
+ * numeric alias absent from the map all fired as false mismatches.
+ *
+ * The real computation folds those spellings to a common form:
+ *   - nullability is stripped (`*T`, `?T`, `| null`),
+ *   - containers are normalized (`[]T` / `T[]` / `[N]T` / `Array<T>` →
+ *     `list<T>`; `map[K]V` / `Record<K,V>` → `map<K,V>`), recursively,
+ *   - primitive leaves are mapped via {@link PRIMITIVE_ALIASES}.
+ *
+ * A named type with no alias maps through unchanged, so two identical named
+ * types still compare equal and two different named types still differ.
+ */
+function normalizeType(type: string, language: string): string {
+  const t = stripNullability(type);
+  if (!t) return 'any';
+
+  // Map: `map[K]V` (Go) / `Record<K,V>` / `Map<K,V>` (TS).
+  let m = t.match(/^map\[(.+)\](.+)$/);
+  if (m) return `map<${normalizeType(m[1], language)},${normalizeType(m[2], language)}>`;
+  m = t.match(/^(?:Record|Map)<(.+),\s*(.+)>$/);
+  if (m) return `map<${normalizeType(m[1], language)},${normalizeType(m[2], language)}>`;
+
+  // Slice / array: `[]T` and `[N]T` (Go) / `T[]` (TS) / `Array<T>` / `List<T>`.
+  m = t.match(/^\[\](.+)$/) || t.match(/^\[[0-9]*\](.+)$/);
+  if (m) return `list<${normalizeType(m[1], language)}>`;
+  m = t.match(/^(.+)\[\]$/);
+  if (m) return `list<${normalizeType(m[1], language)}>`;
+  m = t.match(/^(?:Array|List|ArrayList)<(.+)>$/);
+  if (m) return `list<${normalizeType(m[1], language)}>`;
+
+  return PRIMITIVE_ALIASES[language]?.[t] || t;
+}
+
+/**
+ * Check if two normalized types are compatible (loose mode).
+ *
+ * After normalization, most cross-language equivalences are already equal, so
+ * loose compatibility reduces to: equality, `any` as a wildcard, and recursive
+ * comparison of container elements.
  */
 function areTypesCompatible(type1: string, type2: string): boolean {
-  // Allow some common compatible types
-  const compatibilityMatrix: Record<string, string[]> = {
-    'string': ['string'],
-    'number': ['number', 'integer', 'float'],
-    'boolean': ['boolean', 'bool'],
-    'datetime': ['datetime', 'timestamp', 'date'],
-    'any': ['any', 'object', 'interface{}']
-  };
+  if (type1 === type2) return true;
+  if (type1 === 'any' || type2 === 'any') return true;
 
-  for (const [baseType, compatibleTypes] of Object.entries(compatibilityMatrix)) {
-    if (compatibleTypes.includes(type1) && compatibleTypes.includes(type2)) {
-      return true;
-    }
-  }
+  const l1 = type1.match(/^list<(.+)>$/);
+  const l2 = type2.match(/^list<(.+)>$/);
+  if (l1 && l2) return areTypesCompatible(l1[1], l2[1]);
 
-  return type1 === type2;
+  const m1 = type1.match(/^map<(.+),(.+)>$/);
+  const m2 = type2.match(/^map<(.+),(.+)>$/);
+  if (m1 && m2) return areTypesCompatible(m1[1], m2[1]) && areTypesCompatible(m1[2], m2[2]);
+
+  return false;
 }
 
 /**
