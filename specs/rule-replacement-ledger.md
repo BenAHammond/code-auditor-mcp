@@ -570,3 +570,85 @@ the surviving claim is purely "this class is large".
 - `solid/class-size` — `reworded` (registry message corrected to match the
   already-honest emitted message); the computation was already complete and the
   only crude remnant was the stale "responsibilities" template string
+
+---
+
+## Session 7 — Go `single-responsibility` split into `function-size` / `struct-size` (spec-49 order #7, rows 9 & 10)
+
+The authenticity ledger marks two Go rules crude under the same `solid.go`
+`analyzeSRP` function, both emitting the `single-responsibility` category:
+
+- **row 9 — function**: `countFunctionResponsibilities` = `1 + (complexity > 10) +
+  (returnCount > 2) + (paramCount > 5)`, firing when the total exceeds 3 — i.e.
+  only when *all three* size signals are elevated at once.
+- **row 10 — struct**: `countStructResponsibilities` = `1 + fieldCountScore +
+  mixedTypesScore`, firing when the total exceeds 5. The arithmetic makes this
+  impossible — base 1 + fieldCount max `+2` + mixedTypes max `+1` = 4 < 5 — so the
+  struct half was **dead code** that could never fire. Its `mixedTypes` heuristic
+  additionally false-matched via `strings.Contains(field.Type, "int")`, so a
+  `*Point` field (substring `"int"`) counted as a numeric type.
+
+Both claimed the Single Responsibility Principle from *size* proxies.
+"Responsibility" is semantic — cohesion / LCOM — which the syntax-only `go/parser`
+subprocess cannot compute. The SRP reading is therefore **blocked**; the honest
+size signal survives under honest names, exactly as `single-responsibility` (TS)
+was split into `function-length`/`parameter-count`:
+
+- `function-size` — the "many params + multiple returns + high complexity"
+  composite, kept as-is (all three must be elevated), `principle: "SRP"` dropped.
+- `struct-size` — the "many fields" reading, now a **direct** `len(Fields) > 10`
+  check; the buggy `mixedTypes` substring heuristic and the dead composite are
+  removed.
+
+### Tests (written before implementation, per the TDD loop)
+
+`goSingleResponsibilitySplit.spec.ts` — 5 tests, all spawning the real Go binary:
+
+- positive — a big function (complexity 12 + 6 params + 3 returns) fires `function-size`
+- positive — an 11-field struct fires `struct-size`
+- near-miss — a complexity-only function (11 ifs, 2 params, 1 return) does **not**
+  fire `function-size` (all three signals must be elevated)
+- near-miss — a ≤10-field struct whose field type merely contains `"int"` as a
+  substring does **not** fire `struct-size` (the substring heuristic is gone)
+- rename guard — `single-responsibility` no longer emits for either the big
+  function or the big struct
+
+3 red before implementation (`function-size` absent, `struct-size` absent,
+`single-responsibility` still emitted); 5 green after. Go contract suites stay
+green: `goDependencyInversionBlock` (3), `goSwitchSize` (in the same solid suite).
+
+### Counts (before → after, per corpus)
+
+The change is Go-only, so only gin — the sole Go corpus — is affected; the TS
+corpora are untouched:
+
+- gin `solid::single-responsibility` 0→**0** (function half fires 0 on gin — the
+  "all three signals" composite is too strict for real code — and the struct half
+  was dead); `solid::struct-size` 0→**3** (the formerly-dead struct signal now
+  surfaces three genuine large structs); advisory 23→26, `solid` 19→22;
+  `liskov-substitution` 11, `switch-size` 6, `interface-size` 2, `import-organization`
+  4 all unchanged
+- recall / knex / primer-css / blitz / hhra-org n/a (TS, untouched) ·
+  svelte-realworld not on disk
+
+"before" was measured against the committed pre-removal binary (`a0ac5ef`, verified
+to still contain `single-responsibility`), not reconstructed.
+
+### Adjudication
+
+Three survivors, all genuine large structs in gin:
+
+- `Engine` (gin.go:92) — 30 fields (router + config + state)
+- `Context` (context.go:61) — 17 fields (gin's well-known "god struct")
+- `LogFormatterParams` (logger.go:68) — 11 fields (log format config)
+
+Zero false positives — the direct field-count threshold reports only genuinely
+large structs, and the `mixedTypes` substring false-positive (`*Point` → "int")
+is gone by construction.
+
+### Verdict
+
+- Go `single-responsibility` (function, row 9) — `renamed` to `function-size` (the
+  composite is kept verbatim; only the SRP claim is dropped)
+- Go `single-responsibility` (struct, row 10) — `renamed` to `struct-size` with the
+  predicate `replaced` (dead composite + substring heuristic → direct field count)

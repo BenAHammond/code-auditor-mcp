@@ -27,8 +27,9 @@ func NewSOLIDAnalyzer(parser *Parser) *SOLIDAnalyzer {
 func (s *SOLIDAnalyzer) Analyze() []Violation {
 	var violations []Violation
 
-	// Analyze Single Responsibility Principle
-	violations = append(violations, s.analyzeSRP()...)
+	// Analyze function/struct size (was the single-responsibility proxy)
+	violations = append(violations, s.analyzeFunctionSize()...)
+	violations = append(violations, s.analyzeStructSize()...)
 
 	// Analyze switch/type-switch size
 	violations = append(violations, s.analyzeSwitchSize()...)
@@ -42,49 +43,70 @@ func (s *SOLIDAnalyzer) Analyze() []Violation {
 	return violations
 }
 
-// analyzeSRP analyzes Single Responsibility Principle violations
-func (s *SOLIDAnalyzer) analyzeSRP() []Violation {
+// analyzeFunctionSize analyzes function *size* (`function-size`).
+//
+// Spec-49: the old `single-responsibility` category claimed the Single
+// Responsibility Principle from a composite of three size signals — complexity,
+// return count, and parameter count. "Responsibility" is semantic; the
+// syntax-only go/parser has no cohesion analysis, so the SRP reading is blocked
+// (see the ledger). What remains is the size signal under an honest name: a
+// function with high complexity AND multiple returns AND many parameters is
+// large in every dimension.
+func (s *SOLIDAnalyzer) analyzeFunctionSize() []Violation {
 	var violations []Violation
 
-	// Check functions for too many responsibilities
 	for _, function := range s.functions {
-		responsibilities := s.countFunctionResponsibilities(function)
-		if responsibilities > 3 {
+		returns := strings.Split(function.ReturnType, ",")
+		complex := function.Complexity > 10
+		multiReturn := len(returns) > 2
+		manyParams := len(function.Parameters) > 5
+		if complex && multiReturn && manyParams {
 			violations = append(violations, Violation{
 				File:     function.File,
 				Line:     function.StartLine,
 				Severity: "warning",
-				Message:  "Function has many parameters, returns, or high complexity",
+				Message:  "Function has many parameters, multiple returns, and high complexity",
 				Details: map[string]interface{}{
-					"function":        function.Name,
-					"responsibilities": responsibilities,
-					"principle":       "SRP",
+					"function":   function.Name,
+					"complexity": function.Complexity,
+					"parameters": len(function.Parameters),
+					"returns":    len(returns),
 				},
 				Suggestion: "Consider breaking this function into smaller, more focused functions",
 				Analyzer:   "solid",
-				Category:   "single-responsibility",
+				Category:   "function-size",
 			})
 		}
 	}
 
-	// Check structs for too many responsibilities
+	return violations
+}
+
+// analyzeStructSize analyzes struct *size* (`struct-size`).
+//
+// Spec-49: the old `single-responsibility` struct variant claimed SRP from a
+// composite of field count and a `mixedTypes` substring heuristic. Two defects:
+// the composite score could never exceed 4 (the fire threshold was 5), so the
+// rule was dead code; and `strings.Contains(field.Type, "int")` false-matched
+// `*Point` (a pointer whose type name merely contains "int"). The SRP reading is
+// blocked; the honest size reading is a direct field count.
+func (s *SOLIDAnalyzer) analyzeStructSize() []Violation {
+	var violations []Violation
+
 	for _, structInfo := range s.structs {
-		responsibilities := s.countStructResponsibilities(structInfo)
-		if responsibilities > 5 {
+		if len(structInfo.Fields) > 10 {
 			violations = append(violations, Violation{
 				File:     structInfo.File,
 				Line:     structInfo.StartLine,
 				Severity: "warning",
 				Message:  "Struct has many fields",
 				Details: map[string]interface{}{
-					"struct":          structInfo.Name,
-					"responsibilities": responsibilities,
-					"principle":       "SRP",
-					"fieldCount":      len(structInfo.Fields),
+					"struct":     structInfo.Name,
+					"fieldCount": len(structInfo.Fields),
 				},
-				Suggestion: "Consider splitting this struct into smaller, more cohesive structs",
+				Suggestion: "Consider splitting this struct into smaller, more focused structs",
 				Analyzer:   "solid",
-				Category:   "single-responsibility",
+				Category:   "struct-size",
 			})
 		}
 	}
@@ -233,73 +255,6 @@ func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 }
 
 // Helper methods for analysis
-
-func (s *SOLIDAnalyzer) countFunctionResponsibilities(function Function) int {
-	responsibilities := 1
-
-	// Count different types of operations
-	if function.Complexity > 10 {
-		responsibilities++
-	}
-
-	// Check for multiple return types (excluding error)
-	returns := strings.Split(function.ReturnType, ",")
-	if len(returns) > 2 {
-		responsibilities++
-	}
-
-	// Check parameter count
-	if len(function.Parameters) > 5 {
-		responsibilities++
-	}
-
-	return responsibilities
-}
-
-func (s *SOLIDAnalyzer) countStructResponsibilities(structInfo Struct) int {
-	responsibilities := 1
-
-	// Base on field count
-	fieldCount := len(structInfo.Fields)
-	if fieldCount > 10 {
-		responsibilities += 2
-	} else if fieldCount > 5 {
-		responsibilities++
-	}
-
-	// Check for mixed data types indicating different responsibilities
-	hasStrings := false
-	hasNumbers := false
-	hasCollections := false
-
-	for _, field := range structInfo.Fields {
-		switch {
-		case strings.Contains(field.Type, "string"):
-			hasStrings = true
-		case strings.Contains(field.Type, "int") || strings.Contains(field.Type, "float"):
-			hasNumbers = true
-		case strings.Contains(field.Type, "[]") || strings.Contains(field.Type, "map"):
-			hasCollections = true
-		}
-	}
-
-	mixedTypes := 0
-	if hasStrings {
-		mixedTypes++
-	}
-	if hasNumbers {
-		mixedTypes++
-	}
-	if hasCollections {
-		mixedTypes++
-	}
-
-	if mixedTypes > 2 {
-		responsibilities++
-	}
-
-	return responsibilities
-}
 
 func (s *SOLIDAnalyzer) countSwitchCases(switchStmt *ast.SwitchStmt) int {
 	caseCount := 0
