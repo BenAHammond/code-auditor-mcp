@@ -1146,3 +1146,89 @@ identical sets, not a swap.
 - `unfiltered-query` — `replaced`: the "absence of WHERE/HAVING/LIMIT/ON
   substrings" proxy is replaced by "absence of a row-limiting WHERE/HAVING/LIMIT
   clause", where `ON` and a bare `WHERE 1=1` no longer masquerade as a filter.
+
+---
+
+## Session 14 — `conventions/error-handling` (first-match regex over body text → structural AST shape) (spec-49 order #7 remainder, row 38)
+
+The authenticity ledger marked `conventions/error-handling` (row 38) crude with
+one gap: the error-handling *shape* of a function is classified by a **first-match
+regex over raw body text**, which (a) collapses a body that mixes two shapes down
+to whichever the regex saw first, and (b) misclassifies text — a string or comment
+containing `try {` reads as a try/catch, `if (errorMessage)` reads as `if-err`, and
+`.success` reads as `go-style`. The proxy was:
+
+```ts
+\btry\s*\{        → 'try-catch'
+\.catch\s*\(      → 'promise-catch'
+\bif\s*\(\s*err   → 'if-err'
+\b\.success\b     → 'go-style'
+```
+
+### The fix
+
+`detectErrorHandlingShape` now walks the function body's tree-sitter AST and
+classifies the shape from real nodes:
+
+- `try-catch`     — a `catch_clause` (a real try/catch, not `try`/`finally`)
+- `promise-catch` — a `.catch(...)` call (`call_expression` whose callee is a
+  `member_expression` with property `catch`)
+- `if-err`        — an `if` whose condition is a bare error-presence check
+  (`if (err)`, `if (!err)`, `if (err != null)`), not type narrowing
+  (`err instanceof Error`) or member access (`err.message`)
+
+The `go-style` shape is **dropped entirely** — `.success` is a result boolean
+(Zod `safeParse().success`, a `{ success: boolean }` API field), not error
+handling. A body exhibiting more than one distinct shape is ambiguous and
+returns null (never collapsed). A body with no error handling returns null.
+`MINER_VERSION` bumped 1 → 2 so the re-mine runs against the new predicate.
+
+### Tests (written before implementation, per the TDD loop)
+
+`errorHandlingShape.spec.ts` — 9 tests against the real `detectErrorHandlingShape`
+(the stored `{...}` body text parsed by the TS parser):
+
+- positive — `try {} catch {}` → `try-catch`; `.catch()` → `promise-catch`;
+  `if (err)` → `if-err`
+- near-miss — a string literal `"try {"` → null; `if (errorMessage)` → null
+- inverse near-miss — a mixed try/catch + `.catch()` body → null (not collapsed
+  to its first shape); `if (err instanceof Error)` → null (type narrowing);
+  `r.success` (Zod result) → null
+
+The inverse near-misses (`if (err instanceof Error)`, `r.success`, and the
+multi-shape body) failed against the first AST iteration and drove its
+refinement — the first iteration still classified `.success` as `go-style` and
+any `err` identifier in the condition as `if-err`, both of which the adjudication
+step below caught as residual false positives.
+
+### Counts (before → after, per corpus)
+
+- recall **49→51** · knex 0→0 · primer-css 0→0 · blitz 0→0 ·
+  hhra-org 0→0 · gin 0→0 · svelte-realworld 0→0
+
+The +2 on recall is the net of two opposing corrections. Dropping `go-style`
+removes ~18 `.success`-as-error-handling false positives and the broad `if-err`
+scan removes ~2 `instanceof` false positives; those removals are offset by the
+multi-shape collapse fix, which now correctly surfaces ~10 bodies that mix a real
+`.catch()` with a `.success` field (previously excluded as "ambiguous"). Every
+delta is attributed to a named cause.
+
+### Adjudication
+
+- **All 51 recall survivors are `promise-catch`** — a `.catch(...)` call in a
+  directory whose dominant shape is `try-catch`. Sampled:
+  `_find-source.ts:213` (`await r.json().catch(() => ({ error: r.status }))`),
+  `og-build-png.ts:36` (`initWasm(fetch(url)).catch((error) => { … })`),
+  `og-hero-png.ts:58`, `fan-creations.ts:22` — each is a genuine `.catch()` on a
+  promise. TRUE, all of them.
+- **`go-style` — gone.** `.success` no longer registers as error handling, so
+  the Zod/API-result false positives that dominated the old output are removed.
+- **`if-err instanceof` — gone.** `if (err instanceof Error)` is type narrowing,
+  not a presence check, and no longer registers.
+
+### Verdict
+
+- `conventions/error-handling` — `replaced`: the first-match regex over raw body
+  text is replaced by a structural AST walk that classifies `try-catch`,
+  `promise-catch`, and `if-err` from real nodes, drops the bogus `go-style`
+  shape, and leaves multi-shape bodies unclassified rather than collapsing them.

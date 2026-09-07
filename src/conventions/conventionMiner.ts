@@ -17,8 +17,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
+import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import type { Convention, ConventionMiningConfig } from '../types.js';
 import type { ExportInfo } from '../languages/types.js';
+import { getParser, isInitialized } from '../languages/tree-sitter/parser.js';
 
 // ─── Built-in / stdlib exclusion ──────────────────────────────────────────────
 
@@ -311,18 +313,141 @@ function _detectExportFormFromSource(
 
 /**
  * Detect the error-handling shape used in a function body.
- * Returns null if no error handling is present (function should not be counted
- * in the corpus for mode computation).
+ *
+ * Returns null when the body has no error handling (function excluded from the
+ * corpus for mode computation), or when it exhibits *more than one* distinct
+ * shape — a multi-shape body cleanly exemplifies no single convention and must
+ * not bias the dominant-shape histogram either way.
+ *
+ * Detection is structural (tree-sitter AST), not a first-match regex over raw
+ * text:
+ *   - `try-catch`     — a `catch_clause` (a real try/catch, not `try`/`finally`)
+ *   - `promise-catch` — a `.catch(...)` call
+ *   - `if-err`        — an `if` whose condition is a bare error-presence check
+ *                       (`if (err)`, `if (!err)`, `if (err != null)`), not type
+ *                       narrowing (`err instanceof Error`) or member access
+ *
+ * A string/comment containing `try {` or `if (err)` no longer registers, and a
+ * body that mixes two shapes is no longer collapsed to whichever the regex
+ * happened to see first.
  */
 export function detectErrorHandlingShape(body: string | undefined | null): string | null {
   if (!body) return null;
 
-  if (/\btry\s*\{/.test(body)) return 'try-catch';
-  if (/\.catch\s*\(/.test(body)) return 'promise-catch';
-  if (/\bif\s*\(\s*err/.test(body)) return 'if-err';
-  if (/\b\.success\b/.test(body)) return 'go-style';
+  // AST-level detection requires the tree-sitter runtime. In a pure-DB context
+  // where it is not yet initialised we cannot honestly classify the body, so
+  // return null rather than fall back to a text proxy.
+  if (!isInitialized()) return null;
 
-  return null;
+  let root: TreeSitterNode;
+  try {
+    const parser = getParser('typescript');
+    const tree = parser.parse(`async function __ca() ${body}`);
+    if (!tree) return null;
+    root = tree.rootNode;
+  } catch {
+    return null;
+  }
+  if (!root) return null;
+
+  const shapes = new Set<string>();
+
+  const walk = (node: TreeSitterNode): void => {
+    switch (node.type) {
+      case 'catch_clause':
+        shapes.add('try-catch');
+        break;
+      case 'call_expression': {
+        const callee = node.childForFieldName?.('function') ?? null;
+        if (callee?.type === 'member_expression' && memberPropertyName(callee) === 'catch') {
+          shapes.add('promise-catch');
+        }
+        break;
+      }
+      case 'if_statement': {
+        if (conditionReferencesError(node)) shapes.add('if-err');
+        break;
+      }
+    }
+    for (const child of node.namedChildren) walk(child);
+  };
+
+  walk(root);
+
+  if (shapes.size !== 1) return null; // no error handling, or ambiguous (multi-shape)
+  return shapes.values().next().value ?? null;
+}
+
+/** The `property` field of a `member_expression` (`a.catch` → `catch`). */
+function memberPropertyName(node: TreeSitterNode): string | null {
+  const prop = node.childForFieldName?.('property') ?? null;
+  return prop?.text ?? null;
+}
+
+/** Whether an `if_statement`'s condition is a bare error-presence check.
+ *
+ *  Recognises `if (err)`, `if (!err)`, and nil comparisons `if (err != null)` /
+ *  `if (err === undefined)`. Type narrowing (`err instanceof Error`), member
+ *  access (`err.message`), and near-miss identifiers (`errorMessage`) are NOT
+ *  presence checks and must not register as `if-err`.
+ */
+function conditionReferencesError(ifNode: TreeSitterNode): boolean {
+  const cond = ifNode.childForFieldName?.('condition') ?? null;
+  if (!cond) return false;
+  return isErrorPresenceCheck(cond);
+}
+
+/** `err` or `error`, the only identifiers we treat as an error value. */
+function isErrorIdentifier(n: TreeSitterNode | null): boolean {
+  return n?.type === 'identifier' && (n.text === 'err' || n.text === 'error');
+}
+
+/** A `null` literal or `undefined` identifier — the "nothing" side of a check. */
+function isNilNode(n: TreeSitterNode | null): boolean {
+  if (!n) return false;
+  return n.type === 'null' || (n.type === 'identifier' && n.text === 'undefined');
+}
+
+/** Strip `parenthesized_expression` down to the expression it wraps. */
+function unwrapParens(n: TreeSitterNode): TreeSitterNode {
+  while (n.type === 'parenthesized_expression') {
+    const inner = n.namedChildren[0];
+    if (!inner) break;
+    n = inner;
+  }
+  return n;
+}
+
+/** Whether the (already-unwrapped) condition node is an error-presence check. */
+function isErrorPresenceCheck(n: TreeSitterNode): boolean {
+  n = unwrapParens(n);
+
+  // `if (err)` / `if (error)`
+  if (isErrorIdentifier(n)) return true;
+
+  // `if (!err)` / `if (!error)`
+  if (n.type === 'unary_expression') {
+    const op = n.childForFieldName?.('operator') ?? null;
+    if (op?.text !== '!') return false;
+    const arg = n.childForFieldName?.('argument') ?? null;
+    return arg ? isErrorPresenceCheck(arg) : false;
+  }
+
+  // `if (err != null)` / `if (err === undefined)` — a nil comparison. Excludes
+  // `err instanceof Error` (type narrowing) and `err.code === 'X'` (member access).
+  if (n.type === 'binary_expression') {
+    const op = n.childForFieldName?.('operator') ?? null;
+    const opText = op?.text;
+    if (opText !== '==' && opText !== '!=' && opText !== '===' && opText !== '!==') {
+      return false;
+    }
+    const left = n.childForFieldName?.('left') ?? null;
+    const right = n.childForFieldName?.('right') ?? null;
+    return (isErrorIdentifier(left) && isNilNode(right)) ||
+           (isErrorIdentifier(right) && isNilNode(left));
+  }
+
+  return false;
 }
 
 /** Compute MD5 hash for change detection. */
@@ -942,7 +1067,7 @@ function mineNaming(db: Database.Database, config: ConventionMiningConfig): Conv
  * folded into the skip-hash so that miner upgrades force re-mining rather
  * than silently reusing stale results from the old algorithm.
  */
-export const MINER_VERSION = 1;
+export const MINER_VERSION = 2;
 
 /**
  * Compute a content hash of the miner inputs for change detection.
