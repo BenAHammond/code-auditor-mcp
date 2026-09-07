@@ -348,18 +348,139 @@ function checkStringConstraints(data: any, schema: any, ctx: ValidationCtx, path
   }
 }
 
+// ── Format registry (Spec 49 Session 17 — row 63 `invalid-format`) ─────────
+//
+// The ledger gap: `invalid-format` claimed general format validation but only
+// `email`/`uuid` were implemented — every other JSON-Schema format was silently
+// ignored while the message still implied it had been checked. This registry
+// maps every standard JSON-Schema draft-07 `format` keyword to a validator, so
+// the rule now honestly names the format it actually checked. A `format` not
+// listed here is a non-standard/custom annotation: per JSON-Schema, unknown
+// formats are treated as valid (annotation-only), so we correctly emit nothing
+// for them rather than pretending to validate them.
+
+type FormatValidator = (value: string) => boolean;
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const URI_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:[^\s]*$/;
+const URI_REFERENCE_RE = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?[^\s]*$/;
+const JSON_POINTER_RE = /^(\/(?:[^~/]|~[01])*)*$/;
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/** RFC 3339 full-date — calendar-aware, rejects 2023-02-29 but accepts 2024-02-29. */
+function isValidDate(value: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12) return false;
+  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= daysInMonth[month - 1];
+}
+
+/** RFC 3339 full-time — `HH:MM:SS(.frac)?(Z|±HH:MM)`. */
+function isValidTime(value: string): boolean {
+  const m = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!m) return false;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  const second = Number(m[3]);
+  // `second` allows 60 to admit RFC 3339 leap seconds rather than false-positive.
+  return hour <= 23 && minute <= 59 && second <= 60;
+}
+
+/** RFC 3339 date-time — `full-date T full-time` (accepts lowercase `t`/`z`). */
+function isValidDateTime(value: string): boolean {
+  const sep = value.indexOf('T');
+  const sepLower = value.indexOf('t');
+  const idx = sep !== -1 ? sep : sepLower;
+  if (idx === -1) return false;
+  return isValidDate(value.slice(0, idx)) && isValidTime(value.slice(idx + 1));
+}
+
+/** RFC 1123 hostname — dot-separated labels, 1–63 alnum+hyphen each, ≤253 total. */
+function isValidHostname(value: string): boolean {
+  const host = value.endsWith('.') ? value.slice(0, -1) : value;
+  if (host.length === 0 || host.length > 253) return false;
+  const labelRe = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
+  return host.split('.').every(label => labelRe.test(label));
+}
+
+/** IPv6 — handles `::` compression, embedded IPv4 (::ffff:1.2.3.4), and zone ids. */
+function isValidIpv6(value: string): boolean {
+  let rest = value;
+  const lastColon = value.lastIndexOf(':');
+  if (lastColon !== -1 && value.slice(lastColon + 1).includes('.')) {
+    if (!IPV4_RE.test(value.slice(lastColon + 1))) return false;
+    rest = value.slice(0, lastColon);
+  }
+  const pct = rest.indexOf('%');
+  if (pct !== -1) rest = rest.slice(0, pct);
+
+  if (rest === '::') return true;
+  const parts = rest.split('::');
+  if (parts.length > 2) return false;
+  const groupRe = /^[0-9a-fA-F]{1,4}$/;
+  const splitGroups = (s: string): string[] => (s === '' ? [] : s.split(':'));
+  const left = splitGroups(parts[0]);
+  const right = parts.length === 2 ? splitGroups(parts[1]) : [];
+  if (parts.length === 1) {
+    return left.length === 8 && left.every(g => groupRe.test(g));
+  }
+  const total = left.length + right.length;
+  return total < 8 && [...left, ...right].every(g => groupRe.test(g));
+}
+
+function isValidRegex(value: string): boolean {
+  try {
+    new RegExp(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** RFC 6570 URI template — balanced `{}`, no whitespace/control chars. */
+function isValidUriTemplate(value: string): boolean {
+  if (/\s/.test(value)) return false;
+  let depth = 0;
+  for (const ch of value) {
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth < 0) return false; }
+  }
+  return depth === 0;
+}
+
+const FORMAT_VALIDATORS: Record<string, FormatValidator> = {
+  email: v => EMAIL_RE.test(v),
+  'idn-email': v => EMAIL_RE.test(v), // `[^\s@]` already permits non-ASCII
+  uuid: v => UUID_RE.test(v),
+  date: isValidDate,
+  time: isValidTime,
+  'date-time': isValidDateTime,
+  ipv4: v => IPV4_RE.test(v),
+  ipv6: isValidIpv6,
+  hostname: isValidHostname,
+  'idn-hostname': isValidHostname, // label regex permits only ASCII; Unicode hosts are rare in code corpora
+  uri: v => URI_RE.test(v),
+  iri: v => URI_RE.test(v), // `[^\s]*` already permits non-ASCII path/query
+  'uri-reference': v => URI_REFERENCE_RE.test(v),
+  'iri-reference': v => URI_REFERENCE_RE.test(v),
+  'uri-template': isValidUriTemplate,
+  'json-pointer': v => JSON_POINTER_RE.test(v),
+  regex: isValidRegex,
+};
+
 function checkFormatConstraint(data: string, format: string, ctx: ValidationCtx, path: string): void {
-  switch (format) {
-    case 'email':
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data)) {
-        emit(ctx, 'warning', 'invalid-format', `Invalid email format at ${path}`);
-      }
-      break;
-    case 'uuid':
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(data)) {
-        emit(ctx, 'warning', 'invalid-format', `Invalid UUID format at ${path}`);
-      }
-      break;
+  const validator = FORMAT_VALIDATORS[format];
+  if (validator && !validator(data)) {
+    emit(ctx, 'warning', 'invalid-format', `Invalid ${format} format at ${path}`);
   }
 }
 

@@ -1403,3 +1403,83 @@ token-*role* analysis (distinguish a generic `--space-2` from a specific
   spelling equals a project-defined token's value, type-agnostic and
   case/shorthand-symmetric". The residual value-coincidence tail is reported as
   true-but-useless above, not left unstated.
+
+## Session 17 — `invalid-format` (email+uuid switch → full format registry) (spec-49 order #7 remainder, row 63)
+
+### The state on arrival
+
+Row 63 marked `invalid-format` crude with an `[overclaim]` gap: the message
+"Invalid format for field {field}" implies general format validation, but
+`checkFormatConstraint` was a two-case `switch` handling only `email` and `uuid`
+via lightweight regexes — every other JSON-Schema format (`date`, `date-time`,
+`time`, `uri`, `ipv4`/`ipv6`, `hostname`, …) was silently ignored. The rule
+fired only on the two formats it knew; the rest it neither validated nor
+reported.
+
+### The fix
+
+`checkFormatConstraint`'s `switch` is replaced by a `FORMAT_VALIDATORS` registry
+mapping every standard JSON-Schema draft-07 `format` keyword to a validator —
+`email`, `idn-email`, `uuid`, `date`, `time`, `date-time`, `ipv4`, `ipv6`,
+`hostname`, `idn-hostname`, `uri`, `iri`, `uri-reference`, `iri-reference`,
+`uri-template`, `json-pointer`, `regex`. Each is a real computation, not a
+shape-proxy:
+
+- `date` / `date-time` — calendar-aware (`2024-02-29` valid, `2023-02-29`
+  invalid, leap years via `%4`/`%100`/`%400`), not a `\d{4}-\d{2}-\d{2}` regex.
+- `time` — RFC 3339 `HH:MM:SS(.frac)?(Z|±HH:MM)` with range checks (admits
+  `:60` to avoid false-positives on leap seconds).
+- `ipv6` — programmatic group-counting with `::` compression, embedded-IPv4
+  (`::ffff:1.2.3.4`) and zone-id (`%eth0`) handling.
+- `hostname` — RFC 1123 label checks (1–63 alnum+hyphen per label, ≤253 total).
+- `uri` / `uri-reference` / `json-pointer` / `uri-template` / `regex` — scheme,
+  RFC 6901 pointer, RFC 6570 brace-balance, and `new RegExp`-parse checks.
+
+The emitted message now names the format actually checked
+(`Invalid ${format} format at ${path}`), so a finding is honest about what was
+validated. A `format` not in the registry is a non-standard/custom annotation:
+per JSON-Schema, unknown formats are treated as valid, so the rule correctly
+emits nothing for them rather than pretending to validate.
+
+### Tests (written before implementation, per the TDD loop)
+
+New `src/analyzers/universal/schema/jsonSchema.spec.ts`, exercising
+`analyzeJsonSchemas` (the public entry point) with a `schemaDataPairs` pair:
+
+- positive — `format: "email"`, data `"definitely-not-an-email"` → fires.
+  Passed pre-change (locks the already-correct email branch).
+- inverse near-miss — `format: "date"`, data `"not-a-date"` → fires. **Failed
+  pre-change** (date silently ignored → 0 findings); passes after.
+- near-miss — `format: "date"`, data `"2024-02-29"` (valid leap day) → does
+  NOT fire; contrast assertion `"2023-02-29"` → fires. Failed pre-change (both
+  returned 0); passes after, proving calendar-awareness rather than shape-only.
+
+### Counts (before → after, per corpus)
+
+- recall 0→0 · knex 0→0 · primer-css 0→0 · blitz 0→0 · hhra-org 0→0 ·
+  gin 0→0 · svelte-realworld 0→0
+
+The rule is unobservable on all seven code corpora: none contains a
+`.schema.json` / `-schema.json` / `.data.json` / `.example.json` file (verified
+by `find`), so the JSON-schema data-validation path that emits `invalid-format`
+never runs — `loadSchemas` loads zero schemas, so `checkFormatConstraint` is
+never reached. "Before" was confirmed by stashing the change and re-measuring
+recall (0). The behaviour is therefore pinned entirely by the three unit tests,
+not by corpus deltas.
+
+### Adjudication
+
+No survivors on any corpus (0 findings everywhere). Adjudication is carried on
+the test fixtures instead: `"definitely-not-an-email"` and `"not-a-date"` are
+true invalid-format readings; `"2024-02-29"` is correctly not flagged while the
+impossible `"2023-02-29"` is — the sharp edge separating a real calendar
+validator from a shape regex.
+
+### Verdict
+
+- `invalid-format` — `replaced`: the `[overclaim]` gap is closed — the rule no
+  longer claims general format validation while only checking `email`/`uuid`.
+  A registry now covers every standard draft-07 format with a real validator,
+  the two-case switch is gone, and the message names the format actually
+  checked. The `partial` bridgeability ("a format registry covering standard
+  JSON-Schema formats is missing") is now satisfied.
