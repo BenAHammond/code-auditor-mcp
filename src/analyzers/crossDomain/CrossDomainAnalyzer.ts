@@ -7,7 +7,7 @@
  *   R1 — Schema Lifecycle:
  *     cross-domain/written-never-read    — Table written but never read
  *     cross-domain/read-never-written    — Table read but never written
- *     cross-domain/transaction-boundary  — Function writes to too many tables
+ *     cross-domain/multi-table-write     — Function writes to too many tables
  *
  *   R3 — Validation Bypass (future):
  *     cross-domain/validation-bypass     — Writer doesn't reach a validator
@@ -553,7 +553,7 @@ function flagTransactionBoundaryWrites(
         column: 0,
         severity: 'suggestion',
         message: `Function writes to ${allTables.size} distinct tables (threshold: ${txnTableMax}): ${tableList}. This may indicate transaction-boundary risk — consider splitting writes across smaller transactional scopes.`,
-        rule: 'cross-domain/transaction-boundary',
+        rule: 'cross-domain/multi-table-write',
         analyzer: ANALYZER_NAME,
         functionName: key.split('::')[1],
       });

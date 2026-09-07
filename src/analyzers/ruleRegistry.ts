@@ -1854,20 +1854,20 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'cross-domain/transaction-boundary': {
+  'cross-domain/multi-table-write': {
     analyzer: 'cross-domain',
     field: 'rule',
     input: ['schema_usage', 'functions'],
     resolvable: false,
-    message: 'Transaction boundary spans {count} tables.',
-    docs: 'cross-domain/transaction-boundary',
+    message: 'Function writes to {count} distinct tables.',
+    docs: 'cross-domain/multi-table-write',
     thresholds: ['schemaLifecycle.txnTableMax'],
     samples: {
       valid: [
-        { code: 'BEGIN; UPDATE users ...; COMMIT;', nearMiss: true },
+        { code: 'UPDATE users SET ...;\nINSERT INTO audit_log ...;', nearMiss: true },
       ],
       invalid: [
-        { code: 'BEGIN; UPDATE a ...; UPDATE b ...; UPDATE c ...; UPDATE d ...; COMMIT;' },
+        { code: 'UPDATE a SET ...;\nUPDATE b SET ...;\nUPDATE c SET ...;\nUPDATE d SET ...;' },
       ],
     },
   },

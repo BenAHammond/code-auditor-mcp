@@ -1819,3 +1819,80 @@ exportedness.
   The `partial` bridgeability note is satisfied — the TS side was always honest,
   and the Go side now computes requiredness from nilability rather than
   exportedness.
+
+## Session 22 — `cross-domain/transaction-boundary` → `cross-domain/multi-table-write` (spec-49 order #8, row 84)
+
+### The state on arrival
+
+Row 84 marked `cross-domain/transaction-boundary` crude with an `[overclaim]`
+gap: the registry message asserted "Transaction boundary spans {count} tables."
+but the code only counts distinct write targets. The emitted message was
+already hedged ("This may indicate transaction-boundary risk"), so the
+overclaim lived in two places the message hedged around — the rule **name**
+(`transaction-boundary`) and the **registry message** ("spans {count} tables"),
+neither of which the code computes. There is no BEGIN/COMMIT/savepoint/
+transaction-API detection anywhere in the pipeline.
+
+### The fix
+
+A rename, not a predicate change. The write-count predicate (`allTables.size >=
+txnTableMax`) is a real, honest signal — writing to N distinct tables is worth
+flagging on its own — but the name asserted a transaction boundary the rule
+never computes. The predicate stays; the rule ID and its registry message are
+renamed to say what they measure:
+
+- `CrossDomainAnalyzer.ts:556` — emitted `rule` `'cross-domain/transaction-boundary'`
+  → `'cross-domain/multi-table-write'`. The hedged message ("Function writes to N
+  distinct tables … may indicate transaction-boundary risk") is unchanged — it
+  was already honest.
+- `ruleRegistry.ts:1857` — key `'cross-domain/transaction-boundary'` →
+  `'cross-domain/multi-table-write'`, message `'Function writes to {count}
+  distinct tables.'` (the "spans" overclaim removed), docs key renamed, samples
+  de-transaction-ified (BEGIN/COMMIT stripped).
+- `ruleAliases.ts:113` — alias `'cross-domain/transaction-boundary' → 'cross-domain/
+  multi-table-write'` with the rename reason, so pre-rename baselines survive via
+  `canonicalRuleId()`.
+- Config keys `enableTransactionBoundaryRisk` / `txnTableMax` are **not** renamed:
+  they are configuration surface, not rule identity, and renaming them would break
+  existing `.codeauditor.json` files for no rule-identity gain.
+
+### Tests (written this session)
+
+New `src/analyzers/crossDomain/__tests__/multiTableWrite.spec.ts`:
+
+- positive — a function writing to ≥ `txnTableMax` (4) tables fires under
+  `cross-domain/multi-table-write` and the message says "distinct tables", not
+  "spans". Failed pre-change (emitted the old ID).
+- near-miss — a function writing to 2 tables (< 4) does not fire. Passed
+  pre-change (the predicate was already correct).
+- registry message claims the write-count, not a transaction boundary.
+
+Existing `CrossDomainAnalyzer.test.ts` and the integration fixture
+(`fixture-cross-domain.test.ts`) were sed-updated to the new ID. The integration
+test's true positive (`transferCredits` writes 2 tables, `txnTableMax: 2`) now
+filters `v.rule === 'cross-domain/multi-table-write'` and passes.
+
+### Counts (before → after, per corpus)
+
+The predicate is unchanged, so counts move under the new ID without changing
+value:
+
+- recall 10 → 10 (`multi-table-write`) · knex 0 → 0 · primer-css 0 → 0 ·
+  blitz 0 → 0 · gin 0 → 0 · svelte-realworld 0 → 0 · hhra-org 0 → 0
+
+Only recall-protocol emits the rule (10 findings), identical before and after —
+as expected for a rename with no predicate change. No delta to explain.
+
+### Adjudication
+
+No survivors to re-adjudicate: the set of findings is identical, only the rule
+ID changed. The 10 recall findings are the same write-fan-out findings the old
+ID produced; none claim a transaction boundary anymore.
+
+### Verdict
+
+- `cross-domain/transaction-boundary` — `renamed` to `cross-domain/multi-table-write`
+  (proxy kept under an honest name). The write-count predicate is real and worth
+  keeping; the "transaction boundary" claim is the overclaim and is removed from
+  the ID and registry message. Transaction-scope parsing (BEGIN/COMMIT) remains
+  absent and is out of scope for this rename — the honest name does not promise it.

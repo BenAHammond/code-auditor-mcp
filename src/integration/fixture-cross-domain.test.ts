@@ -25,7 +25,7 @@
  *
  * Total cross-domain violations: 2
  *   - cross-domain/written-never-read: 1 (audit_log table)
- *   - cross-domain/transaction-boundary: 1 (transferCredits writes to 2 tables)
+ *   - cross-domain/multi-table-write: 1 (transferCredits writes to 2 tables)
  *
  * Disabled: read-never-written (via enableReadNeverWritten: false) to keep
  * the fixture focused on the two primary detectors.
@@ -117,7 +117,7 @@ describe('cross-domain fixture', () => {
     it('true positive: transferCredits writes to 2 tables triggers transaction-boundary', () => {
       const violations = runAndGetViolations(testDir);
       const txn = violations.filter(
-        (v: any) => v.rule === 'cross-domain/transaction-boundary',
+        (v: any) => v.rule === 'cross-domain/multi-table-write',
       );
       expect(txn.length).toBe(1);
       expect(txn[0].file).toBe('src/transfer.ts');
@@ -133,7 +133,7 @@ describe('cross-domain fixture', () => {
       const violations = runAndGetViolations(testDir);
       const txn = violations.filter(
         (v: any) =>
-          v.rule === 'cross-domain/transaction-boundary' &&
+          v.rule === 'cross-domain/multi-table-write' &&
           v.file === 'src/events.ts',
       );
       expect(txn.length).toBe(0);

@@ -105,6 +105,16 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
     reason:
       'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
   },
+  // Rename: cross-domain/transaction-boundary → cross-domain/multi-table-write (Spec-49).
+  // The old ID asserted a transaction boundary the code never computes — it only
+  // counts distinct write targets (schema_usage write rows), with no
+  // BEGIN/COMMIT/savepoint/transaction-API detection. Writing to many tables is a
+  // real signal; the honest name is the write fan-out it measures.
+  'cross-domain/transaction-boundary': {
+    to: 'cross-domain/multi-table-write',
+    reason:
+      'Renamed to cross-domain/multi-table-write — the detector counts distinct write targets, not a transaction boundary (no BEGIN/COMMIT/transaction-API parsing exists); "transaction boundary" was the overclaim.',
+  },
 };
 
 /**

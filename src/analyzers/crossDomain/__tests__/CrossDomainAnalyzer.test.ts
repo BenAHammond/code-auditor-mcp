@@ -387,7 +387,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
 
       const violations = result.violations.filter(
-        v => v.rule === 'cross-domain/transaction-boundary',
+        v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(1);
       expect(violations[0].functionName).toBe('migrateAll');
@@ -410,7 +410,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
 
       const violations = result.violations.filter(
-        v => v.rule === 'cross-domain/transaction-boundary',
+        v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(0);
     });
@@ -432,7 +432,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
 
       const violations = result.violations.filter(
-        v => v.rule === 'cross-domain/transaction-boundary',
+        v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(1);
       expect(violations[0].message).toContain('threshold: 3');
@@ -466,7 +466,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
 
       const violations = result.violations.filter(
-        v => v.rule === 'cross-domain/transaction-boundary',
+        v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(1);
       expect(violations[0].functionName).toBe('orchestrator');
@@ -498,7 +498,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
 
       const violations = result.violations.filter(
-        v => v.rule === 'cross-domain/transaction-boundary',
+        v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(1);
       expect(violations[0].message).toContain('3 distinct tables');
@@ -520,7 +520,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
 
       const violations = result.violations.filter(
-        v => v.rule === 'cross-domain/transaction-boundary',
+        v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(0);
     });
@@ -578,7 +578,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       // Only written-never-read and read-never-written should be enabled
       // (but txn-boundary should be disabled)
       const txnViolations = result.violations.filter(
-        v => v.rule === 'cross-domain/transaction-boundary',
+        v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(txnViolations).toHaveLength(0);
     });
