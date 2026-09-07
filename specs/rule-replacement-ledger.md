@@ -1993,3 +1993,92 @@ verdict.
   specific input is validated") remains out of scope — the honest name does not
   promise it, and the ledger's `partial` bridgeability note already identified
   validator identity (provenance) as the bridged half.
+
+## Session 24 — `react/performance` (row 115)
+
+### The state on arrival
+
+Row 115 marked `performance` crude with a two-part `[overclaim]` gap:
+
+- the memoization emission asserted "React component '{name}' **is missing
+  memoization**" when the code only computed `complexity > 5` (a size heuristic)
+  — a consequence ("missing") asserted from a proxy (complexity);
+- the inline-prop and missing-keys emissions were substring/regex heuristics
+  over a 500-char truncated context string (`context.includes('=>')` +
+  `/\bonClick\s*=\s*\{/`, and `context.includes('.map(')` + `!context.includes('key=')`)
+  with no element/attribute attribution — one `=>` or one `key=` anywhere in the
+  window mis-fired or suppressed the finding.
+
+### The fix
+
+Already applied in spec-44, not in this sweep. Commit `a60f655` ("react/accessibility
++ react/performance: per-element JSX detection against the full component body")
+rewrote the predicate and hedged the messages:
+
+- **memoization** — message is now `Consider memoizing component 'X' for better
+  performance` (hedged advice, no "is missing" claim); still gated behind
+  `requireMemoization` (default false).
+- **inline-prop** — `hasInlineFunctionProp(source, 'onClick')` scans the *specific
+  `onClick` attribute* for an inline arrow/function value, so a `=>` on an unrelated
+  node or an identifier handler (`onClick={handleClick}`) never fires.
+- **missing-keys** — runs over the full component body (`component.body ?? context`),
+  not a truncated window, so a `.map(` outside the old 500-char window is caught.
+
+### The fix (this session)
+
+None to the predicate. The spec-44 commit pinned the *inline-prop* and
+*accessibility* legs with tests, but left the two remaining `performance` legs —
+the hedged memoization message and the full-source missing-keys check — untested.
+This session adds that coverage.
+
+### Tests (written this session; the fix predates the sweep so all pass on arrival)
+
+New `src/analyzers/reactPerformanceHonesty.spec.ts` (end-to-end through `scanFile` +
+`analyzeComponent`):
+
+- positive — a complexity>5 functional component with `requireMemoization: true`
+  fires `performance` with "Consider memoizing", and the message does NOT say "is
+  missing memoization".
+- near-miss — a simple (complexity ≤ 5) component is not flagged for memoization.
+- positive — a `.map()` render without `key=` fires "may be rendering lists without
+  keys" (hedged "may be").
+- near-miss — a `.map()` render that already has `key=` does not fire.
+
+4 green. All passed on arrival because the spec-44 fix predates this sweep; there
+is no pre-change failure to post (same situation as `missing-field`, Session 21).
+
+### Counts (before → after, per corpus)
+
+No predicate change this session, so counts are unchanged:
+
+- recall 95 → 95 · blitz 9 → 9 · hhra-org 57 → 57 · knex 0 → 0 ·
+  primer-css 0 → 0 · gin 0 → 0 · svelte-realworld 0 → 0
+
+### Adjudication (recall-protocol, 95 findings — the corpus where it fires most)
+
+Message-shape breakdown of the 95:
+
+- **90** — "passes an inline function prop (onClick) causing unnecessary re-renders".
+  True positive for the honest fact (an inline arrow is passed as the onClick prop);
+  per-element detection now, so no unrelated-arrow false fires. The "causing
+  unnecessary re-renders" phrasing is the conventional React guidance (the
+  consequence is strictly guaranteed only for memoized children) — a mild,
+  standard simplification, not the "is missing" overclaim the ledger flagged.
+- **5** — "may be rendering lists without keys". Hedged ("may be"), full-source
+  detection. True positive where `.map(` renders unkeyed JSX.
+- **0** — memoization ("Consider memoizing") never fires on the corpus because
+  `requireMemoization` defaults to false.
+
+No survivors are false positives for the honest claim; the two hedged message
+shapes (inline-prop, missing-keys) report the fact + the standard advice, not an
+asserted defect.
+
+### Verdict
+
+- `react/performance` — `replaced` (already replaced in spec-44, commit `a60f655`:
+  per-element JSX detection against the full component body, and "is missing
+  memoization" → "Consider memoizing"). This session adds the end-to-end tests for
+  the two legs the spec-44 suite did not pin (memoization message honesty,
+  full-source missing-keys), closing the coverage gap. The `partial` bridgeability
+  note is satisfied — the memo/memo/key checks are now AST/body-scoped rather than
+  truncated-context substrings.
