@@ -652,3 +652,89 @@ is gone by construction.
   composite is kept verbatim; only the SRP claim is dropped)
 - Go `single-responsibility` (struct, row 10) — `renamed` to `struct-size` with the
   predicate `replaced` (dead composite + substring heuristic → direct field count)
+
+---
+
+## Session 8 — Go `import-organization` (count proxy → grouping) (spec-49 order #7 remainder, row 16)
+
+The authenticity ledger marked `imports/import-organization` (row 16) crude with
+a single gap: the predicate was `if len(file.Imports) > 10` — a raw import *count*
+standing in for "import organization", emitting "File has many imports - consider
+organizing or reducing import count". The `gap` column named the real signal:
+"stdlib vs third-party vs project grouping and unnecessary deps".
+
+Count is not that signal. A file with twelve well-grouped imports is not
+unorganized; a file with two mis-grouped imports is. The "unnecessary deps" half
+is out of scope — the Go compiler already rejects unused imports at build time, so
+a static analyzer adds no signal there. What remains is **grouping**, and it is
+directly bridgeable from the AST: each `*ast.ImportSpec` carries its path string,
+and Go convention (goimports/gofmt) requires standard-library imports first, then
+third-party, then local, each block sorted.
+
+### The fix
+
+The count threshold is removed outright (a raw import count is not a signal worth
+keeping under any name — unlike line count for `function-length`, no Go tool or
+style guide treats "too many imports" as a defect). The predicate is replaced with
+a grouping check:
+
+- `importGroup(path)` classifies an unquoted path by its first segment — `stdlib`
+  (no `.`), `third-party` (has `.`), `local` (starts `.`/`..`).
+- `firstImportGroupViolation(imports)` scans the import list and reports the first
+  import whose group precedes a strictly-earlier group (i.e. the group sequence is
+  not non-decreasing), plus how many imports are out of group order.
+
+One violation per file, positioned at the first out-of-group import, message
+"Import block mixes standard library and third-party imports without grouping".
+The dot-import `import-style` check is untouched (it was already honest).
+
+### Tests (written before implementation, per the TDD loop)
+
+`goImportOrganization.spec.ts` — 5 tests, all spawning the real Go binary:
+
+- positive — third-party-then-stdlib imports fire `import-organization`
+- near-miss — 12 well-grouped imports (stdlib sorted, then third-party) do **not**
+  fire — the count proxy is gone
+- inverse near-miss — a 2-import file with stdlib-after-third-party **fires** — the
+  grouping signal catches what the count proxy missed
+- sanity — a dot import still fires `import-style` (honest check untouched)
+- rename guard — no retired `import-count` / `many-imports` category emits
+
+3 red before implementation (positive/near-miss/inverse — the count proxy both
+false-fires on 12 well-grouped imports and misses a 2-import mis-grouping); 5 green
+after. Full Go suite 13 passed (`goImportOrganization` 5, `goSingleResponsibilitySplit`
+5, `goDependencyInversionBlock` 3).
+
+### Counts (before → after, per corpus)
+
+Go-only change, so only gin — the sole Go corpus — is affected; the TS corpora are
+untouched:
+
+- gin `imports::import-organization` 4→**1** (advisory 26→23, `imports` 4→1;
+  `solid` 22→22 and its `struct-size` 3, `liskov-substitution` 11, `switch-size` 6,
+  `interface-size` 2 all unchanged)
+- recall / knex / primer-css / blitz / hhra-org n/a (TS, untouched) ·
+  svelte-realworld not on disk
+
+"before" was measured against the committed pre-change binary (`5a4a0d7`, verified
+to still contain the `> 10` count predicate), not reconstructed.
+
+### Adjudication
+
+The 4 dropped findings were all gin files with >10 imports that are, in fact, well
+grouped — `context.go` (19), `recovery.go` (15), `gin.go` (14),
+`binding/form_mapping.go` (11). Pure count false positives: every one is a large
+but correctly organized import block.
+
+The single survivor is `testdata/protoexample/test.pb.go` — a genuine grouping
+violation the count proxy had missed (it has only 4 imports): the generated
+protobuf file places `google.golang.org/protobuf/...` imports before the `reflect` /
+`sync` stdlib imports. True positive — the block really is mis-grouped (a known
+protoc-gen-go quirk), exactly the "mixed-up imports" case the rule now names.
+
+### Verdict
+
+- `imports/import-organization` — `replaced` (count proxy removed outright; the
+  grouping predicate computes the real "stdlib vs third-party vs local" signal the
+  ledger's `gap` column named). Category ID unchanged — "import-organization"
+  already named the right thing; only the predicate was a proxy.

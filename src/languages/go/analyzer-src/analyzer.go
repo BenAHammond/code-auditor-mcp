@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/token"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -135,22 +137,34 @@ func (a *Analyzer) runSOLIDAnalysis() []Violation {
 	return solidAnalyzer.Analyze()
 }
 
-// runImportAnalysis analyzes import usage and organization
+// runImportAnalysis analyzes import usage and organization.
+//
+// The old `import-organization` predicate was a raw import count
+// (`len(file.Imports) > 10`). Count is not "organization" — a file with twelve
+// well-grouped imports is fine, and a file with two mis-grouped imports is not.
+// The honest reading is grouping: Go convention (goimports/gofmt) requires
+// standard-library imports first, then third-party, then local, each block
+// sorted. A stdlib import appearing after a third-party import is the
+// "mixed-up imports" case a reviewer actually flags. "Unnecessary deps" is out
+// of scope — the Go compiler already rejects unused imports at build time, so a
+// static analyzer adds no signal there.
 func (a *Analyzer) runImportAnalysis() []Violation {
 	var violations []Violation
 
 	for filePath, file := range a.parser.files {
-		// Check for unused imports
-		if len(file.Imports) > 10 {
+		// Detect import grouping violations (stdlib vs third-party vs local).
+		if pos, grouped := firstImportGroupViolation(file.Imports); grouped > 0 {
+			line := a.parser.fileSet.Position(pos).Line
 			violations = append(violations, Violation{
 				File:     filePath,
-				Line:     1,
+				Line:     line,
 				Severity: "suggestion",
-				Message:  "File has many imports - consider organizing or reducing import count",
+				Message:  "Import block mixes standard library and third-party imports without grouping",
 				Details: map[string]interface{}{
-					"importCount": len(file.Imports),
+					"importCount":        len(file.Imports),
+					"groupingViolations": grouped,
 				},
-				Suggestion: "Group related imports and consider if all are necessary",
+				Suggestion: "Group standard library imports first, then third-party imports, each block separated by a blank line",
 				Analyzer:   "imports",
 				Category:   "import-organization",
 			})
@@ -493,6 +507,51 @@ func containsSubstring(str, substr string) bool {
 		}
 	}
 	return false
+}
+
+// importGroup classifies an unquoted import path into a grouping tier:
+// 0 = standard library (first path segment has no '.'), 1 = third-party (first
+// segment has a '.'), 2 = local (relative './' or '../'). This is the
+// stdlib-before-third-party-before-local convention goimports/gofmt enforce.
+func importGroup(path string) int {
+	if strings.HasPrefix(path, ".") {
+		return 2
+	}
+	first := path
+	if idx := strings.IndexByte(path, '/'); idx >= 0 {
+		first = path[:idx]
+	}
+	if strings.Contains(first, ".") {
+		return 1
+	}
+	return 0
+}
+
+// firstImportGroupViolation reports the position of the first import that breaks
+// the stdlib-before-third-party-before-local grouping, and how many imports in
+// total are out of group order. It returns (token.NoPos, 0) when the import
+// block is grouped (the group sequence is non-decreasing).
+func firstImportGroupViolation(imports []*ast.ImportSpec) (token.Pos, int) {
+	maxGroup := -1
+	grouped := 0
+	firstPos := token.NoPos
+	for _, spec := range imports {
+		path, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			path = spec.Path.Value
+		}
+		g := importGroup(path)
+		switch {
+		case g > maxGroup:
+			maxGroup = g
+		case g < maxGroup:
+			grouped++
+			if firstPos == token.NoPos {
+				firstPos = spec.Pos()
+			}
+		}
+	}
+	return firstPos, grouped
 }
 
 // excludeTestFiles removes *_test.go files from a file list. Test files are
