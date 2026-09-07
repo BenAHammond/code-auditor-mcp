@@ -2481,3 +2481,83 @@ that the public export now reports the real thresholds.
 - DRY defaults drift — `fixed`. `DEFAULT_ANALYZER_CONFIGS.dry` now mirrors
   `DEFAULT_DRY_CONFIG` (minus the separately-read `divergence`), pinned by a
   deep-equal guard test.
+
+---
+
+## Session 30 — after-33 pass (3/4): zero-everywhere threshold pass
+
+The deferred pass over "every rule that ended at zero everywhere". The
+question for each is: is the zero **honest** (off-by-default / gated by empty
+config / no-corpus-instances), or is it an **untested threshold** that is set
+too high to ever fire? The answer matters because a rule that is silent on a
+15k-function corpus has either been shown precise *or* shown to be dead.
+
+Seven rules end at 0 across all five corpora (recall, hhra-org, knex,
+primer-css, blitz). `solid/single-responsibility` is **not** re-adjudicated
+here — its 0→1 on recall (`boot`, fetch+render) was already confronted and
+closed in the "concern taxonomy correction" follow-up: narrow by design, not
+silent by accident.
+
+### Adjudication, rule by rule
+
+**Off-by-default (2) — the config default turns the rule off, so 0 is the
+enforced default, not a miss.**
+
+- `dry/structural-similarity` — gated by `checkStructuralSimilarity: false` in
+  `DEFAULT_DRY_CONFIG`. Opt-in; a default corpus never runs it. The
+  Session 26 tests prove the engine fires when enabled (`checkStructuralSimilarity:
+  true`); the default is the only reason it is 0. **Honest.**
+- `cross-domain/no-validator-reachable` — gated by `crossDomain.validatorBypass.
+  validators: []` (empty by default). With no validators configured, no writer
+  is ever BFS-reachable to one, so `coveredCount` is always 0 and the
+  convention baseline (`ratio ≥ modeShare` 0.8) can never be established — the
+  detector deliberately cannot invent a "peers are validated, you are not"
+  finding with no validator list. Opt-in via the validators config. **Honest.**
+
+**No-corpus-instances (5) — the gate is structural, not a number, and none of
+the five corpora contains the input the rule needs.**
+
+- `solid/liskov-substitution` — fires only when a *same-file* class `extends` a
+  resolvable parent, a subclass method overrides a same-named parent method,
+  and the child `throw`s where the parent does not. No corpus has a same-file
+  hierarchy with a throwing override. The rule has **no numeric threshold** —
+  it is a structural predicate (throw-vs-not-throw). The within-file-only
+  parent resolution (no type checker) is "claim less" by design, not a
+  threshold that needs lowering. **Honest.**
+- `invalid-format` — fires only when a JSON Schema declares a recognized
+  `format` keyword *and* the validated data fails that format's validator.
+  The corpora contain no JSON Schema file with a `format` constraint applied
+  to failing data. The format registry (Session 17, row 63) is complete for
+  draft-07 and unit-tested per-format. No threshold involved. **Honest.**
+- `schema-field-mismatch` — the schema-validator reducer returns `notRunReason:
+  no cross-language pairs found (schema comparison requires ≥2 languages)`
+  when a project has no TS-interface↔Go-struct pair. None of the five corpora
+  is polyglot in a way that produces such a pair. The reducer explicitly
+  distinguishes "nothing to compare" from "compared and clean", so a 0 here
+  cannot masquerade as a clean pass. **Honest.**
+- `missing-field` — same cross-language schema-validator gate as
+  `schema-field-mismatch`. No polyglot schema pair in any corpus. **Honest.**
+- `duplicate-import` — fires only when a single source is imported more than
+  once in one file. No corpus file does. The Session 27 fix replaced the
+  fabricated `1:1` location with the real first-import location; the
+  detection predicate (import count per source > 1) is exact and has no
+  threshold to mis-set. **Honest.**
+
+### Conclusion of the pass
+
+Every zero is honest. **No threshold needs changing.** Two rules are opt-in by
+default and five are structurally gated on input the corpora do not contain;
+none is a numeric threshold sitting above every real function. The residual
+risk the user flagged — "whether the thresholds are untested" — is real but
+bounded and correctly characterized: these seven rules' thresholds are
+untested *against corpus input* because no corpus exercises them, yet each is
+unit-tested against synthetic fixtures that prove the engine fires when the
+input is present. The honest statement is "no corpus exercises this rule", not
+"this rule is verified precise on real code" — which is exactly what the
+`notRunReason` / `notApplicable` machinery now reports.
+
+### Verdict
+
+- Zero-everywhere pass — `adjudicated`, no code change. 7/7 rules are honest
+  zeros (2 off-by-default, 5 no-corpus-instances); `single-responsibility`
+  was already adjudicated in its own follow-up. No untested threshold surfaced.
