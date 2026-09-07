@@ -1693,7 +1693,7 @@ export interface SchemaLifecycleConfig {
   txnTableMax: number;
 }
 
-/** Config for validation-bypass detection (R3). */
+/** Config for the no-validator-reachable detector (R3, formerly validation-bypass). */
 export interface ValidatorBypassConfig {
   /** User-configured validator function names or "path#name". */
   validators: string[];

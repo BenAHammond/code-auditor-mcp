@@ -634,7 +634,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
   // ── R3: Validation-Bypass ─────────────────────────────────────────────────
 
-  describe('R3: validation-bypass', () => {
+  describe('R3: no-validator-reachable (was validation-bypass)', () => {
     const projectRoot = '/test/project';
     const writerDir = `${projectRoot}/src/handlers`;
 
@@ -695,7 +695,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         });
 
         // Writer reaches validator via graph_cache — should NOT be flagged
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -722,7 +722,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -749,7 +749,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -773,7 +773,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -807,7 +807,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // saveOrder reaches heuristic validator, createOrder does not
         // 1/2 = 0.5 ≥ 0.5 modeShare → flag createOrder
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
         expect(bypass[0].functionName).toBe('createOrder');
       });
@@ -852,7 +852,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         // Writer 1 reaches heuristic-only → NOT covered.
         // Writer 2 reaches provenance validator → covered.
         // 1/2 = 0.5 ≥ 0.5 modeShare → flag Writer 1
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
         expect(bypass[0].functionName).toBe('createOrder');
       });
@@ -878,7 +878,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
     });
@@ -917,7 +917,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
         expect(bypass[0].functionName).toBe('createOrder');
         expect(bypass[0].severity).toBe('suggestion');
@@ -942,7 +942,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         // Writer reaches validator (at depth 0 because writer IS a validator)
         expect(bypass).toHaveLength(0);
       });
@@ -961,7 +961,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -984,7 +984,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -1009,7 +1009,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -1042,7 +1042,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         // saveOrder reaches validator, createOrder does not (beyond depth 3)
         expect(bypass).toHaveLength(1);
         expect(bypass[0].functionName).toBe('createOrder');
@@ -1068,7 +1068,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         });
 
         // Despite cycle, writer reaches validator at depth 2 (createOrder → saveEntity → validateOrder)
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
     });
@@ -1100,7 +1100,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -1138,7 +1138,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
         expect(bypass[0].functionName).toBe('deleteOrder');
       });
@@ -1176,7 +1176,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -1213,7 +1213,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
 
         // writerDir: 2 writers, 0 covered → ratio 0.0 < 0.5 → NOT flagged
         // otherDir: 1 writer < minCorpus 2 → NOT flagged
@@ -1232,7 +1232,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         // No validatorBypass in config → detection skipped entirely
         const result = await runAnalyze(db, { indexHandle: db, projectRoot });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
       });
 
@@ -1308,7 +1308,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
         expect(bypass[0].functionName).toBe('createOrder');
       });
@@ -1343,7 +1343,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         });
 
         // createOrder should only be flagged once
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
       });
     });
@@ -1376,7 +1376,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
         expect(bypass[0].severity).toBe('suggestion');
       });
@@ -1406,15 +1406,15 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
-        expect(bypass[0].rule).toBe('cross-domain/validation-bypass');
+        expect(bypass[0].rule).toBe('cross-domain/no-validator-reachable');
         expect(bypass[0].analyzer).toBe('cross-domain');
         expect(bypass[0].functionName).toBe('createOrder');
         expect(bypass[0].line).toBe(42);
       });
 
-      it('message explains validation gap', async () => {
+      it('message reports validator reachability, not a validation verdict', async () => {
         seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 42);
         db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 42)`, [`${writerDir}/createOrder.ts`]);
@@ -1439,10 +1439,11 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
           },
         });
 
-        const bypass = result.violations.filter(v => v.rule === 'cross-domain/validation-bypass');
+        const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
-        expect(bypass[0].message).toContain('not validated');
+        expect(bypass[0].message).toContain('does not reach a validator');
         expect(bypass[0].message).toContain('createOrder');
+        expect(bypass[0].message).not.toContain('is not validated');
       });
     });
   });

@@ -1871,13 +1871,13 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'cross-domain/validation-bypass': {
+  'cross-domain/no-validator-reachable': {
     analyzer: 'cross-domain',
     field: 'rule',
     input: ['schema_usage', 'functions'],
     resolvable: false,
-    message: 'Validation bypass: {detail}.',
-    docs: 'cross-domain/validation-bypass',
+    message: 'No validator reachable within BFS depth: {detail}.',
+    docs: 'cross-domain/no-validator-reachable',
     thresholds: [],
     samples: {
       valid: [

@@ -29,7 +29,7 @@ export function validatePayment(data: unknown): boolean {
  * Does NOT use zod — its usedImports won't include 'zod'.
  * Used to verify per-identifier validator detection:
  * a writer reaching only formatHelper (not validateOrder/validatePayment)
- * should still trigger a validation-bypass violation.
+ * should still trigger a no-validator-reachable violation.
  */
 export function formatHelper(amount: number): string {
   return `$${amount.toFixed(2)}`;

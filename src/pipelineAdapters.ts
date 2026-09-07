@@ -1141,7 +1141,7 @@ export function createConventionsReducer(): Stage3Reducer {
 
 /**
  * Cross-domain reducer — runs written-never-read, read-never-written,
- * transaction-boundary risk, validation-bypass, and uncovered-risk detectors.
+ * transaction-boundary risk, no-validator-reachable, and uncovered-risk detectors.
  * Uses analyzer.analyze([]) with rawDb injected.
  */
 export function createCrossDomainReducer(): Stage4Reducer {

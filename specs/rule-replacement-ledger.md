@@ -1896,3 +1896,100 @@ ID produced; none claim a transaction boundary anymore.
   keeping; the "transaction boundary" claim is the overclaim and is removed from
   the ID and registry message. Transaction-scope parsing (BEGIN/COMMIT) remains
   absent and is out of scope for this rename — the honest name does not promise it.
+
+## Session 23 — `cross-domain/validation-bypass` → `cross-domain/no-validator-reachable` (spec-49 order #9, row 85)
+
+### The state on arrival
+
+Row 85 marked `cross-domain/validation-bypass` crude with an `[overclaim]` gap
+in two places at once: the rule **name** asserted a "bypass" (deliberate
+circumvention) and the emission **message** asserted "Function '…' is not
+validated". The code computes neither. What it actually computes is BFS
+reachability over the call graph — does a writer reach a validator function
+within a bounded depth (`bfsReachesValidator`, depth ≤ 3 default) — gated on a
+mode-share of *peer writers in the same directory* doing so (`modeShare` 0.8,
+`minCorpus` 20). Reachability is not "the write's input was validated": a
+function that validates its input inline (no named validator reachable) is
+indistinguishable from one that never validates, yet the old message called it
+"not validated". Validator identity already degrades to a name-GLOB heuristic
+(`validate*`/`assert*`) as a *fallback*, but provenance (exported functions
+importing `VALIDATOR_PACKAGES`) is the primary source, so that leg of the gap is
+already mitigated — the `[overclaim]` is the name + message, not the detection.
+
+### The fix
+
+A rename + reword, not a predicate change. The BFS-reachability + mode-share
+gate is honest and stays. The name and message are reworded to the reachability
+fact they measure:
+
+- `CrossDomainAnalyzer.ts:797` — emitted `rule` `'cross-domain/validation-bypass'`
+  → `'cross-domain/no-validator-reachable'`; message `"Function '…' is not
+  validated. N/M peer writers … reach a validator but this function does not
+  (BFS depth ≤ d)."` → `"Function '…' does not reach a validator within BFS depth
+  ≤ d. N/M peer writers in '…' do. Consider adding input validation."` — the
+  declarative "is not validated" overclaim is gone; "Consider adding input
+  validation" stays as hedged advice, not a claim.
+- `ruleRegistry.ts:1874` — key + message `'Validation bypass: {detail}.'` →
+  `'No validator reachable within BFS depth: {detail}.'`, docs key renamed.
+- `ruleAliases.ts:125` — alias `'cross-domain/validation-bypass' →
+  'cross-domain/no-validator-reachable'` with the rename reason.
+- Config keys `validatorBypass` / `ValidatorBypassConfig` are **not** renamed:
+  they are configuration surface, not rule identity (same policy as
+  `enableTransactionBoundaryRisk` in Session 22).
+- The bench corpus comment (`bench/corpus/cross-domain/.../validators.ts`) that
+  referenced the old ID was updated to the new name.
+
+### Tests (written this session)
+
+New `src/analyzers/crossDomain/__tests__/noValidatorReachable.spec.ts`:
+
+- positive — an uncovered writer (no call edge to a validator) in a
+  validator-dense directory fires under `cross-domain/no-validator-reachable`,
+  message says "does not reach a validator", not "is not validated" / "bypass".
+  Failed pre-change (emitted the old ID + overclaiming message).
+- near-miss — a writer that reaches a validator does not fire. Passed pre-change
+  (the predicate was already correct).
+- inverse near-miss — an inline-validated writer (no reachable named validator;
+  the analyzer cannot see the inline guard) is flagged, but the message reports
+  only reachability, never the false "is not validated" verdict. Failed
+  pre-change.
+- registry message claims reachability, not a validation verdict. Failed
+  pre-change.
+
+Existing `CrossDomainAnalyzer.test.ts` (25 rule-ID references) was sed-renamed;
+its "message explains validation gap" test was reworded to assert the honest
+reachability message.
+
+### Counts (before → after, per corpus)
+
+The predicate is unchanged, so counts move under the new ID without changing
+value:
+
+- recall 0 → 0 · knex 0 → 0 · primer-css 0 → 0 · blitz 0 → 0 · gin 0 → 0 ·
+  svelte-realworld 0 → 0 · hhra-org 0 → 0
+
+The rule fires nowhere on any corpus. This is a threshold artifact, not a rename
+delta: the default gate (`minCorpus` 20 writers in one directory, `modeShare`
+0.8 of them reaching a validator) is almost never met on these seven projects.
+The rename is observable only via the rule ID, not the count. Flagged for the
+post-33 threshold pass — a detector that never fires anywhere is either clean
+everywhere or its threshold is doing the same unexamined work the predicate just
+received scrutiny for.
+
+### Adjudication
+
+No survivors (0 findings everywhere). Adjudication is carried on the test
+fixtures: the uncovered writer is a true "no validator reachable"; the covered
+writer is a true "validator reachable, no finding"; the inline-validated writer
+is the sharp edge — reachability-only reporting, no false "not validated"
+verdict.
+
+### Verdict
+
+- `cross-domain/validation-bypass` — `renamed` to `cross-domain/no-validator-reachable`
+  (proxy kept under an honest name), with the message reworded to the
+  reachability fact. The `[overclaim]` ("bypass" + "is not validated") is
+  removed from both the ID and the message. Data-path validation ("this write's
+  specific input is validated") remains out of scope — the honest name does not
+  promise it, and the ledger's `partial` bridgeability note already identified
+  validator identity (provenance) as the bridged half.

@@ -10,7 +10,7 @@
  *     cross-domain/multi-table-write     — Function writes to too many tables
  *
  *   R3 — Validation Bypass (future):
- *     cross-domain/validation-bypass     — Writer doesn't reach a validator
+ *     cross-domain/no-validator-reachable — Writer doesn't reach a validator
  *
  *   R4 — Coverage by Importance:
  *     cross-domain/uncovered-risk        — Top-risk function with no test coverage
@@ -790,11 +790,10 @@ function flagUnvalidatedWriters(
           column: 0,
           severity: 'suggestion',
           message:
-            `Function '${w.funcName}' is not validated. ` +
-            `${coveredCount}/${dirWriterList.length} peer writers in '${dir}' ` +
-            `reach a validator but this function does not (BFS depth ≤ ${depth}). ` +
+            `Function '${w.funcName}' does not reach a validator within BFS depth ≤ ${depth}. ` +
+            `${coveredCount}/${dirWriterList.length} peer writers in '${dir}' do. ` +
             `Consider adding input validation.`,
-          rule: 'cross-domain/validation-bypass',
+          rule: 'cross-domain/no-validator-reachable',
           analyzer: ANALYZER_NAME,
           functionName: w.funcName,
         });

@@ -115,6 +115,18 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
     reason:
       'Renamed to cross-domain/multi-table-write — the detector counts distinct write targets, not a transaction boundary (no BEGIN/COMMIT/transaction-API parsing exists); "transaction boundary" was the overclaim.',
   },
+  // Rename: cross-domain/validation-bypass → cross-domain/no-validator-reachable (Spec-49).
+  // The old ID asserted a "validation bypass" and the message asserted "is not
+  // validated", but the code only computes BFS reachability — whether a writer
+  // reaches a validator function within a bounded call depth while peers do.
+  // Reachability is not "the input was validated" (inline validation is invisible
+  // to BFS), and "bypass" implies deliberate circumvention the code never
+  // establishes. The honest name is the reachability result it measures.
+  'cross-domain/validation-bypass': {
+    to: 'cross-domain/no-validator-reachable',
+    reason:
+      'Renamed to cross-domain/no-validator-reachable — the detector computes BFS reachability to a validator within a bounded depth, not a "validation bypass" and not "the input was not validated"; the honest claim is the reachability result.',
+  },
 };
 
 /**
