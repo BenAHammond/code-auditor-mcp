@@ -1151,23 +1151,25 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     adapter: LanguageAdapter
   ): Violation[] {
     const violations: Violation[] = [];
-    const importMap = new Map<string, number>();
+    // source → locations of every import of that source, in encounter order.
+    const importLocs = new Map<string, { line: number; column: number }[]>();
 
     // Find all import statements
     const imports = adapter.extractImports(ast);
 
     for (const imp of imports) {
-      const count = importMap.get(imp.source) || 0;
-      importMap.set(imp.source, count + 1);
+      const locs = importLocs.get(imp.source) ?? [];
+      locs.push(imp.location.start);
+      importLocs.set(imp.source, locs);
     }
 
-    // Report duplicates
-    for (const [source, count] of importMap) {
-      if (count > 1) {
+    // Report duplicates at the real first-import location (not a fabricated 1:1).
+    for (const [source, locs] of importLocs) {
+      if (locs.length > 1) {
         violations.push(this.createViolation(
           ast.filePath,
-          { line: 1, column: 1 }, // Import section is typically at the top
-          `Module "${source}" is imported ${count} times`,
+          locs[0],
+          `Module "${source}" is imported ${locs.length} times`,
           { severity: 'warning', rule: 'duplicate-import', symbol: source }
         ));
       }

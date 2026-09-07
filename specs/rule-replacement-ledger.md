@@ -2249,3 +2249,79 @@ threshold pass, not fixed here:
   structural-Jaccard comparison that reads `similarityThreshold` and reports the
   structural percentage. The predicate now matches the registry's `{similarity}%`
   + `similarityThreshold` claim.
+
+## Session 27 — `duplicate-import` (spec-49 order #11, row 122)
+
+### The state on arrival
+
+Row 122 marked `duplicate-import` crude, but the verdict text was explicit that
+the *detection* is fine: "Counts same-source import statements (a defensible
+proxy)." The gap is narrower — the reported **location is fabricated** as
+`{line:1, column:1}` regardless of where the import actually sits, even though
+every `ImportInfo` carries its real `location` (`toSourceLocation(node)`) from
+`extractImports`. The `bridgeable` column reads "yes — read `imp.location`
+instead of the hardcoded 1:1; optionally compare specifiers".
+
+So the rule was honest about *what* it found (a module imported N times) but
+dishonest about *where* — it pointed every finding at line 1, column 1.
+
+### The fix
+
+`checkDuplicateImports` now records each import's real location alongside its
+count and reports the violation at the **first import's actual location**:
+
+- `Map<string, {line,column}[]>` replaces the `Map<string, number>` count map.
+- The violation location is `locs[0]` (`imp.location.start`) — the real first
+  import — instead of the hardcoded `{line:1, column:1}`.
+- Detection and count are unchanged: still `locs.length > 1` gating, still the
+  `Module "…" is imported N times` message, still `warning` severity.
+
+This is a location fix, not a predicate change — the defensible counting proxy
+is kept.
+
+### Tests (written this session — TDD, pre-change failure posted)
+
+New `src/__tests__/duplicate-import.spec.ts` (3 tests, `checkImports: true`):
+
+- **positive** — a module imported twice fires with `line` = the real first-import
+  line (3), not the fabricated 1. *Pre-change failed with `expected 1 to be 3`.*
+- **near-miss** — two imports of *different* modules stay silent.
+- **inverse near-miss** — duplicate imports deep in the file (line 1 is a
+  comment) report the real import line (9). *Pre-change failed with `expected 1
+  to be 9`* — the old `{1,1}` would land on the license comment.
+
+All three green after the fix; full unit suite (1321 tests) green, no regressions.
+
+### Counts (before → after, per corpus)
+
+The change is location-only — it cannot add or remove findings — so counts are
+unchanged. `duplicate-import` is additionally **off by default**: the pipeline
+builds the DRY config from the user `analyzerConfigs.dry` (empty by default), so
+the analyzer runs on `DEFAULT_DRY_CONFIG` where `checkImports: false`. The rule
+fires nowhere on the default corpora:
+
+- recall 0 → 0 (verified; `dry` totals 27 = 21 similar-expression + 6 duplicate,
+  unchanged) · hhra-org 0 → 0 · knex 0 → 0 · primer-css 0 → 0 · blitz 0 → 0 ·
+  gin n/a (Go corpus, not on disk) · svelte-realworld not on disk
+
+### Adjudication
+
+No corpus-level survivors (off by default). The enabled path is adjudicated by
+the three unit tests: the only cases that fire are genuine same-module imports,
+and the location is the real import line. One config-coherence issue surfaced
+while tracing the default and is recorded for the post-33 pass, not fixed here:
+
+- **Two disagreeing DRY defaults** — `DEFAULT_ANALYZER_CONFIGS.dry`
+  (`config/defaults.ts`, exported from the library) carries `checkImports: true`,
+  `checkStrings: true`, `minLineThreshold: 3`, `similarityThreshold: 0.5`, but
+  the pipeline never merges it — it builds the DRY config from user
+  `analyzerConfigs.dry` only, so the analyzer actually runs on `DEFAULT_DRY_CONFIG`
+  (`checkImports: false`, `checkStrings: false`, `minLineThreshold: 15`,
+  `similarityThreshold: 0.85`). The library-exported defaults and the
+  enforced defaults have drifted apart.
+
+### Verdict
+
+- `duplicate-import` — `replaced`. The fabricated-location proxy (`{line:1,
+  column:1}`) is replaced with the real `ImportInfo.location`; the defensible
+  same-source counting detection is unchanged.
