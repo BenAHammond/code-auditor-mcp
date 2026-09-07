@@ -2684,3 +2684,58 @@ resolved:
 blocking violations ✓.
 
 - Spec 49 acceptance #8 — `met` (`verify:close` green).
+
+---
+
+## Session 33 — restore the authenticity ledger + reconcile the rule-identity seam
+
+Two follow-ups to the Spec 49 close-out, done in the user's stated order:
+seam first, then the ledger.
+
+### 1. Rule identity — one field, one meaning (`rule`)
+
+The Go subprocess emitted its rule ID under `category` (`json:"category"`),
+while the canonical TS field is `rule` (`src/types.ts:67`) and, on the TS side,
+`category` means *broad grouping* (security/architecture/style). That one
+collision had spawned eleven different fallback chains, each guessing
+differently (`v.rule || v.category`, `v.category || v.type || v.analyzer`,
+`violation.type || analyzer`, `v.rule || v.type`, `(v).rule || 'unknown'`, …).
+An earlier `|| 'unknown'` patch to `verify-self.mjs` made the mismatch silent
+instead of loud — the wrong direction.
+
+Fixed at the source, not harmonized:
+
+- **Go source** (`analyzer-src/types.go`, `solid.go`, `analyzer.go`):
+  `Category string json:"category"` → `Rule string json:"rule"`; all 11
+  `Category:` literals → `Rule:`. Binary rebuilt and re-committed.
+- **Loud seam assertion** (`src/languages/RuntimeManager.ts`
+  `parseGoAnalyzerResponse`): after parsing, every Go violation must carry a
+  non-empty `rule`, else `throw` with the offending violation's JSON. This is
+  the single point where Go findings enter the TS world.
+- **Fallback chains deleted.** Every identity read is now a direct `v.rule`
+  read. Where the value can be `undefined` at runtime (`any`-typed), it throws
+  rather than falls back — except the ledger's `NOT NULL` `rule` column, which
+  keeps `?? ''` (empty string is the codebase's canonical no-rule sentinel,
+  matching `buildFingerprintInput`). `nextFileIncremental` buckets by *analyzer*
+  (a distinct concern), so it only dropped the deprecated `type` guess.
+- **Six Go spec files** now assert `v.rule` on raw subprocess output — the
+  regression tests for "a Go finding must carry `rule`".
+
+### 2. Authenticity ledger restored (`specs/rule-authenticity-ledger.md`)
+
+The ledger was deleted in cleanup commit `06c6588`; its only surviving copy
+still read `crude: 33`. Restored from `06c6588^` and flipped to current:
+
+- 33 `crude` rows → 32 `honest` + 1 `blocked` (Go `solid/dependency-inversion`,
+  the one rule whose proxy was removed with no honest replacement — field-type
+  resolution needs a semantic/type tier tree-sitter cannot supply).
+- 4 `dishonest` rows (Go LSP / error-handling / concurrency, and
+  `missing-org-filter`) → `honest` (all four now do real body/table-catalog
+  analysis, verified against the current source).
+- 10 `cannot-fire` rows unchanged.
+
+Running total: `honest: 94 · crude: 0 · dishonest: 0 · blocked: 1 ·
+cannot-fire: 10 · unread: 0 (105 rows)`.
+
+- Spec 49 acceptance #9 — `met` (`crude: 0`; the artifact the criterion names
+  is restored and current).
