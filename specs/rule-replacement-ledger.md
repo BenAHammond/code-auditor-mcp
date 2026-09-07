@@ -1562,3 +1562,88 @@ provenance missing" gap.
   the dynamic-SQL-construction vector. Taint-aware injection detection remains
   the job of `sql-injection-risk` (data-access), which the ledger already marks
   honest. The predicate is unchanged; the name is now true.
+
+## Session 19 — `table-naming-convention` (uppercase-proxy → snake_case conformance) (spec-49 order #7 remainder, row 72)
+
+### The state on arrival
+
+Row 72 marked `table-naming-convention` crude with one gap: the old predicate
+flagged any table name containing an uppercase letter (`/[A-Z]/`, minus a
+hardcoded `Table`-suffix exemption) as "not snake_case". That is a proxy, not a
+conformance check, and it errs in both directions: an all-caps name (`ORDERS`)
+is not PascalCase but reads as if it were, an ORM `XxxTable` class name needs a
+special-case to pass, and — most importantly — a non-snake_case name with **no**
+uppercase letter (`order-items`, `123orders`) slips through entirely because the
+`/[A-Z]/` proxy never fires on it.
+
+### The state on arrival (continued)
+
+The rule was **already replaced in spec-44**, not in this sweep. Commit `13dd2cb`
+("check snake_case conformance for table-naming instead of uppercase-proxy")
+rewrote `checkNamingConventions` (`codeAnalysis.ts:445-447`) to an explicit
+`/^[a-z][a-z0-9_]*$/` conformance check plus the `Table`-suffix ORM policy, and
+reworded the message to `Table name '…' should use snake_case convention`. Unlike
+the other spec-44 fixes, that commit changed **one file only** — it shipped no
+test. The fix was live but unverified.
+
+### The fix
+
+No predicate change was required this session — the conformance check is in
+place. The gap that remained was **coverage, not correctness**: a rule whose
+entire point is that the uppercase-proxy missed lowercase non-snake_case names
+had no test proving it, so a future edit could regress to the proxy unnoticed.
+This session's contribution is **verification + measurement + ledger record**:
+three dedicated tests pin the conformance check, with the inverse near-miss as
+the regression guard.
+
+### Tests (written before implementation, per the TDD loop)
+
+New `src/analyzers/universal/schema/tableNaming.spec.ts`, exercising the
+exported `checkNamingConventions` with `TableReference` objects (no AST needed):
+
+- positive — `OrderItems` (PascalCase) fires. Passed on arrival (the conformance
+  check was already live).
+- near-miss — `order_items` (snake_case) and `OrderItemsTable` (ORM
+  `Table`-suffix policy) do NOT fire. Passed on arrival.
+- inverse near-miss — `order-items` and `123orders` (non-snake_case, **no
+  uppercase**) fire. Passed on arrival. This is the regression guard: the old
+  `/[A-Z]/` proxy would have let both pass, so a green run here proves the proxy
+  is gone and the conformance check is what runs.
+
+3 green. All three passed on arrival — the spec-44 fix predates this sweep, so
+there is no pre-change failure to show. The tests are written this session
+because spec-44 shipped none; they are the missing proof, not a duplicate.
+
+### Counts (before → after, per corpus)
+
+The proxy was removed in spec-44, before this sweep's baseline, so "before" is
+the pre-`13dd2cb` predicate (uppercase-proxy) and "after" is the current
+conformance check. Only the after-count is measurable now:
+
+- recall 0 · knex **1** · primer-css 0 · blitz 0 · hhra-org 0 · gin 0 ·
+  svelte-realworld 0
+
+A near-zero count is the honest answer: the uppercase-proxy's false positives
+(all-caps names, any `Xxx` identifier) are gone, and the conformance check now
+fires only on a genuine non-snake_case, non-`Table`-suffix table reference.
+
+### Adjudication
+
+One survivor (knex `test/unit/query/builder.js:10255`):
+`.from('withClause')` — TRUE. `withClause` is a camelCase CTE alias used as a
+`FROM` table reference in a knex test fixture; it is genuinely not snake_case and
+does not end in `Table`, so the conformance check correctly flags it. It is
+low-value noise (a test that intentionally names a CTE `withClause` to prove the
+name passes through verbatim across dialects), but it is a true reading, not a
+false positive — the rule claims "table name should use snake_case" and
+`withClause` violates exactly that.
+
+### Verdict
+
+- `table-naming-convention` — `replaced` (already replaced in spec-44, commit
+  `13dd2cb`: the uppercase-proxy became an explicit `/^[a-z][a-z0-9_]*$/`
+  conformance check with a `Table`-suffix ORM policy). This session adds the
+  three tests the spec-44 commit shipped without, including the inverse near-miss
+  that guards against regressing to the proxy. No residual gap — the `bridgeable`
+  fix the ledger named ("replace with an explicit conformance check") is
+  satisfied.
