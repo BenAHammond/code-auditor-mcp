@@ -39,9 +39,6 @@ func (s *SOLIDAnalyzer) Analyze() []Violation {
 	// Analyze Interface Segregation Principle
 	violations = append(violations, s.analyzeISP()...)
 
-	// Analyze Dependency Inversion Principle
-	violations = append(violations, s.analyzeDIP()...)
-
 	return violations
 }
 
@@ -235,34 +232,6 @@ func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 	return violations
 }
 
-// analyzeDIP analyzes Dependency Inversion Principle violations
-func (s *SOLIDAnalyzer) analyzeDIP() []Violation {
-	var violations []Violation
-
-	// Check for direct dependencies on concrete types instead of interfaces
-	for _, structInfo := range s.structs {
-		concreteDeps := s.countConcreteDependencies(structInfo)
-		if concreteDeps > 3 {
-			violations = append(violations, Violation{
-				File:     structInfo.File,
-				Line:     structInfo.StartLine,
-				Severity: "suggestion",
-				Message:  "Struct has many concrete-typed fields",
-				Details: map[string]interface{}{
-					"struct":             structInfo.Name,
-					"concreteDependencies": concreteDeps,
-					"principle":          "DIP",
-				},
-				Suggestion: "Consider depending on interfaces instead of concrete types",
-				Analyzer:   "solid",
-				Category:   "dependency-inversion",
-			})
-		}
-	}
-
-	return violations
-}
-
 // Helper methods for analysis
 
 func (s *SOLIDAnalyzer) countFunctionResponsibilities(function Function) int {
@@ -354,37 +323,6 @@ func (s *SOLIDAnalyzer) countTypeSwitchCases(typeSwitchStmt *ast.TypeSwitchStmt)
 		}
 	}
 	return caseCount
-}
-
-func (s *SOLIDAnalyzer) countConcreteDependencies(structInfo Struct) int {
-	concreteDeps := 0
-
-	for _, field := range structInfo.Fields {
-		// Check if field type looks like a concrete type (not interface)
-		if !strings.Contains(field.Type, "interface") &&
-			!strings.HasPrefix(field.Type, "*") && // Pointers might be interfaces
-			!s.isBuiltinType(field.Type) {
-			concreteDeps++
-		}
-	}
-
-	return concreteDeps
-}
-
-func (s *SOLIDAnalyzer) isBuiltinType(typeName string) bool {
-	builtinTypes := []string{
-		"bool", "string", "int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-		"byte", "rune", "float32", "float64", "complex64", "complex128",
-	}
-
-	for _, builtin := range builtinTypes {
-		if typeName == builtin {
-			return true
-		}
-	}
-
-	return false
 }
 
 // methodCallsPanic reports whether a function body contains a direct panic()

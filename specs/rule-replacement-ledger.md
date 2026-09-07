@@ -412,3 +412,90 @@ touching the *predicate*: none of these findings now assert that the switch is
   type + sealed-vs-open judgment)
 - `solid/open-closed` (TS instanceof) — already `replaced` (honest predicate +
   message); row 24 was stale and needed no change
+
+---
+
+## Session 5 — `dependency-inversion` (Go concrete-field proxy removed; TS already honest) (spec-49 order #5)
+
+The authenticity ledger marked the Go `dependency-inversion` (row 15) crude and the
+TS `solid/dependency-inversion` (row 28) honest. Two different stories, so two
+different outcomes — the same shape as Session 4's open-closed split.
+
+### The Go proxy (row 15) — `blocked`, proxy removed
+
+`analyzeDIP` fired `if concreteDeps > 3`, where `countConcreteDependencies` counted
+a struct field as "concrete" iff
+`!strings.Contains(field.Type, "interface") && !strings.HasPrefix(field.Type, "*")
+&& !s.isBuiltinType(field.Type)`. That predicate is broken on both ends:
+
+- **pointers are exempted** — `*http.Client` (`HasPrefix "*"`) is skipped because
+  "pointers might be interfaces", when a pointer-to-concrete is the *most common*
+  concrete dependency in Go. The exemption silently drops the exact case DIP is
+  about.
+- **`"interface"` is substring-matched** — a concrete type named `MyInterface` is
+  exempted, while a real interface like `io.Reader` is not matched (it has no
+  `"interface"` substring), so the check neither exempts what it should nor counts
+  what it should.
+
+Whether a named field type is an interface or a concrete type cannot be answered by
+`go/parser` — it needs type resolution. The honest DIP computation is therefore
+**blocked**, not faked: the proxy is removed and the Go analyzer no longer emits
+`dependency-inversion`.
+
+### The TS rule (row 28) — already `replaced`-shaped, no change
+
+`UniversalSOLIDAnalyzer.hasDirectInstantiation` is a *real* signal: a bare
+`new PascalCaseNonBuiltinNonSelf()` instantiation inside the class body, with
+near-miss guards — lowercase ctor names are instances not types, `BUILTIN_TYPES`
+are platform primitives, `cls.name` is self-instantiation. It has the only
+execution-level near-miss suite in the solid analyzer (7 tests). The one stale
+caveat in the authenticity ledger is a *wording* overreach, not a predicate lie:
+the message says "concrete **dependency**", but a `new` of a value object/DTO is
+not a dependency. That is a message nit, not a crude proxy, so the rule stands
+untouched (matching how Session 4 left the TS `instanceof` rule alone).
+
+### Tests (written before implementation, per the TDD loop)
+
+`goDependencyInversionBlock.spec.ts` — 3 tests, all spawning the real Go binary:
+
+- positive-block — a struct with four concrete fields (`User`/`Order`/`Product`/
+  `Payment`) does **not** emit `dependency-inversion` (the proxy no longer fires)
+- rename guard — no re-branded proxy category (`dependency`/`concrete`/
+  `field-count`) fires for the same struct
+- sanity — the rest of the solid analyzer still runs (a large interface fires
+  `interface-size`)
+
+2 red before implementation (`dependency-inversion` still emitted for the four-field
+struct); 3 green after. Full Go suite 7 passed across both `goSwitchSize` and
+`goDependencyInversionBlock`.
+
+### Counts (before → after, per corpus)
+
+The proxy is Go-only and removed outright (not relabeled), so only gin — the sole
+Go corpus — is affected; the TS corpora are untouched:
+
+- gin `solid::dependency-inversion` 6→**0** (advisory 29→23, `solid` 25→19;
+  `liskov-substitution` 11 and `switch-size` 6 and `interface-size` 2 unchanged)
+- recall / knex / primer-css / blitz / hhra-org n/a — `solid/dependency-inversion`
+  (TS) unchanged · svelte-realworld not on disk
+
+"before" was measured against the pre-removal committed binary (0b11db3, verified
+to still contain the `dependency-inversion` string), not reconstructed.
+
+### Adjudication
+
+Zero survivors — a block has nothing to re-examine. The 6 removed findings were
+gin structs with >3 non-builtin, non-`"interface"`-substring, non-pointer fields,
+which is exactly the population the broken predicate selected: a mix of genuine
+concrete-typed aggregates and pointer-exempted false negatives, with no way to tell
+them apart without type resolution. Rather than keep a signal that counts a
+`*http.Client` as an interface and a `MyInterface` as not-an-interface, the finding
+class is removed wholesale.
+
+### Verdict
+
+- Go `dependency-inversion` — `blocked` (needs type resolution: interface-vs-concrete
+  per field type); proxy removed
+- `solid/dependency-inversion` (TS) — already `replaced` (honest
+  `new PascalCaseNonBuiltinNonSelf()` predicate + 7-test near-miss suite); row 28's
+  only stale note is the "dependency" wording, a message nit left as-is
