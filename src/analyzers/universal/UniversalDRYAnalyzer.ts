@@ -615,7 +615,13 @@ function computePairFingerprint(original: CodeBlock, block: CodeBlock): string {
  * Find a node by its location via BFS.
  */
 function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
-  const queue: ASTNode[] = [root];
+  // Search from the root's children, never the root itself. The root is a
+  // whole-file wrapper (`program`/`source_file`) whose start location collides
+  // with its first top-level child (a non-`export`ed declaration starts at
+  // column 1, the same as the wrapper). Returning the wrapper for the first
+  // top-level declaration made `deduplicateBlocks` absorb it as an outer block,
+  // silently dropping the file's first declaration from comparison.
+  const queue: ASTNode[] = [...(root.children ?? [])];
 
   while (queue.length > 0) {
     const node = queue.shift()!;

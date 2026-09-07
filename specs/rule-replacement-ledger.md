@@ -2325,3 +2325,81 @@ while tracing the default and is recorded for the post-33 pass, not fixed here:
 - `duplicate-import` — `replaced`. The fabricated-location proxy (`{line:1,
   column:1}`) is replaced with the real `ImportInfo.location`; the defensible
   same-source counting detection is unchanged.
+
+---
+
+## Session 28 — after-33 pass (1/4): fix the `program`-node location collision
+
+The 33 crude rules are closed (Sessions 1–27). The deferred post-33 pass now
+sweeps the two correctness bugs flagged during Sessions 26/27, then adjudicates
+every rule that ended at zero across all corpora. This session fixes the first
+bug.
+
+### The bug
+
+`extractCodeBlocks` collects a block for every function/class/method by
+resolving its start location back to an AST node through `findNodeByLocation`,
+a BFS that returned the **first** node whose `location.start` matched. The AST
+root (`program` in TS, `source_file` in Go) reports its start at the same
+(line, column) as its first child, so for a *non-`export`ed* top-level
+declaration (whose `function_declaration`/`class_declaration` starts at
+column 1, the same as the wrapper) the BFS returned the whole-file wrapper
+instead of the declaration.
+
+`deduplicateBlocks` then absorbed that whole-file block — an outer block that
+fully contains its inner blocks is replaced by them — so the **first top-level
+function/class in every file was silently dropped as a candidate block and
+never compared**. A pair of structurally-identical top-level functions could
+not fire `dry/structural-similarity`; only their inner `if`/`for` bodies
+survived. `export`ed declarations were spared (the declaration node starts at
+the `function` keyword, column 8, clear of the wrapper), which is why this hid
+from the Session 26 tests — they used `export function`-free fixtures wrapped
+in a class as a workaround.
+
+### The fix
+
+`findNodeByLocation` now searches from the root's **children**, never the root
+itself. The root is always a whole-file wrapper the block extractor never wants
+to return; a first-match BFS over the children returns the actual declaration
+(the wrapper is the only node that shares its start with a top-level child, and
+the BFS reaches the declaration before any leaf such as its name identifier).
+
+### Tests (written before the fix, per the TDD loop)
+
+`dry-top-level-block.spec.ts` — 3 tests, positive / near-miss / inverse
+near-miss, using `checkStructuralSimilarity: true` and no inner control-flow
+blocks (so the whole top-level function is the *only* candidate):
+
+- **positive** — two structurally-identical top-level functions fire
+  `dry/structural-similarity` at the second function's start line.
+- **near-miss** — two structurally-different top-level functions stay silent.
+- **inverse near-miss** — the identical pair with the first function at line 1
+  (the worst case for the collision) still fires.
+
+*Pre-change failure posted*: both the positive and inverse near-miss failed
+`expected 0 to be greater than or equal to 1` before the fix; the near-miss
+passed (different functions correctly silent). All three green after. Full unit
+suite 1321 → **1324** tests, no regressions; typecheck clean.
+
+### Counts (before → after, per corpus)
+
+The fix only widens block extraction for the first top-level declaration, and
+the two rules it feeds are either off by default (`dry/structural-similarity`)
+or require an *exact* text match across a whole top-level declaration
+(`dry/duplicate`), which none of the corpora contain. The default corpora are
+count-neutral:
+
+- recall `dry` 27 → 27 (21 similar-expression + 6 duplicate) · hhra-org 5 → 5 ·
+  knex 1 → 1 · primer-css 0 → 0 · blitz 0 → 0
+
+### Adjudication
+
+No corpus-level delta to adjudicate — the change is provably count-neutral on
+the default configs. The regression is pinned by the three unit tests, which
+now exercise the exact case the Session 26 class-wrap workaround was hiding.
+
+### Verdict
+
+- program-node location collision — `fixed`. The whole-file-wrapper match in
+  `findNodeByLocation` is removed; the first top-level declaration is now a
+  first-class candidate block.
