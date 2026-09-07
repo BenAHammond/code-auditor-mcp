@@ -912,3 +912,88 @@ concrete user-defined type".
   match the already-honest emitted message and predicate); the computation was
   already complete and the only crude remnant was the stale "frequently modified" /
   "Open/Closed Principle" template string and a mismatched sample.
+
+---
+
+## Session 11 — `solid/liskov-substitution` (already replaced in spec-44; verified) (spec-49 order #7 remainder, row 27)
+
+The authenticity ledger marked `solid/liskov-substitution` (row 27) crude with one
+gap: the old proxy — for each non-constructor method, if `cls.extends`, walk the
+method node for a `throw_statement` and fire — computed only "contains a throw
+statement", never "violates the parent class contract". A subclass method that
+throws is not a Liskov violation when the parent method throws the same way, nor
+when it is a *new* method (not an override), nor when the parent is unresolvable
+(imported, cross-file). The message claimed "Ensure this doesn't violate parent
+class contract" without ever comparing against the parent.
+
+### The state on arrival
+
+The rule was **already replaced in spec-44**, not in this sweep. Commit `a60f655`
+("build the honest predicates") rewrote `checkLiskovSubstitution` and added a
+six-test suite (`src/analyzers/universal/liskov-substitution.spec.ts`); commit
+`fdd8c81` reworded the message to claim only what is computed. The honest predicate:
+
+1. resolve the parent class **within-file** (`adapter.extractClasses(ast).find(c =>
+   c.name === cls.extends)`); if it cannot be found — imported/cross-file parent —
+   the contract is unknowable and the rule does **not** fire (claim less rather than
+   accuse blindly);
+2. require a **real override** — a same-named parent method, not a new method;
+3. fire only when `childThrows && !parentThrows`.
+
+The emitted message and the registry's canonical template both read "…throws where
+the parent does not", and the samples are correct (`Ostrich extends Bird` with a
+throwing `fly()` as invalid; `Sparrow extends Bird` with a non-throwing `fly()` as
+the near-miss valid).
+
+### The fix
+
+None required in this session. The predicate, message, and samples were already
+honest. This session's contribution is **verification + measurement + ledger
+record**: the six-test spec-44 suite was re-run green, and the honest rule's count
+was measured across the TS corpora. The remaining `gap` — cross-file parent
+resolution — is `blocked` (needs a type resolver, which the syntax-only tree-sitter
+adapter lacks), and the honest rule already handles it by declining to fire.
+
+### Tests (spec-44, re-verified this session)
+
+`src/analyzers/universal/liskov-substitution.spec.ts` — 6 tests, running the real
+`UniversalSOLIDAnalyzer` via `analyzeAST`:
+
+- true positive — an override that throws where the parent does not (`Ostrich.fly`)
+- near-miss — an override that does not throw (`Sparrow.fly`)
+- contract preserved — child throws but the parent also throws
+- unresolvable parent — `extends Bird` with `Bird` not in the file
+- non-override — a *new* `swim()` method throws
+- no parent — a throwing method on a class with no `extends`
+
+6 green. No new tests were written this session — writing a duplicate subset of the
+spec-44 suite would add nothing (the Session 5 precedent: TS `dependency-inversion`
+was recorded `already replaced` with its existing near-miss suite, no new tests).
+
+### Counts (before → after, per corpus)
+
+The proxy was removed in spec-44, before this sweep's baseline. The honest predicate
+fires only on a within-file override that throws where the parent does not — a
+genuinely rare shape, because parents are usually imported cross-file:
+
+- recall 0→0 · knex 0→0 · primer-css 0→0 · blitz 0→0 · hhra-org 0→0 ·
+  gin n/a (Go corpus — the Go `liskov-substitution` is a separate dishonest rule,
+  row 13, already fixed) · svelte-realworld 0→0
+
+A count of zero is the honest answer, not a regression: the old proxy's non-zero
+readings were false positives (any subclass method that threw), and the honest
+signal is rare.
+
+### Adjudication
+
+Zero survivors — a count of 0 has nothing to re-examine. The rule now claims a
+specific, provable thing (a within-file override that throws where the parent does
+not) and is silent everywhere it cannot prove it.
+
+### Verdict
+
+- `solid/liskov-substitution` — `replaced` (already replaced in spec-44, commits
+  `a60f655` + `fdd8c81`: within-file parent resolution + real-override requirement +
+  throws comparison, with a 6-test suite). The cross-file-parent half is `blocked` —
+  it needs type resolution the syntax-only adapter lacks — and the honest rule
+  already declines to fire there.
