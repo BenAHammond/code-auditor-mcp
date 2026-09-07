@@ -2403,3 +2403,81 @@ now exercise the exact case the Session 26 class-wrap workaround was hiding.
 - program-node location collision — `fixed`. The whole-file-wrapper match in
   `findNodeByLocation` is removed; the first top-level declaration is now a
   first-class candidate block.
+
+---
+
+## Session 29 — after-33 pass (2/4): reconcile DRY defaults drift
+
+The second correctness bug flagged during Sessions 26/27: the library-exported
+`DEFAULT_ANALYZER_CONFIGS.dry` namespace had drifted from the analyzer's
+authoritative `DEFAULT_DRY_CONFIG`, so the public export lied about what the
+DRY analyzer actually runs.
+
+### The bug
+
+Two config surfaces nominally describe the same defaults but had diverged:
+
+| key | exported `DEFAULT_ANALYZER_CONFIGS.dry` (lying) | enforced `DEFAULT_DRY_CONFIG` (authoritative) |
+| --- | --- | --- |
+| `minLineThreshold` | 3 | 15 |
+| `similarityThreshold` | 0.5 | 0.85 |
+| `excludePatterns` | 2 entries (`.test`/`.spec` only) | 10 entries (+`.tsx`/`.jsx` variants, `/test/`, `/tests/`) |
+| `checkImports` | `true` | `false` |
+| `checkStrings` | `true` | `false` |
+| `checkStructuralSimilarity` | *(absent)* | `false` |
+| `checkExpressionSimilarity` | *(absent)* | `true` |
+| `minShapeNames` | *(absent)* | `4` |
+
+The exported namespace is **dead**: `grep` confirms `DEFAULT_ANALYZER_CONFIGS`
+is only *defined* in `config/defaults.ts` and *re-exported* at `src/index.ts:25`
+— never read by any analyzer, `auditRunner`, or `getDefaultConfig()`. The
+pipeline builds its DRY config from the *user's* `analyzerConfigs.dry` and the
+analyzer falls back to `DEFAULT_DRY_CONFIG`; the exported values are applied
+nowhere. So the drift caused **no analysis change** — but a library consumer
+reading `DEFAULT_ANALYZER_CONFIGS.dry` (or a user running
+`code-audit generate-config`) would be told `minLineThreshold: 3` when the
+enforced floor is 15. The two surfaces must not disagree.
+
+### The fix
+
+Aligned `DEFAULT_ANALYZER_CONFIGS.dry` to `DEFAULT_DRY_CONFIG` value-for-value,
+kept the `divergence` sub-object (the one key the pipeline reads separately,
+`auditRunner.ts:949-951`, with a hardcoded `{0.05, 2, 0.5}` fallback that this
+mirrors). Chose copy-over-import deliberately: `UniversalDRYAnalyzer` and the
+defaults module both sit in the `pipelineAdapters`→`defaults` graph, and an
+import of `DEFAULT_DRY_CONFIG` into `defaults.ts` risks a cycle. A comment pins
+the namespace to `DEFAULT_DRY_CONFIG` so future sweep edits cannot silently
+re-diverge.
+
+### Test (written first, per the TDD loop)
+
+`defaultsRegistry.test.ts` — new `dry defaults drift` describe block, two
+assertions:
+
+- `DEFAULT_ANALYZER_CONFIGS.dry` **minus** `divergence` deep-equals
+  `DEFAULT_DRY_CONFIG` — catches any future value drift.
+- `DEFAULT_ANALYZER_CONFIGS.dry.divergence` equals `{0.05, 2, 0.5}` — the
+  auditRunner fallback the namespace advertises.
+
+*Pre-change failure posted*: the deep-equal failed (3 vs 15, 0.5 vs 0.85,
+missing keys) before the fix. Full unit suite **1326** tests green, no
+regressions; typecheck clean; no import cycle introduced.
+
+### Counts
+
+Count-neutral **by construction**, not by re-measurement: the changed surface
+is grep-confirmed unreachable at runtime (only definition + `src/index.ts:25`
+re-export). The enforced default `DEFAULT_DRY_CONFIG` is untouched, so no
+corpus can move.
+
+### Adjudication
+
+Nothing to adjudicate — a dead exported namespace, not an enforced behavior.
+The guard test is what makes the reconciliation durable; the honesty win is
+that the public export now reports the real thresholds.
+
+### Verdict
+
+- DRY defaults drift — `fixed`. `DEFAULT_ANALYZER_CONFIGS.dry` now mirrors
+  `DEFAULT_DRY_CONFIG` (minus the separately-read `divergence`), pinned by a
+  deep-equal guard test.

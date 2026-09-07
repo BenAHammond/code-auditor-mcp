@@ -23,6 +23,7 @@ import { getDefaultConfig, DEFAULT_ANALYZER_CONFIGS } from '../config/defaults.j
 import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
 // Analyzer defaults — used by each analyzer's constructor/analyzeAST
 import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
 
 describe('defaults ≡ registry guard', () => {
   const defaults = getDefaultConfig().enabledAnalyzers!;
@@ -55,6 +56,30 @@ describe('defaults ≡ registry guard', () => {
 // ---------------------------------------------------------------------------
 
 describe('config-key guards (Spec 22 Item 3)', () => {
+  describe('dry defaults drift (Spec 49 after-33)', () => {
+    it('DEFAULT_ANALYZER_CONFIGS.dry mirrors the authoritative DEFAULT_DRY_CONFIG', () => {
+      // DEFAULT_ANALYZER_CONFIGS.dry is exported from the library but never
+      // merged into the pipeline; the analyzer enforces DEFAULT_DRY_CONFIG.
+      // The two surfaces drifted (minLineThreshold 3 vs 15, similarityThreshold
+      // 0.5 vs 0.85, checkImports/checkStrings true vs false). This pins the
+      // exported namespace to the enforced values so the public export cannot
+      // lie again — `divergence` is the one key the pipeline reads separately.
+      const { divergence, ...dryDefaults } = DEFAULT_ANALYZER_CONFIGS.dry;
+      expect(dryDefaults).toEqual(DEFAULT_DRY_CONFIG);
+    });
+
+    it('DEFAULT_ANALYZER_CONFIGS.dry.divergence mirrors the auditRunner fallback', () => {
+      // auditRunner.ts:949-951 reads divergence from analyzerConfigs.dry.divergence
+      // with a hardcoded fallback of { 0.05, 2, 0.5 }. The exported namespace must
+      // not advertise a different divergence default than the one actually applied.
+      expect(DEFAULT_ANALYZER_CONFIGS.dry.divergence).toEqual({
+        divergenceThreshold: 0.05,
+        divergenceRuns: 2,
+        minPairSimilarity: 0.5,
+      });
+    });
+  });
+
   describe('data-access analyzer merge path', () => {
     it('preserves parameterizedQueries through the production shallow-spread merge', () => {
       // Replicate the production merge in UniversalDataAccessAnalyzer.analyzeAST:

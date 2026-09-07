@@ -154,17 +154,33 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     classAggregateComplexity: 80,        // Spec 11 R3 sweep: 100 → 80 (precision-first)
   },
   
-  // Spec 11 R3 sweep: minLineThreshold 15 → 3, similarityThreshold 0.85 → 0.5 (precision-first)
-  // ⚠️ These sweep recommendations reflect a minimal corpus; R4 real-corpus triage may revert.
+  // Keep in sync with `DEFAULT_DRY_CONFIG` (UniversalDRYAnalyzer.ts) — that is the
+  // authoritative, *enforced* default. This namespace is exported from the library
+  // (`src/index.ts`) but is NOT merged into the pipeline (the pipeline builds the
+  // DRY config from the user's `analyzerConfigs.dry` only, and the analyzer falls
+  // back to `DEFAULT_DRY_CONFIG`). It is kept here solely so the public export does
+  // not lie about what the analyzer actually runs; a guard test
+  // (defaultsRegistry.test.ts) pins these values to `DEFAULT_DRY_CONFIG`.
   dry: {
-    minLineThreshold: 3,
-    similarityThreshold: 0.5,
-    excludePatterns: ['**/*.test.ts', '**/*.spec.ts'],
-    checkImports: true,
-    checkStrings: true,
+    minLineThreshold: 15,
+    similarityThreshold: 0.85,
+    excludePatterns: [
+      '**/*.test.ts', '**/*.spec.ts',
+      '**/*.test.tsx', '**/*.spec.tsx',
+      '**/*.test.js', '**/*.spec.js',
+      '**/*.test.jsx', '**/*.spec.jsx',
+      '**/test/**', '**/tests/**',
+    ],
+    checkImports: false,
+    checkStrings: false,
     ignoreComments: true,
     ignoreWhitespace: true,
-    // Spec 13 R5 — Diverging-clone detection
+    checkStructuralSimilarity: false,
+    checkExpressionSimilarity: true,
+    minShapeNames: 4,
+    // Spec 13 R5 — Diverging-clone detection. The pipeline reads this from the
+    // user's `analyzerConfigs.dry.divergence` (auditRunner.ts) with an identical
+    // hardcoded fallback; the values here mirror that fallback.
     divergence: {
       divergenceThreshold: 0.05,
       divergenceRuns: 2,
