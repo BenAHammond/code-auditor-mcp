@@ -2739,3 +2739,54 @@ cannot-fire: 10 · unread: 0 (105 rows)`.
 
 - Spec 49 acceptance #9 — `met` (`crude: 0`; the artifact the criterion names
   is restored and current).
+
+---
+
+## Session 34 — evidence the `single-responsibility` threshold (zero-everywhere pass)
+
+The third Spec-49 follow-up. `single-responsibility`'s "narrow by design" had
+been *asserted*, not *shown*. The concern engine (`functionConcerns.ts`) fires
+only when a function spans ≥2 of the 3 irreducible concerns
+(`data-access` / `messaging` / `rendering`); `data-transformation` and `logging`
+are glue and never vote. The check was cheap and decisive: rank the functions
+that come *closest* to firing and adjudicate whether they are ones you'd want
+flagged.
+
+Ran a throwaway diagnostic (deleted; never committed) that drives the real
+concern engine over recall-protocol — `extractFunctions` → `findFunctionNode` →
+`detectFunctionConcerns`, the same path `checkMixedResponsibilities` uses.
+
+**Result over recall-protocol (14,618 standalone, non-method functions; 0
+node-not-found):**
+
+- `single-responsibility` fires **0** times.
+- 10,443 functions detect no concern at all (pure computation / no classifiable
+  call).
+- 563 near-misses (≥2 total concerns but <2 voting), all "1 voting + glue":
+
+| signature | count |
+| --- | --- |
+| data-access + data-transformation | 551 |
+| data-transformation + logging | 4 |
+| data-transformation + messaging | 4 |
+| data-access + data-transformation + logging | 2 |
+| data-transformation + rendering | 2 |
+
+- The 6 near-misses touching messaging/rendering — the closest any function
+  comes to a real mixed-concern finding — are `shape-then-send`
+  (`emit`, `postEntry`, two anonymous strategist-tools callbacks) and
+  `shape-then-render` (`renderBuildOgPng`, `renderHeroOgPng`): each a single
+  cohesive job, none spanning two irreducible concerns.
+
+**Adjudication — the threshold holds.** No function in the corpus spans two
+irreducible concerns, so the rule is silent — and the 563 functions that come
+closest are all load-and-shape / shape-then-send / shape-then-render pipelines
+you would *not* want flagged. The prior assumption that `boot` (fetch+render)
+fires was stale: it is not among the standalone functions scanned, and nothing
+else fires either. The synthetic firing cases (`processOrder`, `notifyUser`)
+remain pinned in `single-responsibility.spec.ts`, so the engine still fires when
+a genuine mixed-concern function appears. No code change; the design claim is
+now evidenced rather than asserted.
+
+- Spec 49 zero-everywhere pass — `single-responsibility` threshold confirmed
+  correct (evidence above).
