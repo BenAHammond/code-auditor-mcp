@@ -2,6 +2,48 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.8.0] — 2026-09-08
+
+### Rule authenticity — Spec 49 closes the crude sweep
+The 33 `crude` and 4 `dishonest` rules flagged in the authenticity ledger were
+replaced, renamed, or blocked, so no analysis reports a name/doc-comment/substring
+proxy under a rule ID that overclaims what was computed. The ledger now reads
+`crude: 0`.
+
+- **`solid::function-length`** (was `single-responsibility`) — counts parameters
+  and lines honestly; the SRP claim is dropped.
+- **`solid::interface-size`** (was `interface-segregation`) — counts members; true
+  ISP needs client-usage sets.
+- **`solid::switch-size`** (was Go `open-closed`) — counts cases; "closed to
+  extension" needs type resolution.
+- **`schema-code::dynamic-sql-construction`** (was `sql-injection`) — names the
+  construction, not an unproven taint flow.
+- **`cross-domain::multi-table-write`** (was `transaction-boundary`) — counts
+  write targets, not an unparsed boundary.
+- **`cross-domain::no-validator-reachable`** (was `validation-bypass`) — BFS
+  reachability, not "not validated".
+- Go `solid/dependency-inversion` (concrete-field) is **blocked** — the proxy was
+  removed; an honest field-type check needs a semantic tier tree-sitter lacks.
+
+### Rule-identity seam fix
+The Go subprocess now emits the canonical `rule` ID, so the renames hold across
+both TypeScript and Go analyzers instead of diverging on identity.
+
+### Daemon — Spec 50
+Auditing can run as a long-lived per-project process. One core owns the store and
+pipeline; the Unix-socket and LSP faces are thin adapters over it, and every
+command still works with no daemon (the daemon is an optimisation, never a
+dependency).
+
+- **`retryAfterMs` covers time-to-ready** — a polling client is told how long until
+  the seed is *ready*, not just done reading files. The estimate prices the
+  source/orphan file populations separately, then the corpus/derived reducer and
+  finalization phases on their own rates, and never reports the "almost done"
+  floor while a later phase has not started.
+- **JSON dead-read removed** — JSON orphans no longer materialize their bytes for
+  the schema-json visitor (it re-reads on demand); a measured read-cpu saving with
+  no finding-count change.
+
 ## [3.7.0] — 2026-09-06
 
 ### Hardcoded credentials — new critical, gating analyzer
