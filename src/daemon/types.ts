@@ -17,19 +17,34 @@ export type DaemonStatus =
   | 'reindexing'     // a warm re-audit is in flight (still serving the last known-good set)
   | 'shutting-down'; // releasing lease, closing faces
 
+/** Seed phases, in completion order. `retryAfterMs` prices each on its own rate. */
+export type DaemonSeedPhase = 'files' | 'reducers' | 'derived' | 'finalize';
+
 export interface DaemonProgress {
   filesIndexed: number;
   filesTotal: number;
+  /** Source files (have a LanguageAdapter) — parsed first, priced at the source rate. */
+  sourceTotal?: number;
+  /** Orphan files (no adapter) — read last, priced at the orphan rate. */
+  orphanTotal?: number;
+  /** Which seed phase the daemon is in — visible so a caller watches phase, not a frozen file count. */
+  phase: DaemonSeedPhase;
+  /** Progress within the current phase (e.g. reducer 2/4). */
+  phaseCurrent?: number;
+  phaseTotal?: number;
 }
 
 /**
  * The answer every read surface gets for "what is the daemon's state" (R3).
  *
- * `retryAfterMs` is derived from observed throughput (`filesIndexed / elapsed`)
- * and remaining files — never a constant. When no files have been indexed yet,
- * throughput is unknown and `retryAfterMs` is `null` with `throughputUnknown`
- * set, so a client can distinguish "not ready, wait ~N ms" from "not ready,
- * we don't yet know how long" without parsing prose.
+ * `retryAfterMs` is derived from observed progress across the seed's *whole*
+ * lifetime — files, corpus reducers, derived reducers, and finalization — so it
+ * covers time-to-ready, not just time-to-finish-files. Each phase is priced on
+ * its own observed rate; at a phase boundary (rate not yet observed) the value
+ * is clamped conservatively rather than collapsing to "done". When the first
+ * files have not yet been indexed, throughput is unknown and `retryAfterMs` is
+ * `null` with `throughputUnknown` set, so a client can distinguish "not ready,
+ * wait ~N ms" from "not ready, we don't yet know how long" without parsing prose.
  */
 export interface DaemonState {
   status: DaemonStatus;

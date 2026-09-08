@@ -33,7 +33,7 @@ import {
 } from '../ledger.js';
 import { findConfigFileUp, loadConfig } from '../config/configLoader.js';
 import { discoverFilesDetailed, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileDiscovery.js';
-import { initParsers } from '../languages/index.js';
+import { initParsers, LanguageRegistry } from '../languages/index.js';
 import {
   hashAndStatFiles,
   diffFiles,
@@ -42,12 +42,13 @@ import {
   type FileRecord,
   type NextFileSnapshot,
 } from '../nextFileIncremental.js';
-import type { AuditConfig, Violation } from '../types.js';
+import type { AuditConfig, AuditProgress, Violation } from '../types.js';
 import {
   type DaemonStatus,
   type DaemonState,
   type DaemonDiagnosticsResult,
   type DaemonFindingsResult,
+  type DaemonSeedPhase,
 } from './types.js';
 
 /** Extensions that carry table/DDL definitions — a change can shift the schema catalog. */
@@ -62,6 +63,9 @@ const WATCH_DEBOUNCE_MS = 300;
 /** Clamp for `retryAfterMs` so it is never absurdly short or long. */
 const RETRY_AFTER_MIN_MS = 250;
 const RETRY_AFTER_MAX_MS = 30_000;
+
+/** Seed phases, in completion order. Each is priced on its own observed rate. */
+type SeedPhase = DaemonSeedPhase;
 
 export interface DaemonCoreOptions {
   projectRoot: string;
@@ -80,8 +84,18 @@ export class DaemonCore extends EventEmitter {
 
   private status: DaemonStatus = 'starting';
   private snapshot: NextFileSnapshot | null = null;
-  private progress = { filesIndexed: 0, filesTotal: 0 };
+  private progress = { filesIndexed: 0, filesTotal: 0, sourceTotal: 0, orphanTotal: 0 };
   private seedStartedAt = 0;
+
+  // Phase machine for `retryAfterMs`: the seed runs files → reducers → derived →
+  // finalize, and each phase is priced on its own observed rate so the estimate
+  // covers time-to-ready (never collapsing to "done" during the reducer tail).
+  private phase: SeedPhase = 'files';
+  private phaseCurrent = 0;
+  private phaseTotal = 0;
+  private phaseStartedAt = 0;
+  private orphanStartedAt = 0;
+  private seenOrphan = false;
 
   private db: CodeIndexDB | null = null;
   private leaseRunId: string | null = null;
@@ -126,22 +140,159 @@ export class DaemonCore extends EventEmitter {
       throughputUnknown: false,
     };
     if (this.status === 'indexing' || this.status === 'reindexing') {
-      state.progress = { ...this.progress };
+      state.progress = {
+        ...this.progress,
+        phase: this.phase,
+        phaseCurrent: this.phaseCurrent,
+        phaseTotal: this.phaseTotal,
+      };
       state.retryAfterMs = this.deriveRetryAfterMs();
       state.throughputUnknown = state.retryAfterMs === null;
     }
     return state;
   }
 
-  /** R3/R6 — derive `retryAfterMs` from observed throughput, never a constant. */
+  /**
+   * R3/R6 — derive `retryAfterMs` from observed progress across the seed's whole
+   * lifetime (files → reducers → derived → finalize), never a constant. Each
+   * phase is priced on its own observed rate; at a phase boundary the rate is
+   * unknown yet, so the value clamps conservatively instead of collapsing to
+   * "done" while work remains.
+   */
   private deriveRetryAfterMs(): number | null {
-    const elapsedSec = (Date.now() - this.seedStartedAt) / 1000;
-    const { filesIndexed, filesTotal } = this.progress;
+    const now = Date.now();
+    if (this.phase === 'files') return this.deriveFilesEta(now);
+    return this.derivePhaseEta(now);
+  }
+
+  /**
+   * Files phase — the two-population split. Source files (parsed, ~11ms each)
+   * are priced at the source rate; orphan files (raw, mostly no visitor) at the
+   * orphan rate. Discovery classifies both up front, so the split is known
+   * before the first sample. During the source phase the orphan rate is not yet
+   * observed, so orphans are priced at the source rate (the honest fallback —
+   * conservative, never an underestimate); once the source phase completes, the
+   * orphan tail is priced on its own (much faster) rate.
+   */
+  private deriveFilesEta(now: number): number | null {
+    const elapsedSec = (now - this.seedStartedAt) / 1000;
+    const { filesIndexed, filesTotal, sourceTotal } = this.progress;
     if (filesIndexed <= 0 || elapsedSec <= 0) return null; // throughput unknown yet
-    const throughput = filesIndexed / elapsedSec;
-    const remaining = filesTotal - filesIndexed;
-    if (throughput <= 0) return null;
-    return Math.min(RETRY_AFTER_MAX_MS, Math.max(RETRY_AFTER_MIN_MS, Math.round((remaining / throughput) * 1000)));
+
+    // Degenerate case: no source files — the whole corpus is orphan, priced at
+    // the cumulative rate (there is no source phase to complete first).
+    if (sourceTotal <= 0) {
+      const rate = filesIndexed / elapsedSec;
+      if (rate <= 0) return null;
+      return this.clampRetry(((filesTotal - filesIndexed) / rate) * 1000);
+    }
+
+    const sourceIndexed = Math.min(filesIndexed, sourceTotal);
+    const orphanIndexed = Math.max(0, filesIndexed - sourceTotal);
+
+    if (sourceIndexed < sourceTotal) {
+      // Source phase: orphans priced at the source rate (fallback). This equals
+      // the cumulative estimate — pessimistic early, honest about what it knows.
+      const sourceRate = sourceIndexed / elapsedSec;
+      if (sourceRate <= 0) return null;
+      const remaining = filesTotal - sourceIndexed; // source remaining + all orphans
+      return this.clampRetry((remaining / sourceRate) * 1000);
+    }
+
+    // Orphan phase: source is done; price the orphan tail on its own rate.
+    // (`orphanStartedAt` is set the first time `filesIndexed >= sourceTotal`; a
+    // still-unset boundary can only mean `orphanIndexed` is 0, which is handled
+    // by the `sourceIndexed < sourceTotal` branch above.)
+    const orphanElapsedSec = (now - this.orphanStartedAt) / 1000;
+    if (orphanElapsedSec <= 0) return RETRY_AFTER_MAX_MS;
+    const orphanRate = orphanIndexed / orphanElapsedSec;
+    if (orphanRate <= 0) return RETRY_AFTER_MAX_MS;
+    const orphanRemaining = this.progress.orphanTotal - orphanIndexed;
+    if (orphanRemaining <= 0) return RETRY_AFTER_MIN_MS;
+    return this.clampRetry((orphanRemaining / orphanRate) * 1000);
+  }
+
+  /** Reducer/derived/finalize phases — uniform unit, priced on the phase's own window. */
+  private derivePhaseEta(now: number): number | null {
+    const { phaseCurrent, phaseTotal, phaseStartedAt } = this;
+    if (phaseTotal <= 0) return RETRY_AFTER_MAX_MS; // no work priced in this phase — conservative
+    if (phaseCurrent <= 0) return RETRY_AFTER_MAX_MS; // rate unknown yet, work known to remain
+    const phaseElapsedSec = (now - phaseStartedAt) / 1000;
+    if (phaseElapsedSec <= 0) return RETRY_AFTER_MAX_MS;
+    const rate = phaseCurrent / phaseElapsedSec;
+    if (rate <= 0) return RETRY_AFTER_MAX_MS;
+    const remaining = phaseTotal - phaseCurrent;
+    const rawMs = remaining <= 0 ? 0 : (remaining / rate) * 1000;
+    const eta = this.clampRetry(rawMs);
+    // The 250ms floor means "almost ready". That is only ever true in the final
+    // phase: in reducers/derived a later phase has not started, so a floor-level
+    // estimate would understate time-to-ready and must stay conservative.
+    if (this.phase !== 'finalize' && eta === RETRY_AFTER_MIN_MS) return RETRY_AFTER_MAX_MS;
+    return eta;
+  }
+
+  private clampRetry(ms: number): number {
+    return Math.min(RETRY_AFTER_MAX_MS, Math.max(RETRY_AFTER_MIN_MS, Math.round(ms)));
+  }
+
+  /** Map pipeline + local progress events onto the phase machine (R3). */
+  private onSeedProgress(p: AuditProgress): void {
+    const ph = p.phase;
+    if (ph === 'stage2') {
+      // File-level numerator — the pipeline also emits stage1 parse-failure
+      // events, but stage2's `current` is the authoritative (monotonic) file
+      // index, so track it exclusively and take a max for safety.
+      this.progress.filesIndexed = Math.max(this.progress.filesIndexed, p.current ?? 0);
+      this.assertSourceBeforeOrphan(p);
+      // Detect the source→orphan boundary (ordering invariant: source yields first).
+      if (this.orphanStartedAt === 0 && this.progress.sourceTotal > 0 && this.progress.filesIndexed >= this.progress.sourceTotal) {
+        this.orphanStartedAt = Date.now();
+      }
+      this.setPhase('files', this.progress.filesIndexed, this.progress.filesTotal);
+    } else if (ph === 'stage3') {
+      this.setPhase('reducers', p.current ?? 0, p.total ?? 0);
+    } else if (ph === 'stage4') {
+      this.setPhase('derived', p.current ?? 0, p.total ?? 0);
+    } else if (ph === 'stage4-complete') {
+      // Pipeline is done; the daemon's own finalize (hash + persist) and any
+      // audit-runner post-pipeline awaits remain. Enter the finalize phase with
+      // no priced unit so the estimate clamps conservatively rather than
+      // reporting "done" at the end of the reducer tail.
+      this.setPhase('finalize', 0, 0);
+    } else if (ph === 'finalize') {
+      this.setPhase('finalize', p.current ?? 0, p.total ?? 0);
+    }
+    // Ignore stage1 / stage1-complete / stage2-complete and any unknown phase.
+    this.emitState();
+  }
+
+  private setPhase(next: SeedPhase, current: number, total: number): void {
+    if (next !== this.phase) {
+      this.phase = next;
+      this.phaseStartedAt = Date.now();
+    }
+    this.phaseCurrent = current;
+    this.phaseTotal = total;
+  }
+
+  /**
+   * Ordering invariant (R3 accuracy guard): stage 1 yields source files before
+   * orphans. The two-population split above interprets `filesIndexed` as "source
+   * done up to `sourceTotal`, then orphans" — a future reorder that interleaved
+   * the two loops would silently corrupt the estimate. Assert it loudly: throw
+   * the moment a source file is reported after an orphan has been seen.
+   */
+  private assertSourceBeforeOrphan(p: AuditProgress): void {
+    if (p.file == null) return;
+    const isSource = LanguageRegistry.getInstance().getAdapterForFile(p.file) !== null;
+    if (!isSource) {
+      this.seenOrphan = true;
+    } else if (this.seenOrphan) {
+      throw new Error(
+        `code-auditor daemon: stage-1 ordering violated — source file ${p.file} ` +
+        `yielded after orphan files; the two-population retryAfterMs estimate is invalid`,
+      );
+    }
   }
 
   /** All current findings + R4 stale-file report. */
@@ -337,28 +488,49 @@ export class DaemonCore extends EventEmitter {
       includePaths: this.config?.includePaths,
       excludePaths: this.config?.excludePaths,
     });
-    this.progress = { filesIndexed: 0, filesTotal: discovered.files.length };
+
+    // Classify the corpus up front (the same `getAdapterForFile` the pipeline's
+    // stage 1 uses) so the two-population ETA knows the source/orphan split
+    // before the first sample.
+    const registry = LanguageRegistry.getInstance();
+    let sourceTotal = 0;
+    for (const file of discovered.files) {
+      if (registry.getAdapterForFile(file)) sourceTotal++;
+    }
+    const orphanTotal = discovered.files.length - sourceTotal;
+    this.progress = {
+      filesIndexed: 0,
+      filesTotal: discovered.files.length,
+      sourceTotal,
+      orphanTotal,
+    };
+    // Reset the phase machine for this seed.
+    this.phase = 'files';
+    this.phaseCurrent = 0;
+    this.phaseTotal = discovered.files.length;
+    this.phaseStartedAt = Date.now();
+    this.orphanStartedAt = 0;
+    this.seenOrphan = false;
     this.emitState();
 
     const start = Date.now();
     const result = await runAuditDispatch({
       projectRoot: this.projectRoot,
       configName: this.configName,
-      progressCallback: (p) => {
-        // Only the file-parse/analysis phases (stage1/stage2) report a true
-        // file-level numerator; the index/schema phases report unrelated totals
-        // (a style-index sync can report 1/1, a schema pass 0/3) that would make
-        // the bar regress. Take a monotonic max so `filesIndexed` never drops,
-        // and keep the discovery-derived `filesTotal` as the denominator.
-        if (p.phase !== 'stage1' && p.phase !== 'stage2') return;
-        this.progress.filesIndexed = Math.max(this.progress.filesIndexed, p.current ?? 0);
-        this.emitState();
-      },
+      progressCallback: (p) => this.onSeedProgress(p),
     });
     const durationMs = Date.now() - start;
 
+    // Finalize phase: split + hash + persist are the last work before `ready`.
+    this.setPhase('finalize', 0, discovered.files.length);
+    this.emitState();
+
     const split = splitFindings(result.analyzerResults, this.projectRoot);
-    const files = hashAndStatFiles(discovered.files, this.projectRoot);
+    const files = hashAndStatFiles(discovered.files, this.projectRoot, (done) => {
+      this.setPhase('finalize', done, discovered.files.length);
+      this.emitState();
+    });
+
     this.snapshot = {
       version: 1,
       projectRoot: this.projectRoot,

@@ -3386,17 +3386,19 @@ const DAEMON_NOT_READY_EXIT_CODE = 3;
 
 /** R3 — a query while the seed is still running: the status is the answer. */
 function reportDaemonIndexing(
-  state: { progress?: { filesIndexed: number; filesTotal: number }; retryAfterMs?: number | null; throughputUnknown?: boolean } | undefined,
+  state: { progress?: { filesIndexed: number; filesTotal: number; phase?: string; phaseCurrent?: number; phaseTotal?: number }; retryAfterMs?: number | null; throughputUnknown?: boolean } | undefined,
   json: boolean,
 ): never {
-  const filesIndexed = state?.progress?.filesIndexed ?? 0;
-  const filesTotal = state?.progress?.filesTotal ?? 0;
+  const progress = state?.progress;
+  const filesIndexed = progress?.filesIndexed ?? 0;
+  const filesTotal = progress?.filesTotal ?? 0;
+  const phase = progress?.phase ?? 'files';
   const retryAfterMs = state?.retryAfterMs ?? null;
   const throughputUnknown = state?.throughputUnknown ?? false;
   if (json) {
     process.stdout.write(JSON.stringify({
       status: 'indexing',
-      progress: { filesIndexed, filesTotal },
+      progress: { filesIndexed, filesTotal, phase },
       retryAfterMs,
       throughputUnknown,
     }, null, 2) + '\n');
@@ -3404,7 +3406,11 @@ function reportDaemonIndexing(
     const retry = retryAfterMs != null
       ? `try again in ~${Math.max(1, Math.round(retryAfterMs / 1000))}s`
       : 'check back shortly';
-    console.log(chalk.yellow(`⏳ Daemon indexing — ${filesIndexed} of ${filesTotal} files; ${retry}.`));
+    const phaseDetail =
+      phase === 'files'
+        ? `${filesIndexed} of ${filesTotal} files`
+        : `${phase} phase`;
+    console.log(chalk.yellow(`⏳ Daemon indexing — ${phaseDetail}; ${retry}.`));
   }
   process.exit(DAEMON_NOT_READY_EXIT_CODE);
 }

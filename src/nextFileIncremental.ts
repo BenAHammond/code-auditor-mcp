@@ -128,9 +128,11 @@ function sha256(data: string | Buffer): string {
 export function hashAndStatFiles(
   files: string[],
   projectRoot: string,
+  onProgress?: (done: number) => void,
 ): Record<string, FileRecord> {
   const out: Record<string, FileRecord> = {};
-  for (const file of files) {
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
     const abs = isAbsolute(file) ? file : join(projectRoot, file);
     try {
       out[relative(projectRoot, abs)] = {
@@ -139,6 +141,12 @@ export function hashAndStatFiles(
       };
     } catch {
       // Unreadable (deleted between discovery and hash) — excluded from the set.
+    }
+    // Report progress periodically (hashing a large corpus is a non-trivial
+    // tail on the seed); every file is cheap, but a 500-file stride keeps the
+    // callback overhead negligible.
+    if (onProgress && (i % 500 === 0 || i === files.length - 1)) {
+      onProgress(i + 1);
     }
   }
   return out;

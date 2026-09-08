@@ -54,7 +54,7 @@ import { validateFactsDependencies, buildFactsMap } from './pipelineTypes.js';
  * @returns generator (yields tuples), total file count, and a closure to
  *          retrieve aggregate parse/read timing after the generator completes.
  */
-function runStage1(config: PipelineConfig): {
+export function runStage1(config: PipelineConfig): {
   generator: AsyncGenerator<FileASTTuple, void, undefined>;
   fileCount: number;
   getTiming: () => { parseDurationMs: number; readDurationMs: number };
@@ -155,15 +155,39 @@ function runStage1(config: PipelineConfig): {
       }
     }
 
-    // Orphan files (no LanguageAdapter)
+    // Orphan files (no LanguageAdapter).
+    //
+    // ORDERING INVARIANT — source files are yielded *before* orphans, so a
+    // caller tracking the monotonic file index sees source files first and can
+    // split its ETA into a source population and an orphan population at the
+    // `sourceCount` boundary. Do not interleave the two loops: the daemon's
+    // two-population `retryAfterMs` estimate depends on this order and asserts
+    // against it (source-before-orphan) at runtime.
     for (const file of orphans) {
       try {
-        // Spec 31 — oversized orphan .sql dumps are not materialized into a
-        // source string; the schema-sql visitor streams them on demand (and
-        // skips them entirely when they contain no DDL). Restricted to .sql:
-        // JSON/CSS orphans must still be materialized — their visitors parse
-        // the content, and an empty source would silently change behavior for
-        // large-but-valid files (e.g. a multi-MB audit-report.json).
+        // Orphans are materialized into a source string only when a visitor will
+        // parse the content:
+        //  • .json — the schema-json visitor emits a path-only marker
+        //    (`{ isJson: true }`) and the stage-3 schema reducer re-reads the
+        //    file on demand via readSource, so materializing the bytes here is a
+        //    dead read (every JSON byte would be read twice). Yield empty source.
+        //  • .sql (oversized only, Spec 31) — dumps beyond
+        //    MAX_ORPHAN_SOURCE_BYTES are streamed on demand by the schema-sql
+        //    visitor, which skips them entirely when they contain no DDL.
+        //  • everything else (CSS, etc.) — materialized because its visitor
+        //    parses the content.
+        if (file.endsWith('.json')) {
+          parsed++;
+          yield {
+            kind: 'raw',
+            file,
+            ast: null,
+            adapter: null,
+            sourceCode: '',
+          };
+          continue;
+        }
+
         const st = await stat(file);
         if (file.endsWith('.sql') && st.size > MAX_ORPHAN_SOURCE_BYTES) {
           parsed++;
@@ -477,7 +501,8 @@ async function runStage3(
   const rawConfig = config.config ?? {};
   const infra = (rawConfig['_infra'] as Record<string, unknown>) ?? {};
 
-  for (const reducer of reducers) {
+  for (let i = 0; i < reducers.length; i++) {
+    const reducer = reducers[i];
     if (config.abortSignal?.aborted) {
       throw new AuditAbortedError(`Audit aborted during stage 3 (${reducer.name})`);
     }
@@ -546,6 +571,17 @@ async function runStage3(
         errors: [{ file: '(reducer)', error: err.message }],
       });
     }
+
+    // Report each completed reducer so a caller can price the post-file
+    // reducer tail — `retryAfterMs` covers time-to-ready, not just file count.
+    if (config.progressCallback) {
+      config.progressCallback({
+        current: i + 1,
+        total: reducers.length,
+        analyzer: reducer.name,
+        phase: 'stage3',
+      });
+    }
   }
 
   return {
@@ -575,7 +611,8 @@ async function runStage4(
   const rawConfig = config.config ?? {};
   const infra = (rawConfig['_infra'] as Record<string, unknown>) ?? {};
 
-  for (const dr of derivedReducers) {
+  for (let i = 0; i < derivedReducers.length; i++) {
+    const dr = derivedReducers[i];
     if (config.abortSignal?.aborted) {
       throw new AuditAbortedError(`Audit aborted during stage 4 (${dr.name})`);
     }
@@ -622,6 +659,15 @@ async function runStage4(
         executionTime: 0,
         analyzerName: dr.name,
         errors: [{ file: '(derived-reducer)', error: err.message }],
+      });
+    }
+
+    if (config.progressCallback) {
+      config.progressCallback({
+        current: i + 1,
+        total: derivedReducers.length,
+        analyzer: dr.name,
+        phase: 'stage4',
       });
     }
   }
@@ -701,6 +747,19 @@ export async function runPipeline(
     });
   }
 
+  // Emit the reducer-phase start marker *before* the index-fact flush and
+  // onStage2Complete hook so a caller pricing time-to-ready covers that tail,
+  // not just the file stream. `current: 0` means "reducers pending" (rate
+  // unknown yet); the daemon reports a conservative clamp rather than "done".
+  if (config.progressCallback) {
+    config.progressCallback({
+      current: 0,
+      total: reducers.length,
+      analyzer: 'pipeline',
+      phase: 'stage3',
+    });
+  }
+
   // ── Flush index facts to DB ──────────────────────────────────────────────────
   // Stage 2 visitors collect IndexFactsEntry records (function-index,
   // schema-code etc.). Flush them now so downstream reducers and
@@ -727,6 +786,17 @@ export async function runPipeline(
   const stage3 = await runStage3(stage2.allFacts, reducers, config, indexHandle);
   stageTiming['stage3-reducers'] = performance.now() - stage3T0;
 
+  // Derived-reducer start marker (stage 4) — emitted before the fact merge so a
+  // caller's estimate never collapses to "done" between the two reducer phases.
+  if (config.progressCallback) {
+    config.progressCallback({
+      current: 0,
+      total: derivedReducers.length,
+      analyzer: 'pipeline',
+      phase: 'stage4',
+    });
+  }
+
   // Merge stage 2 + stage 3 facts for stage 4
   const combinedFacts: Record<string, unknown> = {};
   for (const [name, facts] of stage2.allFacts) {
@@ -740,6 +810,18 @@ export async function runPipeline(
   const stage4T0 = performance.now();
   const stage4 = await runStage4(combinedFacts, derivedReducers, config, indexHandle);
   stageTiming['stage4-derived'] = performance.now() - stage4T0;
+
+  // Pipeline is done — a caller pricing time-to-ready must not report "done"
+  // here: the daemon's finalize (hash + persist) and any runner post-pipeline
+  // awaits remain.
+  if (config.progressCallback) {
+    config.progressCallback({
+      current: derivedReducers.length,
+      total: derivedReducers.length,
+      analyzer: 'pipeline',
+      phase: 'stage4-complete',
+    });
+  }
 
   // ── Build result ─────────────────────────────────────────────────────────
   const analyzerResults: Record<string, AnalyzerResult> = {};

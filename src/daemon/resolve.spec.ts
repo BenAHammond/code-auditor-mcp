@@ -59,7 +59,7 @@ describe('resolveDaemon', () => {
       ok: true,
       result: {
         status: 'indexing',
-        progress: { filesIndexed: 10, filesTotal: 100 },
+        progress: { filesIndexed: 10, filesTotal: 100, phase: 'files' },
         retryAfterMs: 2500,
         throughputUnknown: false,
       },
