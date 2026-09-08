@@ -14,6 +14,14 @@ the target project.
 
 Timestamp: 2026-09-07.
 
+Re-verified 2026-09-08 against the current build. All five corpora reproduce
+exactly except two transcription errors in the original pin, corrected above:
+knex `solid::function-length` was recorded 60 but measures 59 (total 404, not
+405); primer-css was missing a `styles::styles/token-bypass` finding of 1 (total
+125, not 124). Both were verified by re-measuring the pin commit itself
+(`81efaeb`) — the recorded numbers never matched that tree, so these are ledger
+errors, not analysis changes.
+
 ---
 
 ## recall-protocol — 4,351 advisory findings (4,268 files)
@@ -96,12 +104,12 @@ Timestamp: 2026-09-07.
 | schema-code::dynamic-sql-construction | 1 |
 | solid::solid/class-size | 1 |
 
-## knex — 405 advisory findings (474 files)
+## knex — 404 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | schema-code::too-many-queries | 181 |
-| solid::function-length | 60 |
+| solid::function-length | 59 |
 | solid::solid/class-size | 31 |
 | solid::solid/dependency-inversion | 20 |
 | dependency-graph::orphaned-nodes | 17 |
@@ -122,7 +130,7 @@ Timestamp: 2026-09-07.
 | schema-code::table-naming-convention | 1 |
 | secrets::hardcoded-secret | 1 |
 
-## primer-css — 124 advisory findings (137 files)
+## primer-css — 125 advisory findings (137 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -133,6 +141,7 @@ Timestamp: 2026-09-07.
 | dependency-graph::tight-coupling | 1 |
 | dependency-graph::unreferenced-module | 1 |
 | documentation::function-documentation | 1 |
+| styles::styles/token-bypass | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
 ## blitz — 918 advisory findings (788 files)
