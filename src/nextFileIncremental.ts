@@ -81,6 +81,17 @@ const FILE_LOCAL = new Set([
  */
 const CORPUS_DB = new Set(['styles', 'conventions', 'cross-domain']);
 
+/**
+ * Full-corpus-only reducers: they short-circuit with `notRunReason` on a scoped
+ * run (see the `context.isScoped` guards in `pipelineAdapters.ts`), so a warm
+ * re-audit produces *no* findings for them — not "empty", but "not run". Replacing
+ * the cached findings with the scoped run's empty output would silently drop every
+ * `dependency-graph` / `api-contract` / `schema-validator` finding on each warm
+ * call. Their cached findings are therefore preserved on a merge (best-effort:
+ * they reflect the last full audit; a full re-seed refreshes them).
+ */
+const FULL_CORPUS_ONLY = new Set(['dependency-graph', 'api-contract', 'schema-validator']);
+
 /** Per-file record in the snapshot: content hash + mtime for the staleness gate. */
 export interface FileRecord {
   hash: string;
@@ -229,6 +240,9 @@ export function splitFindings(
 export interface MergeInput {
   cachedVisitor: Record<string, Violation[]>;
   freshVisitor: Record<string, Violation[]>;
+  /** Cached corpus findings from the previous snapshot (needed to preserve
+   *  full-corpus-only analyzers that a scoped run cannot recompute). */
+  cachedCorpus: Violation[];
   freshCorpus: Violation[];
   freshSchema: Violation[];
   changed: string[];
@@ -247,8 +261,11 @@ export interface MergeOutput {
  * Merge cached per-file findings with fresh scoped results. Unchanged files
  * keep their cache; changed/added files are overwritten (including to empty —
  * a fixed file must not fall back to its stale cache); deleted files drop.
- * Corpus-DB findings are replaced wholesale (they are full-corpus); schema
- * findings are passed through (the caller decides cache-vs-re-seed).
+ * Corpus-DB findings are replaced wholesale (they are full-corpus and the scoped
+ * run recomputes them from the persistent index); full-corpus-only findings
+ * (dependency-graph/api-contract/schema-validator) are preserved from the cache
+ * because a scoped run short-circuits them. Schema findings are passed through
+ * (the caller decides cache-vs-re-seed).
  */
 export function mergeFindings(input: MergeInput): MergeOutput {
   const drop = new Set([...input.deleted, ...input.changed, ...input.added]);
@@ -261,7 +278,12 @@ export function mergeFindings(input: MergeInput): MergeOutput {
     visitorFindings[rel] = input.freshVisitor[rel] || [];
   }
 
-  const corpusFindings = input.freshCorpus;
+  // Recomputable corpus findings come from the scoped run; full-corpus-only
+  // analyzers (which the scoped run skipped) keep their cached findings.
+  const corpusFindings = [
+    ...input.freshCorpus,
+    ...input.cachedCorpus.filter((v) => FULL_CORPUS_ONLY.has(v.analyzer ?? '')),
+  ];
   const schemaFindings = input.freshSchema;
   const all = [
     ...Object.values(visitorFindings).flat(),
@@ -409,6 +431,7 @@ export async function runNextFile(options: {
   const merged = mergeFindings({
     cachedVisitor: snapshot.visitorFindings,
     freshVisitor: fresh.visitorFindings,
+    cachedCorpus: snapshot.corpusFindings,
     freshCorpus: fresh.corpusFindings,
     freshSchema: snapshot.schemaFindings,
     changed: diff.changed,

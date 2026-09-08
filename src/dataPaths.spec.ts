@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { resolvePersistedIndexPath } from './dataPaths.js';
+import { resolvePersistedIndexPath, resolveDaemonSocketPath } from './dataPaths.js';
 
 describe('resolvePersistedIndexPath', () => {
   const origDataDir = process.env.CODE_AUDITOR_DATA_DIR;
@@ -85,6 +85,51 @@ describe('resolvePersistedIndexPath', () => {
     const hash = createHash('sha256').update(fs.realpathSync(root)).digest('hex').substring(0, 16);
     expect(resolvePersistedIndexPath(root)).toBe(
       path.join(xdg, 'code-auditor', 'projects', hash, 'index.db')
+    );
+  });
+});
+
+describe('resolveDaemonSocketPath', () => {
+  const origXdg = process.env.XDG_CACHE_HOME;
+  const tempDirs: string[] = [];
+
+  function makeTempDir(prefix: string): string {
+    const dir = fs.mkdtempSync(path.join(tmpdir(), prefix));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  beforeEach(() => {
+    delete process.env.XDG_CACHE_HOME;
+  });
+
+  afterEach(() => {
+    if (origXdg === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = origXdg;
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('hashes a symlinked project path identically to its real path (Spec 50 R5)', () => {
+    const xdg = makeTempDir('ca-xdg-');
+    process.env.XDG_CACHE_HOME = xdg;
+    const real = makeTempDir('ca-real-project-');
+    const linkParent = makeTempDir('ca-link-parent-');
+    const link = path.join(linkParent, 'project-link');
+    fs.symlinkSync(real, link);
+    // The daemon (started from the real path) and the CLI (invoked via the
+    // symlink) must derive the same socket, or they will not find each other.
+    expect(resolveDaemonSocketPath(link)).toBe(resolveDaemonSocketPath(real));
+  });
+
+  it('places the socket under the OS cache dir keyed by the realpath project hash', () => {
+    const xdg = makeTempDir('ca-xdg-');
+    process.env.XDG_CACHE_HOME = xdg;
+    const root = makeTempDir('ca-project-');
+    const hash = createHash('sha256').update(fs.realpathSync(root)).digest('hex').substring(0, 16);
+    expect(resolveDaemonSocketPath(root)).toBe(
+      path.join(xdg, 'code-auditor', 'sockets', `code-auditor-${hash}.sock`)
     );
   });
 });

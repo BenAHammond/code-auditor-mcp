@@ -23,7 +23,7 @@ export interface LedgerRunInput {
   gitDirty: boolean;
   toolVersion: string;
   command: string;
-  surface: 'cli' | 'mcp' | 'library' | 'hook';
+  surface: 'cli' | 'mcp' | 'library' | 'hook' | 'daemon';
   scope: string;
   target: string;
 }

@@ -230,6 +230,32 @@ export function validateConfig(config: AuditConfig): string[] {
   // Validate detection mode (Spec-21 R3: shared provenance/fallback mode key)
   errors.push(...validateDetectionConfig(config.analyzerOptions));
 
+  // Validate daemon config (Spec 50 R5)
+  errors.push(...validateDaemonConfig(config.daemon));
+
+  return errors;
+}
+
+/**
+ * Validate Spec 50 R5 daemon config. `idleTimeoutMs` must be a positive number;
+ * `autoStart` must be a boolean.
+ */
+function validateDaemonConfig(daemon: AuditConfig['daemon']): string[] {
+  const errors: string[] = [];
+  if (daemon === undefined || daemon === null) return errors;
+  if (typeof daemon !== 'object' || Array.isArray(daemon)) {
+    errors.push('daemon must be an object');
+    return errors;
+  }
+  if (daemon.autoStart !== undefined && typeof daemon.autoStart !== 'boolean') {
+    errors.push('daemon.autoStart must be a boolean');
+  }
+  if (
+    daemon.idleTimeoutMs !== undefined &&
+    (typeof daemon.idleTimeoutMs !== 'number' || !Number.isFinite(daemon.idleTimeoutMs) || daemon.idleTimeoutMs <= 0)
+  ) {
+    errors.push('daemon.idleTimeoutMs must be a positive number of milliseconds');
+  }
   return errors;
 }
 

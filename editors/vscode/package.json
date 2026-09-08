@@ -1,0 +1,67 @@
+{
+  "name": "code-auditor-vscode",
+  "displayName": "Code Auditor",
+  "description": "Architectural invariants and code quality, served live by the Code Auditor daemon (Spec 50).",
+  "version": "0.1.0",
+  "publisher": "codeauditormcp",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "solid",
+    "dry",
+    "lint",
+    "architecture",
+    "code-quality"
+  ],
+  "activationEvents": [
+    "onLanguage:typescript",
+    "onLanguage:javascript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascriptreact",
+    "onLanguage:go",
+    "workspaceContains:**/*.ts",
+    "workspaceContains:**/*.go"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Code Auditor",
+      "properties": {
+        "codeAuditor.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Code Auditor language server."
+        },
+        "codeAuditor.daemonCommand": {
+          "type": "string",
+          "default": "code-auditor-daemon",
+          "description": "Command that launches the Code Auditor daemon. Must resolve on PATH (e.g. via `npm i -g code-auditor-mcp`) or be an absolute path to `dist/daemon/main.js`."
+        },
+        "codeAuditor.args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["--lsp"],
+          "description": "Extra arguments passed to the daemon before the workspace folder path."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "tsc -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

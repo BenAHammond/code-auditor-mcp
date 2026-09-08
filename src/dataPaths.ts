@@ -52,6 +52,35 @@ export function getPersistedStorageRoot(projectRoot?: string): string {
   return path.dirname(resolvePersistedIndexPath(projectRoot));
 }
 
+/**
+ * Path of the per-project daemon Unix-domain socket (Spec 50 R5).
+ *
+ * Derived from the realpath'd project root using the *same* `projectHash` the
+ * data directory uses, so the daemon and every read surface (CLI, hook, agent)
+ * derive an identical socket path for the same physical project regardless of
+ * how it was spelled (`/tmp/foo` vs `/private/tmp/foo`). The socket lives under
+ * the OS cache dir rather than next to `index.db` for two reasons: it sidesteps
+ * the Unix socket path-length limit (`~104` bytes on macOS, `~108` on Linux) that
+ * a deeply nested `node_modules` cache path could exceed, and it avoids the
+ * still-lexical local-`node_modules` branch of `resolvePersistedIndexPath`.
+ */
+export function resolveDaemonSocketPath(projectRoot: string): string {
+  const dir = path.join(getFallbackCacheRoot(), 'sockets');
+  return path.join(dir, `code-auditor-${projectHash(projectRoot)}.sock`);
+}
+
+/**
+ * Log file for a detached daemon (Spec 50 R5). A detached daemon's stderr is
+ * redirected here (mirroring the Spec 41 `--detach` job log) so a background
+ * failure is diagnosable rather than silently lost to `/dev/null`. Lives under
+ * the OS cache's `logs/` sibling of the socket directory, keyed by the same
+ * `projectHash`.
+ */
+export function resolveDaemonLogPath(projectRoot: string): string {
+  const dir = path.join(getFallbackCacheRoot(), 'logs');
+  return path.join(dir, `code-auditor-${projectHash(projectRoot)}.log`);
+}
+
 /** Walk up from `start` and return the nearest existing `node_modules` directory, or null. */
 function findNodeModulesDir(start: string): string | null {
   let dir = path.resolve(start);

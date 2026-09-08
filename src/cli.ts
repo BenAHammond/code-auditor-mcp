@@ -465,8 +465,6 @@ program
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
   .action(async (paths: string[], options: Record<string, any>) => {
     try {
-      await initParsers();
-
       const fileSet = new Set<string>();
 
       // Collect paths from stdin if requested
@@ -489,22 +487,47 @@ program
 
       // Resolve scope
       let scope: AuditScope = 'changed';
+      let resolvedPaths: string[] = [];
       if (fileSet.size > 0) {
         // Convert to absolute paths
-        const resolved = [...fileSet].map((f) =>
+        resolvedPaths = [...fileSet].map((f) =>
           isAbsolute(f) ? f : resolve(process.cwd(), f)
         );
-        scope = resolved as unknown as AuditScope;
+        scope = resolvedPaths as unknown as AuditScope;
       }
 
-      // Create runner
-      const runner = createAuditRunner({
-        projectRoot: options.path,
-        scope,
-        analyzerConcurrency: 4
-      });
+      // R2 — resolve to a live daemon first (fast path); fall back in-process.
+      // The daemon serves per-file diagnostics for exactly the changed set. It is
+      // only trusted when ready and none of the queried files are stale (R4): a
+      // just-edited file whose re-audit hasn't landed falls through in-process so
+      // the gate never misses a finding. SARIF needs full run metadata, so it
+      // always runs in-process.
+      const projectRoot = resolve(options.path || process.cwd());
+      let result: any;
+      if (resolvedPaths.length > 0 && options.format !== 'sarif') {
+        const { resolveDaemon, readDaemonDiagnostics } = await import('./daemon/resolve.js');
+        const daemon = await resolveDaemon(projectRoot);
+        if (daemon.mode === 'not-ready') {
+          reportDaemonIndexing(daemon.state, !!options.json);
+          return;
+        }
+        if (daemon.mode === 'ready') {
+          const diag = await readDaemonDiagnostics(daemon.socketPath, resolvedPaths);
+          if (diag && diag.status === 'ready' && diag.staleFiles.length === 0) {
+            result = await buildChangedResultFromDiagnostics(diag.diagnostics, projectRoot);
+          }
+        }
+      }
 
-      const result = await runner.run();
+      if (!result) {
+        await initParsers();
+        const runner = createAuditRunner({
+          projectRoot: options.path,
+          scope,
+          analyzerConcurrency: 4
+        });
+        result = await runner.run();
+      }
 
       // Collect all violations
       const violations = Object.values(result.analyzerResults).flatMap(
@@ -692,6 +715,32 @@ function printCountSummary(
   console.log(`by rule: ${groupedCounts(byRule)}`);
 }
 
+/**
+ * Reconstruct a `changed`-compatible result from daemon-served diagnostics so the
+ * gate/output logic below stays identical to the in-process path. Gate severities
+ * are read from the project config (one JSON file, no parsing) so a custom
+ * `gateSeverities` never diverges from what the in-process run would have used.
+ */
+async function buildChangedResultFromDiagnostics(violations: any[], projectRoot: string): Promise<any> {
+  const analyzerResults: Record<string, any> = {};
+  for (const v of violations) {
+    const key = v.analyzer || 'unknown';
+    (analyzerResults[key] = analyzerResults[key] || { violations: [] }).violations.push(v);
+  }
+  let configUsed: any;
+  try {
+    const { findConfigFileUp, loadConfig } = await import('./config/configLoader.js');
+    const configPath = await findConfigFileUp(projectRoot);
+    const config = await loadConfig({ configPath: configPath ?? undefined });
+    if (Array.isArray(config.gateSeverities) && config.gateSeverities.length > 0) {
+      configUsed = { gateSeverities: config.gateSeverities };
+    }
+  } catch {
+    // No config — the gate falls back to DEFAULT_BLOCKING_SEVERITIES, matching in-process.
+  }
+  return { analyzerResults, metadata: { configUsed, diagnostics: [] } };
+}
+
 // Self-audit gate (Spec 33 Item 15 + Spec 44 remediation). Runs the full
 // analyzer pipeline over the tool's own production source and asserts zero
 // *blocking* (critical/warning) findings in the self-audit scope — the same
@@ -850,87 +899,115 @@ program
   .option('--json', 'Output a single JSON object (or {done:true}) to stdout')
   .action(async (options) => {
     try {
-      await initParsers();
+      const projectDir = resolve(options.path || process.cwd());
 
+      // R2 — resolve to a live daemon first; fall back in-process when absent.
+      // The daemon is an optimisation: a ready daemon serves the current ranking
+      // without re-auditing, and an indexing daemon reports its status (R3).
+      const { resolveDaemon, readDaemonFindings } = await import('./daemon/resolve.js');
+      const daemon = await resolveDaemon(projectDir);
+      if (daemon.mode === 'not-ready') {
+        reportDaemonIndexing(daemon.state, !!options.json);
+        return;
+      }
+      if (daemon.mode === 'ready') {
+        const findings = await readDaemonFindings(daemon.socketPath);
+        if (findings && findings.status === 'ready' && findings.staleFiles.length === 0) {
+          const { summarizeViolations } = await import('./nextFileIncremental.js');
+          printNextFile(findings.violations, summarizeViolations(findings.violations), projectDir, !!options.json);
+          return;
+        }
+        // Daemon fell behind (R4) or vanished — fall through to in-process.
+      }
+
+      await initParsers();
       const { violations, summary } = await runNextFile({
         projectRoot: options.path,
         configName: options.config,
       });
-
-      // Rank files worst-first from the (incrementally-merged) violation set.
-      const ranked = rankFilesByPriority(violations);
-
-      if (ranked.length === 0) {
-        if (options.json) {
-          process.stdout.write(JSON.stringify({ done: true, summary }, null, 2) + '\n');
-        } else {
-          console.log(chalk.green('\n✓ No readings — nothing left to refactor.'));
-        }
-        return;
-      }
-
-      const top = ranked[0];
-      // Every issue on the file, ordered critical → warning → suggestion.
-      const ordered = orderFindingsWithinFile(top.violations);
-
-      const projectDir = resolve(options.path || process.cwd());
-      const relativize = (filePath: string): string => {
-        if (!filePath) return '';
-        if (filePath.startsWith('/') || filePath.startsWith('\\\\')) {
-          const rel = relative(projectDir, filePath);
-          if (!rel.startsWith('..') && !isAbsolute(rel)) return rel;
-        }
-        return filePath;
-      };
-
-      if (options.json) {
-        const output = {
-          done: false,
-          file: relativize(top.file),
-          remainingFiles: ranked.length - 1,
-          remainingFindings: violations.length - top.count,
-          summary,
-          findings: ordered.map((v: any) => ({
-            analyzer: v.analyzer || '',
-            rule: v.rule,
-            severity: v.severity,
-            message: v.message,
-            file: relativize(v.file || ''),
-            line: v.line ?? v.start?.line,
-            column: v.column ?? v.start?.column ?? 1,
-            endLine: v.end?.line,
-            endColumn: v.end?.column,
-            enclosingSymbol: v.symbol || v.enclosingFunction || '',
-            suggestion: v.suggestion || '',
-            details: v.details || '',
-            ...(v.new !== undefined && { new: v.new }),
-          })),
-        };
-        process.stdout.write(JSON.stringify(output, null, 2) + '\n');
-      } else {
-        console.log(chalk.blue('🔍 Next File to Refactor'));
-        console.log(chalk.gray('══════════════════════════════════════════════════'));
-        console.log(
-          `\n${chalk.bold(relativize(top.file))} — ${top.count} reading(s), highest severity ${top.maxSeverity}`
-        );
-        console.log(
-          chalk.gray(
-            `${ranked.length - 1} more file(s) with readings · ${violations.length - top.count} remaining reading(s)`
-          )
-        );
-        console.log(chalk.gray('\n── Readings ────────────────────────────────────────'));
-        for (const v of ordered) {
-          const icon = v.severity === 'critical' ? '🔴' : v.severity === 'warning' ? '🟡' : '🔵';
-          console.log(
-            `${icon} ${chalk.bold(relativize(v.file || ''))}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.rule} — ${v.message}`
-          );
-        }
-      }
+      printNextFile(violations, summary, projectDir, !!options.json);
     } catch (error) {
       console.error(chalk.red('Error:'), error);
       process.exit(1);
     }
   });
+
+/** Rank the violation set and emit the `next-file` result (shared by both paths). */
+function printNextFile(
+  violations: any[],
+  summary: any,
+  projectDir: string,
+  json: boolean,
+): void {
+  // Rank files worst-first from the (incrementally-merged) violation set.
+  const ranked = rankFilesByPriority(violations);
+
+  if (ranked.length === 0) {
+    if (json) {
+      process.stdout.write(JSON.stringify({ done: true, summary }, null, 2) + '\n');
+    } else {
+      console.log(chalk.green('\n✓ No readings — nothing left to refactor.'));
+    }
+    return;
+  }
+
+  const top = ranked[0];
+  // Every issue on the file, ordered critical → warning → suggestion.
+  const ordered = orderFindingsWithinFile(top.violations);
+
+  const relativize = (filePath: string): string => {
+    if (!filePath) return '';
+    if (filePath.startsWith('/') || filePath.startsWith('\\\\')) {
+      const rel = relative(projectDir, filePath);
+      if (!rel.startsWith('..') && !isAbsolute(rel)) return rel;
+    }
+    return filePath;
+  };
+
+  if (json) {
+    const output = {
+      done: false,
+      file: relativize(top.file),
+      remainingFiles: ranked.length - 1,
+      remainingFindings: violations.length - top.count,
+      summary,
+      findings: ordered.map((v: any) => ({
+        analyzer: v.analyzer || '',
+        rule: v.rule,
+        severity: v.severity,
+        message: v.message,
+        file: relativize(v.file || ''),
+        line: v.line ?? v.start?.line,
+        column: v.column ?? v.start?.column ?? 1,
+        endLine: v.end?.line,
+        endColumn: v.end?.column,
+        enclosingSymbol: v.symbol || v.enclosingFunction || '',
+        suggestion: v.suggestion || '',
+        details: v.details || '',
+        ...(v.new !== undefined && { new: v.new }),
+      })),
+    };
+    process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+  } else {
+    console.log(chalk.blue('🔍 Next File to Refactor'));
+    console.log(chalk.gray('══════════════════════════════════════════════════'));
+    console.log(
+      `\n${chalk.bold(relativize(top.file))} — ${top.count} reading(s), highest severity ${top.maxSeverity}`
+    );
+    console.log(
+      chalk.gray(
+        `${ranked.length - 1} more file(s) with readings · ${violations.length - top.count} remaining reading(s)`
+      )
+    );
+    console.log(chalk.gray('\n── Readings ────────────────────────────────────────'));
+    for (const v of ordered) {
+      const icon = v.severity === 'critical' ? '🔴' : v.severity === 'warning' ? '🟡' : '🔵';
+      console.log(
+        `${icon} ${chalk.bold(relativize(v.file || ''))}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.rule} — ${v.message}`
+      );
+    }
+  }
+}
 
 // Baseline command (Spec 18 R1)
 program
@@ -3295,6 +3372,149 @@ function renderBar(value: number, width: number): string {
   const color = value > 0.8 ? chalk.green : value > 0.5 ? chalk.yellow : chalk.red;
   return color('█'.repeat(filled) + '░'.repeat(empty));
 }
+
+// ── Daemon command (Spec 50) ────────────────────────────────────────────
+// The daemon is an optimisation, never a dependency (R2). These commands start,
+// stop, and inspect it. The hot-path reads — `changed` (the hook gate) and
+// `next-file` (the refactor loop) — resolve to a live daemon and fall back
+// in-process when it is absent. `audit` stays in-process on purpose: it emits
+// full reports (baseline, recommendations, per-category SARIF/HTML) that need
+// the complete analyzer results, which the daemon does not serve over its
+// findings face (it serves the flattened violation set).
+
+const DAEMON_NOT_READY_EXIT_CODE = 3;
+
+/** R3 — a query while the seed is still running: the status is the answer. */
+function reportDaemonIndexing(
+  state: { progress?: { filesIndexed: number; filesTotal: number }; retryAfterMs?: number | null; throughputUnknown?: boolean } | undefined,
+  json: boolean,
+): never {
+  const filesIndexed = state?.progress?.filesIndexed ?? 0;
+  const filesTotal = state?.progress?.filesTotal ?? 0;
+  const retryAfterMs = state?.retryAfterMs ?? null;
+  const throughputUnknown = state?.throughputUnknown ?? false;
+  if (json) {
+    process.stdout.write(JSON.stringify({
+      status: 'indexing',
+      progress: { filesIndexed, filesTotal },
+      retryAfterMs,
+      throughputUnknown,
+    }, null, 2) + '\n');
+  } else {
+    const retry = retryAfterMs != null
+      ? `try again in ~${Math.max(1, Math.round(retryAfterMs / 1000))}s`
+      : 'check back shortly';
+    console.log(chalk.yellow(`⏳ Daemon indexing — ${filesIndexed} of ${filesTotal} files; ${retry}.`));
+  }
+  process.exit(DAEMON_NOT_READY_EXIT_CODE);
+}
+
+const daemonCmd = program
+  .command('daemon')
+  .description('Manage the per-project code-auditor daemon (Spec 50)')
+  .action(() => {
+    console.log(chalk.yellow('Use a daemon subcommand:'));
+    console.log(chalk.gray('  code-audit daemon start [--foreground]   Start the daemon for this project'));
+    console.log(chalk.gray('  code-audit daemon stop                   Ask the daemon to shut down'));
+    console.log(chalk.gray('  code-audit daemon status                 Show daemon status'));
+  });
+
+daemonCmd
+  .command('start')
+  .description('Start the daemon for this project (detached by default)')
+  .option('-p, --path <path>', 'Project root', process.cwd())
+  .option('-c, --config <config>', 'Configuration name')
+  .option('--foreground', 'Run in the foreground (blocking; useful for debugging)')
+  .action(async (options) => {
+    try {
+      const { resolveDaemonSocketPath } = await import('./dataPaths.js');
+      const { isDaemonListening } = await import('./daemon/socketClient.js');
+      const projectRoot = resolve(options.path);
+      const socketPath = resolveDaemonSocketPath(projectRoot);
+
+      if (await isDaemonListening(socketPath)) {
+        console.log(chalk.green('✓ Daemon already running.'));
+        return;
+      }
+
+      if (options.foreground) {
+        const { runDaemonForeground } = await import('./daemon/main.js');
+        await runDaemonForeground({ projectRoot, configName: options.config, foreground: true });
+        return;
+      }
+
+      const { startDaemonDetached } = await import('./daemon/resolve.js');
+      startDaemonDetached(projectRoot, options.config);
+      console.log(chalk.green('✓ Daemon started (detached).'));
+      console.log(chalk.gray(`  Socket: ${socketPath}`));
+      console.log(chalk.gray('  It indexes on startup — `code-audit daemon status` to watch.'));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+daemonCmd
+  .command('stop')
+  .description('Ask the daemon to shut down')
+  .option('-p, --path <path>', 'Project root', process.cwd())
+  .action(async (options) => {
+    try {
+      const { resolveDaemonSocketPath } = await import('./dataPaths.js');
+      const { isDaemonListening } = await import('./daemon/socketClient.js');
+      const { requestDaemonShutdown } = await import('./daemon/resolve.js');
+      const socketPath = resolveDaemonSocketPath(resolve(options.path));
+      if (!(await isDaemonListening(socketPath))) {
+        console.log(chalk.gray('No daemon running.'));
+        return;
+      }
+      await requestDaemonShutdown(socketPath);
+      console.log(chalk.green('✓ Shutdown requested.'));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+daemonCmd
+  .command('status')
+  .description('Show daemon status')
+  .option('-p, --path <path>', 'Project root', process.cwd())
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const { resolveDaemon } = await import('./daemon/resolve.js');
+      const { resolveDaemonSocketPath } = await import('./dataPaths.js');
+      const projectRoot = resolve(options.path);
+      const resolved = await resolveDaemon(projectRoot);
+      const socketPath = resolveDaemonSocketPath(projectRoot);
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify({
+          running: resolved.mode !== 'absent',
+          mode: resolved.mode,
+          socketPath,
+          ...(resolved.state && { state: resolved.state }),
+        }, null, 2) + '\n');
+        return;
+      }
+
+      if (resolved.mode === 'absent') {
+        console.log(chalk.gray('No daemon running.'));
+        console.log(chalk.gray('Start one: code-audit daemon start'));
+        return;
+      }
+      if (resolved.mode === 'not-ready') {
+        reportDaemonIndexing(resolved.state, false);
+        return;
+      }
+      console.log(chalk.green('✓ Daemon ready.'));
+      console.log(chalk.gray(`  Socket: ${socketPath}`));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
 
 // Parse command line arguments
 program.parse(process.argv);

@@ -777,6 +777,29 @@ export interface AuditConfig {
   analyzerConfigs?: Record<string, any>;
   /** Spec 36 R5 — written justifications for each non-default threshold, keyed `"<analyzer>.<key>"`. */
   rationales?: Record<string, string>;
+  /**
+   * Spec 50 — daemon behaviour. The daemon is never a dependency (R2); these
+   * keys only tune when it is (optionally) started and how long it lingers.
+   */
+  daemon?: DaemonConfig;
+}
+
+/**
+ * Spec 50 R5 — daemon lifecycle config.
+ *
+ * `autoStart` (default `false`): when a CLI read finds no daemon, start one in
+ * the background rather than falling back to an in-process audit. Off by default
+ * — a background process is never started unless the user opted in (R5).
+ *
+ * `idleTimeoutMs` (default 5 min): the daemon exits after this much time with no
+ * active client, no LSP connection, and no watcher-triggered re-audit. Recorded
+ * decision: exit-after-inactivity beats a lingering process the user forgot; the
+ * restart (`code-audit daemon start`, an editor reconnect, or `autoStart`) is a
+ * single command.
+ */
+export interface DaemonConfig {
+  autoStart?: boolean;
+  idleTimeoutMs?: number;
 }
 
 // Legacy type aliases for backward compatibility

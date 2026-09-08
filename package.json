@@ -8,7 +8,8 @@
   "mcpName": "io.github.BenAHammond/code-auditor-mcp",
   "bin": {
     "code-audit": "dist/cli.js",
-    "code-auditor-mcp": "dist/mcp.js"
+    "code-auditor-mcp": "dist/mcp.js",
+    "code-auditor-daemon": "dist/daemon/main.js"
   },
   "scripts": {
     "build": "tsc && pnpm run build:go && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
@@ -79,6 +80,8 @@
     "express": "^5.2.1",
     "inquirer": "^14.0.2",
     "picomatch": "^4.0.5",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.14",
     "web-tree-sitter": "^0.26.11"
   },
   "optionalDependencies": {

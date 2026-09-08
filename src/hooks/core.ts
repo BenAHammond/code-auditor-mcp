@@ -96,9 +96,6 @@ export async function readStdin(): Promise<string> {
  * This is the shared core — all hook adapters call this.
  */
 export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutput> {
-  // Initialize parsers (idempotent once loaded)
-  await initParsers();
-
   if (input.filePaths.length === 0) {
     return {
       violations: [],
@@ -111,6 +108,23 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
   const resolvedPaths = [...new Set(input.filePaths.map((f) =>
     resolve(input.projectRoot, f)
   ))];
+
+  // Spec 50 R2 — the gate "looks up" instead of shelling out and waiting. Consult
+  // a live daemon first; only trust it when it is `ready` and none of the queried
+  // files are stale (R4 — a just-edited file whose re-audit hasn't landed must
+  // fall through so the gate never misses a finding). Absent/stale/not-ready all
+  // fall through to the in-process path below, byte-identical to before.
+  const { resolveDaemon, readDaemonDiagnostics } = await import('../daemon/resolve.js');
+  const daemon = await resolveDaemon(input.projectRoot);
+  if (daemon.mode === 'ready') {
+    const diag = await readDaemonDiagnostics(daemon.socketPath, resolvedPaths);
+    if (diag && diag.status === 'ready' && diag.staleFiles.length === 0) {
+      return buildHookOutput(diag.diagnostics, resolvedPaths.length);
+    }
+  }
+
+  // Initialize parsers (idempotent once loaded)
+  await initParsers();
 
   // Create runner with the resolved scope
   const runner = createAuditRunner({
@@ -126,6 +140,11 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
     (r: any) => r.violations || []
   );
 
+  return buildHookOutput(allViolations, result.metadata.filesAnalyzed);
+}
+
+/** Map raw violations to the hook's output contract and summarize by severity. */
+function buildHookOutput(allViolations: any[], filesAnalyzed: number): HookAuditOutput {
   const violations: HookViolation[] = allViolations.map((v: any) => ({
     analyzer: v.analyzer || '',
     rule: v.rule,
@@ -153,7 +172,7 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
       warning: warningCount,
       suggestion: suggestionCount,
     },
-    filesAnalyzed: result.metadata.filesAnalyzed,
+    filesAnalyzed,
   };
 }
 

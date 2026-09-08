@@ -88,6 +88,7 @@ describe('mergeFindings', () => {
         'del.ts': [v({ file: 'del.ts', severity: 'warning' })],
       },
       freshVisitor: { 'fix.ts': [] }, // fixed → must become empty, not fall back
+      cachedCorpus: [],
       freshCorpus: [v({ file: 'any.ts', severity: 'warning', analyzer: 'styles' })],
       freshSchema: [v({ file: 'q.ts', severity: 'suggestion', analyzer: 'schema' })],
       changed: ['fix.ts'],
@@ -106,6 +107,7 @@ describe('mergeFindings', () => {
     const merged = mergeFindings({
       cachedVisitor: {},
       freshVisitor: { 'new.ts': [v({ file: 'new.ts', severity: 'warning' })] },
+      cachedCorpus: [],
       freshCorpus: [],
       freshSchema: [],
       changed: [],
@@ -113,6 +115,36 @@ describe('mergeFindings', () => {
       deleted: [],
     });
     expect(merged.visitorFindings['new.ts']).toHaveLength(1);
+  });
+
+  it('preserves full-corpus-only findings that a scoped run cannot recompute', () => {
+    // On a warm re-audit the dependency-graph / api-contract / schema-validator
+    // reducers short-circuit (isScoped) and emit nothing, so `freshCorpus` lacks
+    // them. Their cached findings must survive, or every warm call silently drops
+    // unreferenced-module / circular-dependency / api-contract violations.
+    const cachedDependencyGraph = v({ file: 'a.ts', severity: 'warning', analyzer: 'dependency-graph' });
+    const cachedApiContract = v({ file: 'x.ts', severity: 'warning', analyzer: 'api-contract' });
+    const cachedCrossDomain = v({ file: 'c.ts', severity: 'suggestion', analyzer: 'cross-domain' });
+    const merged = mergeFindings({
+      cachedVisitor: {},
+      freshVisitor: {},
+      cachedCorpus: [cachedDependencyGraph, cachedApiContract, cachedCrossDomain],
+      // A scoped run recomputes DB-backed corpus (styles/conventions/cross-domain)
+      // but returns nothing for full-corpus-only reducers.
+      freshCorpus: [v({ file: 'd.ts', severity: 'warning', analyzer: 'styles' })],
+      freshSchema: [],
+      changed: ['a.ts'],
+      added: [],
+      deleted: [],
+    });
+    expect(merged.corpusFindings.map((x) => x.analyzer).sort()).toEqual(
+      ['dependency-graph', 'api-contract', 'styles'].sort(),
+    );
+    // The full-corpus-only cached findings are preserved; the DB-backed cross-domain
+    // finding is *replaced* by the scoped run's fresh output (it did not re-emit).
+    expect(merged.corpusFindings).toContain(cachedDependencyGraph);
+    expect(merged.corpusFindings).toContain(cachedApiContract);
+    expect(merged.corpusFindings).not.toContain(cachedCrossDomain);
   });
 });
 

@@ -66,6 +66,12 @@ export function getDefaultConfig(): AuditConfig {
     },
     // Spec 45 R2 — severity gate default: critical + warning block.
     gateSeverities: DEFAULT_BLOCKING_SEVERITIES,
+    // Spec 50 R5 — daemon lifecycle. Never auto-start (a background process the
+    // user did not ask for); idle-exit after 5 minutes so it does not linger.
+    daemon: {
+      autoStart: false,
+      idleTimeoutMs: 5 * 60 * 1000,
+    },
   };
 }
 
