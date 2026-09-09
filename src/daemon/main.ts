@@ -26,6 +26,8 @@ import { LspFace } from './lspServer.js';
 import { isDaemonListening } from './socketClient.js';
 import { resolveDaemonSocketPath } from '../dataPaths.js';
 import { findConfigFileUp, loadConfig } from '../config/configLoader.js';
+import { PACKAGE_VERSION } from '../constants.js';
+import { parseArgs, USAGE } from './args.js';
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -37,31 +39,6 @@ export interface DaemonRunOptions {
   foreground?: boolean;
   /** Serve the LSP face over stdio (Face A) in addition to the socket face. */
   lsp?: boolean;
-}
-
-interface DaemonArgs {
-  projectRoot: string;
-  configName?: string;
-  idleTimeoutMs?: number;
-  foreground: boolean;
-  lsp: boolean;
-}
-
-function parseArgs(argv: string[]): DaemonArgs {
-  let projectRoot = process.cwd();
-  let configName: string | undefined;
-  let idleTimeoutMs: number | undefined;
-  let foreground = false;
-  let lsp = false;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--config') configName = argv[++i];
-    else if (a === '--idle-timeout-ms') idleTimeoutMs = Number(argv[++i]);
-    else if (a === '--foreground') foreground = true;
-    else if (a === '--lsp') lsp = true;
-    else if (!a.startsWith('--')) projectRoot = a;
-  }
-  return { projectRoot: path.resolve(projectRoot), configName, idleTimeoutMs, foreground, lsp };
 }
 
 /**
@@ -148,6 +125,14 @@ export async function runDaemonForeground(options: DaemonRunOptions): Promise<vo
 
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.help) {
+    process.stdout.write(USAGE);
+    process.exit(0);
+  }
+  if (opts.version) {
+    process.stdout.write(`${PACKAGE_VERSION}\n`);
+    process.exit(0);
+  }
   await runDaemonForeground({
     projectRoot: opts.projectRoot,
     configName: opts.configName,
