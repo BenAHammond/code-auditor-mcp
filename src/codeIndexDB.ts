@@ -68,6 +68,39 @@ interface FunctionDocument extends EnhancedFunctionMetadata {
 // contention block gracefully; the lease loop also retries SQLITE_BUSY.
 export const DB_BUSY_TIMEOUT_MS = 30_000;
 
+// ── Native-binding failure detection ─────────────────────────────────────
+// better-sqlite3 loads its compiled .node addon lazily, inside `new Database()`
+// (database.js: `DEFAULT_ADDON = require('bindings')('better_sqlite3.node')`).
+// `import Database` therefore always succeeds; the failure surfaces only at
+// open time. When the package's install script was blocked by the package
+// manager (npm 11.2+ and npm 12 block install scripts by default), the prebuilt
+// binary is never downloaded and `bindings` throws one of these messages.
+
+const MISSING_BINDING_PATTERNS: RegExp[] = [
+  /could not locate the bindings file/i, // `bindings` package: no .node anywhere
+  /no native build was found/i, // node-gyp fallback failed outright
+];
+
+/** True when `msg` indicates better-sqlite3's native binding was never built. */
+export function isMissingBetterSqlite3Binding(message: string): boolean {
+  return MISSING_BINDING_PATTERNS.some((re) => re.test(message));
+}
+
+/** Clear, actionable cause + fix for a missing better-sqlite3 native binding. */
+function missingBindingMessage(original: string): string {
+  return (
+    'better-sqlite3 could not load its native SQLite binding. This usually means ' +
+    'the package manager blocked better-sqlite3\'s install script, so its prebuilt ' +
+    'binary was never downloaded (npm 11.2+ and npm 12 block install scripts by default).\n' +
+    'Fix — approve the build once, then rebuild:\n' +
+    '  npm install-scripts approve better-sqlite3 && npm rebuild better-sqlite3\n' +
+    '  # with pnpm, instead:\n' +
+    '  pnpm approve-builds        # select better-sqlite3\n' +
+    '  pnpm rebuild better-sqlite3\n' +
+    `Underlying error: ${original}`
+  );
+}
+
 // ── Content hash ────────────────────────────────────────────────────────
 
 function computeContentHash(body: string | undefined, signature: string | undefined): string {
@@ -277,6 +310,10 @@ export class CodeIndexDB {
   private dbPath: string;
   private isInitialized = false;
   private initializePromise: Promise<void> | null = null;
+  /** Set when initialize() fails, so downstream `ensureInitialized()` can name the
+   *  *cause* (e.g. missing better-sqlite3 binding) instead of the generic
+   *  "Database not initialized". Cleared on success and on close(). */
+  private initFailure: Error | null = null;
 
   // Collection adapters (preserve naming for internal clarity)
   private functionsAdapter!: SqliteCollectionAdapter;
@@ -363,6 +400,11 @@ export class CodeIndexDB {
     this.initializePromise = this.initializeInternal();
     try {
       await this.initializePromise;
+    } catch (e) {
+      // Remember why init failed so a later ensureInitialized() (e.g. an analyzer
+      // calling count()) surfaces the cause instead of "Database not initialized".
+      this.initFailure = e instanceof Error ? e : new Error(String(e));
+      throw e;
     } finally {
       this.initializePromise = null;
     }
@@ -421,6 +463,21 @@ export class CodeIndexDB {
       this.db.pragma('foreign_keys = ON');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      // Missing native binding (install script blocked) is not a corrupt file —
+      // name the cause and fix explicitly rather than the generic storage hint.
+      if (isMissingBetterSqlite3Binding(msg)) {
+        throw new ContextualError(
+          missingBindingMessage(msg),
+          {
+            dbPath: this.dbPath,
+            hint:
+              'The native binding was never built. Approve better-sqlite3\'s install ' +
+              'script, then rebuild: `npm install-scripts approve better-sqlite3 && ' +
+              'npm rebuild better-sqlite3` (or `pnpm approve-builds`).',
+          },
+          e instanceof Error ? e : undefined
+        );
+      }
       // Auto-recover from corrupted / non-db files (Bug #4 / Item 1)
       if (!retried && this.dbPath !== ':memory:' && /(not a database|malformed|corrupt)/i.test(msg)) {
         retried = true;
@@ -477,6 +534,7 @@ export class CodeIndexDB {
     }
 
     this.isInitialized = true;
+    this.initFailure = null;
   }
 
   // ── Schema migrations ────────────────────────────────────────────────
@@ -1448,6 +1506,10 @@ export class CodeIndexDB {
 
   private ensureInitialized(): void {
     if (!this.isInitialized) {
+      // If initialize() already failed, re-throw the *cause* (e.g. the
+      // better-sqlite3 native binding is missing) rather than the generic
+      // "not initialized" — the latter names neither the cause nor the fix.
+      if (this.initFailure) throw this.initFailure;
       throw new Error('Database not initialized. Call initialize() first.');
     }
   }
@@ -2126,6 +2188,7 @@ export class CodeIndexDB {
       this.db.close();
       this.isInitialized = false;
     }
+    this.initFailure = null;
   }
 
   // ── File sync & bulk cleanup ────────────────────────────────────────

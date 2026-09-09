@@ -112,24 +112,34 @@ else
   warn "Could not determine current platform binding — native guards will be skipped"
 fi
 
-# --- Guard 1: better-sqlite3 loads --------------------------------------------
+# --- Guard 1: better-sqlite3 binding presence & load --------------------------
+# better-sqlite3 is V8-ABI (not N-API) and loads its .node lazily at
+# `new Database()`. npm 11.2+/12 block install scripts by default (allowScripts),
+# so on those a stock `npm install` skips prebuild-install and leaves no binding.
+# That is a *clear-error* path the tool must handle (asserted in Guard 9), not a
+# hard failure here.
 echo ""
 echo "Checking better-sqlite3..."
-if node -e "
-  try {
-    const sql = require('better-sqlite3');
-    const db = new sql(':memory:');
-    db.exec('SELECT 1 AS ok');
-    console.log(JSON.stringify(db.prepare('SELECT 1 AS one').get()));
-    db.close();
-  } catch(e) {
-    console.error('LOAD ERROR:', e.message);
-    process.exit(1);
-  }
-" 2>&1; then
-  pass "better-sqlite3 loads and executes SQL"
+BINDING="node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+if [ -f "$BINDING" ]; then
+  if node -e "
+    try {
+      const sql = require('better-sqlite3');
+      const db = new sql(':memory:');
+      db.exec('SELECT 1 AS ok');
+      console.log(JSON.stringify(db.prepare('SELECT 1 AS one').get()));
+      db.close();
+    } catch(e) {
+      console.error('LOAD ERROR:', e.message);
+      process.exit(1);
+    }
+  " 2>&1; then
+    pass "better-sqlite3 loads and executes SQL"
+  else
+    fail "better-sqlite3 binding present but failed to load"
+  fi
 else
-  fail "better-sqlite3 did not load — prebuild may not have run"
+  warn "better-sqlite3 binding absent — install script blocked (npm 12 default); the tool's clear-error path is asserted in Guard 9"
 fi
 
 # --- Guard 2: @ast-grep/napi loads via bundled binary -------------------------
@@ -209,11 +219,23 @@ echo ""
 echo "Checking code-audit changed (tests full native bootstrap chain)..."
 mkdir -p fixtures
 echo 'function add(a: number, b: number): number { return a + b; }' > fixtures/test.ts
-if node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1; then
-  pass "code-audit changed runs end-to-end"
+CHANGED_OUT=""
+CHANGED_RC=0
+# Capture the exit code inside an `if` so a non-zero exit (the blocked-install
+# clear error) does not trip `set -e` before we can classify it.
+if CHANGED_OUT=$(node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1); then
+  CHANGED_RC=0
 else
-  rc=$?
-  fail "code-audit changed exited $rc — bootstrap or napi load failed at runtime"
+  CHANGED_RC=$?
+fi
+if [ "$CHANGED_RC" -eq 0 ]; then
+  pass "code-audit changed runs end-to-end"
+elif echo "$CHANGED_OUT" | grep -qi "better-sqlite3 could not load its native SQLite binding"; then
+  # npm 12 blocked better-sqlite3's install script: a non-zero exit carrying the
+  # clear cause+fix is the expected, correct behavior (asserted in Guard 9).
+  pass "code-audit changed surfaced the clear better-sqlite3 error (blocked install)"
+else
+  fail "code-audit changed exited $CHANGED_RC without the clear better-sqlite3 error — bootstrap or napi load failed at runtime"
 fi
 
 # --- Guard 6: web-tree-sitter WASM loadable -----------------------------------
@@ -309,6 +331,35 @@ if [ -f "$GO_DIR/analyzer" ] && [ -x "$GO_DIR/analyzer" ]; then
     warn "Go analyzer binary did not respond to ping (prebuilt for a different platform — 'go build' source fallback remains available)"
   fi
 fi
+
+# --- Guard 9: npm-12 blocked install scripts → clear, actionable error --------
+# npm 11.2+ and 12 block dependency install scripts by default (allowScripts), so
+# a stranger on npm 12 installs the tarball and better-sqlite3's prebuild is
+# skipped. The audit must then fail naming the cause AND the fix — never the
+# cryptic "Database not initialized" or the generic "corrupted/locked" hint.
+# `--ignore-scripts` reproduces that blocked path deterministically regardless of
+# the local npm version, so this guard runs on every release commit.
+echo ""
+echo "Simulating npm-12 blocked install (--ignore-scripts)..."
+BLOCKED_DIR="$SCRATCH/blocked"
+mkdir -p "$BLOCKED_DIR"
+cd "$BLOCKED_DIR"
+npm init -y --silent 2>/dev/null
+npm install "$TARBALL_PATH" --no-save --ignore-scripts >/dev/null 2>&1
+mkdir -p fixtures
+echo 'function add(a: number, b: number): number { return a + b; }' > fixtures/test.ts
+BLOCKED_OUT=$(node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1 || true)
+if echo "$BLOCKED_OUT" | grep -qi "Database not initialized"; then
+  fail "blocked install surfaced the cryptic 'Database not initialized' — cause and fix are missing"
+elif echo "$BLOCKED_OUT" | grep -qi "corrupted, locked, or on a read-only"; then
+  fail "blocked install surfaced the generic storage hint instead of naming the missing better-sqlite3 binding"
+elif echo "$BLOCKED_OUT" | grep -qi "better-sqlite3 could not load its native SQLite binding" \
+  && echo "$BLOCKED_OUT" | grep -qi "npm install-scripts approve better-sqlite3"; then
+  pass "blocked install yields the clear better-sqlite3 cause + fix"
+else
+  fail "blocked install did not produce the clear better-sqlite3 error (unexpected output)"
+fi
+cd "$SCRATCH"
 
 # --- Done ---------------------------------------------------------------------
 echo ""
