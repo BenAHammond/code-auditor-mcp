@@ -2,6 +2,34 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.8.1] — 2026-09-08
+
+### Fresh-install fix — better-sqlite3 prebuild gap
+A fresh npm install on npm 11.2+/12 left the tool unusable: npm's default
+install-script allowlist blocks better-sqlite3's `prebuild-install`, so the
+native SQLite binding is never downloaded. The audit then aborted with an error
+that named neither the cause nor the fix — first a generic "corrupted/locked"
+hint, then a downstream "Database not initialized" thrown 40 call sites later.
+
+- The missing-binding failure now surfaces a clear cause + fix
+  (`npm install-scripts approve better-sqlite3 && npm rebuild better-sqlite3`).
+- `verify:dist` gained a deterministic guard (Guard 9) that reproduces the
+  npm-12 blocked-install path via `--ignore-scripts` and asserts the clear
+  error — so the gate that previously passed over this defect now catches it.
+
+### Coverage — Go successor rules visible
+The Spec 49 Go renames (`open-closed`→`switch-size`,
+`single-responsibility`→`function-size`/`struct-size`) left four Go successor
+IDs missing from the rule registry, so those findings were emitted but never
+counted. Added `switch-size`, `function-size`, `struct-size`, and the bare Go
+`liskov-substitution` to the registry and dropped the one wrong alias that
+asserted a split identity.
+
+### Daemon — `--help` no longer launches the process
+`code-auditor-daemon --help` launched the daemon (~800 MB) instead of printing
+usage. Argument parsing is extracted and unit-tested, and `--help`/`--version`
+exit before the daemon starts.
+
 ## [3.8.0] — 2026-09-08
 
 ### Rule authenticity — Spec 49 closes the crude sweep
