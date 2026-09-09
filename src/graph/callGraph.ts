@@ -7,7 +7,7 @@
  * All advisory — zero violations. Reports and annotations only.
  */
 
-import type Database from 'better-sqlite3';
+import type { SqliteDatabase } from '../sqlite/types.js';
 import type { RiskEntry, GraphStats, BlastRadiusImpact } from '../types.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ export interface CentralityScores {
  * Resolves `callee_name` TEXT → `functions.id` via name join. Edge weight
  * is the count of call sites between the same (caller, callee) pair.
  */
-export function buildCallGraph(db: Database.Database): {
+export function buildCallGraph(db: SqliteDatabase): {
   graph: CallGraph;
   unresolvedCount: number;
   unresolvedShare: number;
@@ -119,7 +119,7 @@ export function buildCallGraph(db: Database.Database): {
 /**
  * Build a call graph from the persistent `graph_cache` table (fast path).
  */
-export function buildCallGraphFromCache(db: Database.Database): {
+export function buildCallGraphFromCache(db: SqliteDatabase): {
   graph: CallGraph;
   unresolvedCount: number;
   unresolvedShare: number;
@@ -172,7 +172,7 @@ export function buildCallGraphFromCache(db: Database.Database): {
  * Populate `graph_cache` with call and import graph edges.
  * Called after a full sync or scoped sync.
  */
-export function populateCallGraphCache(db: Database.Database): void {
+export function populateCallGraphCache(db: SqliteDatabase): void {
   const txn = db.transaction(() => {
     // Clear existing call cache
     db.prepare("DELETE FROM graph_cache WHERE graph_type = 'call'").run();
@@ -470,7 +470,7 @@ function brandesBfs(
  * (depth ≤ 2) resides in a file matching test globs.
  */
 function detectUntested(
-  db: Database.Database,
+  db: SqliteDatabase,
   functionId: number,
   adjacency: Map<number, Map<number, number>>
 ): boolean {
@@ -538,7 +538,7 @@ function isTestFile(filePath: string): boolean {
  *      × (1 + untested)  — where untested = 1 if true, 0 otherwise
  */
 export function computeRisk(
-  db: Database.Database,
+  db: SqliteDatabase,
   adjacency: Map<number, Map<number, number>>,
   nodeIds: Set<number>,
   nodeNames: Map<number, string>,
@@ -618,7 +618,7 @@ export function computeRisk(
 
 // ── Graph statistics ────────────────────────────────────────────────────
 
-export function getGraphStats(db: Database.Database): GraphStats {
+export function getGraphStats(db: SqliteDatabase): GraphStats {
   const callRows = db.prepare(
     `SELECT COUNT(*) as cnt FROM graph_cache WHERE graph_type = 'call'`
   ).get() as { cnt: number };

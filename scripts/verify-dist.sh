@@ -332,10 +332,12 @@ if [ -f "$GO_DIR/analyzer" ] && [ -x "$GO_DIR/analyzer" ]; then
   fi
 fi
 
-# --- Guard 9: npm-12 blocked install scripts → clear, actionable error --------
+# --- Guard 9: npm-12 blocked install scripts → node:sqlite carries the load --
 # npm 11.2+ and 12 block dependency install scripts by default (allowScripts), so
 # a stranger on npm 12 installs the tarball and better-sqlite3's prebuild is
-# skipped. The audit must then fail naming the cause AND the fix — never the
+# skipped. Spec 51 makes that harmless on Node 23.4+: the builtin node:sqlite
+# needs no install script, so the audit must now *succeed*. On older Node without
+# node:sqlite, the audit must still fail naming the cause AND the fix — never the
 # cryptic "Database not initialized" or the generic "corrupted/locked" hint.
 # `--ignore-scripts` reproduces that blocked path deterministically regardless of
 # the local npm version, so this guard runs on every release commit.
@@ -348,16 +350,34 @@ npm init -y --silent 2>/dev/null
 npm install "$TARBALL_PATH" --no-save --ignore-scripts >/dev/null 2>&1
 mkdir -p fixtures
 echo 'function add(a: number, b: number): number { return a + b; }' > fixtures/test.ts
-BLOCKED_OUT=$(node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1 || true)
-if echo "$BLOCKED_OUT" | grep -qi "Database not initialized"; then
-  fail "blocked install surfaced the cryptic 'Database not initialized' — cause and fix are missing"
-elif echo "$BLOCKED_OUT" | grep -qi "corrupted, locked, or on a read-only"; then
-  fail "blocked install surfaced the generic storage hint instead of naming the missing better-sqlite3 binding"
-elif echo "$BLOCKED_OUT" | grep -qi "better-sqlite3 could not load its native SQLite binding" \
-  && echo "$BLOCKED_OUT" | grep -qi "npm install-scripts approve better-sqlite3"; then
-  pass "blocked install yields the clear better-sqlite3 cause + fix"
+BLOCKED_RC=0
+if BLOCKED_OUT=$(node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1); then
+  BLOCKED_RC=0
 else
-  fail "blocked install did not produce the clear better-sqlite3 error (unexpected output)"
+  BLOCKED_RC=$?
+fi
+# Does the Node running this guard ship node:sqlite? If so, a blocked
+# better-sqlite3 build is irrelevant and the audit must succeed end-to-end.
+if node -e "const { DatabaseSync } = require('node:sqlite'); if (typeof DatabaseSync !== 'function') process.exit(1);" 2>/dev/null; then
+  if [ "$BLOCKED_RC" -eq 0 ]; then
+    pass "blocked install still succeeds on node:sqlite-capable Node (builtin backend, no native install)"
+  elif echo "$BLOCKED_OUT" | grep -qi "Database not initialized" \
+    || echo "$BLOCKED_OUT" | grep -qi "could not load its native SQLite binding"; then
+    fail "blocked install failed even though node:sqlite is available — the builtin backend did not take over"
+  else
+    fail "blocked install failed on node:sqlite-capable Node (exit $BLOCKED_RC): $BLOCKED_OUT"
+  fi
+else
+  if echo "$BLOCKED_OUT" | grep -qi "Database not initialized"; then
+    fail "blocked install surfaced the cryptic 'Database not initialized' — cause and fix are missing"
+  elif echo "$BLOCKED_OUT" | grep -qi "corrupted, locked, or on a read-only"; then
+    fail "blocked install surfaced the generic storage hint instead of naming the missing better-sqlite3 binding"
+  elif echo "$BLOCKED_OUT" | grep -qi "better-sqlite3 could not load its native SQLite binding" \
+    && echo "$BLOCKED_OUT" | grep -qi "npm install-scripts approve better-sqlite3"; then
+    pass "blocked install yields the clear better-sqlite3 cause + fix"
+  else
+    fail "blocked install did not produce the clear better-sqlite3 error (unexpected output)"
+  fi
 fi
 cd "$SCRATCH"
 

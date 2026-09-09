@@ -46,7 +46,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 
 const CLI = resolve(process.cwd(), 'dist/cli.js');
 if (!existsSync(CLI)) {
@@ -206,7 +206,7 @@ function indexDbPath(dataDirRoot, projectRoot) {
 
 function indexLanguageByFile(dbPath, file) {
   if (!existsSync(dbPath)) return null;
-  const db = new Database(dbPath, { readonly: true });
+  const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const row = db.prepare("SELECT language FROM functions WHERE file_path LIKE ? LIMIT 1").get(`%${file}`);
     return row ? row.language : undefined;

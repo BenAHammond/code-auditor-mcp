@@ -11,7 +11,7 @@ import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { hostname } from 'node:os';
-import Database from 'better-sqlite3';
+import type { SqliteDatabase } from './sqlite/types.js';
 import type { Violation, RuleCoverage, RuleCoverageState } from './types.js';
 import { fingerprint, type FingerprintInput } from './fingerprint.js';
 import { extractSymbol } from './symbols.js';
@@ -177,7 +177,7 @@ function getGitInfo(target: string): { sha?: string; dirty: boolean } {
 // ── Writing ───────────────────────────────────────────────────────────────
 
 export function writeAuditToLedger(
-  db: Database.Database,
+  db: SqliteDatabase,
   runInput: LedgerRunInput,
   violations: Violation[],
   durationMs: number,
@@ -268,7 +268,7 @@ export function writeAuditToLedger(
  * findings. Returns the run id, which is the job id for `--detach`/MCP.
  */
 export function createLedgerRun(
-  db: Database.Database,
+  db: SqliteDatabase,
   runInput: LedgerRunInput,
   opts: { status?: LedgerRunStatus; projectRoot?: string } = {},
 ): string {
@@ -299,7 +299,7 @@ export function createLedgerRun(
 
 /** Patch mutable lifecycle columns on a run row. */
 export function patchLedgerRun(
-  db: Database.Database,
+  db: SqliteDatabase,
   runId: string,
   patch: LedgerRunPatch,
 ): void {
@@ -348,7 +348,7 @@ export function patchLedgerRun(
 
 /** Update the exit status of a ledger run — called by CLI/MCP after determining it. */
 export function updateLedgerRunStatus(
-  db: Database.Database,
+  db: SqliteDatabase,
   runId: string,
   exitStatus: number,
 ): void {
@@ -410,12 +410,12 @@ function mapRunRow(row: any): LedgerRunDetail {
   };
 }
 
-export function getLedgerRun(db: Database.Database, runId: string): LedgerRunDetail | null {
+export function getLedgerRun(db: SqliteDatabase, runId: string): LedgerRunDetail | null {
   const row = db.prepare(`SELECT ${RUN_DETAIL_SELECT} FROM findings_ledger_runs WHERE run_id = ?`).get(runId) as any;
   return row ? mapRunRow(row) : null;
 }
 
-export function listLedgerRuns(db: Database.Database, projectRoot?: string): LedgerRunDetail[] {
+export function listLedgerRuns(db: SqliteDatabase, projectRoot?: string): LedgerRunDetail[] {
   const params: any[] = [];
   let where = '';
   if (projectRoot) {
@@ -430,7 +430,7 @@ export function listLedgerRuns(db: Database.Database, projectRoot?: string): Led
 }
 
 export function queryLedgerFindings(
-  db: Database.Database,
+  db: SqliteDatabase,
   runId: string,
   q: LedgerFindingsQuery = {},
 ): LedgerFindingRecord[] | Array<{ group: string; count: number }> {
@@ -491,7 +491,7 @@ export function queryLedgerFindings(
 }
 
 export function queryLedgerCoverage(
-  db: Database.Database,
+  db: SqliteDatabase,
   runId: string,
   q: LedgerCoverageQuery = {},
 ): LedgerCoverageRow[] {
@@ -564,7 +564,7 @@ export function hashFileSet(files: string[], projectRoot?: string): FileSetHash 
  * when those diverge (or `full` is requested) are file contents re-read.
  */
 export function computeStaleness(
-  db: Database.Database,
+  db: SqliteDatabase,
   runId: string,
   projectRoot: string,
   opts: { full?: boolean } = {},
@@ -743,7 +743,7 @@ export interface RunningLeaseEvaluation {
  * write transactions. The actual reclaim/claim write happens later, under lock.
  */
 export function evaluateStaleRunning(
-  db: Database.Database,
+  db: SqliteDatabase,
   projectRoot: string,
   ttlMs: number,
 ): RunningLeaseEvaluation {
@@ -796,7 +796,7 @@ export function evaluateStaleRunning(
  * wrap it in one (or rely on it being a single implicit transaction otherwise).
  */
 export function markRunsFailed(
-  db: Database.Database,
+  db: SqliteDatabase,
   reclaimable: ReclaimCandidate[],
   cutoff: string,
 ): number {
@@ -831,7 +831,7 @@ export function markRunsFailed(
  * paths so a killed runner surfaces as failed rather than wedging the queue.
  * Returns the number of runs reclaimed.
  */
-export function reclaimStaleRunning(db: Database.Database, projectRoot: string, ttlMs: number): number {
+export function reclaimStaleRunning(db: SqliteDatabase, projectRoot: string, ttlMs: number): number {
   const { cutoff, reclaimable } = evaluateStaleRunning(db, projectRoot, ttlMs);
   return markRunsFailed(db, reclaimable, cutoff);
 }
@@ -841,7 +841,7 @@ export function reclaimStaleRunning(db: Database.Database, projectRoot: string, 
  * coverage cascade via `ON DELETE CASCADE` (foreign_keys is ON). Returns the
  * number of runs pruned.
  */
-export function pruneLedgerRuns(db: Database.Database, projectRoot: string, keepN: number): number {
+export function pruneLedgerRuns(db: SqliteDatabase, projectRoot: string, keepN: number): number {
   const rows = db.prepare(`
     SELECT run_id FROM findings_ledger_runs WHERE project_root = ? ORDER BY timestamp DESC, run_id DESC
   `).all(projectRoot) as Array<{ run_id: string }>;
@@ -874,7 +874,7 @@ export function detectRunInput(
 
 // ── Reading ───────────────────────────────────────────────────────────────
 
-export function listRuns(db: Database.Database): LedgerRunSummary[] {
+export function listRuns(db: SqliteDatabase): LedgerRunSummary[] {
   const rows = db.prepare(`
     SELECT
       r.run_id AS runId,
@@ -906,7 +906,7 @@ export function listRuns(db: Database.Database): LedgerRunSummary[] {
 }
 
 export function exportLedger(
-  db: Database.Database,
+  db: SqliteDatabase,
   since?: string,
 ): { runs: LedgerRunRecord[]; findings: LedgerFindingRecord[] } {
   const runParams: any[] = [];
@@ -1001,7 +1001,7 @@ export interface TrendReport {
  * @param db        The better-sqlite3 database handle.
  * @param sinceRunId  Only consider runs after this run ID.
  */
-export function getTrends(db: Database.Database, sinceRunId?: string): TrendReport | null {
+export function getTrends(db: SqliteDatabase, sinceRunId?: string): TrendReport | null {
   // 1. Fetch full-scope runs, optionally filtered by sinceRunId
   let runQuery = `
     SELECT run_id, timestamp, target, scope
@@ -1133,7 +1133,7 @@ export function getTrends(db: Database.Database, sinceRunId?: string): TrendRepo
   };
 }
 
-export function getLedgerStats(db: Database.Database): LedgerStats {
+export function getLedgerStats(db: SqliteDatabase): LedgerStats {
   const totalRuns = (db.prepare('SELECT COUNT(*) AS cnt FROM findings_ledger_runs').get() as any).cnt;
 
   const findingRows = db.prepare(`
@@ -1183,7 +1183,7 @@ export interface D1InterimRun {
   }>;
 }
 
-export function importLedgerFromDir(db: Database.Database, dirPath: string): { imported: number; skipped: number } {
+export function importLedgerFromDir(db: SqliteDatabase, dirPath: string): { imported: number; skipped: number } {
   if (!existsSync(dirPath)) {
     throw new Error(`Directory not found: ${dirPath}`);
   }

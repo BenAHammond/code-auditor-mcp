@@ -14,7 +14,7 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type Database from 'better-sqlite3';
+import type { SqliteDatabase } from '../sqlite/types.js';
 import {
   createLedgerRun,
   detectRunInput,
@@ -86,7 +86,7 @@ function toAuditJobRecord(detail: LedgerRunDetail): AuditJobRecord {
 }
 
 export function createAuditJob(
-  db: Database.Database,
+  db: SqliteDatabase,
   projectRoot: string,
   meta: CreateAuditJobMeta = {},
 ): AuditJobRecord {
@@ -102,13 +102,13 @@ export function createAuditJob(
   return toAuditJobRecord(getLedgerRun(db, runId)!);
 }
 
-export function getAuditJob(db: Database.Database, jobId: string): AuditJobRecord | undefined {
+export function getAuditJob(db: SqliteDatabase, jobId: string): AuditJobRecord | undefined {
   const detail = getLedgerRun(db, jobId);
   return detail ? toAuditJobRecord(detail) : undefined;
 }
 
 export function patchAuditJob(
-  db: Database.Database,
+  db: SqliteDatabase,
   jobId: string,
   patch: Partial<AuditJobRecord>,
 ): AuditJobRecord | undefined {
@@ -126,7 +126,7 @@ export function patchAuditJob(
   return getAuditJob(db, jobId);
 }
 
-export function setAuditJobProgress(db: Database.Database, jobId: string, progress: AuditJobProgress): void {
+export function setAuditJobProgress(db: SqliteDatabase, jobId: string, progress: AuditJobProgress): void {
   if (!getLedgerRun(db, jobId)) return;
   patchLedgerRun(db, jobId, { progressJson: JSON.stringify(progress) });
 }

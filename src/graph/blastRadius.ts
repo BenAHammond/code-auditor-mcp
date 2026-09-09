@@ -10,7 +10,7 @@
  * If latency > 100ms, the feature ships disabled-by-default.
  */
 
-import type Database from 'better-sqlite3';
+import type { SqliteDatabase } from '../sqlite/types.js';
 import type { BlastRadiusImpact } from '../types.js';
 
 const MAX_DEPTH = 10;
@@ -27,7 +27,7 @@ const LATENCY_BUDGET_MS = 100;
  * @returns Impact estimate with latency measurement
  */
 export function computeImpact(
-  db: Database.Database,
+  db: SqliteDatabase,
   functionIds: number[]
 ): BlastRadiusImpact {
   const startMs = performance.now();
@@ -77,7 +77,7 @@ export function computeImpact(
  * Walk the caller graph using `graph_cache` (fast path).
  * Finds all transitive callers up to MAX_DEPTH.
  */
-function computeImpactFromCache(db: Database.Database, functionIds: number[]): number[] {
+function computeImpactFromCache(db: SqliteDatabase, functionIds: number[]): number[] {
   // Build initial set as comma-separated IDs
   const idList = functionIds.join(',');
 
@@ -116,7 +116,7 @@ function computeImpactFromCache(db: Database.Database, functionIds: number[]): n
  * Fallback: walk the caller graph using `function_calls`.
  * Find all functions that transitively call the given function IDs.
  */
-function computeImpactFromCalls(db: Database.Database, functionIds: number[]): number[] {
+function computeImpactFromCalls(db: SqliteDatabase, functionIds: number[]): number[] {
   // First, get the names of the edited functions
   const idPlaceholders = functionIds.map(() => '?').join(',');
   const fnNames = db.prepare(
@@ -164,7 +164,7 @@ function computeImpactFromCalls(db: Database.Database, functionIds: number[]): n
 /**
  * Count how many of the given function IDs are exported.
  */
-function countExported(db: Database.Database, functionIds: number[]): number {
+function countExported(db: SqliteDatabase, functionIds: number[]): number {
   if (functionIds.length === 0) return 0;
 
   const idPlaceholders = functionIds.map(() => '?').join(',');

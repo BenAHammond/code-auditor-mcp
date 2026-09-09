@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import { openSqlite } from '../../sqlite/driver.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -64,7 +64,7 @@ describe('buildImportGraph', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(db);
 
     // Seed functions with file paths forming community structure
@@ -109,7 +109,7 @@ describe('buildImportGraph', () => {
   });
 
   it('handles empty database', () => {
-    const empty = new Database(':memory:');
+    const empty = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(empty);
     const graph = buildImportGraph(empty);
     expect(graph.filePaths.size).toBe(0);
@@ -319,7 +319,7 @@ describe('computeMartinMetrics', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'graph-test-'));
-    db = new Database(':memory:');
+    db = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(db);
   });
 
@@ -465,7 +465,7 @@ describe('buildImportGraphFromCache', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(db);
 
     const fnStmt = db.prepare(

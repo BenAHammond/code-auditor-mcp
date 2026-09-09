@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
-import Database from 'better-sqlite3';
+import { openSqlite } from '../sqlite/driver.js';
 import {
   writeAuditToLedger,
   updateLedgerRunStatus,
@@ -69,7 +69,7 @@ describe('Findings Ledger — write and status', () => {
   }
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(db);
   });
 
@@ -228,7 +228,7 @@ describe('Findings Ledger — reading and stats', () => {
   }
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(db);
   });
 
@@ -376,7 +376,7 @@ describe('Findings Ledger — audit runner integration', () => {
     // in the preserved-data set alongside project_tasks, analyzer_configs, etc.
     // Since clearIndex is a CodeIndexDB method, we validate here that the
     // ledger tables are documented as preserved in the schema definition.
-    const db = new Database(':memory:');
+    const db = openSqlite(':memory:', { timeoutMs: 30_000 });
 
     // Simulate what createSchema does
     db.exec(`
@@ -430,7 +430,7 @@ describe('Findings Ledger — audit runner integration', () => {
   it('fingerprints are stable and severity-independent', () => {
     // Same (analyzer, rule, file, symbol) at different severities
     // should produce the same fingerprint
-    const db = new Database(':memory:');
+    const db = openSqlite(':memory:', { timeoutMs: 30_000 });
     db.exec(`
       CREATE TABLE IF NOT EXISTS findings_ledger_runs (
         run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, git_sha TEXT,
@@ -477,7 +477,7 @@ describe('Findings Ledger — audit runner integration', () => {
   });
 
   it('different symbols produce different fingerprints', () => {
-    const db = new Database(':memory:');
+    const db = openSqlite(':memory:', { timeoutMs: 30_000 });
     db.exec(`
       CREATE TABLE IF NOT EXISTS findings_ledger_runs (
         run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, git_sha TEXT,
@@ -519,7 +519,7 @@ describe('Findings Ledger — audit runner integration', () => {
 
 describe('Findings Ledger — corruption resilience', () => {
   it('writeAuditToLedger with missing fields does not throw', () => {
-    const db = new Database(':memory:');
+    const db = openSqlite(':memory:', { timeoutMs: 30_000 });
     db.exec(`
       CREATE TABLE IF NOT EXISTS findings_ledger_runs (
         run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, git_sha TEXT,

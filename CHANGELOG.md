@@ -2,6 +2,27 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.0] — 2026-09-09
+
+### SQLite without a native install (Spec 51)
+`better-sqlite3` is no longer a hard dependency. The tool now selects its SQLite
+backend at runtime: the built-in `node:sqlite` (`DatabaseSync`/`StatementSync`)
+is the primary backend on Node 23.4+ and needs no native install or prebuilt
+binary, so a fresh `npm install` on npm 11.2+/12 (which block install scripts by
+default) just works. `better-sqlite3` remains as an `optionalDependencies`
+fallback for Node 18–23.3.
+
+- Backend selection is a runtime capability check, not a version-string match
+  (`CODE_AUDITOR_SQLITE_BACKEND=node-sqlite|better-sqlite3` forces one for the
+  parity suite). The active backend is reported in `code-audit --version`.
+- `node:sqlite`'s missing `.transaction()`/`.pragma()` and its stricter
+  named-parameter binding are shimmed behind the same interface; error codes are
+  normalized to better-sqlite3's `SqliteError` shape so callers branching on
+  `SQLITE_BUSY` etc. behave identically.
+- Full-suite and corpus parity verified: both backends produce byte-identical
+  results (recall-protocol corpus: 4,351 advisory findings under both).
+- **Node floor:** `>=18` to run, `>=23.4` for the zero-native-install path.
+
 ## [3.8.1] — 2026-09-08
 
 ### Fresh-install fix — better-sqlite3 prebuild gap

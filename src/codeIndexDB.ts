@@ -3,8 +3,9 @@
  * Replaces LokiJS + FlexSearch with durable, transactional storage.
  */
 
-import Database from 'better-sqlite3';
 import { createHash } from 'crypto';
+import { openSqlite } from './sqlite/driver.js';
+import type { SqliteDatabase, SqliteStatement } from './sqlite/types.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { discoverFiles, ALL_EXTENSIONS } from './utils/fileDiscovery.js';
@@ -68,39 +69,6 @@ interface FunctionDocument extends EnhancedFunctionMetadata {
 // contention block gracefully; the lease loop also retries SQLITE_BUSY.
 export const DB_BUSY_TIMEOUT_MS = 30_000;
 
-// ── Native-binding failure detection ─────────────────────────────────────
-// better-sqlite3 loads its compiled .node addon lazily, inside `new Database()`
-// (database.js: `DEFAULT_ADDON = require('bindings')('better_sqlite3.node')`).
-// `import Database` therefore always succeeds; the failure surfaces only at
-// open time. When the package's install script was blocked by the package
-// manager (npm 11.2+ and npm 12 block install scripts by default), the prebuilt
-// binary is never downloaded and `bindings` throws one of these messages.
-
-const MISSING_BINDING_PATTERNS: RegExp[] = [
-  /could not locate the bindings file/i, // `bindings` package: no .node anywhere
-  /no native build was found/i, // node-gyp fallback failed outright
-];
-
-/** True when `msg` indicates better-sqlite3's native binding was never built. */
-export function isMissingBetterSqlite3Binding(message: string): boolean {
-  return MISSING_BINDING_PATTERNS.some((re) => re.test(message));
-}
-
-/** Clear, actionable cause + fix for a missing better-sqlite3 native binding. */
-function missingBindingMessage(original: string): string {
-  return (
-    'better-sqlite3 could not load its native SQLite binding. This usually means ' +
-    'the package manager blocked better-sqlite3\'s install script, so its prebuilt ' +
-    'binary was never downloaded (npm 11.2+ and npm 12 block install scripts by default).\n' +
-    'Fix — approve the build once, then rebuild:\n' +
-    '  npm install-scripts approve better-sqlite3 && npm rebuild better-sqlite3\n' +
-    '  # with pnpm, instead:\n' +
-    '  pnpm approve-builds        # select better-sqlite3\n' +
-    '  pnpm rebuild better-sqlite3\n' +
-    `Underlying error: ${original}`
-  );
-}
-
 // ── Content hash ────────────────────────────────────────────────────────
 
 function computeContentHash(body: string | undefined, signature: string | undefined): string {
@@ -124,7 +92,7 @@ interface LokiFindQuery {
 
 class SqliteCollectionAdapter {
   constructor(
-    private db: Database.Database,
+    private db: SqliteDatabase,
     private tableName: string
   ) {}
 
@@ -301,10 +269,10 @@ class SqliteCollectionAdapter {
 export class CodeIndexDB {
   private static instance: CodeIndexDB;
   /** Subclasses (e.g. EnhancedCodeIndexDB) need access for extra tables without `as any`. */
-  protected db!: Database.Database;
+  protected db!: SqliteDatabase;
 
   /** Public access to raw SQLite handle — used by ledger writes from external surfaces. */
-  get rawDb(): Database.Database {
+  get rawDb(): SqliteDatabase {
     return this.db;
   }
   private dbPath: string;
@@ -332,7 +300,7 @@ export class CodeIndexDB {
   private graphCacheAdapter!: SqliteCollectionAdapter;
 
   private taskRepository: ProjectTaskRepository | null = null;
-  private stmts: Map<string, Database.Statement> = new Map();
+  private stmts: Map<string, SqliteStatement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
   private static readonly SCHEMA_VERSION = 12;
@@ -458,23 +426,19 @@ export class CodeIndexDB {
     // Open SQLite database (with auto-recovery for corrupted files)
     let retried = false;
     try {
-      this.db = new Database(this.dbPath, { timeout: DB_BUSY_TIMEOUT_MS });
+      this.db = openSqlite(this.dbPath, { timeoutMs: DB_BUSY_TIMEOUT_MS });
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      // Missing native binding (install script blocked) is not a corrupt file —
-      // name the cause and fix explicitly rather than the generic storage hint.
-      if (isMissingBetterSqlite3Binding(msg)) {
+      // No usable backend (e.g. node:sqlite absent and better-sqlite3's binding
+      // missing) surfaces from openSqlite with its own clear cause + fix; pass
+      // it through unwrapped so that message is not buried under the generic
+      // storage hint.
+      if (/no usable backend is available/i.test(msg)) {
         throw new ContextualError(
-          missingBindingMessage(msg),
-          {
-            dbPath: this.dbPath,
-            hint:
-              'The native binding was never built. Approve better-sqlite3\'s install ' +
-              'script, then rebuild: `npm install-scripts approve better-sqlite3 && ' +
-              'npm rebuild better-sqlite3` (or `pnpm approve-builds`).',
-          },
+          msg,
+          { dbPath: this.dbPath },
           e instanceof Error ? e : undefined
         );
       }
@@ -482,7 +446,7 @@ export class CodeIndexDB {
       if (!retried && this.dbPath !== ':memory:' && /(not a database|malformed|corrupt)/i.test(msg)) {
         retried = true;
         try { await fs.unlink(this.dbPath); } catch { /* ignore */ }
-        this.db = new Database(this.dbPath, { timeout: DB_BUSY_TIMEOUT_MS });
+        this.db = openSqlite(this.dbPath, { timeoutMs: DB_BUSY_TIMEOUT_MS });
         this.db.pragma('journal_mode = WAL');
         this.db.pragma('foreign_keys = ON');
       } else {
@@ -1341,7 +1305,7 @@ export class CodeIndexDB {
       // Rename old LokiJS file FIRST, then create fresh SQLite DB
       require('fs').renameSync(this.dbPath, bakPath);
 
-      const migDb = new Database(this.dbPath, { timeout: DB_BUSY_TIMEOUT_MS });
+      const migDb = openSqlite(this.dbPath, { timeoutMs: DB_BUSY_TIMEOUT_MS });
       migDb.pragma('journal_mode = WAL');
       migDb.pragma('foreign_keys = ON');
 

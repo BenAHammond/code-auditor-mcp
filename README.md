@@ -26,6 +26,17 @@ claude plugin install code-auditor
 
 The hook auto-installs the auditor on first use via npx.
 
+## Requirements
+
+- **Node 18+** to run. **Node 23.4+** gets the zero-native-install path: Code
+  Auditor uses the built-in `node:sqlite` module, so nothing needs to compile or
+  download a prebuilt binary on install.
+- On older Node (18–23.3), Code Auditor falls back to `better-sqlite3`, an
+  *optional* dependency whose install script must be approved once on npm
+  11.2+/12 (they block dependency install scripts by default):
+  `npm install-scripts approve better-sqlite3 && npm rebuild better-sqlite3`
+  (with pnpm: `pnpm approve-builds`, then select `better-sqlite3`).
+
 ## Prompt examples
 
 **"Index the codebase and run a full audit, then walk the violations file-by-file with `code-audit next-file`."**

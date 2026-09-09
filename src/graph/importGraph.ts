@@ -13,7 +13,7 @@
  * All advisory — zero violations. Reports and annotations only.
  */
 
-import type Database from 'better-sqlite3';
+import type { SqliteDatabase } from '../sqlite/types.js';
 import type { DirectoryPurity, MartinEntry } from '../types.js';
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ export interface PurityResult {
  *
  * Edge weight = count of distinct dependency symbols between a file pair.
  */
-export function buildImportGraph(db: Database.Database): ImportGraph {
+export function buildImportGraph(db: SqliteDatabase): ImportGraph {
   const adjacency = new Map<string, Map<string, number>>();
 
   // Collect all files with indexed functions
@@ -232,7 +232,7 @@ function normalizePath(p: string): string {
 /**
  * Populate `graph_cache` with import graph edges.
  */
-export function populateImportGraphCache(db: Database.Database): void {
+export function populateImportGraphCache(db: SqliteDatabase): void {
   const { adjacency } = buildImportGraph(db);
 
   const txn = db.transaction(() => {
@@ -255,7 +255,7 @@ export function populateImportGraphCache(db: Database.Database): void {
 /**
  * Build an import graph from the persistent `graph_cache` table (fast path).
  */
-export function buildImportGraphFromCache(db: Database.Database): ImportGraph {
+export function buildImportGraphFromCache(db: SqliteDatabase): ImportGraph {
   const adjacency = new Map<string, Map<string, number>>();
   const filePaths = new Set<string>();
 
@@ -641,7 +641,7 @@ function dirname(fp: string): string {
  * Uses a lightweight file-content scan.
  */
 export function computeMartinMetrics(
-  db: Database.Database,
+  db: SqliteDatabase,
   importGraph: ImportGraph
 ): MartinEntry[] {
   // Collect all directories from filePaths

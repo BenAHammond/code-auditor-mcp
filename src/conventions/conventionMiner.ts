@@ -16,7 +16,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import Database from 'better-sqlite3';
+import type { SqliteDatabase } from '../sqlite/types.js';
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import type { Convention, ConventionMiningConfig } from '../types.js';
 import type { ExportInfo } from '../languages/types.js';
@@ -480,7 +480,7 @@ function capPerDomain(conventions: Convention[], max: number): Convention[] {
  * those, compute which other calls X co-occur with confidence ≥ pairConfidence
  * and support ≥ minCorpus.
  */
-function mineUsagePairs(db: Database.Database, config: ConventionMiningConfig): Convention[] {
+function mineUsagePairs(db: SqliteDatabase, config: ConventionMiningConfig): Convention[] {
   const conventions: Convention[] = [];
 
   // Build per-function call sets
@@ -596,7 +596,7 @@ function mineUsagePairs(db: Database.Database, config: ConventionMiningConfig): 
  * persisted in the functions table.
  */
 function mineImportForm(
-  db: Database.Database,
+  db: SqliteDatabase,
   config: ConventionMiningConfig,
   projectRoot?: string,
   getSource?: (filePath: string) => string | undefined,
@@ -715,7 +715,7 @@ function mineImportForm(
  * excluded from the corpus and never flagged as deviants.
  */
 function mineErrorHandling(
-  db: Database.Database,
+  db: SqliteDatabase,
   config: ConventionMiningConfig,
 ): Convention[] {
   const conventions: Convention[] = [];
@@ -817,7 +817,7 @@ function mineErrorHandling(
  * form, since it is not stored in the functions table metadata.
  */
 function mineExportShape(
-  db: Database.Database,
+  db: SqliteDatabase,
   config: ConventionMiningConfig,
   projectRoot?: string,
   getSource?: (filePath: string) => string | undefined,
@@ -962,7 +962,7 @@ function classifyExportKind(row: {
  * a mode. A directory's convention is computed per kind; kinds with sub-
  * minCorpus populations produce nothing.
  */
-function mineNaming(db: Database.Database, config: ConventionMiningConfig): Convention[] {
+function mineNaming(db: SqliteDatabase, config: ConventionMiningConfig): Convention[] {
   const conventions: Convention[] = [];
 
   const rows = db
@@ -1075,7 +1075,7 @@ export const MINER_VERSION = 2;
  * Includes MINER_VERSION so that algorithm changes force a re-mine.
  */
 export function computeMinerInputHash(
-  db: Database.Database,
+  db: SqliteDatabase,
   config: ConventionMiningConfig,
 ): string {
   // Hash actual content — not just counts — so two corpora with identical
@@ -1105,7 +1105,7 @@ export function computeMinerInputHash(
  * @returns Array of mined conventions (uncapped — caller should upsert).
  */
 export function mineConventions(
-  db: Database.Database,
+  db: SqliteDatabase,
   config: ConventionMiningConfig,
   projectRoot?: string,
   getSource?: (filePath: string) => string | undefined,

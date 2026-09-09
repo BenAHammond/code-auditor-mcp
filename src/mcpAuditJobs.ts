@@ -14,7 +14,7 @@ import type {
   Severity,
   Violation,
 } from './types.js';
-import Database from 'better-sqlite3';
+import type { SqliteDatabase } from './sqlite/types.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
@@ -137,7 +137,7 @@ function isBusyError(e: unknown): boolean {
  * (the long `syncFileIndex`/`updateDependencyGraph` phase) and crash it with
  * `database is locked`.
  */
-async function acquireLease(db: Database.Database, projectRoot: string, jobId: string): Promise<void> {
+async function acquireLease(db: SqliteDatabase, projectRoot: string, jobId: string): Promise<void> {
   const ttl = jobLeaseTtlMs();
   const limit = maxRunningJobs();
   const now = () => new Date().toISOString();
@@ -239,7 +239,7 @@ function isRetryableShardError(error: string): boolean {
 }
 
 async function runShardTasksWithWorkerPool(
-  getDb: () => Database.Database,
+  getDb: () => SqliteDatabase,
   jobId: string,
   tasks: WorkerShardTask[],
   options: {
@@ -962,7 +962,7 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
   // parent's deferred read→write transactions fail with "database is locked" —
   // the defect that originally motivated a separate progress connection, so this
   // stays a single connection throughout.
-  const getJobDb = (): Database.Database => db!.rawDb;
+  const getJobDb = (): SqliteDatabase => db!.rawDb;
 
   try {
     const auditPath = path.resolve((args.path as string) || process.cwd());

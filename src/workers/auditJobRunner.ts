@@ -27,9 +27,10 @@ async function main(): Promise<void> {
 
   // This process is a fresh fork of a parent that already opened CodeIndexDB.
   // fork() copies the singleton (including `isInitialized = true` and a native
-  // better-sqlite3 handle that does not survive the fork), so `getInstance`
-  // would short-circuit and hand back a dead connection. Reset the singleton so
-  // runAuditJob opens a fresh per-project connection.
+  // SQLite handle — better-sqlite3 or node:sqlite, whichever the driver loaded
+  // — that does not survive the fork), so `getInstance` would short-circuit and
+  // hand back a dead connection. Reset the singleton so runAuditJob opens a
+  // fresh per-project connection.
   CodeIndexDB.resetInstance();
 
   await runAuditJob(jobId, JSON.parse(argsJson) as Record<string, unknown>, JSON.parse(defaultsJson) as never);

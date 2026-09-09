@@ -724,7 +724,11 @@ export function compileToSQL(
 
   if (matchParts.length > 0) {
     ftsMatch = matchParts.join(' ');
-    params.ftsMatch = ftsMatch;
+    // `ftsMatch` is returned as its own field on SqlQuery (consumers read
+    // `compiled.ftsMatch`), not smuggled through `params`. A `params.ftsMatch`
+    // key would be dead — the FTS SQL binds it under `@_ftsMatch`
+    // (codeIndexDB.ts), never `@ftsMatch` — so it is omitted rather than left as
+    // an unused bind key.
   }
 
   // ── Operator filters → WHERE clauses ────────────────────────────────────

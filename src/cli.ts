@@ -30,6 +30,7 @@ import { computeGatingDecision } from './enforcement/gate.js';
 import { DEFAULT_BLOCKING_SEVERITIES } from './config/defaults.js';
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
+import { describeSqliteBackend } from './sqlite/driver.js';
 
 // Get package.json for version info
 const __filename = fileURLToPath(import.meta.url);
@@ -102,7 +103,7 @@ function printFileAccounting(result: any, explainSkipped: boolean): void {
 program
   .name('code-auditor')
   .description('TypeScript/JavaScript code quality auditor with AI tool integration')
-  .version(packageJson.version);
+  .version(`${packageJson.version} (sqlite: ${describeSqliteBackend()})`);
 
 // Legacy audit command (default behavior)
 program

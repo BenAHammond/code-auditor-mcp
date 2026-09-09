@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import Database from 'better-sqlite3';
+import { openSqlite } from '../../sqlite/driver.js';
 import {
   buildCallGraph,
   buildCallGraphFromCache,
@@ -94,7 +94,7 @@ describe('populateCallGraphCache', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(db);
     seedFunctions(db, [
       [1, 'main', 'src/main.ts'],
@@ -163,7 +163,7 @@ describe('populateImportGraphCache', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(db);
     seedFunctions(db, [
       [1, 'fnA', 'src/module_a/a.ts'],
@@ -209,7 +209,7 @@ describe('graph cache — incremental update simulation', () => {
   let db: Database.Database;
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    db = openSqlite(':memory:', { timeoutMs: 30_000 });
     createSchema(db);
     seedFunctions(db, [
       [1, 'alpha', 'src/alpha.ts'],

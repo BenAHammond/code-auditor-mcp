@@ -11,7 +11,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type Database from 'better-sqlite3';
+import type { SqliteDatabase } from '../sqlite/types.js';
 import { extractDeclarations } from './styleExtractor.js';
 import { loadTailwindConfig, tokensToStyleTokens } from './tailwindConfigLoader.js';
 import {
@@ -83,7 +83,7 @@ export interface StyleSyncOptions {
  * - For full runs: also removes stale entries for files no longer on disk.
  */
 export async function syncStyleIndex(
-  rawDb: Database.Database,
+  rawDb: SqliteDatabase,
   files: string[],
   projectRoot: string,
   options: StyleSyncOptions = {},
@@ -331,7 +331,7 @@ async function findUnreadStyleFiles(projectRoot: string): Promise<UnreadStyleSou
  * leaving prior full-run rows for the rest of the project intact.
  */
 function persistUnreadSources(
-  rawDb: Database.Database,
+  rawDb: SqliteDatabase,
   unreadSources: UnreadStyleSource[],
   scoped: boolean,
 ): void {
@@ -368,14 +368,14 @@ function computeFileHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-function getStoredHash(rawDb: Database.Database, filePath: string): string | null {
+function getStoredHash(rawDb: SqliteDatabase, filePath: string): string | null {
   const row = rawDb.prepare(
     'SELECT content_hash FROM style_declarations WHERE file_path = ? LIMIT 1',
   ).get(filePath) as { content_hash: string } | undefined;
   return row?.content_hash ?? null;
 }
 
-function deleteFileEntries(rawDb: Database.Database, filePath: string): void {
+function deleteFileEntries(rawDb: SqliteDatabase, filePath: string): void {
   rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?').run(filePath);
   rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(filePath);
   rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(filePath);
@@ -383,7 +383,7 @@ function deleteFileEntries(rawDb: Database.Database, filePath: string): void {
   rawDb.prepare('DELETE FROM style_defined_classes WHERE file_path = ?').run(filePath);
 }
 
-function removeStaleEntries(rawDb: Database.Database, currentFiles: string[]): number {
+function removeStaleEntries(rawDb: SqliteDatabase, currentFiles: string[]): number {
   const filesSet = new Set(currentFiles);
   // Union all three tables — style_class_usage and style_tokens can have
   // entries for files that don't appear in style_declarations (e.g. TSX
@@ -412,7 +412,7 @@ function removeStaleEntries(rawDb: Database.Database, currentFiles: string[]): n
 }
 
 function insertDeclarations(
-  rawDb: Database.Database,
+  rawDb: SqliteDatabase,
   filePath: string,
   declarations: NormalizedDeclaration[],
   contentHash: string,
@@ -459,7 +459,7 @@ function insertDeclarations(
 }
 
 function upsertTokens(
-  rawDb: Database.Database,
+  rawDb: SqliteDatabase,
   filePath: string,
   tokens: StyleToken[],
 ): void {
@@ -486,7 +486,7 @@ function upsertTokens(
 }
 
 function upsertClassUsage(
-  rawDb: Database.Database,
+  rawDb: SqliteDatabase,
   filePath: string,
   usage: StyleClassUsage[],
 ): void {
