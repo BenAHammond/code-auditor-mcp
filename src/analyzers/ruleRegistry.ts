@@ -264,6 +264,92 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
+  // ── Go successor rules (Spec-49) ────────────────────────────────────────
+  // The Go analyzer emits these *bare* IDs (Analyzer: 'solid') for the honest
+  // size readings that replaced the retired Go `single-responsibility` /
+  // `open-closed` proxies, plus the Go `liskov-substitution` (method calls
+  // panic()) rule. They were missing from the registry, so Go findings were
+  // invisible to coverage and `describeRuleId` reported them `unknown`.
+  'switch-size': {
+    analyzer: 'solid',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Switch or type switch has many case clauses.',
+    docs: 'switch-size',
+    thresholds: [],
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\nfunc small(x int) int {\n\tswitch x {\n\tcase 1:\n\t\treturn 1\n\tcase 2:\n\t\treturn 2\n\tcase 3:\n\t\treturn 3\n\t}\n\treturn 0\n}',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\nfunc dispatch(x int) int {\n\tswitch x {\n\tcase 1:\n\t\treturn 1\n\tcase 2:\n\t\treturn 2\n\tcase 3:\n\t\treturn 3\n\tcase 4:\n\t\treturn 4\n\tcase 5:\n\t\treturn 5\n\tcase 6:\n\t\treturn 6\n\tcase 7:\n\t\treturn 7\n\t}\n\treturn 0\n}' },
+      ],
+    },
+  },
+  'function-size': {
+    analyzer: 'solid',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Function has many parameters, multiple returns, and high complexity.',
+    docs: 'function-size',
+    thresholds: [],
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\nfunc deep(x int) int {\n\tif x > 0 { x++ }\n\tif x > 1 { x++ }\n\tif x > 2 { x++ }\n\tif x > 3 { x++ }\n\tif x > 4 { x++ }\n\tif x > 5 { x++ }\n\tif x > 6 { x++ }\n\tif x > 7 { x++ }\n\tif x > 8 { x++ }\n\tif x > 9 { x++ }\n\tif x > 10 { x++ }\n\treturn x\n}',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\nfunc doEverything(a int, b int, c int, d int, e int, f int) (int, string, bool) {\n\tx := 0\n\tif a > 0 { x++ }\n\tif b > 0 { x++ }\n\tif c > 0 { x++ }\n\tif d > 0 { x++ }\n\tif e > 0 { x++ }\n\tif f > 0 { x++ }\n\tif a > 1 { x++ }\n\tif b > 1 { x++ }\n\tif c > 1 { x++ }\n\tif d > 1 { x++ }\n\tif e > 1 { x++ }\n\treturn x, "ok", true\n}' },
+      ],
+    },
+  },
+  'struct-size': {
+    analyzer: 'solid',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Struct has many fields.',
+    docs: 'struct-size',
+    thresholds: [],
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\ntype Small struct {\n\tValue  string\n\tCount  int\n\tNext   *Point\n\tPrior  *Point\n\tLabel  string\n}',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\ntype Everything struct {\n\tField1  string\n\tField2  string\n\tField3  string\n\tField4  int\n\tField5  int\n\tField6  int\n\tField7  string\n\tField8  string\n\tField9  int\n\tField10 string\n\tField11 string\n}' },
+      ],
+    },
+  },
+  'liskov-substitution': {
+    analyzer: 'solid',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Method calls panic().',
+    docs: 'liskov-substitution',
+    thresholds: [],
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\ntype Parser struct{}\n\nfunc (p *Parser) panicRecovery() error {\n\treturn nil\n}',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\ntype Parser struct{}\n\nfunc (p *Parser) parse() {\n\tpanic("unexpected token")\n}' },
+      ],
+    },
+  },
   'solid/liskov-substitution': {
     analyzer: 'solid',
     field: 'rule',

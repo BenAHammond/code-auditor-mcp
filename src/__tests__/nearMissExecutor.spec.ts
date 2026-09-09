@@ -258,6 +258,13 @@ const SKIP_RULES: Record<string, string> = {
   'hooks-naming': 'react — sample is a hook *definition* (`useFetch`), not a hook called inside a scannable component',
   'missing-props': 'react — `hasPropsValidation` treats destructured params as validation, so the near-miss (propTypes) and invalid (none) are indistinguishable; needs a non-destructured-prop fixture',
   'no-error-boundary': 'react — sample is a JSX fragment (`<ErrorBoundary><App/></ErrorBoundary>`) needing a multi-file scan tree',
+  // Go rules — near-misses are Go snippets exercised through the real Go
+  // analyzer binary (the same boundary the production pipeline uses), not the
+  // TS single-file runner here.
+  'switch-size': 'Go — near-miss exercised in goSwitchSize.spec.ts via the Go analyzer binary',
+  'function-size': 'Go — near-miss exercised in goSingleResponsibilitySplit.spec.ts via the Go analyzer binary',
+  'struct-size': 'Go — near-miss exercised in goSingleResponsibilitySplit.spec.ts via the Go analyzer binary',
+  'liskov-substitution': 'Go — near-miss exercised in goDishonestRules.spec.ts via the Go analyzer binary',
   performance: 'react — sample is a `memo(...)` statement needing requireMemoization config + a detected memo component',
   'raw-element': 'react — sample is a `return <Button …>` fragment needing a wrapper-component scan to classify `Button` as non-raw',
 };

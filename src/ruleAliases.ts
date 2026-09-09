@@ -95,11 +95,11 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
     reason:
       'Renamed to interface-size — a member count is a size reading, not an Interface Segregation reading (true ISP client-usage detection needs the call graph).',
   },
-  'liskov-substitution': {
-    to: 'solid/liskov-substitution',
-    reason:
-      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
-  },
+  // NOTE: `liskov-substitution` is deliberately NOT aliased here. The Go analyzer
+  // emits bare `liskov-substitution` as a *live* rule ("method calls panic()"),
+  // distinct from the TS `solid/liskov-substitution` ("override throws"). Bare is
+  // therefore a current registry key, not a retired name — a rename alias here
+  // would assert a split identity and fail the Spec 38 R5 registry test.
   'dependency-inversion': {
     to: 'solid/dependency-inversion',
     reason:
