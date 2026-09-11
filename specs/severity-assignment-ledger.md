@@ -6,7 +6,7 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 69 / 106
+- **Assigned:** 75 / 106
 - **critical:** 6
 - **severe:** 27
 - **high:** 32
@@ -215,3 +215,17 @@ fields), so they get no severity.
 | `extra-field` | warning | severe | A field is present where the schema does not declare it — surfaces on integration. | no |
 
 `cannot-fire` (no severity): `field-mismatch`, `constraint-mismatch`, `version-mismatch`.
+
+---
+
+## Session 9 — api-contract (0 live + 6 cannot-fire)
+
+`APIContractAnalyzer` has **no emission site** for any of its six rules. All six
+are `cannot-fire`: `extractEndpoints`/`extractAPICalls` never populate the fields
+these rules read, or the rule has no producing code at all (per
+`CANNOT_FIRE_RULES`). No severity is assigned — there is nothing to gate until
+extraction lands. This is a standing finding about the analyzer, not a project
+verdict.
+
+`cannot-fire` (no severity): `api-type-mismatch`, `missing-endpoint`,
+`api-extra-field`, `api-missing-field`, `method-mismatch`, `auth-mismatch`.
