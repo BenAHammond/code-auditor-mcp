@@ -6,18 +6,33 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 13 / 106
-- **critical:** 0
+- **Assigned:** 14 / 106
+- **critical:** 1
 - **severe:** 2
 - **high:** 11
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
-The spec calls for 105 rules. The accurate inventory is **106** concrete emitted
-rules: 102 in `RULE_REGISTRY` plus 4 unregistered emit sites — `dry/diverging-clone`
-(`auditRunner.ts`), `missing-schemas` (`UniversalSchemaAnalyzer.ts`), `reserved-word`
-and `too-many-queries` (`schema/codeAnalysis.ts`). Every one of the 106 gets a row;
-the total reconciles to 106, not 105.
+The spec calls for 105 rules. The accurate inventory is **106** rules, which
+decompose into **96 live** (have an emission site) plus **10 `cannot-fire`**
+(registered but structurally unreachable — see `CANNOT_FIRE_RULES` in
+`src/analyzers/applicability.ts`).
+
+- **102** in `RULE_REGISTRY`, plus **4 unregistered live** emit sites —
+  `dry/diverging-clone` (`auditRunner.ts`), `missing-schemas`
+  (`UniversalSchemaAnalyzer.ts`), `reserved-word` and `too-many-queries`
+  (`schema/codeAnalysis.ts`).
+- Of the 102 registered, **10 `cannot-fire`**: all six `api-contract` rules,
+  `schema/file-error`, and three `schema-validator` rules (`field-mismatch`,
+  `constraint-mismatch`, `version-mismatch`).
+
+Every live rule gets a severity row. `cannot-fire` rules are accounted for with a
+note and **no** severity — there is nothing to gate until an emission site exists.
+
+Per-analyzer counts (live / cannot-fire): solid 13/0, secrets 1/0, data-access 6/0,
+dry 6/0, documentation 6/0, react 7/0, schema 23/1, schema-validator 3/3,
+api-contract 0/6, dependency-graph 9/0, invariants 2/0, styles 10/0,
+conventions 5/0, cross-domain 5/0.
 
 ## Measuring stick for the "Disagrees" column
 
@@ -72,3 +87,13 @@ Emit-site severities come from `UniversalSOLIDAnalyzer.ts` (TS rules) and
 | `function-size` | warning | high | Go function off-scale size — anchored high. | yes |
 | `struct-size` | warning | high | Go struct off-scale size — anchored high. | yes |
 | `liskov-substitution` (bare Go) | warning | severe | Method calls `panic()` — a runtime crash that surfaces when the method runs. | no |
+
+---
+
+## Session 2 — secrets (1 rule)
+
+Emit site: `UniversalSecretsAnalyzer.ts` (`hardcoded-secret`, `severity: 'critical'`).
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `hardcoded-secret` | critical | critical | A credential value embedded in source is exploitable now — no runtime needed. | no |
