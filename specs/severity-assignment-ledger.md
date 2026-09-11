@@ -6,10 +6,10 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 14 / 106
-- **critical:** 1
-- **severe:** 2
-- **high:** 11
+- **Assigned:** 20 / 106
+- **critical:** 3
+- **severe:** 4
+- **high:** 13
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
@@ -97,3 +97,19 @@ Emit site: `UniversalSecretsAnalyzer.ts` (`hardcoded-secret`, `severity: 'critic
 | Rule | Current (effective) | New level | Reason | Disagrees |
 |---|---|---|---|---|
 | `hardcoded-secret` | critical | critical | A credential value embedded in source is exploitable now — no runtime needed. | no |
+
+---
+
+## Session 3 — data-access (6 rules)
+
+Emit sites: `UniversalDataAccessAnalyzer.ts`. Effective severities fold in
+`severityOverrides` (`missing-org-filter`→suggestion).
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `sql-injection-risk` | warning | critical | String-concatenated SQL from input is exploitable now. | yes |
+| `missing-org-filter` | suggestion | severe | A query on tenant tables without an org filter leaks across tenants — it surfaces as a data-isolation breach. | yes |
+| `complex-query` | warning | high | Subqueries and many-table joins are a performance smell that has not bitten. | yes |
+| `unfiltered-query` | suggestion | high | A no-filter query is a smell (possible full-table read) that has not bitten. | no |
+| `hardcoded-connection` | suggestion | critical | A connection string with credentials embedded in source is a leaked secret — exploitable now. | yes |
+| `loop-query` | warning | severe | A query inside a loop is N+1 — it surfaces under load (anchored). | no |
