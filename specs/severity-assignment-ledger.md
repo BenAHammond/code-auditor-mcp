@@ -6,10 +6,10 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 39 / 106
-- **critical:** 3
-- **severe:** 7
-- **high:** 29
+- **Assigned:** 63 / 106
+- **critical:** 6
+- **severe:** 24
+- **high:** 32
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
@@ -163,3 +163,39 @@ and `raw-element` is dynamic (`warning` when `componentMap` is set, else
 | `performance` | warning | high | Missing memoization causes re-renders, a performance smell that has not bitten. | yes |
 | `accessibility` | warning | severe | An inaccessible component fails WCAG — a defect that surfaces for assistive-tech users. | yes |
 | `raw-element` | warning | high | A raw element where the project uses a wrapper is a convention smell. | yes |
+
+---
+
+## Session 7 — schema (23 live + 1 cannot-fire)
+
+Emit sites: `jsonSchema.ts` (JSON validation), `codeAnalysis.ts` (SQL/table
+rules), `UniversalSchemaAnalyzer.ts` (`missing-schemas`). `file-error` is
+`cannot-fire` (routed to `state.errors`), so it gets no severity.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `missing-schema-declaration` | suggestion | high | A missing `$schema` declaration is a convention gap that has not bitten. | no |
+| `invalid-json` | warning | critical | The file cannot be parsed at all — broken now. | yes |
+| `undefined-required-field` | warning | severe | A required field is not defined in `properties` — the schema is wrong and surfaces. | no |
+| `invalid-type` | warning | severe | A declared type is not a valid JSON-Schema type — the schema is wrong. | no |
+| `invalid-range` | warning | severe | `minimum > maximum` is a contradictory constraint — the schema is wrong. | no |
+| `type-mismatch` | warning | severe | Data does not match the declared field type — surfaces on validation. | no |
+| `string-too-short` | warning | severe | Data violates `minLength` — surfaces on validation. | no |
+| `string-too-long` | warning | severe | Data violates `maxLength` — surfaces on validation. | no |
+| `pattern-mismatch` | warning | severe | Data fails the declared pattern — surfaces on validation. | no |
+| `invalid-format` | warning | severe | Data fails the declared format — surfaces on validation. | no |
+| `below-minimum` | warning | severe | Data is below the declared minimum — surfaces on validation. | no |
+| `above-maximum` | warning | severe | Data is above the declared maximum — surfaces on validation. | no |
+| `too-few-items` | warning | severe | Array is below `minItems` — surfaces on validation. | no |
+| `too-many-items` | warning | severe | Array is above `maxItems` — surfaces on validation. | no |
+| `missing-required-field` | warning | severe | A required field is absent — surfaces on validation. | no |
+| `unexpected-property` | warning | severe | An undeclared property is present — surfaces on validation. | no |
+| `enum-mismatch` | warning | severe | Value is not in the declared enum — surfaces on validation. | no |
+| `dynamic-sql-construction` | suggestion | critical | User-controlled SQL built by interpolation is injectable now — anchored critical. | yes |
+| `table-naming-convention` | suggestion | high | A table name off the naming convention is a style smell that has not bitten. | no |
+| `unknown-table` | suggestion | critical | A query against a table that does not exist fails when it runs — anchored critical. | yes |
+| `missing-schemas` | warning | severe | Schema validation is configured but no schemas exist — the guard you think is up is down. | no |
+| `reserved-word` | warning | severe | A reserved word as a table name breaks when the SQL runs. | no |
+| `too-many-queries` | warning | high | A function issuing many queries is a chatty-perf smell that has not bitten. | yes |
+
+`cannot-fire` (no severity): `file-error`.
