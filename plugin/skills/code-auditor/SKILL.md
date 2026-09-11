@@ -5,7 +5,7 @@ description: Audit code quality, search the codebase semantically, enforce invar
 
 # Code Auditor Skill
 
-> **Version 3.9.1** • Run `code-audit --version` to check your installed version.
+> **Version 3.9.2** • Run `code-audit --version` to check your installed version.
 > If versions differ, the CLI is authoritative — use `code-audit <command> --help` to see what your install actually supports.
 
 You have the `code-audit` CLI available. It indexes every function, component, and struct in the codebase for semantic search and invariant enforcement. Use these commands instead of raw grep/find whenever possible.

@@ -2,6 +2,33 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.2] — 2026-09-11
+
+### Severity as urgency, not permission (Spec 54)
+
+The severity vocabulary is relabeled from `critical` / `warning` / `suggestion`
+to **`critical`** / **`severe`** / **`high`**. Every level is now a defect; the
+axis is *how fast it bites you*, not how optional the fix is:
+
+- **`critical`** — exploitable or broken now.
+- **`severe`** — wrong, and it will surface.
+- **`high`** — wrong, and it has not bitten yet.
+
+There is no fourth rung below `high`; the advisory `suggestion` tier is gone,
+and a `high` finding now blocks the gate with exit 2. Every reading is a defect
+and the severity is only the order to act.
+
+- **Old-scheme machinery removed** — `gateSeverities`, `severityOverrides`, and
+  path-profile severity capping are gone; `excludeFromGate` remains.
+- **SARIF** maps all three levels to `error` (the lower two no longer downgrade).
+- **Every surface updated** — CLI, JSON/HTML/CSV/SARIF reports, SKILL docs,
+  the rule registry, message templates, and the six-locale docs site.
+- **Full ledger** — every rule reassigned from scratch in
+  `specs/severity-assignment-ledger.md`: 111 rules at 8 `critical` / 37 `severe` /
+  56 `high`.
+- **No detection change** — corpus baselines re-measured and unchanged; this is
+  a relabel only, not a behavior change.
+
 ## [3.9.1] — 2026-09-11
 
 ### Findings from a real D1/Workers audit (Spec 52)
