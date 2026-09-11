@@ -6,10 +6,10 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 75 / 106
+- **Assigned:** 84 / 106
 - **critical:** 6
-- **severe:** 27
-- **high:** 32
+- **severe:** 32
+- **high:** 36
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
@@ -229,3 +229,24 @@ verdict.
 
 `cannot-fire` (no severity): `api-type-mismatch`, `missing-endpoint`,
 `api-extra-field`, `api-missing-field`, `method-mismatch`, `auth-mismatch`.
+
+---
+
+## Session 10 — dependency-graph (9 rules)
+
+Emit sites: `DependencyGraphBuilder.ts` (issue/suggestion pairs) and the
+Stage-4 reducer in `pipelineAdapters.ts` (`unreferenced-module`). The four
+`*Type` "resolution" rules pair one-to-one with their issue — same underlying
+finding, same level.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `circular-dependency` | warning | severe | A module cycle breaks initialization order — it surfaces (anchored). | no |
+| `break-cycles` | warning | severe | The action form of `circular-dependency`; same finding. | no |
+| `tight-coupling` | warning | high | Tight coupling is design debt that has not bitten. | yes |
+| `reduce-coupling` | warning | high | The action form of `tight-coupling`; same finding. | yes |
+| `hub-nodes` | warning | high | A hub node is a maintainability smell that has not bitten. | yes |
+| `split-responsibilities` | warning | high | The action form of `hub-nodes`; same finding. | yes |
+| `orphaned-nodes` | suggestion | severe | A node nothing connects to is dead code — same class as `unreferenced-module`. | yes |
+| `review-orphans` | suggestion | severe | The action form of `orphaned-nodes`; same finding. | yes |
+| `unreferenced-module` | warning | severe | A module nothing imports is dead code — anchored severe. | no |
