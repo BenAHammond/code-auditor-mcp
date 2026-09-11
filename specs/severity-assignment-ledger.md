@@ -8,8 +8,8 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 - **Assigned:** 96 / 106
 - **critical:** 7
-- **severe:** 33
-- **high:** 46
+- **severe:** 35
+- **high:** 54
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
@@ -283,3 +283,47 @@ high, so the rest of the family follows.
 | `styles/declaration-set-similarity` | suggestion | high | Similar declaration sets are a DRY smell that has not bitten. | no |
 | `styles/z-index-sprawl` | warning | high | Z-index sprawl is a maintainability smell that has not bitten. | yes |
 | `styles/z-index-singleton` | suggestion | high | A one-off z-index value is a maintainability smell. | no |
+
+---
+
+## Session 13 — conventions (5 rules)
+
+Emit site: `UniversalConventionsAnalyzer.ts`. All five domains ship at
+`suggestion`. They are mined-deviation smells — a minority import style or wrong
+casing is a consistency smell that has not bitten. The spec places the
+documentation family at high; convention deviation is the same class of
+consistency gap.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `conventions/usage-pair` | suggestion | high | A function missing its co-occurring call is a convention gap that has not bitten. | no |
+| `conventions/import-form` | suggestion | high | A minority import style is a consistency gap that has not bitten. | no |
+| `conventions/error-handling` | suggestion | high | An off-pattern error-handling shape is a consistency gap that has not bitten. | no |
+| `conventions/export-shape` | suggestion | high | A minority export style is a consistency gap that has not bitten. | no |
+| `conventions/naming` | suggestion | high | Wrong casing is a consistency gap that has not bitten. | no |
+
+---
+
+## Session 14 — cross-domain (5 rules)
+
+Emit site: `CrossDomainAnalyzer.ts` (entry rule: all findings at `suggestion`).
+Two rules describe data-flow defects that surface when the read or the write
+actually happens, so they rise above the mechanical baseline; the rest are
+smells.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `cross-domain/written-never-read` | suggestion | high | A table written but never read is a dead-write smell that has not bitten. | no |
+| `cross-domain/read-never-written` | suggestion | severe | A table read but never written means every read fails — it surfaces on the first read. | yes |
+| `cross-domain/multi-table-write` | suggestion | high | A function writing too many tables is a coupling smell that has not bitten. | no |
+| `cross-domain/no-validator-reachable` | suggestion | severe | A writer that reaches no validator means unvalidated data enters the system — it surfaces as corrupt state. | yes |
+| `cross-domain/uncovered-risk` | suggestion | high | A top-risk function with no test coverage is a coverage smell that has not bitten. | no |
+
+---
+
+## Sweep complete
+
+All 106 rules accounted for: 96 live assigned across 14 analyzer sessions
+(`critical` 7, `severe` 35, `high` 54) plus 10 `cannot-fire` rules noted with no
+severity. Every row above records current (effective) severity, new level,
+reason, and whether it departs from the mechanical remap baseline.
