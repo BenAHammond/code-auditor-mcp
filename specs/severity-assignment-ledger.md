@@ -6,10 +6,10 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 20 / 106
+- **Assigned:** 26 / 106
 - **critical:** 3
-- **severe:** 4
-- **high:** 13
+- **severe:** 5
+- **high:** 18
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
@@ -113,3 +113,19 @@ Emit sites: `UniversalDataAccessAnalyzer.ts`. Effective severities fold in
 | `unfiltered-query` | suggestion | high | A no-filter query is a smell (possible full-table read) that has not bitten. | no |
 | `hardcoded-connection` | suggestion | critical | A connection string with credentials embedded in source is a leaked secret — exploitable now. | yes |
 | `loop-query` | warning | severe | A query inside a loop is N+1 — it surfaces under load (anchored). | no |
+
+---
+
+## Session 4 — dry (6 rules)
+
+Emit sites: `UniversalDRYAnalyzer.ts` (5 registered) and `auditRunner.ts`
+(`dry/diverging-clone`, unregistered).
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `dry/duplicate` | warning | high | A duplicated block is maintainability debt that has not bitten. | yes |
+| `dry/structural-similarity` | suggestion | high | Structurally similar blocks are a DRY smell that has not bitten. | no |
+| `dry/similar-expression` | suggestion | high | Near-identical expressions are a DRY smell that has not bitten. | no |
+| `duplicate-string-literal` | suggestion | high | Repeated literals are a maintainability smell that has not bitten. | no |
+| `duplicate-import` | warning | high | A redundant import is noise that has not bitten. | yes |
+| `dry/diverging-clone` | suggestion | severe | A clone that has already drifted means a fix landed in one copy and not the other — inconsistent behavior that surfaces when the stale copy runs. | yes |
