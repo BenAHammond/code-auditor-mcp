@@ -203,7 +203,12 @@ function sqlTablePatterns(): Array<{ regex: RegExp; type: TableReference['type']
   return [
     { regex: /\bFROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
     { regex: /\bJOIN\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
-    { regex: /\bINSERT\s+INTO\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'insert' },
+    // Spec 52 R2 — the four D1/SQLite upsert forms are writes. MySQL's
+    // `INSERT IGNORE INTO` (no OR) and `ON DUPLICATE KEY UPDATE` are
+    // deliberately out of scope: the classifier targets the D1/Workers SQLite
+    // dialect, and `ON DUPLICATE KEY UPDATE col = …` (no `SET`) would otherwise
+    // misfire the UPDATE pattern below onto the column name.
+    { regex: /\b(?:INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?|REPLACE)\s+INTO\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'insert' },
     { regex: /\bUPDATE\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'update' },
     { regex: /\bDELETE\s+FROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'delete' },
     { regex: /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'create' },
@@ -992,23 +997,37 @@ export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean 
 /**
  * Count the number of DB queries a function body issues.
  *
- * A `query`/`execute` method call is one query; each standalone SQL keyword
- * (SELECT, INSERT INTO, UPDATE, DELETE FROM) outside such a call is also one
- * query. SQL keywords inside a call's argument are not counted separately —
- * otherwise a single `query('SELECT ...')` call is counted twice (once for the
- * call, once for the SQL it carries).
+ * An eager execution method call (`.run()`/`.all()`/`.first()`/`.raw()`/
+ * `.batch()`, plus the generic `.query()`/`.execute()` wrappers) is one query;
+ * each standalone SQL keyword (SELECT, INSERT [OR …] INTO / REPLACE INTO,
+ * UPDATE, DELETE FROM) outside such a call is also one query. SQL keywords
+ * inside a call's argument are not counted separately — otherwise a single
+ * `run('SELECT ...')` call is counted twice (once for the call, once for the
+ * SQL it carries). `.prepare()` bodies are likewise stripped (Spec 52 R1):
+ * preparation is statement construction, not execution, so its SQL is not a
+ * query the function issues — but a `db.prepare(sql).bind(x).run()` chain still
+ * counts one query for the eager `.run()`. `Promise.all(...)` is not a query
+ * and is excluded from the `.all()` count. Optional TypeScript type arguments
+ * (`.all<Row>()`/`.first<Row>()`) are matched. `.exec()` is deliberately
+ * omitted: `regex.exec()`/`child_process.exec()` are too common to distinguish
+ * from `db.exec()` in a text heuristic, and a `db.exec('SELECT …')` literal is
+ * still counted via its bare SQL keyword. A bare `UPDATE` keyword is counted,
+ * but not the `DO UPDATE` / `KEY UPDATE` clause of an upsert
+ * (`INSERT … ON CONFLICT … DO UPDATE` / `INSERT … ON DUPLICATE KEY UPDATE`) —
+ * that clause is part of the one INSERT statement, not a second query
+ * (Spec 52 R2).
  *
  * @param text The function body text.
  * @returns The number of DB queries the function issues.
  */
 export function countQueries(text: string): number {
-  const callCount = (text.match(/\.(?:query|execute)\s*\(/g) || []).length;
+  const callCount = (text.match(/\.(?:query|execute|run|first|raw|batch)\b[^()\n]*\(|(?<!Promise)\.all\b[^()\n]*\(/g) || []).length;
 
   const bodyless = stripQueryCallBodies(text);
   const sqlPatterns = [
     /SELECT\s+/gi,
-    /INSERT\s+INTO/gi,
-    /UPDATE\s+/gi,
+    /INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?\s+INTO|REPLACE\s+INTO/gi,
+    /(?<!DO\s)(?<!KEY\s)UPDATE\s+/gi,
     /DELETE\s+FROM/gi,
   ];
   let sqlCount = 0;
@@ -1021,14 +1040,18 @@ export function countQueries(text: string): number {
 }
 
 /**
- * Blank out the bodies of `query(...)`/`execute(...)` calls (balanced-paren
- * aware) so SQL keywords inside their arguments are not double-counted.
+ * Blank out the bodies of eager execution method calls (`.run()`/`.all()`/
+ * `.first()`/`.raw()`/`.batch()`/`.query()`/`.execute()`) and of `.prepare()`
+ * calls (balanced-paren aware) so SQL keywords inside their arguments are not
+ * double-counted. `.prepare()` carries SQL but does not execute it (Spec 52
+ * R1), so its body is stripped too. `Promise.all(...)` is not a query and is
+ * left intact so the DB calls it contains stay visible.
  *
  * @param text The function body text.
- * @returns The text with `query`/`execute` call bodies replaced by spaces.
+ * @returns The text with eager/`query`/`execute`/`prepare` call bodies replaced by spaces.
  */
 function stripQueryCallBodies(text: string): string {
-  const re = /\.(?:query|execute)\s*\(/g;
+  const re = /\.(?:query|execute|prepare|run|first|raw|batch)\b[^()\n]*\(|(?<!Promise)\.all\b[^()\n]*\(/g;
   let result = '';
   let last = 0;
   let m: RegExpExecArray | null;

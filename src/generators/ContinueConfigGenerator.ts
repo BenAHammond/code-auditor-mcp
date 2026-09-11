@@ -37,7 +37,7 @@ mcpServers:
     args:
       - "-y"
       - "code-auditor-mcp"
-      - "--mcp-mode"
+      - "--stdio"
 `;
 
     return {

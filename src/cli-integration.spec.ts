@@ -373,9 +373,9 @@ describe('A2 gate — SKILL.md doc-CLI parity', () => {
   /** Token that names a CLI subcommand (not a flag, value, or placeholder). */
   const KNOWN_SUBCOMMANDS = new Set([
     // Top-level commands
-    'search', 'audit', 'changed', 'start', 'index', 'config', 'map',
+    'search', 'audit', 'changed', 'index', 'config', 'map',
     'codemap', 'tasks', 'hotspots', 'risk', 'ledger', 'conventions',
-    'generate-config', 'gen', 'baseline', 'install', 'coverage', 'test',
+    'generate-config', 'gen', 'baseline', 'install', 'coverage',
     'next-file',
     // config subcommands
     'rules-list', 'rules-check', 'profiles', 'detection',

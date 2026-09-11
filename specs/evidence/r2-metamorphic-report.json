@@ -1,0 +1,927 @@
+[
+  {
+    "file": "/src/agents/hero-data-agent.ts",
+    "baseline": {
+      "class-documentation": 1,
+      "cross-domain/read-never-written": 8,
+      "cross-domain/written-never-read": 3,
+      "function-length": 3,
+      "loop-query": 16,
+      "method-documentation": 6,
+      "sql-injection-risk": 2,
+      "too-many-queries": 2,
+      "unfiltered-query": 4,
+      "unreferenced-module": 1
+    },
+    "transforms": {
+      "rename-local-identifier": {
+        "applied": false
+      },
+      "reorder-statements": {
+        "applied": true,
+        "detail": "swapped two adjacent statements (lexical_declaration / lexical_declaration)",
+        "deltas": {},
+        "after": {
+          "class-documentation": 1,
+          "cross-domain/read-never-written": 8,
+          "cross-domain/written-never-read": 3,
+          "function-length": 3,
+          "loop-query": 16,
+          "method-documentation": 6,
+          "sql-injection-risk": 2,
+          "too-many-queries": 2,
+          "unfiltered-query": 4,
+          "unreferenced-module": 1
+        }
+      },
+      "add-comment": {
+        "applied": true,
+        "detail": "prepended a line comment",
+        "deltas": {},
+        "after": {
+          "class-documentation": 1,
+          "cross-domain/read-never-written": 8,
+          "cross-domain/written-never-read": 3,
+          "function-length": 3,
+          "loop-query": 16,
+          "method-documentation": 6,
+          "sql-injection-risk": 2,
+          "too-many-queries": 2,
+          "unfiltered-query": 4,
+          "unreferenced-module": 1
+        }
+      },
+      "remove-comments": {
+        "applied": true,
+        "detail": "stripped all comments",
+        "deltas": {},
+        "after": {
+          "class-documentation": 1,
+          "cross-domain/read-never-written": 8,
+          "cross-domain/written-never-read": 3,
+          "function-length": 3,
+          "loop-query": 16,
+          "method-documentation": 6,
+          "sql-injection-risk": 2,
+          "too-many-queries": 2,
+          "unfiltered-query": 4,
+          "unreferenced-module": 1
+        }
+      },
+      "reformat": {
+        "applied": true,
+        "detail": "re-indented to 4-space",
+        "deltas": {},
+        "after": {
+          "class-documentation": 1,
+          "cross-domain/read-never-written": 8,
+          "cross-domain/written-never-read": 3,
+          "function-length": 3,
+          "loop-query": 16,
+          "method-documentation": 6,
+          "sql-injection-risk": 2,
+          "too-many-queries": 2,
+          "unfiltered-query": 4,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-iife": {
+        "applied": true,
+        "detail": "wrapped expression in IIFE",
+        "deltas": {},
+        "after": {
+          "class-documentation": 1,
+          "cross-domain/read-never-written": 8,
+          "cross-domain/written-never-read": 3,
+          "function-length": 3,
+          "loop-query": 16,
+          "method-documentation": 6,
+          "sql-injection-risk": 2,
+          "too-many-queries": 2,
+          "unfiltered-query": 4,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-promise-all": {
+        "applied": true,
+        "detail": "wrapped statement in Promise.all([...])",
+        "deltas": {},
+        "after": {
+          "class-documentation": 1,
+          "cross-domain/read-never-written": 8,
+          "cross-domain/written-never-read": 3,
+          "function-length": 3,
+          "loop-query": 16,
+          "method-documentation": 6,
+          "sql-injection-risk": 2,
+          "too-many-queries": 2,
+          "unfiltered-query": 4,
+          "unreferenced-module": 1
+        }
+      },
+      "function-to-arrow": {
+        "applied": false
+      },
+      "add-optional-chaining": {
+        "applied": true,
+        "detail": "optional-chained 'row.id'",
+        "deltas": {},
+        "after": {
+          "class-documentation": 1,
+          "cross-domain/read-never-written": 8,
+          "cross-domain/written-never-read": 3,
+          "function-length": 3,
+          "loop-query": 16,
+          "method-documentation": 6,
+          "sql-injection-risk": 2,
+          "too-many-queries": 2,
+          "unfiltered-query": 4,
+          "unreferenced-module": 1
+        }
+      }
+    }
+  },
+  {
+    "file": "/src/lib/stage0/ingest-foundational-kit.ts",
+    "baseline": {
+      "cross-domain/multi-table-write": 2,
+      "cross-domain/written-never-read": 2,
+      "function-documentation": 2,
+      "function-length": 2,
+      "hub-nodes": 1,
+      "loop-query": 16,
+      "orphaned-nodes": 1,
+      "parameter-count": 2,
+      "solid/method-complexity": 1,
+      "tight-coupling": 1,
+      "too-many-queries": 2,
+      "unreferenced-module": 1
+    },
+    "transforms": {
+      "rename-local-identifier": {
+        "applied": true,
+        "detail": "renamed 'EMPTY_CASCADE' -> 'EMPTY_CASCADEMorph' (10 refs)",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "reorder-statements": {
+        "applied": true,
+        "detail": "swapped two adjacent statements (lexical_declaration / lexical_declaration)",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "add-comment": {
+        "applied": true,
+        "detail": "prepended a line comment",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "remove-comments": {
+        "applied": true,
+        "detail": "stripped all comments",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "reformat": {
+        "applied": true,
+        "detail": "re-indented to 4-space",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-iife": {
+        "applied": true,
+        "detail": "wrapped expression in IIFE",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-promise-all": {
+        "applied": true,
+        "detail": "wrapped statement in Promise.all([...])",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "function-to-arrow": {
+        "applied": true,
+        "detail": "function 'nowIso' -> const arrow",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "add-optional-chaining": {
+        "applied": true,
+        "detail": "optional-chained 'a.interactions'",
+        "deltas": {},
+        "after": {
+          "cross-domain/multi-table-write": 2,
+          "cross-domain/written-never-read": 2,
+          "function-documentation": 2,
+          "function-length": 2,
+          "hub-nodes": 1,
+          "loop-query": 16,
+          "orphaned-nodes": 1,
+          "parameter-count": 2,
+          "solid/method-complexity": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unreferenced-module": 1
+        }
+      }
+    }
+  },
+  {
+    "file": "/src/lib/admin-asset-rehost-map.ts",
+    "baseline": {
+      "cross-domain/written-never-read": 1,
+      "function-documentation": 5,
+      "function-length": 2,
+      "loop-query": 11,
+      "orphaned-nodes": 1,
+      "tight-coupling": 1,
+      "too-many-queries": 2,
+      "unfiltered-query": 1,
+      "unreferenced-module": 1
+    },
+    "transforms": {
+      "rename-local-identifier": {
+        "applied": true,
+        "detail": "renamed 'DEFAULT_UA' -> 'DEFAULT_UAMorph' (3 refs)",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      },
+      "reorder-statements": {
+        "applied": true,
+        "detail": "swapped two adjacent statements (lexical_declaration / lexical_declaration)",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      },
+      "add-comment": {
+        "applied": true,
+        "detail": "prepended a line comment",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      },
+      "remove-comments": {
+        "applied": true,
+        "detail": "stripped all comments",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      },
+      "reformat": {
+        "applied": true,
+        "detail": "re-indented to 4-space",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-iife": {
+        "applied": true,
+        "detail": "wrapped expression in IIFE",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-promise-all": {
+        "applied": true,
+        "detail": "wrapped statement in Promise.all([...])",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      },
+      "function-to-arrow": {
+        "applied": true,
+        "detail": "function 'remoteColCondition' -> const arrow",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      },
+      "add-optional-chaining": {
+        "applied": true,
+        "detail": "optional-chained 'db.prepare'",
+        "deltas": {},
+        "after": {
+          "cross-domain/written-never-read": 1,
+          "function-documentation": 5,
+          "function-length": 2,
+          "loop-query": 11,
+          "orphaned-nodes": 1,
+          "tight-coupling": 1,
+          "too-many-queries": 2,
+          "unfiltered-query": 1,
+          "unreferenced-module": 1
+        }
+      }
+    }
+  },
+  {
+    "file": "/scripts/run-knowledge-downstream.ts",
+    "baseline": {
+      "cross-domain/read-never-written": 6,
+      "function-length": 6,
+      "loop-query": 13,
+      "tight-coupling": 1,
+      "too-many-queries": 2
+    },
+    "transforms": {
+      "rename-local-identifier": {
+        "applied": true,
+        "detail": "renamed 'DB_NAME' -> 'DB_NAMEMorph' (3 refs)",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      },
+      "reorder-statements": {
+        "applied": true,
+        "detail": "swapped two adjacent statements (lexical_declaration / lexical_declaration)",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      },
+      "add-comment": {
+        "applied": true,
+        "detail": "prepended a line comment",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      },
+      "remove-comments": {
+        "applied": true,
+        "detail": "stripped all comments",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      },
+      "reformat": {
+        "applied": true,
+        "detail": "re-indented to 4-space",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      },
+      "wrap-iife": {
+        "applied": true,
+        "detail": "wrapped expression in IIFE",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      },
+      "wrap-promise-all": {
+        "applied": true,
+        "detail": "wrapped statement in Promise.all([...])",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      },
+      "function-to-arrow": {
+        "applied": true,
+        "detail": "function 'parseArgs' -> const arrow",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      },
+      "add-optional-chaining": {
+        "applied": true,
+        "detail": "optional-chained 'argv.find'",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 6,
+          "function-length": 6,
+          "loop-query": 13,
+          "tight-coupling": 1,
+          "too-many-queries": 2
+        }
+      }
+    }
+  },
+  {
+    "file": "/src/pages/api/admin/generation/queue.ts",
+    "baseline": {
+      "cross-domain/read-never-written": 2,
+      "too-many-queries": 1,
+      "unfiltered-query": 2,
+      "unreferenced-module": 1
+    },
+    "transforms": {
+      "rename-local-identifier": {
+        "applied": true,
+        "detail": "renamed 'MarkFailedBody' -> 'MarkFailedBodyMorph' (2 refs)",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "reorder-statements": {
+        "applied": true,
+        "detail": "swapped two adjacent statements (lexical_declaration / lexical_declaration)",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "add-comment": {
+        "applied": true,
+        "detail": "prepended a line comment",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "remove-comments": {
+        "applied": true,
+        "detail": "stripped all comments",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "reformat": {
+        "applied": true,
+        "detail": "re-indented to 4-space",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-iife": {
+        "applied": true,
+        "detail": "wrapped expression in IIFE",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-promise-all": {
+        "applied": true,
+        "detail": "wrapped statement in Promise.all([...])",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 2,
+          "unreferenced-module": 1
+        }
+      },
+      "function-to-arrow": {
+        "applied": false
+      },
+      "add-optional-chaining": {
+        "applied": true,
+        "detail": "optional-chained 'Promise.all'",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 2,
+          "unreferenced-module": 1
+        }
+      }
+    }
+  },
+  {
+    "file": "/src/lib/reconciliation/fts-repair.ts",
+    "baseline": {
+      "cross-domain/read-never-written": 1,
+      "loop-query": 2,
+      "too-many-queries": 1,
+      "unfiltered-query": 3,
+      "unreferenced-module": 1
+    },
+    "transforms": {
+      "rename-local-identifier": {
+        "applied": false
+      },
+      "reorder-statements": {
+        "applied": true,
+        "detail": "swapped two adjacent statements (lexical_declaration / lexical_declaration)",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 1,
+          "loop-query": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 3,
+          "unreferenced-module": 1
+        }
+      },
+      "add-comment": {
+        "applied": true,
+        "detail": "prepended a line comment",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 1,
+          "loop-query": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 3,
+          "unreferenced-module": 1
+        }
+      },
+      "remove-comments": {
+        "applied": true,
+        "detail": "stripped all comments",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 1,
+          "loop-query": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 3,
+          "unreferenced-module": 1
+        }
+      },
+      "reformat": {
+        "applied": true,
+        "detail": "re-indented to 4-space",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 1,
+          "loop-query": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 3,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-iife": {
+        "applied": true,
+        "detail": "wrapped expression in IIFE",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 1,
+          "loop-query": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 3,
+          "unreferenced-module": 1
+        }
+      },
+      "wrap-promise-all": {
+        "applied": true,
+        "detail": "wrapped statement in Promise.all([...])",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 1,
+          "loop-query": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 3,
+          "unreferenced-module": 1
+        }
+      },
+      "function-to-arrow": {
+        "applied": true,
+        "detail": "function 'rebuildStrategiesFtsChunked' -> const arrow",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 1,
+          "loop-query": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 3,
+          "unreferenced-module": 1
+        }
+      },
+      "add-optional-chaining": {
+        "applied": true,
+        "detail": "optional-chained 'opts.chunkSize'",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 1,
+          "loop-query": 2,
+          "too-many-queries": 1,
+          "unfiltered-query": 3,
+          "unreferenced-module": 1
+        }
+      }
+    }
+  },
+  {
+    "file": "/scripts/invalidate-article.ts",
+    "baseline": {
+      "cross-domain/read-never-written": 2,
+      "function-length": 1,
+      "tight-coupling": 1
+    },
+    "transforms": {
+      "rename-local-identifier": {
+        "applied": true,
+        "detail": "renamed 'ACCOUNT_ID' -> 'ACCOUNT_IDMorph' (2 refs)",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      },
+      "reorder-statements": {
+        "applied": true,
+        "detail": "swapped two adjacent statements (lexical_declaration / lexical_declaration)",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      },
+      "add-comment": {
+        "applied": true,
+        "detail": "prepended a line comment",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      },
+      "remove-comments": {
+        "applied": true,
+        "detail": "stripped all comments",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      },
+      "reformat": {
+        "applied": true,
+        "detail": "re-indented to 4-space",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      },
+      "wrap-iife": {
+        "applied": true,
+        "detail": "wrapped expression in IIFE",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      },
+      "wrap-promise-all": {
+        "applied": true,
+        "detail": "wrapped statement in Promise.all([...])",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      },
+      "function-to-arrow": {
+        "applied": true,
+        "detail": "function 'd1Query' -> const arrow",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      },
+      "add-optional-chaining": {
+        "applied": true,
+        "detail": "optional-chained 'process.env'",
+        "deltas": {},
+        "after": {
+          "cross-domain/read-never-written": 2,
+          "function-length": 1,
+          "tight-coupling": 1
+        }
+      }
+    }
+  }
+]

@@ -40,7 +40,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 
 if (showHelp) {
-  console.error(`code-auditor-mcp v0.0.0
+  console.error(`code-auditor-mcp v${PACKAGE_VERSION}
 Usage: code-auditor-mcp [--stdio] [--ui] [--auto-index <path>] [--data-dir <dir>]
 
   --stdio        Start MCP stdio server (default mode)
@@ -63,6 +63,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
+import { homedir } from 'node:os';
 
 import { createAuditRunner } from './auditRunner.js';
 import type { AuditResult, AuditScope, FunctionMetadata, Severity } from './types.js';
@@ -1053,7 +1054,7 @@ function registerAllTools(registry: ToolRegistry): void {
             name: 'tools',
             type: 'array',
             required: true,
-            description: 'AI tools to configure (cursor, continue, copilot, claude, zed, windsurf, cody, aider, cline, pearai).',
+            description: 'AI tools to configure (claude, codex, cursor, gemini, copilot, continue, awsq, codeium, vscode, cline, zcode).',
           },
           {
             name: 'outputDir',
@@ -1080,7 +1081,7 @@ function registerAllTools(registry: ToolRegistry): void {
         handler: async (args) => {
           const tools = args.tools as string[];
           const serverUrl = (args.serverUrl as string) || DEFAULT_SERVER_URL;
-          const outputDir = (args.outputDir as string) || '.';
+          const outputDir = ((args.outputDir as string) || '.').replace(/^~(?=$|\/)/, homedir());
           const overwrite = (args.overwrite as boolean) || false;
 
           if (!Array.isArray(tools) || tools.length === 0)

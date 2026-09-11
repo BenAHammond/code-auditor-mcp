@@ -27,6 +27,7 @@ import { ClineConfigGenerator } from './ClineConfigGenerator.js';
 // AiderConfigGenerator retired 2026-07-20: no MCP support documented
 import { CodexConfigGenerator } from './CodexConfigGenerator.js';
 import { GeminiConfigGenerator } from './GeminiConfigGenerator.js';
+import { ZCodeConfigGenerator } from './ZCodeConfigGenerator.js';
 
 export class ConfigGeneratorFactory {
   private generators: Map<string, () => BaseConfigGenerator>;
@@ -47,6 +48,7 @@ export class ConfigGeneratorFactory {
       // JetBrains retired 2026-07-20: no file-based MCP config path
       ['cline', () => new ClineConfigGenerator(this.serverUrl)],
       // Aider retired 2026-07-20: no MCP support documented in aider.chat/docs/
+      ['zcode', () => new ZCodeConfigGenerator(this.serverUrl)],
     ]);
   }
 

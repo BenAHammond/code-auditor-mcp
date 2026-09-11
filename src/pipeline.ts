@@ -35,7 +35,7 @@ import {
   type Violation,
 } from './types.js';
 import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
-import { evaluateRuleApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
+import { evaluateRuleApplicability, scopedWholeProgramApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
 import { resetRuleTiming, getRuleTimingSortedDesc } from './analyzers/ruleTiming.js';
 import { LanguageRegistry } from './languages/LanguageRegistry.js';
 import { discoverFiles, DEFAULT_EXCLUDED_DIRS } from './utils/fileDiscovery.js';
@@ -881,6 +881,18 @@ export async function runPipeline(
     const app = evaluateRuleApplicability(ruleId, dataAccessConfig, ddlColumns);
     if (app) ruleApplicability.set(ruleId, app);
   }
+
+  // Spec 52 R3 — whole-program rules are unsound on a scoped run. A partial
+  // file set cannot support a global claim like "table X is never read" or
+  // "table Y is unknown", so on a scoped/diff run each whole-program rule is
+  // suppressed with a `notApplicable` reason naming the scope. The finding is
+  // removed below (same pass as Spec 39) and reported `notApplicable` in
+  // coverage — not a fired global claim, and not silence. (Whole-program rules
+  // that already carry a Spec-39 applicability verdict are left intact.)
+  for (const [ruleId, app] of scopedWholeProgramApplicability(!!config.isScoped, s1.fileCount)) {
+    if (!ruleApplicability.has(ruleId)) ruleApplicability.set(ruleId, app);
+  }
+
   for (const [ruleId, app] of ruleApplicability) {
     if (app.applicable) continue;
     const entry = RULE_REGISTRY[ruleId];

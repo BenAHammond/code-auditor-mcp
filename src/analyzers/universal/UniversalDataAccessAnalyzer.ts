@@ -154,7 +154,7 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
       /rightJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,
       /innerJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu
     ],
-    sql: [/INSERT\s+INTO\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /DELETE\s+FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /JOIN\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /UPDATE\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu],
+    sql: [/\b(?:INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?|REPLACE)\s+INTO\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /DELETE\s+FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /JOIN\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /UPDATE\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu],
     queryBuilder: [/\.from\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu]
   },
   performanceThresholds: {
@@ -850,6 +850,107 @@ function memberPropertyName(node: ASTNode, adapter: LanguageAdapter, sourceCode:
   return prop ? adapter.getNodeText(prop, sourceCode) : null;
 }
 
+/**
+ * True when a member_expression is the `Promise.all` global, not a D1 `.all()`
+ * call. `hasEagerMethodInCallChain` walks up an argument chain, so a
+ * `Promise.all([db.prepare(x).bind(y)])` would otherwise mistake `Promise.all`'s
+ * "all" property for the eager D1 read method (Spec 52 R1). `Promise` is the
+ * only collision in the eager set — none of run/first/raw/exec/batch are
+ * Promise methods.
+ */
+function isPromiseAllMember(memberExpr: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+  if (memberPropertyName(memberExpr, adapter, sourceCode) !== 'all') return false;
+  const objectNode = adapter.getChildren(memberExpr).find(
+    c => adapter.getNodeType(c) !== 'property_identifier',
+  );
+  if (!objectNode) return false;
+  const text = adapter.getNodeText(objectNode, sourceCode);
+  return text === 'Promise' || text.endsWith('.Promise');
+}
+
+/**
+ * Resolve a db-call node to its call_expression. A template_string db node (the
+ * SQL argument) resolves to its enclosing call; a call_expression node is
+ * returned as-is. Returns null when the node is neither.
+ */
+function resolveDbCallNode(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  if (adapter.getNodeType(node) === 'template_string') {
+    const args = adapter.getParent(node);
+    if (!args || adapter.getNodeType(args) !== 'arguments') return null;
+    const parentCall = adapter.getParent(args);
+    if (!parentCall || adapter.getNodeType(parentCall) !== 'call_expression') return null;
+    return parentCall;
+  }
+  if (adapter.getNodeType(node) === 'call_expression') return node;
+  return null;
+}
+
+/**
+ * The DB method a db-call node invokes, or null when the node is not a member
+ * call. Identifier-wrapper calls (`query(...)`, `sql(...)`) have no member
+ * callee and return null; a template_string db node resolves to its parent
+ * call first.
+ */
+function dbCallMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string | null {
+  const call = resolveDbCallNode(node, adapter);
+  if (!call) return null;
+  const memberExpr = findMemberCallee(call, adapter);
+  return memberExpr ? memberPropertyName(memberExpr, adapter, sourceCode) : null;
+}
+
+/**
+ * DB methods that execute I/O immediately (as opposed to `.prepare()`/`.bind()`,
+ * which only construct a statement object). Used to decide whether a
+ * prepare/bind call is chained into an eager execution.
+ */
+const EAGER_DB_METHODS = new Set(['run', 'all', 'first', 'raw', 'exec', 'batch', 'query']);
+
+/**
+ * True when `node` (a `.prepare()`/`.bind()` call) is chained into an eager
+ * method — e.g. `db.prepare(sql).bind(x).run()`. The `.run()` at the end of the
+ * chain executes I/O on every loop iteration, so the whole chain is a genuine
+ * N+1, not an accumulate-then-batch false positive. Walks up the enclosing
+ * expression and stops at the statement boundary; a chain never crosses one.
+ */
+function hasEagerMethodInCallChain(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+  const call = resolveDbCallNode(node, adapter);
+  let cur = call ? adapter.getParent(call) : adapter.getParent(node);
+  while (cur) {
+    const type = adapter.getNodeType(cur);
+    if (type === 'call_expression') {
+      const memberExpr = findMemberCallee(cur, adapter);
+      const name = memberExpr ? memberPropertyName(memberExpr, adapter, sourceCode) : null;
+      if (name && EAGER_DB_METHODS.has(name) && !isPromiseAllMember(memberExpr!, adapter, sourceCode)) return true;
+    }
+    if (
+      type === 'expression_statement' ||
+      type === 'variable_declarator' ||
+      type === 'return_statement' ||
+      type === 'lexical_declaration' ||
+      type === 'for_statement' ||
+      type === 'for_in_statement' ||
+      type === 'while_statement' ||
+      type === 'statement_block' ||
+      type === 'block'
+    ) {
+      break;
+    }
+    cur = adapter.getParent(cur);
+  }
+  return false;
+}
+
+/**
+ * True when a db-call node is statement construction only — a `.prepare()` /
+ * `.bind()` that is not chained into an eager method (`.run()` / `.all()` /
+ * `.first()` / `.raw()` / `.exec()` / `.batch()`). Such a call performs no I/O,
+ * so it is not a query-in-loop on its own (Spec 52 R1).
+ */
+function isStatementConstructionOnly(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+  const method = dbCallMethodName(node, adapter, sourceCode);
+  return (method === 'prepare' || method === 'bind') && !hasEagerMethodInCallChain(node, adapter, sourceCode);
+}
+
 /** True when a call's arguments contain a spread_element (…binds). */
 function hasSpreadArgument(call: ASTNode, adapter: LanguageAdapter): boolean {
   const args = adapter.getChildren(call).find(
@@ -1268,11 +1369,15 @@ function hasSelectComponent(text: string): boolean {
 }
 
 /**
- * True when a SQL statement carries a write verb (INSERT/DELETE/UPDATE).
+ * True when a SQL statement carries a write verb (INSERT/DELETE/UPDATE/REPLACE).
+ * Spec 52 R2: `REPLACE INTO` is an upsert write — matched as a two-word clause
+ * (not a bare `REPLACE` word) so the `REPLACE()` string function is not misread
+ * as a write.
  */
-function hasWriteVerb(text: string): boolean {
+export function hasWriteVerb(text: string): boolean {
   const upper = text.toUpperCase();
-  return /\bINSERT\b/.test(upper) || /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper);
+  return /\bINSERT\b/.test(upper) || /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
+    || /\bREPLACE\s+INTO\b/.test(upper);
 }
 
 /**
@@ -1559,6 +1664,10 @@ function checkLoopQueries(
   for (const node of dbNodes) {
     const nodeText = adapter.getNodeText(node, sourceCode);
     if (!nodeText || nodeText.trim().length < 10) continue;
+
+    // Spec 52 R1 — skip statement construction (prepare/bind with no eager call);
+    // an eager call or a prepare chained into one still fires.
+    if (isStatementConstructionOnly(node, adapter, sourceCode)) continue;
 
     const loopInfo = findEnclosingLoop(node, adapter);
     if (!loopInfo) continue;

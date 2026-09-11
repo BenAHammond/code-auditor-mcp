@@ -182,9 +182,7 @@ export async function runAuditDispatch(options: AuditRunnerOptions): Promise<Aud
   const polyglotResult = await orchestrator.analyzePolyglotProject(projectRoot, {
     analyzers: options.enabledAnalyzers,
     minSeverity: options.minSeverity as PolyglotAnalysisOptions['minSeverity'],
-    updateIndex: options.indexFunctions,
     enableCrossLanguageAnalysis: true,
-    buildCrossReferences: true,
   });
 
   return convertPolyglotToAuditResult(polyglotResult, projectRoot);

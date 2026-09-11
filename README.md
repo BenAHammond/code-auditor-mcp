@@ -79,6 +79,7 @@ One skill, one CLI, one MCP server. Every agent gets the same audit engine — t
 | Gemini CLI | `code-audit install --agent gemini` | No | Yes | 2026-07-19 |
 | VS Code / Copilot | `code-audit install --agent agents` | No | Yes | 2026-07-19 |
 | Other SKILL.md tools | `code-audit install --agent agents` | No | Yes | 2026-07-19 |
+| ZCode | `code-audit install --agent zcode` | No (plugin-scoped) | Yes | 2026-09-10 |
 
 Hook behavior: **Blocking** means the diff-scoped `changed` gate is tripped — an invariant rule that declares `gating: true` (a binary, per-rule flag, independent of severity) blocks the edit from landing (the agent sees the violation and fixes inline). **Advisory** means violations are reported through the strongest available feedback channel but the edit has already occurred. Cursor's `afterFileEdit` hook is fire-and-forget with no output consumption. MCP is available everywhere for shell-less use.
 

@@ -2,6 +2,74 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.1] — 2026-09-11
+
+### Findings from a real D1/Workers audit (Spec 52)
+
+Three defects surfaced by auditing an unseen Cloudflare D1 project, each fixed
+with a false-positive / true-positive two-direction proof:
+
+- **`loop-query` treated statement construction as execution (R1).** `.prepare()` /
+  `.bind()` build a statement object with no I/O; execution happens only at
+  `.run()` / `.all()` / `.first()` / `.raw()` / `.exec()` / `.batch()`. The
+  accumulate-then-batch shape (`stmts.push(db.prepare(sql).bind(x))` consumed by
+  a single `.batch()` after the loop) is no longer flagged, while a genuine N+1 —
+  an eager call in a loop, *including* `db.prepare(sql).bind(x).run()` — still
+  fires. `too-many-queries` no longer counts `.prepare()` SQL, but now counts the
+  eager execution methods (`.run()` / `.all()` / `.first()` / `.raw()` /
+  `.batch()`, including the typed D1 forms `.all<T>()` / `.first<T>()`), so a
+  genuine `db.prepare(sql).bind(x).all<Row>()` chain is still counted while a
+  pure statement factory is not. `Promise.all(...)` is excluded and `.exec()` is
+  deliberately not counted (indistinguishable from `regex.exec()` in a text
+  heuristic).
+- **`INSERT OR IGNORE` and friends were not recognized as writes (R2).** The write
+  classifier now matches `INSERT OR IGNORE INTO`, `INSERT OR REPLACE INTO`,
+  `REPLACE INTO`, and `INSERT … ON CONFLICT … DO UPDATE`, so the write set that
+  `written-never-read` / `read-never-written` / `multi-table-write` /
+  `unknown-table` read is correct.
+- **Whole-program rules were unsound under a scoped run (R3).**
+  `written-never-read`, `read-never-written`, `no-validator-reachable`, and
+  `unknown-table` draw a global conclusion that a partial file set cannot
+  support, so a scoped/diff run now reports them `notApplicable` ("requires
+  whole-project analysis; this run was scoped to N file(s)") rather than firing
+  an unqualified global claim. Full runs are unchanged.
+
+Edge-case follow-up (same pass): `loop-query`'s `Promise.all` guard now also
+crosses an arrow function — `Promise.all(rows.map(r => db.prepare(sql).bind(r)))`
+in a loop is statement construction (not N+1), while
+`Promise.all(rows.map(r => db.prepare(sql).bind(r).all()))` still fires. And
+`countQueries` no longer double-counts the `DO UPDATE` / `KEY UPDATE` clause of
+an upsert as a second query (knex `too-many-queries` 196 → 193).
+
+### ZCode installation support
+Added first-class ZCode (Z.AI's agentic AI coding IDE) support:
+- `code-audit install --agent zcode` installs the skill (ZCode reads the `.agents`
+  skills convention).
+- The `generate` MCP tool now emits ZCode MCP config — `.zcode/config.json`
+  (project scope) or `~/.zcode/cli/config.json` (user scope), using ZCode's
+  native `mcp.servers` key.
+
+### `solid/dependency-inversion` — escapes-vs-held false positive
+An external audit found the rule firing on `new AppError(...)` thrown from a
+Durable Object method — a *value type*, not a collaborator the class holds. The
+predicate now distinguishes **escapes** from **held**: a construction whose value
+is thrown or returned is a value type (not a dependency); one assigned to a field
+or captured as state is a dependency. The escape check walks through transparent
+wrappers (`parenthesized_expression`, `as_expression`, `type_assertion`,
+`satisfies_expression`, `non_null_expression`), so `return new Foo() as Bar` and
+`throw (new AppError())` are also cleared. This clears `throw new AppError(...)`
+and `return new Foo(...)` factory values while every held-collaborator positive
+still fires. Corpus deltas (only this rule moved): knex 20 → 12 (−8, dialect/Client
+factory accessors that `return new QueryBuilder(this)` etc.), blitz 12 → 11
+(−1, a `return new Response(...)` value). recall-protocol (3), hhra-org (8),
+primer-css (0) unchanged — no weakening to zero. Survivors sampled and confirmed
+field-held collaborators: `GuildAgent` (`this.#migrations = new SQLSchemaMigrations(...)`),
+`StrategistManager` (`this.reconnect = new ReconnectController(...)`),
+`OrgTrackerDatabase` (`this.pool = new Pool(...)`), `Client`
+(`this.logger = new Logger(...)` / `this.pool = new KnexPool(...)` — fires despite
+its many `return new X()` factory accessors), `Generator`
+(`this.enquirer = new Enquirer()`).
+
 ## [3.9.0] — 2026-09-09
 
 ### SQLite without a native install (Spec 51)

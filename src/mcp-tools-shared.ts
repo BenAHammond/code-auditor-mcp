@@ -213,7 +213,7 @@ export const tools: Tool[] = [
         name: 'tools',
         type: 'array',
         required: true,
-        description: 'AI tools to configure (cursor, continue, copilot, claude, zed, windsurf, cody, aider, cline, pearai)',
+        description: 'AI tools to configure (claude, codex, cursor, gemini, copilot, continue, awsq, codeium, vscode, cline, zcode)',
       },
       {
         name: 'outputDir',

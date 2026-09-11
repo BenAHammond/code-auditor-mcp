@@ -25,7 +25,7 @@ export class JetBrainsConfigGenerator extends BaseConfigGenerator {
       mcpServers: {
         'code-auditor': {
           command: 'npx',
-          args: ['-y', 'code-auditor-mcp', '--mcp-mode'],
+          args: ['-y', 'code-auditor-mcp', '--stdio'],
         },
       },
     };

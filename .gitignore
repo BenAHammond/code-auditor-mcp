@@ -137,3 +137,6 @@ claude.backup-*
 
 # Audit output (should not be committed)
 audit-report.json
+
+# Mutation testing output (Stryker)
+reports/

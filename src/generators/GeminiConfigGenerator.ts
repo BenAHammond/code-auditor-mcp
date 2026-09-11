@@ -29,7 +29,7 @@ export class GeminiConfigGenerator extends BaseConfigGenerator {
       mcpServers: {
         'code-auditor': {
           command: 'npx',
-          args: ['-y', 'code-auditor-mcp', '--mcp-mode'],
+          args: ['-y', 'code-auditor-mcp', '--stdio'],
         },
       },
     };
@@ -47,7 +47,7 @@ Gemini CLI MCP Configuration Instructions:
 
 1. Place this file at .gemini/settings.json in your project root
    (or merge the "mcpServers" key into your existing settings.json)
-2. Alternatively, use the CLI: gemini mcp add code-auditor -- npx -y code-auditor-mcp --mcp-mode
+2. Alternatively, use the CLI: gemini mcp add code-auditor -- npx -y code-auditor-mcp --stdio
 3. Restart your Gemini CLI session
 4. The code-auditor MCP tools will be available
 

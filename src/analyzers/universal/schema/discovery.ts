@@ -351,7 +351,7 @@ function detectDbUsageByName(sourceCode: string, config: SchemaAnalyzerConfig): 
 function hasSqlTag(sourceCode: string, config: SchemaAnalyzerConfig): boolean {
   const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
   for (const tag of sqlTags) {
-    const pattern = new RegExp(`\\b${escapeRegex(tag)}\`\\s*SELECT|\\b${escapeRegex(tag)}\`\\s*INSERT|\\b${escapeRegex(tag)}\`\\s*UPDATE|\\b${escapeRegex(tag)}\`\\s*DELETE|\\b${escapeRegex(tag)}\`\\s*CREATE`, 'i');
+    const pattern = new RegExp(`\\b${escapeRegex(tag)}\`\\s*SELECT|\\b${escapeRegex(tag)}\`\\s*INSERT|\\b${escapeRegex(tag)}\`\\s*REPLACE|\\b${escapeRegex(tag)}\`\\s*UPDATE|\\b${escapeRegex(tag)}\`\\s*DELETE|\\b${escapeRegex(tag)}\`\\s*CREATE`, 'i');
     if (pattern.test(sourceCode)) return true;
   }
   return false;

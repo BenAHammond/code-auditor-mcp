@@ -29,7 +29,7 @@ export class CopilotConfigGenerator extends BaseConfigGenerator {
       mcpServers: {
         'code-auditor': {
           command: 'npx',
-          args: ['-y', 'code-auditor-mcp', '--mcp-mode'],
+          args: ['-y', 'code-auditor-mcp', '--stdio'],
         },
       },
     };

@@ -602,23 +602,11 @@ export function extractSchemas(entities: CrossLanguageEntity[]): SchemaDefinitio
       if (schema) schemas.push(schema);
     }
 
-    // Protocol buffer definitions
-    if (entity.file.endsWith('.proto')) {
-      const schema = extractProtobufMessage(entity);
-      if (schema) schemas.push(schema);
-    }
-
-    // GraphQL types
-    if (entity.file.endsWith('.graphql') || entity.file.endsWith('.gql')) {
-      const schema = extractGraphQLType(entity);
-      if (schema) schemas.push(schema);
-    }
-
-    // JSON Schema
-    if (entity.file.endsWith('.json') && entity.name.toLowerCase().includes('schema')) {
-      const schema = extractJSONSchema(entity);
-      if (schema) schemas.push(schema);
-    }
+    // protobuf / GraphQL / JSON Schema files are detected but NOT extracted
+    // here. Pushing an empty-field schema for them silently degrades a real
+    // comparison into a spurious "missing/extra field" or a false "clean".
+    // Callers surface them via getUnimplementedSchemaExtractions() as a
+    // notApplicable reason ("protobuf extraction not implemented") instead.
   }
 
   return schemas;
@@ -693,41 +681,32 @@ function extractGoStruct(entity: CrossLanguageEntity): SchemaDefinition | null {
   };
 }
 
-function extractProtobufMessage(entity: CrossLanguageEntity): SchemaDefinition | null {
-  // Simplified protobuf extraction
-  return {
-    id: entity.id,
-    name: entity.name,
-    type: 'protobuf',
-    language: 'protobuf',
-    file: entity.file,
-    line: entity.startLine || 0,
-    fields: [] // Would parse .proto file in real implementation
-  };
+export interface UnimplementedSchemaExtraction {
+  language: 'protobuf' | 'graphql' | 'json-schema';
+  reason: string;
 }
 
-function extractGraphQLType(entity: CrossLanguageEntity): SchemaDefinition | null {
-  // Simplified GraphQL extraction
-  return {
-    id: entity.id,
-    name: entity.name,
-    type: 'graphql',
-    language: 'graphql',
-    file: entity.file,
-    line: entity.startLine || 0,
-    fields: [] // Would parse .graphql file in real implementation
-  };
-}
+/**
+ * Detect schema-bearing files whose extraction is not implemented yet, so a
+ * caller can state the gap as a notApplicable reason ("protobuf extraction not
+ * implemented") rather than silently comparing nothing. Returns one entry per
+ * distinct unimplemented language present in the corpus.
+ */
+export function getUnimplementedSchemaExtractions(entities: CrossLanguageEntity[]): UnimplementedSchemaExtraction[] {
+  const seen = new Set<string>();
+  const result: UnimplementedSchemaExtraction[] = [];
 
-function extractJSONSchema(entity: CrossLanguageEntity): SchemaDefinition | null {
-  // Simplified JSON Schema extraction
-  return {
-    id: entity.id,
-    name: entity.name,
-    type: 'json-schema',
-    language: 'json',
-    file: entity.file,
-    line: entity.startLine || 0,
-    fields: [] // Would parse JSON schema in real implementation
+  const note = (language: 'protobuf' | 'graphql' | 'json-schema') => {
+    if (seen.has(language)) return;
+    seen.add(language);
+    result.push({ language, reason: `${language} extraction not implemented` });
   };
+
+  for (const entity of entities) {
+    if (entity.file.endsWith('.proto')) note('protobuf');
+    else if (entity.file.endsWith('.graphql') || entity.file.endsWith('.gql')) note('graphql');
+    else if (entity.file.endsWith('.json') && entity.name.toLowerCase().includes('schema')) note('json-schema');
+  }
+
+  return result;
 }

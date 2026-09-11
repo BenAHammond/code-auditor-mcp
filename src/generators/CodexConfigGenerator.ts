@@ -29,7 +29,7 @@ export class CodexConfigGenerator extends BaseConfigGenerator {
     const mcpSection = {
       'code-auditor': {
         command: 'npx',
-        args: ['-y', 'code-auditor-mcp', '--mcp-mode'],
+        args: ['-y', 'code-auditor-mcp', '--stdio'],
       },
     };
 

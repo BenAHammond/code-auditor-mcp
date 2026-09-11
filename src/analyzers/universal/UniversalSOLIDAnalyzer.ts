@@ -572,8 +572,8 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * True if the class body directly instantiates a concrete type (`new Foo()`),
-   * which is the dependency-inversion signal.
+   * True if the class body directly instantiates a concrete type (`new Foo()`)
+   * that it *holds* — which is the dependency-inversion signal.
    *
    * The signal is a *bare* construction of a PascalCase type name, regardless of
    * where the type comes from — a statically-imported class, a CommonJS
@@ -583,13 +583,29 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
    * `ResetPasswordError`, …) and on every `require()`-based codebase. Provenance is
    * not a DIP concern: instantiating a concrete type violates the principle whether
    * the type was imported or defined next door.
+   *
+   * What a construction is *for* is the concern: a value that escapes — thrown
+   * (`throw new AppError(...)`) or returned (`return new Result(...)`) — is a value
+   * type, not a collaborator the class depends on. DIP is about what a class
+   * *holds* (a database client assigned to `this.db`); an error constructed and
+   * thrown, or a DTO returned to the caller, is not a dependency. An escaping
+   * construction is therefore not a signal.
    */
   private hasDirectInstantiation(cls: ClassInfo, classNode: ASTNode, ctx: SolidContext): boolean {
     const { adapter, sourceCode } = ctx;
 
     let hasDirectInstantiation = false;
-    walkAST(classNode, node => {
+    walkASTWithAncestors(classNode, (node, ancestors) => {
       if (node.type !== 'new_expression') return;
+
+      // Escapes vs. held: a construction whose value is thrown or returned —
+      // even through a transparent wrapper (`return new Foo() as Bar`,
+      // `throw (new AppError())`) — is a value type, not a dependency. Only a
+      // value the class retains (a field, a local it works through) is a
+      // coupling signal.
+      if (constructionEscapes(ancestors)) {
+        return;
+      }
 
       // The constructor is the direct child that is neither the argument list
       // nor a type-argument clause. It must be a bare `identifier`: a member
@@ -682,4 +698,56 @@ function walkAST(node: ASTNode, callback: (node: ASTNode) => void): void {
       walkAST(child, callback);
     }
   }
+}
+
+/**
+ * Depth-first walk over a subtree that also passes each node's ancestor chain to
+ * `callback`: `ancestors[0]` is the walk root, `ancestors[ancestors.length - 1]`
+ * is the immediate parent (empty for the root itself). Used where the enclosing
+ * context matters — e.g. distinguishing a `new_expression` that escapes via
+ * `throw`/`return` (possibly through a transparent cast/parenthesis wrapper)
+ * from one the class holds.
+ */
+function walkASTWithAncestors(
+  node: ASTNode,
+  callback: (node: ASTNode, ancestors: ASTNode[]) => void,
+  ancestors: ASTNode[] = []
+): void {
+  callback(node, ancestors);
+  if (node.children) {
+    const next = [...ancestors, node];
+    for (const child of node.children) {
+      walkASTWithAncestors(child, callback, next);
+    }
+  }
+}
+
+/**
+ * Expression wrappers that pass their operand through to an enclosing statement
+ * without changing its runtime value — a parenthesized expression or a type
+ * assertion/cast. A `new` expression under one of these still escapes if the
+ * *wrapping* statement throws or returns it.
+ */
+const ESCAPE_WRAPPERS = new Set([
+  'parenthesized_expression',
+  'as_expression',
+  'type_assertion',
+  'satisfies_expression',
+  'non_null_expression',
+]);
+
+/**
+ * True when the `new` expression whose ancestors are `ancestors` is thrown or
+ * returned (the value escapes the class) rather than held. Walks up through
+ * transparent wrappers only — the first non-wrapper ancestor decides: a
+ * `throw_statement`/`return_statement` means escape; anything else (an
+ * assignment, a call argument, a field initializer) means the value is held.
+ */
+function constructionEscapes(ancestors: ASTNode[]): boolean {
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const type = ancestors[i].type;
+    if (type === 'throw_statement' || type === 'return_statement') return true;
+    if (!ESCAPE_WRAPPERS.has(type)) return false;
+  }
+  return false;
 }

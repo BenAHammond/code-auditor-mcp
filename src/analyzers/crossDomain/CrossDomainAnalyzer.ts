@@ -9,7 +9,7 @@
  *     cross-domain/read-never-written    — Table read but never written
  *     cross-domain/multi-table-write     — Function writes to too many tables
  *
- *   R3 — Validation Bypass (future):
+ *   R3 — Validation Bypass:
  *     cross-domain/no-validator-reachable — Writer doesn't reach a validator
  *
  *   R4 — Coverage by Importance:

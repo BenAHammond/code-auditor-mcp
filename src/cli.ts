@@ -16,7 +16,6 @@ import { promises as fs } from 'fs';
 import { createInterface } from 'readline';
 import { fileURLToPath } from 'url';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
-import { DEFAULT_PORT } from './constants.js';
 import inquirer from 'inquirer';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { initParsers } from './languages/index.js';
@@ -1106,20 +1105,6 @@ program
     }
   });
 
-// Start server command (placeholder - will be implemented later)
-program
-  .command('start')
-  .description('Start the MCP server')
-  .option('-p, --port <port>', 'Server port', String(DEFAULT_PORT))
-  .option('-m, --mcp-mode', 'Start in MCP stdio mode')
-  .option('-r, --rest-api', 'Enable REST API endpoints')
-  .option('-i, --index <path>', 'Path to index on startup')
-  .action(async (options) => {
-    console.log(chalk.yellow('Server start will be implemented in a future task'));
-    console.log('Options:', options);
-    // TODO: Implement server start
-  });
-
 // Index command
 const indexCmd = program
   .command('index')
@@ -1712,16 +1697,6 @@ program
       console.error(chalk.red('Error:'), error);
       process.exit(1);
     }
-  });
-
-// Test command (placeholder - will be implemented later)
-program
-  .command('test <tool>')
-  .description('Test connection to AI tool')
-  .action(async (tool) => {
-    console.log(chalk.yellow('Test command will be implemented in a future task'));
-    console.log('Tool:', tool);
-    // TODO: Implement connection testing
   });
 
 // Code map command
@@ -2868,7 +2843,7 @@ function getNamingPattern(caseName: string): string {
 program
   .command('install')
   .description('Install the code-auditor skill for AI coding tools')
-  .option('--agent <agent>', 'Target agent: claude, cursor, codex, gemini, agents, or all', 'all')
+  .option('--agent <agent>', 'Target agent: claude, cursor, codex, gemini, agents, zcode, or all', 'all')
   .option('--scope <scope>', 'Install scope: user (~) or project (.)', 'user')
   .option('--hooks', 'Offer hook wiring (default)', true)
   .option('--no-hooks', 'Skip hook wiring prompt')

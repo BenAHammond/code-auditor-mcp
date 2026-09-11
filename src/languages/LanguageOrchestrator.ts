@@ -20,15 +20,12 @@ export interface PolyglotAnalysisOptions {
   
   // Cross-language features
   enableCrossLanguageAnalysis?: boolean;
-  buildCrossReferences?: boolean;
-  validateAPIContracts?: boolean;
-  
+
   // Performance options
   maxConcurrency?: number;
   timeout?: number;
-  
+
   // Indexing options
-  updateIndex?: boolean;
   indexFunctions?: boolean;
   
   // Reporting options
@@ -44,15 +41,13 @@ export interface PolyglotAnalysisResult {
   // Cross-language analysis
   crossLanguageViolations: CrossLanguageViolation[];
   dependencyGraph?: DependencyGraph;
-  apiContracts?: APIContractAnalysis[];
-  
+
   // Metrics and statistics
   metrics: PolyglotMetrics;
   languageStats: Map<string, LanguageStats>;
 
   // Index updates
   indexEntries?: any[];
-  crossReferences?: CrossReference[];
 
   // Languages discovered on disk but not analyzed because no runtime could run
   // them. Each entry names the language and the reason — a stated skip, not the
@@ -212,43 +207,38 @@ export class LanguageOrchestrator {
     options: PolyglotAnalysisOptions,
     startTime: number,
   ): Promise<void> {
-    // 5. Build cross-references if enabled
-    if (options.buildCrossReferences) {
-      mergedResult.crossReferences = await this.buildCrossReferences(analysisResults);
-      console.log(`[LanguageOrchestrator] Built ${mergedResult.crossReferences.length} cross-references`);
-    }
-
-    // 6. Detect cross-language violations
+    // 5. Detect cross-language violations (API contracts + schema validation).
+    // This is the real cross-language work. Its results are merged into
+    // `violations` so they reach the report — the separate
+    // `crossLanguageViolations` field was never consumed downstream, so the
+    // findings silently evaporated. The field is kept for observability, but
+    // the findings now flow through the same `violations` bucket the report
+    // reads.
     if (options.enableCrossLanguageAnalysis) {
-      mergedResult.crossLanguageViolations = await this.detectCrossLanguageViolations(
-        analysisResults,
-        mergedResult.crossReferences || []
+      const cross = await this.detectCrossLanguageViolations(analysisResults);
+      mergedResult.crossLanguageViolations = cross;
+      mergedResult.violations.push(...cross);
+      console.log(`[LanguageOrchestrator] Found ${cross.length} cross-language violations`);
+
+      // Surface schema languages present but not extracted as a stated
+      // notApplicable ("protobuf extraction not implemented") instead of
+      // silently comparing nothing.
+      const { getUnimplementedSchemaExtractions } = await import(
+        '../analyzers/cross-language/SchemaValidator.js'
       );
-      console.log(`[LanguageOrchestrator] Found ${mergedResult.crossLanguageViolations.length} cross-language violations`);
+      const gaps = getUnimplementedSchemaExtractions(collectAllEntities(analysisResults));
+      if (gaps.length > 0) {
+        mergedResult.notApplicable = [...(mergedResult.notApplicable || []), ...gaps];
+      }
     }
 
-    // 7. Validate API contracts
-    if (options.validateAPIContracts) {
-      mergedResult.apiContracts = await this.validateAPIContracts(analysisResults);
-      console.log(`[LanguageOrchestrator] Validated ${mergedResult.apiContracts?.length || 0} API contracts`);
-    }
-
-    // 8. Generate dependency graph
+    // 6. Generate dependency graph.
     if (options.generateDependencyGraph) {
-      mergedResult.dependencyGraph = await generateDependencyGraph(
-        analysisResults,
-        mergedResult.crossReferences || []
-      );
+      mergedResult.dependencyGraph = await generateDependencyGraph(analysisResults, []);
       console.log(`[LanguageOrchestrator] Generated dependency graph with ${mergedResult.dependencyGraph.nodes.length} nodes`);
     }
 
-    // 9. Update index if requested
-    if (options.updateIndex && mergedResult.indexEntries) {
-      await this.updateCodeIndex(mergedResult.indexEntries, mergedResult.crossReferences || []);
-      console.log(`[LanguageOrchestrator] Updated index with ${mergedResult.indexEntries.length} entries`);
-    }
-
-    // 10. Final metrics
+    // 7. Final metrics.
     mergedResult.metrics.executionTime = Date.now() - startTime;
     console.log(`[LanguageOrchestrator] Analysis complete in ${mergedResult.metrics.executionTime}ms`);
   }
@@ -418,28 +408,10 @@ export class LanguageOrchestrator {
   }
 
   /**
-   * Build cross-references between languages
-   */
-  private async buildCrossReferences(
-    results: Array<{ language: string; result: AnalysisResult }>
-  ): Promise<CrossReference[]> {
-    // This is a placeholder for cross-reference building logic
-    // In future phases, this will analyze:
-    // - Function calls across language boundaries
-    // - API endpoints and their consumers
-    // - Shared type definitions
-    // - Import/export relationships
-    
-    console.log('[LanguageOrchestrator] Building cross-references (placeholder)');
-    return [];
-  }
-
-  /**
    * Detect violations that span multiple languages
    */
   private async detectCrossLanguageViolations(
-    results: Array<{ language: string; result: AnalysisResult }>,
-    crossReferences: CrossReference[]
+    results: Array<{ language: string; result: AnalysisResult }>
   ): Promise<CrossLanguageViolation[]> {
     console.log('[LanguageOrchestrator] Detecting cross-language violations...');
     
@@ -454,28 +426,6 @@ export class LanguageOrchestrator {
 
     console.log(`[LanguageOrchestrator] Found ${violations.length} cross-language violations`);
     return violations;
-  }
-
-  /**
-   * Validate API contracts between frontend and backend
-   */
-  private async validateAPIContracts(
-    results: Array<{ language: string; result: AnalysisResult }>
-  ): Promise<APIContractAnalysis[]> {
-    // Placeholder for API contract validation
-    console.log('[LanguageOrchestrator] Validating API contracts (placeholder)');
-    return [];
-  }
-
-  /**
-   * Update the unified code index
-   */
-  private async updateCodeIndex(
-    indexEntries: any[],
-    crossReferences: CrossReference[]
-  ): Promise<void> {
-    // Placeholder for index updates
-    console.log('[LanguageOrchestrator] Updating code index (placeholder)');
   }
 
   /**

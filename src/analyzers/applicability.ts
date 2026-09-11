@@ -29,6 +29,65 @@ export interface RuleApplicability {
 }
 
 /**
+ * Spec 52 R3 — the whole-program rule class. These rules draw a global
+ * conclusion ("table X is never read", "table Y is unknown", "no validator is
+ * reachable") that is only sound when every file in the project contributed to
+ * the evidence. On a scoped/diff run the evidence is a partial file set, so a
+ * fired finding would be an unqualified global claim backed by partial evidence.
+ *
+ * On a scoped run each of these is suppressed with a `notApplicable` reason
+ * naming the scope, rather than firing a claim the partial corpus cannot
+ * support. The dependency-graph rules (unreferenced-module, orphaned-nodes,
+ * review-orphans) are omitted here because their Stage-4 reducer already
+ * short-circuits on `isScoped` with its own `notRunReason`.
+ *
+ * Option chosen (over "evaluate against the full project index"): suppress.
+ * Rationale — a scoped run is a diff gate whose value is low latency; running
+ * whole-program detectors against the full index would re-open the ~600ms
+ * corpus-wide sweep the scoped gate exists to avoid, and the index is only as
+ * fresh as the last full sync, so a "full" answer could still be stale. The
+ * honest answer under a partial corpus is "not applicable to this run", surfaced
+ * with a reason, not a global claim and not silence.
+ *
+ * Revisit note: this decision is scoped to a *scoped run without the daemon*.
+ * Both of the reasons above are contingent on that context — the index can be
+ * stale only because the scoped gate runs ahead of a fresh sync, and the cost is
+ * a full corpus sweep only because there is no resident index to read. The
+ * daemon removes both: its index is live by construction, and a read of an
+ * already-built whole-program fact is not a sweep. Whoever reopens this should
+ * evaluate "answer from the live daemon index" as the option-2 path rather than
+ * re-deriving why suppression beat a cold re-sweep.
+ */
+export const WHOLE_PROGRAM_RULES: ReadonlyArray<string> = [
+  'cross-domain/written-never-read',
+  'cross-domain/read-never-written',
+  'cross-domain/no-validator-reachable',
+  'unknown-table',
+];
+
+/**
+ * Build the `notApplicable` verdicts that suppress the whole-program rule class
+ * on a scoped run. Returns an empty map when the run is unscoped — whole-program
+ * rules run normally on a full corpus. Extracted as a pure function so the
+ * scoped-suppression wiring is unit-testable without spinning up a full pipeline.
+ */
+export function scopedWholeProgramApplicability(
+  isScoped: boolean,
+  fileCount: number,
+): Map<string, RuleApplicability> {
+  const map = new Map<string, RuleApplicability>();
+  if (!isScoped) return map;
+  for (const ruleId of WHOLE_PROGRAM_RULES) {
+    map.set(ruleId, {
+      applicable: false,
+      kind: 'notApplicable',
+      reason: `requires whole-project analysis; this run was scoped to ${fileCount} file(s)`,
+    });
+  }
+  return map;
+}
+
+/**
  * Default tenant-scoping column names. The single source of truth is
  * DEFAULT_DATA_ACCESS_CONFIG.orgFilterColumns in UniversalDataAccessAnalyzer.js;
  * this is a local copy because importing that module here would create the cycle

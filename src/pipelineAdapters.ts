@@ -1783,19 +1783,30 @@ export function createSchemaValidatorReducer(): Stage4Reducer {
       const entities = clFlattenEntities(allFacts);
       if (entities.length === 0) return { violations: [], facts: {}, factsConsumed: 0 };
       try {
-        const { SchemaValidator, extractSchemas, countCrossLanguagePairs } = await import(
+        const { SchemaValidator, extractSchemas, countCrossLanguagePairs, getUnimplementedSchemaExtractions } = await import(
           './analyzers/cross-language/SchemaValidator.js'
         );
         const schemas = extractSchemas(entities);
+        const unimplemented = getUnimplementedSchemaExtractions(entities);
         // A zero here would otherwise surface as `clean` in coverage — which
         // reads as "compared everything and found no mismatch" when the truth
         // is "there is nothing to compare". Distinguish the two: no schemas at
         // all, or schemas all in one language, is `notApplicable`, not `clean`.
+        // Fold in any schema languages that are present but not extracted, so
+        // "protobuf extraction not implemented" reaches the report rather than
+        // silently collapsing into a zero.
+        const gapReason = unimplemented.map(u => u.reason).join(', ');
         if (schemas.length === 0) {
-          return { violations: [], facts: {}, notRunReason: 'no schema definitions found (no interfaces/structs to compare)' };
+          const reason = gapReason
+            ? `${gapReason} (no interfaces/structs to compare)`
+            : 'no schema definitions found (no interfaces/structs to compare)';
+          return { violations: [], facts: {}, notRunReason: reason };
         }
         if (countCrossLanguagePairs(schemas) === 0) {
-          return { violations: [], facts: {}, notRunReason: 'no cross-language pairs found (schema comparison requires ≥2 languages)' };
+          const reason = gapReason
+            ? `no cross-language pairs found (${gapReason}; schema comparison requires ≥2 languages)`
+            : 'no cross-language pairs found (schema comparison requires ≥2 languages)';
+          return { violations: [], facts: {}, notRunReason: reason };
         }
         const validator = new SchemaValidator();
         const violations = await validator.validateSchemas(schemas);

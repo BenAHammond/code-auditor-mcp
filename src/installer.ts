@@ -74,6 +74,14 @@ const AGENTS: AgentInfo[] = [
     hooksAvailable: false,
     hookType: 'none',
   },
+  {
+    name: 'zcode',
+    displayName: 'ZCode',
+    userPath: join(homedir(), '.agents', 'skills'), // ZCode reads the .agents skills convention
+    projectPath: '.agents/skills',
+    hooksAvailable: false, // ZCode hooks are plugin-scoped (hooks/hooks.json), not file-based
+    hookType: 'none',
+  },
 ];
 
 export interface InstallOptions {
