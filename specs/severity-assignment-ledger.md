@@ -6,10 +6,10 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 26 / 106
+- **Assigned:** 32 / 106
 - **critical:** 3
 - **severe:** 5
-- **high:** 18
+- **high:** 24
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
@@ -129,3 +129,19 @@ Emit sites: `UniversalDRYAnalyzer.ts` (5 registered) and `auditRunner.ts`
 | `duplicate-string-literal` | suggestion | high | Repeated literals are a maintainability smell that has not bitten. | no |
 | `duplicate-import` | warning | high | A redundant import is noise that has not bitten. | yes |
 | `dry/diverging-clone` | suggestion | severe | A clone that has already drifted means a fix landed in one copy and not the other — inconsistent behavior that surfaces when the stale copy runs. | yes |
+
+---
+
+## Session 5 — documentation (6 rules)
+
+Emit sites: `UniversalDocumentationAnalyzer.ts`. The whole family is a
+maintainability/readability gap — anchored high in the spec.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `file-documentation` | warning | high | A missing file doc comment is a readability gap that has not bitten. | yes |
+| `function-documentation` | warning | high | A missing function doc comment is a readability gap. | yes |
+| `parameter-documentation` | warning | high | A missing @param tag is a readability gap. | yes |
+| `return-documentation` | warning | high | A missing @returns tag is a readability gap. | yes |
+| `class-documentation` | warning | high | A missing class doc comment is a readability gap. | yes |
+| `method-documentation` | warning | high | A missing method doc comment is a readability gap. | yes |
