@@ -6,10 +6,10 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 32 / 106
+- **Assigned:** 39 / 106
 - **critical:** 3
-- **severe:** 5
-- **high:** 24
+- **severe:** 7
+- **high:** 29
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
@@ -145,3 +145,21 @@ maintainability/readability gap — anchored high in the spec.
 | `return-documentation` | warning | high | A missing @returns tag is a readability gap. | yes |
 | `class-documentation` | warning | high | A missing class doc comment is a readability gap. | yes |
 | `method-documentation` | warning | high | A missing method doc comment is a readability gap. | yes |
+
+---
+
+## Session 6 — react (7 rules)
+
+Emit sites: `reactAnalyzer.ts`. `performance` carries one `suggestion` sub-path
+and `raw-element` is dynamic (`warning` when `componentMap` is set, else
+`suggestion`); both are recorded at their dominant/configured severity.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `hooks-naming` | warning | high | A hook outside the `use*` convention is a naming smell that has not bitten. | yes |
+| `complexity` | warning | high | An over-complex component is off-scale complexity that has not bitten. | yes |
+| `missing-props` | warning | high | Missing prop-types is a type-safety smell that has not bitten. | yes |
+| `no-error-boundary` | warning | severe | A tree without an error boundary crashes the whole app on one throw — anchored severe. | no |
+| `performance` | warning | high | Missing memoization causes re-renders, a performance smell that has not bitten. | yes |
+| `accessibility` | warning | severe | An inaccessible component fails WCAG — a defect that surfaces for assistive-tech users. | yes |
+| `raw-element` | warning | high | A raw element where the project uses a wrapper is a convention smell. | yes |
