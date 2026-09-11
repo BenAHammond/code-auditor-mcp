@@ -6,10 +6,10 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 86 / 106
+- **Assigned:** 96 / 106
 - **critical:** 7
 - **severe:** 33
-- **high:** 36
+- **high:** 46
 
 ## Inventory note (reconciles to 106, not the spec's 105)
 
@@ -262,3 +262,24 @@ user-defined invariant rule IDs vary per project and are not in scope here.
 |---|---|---|---|---|
 | `config-error` | critical | critical | A malformed `.codeauditor.json` means declared laws are not enforced — broken now. | no |
 | `engine-error` | warning | severe | The rule engine threw on a rule — a defect that surfaces as an unenforced law. | no |
+
+---
+
+## Session 12 — styles (10 rules)
+
+Emit sites: `UniversalStylesAnalyzer.ts`. The whole family is design-system
+consistency; the spec anchors `styles/off-scale` and `styles/undefined-class` to
+high, so the rest of the family follows.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `styles/value-drift` | warning | high | A color drifting off the token is a design-consistency smell that has not bitten. | yes |
+| `styles/off-scale` | warning | high | A value off the spacing scale is a design smell — anchored high. | yes |
+| `styles/undefined-class` | warning | high | A class with no definition is a styling gap — anchored high. | yes |
+| `styles/undefined-class-disabled` | suggestion | high | Detector-availability notice, not a code defect — still a gap, not a bite. | no |
+| `styles/token-bypass` | warning | high | A raw value where a token belongs is a design smell that has not bitten. | yes |
+| `styles/mechanism-fragmentation` | warning | high | Many styling mechanisms is a maintainability smell that has not bitten. | yes |
+| `styles/mechanism-mixing` | suggestion | high | Mixed mechanisms in one file is a maintainability smell. | no |
+| `styles/declaration-set-similarity` | suggestion | high | Similar declaration sets are a DRY smell that has not bitten. | no |
+| `styles/z-index-sprawl` | warning | high | Z-index sprawl is a maintainability smell that has not bitten. | yes |
+| `styles/z-index-singleton` | suggestion | high | A one-off z-index value is a maintainability smell. | no |
