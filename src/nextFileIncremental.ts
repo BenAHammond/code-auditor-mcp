@@ -311,8 +311,8 @@ export interface RunNextFileResult {
 export interface NextFileSummary {
   totalViolations: number;
   criticalIssues: number;
-  warnings: number;
-  suggestions: number;
+  severe: number;
+  high: number;
   violationsByCategory: Record<string, number>;
   topIssues: Array<{ type: string; count: number }>;
 }
@@ -320,13 +320,13 @@ export interface NextFileSummary {
 /** Compute a summary from a merged violation set (cached + fresh). */
 export function summarizeViolations(violations: Violation[]): NextFileSummary {
   let criticalIssues = 0;
-  let warnings = 0;
-  let suggestions = 0;
+  let severe = 0;
+  let high = 0;
   const violationsByCategory: Record<string, number> = {};
   for (const v of violations) {
     if (v.severity === 'critical') criticalIssues++;
-    else if (v.severity === 'warning') warnings++;
-    else if (v.severity === 'suggestion') suggestions++;
+    else if (v.severity === 'severe') severe++;
+    else if (v.severity === 'high') high++;
     const cat = v.analyzer || 'other';
     violationsByCategory[cat] = (violationsByCategory[cat] || 0) + 1;
   }
@@ -334,7 +334,7 @@ export function summarizeViolations(violations: Violation[]): NextFileSummary {
     .sort(([, a], [, b]) => b - a)
     .slice(0, 5)
     .map(([type, count]) => ({ type, count }));
-  return { totalViolations: violations.length, criticalIssues, warnings, suggestions, violationsByCategory, topIssues };
+  return { totalViolations: violations.length, criticalIssues, severe, high, violationsByCategory, topIssues };
 }
 
 /** The three-violation arrays flattened into one, in a stable order. */

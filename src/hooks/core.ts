@@ -26,7 +26,7 @@ import type { Severity, AuditScope } from '../types.js';
 export interface HookAuditInput {
   filePaths: string[];      // Absolute or relative paths to audit
   projectRoot: string;      // Project root directory
-  failOn: Severity;         // 'critical' | 'warning' | 'suggestion'
+  failOn: Severity;         // 'critical' | 'severe' | 'high'
 }
 
 export interface HookViolation {
@@ -49,8 +49,8 @@ export interface HookAuditOutput {
   summary: {
     total: number;
     critical: number;
-    warning: number;
-    suggestion: number;
+    severe: number;
+    high: number;
   };
   filesAnalyzed: number;
 }
@@ -99,7 +99,7 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
   if (input.filePaths.length === 0) {
     return {
       violations: [],
-      summary: { total: 0, critical: 0, warning: 0, suggestion: 0 },
+      summary: { total: 0, critical: 0, severe: 0, high: 0 },
       filesAnalyzed: 0,
     };
   }
@@ -161,16 +161,16 @@ function buildHookOutput(allViolations: any[], filesAnalyzed: number): HookAudit
   }));
 
   const criticalCount = violations.filter((v) => v.severity === 'critical').length;
-  const warningCount = violations.filter((v) => v.severity === 'warning').length;
-  const suggestionCount = violations.filter((v) => v.severity === 'suggestion').length;
+  const severeCount = violations.filter((v) => v.severity === 'severe').length;
+  const highCount = violations.filter((v) => v.severity === 'high').length;
 
   return {
     violations,
     summary: {
       total: violations.length,
       critical: criticalCount,
-      warning: warningCount,
-      suggestion: suggestionCount,
+      severe: severeCount,
+      high: highCount,
     },
     filesAnalyzed,
   };
@@ -183,7 +183,7 @@ export function hasViolationsAtOrAbove(
   violations: HookViolation[],
   failOn: Severity,
 ): boolean {
-  const severityOrder: Severity[] = ['critical', 'warning', 'suggestion'];
+  const severityOrder: Severity[] = ['critical', 'severe', 'high'];
   const failIndex = severityOrder.indexOf(failOn);
   return violations.some((v) => {
     const vIndex = severityOrder.indexOf(v.severity);

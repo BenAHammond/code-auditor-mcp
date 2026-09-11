@@ -229,7 +229,7 @@ interface QueryAnalysis {
  * call rather than a 6-arg one (Spec 34 param-count bundling).
  */
 interface DataAccessViolationClassification {
-  severity: 'critical' | 'warning' | 'suggestion';
+  severity: 'critical' | 'severe' | 'high';
   rule: string;
   symbol?: string;
   /** Spec 37 R1 — structured next action carried on gating findings. */
@@ -542,11 +542,11 @@ function checkViolations(
   const push = (message: string, opts: Omit<DataAccessViolationClassification, 'symbol'>) =>
     violations.push(makeViolation(filePath, { line: call.line, column: call.column }, message, { ...opts, symbol }));
 
-  // Security: SQL injection — AST heuristics, high-signal not proof, so
-  // `warning` not `critical`; manual quote-escaping is not sanitization.
+  // Security: SQL injection — string-interpolated SQL from input is exploitable
+  // now, so `critical`; manual quote-escaping is not sanitization.
   if (config.checkSQLInjection && call.hasSqlInjectionRisk) {
     push(`Potential SQL injection risk in ${call.method}. Use parameterized queries.`, {
-      severity: 'warning',
+      severity: 'critical',
       rule: 'sql-injection-risk',
       resolution: {
         action: 'parameterize',
@@ -560,7 +560,7 @@ function checkViolations(
 
   // Security: Missing Organization Filter
   if (config.checkOrgFilters && !call.hasOrganizationFilter && call.tables.length > 0 && requiresOrgFilter(call.tables, config)) {
-    push(`Query on ${call.tables.join(', ')} missing organization/tenant filter`, { severity: 'warning', rule: 'missing-org-filter' });
+    push(`Query on ${call.tables.join(', ')} missing organization/tenant filter`, { severity: 'severe', rule: 'missing-org-filter' });
   }
 
   // Performance: Complex Query — a subquery or many joined tables, named honestly.
@@ -570,12 +570,12 @@ function checkViolations(
     if (call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
       reasons.push(`references ${call.tables.length} tables`);
     }
-    push(`Query ${reasons.join(' and ')}`, { severity: 'warning', rule: 'complex-query' });
+    push(`Query ${reasons.join(' and ')}`, { severity: 'high', rule: 'complex-query' });
   }
 
   // Performance: Unfiltered Query
   if (isUnfilteredQuery(call) && analysis.performanceRisk === 'medium') {
-    push(`Query on ${call.tables.join(', ')} has no filter`, { severity: 'suggestion', rule: 'unfiltered-query' });
+    push(`Query on ${call.tables.join(', ')} has no filter`, { severity: 'high', rule: 'unfiltered-query' });
   }
 
   return violations;
@@ -625,7 +625,7 @@ function checkGeneralPatterns(
         ast.filePath,
         node.location.start,
         'Hardcoded database connection string detected. Use environment variables. (On Cloudflare Workers/D1, connection strings are injected via bindings.)',
-        { severity: 'suggestion', rule: 'hardcoded-connection', symbol: sym } // R7: direct-access → suggestion
+        { severity: 'critical', rule: 'hardcoded-connection', symbol: sym } // R7: direct-access → critical
       ));
     }
   }
@@ -1688,7 +1688,7 @@ function checkLoopQueries(
       `Database query inside loop${depthMsg} ` +
       `(loop at line ${loopInfo.loopNode.location.start.line}). ` +
       `This may cause N+1 performance issues. Consider batching queries or using a join.`,
-      { severity: 'warning', rule: 'loop-query', symbol: sym },
+      { severity: 'severe', rule: 'loop-query', symbol: sym },
     ));
   }
 

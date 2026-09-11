@@ -1,0 +1,47 @@
+Spec 54 — forced-failure transcript: `high` blocks (acceptance #4)
+=========================================================================
+
+A single `function-documentation` finding at `high` must block the gate with
+exit 2. This transcript was captured against the freshly-built `dist/cli.js`.
+
+Fixture (temp project, only the documentation analyzer enabled):
+
+  // src/undocumented.ts
+  export function computeTotal(items: number[]): number {
+    let total = 0;
+    for (const n of items) {
+      total += n;
+    }
+    total += items.length;
+    return total;
+  }
+
+Command:
+
+  node dist/cli.js audit -f json --fail-on high -p /tmp/ca-high-blocks
+
+Output:
+
+  ── Coverage panel ── 1 fired · 5 clean · 0 unassessed · 0 not-applicable · 0 cannot-fire
+
+  Found 1 readings
+  Critical: 0
+  Severe: 0
+  High: 1
+
+  Every reading is a defect — severity is urgency, the order to act.
+
+  documentation [visitor-ran]: 1 files, 1 violations
+
+  Report written to /private/tmp/ca-high-blocks/audit-report.json
+
+  EXIT=2
+
+The JSON report records the finding at `high` and the summary in the new
+Spec-54 shape:
+
+  violation  → { "rule": "function-documentation", "severity": "high" }
+  summary    → { "criticalIssues": 0, "severe": 0, "high": 1 }
+
+Exit code 2 (not 1, not 0) proves a `high` reading blocks the gate — every
+level is a defect; nothing below `high` is advisory.

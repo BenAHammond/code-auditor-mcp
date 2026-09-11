@@ -99,7 +99,7 @@ function checkComponentComplexity(
   return [{
     file: component.filePath,
     line: component.lineNumber,
-    severity: 'warning',
+    severity: 'high',
     message: `Component '${component.name}' has high complexity (${component.complexity})`,
     componentName: component.name,
     rule: 'complexity',
@@ -123,7 +123,7 @@ function checkPropsValidation(
   return [{
     file: component.filePath,
     line: component.lineNumber,
-    severity: 'warning',
+    severity: 'high',
     message: `Component '${component.name}' is missing prop type definitions`,
     componentName: component.name,
     rule: 'missing-props',
@@ -143,7 +143,7 @@ function checkErrorBoundary(
   return [{
     file: component.filePath,
     line: component.lineNumber,
-    severity: 'warning',
+    severity: 'severe',
     message: `Complex component '${component.name}' should be wrapped in an error boundary`,
     componentName: component.name,
     rule: 'no-error-boundary',
@@ -176,7 +176,7 @@ function checkHooksRules(component: ComponentMetadata): ReactViolation[] {
     violations.push({
       file: component.filePath,
       line: hook.line,
-      severity: 'warning',
+      severity: 'high',
       message: `Custom hook '${hook.name}' should start with 'use'`,
       componentName: component.name,
       rule: 'hooks-naming',
@@ -229,7 +229,7 @@ function checkPerformanceIssues(
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
-      severity: 'suggestion',
+      severity: 'high',
       message: `Consider memoizing component '${component.name}' for better performance`,
       componentName: component.name,
       rule: 'performance',
@@ -253,7 +253,7 @@ function checkPerformanceIssues(
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
-      severity: 'warning',
+      severity: 'high',
       message: `Component '${component.name}' passes an inline function prop (onClick) causing unnecessary re-renders`,
       componentName: component.name,
       rule: 'performance',
@@ -283,7 +283,7 @@ function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
-      severity: 'warning',
+      severity: 'severe',
       message: `Component '${component.name}' has an <img> element without an alt attribute`,
       componentName: component.name,
       rule: 'accessibility',
@@ -301,7 +301,7 @@ function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
       violations.push({
         file: component.filePath,
         line: component.lineNumber,
-        severity: 'warning',
+        severity: 'severe',
         message: `Component '${component.name}' has onClick on a non-interactive <${element}> element`,
         componentName: component.name,
         rule: 'accessibility',
@@ -330,7 +330,7 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
-      severity: 'warning',
+      severity: 'high',
       message: `Component '${component.name}' may be rendering lists without keys`,
       componentName: component.name,
       rule: 'performance',
@@ -481,7 +481,7 @@ export function checkCircularDependencies(
     if (cycle) {
       violations.push({
         file: 'component-dependencies',
-        severity: 'warning',
+        severity: 'high',
         message: `Circular dependency detected: ${cycle.join(' → ')}`,
         rule: 'complexity',
         violationType: 'complexity',
@@ -545,7 +545,7 @@ export function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): Rea
       violations.push({
         file: 'app-level',
         line: 1,
-        severity: 'warning',
+        severity: 'severe',
         message: 'No error boundaries found in the application',
         rule: 'no-error-boundary',
         violationType: 'no-error-boundary',
@@ -698,7 +698,7 @@ function collectRawElementUsages(
  * Auto-detects wrapper components (exported components whose rendered root is a single
  * intrinsic element from the watch list) and flags raw usages of that element outside
  * the wrapper's definition. A {@link ReactAnalyzerConfig.componentMap} overrides
- * auto-detection, making every raw usage a warning.
+ * auto-detection, making every raw usage a high-severity finding.
  * @param config
  * @param scanResults
  * @returns
@@ -723,7 +723,7 @@ export function checkRawElements(
 
     // ── Phase 3: Emit violations ──────────────────────────────────────────
     const minUsages = config.wrapperMinUsages ?? 5;
-    const severity: 'warning' | 'suggestion' = config.componentMap ? 'warning' : 'suggestion';
+    const severity: 'high' = 'high';
 
     for (const loc of rawUsageLocations) {
       const count = rawUsageCounts.get(loc.element) || 0;

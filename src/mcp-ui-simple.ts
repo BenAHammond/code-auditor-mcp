@@ -172,8 +172,8 @@ app.get('/dashboard/:sessionKey', (req, res) => {
             .stat-value { font-size: 2rem; font-weight: bold; color: #2d3748; margin-bottom: 5px; }
             .stat-label { color: #718096; font-size: 0.9rem; }
             .severity-critical { border-left-color: #e53e3e; }
-            .severity-warning { border-left-color: #dd6b20; }
-            .severity-info { border-left-color: #3182ce; }
+            .severity-severe { border-left-color: #dd6b20; }
+            .severity-high { border-left-color: #3182ce; }
             .violations-section { 
                 background: white; border-radius: 12px; 
                 box-shadow: 0 4px 15px rgba(0,0,0,0.08); overflow: hidden; 
@@ -211,8 +211,8 @@ app.get('/dashboard/:sessionKey', (req, res) => {
                 font-weight: 600; text-transform: uppercase; 
             }
             .severity-critical { background: #fed7d7; color: #c53030; }
-            .severity-warning { background: #feebc8; color: #c05621; }
-            .severity-info { background: #bee3f8; color: #2c5aa0; }
+            .severity-severe { background: #feebc8; color: #c05621; }
+            .severity-high { background: #bee3f8; color: #2c5aa0; }
             .recommendation { 
                 background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 6px; 
                 padding: 12px; margin-top: 10px; 
@@ -251,16 +251,16 @@ app.get('/dashboard/:sessionKey', (req, res) => {
                     <div class="stat-label">Requires immediate attention</div>
                 </div>
                 
-                <div class="stat-card severity-warning">
-                    <h3>⚠️ Warnings</h3>
-                    <div class="stat-value">${auditResult.summary?.warnings || 0}</div>
-                    <div class="stat-label">Should be addressed</div>
+                <div class="stat-card severity-severe">
+                    <h3>⚠️ Severe</h3>
+                    <div class="stat-value">${auditResult.summary?.severe || 0}</div>
+                    <div class="stat-label">Will surface — address before declaring clean</div>
                 </div>
-                
-                <div class="stat-card severity-info">
-                    <h3>💡 Suggestions</h3>
-                    <div class="stat-value">${auditResult.summary?.suggestions || 0}</div>
-                    <div class="stat-label">Improvement opportunities</div>
+
+                <div class="stat-card severity-high">
+                    <h3>💡 High</h3>
+                    <div class="stat-value">${auditResult.summary?.high || 0}</div>
+                    <div class="stat-label">Defects that have not bitten yet</div>
                 </div>
             </div>
             
@@ -270,8 +270,8 @@ app.get('/dashboard/:sessionKey', (req, res) => {
                     <div class="filters">
                         <button class="filter-btn active" onclick="filterViolations('all')">All</button>
                         <button class="filter-btn" onclick="filterViolations('critical')">Critical</button>
-                        <button class="filter-btn" onclick="filterViolations('warning')">Warnings</button>
-                        <button class="filter-btn" onclick="filterViolations('info')">Info</button>
+                        <button class="filter-btn" onclick="filterViolations('severe')">Severe</button>
+                        <button class="filter-btn" onclick="filterViolations('high')">High</button>
                     </div>
                 </div>
                 

@@ -6,14 +6,14 @@
  *
  * Each test cites the spec section it covers and the fixture file it uses.
  *
- * R7 severity defaults are verified inline:
- *   documentation/*     → warning
- *   schema/unknown-table → suggestion
- *   dry/duplicate       → warning
- *   dry/structural-similarity → suggestion
- *   data-access/loop-query → warning
- *   solid/method-complexity → warning
- *   solid/class-size    → suggestion
+ * R7 severity defaults are verified inline (Spec 54: critical/severe/high):
+ *   documentation/*     → high
+ *   schema/unknown-table → critical
+ *   dry/duplicate       → high
+ *   dry/structural-similarity → high
+ *   data-access/loop-query → severe
+ *   solid/method-complexity → high
+ *   solid/class-size    → high
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -78,8 +78,8 @@ describe('Spec-17 R1 — Documentation Analyzer', () => {
     // R1.6: message should cite "exported" (the audience reason)
     const msg = funcViolations.map(v => v.message).join(' ');
     expect(msg).toMatch(/exported/i);
-    // R7: severity is warning (documentation is a maintainability obligation)
-    funcViolations.forEach(v => expect(v.severity).toBe('warning'));
+    // R7: severity is high (documentation is a maintainability obligation)
+    funcViolations.forEach(v => expect(v.severity).toBe('high'));
   });
 
   it('R1.2 — private/protected/#/_ methods skipped (fixture 4)', async () => {
@@ -124,8 +124,8 @@ describe('Spec-17 R1 — Documentation Analyzer', () => {
       expect(v.message).not.toMatch(/\barrow\b/i);
     }
 
-    // R7: severity is warning (documentation is a maintainability obligation)
-    funcViolations.forEach(v => expect(v.severity).toBe('warning'));
+    // R7: severity is high (documentation is a maintainability obligation)
+    funcViolations.forEach(v => expect(v.severity).toBe('high'));
   });
 });
 
@@ -260,8 +260,8 @@ describe('Spec-17 R3 — DRY Analyzer', () => {
 
     // May produce structural-similarity findings
     const structural = result.violations.filter(v => v.rule === 'dry/structural-similarity');
-    // R7: structural similarity is suggestion
-    structural.forEach(v => expect(v.severity).toBe('suggestion'));
+    // R7: structural similarity is high
+    structural.forEach(v => expect(v.severity).toBe('high'));
   });
 
   it('R3.3 — token-identical 15+ line blocks produce dry/duplicate (fixture 13)', async () => {
@@ -275,8 +275,8 @@ describe('Spec-17 R3 — DRY Analyzer', () => {
     const exactDup = result.violations.filter(v => v.rule === 'dry/duplicate');
     expect(exactDup.length).toBeGreaterThanOrEqual(1);
 
-    // R7: severity is warning for dry/duplicate
-    exactDup.forEach(v => expect(v.severity).toBe('warning'));
+    // R7: severity is high for dry/duplicate
+    exactDup.forEach(v => expect(v.severity).toBe('high'));
 
     // First-occurrence message must cite the earlier block, not its own location
     const messages = exactDup.map(v => v.message).join(' ');
@@ -313,8 +313,8 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
       expect(v.line).toBeGreaterThan(1);
     }
 
-    // R7: severity is warning
-    loopViolations.forEach(v => expect(v.severity).toBe('warning'));
+    // R7: severity is severe (N+1 surfaces under load)
+    loopViolations.forEach(v => expect(v.severity).toBe('severe'));
   });
 
   it('R4.2 — nested loops → innermost loop cited with depth (fixture 16)', async () => {
@@ -357,9 +357,9 @@ describe('Spec-17 R5 — SOLID Analyzer', () => {
     const methodComplexityViolations = result.violations.filter(v => v.rule === 'solid/method-complexity');
     expect(methodComplexityViolations.length).toBeGreaterThanOrEqual(1);
 
-    // R5.3: class-size is suggestion, method-complexity is warning (outranks)
-    classSizeViolations.forEach(v => expect(v.severity).toBe('suggestion'));
-    methodComplexityViolations.forEach(v => expect(v.severity).toBe('warning'));
+    // R5.3: class-size and method-complexity both ship at high (off-scale size)
+    classSizeViolations.forEach(v => expect(v.severity).toBe('high'));
+    methodComplexityViolations.forEach(v => expect(v.severity).toBe('high'));
 
     // DataProcessor class should NOT appear under method-complexity
     for (const v of methodComplexityViolations) {
@@ -455,20 +455,28 @@ describe('Spec-17 R8 — Node-type regression guards', () => {
   });
 });
 
-// ── R7 structural guard: zero critical from analyzers ─────────────────────────
+// ── R7 structural guard: critical stays a small, deliberate set ──────────────
 //
-// R7's principle is that no built-in analyzer rule ships at critical.
-// Only user-declared invariant rules may block with critical severity.
-// This test runs every universal analyzer over the full Spec-17 fixture corpus
-// and asserts zero critical-severity findings — a structural guard so stray
-// criticals are caught at test time, not discovered one self-audit at a time.
+// Spec 54 made `critical` a first-class urgency level ("exploitable or broken
+// now") instead of a synonym for "block". A small, deliberate set of rules
+// recorded in the severity ledger ships at critical. This test runs every
+// universal analyzer over the full Spec-17 fixture corpus and asserts that any
+// critical finding comes from a ledger-approved rule — a structural guard so a
+// stray `severity: 'critical'` is caught at test time, not discovered one
+// self-audit at a time.
+//
+// The ledger's critical rules reachable from the universal analyzers are
+// `invalid-json`, `dynamic-sql-construction`, and `unknown-table` (schema),
+// plus `sql-injection-risk` and `hardcoded-connection` (data-access). The
+// remaining ledger criticals live outside the universal set — `hardcoded-secret`
+// (secrets), `config-error` (invariants), `channels/channel-deadlock`
+// (go-subprocess) — and are not exercised here.
 //
 // Cross-language analyzers are covered by a grep-level assertion: no
-// hardcoded 'critical' string in any source file under cross-language/.
-// Invariants are excepted by construction: their severity comes from
-// the user's .codeauditor.json, not from analyzer code.
+// hardcoded 'critical' string in any source file under cross-language/ (their
+// five cross-domain rules are all high or severe).
 
-describe('Spec-17 R7 — zero critical from any analyzer-origin rule', () => {
+describe('Spec-17 R7 — critical only from the ledger-approved set', () => {
   const universalAnalyzers = [
     { name: 'UniversalDocumentationAnalyzer', analyzer: new UniversalDocumentationAnalyzer() },
     { name: 'UniversalSchemaAnalyzer', analyzer: new UniversalSchemaAnalyzer() },
@@ -477,7 +485,17 @@ describe('Spec-17 R7 — zero critical from any analyzer-origin rule', () => {
     { name: 'UniversalSOLIDAnalyzer', analyzer: new UniversalSOLIDAnalyzer() },
   ];
 
-  it('all Spec-17 fixtures produce zero critical-severity violations from universal analyzers', async () => {
+  // The exact set of rules the ledger authorizes to ship at critical, reachable
+  // from the universal analyzers. Any critical from another rule is a stray.
+  const CRITICAL_RULES = new Set([
+    'invalid-json',
+    'dynamic-sql-construction',
+    'unknown-table',
+    'sql-injection-risk',
+    'hardcoded-connection',
+  ]);
+
+  it('all Spec-17 fixtures produce criticals only from ledger-approved rules', async () => {
     const { readdirSync } = await import('fs');
     const allFixtures = readdirSync(FIXTURES)
       .filter(f => f.endsWith('.ts') || f.endsWith('.tsx'))
@@ -486,16 +504,17 @@ describe('Spec-17 R7 — zero critical from any analyzer-origin rule', () => {
     for (const { name, analyzer } of universalAnalyzers) {
       const result = await analyzer.analyze(allFixtures, { exemptPatterns: [] });
       const criticals = result.violations.filter(v => v.severity === 'critical');
+      const strays = criticals.filter(v => !CRITICAL_RULES.has(v.rule));
       expect(
-        criticals,
-        `${name} produced ${criticals.length} critical violation(s): ${JSON.stringify(criticals.slice(0, 3))}`
+        strays,
+        `${name} produced a critical from a non-approved rule: ${JSON.stringify(strays.slice(0, 3))}`
       ).toHaveLength(0);
     }
   });
 
   it('cross-language analyzer source files contain zero hardcoded critical severity', async () => {
     // Cross-language analyzers aren't wired into the production pipeline but
-    // must still obey the zero-critical principle as forward-defense.
+    // must still avoid critical — their five cross-domain rules are high/severe.
     const { readFileSync } = await import('fs');
     const { resolve, dirname } = await import('path');
     const crossLangDir = resolve(dirname(FIXTURES), '..', '..', 'cross-language');
@@ -514,7 +533,7 @@ describe('Spec-17 R7 — zero critical from any analyzer-origin rule', () => {
         if (line.includes("case 'critical'")) continue;
         expect(
           line,
-          `${file}:${i + 1} has hardcoded 'critical' — demote to warning or below`
+          `${file}:${i + 1} has hardcoded 'critical' — use severe or high (see severity ledger)`
         ).not.toMatch(/severity:\s*'critical'/);
       }
     }

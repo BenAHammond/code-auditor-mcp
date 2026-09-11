@@ -1,12 +1,13 @@
 /**
- * Spec 45 R1/R2/R4 — the blocking gate as a pure, testable function.
+ * Spec 45 R1/R4 + Spec 54 R3 — the blocking gate as a pure, testable function.
  *
- * The gate is severity-scoped (R2): a finding blocks when its severity is in
- * the configured blocking set (default `critical` + `warning`). Every
- * registered rule participates (R1) — there is no per-rule opt-in. Enforcement
- * is not diff-scoped (R4): a pre-existing finding in the audited file blocks
- * exactly like a new one. The edit-time hook still runs on the changed file as
- * a performance property, but "pre-existing" is not an exemption from blocking.
+ * Spec 54 R3: the blocking set is the fixed all-three {critical, severe, high}.
+ * Every finding is a defect and every finding blocks; there is no configurable
+ * gate and nothing below `high`. Every registered rule participates (Spec 45
+ * R1) — there is no per-rule opt-in. Enforcement is not diff-scoped (Spec 45
+ * R4): a pre-existing finding in the audited file blocks exactly like a new
+ * one. The edit-time hook still runs on the changed file as a performance
+ * property, but "pre-existing" is not an exemption from blocking.
  *
  * A rule that cannot name a `resolution` for a given occurrence still gates
  * (R1). The missing action is recorded as a `resolutionGap` — a defect in the
@@ -14,7 +15,7 @@
  *
  * Path-profile exclusions (`gateExcluded`) remain: a file explicitly excluded
  * from the gate by a path profile never blocks. That is a deliberate, recorded
- * config decision, not a narrowing of what the tool reports.
+ * scope decision, not a narrowing of what the tool reports.
  */
 import { getViolationRuleEntry } from '../analyzers/ruleRegistry.js';
 import type { Severity, Violation } from '../types.js';
@@ -47,7 +48,7 @@ export interface GatingDecision {
  * with the gap recorded rather than enforcement skipped.
  *
  * @param violations The full violation list for the audited file(s).
- * @param blockingSeverities Severities that block (default `critical` + `warning`).
+ * @param blockingSeverities Severities that block (the fixed all-three set).
  */
 export function computeGatingDecision(
   violations: Violation[],

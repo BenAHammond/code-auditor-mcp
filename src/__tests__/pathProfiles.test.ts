@@ -137,7 +137,7 @@ describe('validateConfig — pathProfiles', () => {
     enabledAnalyzers: ['solid'],
     outputFormats: ['json'],
     outputDirectory: './reports',
-    minSeverity: 'suggestion',
+    minSeverity: 'high',
     failOnCritical: false,
     showProgress: false,
   };
@@ -288,13 +288,9 @@ export function undocumentedFn(items: number[]): number {
 }
 `;
 
-/**
- * Helper: pass a promodoc override to elevate documentation violations
- * above the default 'suggestion' so gate exclusion is observable without
- * conflating it with a severity change. Gate exclusion must leave severity
- * untouched — so a gate-excluded file still reports 'critical'.
- */
-const PROMOTE_DOCS_TO_CRITICAL = { 'function-documentation': 'critical' as const };
+// Documentation violations now ship at `high` (Spec 54 — no `suggestion` tier,
+// and `severityOverrides` is removed). Gate exclusion must leave severity
+// untouched, so a gate-excluded file still reports its real `high` severity.
 
 describe('pathProfiles — integration', () => {
   let testDir: string;
@@ -321,9 +317,8 @@ describe('pathProfiles — integration', () => {
 
   // Test 7: Different gate exclusion per directory.
   // src/ gets a doc-required profile (no exclusion); scripts/ is excluded
-  // from the gate.  We promote docs violations globally to critical so the
-  // "severity unchanged" property is observable: src → critical, scripts →
-  // critical (gate-excluded, but severity untouched).
+  // from the gate. Both report the real `high` severity: gate exclusion is
+  // observable without conflating it with a severity change.
   it('applies per-directory profile overrides during audit (Test 7)', async () => {
     const srcDir = path.join(testDir, 'src');
     const scriptsDir = path.join(testDir, 'scripts');
@@ -336,7 +331,6 @@ describe('pathProfiles — integration', () => {
     const result = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
-      severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       pathProfiles: [
         { name: 'source-strict', paths: ['src/**'], overrides: { requireFunctionDocs: true } },
         { name: 'scripts-lenient', paths: ['scripts/**'], overrides: { excludeFromGate: true } },
@@ -350,15 +344,15 @@ describe('pathProfiles — integration', () => {
     expect(srcV.length).toBeGreaterThan(0);
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // src has no gate exclusion → critical (from severityOverrides), not excluded
+    // src has no gate exclusion → high, not excluded
     for (const v of srcV) {
-      expect(v.severity).toBe('critical');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('source-strict');
       expect(v.gateExcluded).toBeUndefined();
     }
-    // scripts is gate-excluded, but severity is untouched (still critical)
+    // scripts is gate-excluded, but severity is untouched (still high)
     for (const v of scriptsV) {
-      expect(v.severity).toBe('critical');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('scripts-lenient');
       expect(v.gateExcluded).toBe(true);
     }
@@ -411,10 +405,10 @@ export function foo() { return something(); }
   });
 
   // Test 9: gate exclusion leaves severity untouched.
-  // Global severityOverrides promotes function-documentation to critical,
-  // and path profile excludes src/** from the gate.  Severity must remain
-  // critical — exclusion never softens a finding (Spec-36 R4).
-  it('gate exclusion after severityOverrides — severity untouched (Test 9)', async () => {
+  // function-documentation ships at `high`; a path profile excludes src/**
+  // from the gate. Severity must remain `high` — exclusion never softens a
+  // finding (Spec-36 R4).
+  it('gate exclusion leaves severity untouched (Test 9)', async () => {
     await mkdir(path.join(testDir, 'src'), { recursive: true });
 
     await writeFile(path.join(testDir, 'src', 'module.ts'), EXPORTED_FN_SRC, 'utf-8');
@@ -422,7 +416,6 @@ export function foo() { return something(); }
     const result = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
-      severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       pathProfiles: [
         { name: 'excluded', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
@@ -432,42 +425,39 @@ export function foo() { return something(); }
     const docsV = violationsFor(result, 'src/module.ts');
     expect(docsV.length).toBeGreaterThan(0);
 
-    // Exclusion must NOT soften — severity stays critical, only gateExcluded set
+    // Exclusion must NOT soften — severity stays high, only gateExcluded set
     for (const v of docsV) {
-      expect(v.severity).toBe('critical');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('excluded');
       expect(v.gateExcluded).toBe(true);
     }
   });
 
   // Test 10: Baseline fingerprint stable under gate exclusion.
-  // severity overrides promote to "critical" → first run sees "critical",
-  // no gate exclusion; second run adds a profile excludeFromGate: true →
-  // severity stays "critical", only gateExcluded flips.  The fingerprint
-  // (symbol) MUST stay identical because it is intentionally
-  // severity-free AND gate-free.
+  // function-documentation ships at `high` → first run sees `high`, no gate
+  // exclusion; second run adds a profile excludeFromGate: true → severity stays
+  // `high`, only gateExcluded flips. The fingerprint (symbol) MUST stay
+  // identical because it is intentionally severity-free AND gate-free.
   it('baseline fingerprint is stable under gate exclusion (Test 10)', async () => {
     await mkdir(path.join(testDir, 'src'), { recursive: true });
 
     await writeFile(path.join(testDir, 'src', 'module.ts'), EXPORTED_FN_SRC, 'utf-8');
 
-    // Audit 1: promoted to critical, no exclusion
+    // Audit 1: high severity, no exclusion
     const result1 = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
-      severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       showProgress: false,
     });
     const v1 = violationsFor(result1, 'src/module.ts');
     expect(v1.length).toBeGreaterThan(0);
-    expect(v1[0].severity).toBe('critical');
+    expect(v1[0].severity).toBe('high');
     expect(v1[0].gateExcluded).toBeUndefined();
 
-    // Audit 2: same promotion, but profile excludes from gate
+    // Audit 2: same severity, but profile excludes from gate
     const result2 = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
-      severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       pathProfiles: [
         { name: 'excluded', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
@@ -475,7 +465,7 @@ export function foo() { return something(); }
     });
     const v2 = violationsFor(result2, 'src/module.ts');
     expect(v2.length).toBeGreaterThan(0);
-    expect(v2[0].severity).toBe('critical');
+    expect(v2[0].severity).toBe('high');
     expect(v2[0].gateExcluded).toBe(true);
 
     // Gate exclusion differs
@@ -497,7 +487,6 @@ export function foo() { return something(); }
     const result = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
-      severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       pathProfiles: BUILTIN_PATH_PROFILES,
       showProgress: false,
     });
@@ -505,9 +494,9 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Built-in excludes from gate; severity stays critical
+    // Built-in excludes from gate; severity stays high
     for (const v of scriptsV) {
-      expect(v.severity).toBe('critical');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('scripts-and-tests');
       expect(v.gateExcluded).toBe(true);
     }
@@ -525,24 +514,23 @@ export function foo() { return something(); }
     const result = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
-      severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       showProgress: false,
     });
 
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Built-in excludes from gate even when severityOverrides promote to critical
+    // Built-in excludes from gate while severity stays at its real `high`
     for (const v of scriptsV) {
-      expect(v.severity).toBe('critical');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('scripts-and-tests');
       expect(v.gateExcluded).toBe(true);
     }
   });
 
   // Test 12b: builtin: false disables built-in profiles.
-  // With severityOverrides promoting to critical, a scripts/ file should
-  // NOT be gate-excluded when built-in profiles are explicitly disabled.
+  // A scripts/ file should NOT be gate-excluded when built-in profiles are
+  // explicitly disabled.
   it('builtin: false disables built-in scripts-and-tests exclusion (Test 12b)', async () => {
     await mkdir(path.join(testDir, 'scripts'), { recursive: true });
 
@@ -551,7 +539,6 @@ export function foo() { return something(); }
     const result = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
-      severityOverrides: PROMOTE_DOCS_TO_CRITICAL,
       builtin: false,
       showProgress: false,
     });
@@ -559,10 +546,10 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Without built-in profile, severity stays at critical (from overrides)
-    // and the file is NOT gate-excluded.
+    // Without built-in profile, severity stays at high and the file is NOT
+    // gate-excluded.
     for (const v of scriptsV) {
-      expect(v.severity).toBe('critical');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBeUndefined();
       expect(v.gateExcluded).toBeUndefined();
     }

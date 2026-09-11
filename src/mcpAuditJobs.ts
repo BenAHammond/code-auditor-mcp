@@ -605,14 +605,14 @@ function getAllViolations(result: { analyzerResults?: Record<string, { violation
 
 function calculateHealthScore(result: {
   metadata?: { filesAnalyzed?: number };
-  summary?: { criticalIssues?: number; warnings?: number; suggestions?: number };
+  summary?: { criticalIssues?: number; severe?: number; high?: number };
 }): number {
   const filesAnalyzed = result.metadata?.filesAnalyzed || 1;
   const critical = result.summary?.criticalIssues || 0;
-  const warnings = result.summary?.warnings || 0;
-  const suggestions = result.summary?.suggestions || 0;
+  const severe = result.summary?.severe || 0;
+  const high = result.summary?.high || 0;
 
-  const weightedViolations = critical * 10 + warnings * 3 + suggestions * 0.5;
+  const weightedViolations = critical * 10 + severe * 3 + high * 0.5;
   let score = 100 - (weightedViolations / filesAnalyzed) * 2;
   return Math.max(0, Math.round(Math.min(100, score)));
 }
@@ -620,16 +620,16 @@ function calculateHealthScore(result: {
 function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult>, filesAnalyzed: number) {
   let totalViolations = 0;
   let criticalIssues = 0;
-  let warnings = 0;
-  let suggestions = 0;
+  let severe = 0;
+  let high = 0;
   const violationsByCategory: Record<string, number> = {};
 
   for (const [analyzer, result] of Object.entries(analyzerResults)) {
     for (const violation of result.violations) {
       totalViolations++;
       if (violation.severity === 'critical') criticalIssues++;
-      else if (violation.severity === 'warning') warnings++;
-      else suggestions++;
+      else if (violation.severity === 'severe') severe++;
+      else high++;
       const category = violation.rule;
       violationsByCategory[category] = (violationsByCategory[category] || 0) + 1;
     }
@@ -645,8 +645,8 @@ function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult
     totalFiles: filesAnalyzed,
     totalViolations,
     criticalIssues,
-    warnings,
-    suggestions,
+    severe,
+    high,
     violationsByCategory,
     topIssues,
   };
@@ -1335,8 +1335,8 @@ export async function getAuditResultsAsSarif(args: any): Promise<string> {
       totalFiles: stored.metadata?.filesAnalyzed ?? 0,
       totalViolations: stored.summary?.totalViolations ?? 0,
       criticalIssues: stored.summary?.criticalIssues ?? 0,
-      warnings: stored.summary?.warnings ?? 0,
-      suggestions: stored.summary?.suggestions ?? 0,
+      severe: stored.summary?.severe ?? 0,
+      high: stored.summary?.high ?? 0,
       violationsByCategory: stored.summary?.violationsByCategory ?? {},
       topIssues: stored.summary?.topIssues ?? [],
     },
@@ -1384,8 +1384,8 @@ export async function getAuditResultsPage(args: any): Promise<Record<string, unk
     summary: {
       totalViolations: auditResult.summary?.totalViolations ?? allViolations.length,
       criticalIssues: auditResult.summary?.criticalIssues ?? 0,
-      warnings: auditResult.summary?.warnings ?? 0,
-      suggestions: auditResult.summary?.suggestions ?? 0,
+      severe: auditResult.summary?.severe ?? 0,
+      high: auditResult.summary?.high ?? 0,
       filesAnalyzed: auditResult.metadata?.filesAnalyzed ?? 0,
       executionTime: auditResult.metadata?.auditDuration ?? 0,
       healthScore: auditResult.summary?.healthScore ?? calculateHealthScore(auditResult),

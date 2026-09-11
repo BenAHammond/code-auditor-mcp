@@ -4,7 +4,7 @@
  * The tool's config is a flat blob spread across several layers:
  *   - runtime defaults (each analyzer's `DEFAULT_*_CONFIG`),
  *   - project config (`analyzerConfigs[name]` in .codeauditor.json),
- *   - `_infra` (pathProfiles, severityOverrides, files, projectRoot),
+ *   - `_infra` (pathProfiles, files, projectRoot),
  *   - per-file path-profile overrides (resolved by glob).
  *
  * This module reconstructs, for a single file, the exact config the pipeline
@@ -165,9 +165,9 @@ function flattenPresetLayer(
  * Precedence (highest wins), mirroring pipeline.ts stage 2:
  *   path-profile overrides > project analyzerConfigs[name] > preset > runtime default
  *
- * `_infra` is infrastructure (pathProfiles, severityOverrides, files,
- * projectRoot) spread into every visitor's config; it is surfaced in
- * `topLevel` rather than re-listed per analyzer.
+ * `_infra` is infrastructure (pathProfiles, files, projectRoot) spread into
+ * every visitor's config; it is surfaced in `topLevel` rather than re-listed
+ * per analyzer.
  */
 export function computeEffectiveConfig(opts: {
   filePath: string;

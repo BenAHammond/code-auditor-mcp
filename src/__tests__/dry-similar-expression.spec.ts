@@ -157,7 +157,7 @@ describe('#133 dry/similar-expression (default-on)', () => {
     expect(vs).toHaveLength(1);
 
     const v = vs[0];
-    expect(v.severity).toBe('suggestion');
+    expect(v.severity).toBe('high');
     expect(v.resolution?.action).toBe('extract-shared-expression');
     expect(v.message).toContain('completedAt');
     expect(v.message).toContain('info.resultSummary');

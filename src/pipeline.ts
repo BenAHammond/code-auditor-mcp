@@ -31,7 +31,6 @@ import {
   type Stage2Visitor,
   type Stage3Reducer,
   type Stage4Reducer,
-  type Severity,
   type Violation,
 } from './types.js';
 import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
@@ -291,7 +290,6 @@ export async function runStage2(
   const rawConfig = config.config ?? {};
   const infra = (rawConfig['_infra'] as Record<string, unknown>) ?? {};
   const pathProfiles: PathProfile[] | undefined = infra['pathProfiles'] as PathProfile[] | undefined;
-  const severityOverrides: Record<string, string> = (infra['severityOverrides'] as Record<string, string>) ?? {};
 
   // Stream tuples from stage 1
   let i = 0;
@@ -366,20 +364,17 @@ export async function runStage2(
           // Accumulate timing
           timingMap.set(visitor.name, (timingMap.get(visitor.name) ?? 0) + vMs);
 
-          // Attach profile, severity overrides, analyzer name, and gate exclusion
-          // (Spec 36 R4). Severity is left untouched — a path profile excludes a
-          // file from the blocking gate, it never softens a finding within it.
+          // Attach profile and gate exclusion (Spec 36 R4). Severity is left
+          // untouched — a path profile excludes a file from the blocking gate, it
+          // never softens a finding within it (Spec 54 R3).
           const processedViolations = result.violations
             .map((v) => ({
               ...v,
               profile: fileProfileNames.length > 0
                 ? fileProfileNames[fileProfileNames.length - 1]
                 : v.profile,
-              severity: (severityOverrides[v.rule] ?? v.severity) as Severity,
               ...(fileGateExcluded ? { gateExcluded: true } : {}),
-            }))
-            // Filter out violations whose severity was overridden to 'off' (Spec-11 R5)
-            .filter((v) => v.severity !== 'off');
+            }));
 
           // Accumulate violations
           const ar = visitorResults.get(visitor.name)!;

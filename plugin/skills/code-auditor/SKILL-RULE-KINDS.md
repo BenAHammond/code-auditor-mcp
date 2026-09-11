@@ -23,7 +23,7 @@ With exceptions:
 {
   "id": "no-moment",
   "kind": "import-ban",
-  "severity": "warning",
+  "severity": "severe",
   "module": "moment",
   "except": ["src/legacy/**"],
   "message": "Use date-fns or Temporal. Moment is only allowed in legacy code."
@@ -77,7 +77,7 @@ Files matching the `from` glob may not import from files matching the `to` glob.
 {
   "id": "shared-no-features",
   "kind": "module-boundary",
-  "severity": "warning",
+  "severity": "severe",
   "from": "src/shared/**",
   "to": "src/features/**",
   "message": "Shared modules must not depend on feature modules."
@@ -92,7 +92,7 @@ Exported symbols in files matching the `path` glob must match the `exports` rege
 {
   "id": "hooks-prefix",
   "kind": "naming",
-  "severity": "warning",
+  "severity": "severe",
   "path": "src/**/use*.ts",
   "exports": "^use[A-Z]",
   "message": "Custom hooks exported from hook files must start with 'use' followed by an uppercase letter."
@@ -103,7 +103,7 @@ Exported symbols in files matching the `path` glob must match the `exports` rege
 {
   "id": "constants-upper",
   "kind": "naming",
-  "severity": "suggestion",
+  "severity": "high",
   "path": "src/**/constants.ts",
   "exports": "^[A-Z][A-Z0-9_]*$",
   "message": "Exported constants should use UPPER_SNAKE_CASE."
@@ -129,7 +129,7 @@ With language and path constraints:
 {
   "id": "no-console-log-ts",
   "kind": "ast-pattern",
-  "severity": "warning",
+  "severity": "severe",
   "pattern": "console.log($$$)",
   "language": "typescript",
   "path": "src/production/**",
@@ -147,7 +147,7 @@ Enforce which styling mechanisms are allowed in files matching an optional `path
 {
   "id": "tailwind-only-in-components",
   "kind": "style-mechanism",
-  "severity": "warning",
+  "severity": "severe",
   "allow": ["tailwind"],
   "path": "src/components/**",
   "message": "Only Tailwind utilities in src/components/ — use the project's CSS modules elsewhere"
@@ -164,7 +164,7 @@ Require designated CSS properties to reference a design token instead of a raw v
 {
   "id": "no-raw-colors-in-pages",
   "kind": "no-raw-values",
-  "severity": "warning",
+  "severity": "severe",
   "properties": ["color", "background-color"],
   "allowValues": ["inherit", "transparent"],
   "path": "src/pages/**",
@@ -176,33 +176,35 @@ Require designated CSS properties to reference a design token instead of a raw v
 
 ## Severity Levels
 
-Severity ranks how urgent a finding is to fix. It never decides whether a
-finding is real, and it never licenses leaving one unresolved. Whether an edit
-is *blocked* is decided by severity: the edit hook blocks on any finding at a
-blocking severity (`critical` and `warning` by default, configurable via
-`gateSeverities` in `.codeauditor.json`), from any rule — there is no per-rule
-opt-in.
+Severity is urgency, not permission. There are three levels — all defects,
+none optional — and the axis is *how fast a finding bites you*:
 
 | Severity | What it means |
 |----------|---------------|
-| `critical` | Security vulnerabilities, data-loss risks |
-| `warning` | Architecture violations, tech debt, missing documentation |
-| `suggestion` | Smaller defects — naming, conventions, minor correctness |
+| `critical` | Exploitable or broken now |
+| `severe` | Wrong, and it will surface |
+| `high` | Wrong, and it has not bitten yet |
+
+Every severity blocks. The edit hook gates on any finding from any rule —
+there is no non-blocking tier and no per-rule opt-in. A `high` finding blocks
+the edit exactly like a `critical` one; urgency only sets the order you fix
+things, never whether they gate.
 
 > **Severity ranks urgency, never whether a finding is real.** There is no
-> "noise" tier — every finding is a defect to resolve. A finding that does not
-> block the edit still fails the review unless it is fixed, or the rule that
-> produces it is edited in `.codeauditor.json`. There is no "waive" — a finding
-> leaves the queue only by being resolved or by changing the rule that fires it.
-> Documentation findings are not stylistic: missing
-> JSDoc is a maintainability defect, not a nicety.
+> "noise" tier — every finding is a defect to resolve, and every finding blocks
+> the edit until it is fixed, or the rule that produces it is edited in
+> `.codeauditor.json`. There is no "waive" — a finding leaves the queue only by
+> being resolved or by changing the rule that fires it. The `next-file` queue
+> orders work worst-first; that ordering is triage, not permission — a finding
+> that surfaces later in the queue still gates. Documentation findings are not
+> stylistic: missing JSDoc is a maintainability defect, not a nicety.
 
 ## Validation
 
 Rules are validated against `invariant-rules.schema.json` on startup. Common errors:
 
 - **Missing required field**: each kind has required fields (e.g., `import-ban` requires `module`)
-- **Invalid severity**: must be one of `critical`, `warning`, `suggestion`
+- **Invalid severity**: must be one of `critical`, `severe`, `high`
 - **Invalid kind**: must be one of the seven kinds above
 - **Both allowFrom and denyFrom**: `call-constraint` requires exactly one
 - **Empty pattern**: `ast-pattern` requires a non-empty `pattern` string

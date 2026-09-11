@@ -64,7 +64,7 @@ func (s *SOLIDAnalyzer) analyzeFunctionSize() []Violation {
 			violations = append(violations, Violation{
 				File:     function.File,
 				Line:     function.StartLine,
-				Severity: "warning",
+				Severity: "high",
 				Message:  "Function has many parameters, multiple returns, and high complexity",
 				Details: map[string]interface{}{
 					"function":   function.Name,
@@ -98,7 +98,7 @@ func (s *SOLIDAnalyzer) analyzeStructSize() []Violation {
 			violations = append(violations, Violation{
 				File:     structInfo.File,
 				Line:     structInfo.StartLine,
-				Severity: "warning",
+				Severity: "high",
 				Message:  "Struct has many fields",
 				Details: map[string]interface{}{
 					"struct":     structInfo.Name,
@@ -136,7 +136,7 @@ func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 					violations = append(violations, Violation{
 						File:     filePath,
 						Line:     pos.Line,
-						Severity: "suggestion",
+						Severity: "high",
 						Message:  "Switch statement has many case clauses",
 						Details: map[string]interface{}{
 							"caseCount": caseCount,
@@ -154,7 +154,7 @@ func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 					violations = append(violations, Violation{
 						File:     filePath,
 						Line:     pos.Line,
-						Severity: "suggestion",
+						Severity: "high",
 						Message:  "Type switch has many case clauses",
 						Details: map[string]interface{}{
 							"caseCount": caseCount,
@@ -202,7 +202,7 @@ func (s *SOLIDAnalyzer) analyzeLSP() []Violation {
 			violations = append(violations, Violation{
 				File:     filePath,
 				Line:     pos.Line,
-				Severity: "warning",
+				Severity: "severe",
 				Message:  "Method calls panic()",
 				Details: map[string]interface{}{
 					"function":  funcDecl.Name.Name,
@@ -237,7 +237,7 @@ func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 			violations = append(violations, Violation{
 				File:     interfaceInfo.File,
 				Line:     interfaceInfo.StartLine,
-				Severity: "warning",
+				Severity: "high",
 				Message:  "Interface has many methods",
 				Details: map[string]interface{}{
 					"interface":   interfaceInfo.Name,

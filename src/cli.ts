@@ -26,7 +26,7 @@ import { getFilesProcessed, getFactsConsumed, isVisitorStatus, isReducerStatus }
 import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
 import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { computeGatingDecision } from './enforcement/gate.js';
-import { DEFAULT_BLOCKING_SEVERITIES } from './config/defaults.js';
+import { BLOCKING_SEVERITIES } from './types.js';
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 import { describeSqliteBackend } from './sqlite/driver.js';
@@ -137,7 +137,7 @@ program
       await initParsers();
 
       // Validate --fail-on severity
-      const validSeverities: Severity[] = ['critical', 'warning', 'suggestion'];
+      const validSeverities: Severity[] = ['critical', 'severe', 'high'];
       const failOnSeverity = options.failOn as Severity | undefined;
       if (failOnSeverity && !validSeverities.includes(failOnSeverity as Severity)) {
         console.error(
@@ -212,7 +212,7 @@ program
           for (const v of newViolations) {
             const icon =
               v.severity === 'critical' ? '🔴' :
-              v.severity === 'warning' ? '🟡' : '🔵';
+              v.severity === 'severe' ? '🟠' : '🟡';
             console.log(
               `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}`
             );
@@ -257,19 +257,19 @@ program
         // No baseline: current behavior + hint
         console.log(`\nFound ${result.summary.totalViolations} readings`);
         console.log(`Critical: ${result.summary.criticalIssues}`);
-        console.log(`Warnings: ${result.summary.warnings}`);
-        console.log(`Suggestions: ${result.summary.suggestions}`);
+        console.log(`Severe: ${result.summary.severe}`);
+        console.log(`High: ${result.summary.high}`);
 
-        console.log(chalk.gray(`\nEvery reading is a measurement, not a verdict — severity is triage, the order to act.`));
+        console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
       } else {
         // --full with baseline: full itemized inventory (current behavior)
         console.log(`\nFound ${result.summary.totalViolations} readings`);
         console.log(`Critical: ${result.summary.criticalIssues}`);
-        console.log(`Warnings: ${result.summary.warnings}`);
-        console.log(`Suggestions: ${result.summary.suggestions}`);
+        console.log(`Severe: ${result.summary.severe}`);
+        console.log(`High: ${result.summary.high}`);
 
-        console.log(chalk.gray(`\nEvery reading is a measurement, not a verdict — severity is triage, the order to act.`));
+        console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
       }
 
       // Spec 44 R4 — file accounting: analyzed/dropped totals + optional breakdown.
@@ -367,11 +367,12 @@ program
       }
 
       // Spec-20 R4: built-in profile visibility — silent behavior changes
-      // are never acceptable. Notify when scripts-and-tests capped findings.
+      // are never acceptable. Notify when scripts-and-tests excludes findings
+      // from the blocking gate.
       const builtinCapped = Object.values(result.analyzerResults)
         .reduce((count, ar) => count + ar.violations.filter(v => v.profile === 'scripts-and-tests').length, 0);
       if (builtinCapped > 0) {
-        console.log(chalk.blue(`\nℹ️  ${builtinCapped.toLocaleString()} readings capped by built-in profile "scripts-and-tests" (scripts/tests/fixtures → suggestion).`));
+        console.log(chalk.blue(`\nℹ️  ${builtinCapped.toLocaleString()} readings excluded from the blocking gate by built-in profile "scripts-and-tests" (scripts/tests/fixtures).`));
         console.log(chalk.gray(`   Set ${chalk.cyan('"builtin": false')} in .codeauditor.json to disable.`));
       }
 
@@ -434,7 +435,7 @@ program
         const evaluableViolations = (baseline && !options.includeBaseline)
           ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
           : violations;
-        const severityOrder: Severity[] = ['critical', 'warning', 'suggestion'];
+        const severityOrder: Severity[] = ['critical', 'severe', 'high'];
         const failIndex = severityOrder.indexOf(failOnSeverity);
         const hasAtOrAbove = evaluableViolations.some((v: any) => {
           const vIndex = severityOrder.indexOf(v.severity);
@@ -534,18 +535,13 @@ program
         (r: any) => r.violations || []
       );
 
-      // Blocking gate decision (Spec 45 R1/R2/R4), computed once so the
+      // Blocking gate decision (Spec 45 R1/R4, Spec 54 R3), computed once so the
       // agent-facing before/after count (Spec 45 A2) and the exit code agree on
-      // the same number. Every registered rule participates (R1); severity
-      // decides (R2); enforcement is not diff-scoped (R4). No rule is removed
-      // from the gate for speed (Spec 45 A1).
-      const configuredGateSeverities = (result.metadata.configUsed as any)?.gateSeverities;
-      const blockingSeverities = new Set(
-        Array.isArray(configuredGateSeverities) && configuredGateSeverities.length > 0
-          ? (configuredGateSeverities as Severity[])
-          : DEFAULT_BLOCKING_SEVERITIES
-      );
-      const { blocking, resolutionGaps } = computeGatingDecision(violations as any, blockingSeverities);
+      // the same number. Every registered rule participates (R1); enforcement is
+      // not diff-scoped (R4). Spec 54: the blocking set is the fixed all-three
+      // {critical, severe, high} — every finding is a defect and every finding
+      // blocks; there is no configurable gate.
+      const { blocking, resolutionGaps } = computeGatingDecision(violations as any, BLOCKING_SEVERITIES);
 
       // JSON output
       if (options.format === 'sarif') {
@@ -599,7 +595,7 @@ program
           for (const v of violations) {
             const icon =
               v.severity === 'critical' ? '🔴' :
-              v.severity === 'warning' ? '🟡' : '🔵';
+              v.severity === 'severe' ? '🟠' : '🟡';
             const statusTag = (v as any).new === false
               ? chalk.dim(' [known — still open]')
               : '';
@@ -717,9 +713,8 @@ function printCountSummary(
 
 /**
  * Reconstruct a `changed`-compatible result from daemon-served diagnostics so the
- * gate/output logic below stays identical to the in-process path. Gate severities
- * are read from the project config (one JSON file, no parsing) so a custom
- * `gateSeverities` never diverges from what the in-process run would have used.
+ * gate/output logic below stays identical to the in-process path. The blocking
+ * set is the fixed all-three set (Spec 54 R3) — there is no config to read.
  */
 async function buildChangedResultFromDiagnostics(violations: any[], projectRoot: string): Promise<any> {
   const analyzerResults: Record<string, any> = {};
@@ -727,23 +722,12 @@ async function buildChangedResultFromDiagnostics(violations: any[], projectRoot:
     const key = v.analyzer || 'unknown';
     (analyzerResults[key] = analyzerResults[key] || { violations: [] }).violations.push(v);
   }
-  let configUsed: any;
-  try {
-    const { findConfigFileUp, loadConfig } = await import('./config/configLoader.js');
-    const configPath = await findConfigFileUp(projectRoot);
-    const config = await loadConfig({ configPath: configPath ?? undefined });
-    if (Array.isArray(config.gateSeverities) && config.gateSeverities.length > 0) {
-      configUsed = { gateSeverities: config.gateSeverities };
-    }
-  } catch {
-    // No config — the gate falls back to DEFAULT_BLOCKING_SEVERITIES, matching in-process.
-  }
-  return { analyzerResults, metadata: { configUsed, diagnostics: [] } };
+  return { analyzerResults, metadata: { configUsed: undefined, diagnostics: [] } };
 }
 
 // Self-audit gate (Spec 33 Item 15 + Spec 44 remediation). Runs the full
 // analyzer pipeline over the tool's own production source and asserts zero
-// *blocking* (critical/warning) findings in the self-audit scope — the same
+// *blocking* (critical/severe/high) findings in the self-audit scope — the same
 // scope + severity contract as scripts/verify-self.mjs, but callable from the
 // shipped CLI so the edit-time plugin hook can enforce it. `verify:self` (the
 // release gate) stays authoritative; this command is its per-edit sibling.
@@ -773,12 +757,12 @@ program
   .option('--json', 'Output violations as machine-readable JSON to stdout')
   .option('--stdin', 'Read file paths from stdin (one per line)')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
-  .option('--fail-on <severity>', 'Blocking severity floor: critical, warning, or suggestion', 'warning')
+  .option('--fail-on <severity>', 'Blocking severity floor: critical, severe, or high', 'high')
   .action(async (paths: string[], options: Record<string, any>) => {
     try {
       await initParsers();
 
-      const validSeverities: Severity[] = ['critical', 'warning', 'suggestion'];
+      const validSeverities: Severity[] = ['critical', 'severe', 'high'];
       const failOnSeverity = options.failOn as Severity;
       if (!validSeverities.includes(failOnSeverity)) {
         console.error(
@@ -827,7 +811,7 @@ program
         (r: any) => r.violations || []
       );
 
-      const severityOrder: Severity[] = ['critical', 'warning', 'suggestion'];
+      const severityOrder: Severity[] = ['critical', 'severe', 'high'];
       const failIndex = severityOrder.indexOf(failOnSeverity);
       const blocking = violations.filter((v: any) => {
         if (!isSelfAuditInScope(v.file ?? '')) return false;
@@ -866,7 +850,7 @@ program
         for (const v of blocking) {
           const icon =
             v.severity === 'critical' ? '🔴' :
-            v.severity === 'warning' ? '🟡' : '🔵';
+            v.severity === 'severe' ? '🟠' : '🟡';
           console.log(
             `${icon} ${v.file}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}`
           );
@@ -952,7 +936,7 @@ function printNextFile(
   }
 
   const top = ranked[0];
-  // Every issue on the file, ordered critical → warning → suggestion.
+  // Every issue on the file, ordered critical → severe → high.
   const ordered = orderFindingsWithinFile(top.violations);
 
   const relativize = (filePath: string): string => {
@@ -1001,7 +985,7 @@ function printNextFile(
     );
     console.log(chalk.gray('\n── Readings ────────────────────────────────────────'));
     for (const v of ordered) {
-      const icon = v.severity === 'critical' ? '🔴' : v.severity === 'warning' ? '🟡' : '🔵';
+      const icon = v.severity === 'critical' ? '🔴' : v.severity === 'severe' ? '🟠' : '🟡';
       console.log(
         `${icon} ${chalk.bold(relativize(v.file || ''))}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.rule} — ${v.message}`
       );
@@ -1310,7 +1294,7 @@ configCmd
             console.log(chalk.blue(`\n${rules.length} rule(s) in ${configPath}`));
             console.log(chalk.gray('──────────────────────────────────────────'));
             for (const r of rules) {
-              const sevIcon = r.severity === 'critical' ? '🔴' : r.severity === 'warning' ? '🟡' : '🔵';
+              const sevIcon = r.severity === 'critical' ? '🔴' : r.severity === 'severe' ? '🟠' : '🟡';
               console.log(`${sevIcon} ${chalk.bold(r.id)}  [${r.kind}] ${chalk.dim(r.severity)}`);
               if (r.message) console.log(`   ${r.message}`);
             }
@@ -1946,7 +1930,7 @@ tasksCmd
   .command('from-audit')
   .description('Populate tasks from audit violations')
   .option('--auditJobId <id>', 'Specific audit result ID')
-  .option('--severities <severities>', 'Comma-separated severities (critical,warning,suggestion)', 'critical,warning')
+  .option('--severities <severities>', 'Comma-separated severities (critical,severe,high)', 'critical,severe,high')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
@@ -2328,7 +2312,7 @@ function spec41StatusBadge(status: string): string {
 
 function spec41SeverityColor(severity: string): (s: string) => string {
   if (severity === 'critical') return chalk.red;
-  if (severity === 'warning') return chalk.yellow;
+  if (severity === 'severe') return chalk.yellow;
   return chalk.gray;
 }
 
@@ -2407,7 +2391,7 @@ async function runDetachedAudit(options: {
   });
   const defaultsJson = JSON.stringify({
     defaultAnalyzers: DETACHED_DEFAULT_ANALYZERS,
-    defaultMinSeverity: 'suggestion',
+    defaultMinSeverity: 'high',
     defaultGenerateCodeMap: false,
   });
 
@@ -2489,7 +2473,7 @@ program
   .option('--rule <rule>', 'Filter by rule id')
   .option('--analyzer <analyzer>', 'Filter by analyzer')
   .option('--file <file>', 'Filter by file path (substring match)')
-  .option('--severity <severity>', 'Filter by severity (critical|warning|suggestion)')
+  .option('--severity <severity>', 'Filter by severity (critical|severe|high)')
   .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|cannot-fire|unassessed); omit value for all')
   .option('--count', 'Group findings by analyzer/rule with counts')
   .option('--limit <n>', 'Max findings to return (0 = unbounded)', '50')
@@ -3328,7 +3312,7 @@ program
       for (const v of sorted) {
         const icon =
           v.severity === 'critical' ? '🔴' :
-          v.severity === 'warning' ? '🟡' : '🔵';
+          v.severity === 'severe' ? '🟠' : '🟡';
         console.log(
           `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.rule || v.severity}] ${v.message}`
         );
@@ -3573,7 +3557,7 @@ const SCAFFOLD_CONFIG: Record<string, unknown> = {
     {
       id: 'api-routes-naming',
       kind: 'naming',
-      severity: 'warning',
+      severity: 'severe',
       message: 'API route files must export a handler matching the HTTP method.',
       path: 'src/api/**',
       exports: '^(get|post|put|delete|patch)\\b',
@@ -3713,11 +3697,11 @@ async function buildRulesInteractively(): Promise<Record<string, unknown>> {
         type: 'list',
         message: 'Severity:',
         choices: [
-          { name: chalk.red('Critical — exit code 2, blocks the edit'), value: 'critical' },
-          { name: chalk.yellow('Warning — must fix; does not block the edit'), value: 'warning' },
-          { name: chalk.blue('Suggestion — must fix; does not block the edit'), value: 'suggestion' },
+          { name: chalk.red('Critical — exploitable or broken now'), value: 'critical' },
+          { name: chalk.yellow('Severe — wrong, and it will surface'), value: 'severe' },
+          { name: chalk.blue('High — wrong, and it has not bitten yet'), value: 'high' },
         ],
-        default: 'warning',
+        default: 'high',
       },
       message: {
         type: 'input',

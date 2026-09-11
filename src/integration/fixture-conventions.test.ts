@@ -73,7 +73,7 @@ describe('conventions fixture', () => {
       expect(exportShape.length).toBe(1);
       expect(exportShape[0].file).toBe('src/named-majority/outlier.tsx');
       expect(exportShape[0].line).toBe(8);
-      expect(exportShape[0].severity).toBe('suggestion');
+      expect(exportShape[0].severity).toBe('high');
       expect(exportShape[0].functionName).toBe('OutlierComponent');
     });
 
@@ -97,7 +97,7 @@ describe('conventions fixture', () => {
       expect(naming.length).toBe(1);
       expect(naming[0].file).toBe('src/named-majority/outlier.tsx');
       expect(naming[0].line).toBe(8);
-      expect(naming[0].severity).toBe('suggestion');
+      expect(naming[0].severity).toBe('high');
       expect(naming[0].functionName).toBe('OutlierComponent');
     });
 
@@ -112,11 +112,11 @@ describe('conventions fixture', () => {
     });
   });
 
-  describe('violations are suggestion severity', () => {
-    it('all conventions violations are suggestions', () => {
+  describe('violations are high severity', () => {
+    it('all conventions violations are high', () => {
       const violations = runAndGetViolations(testDir);
       for (const v of violations) {
-        expect(v.severity).toBe('suggestion');
+        expect(v.severity).toBe('high');
       }
     });
   });

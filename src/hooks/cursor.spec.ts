@@ -34,7 +34,7 @@ function makeViolation(overrides: Partial<HookViolation> = {}): HookViolation {
 function makeAuditOutput(overrides: Partial<HookAuditOutput> = {}): HookAuditOutput {
   return {
     violations: [makeViolation()],
-    summary: { total: 1, critical: 1, warning: 0, suggestion: 0 },
+    summary: { total: 1, critical: 1, severe: 0, high: 0 },
     filesAnalyzed: 1,
     ...overrides,
   };
@@ -116,52 +116,53 @@ describe('formatViolationContext', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'SQL injection risk', file: 'src/db.ts', line: 42 }),
       ],
-      summary: { total: 1, critical: 1, warning: 0, suggestion: 0 },
+      summary: { total: 1, critical: 1, severe: 0, high: 0 },
     });
     const result = formatViolationContext(output);
     expect(result.isBlocking).toBe(true);
-    expect(result.context).toContain('critical violation');
+    expect(result.context).toContain('[critical]');
     expect(result.context).toContain('SQL injection risk');
     expect(result.context).toContain('src/db.ts:42');
     expect(result.context).toContain('edit has been blocked');
   });
 
-  it('returns advisory context for warnings only (not blocking)', () => {
+  it('returns blocking context for severe violations', () => {
     const output = makeAuditOutput({
       violations: [
-        makeViolation({ severity: 'warning', message: 'Function too long', file: 'src/foo.ts', line: 10 }),
+        makeViolation({ severity: 'severe', message: 'Function too long', file: 'src/foo.ts', line: 10 }),
       ],
-      summary: { total: 1, critical: 0, warning: 1, suggestion: 0 },
+      summary: { total: 1, critical: 0, severe: 1, high: 0 },
     });
     const result = formatViolationContext(output);
-    expect(result.isBlocking).toBe(false);
-    expect(result.context).toContain('Code Auditor notes');
-    expect(result.context).toContain('warning');
-    expect(result.context).not.toContain('blocked');
+    expect(result.isBlocking).toBe(true);
+    expect(result.context).toContain('[severe]');
+    expect(result.context).toContain('edit has been blocked');
   });
 
   it('returns empty context for no violations', () => {
     const output = makeAuditOutput({
       violations: [],
-      summary: { total: 0, critical: 0, warning: 0, suggestion: 0 },
+      summary: { total: 0, critical: 0, severe: 0, high: 0 },
     });
     const result = formatViolationContext(output);
     expect(result.context).toBe('');
     expect(result.isBlocking).toBe(false);
   });
 
-  it('includes suggestion count in blocking context when mixed', () => {
+  it('ranks mixed violations worst-first in blocking context', () => {
     const output = makeAuditOutput({
       violations: [
         makeViolation({ severity: 'critical', message: 'XSS risk', file: 'src/view.ts' }),
-        makeViolation({ severity: 'warning', message: 'Missing doc', file: 'src/other.ts' }),
-        makeViolation({ severity: 'suggestion', message: 'Use const', file: 'src/other.ts' }),
+        makeViolation({ severity: 'severe', message: 'Missing doc', file: 'src/other.ts' }),
+        makeViolation({ severity: 'high', message: 'Use const', file: 'src/other.ts' }),
       ],
-      summary: { total: 3, critical: 1, warning: 1, suggestion: 1 },
+      summary: { total: 3, critical: 1, severe: 1, high: 1 },
     });
     const result = formatViolationContext(output);
     expect(result.isBlocking).toBe(true);
-    expect(result.context).toContain('1 warning(s), 1 suggestion(s)');
+    // Worst-first: critical, then severe, then high.
+    expect(result.context.indexOf('[critical]')).toBeLessThan(result.context.indexOf('[severe]'));
+    expect(result.context.indexOf('[severe]')).toBeLessThan(result.context.indexOf('[high]'));
   });
 });
 
@@ -202,7 +203,7 @@ describe('processCursorEvent', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'Broken invariant', file: 'src/bad.ts', line: 5 }),
       ],
-      summary: { total: 1, critical: 1, warning: 0, suggestion: 0 },
+      summary: { total: 1, critical: 1, severe: 0, high: 0 },
     });
     const event = JSON.stringify({
       tool_name: 'Write',
@@ -225,7 +226,7 @@ describe('processCursorEvent', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'Security risk', file: 'src/auth.ts' }),
       ],
-      summary: { total: 1, critical: 1, warning: 0, suggestion: 0 },
+      summary: { total: 1, critical: 1, severe: 0, high: 0 },
     });
     const event = JSON.stringify({
       toolName: 'Edit',
@@ -237,12 +238,12 @@ describe('processCursorEvent', () => {
     expect(result.stdout).toContain('additional_context');
   });
 
-  it('returns exitCode 0 with advisory notes for warnings only', async () => {
+  it('returns exitCode 2 with additional_context for severe violations', async () => {
     const output = makeAuditOutput({
       violations: [
-        makeViolation({ severity: 'warning', message: 'Missing JSDoc', file: 'src/utils.ts' }),
+        makeViolation({ severity: 'severe', message: 'Missing JSDoc', file: 'src/utils.ts' }),
       ],
-      summary: { total: 1, critical: 0, warning: 1, suggestion: 0 },
+      summary: { total: 1, critical: 0, severe: 1, high: 0 },
     });
     const event = JSON.stringify({
       tool_name: 'Write',
@@ -250,15 +251,15 @@ describe('processCursorEvent', () => {
     });
 
     const result = await processCursorEvent(event, mockAudit(output));
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode).toBe(2);
     expect(result.stdout).toContain('additional_context');
-    expect(result.stdout).toContain('Code Auditor notes');
+    expect(result.stdout).toContain('blocked');
   });
 
   it('returns exitCode 0 with no stdout for clean audit', async () => {
     const output = makeAuditOutput({
       violations: [],
-      summary: { total: 0, critical: 0, warning: 0, suggestion: 0 },
+      summary: { total: 0, critical: 0, severe: 0, high: 0 },
     });
     const event = JSON.stringify({
       tool_name: 'Write',

@@ -85,7 +85,7 @@ describe('cross-domain fixture', () => {
       );
       expect(wnr.length).toBe(1);
       expect(wnr[0].file).toBe('src/audit-log.ts');
-      expect(wnr[0].severity).toBe('suggestion');
+      expect(wnr[0].severity).toBe('high');
       expect(wnr[0].message).toContain("Table 'audit_log' is written");
       expect(wnr[0].message).toContain('never read (SELECT)');
       // Should reference the audit_log table, not any other table
@@ -121,7 +121,7 @@ describe('cross-domain fixture', () => {
       );
       expect(txn.length).toBe(1);
       expect(txn[0].file).toBe('src/transfer.ts');
-      expect(txn[0].severity).toBe('suggestion');
+      expect(txn[0].severity).toBe('high');
       expect(txn[0].message).toContain('writes to 2 distinct tables');
       expect(txn[0].message).toContain('transaction-boundary risk');
       // Should mention both tables
@@ -158,12 +158,12 @@ describe('cross-domain fixture', () => {
     });
   });
 
-  describe('violations are suggestion severity', () => {
-    it('all cross-domain violations are suggestions', () => {
+  describe('violations are high severity', () => {
+    it('all cross-domain violations are high', () => {
       const violations = runAndGetViolations(testDir);
       expect(violations.length).toBeGreaterThan(0);
       for (const v of violations) {
-        expect(v.severity).toBe('suggestion');
+        expect(v.severity).toBe('high');
       }
     });
   });

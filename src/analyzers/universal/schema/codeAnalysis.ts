@@ -454,7 +454,7 @@ export function checkNamingConventions(
         filePath,
         ref.location,
         `Table name '${ref.table}' should use snake_case convention`,
-        { severity: 'suggestion', rule: 'table-naming-convention', symbol: ref.table }
+        { severity: 'high', rule: 'table-naming-convention', symbol: ref.table }
       ));
     }
 
@@ -464,7 +464,7 @@ export function checkNamingConventions(
         filePath,
         ref.location,
         `Table name '${ref.table}' is a reserved word. Consider using a different name.`,
-        { severity: 'warning', rule: 'reserved-word', symbol: ref.table }
+        { severity: 'severe', rule: 'reserved-word', symbol: ref.table }
       ));
     }
   }
@@ -509,7 +509,7 @@ export function checkQueryPatterns(
         ast.filePath,
         func.location.start,
         `Function '${func.name}' has ${queryCount} queries, exceeding the maximum of ${maxQueries}`,
-        { severity: 'warning', rule: 'too-many-queries', symbol: func.name }
+        { severity: 'high', rule: 'too-many-queries', symbol: func.name }
       ));
     }
   }
@@ -579,8 +579,8 @@ function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray)
     ast.filePath,
     location,
     `SQL query built via string interpolation or concatenation in ${enclosingFn}; use parameterized queries.`,
-    // Spec 11 R4 blanket demotion: all survivors → suggestion
-    { severity: 'suggestion', rule: 'dynamic-sql-construction', symbol }
+    // User-controlled SQL built by interpolation is injectable now — critical.
+    { severity: 'critical', rule: 'dynamic-sql-construction', symbol }
   ));
 }
 
@@ -722,7 +722,7 @@ export function checkMissingReferences(
       filePath,
       ref.location,
       msg,
-      { severity: 'suggestion', rule: 'unknown-table', symbol: ref.table }
+      { severity: 'critical', rule: 'unknown-table', symbol: ref.table }
     ));
   }
 

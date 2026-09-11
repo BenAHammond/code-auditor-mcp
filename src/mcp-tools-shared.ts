@@ -65,9 +65,9 @@ export const tools: Tool[] = [
         name: 'minSeverity',
         type: 'string',
         required: false,
-        description: 'Minimum severity level to report (suggestions included by default).',
-        default: 'suggestion',
-        enum: ['suggestion', 'warning', 'critical'],
+        description: 'Minimum severity level to report (high included by default).',
+        default: 'high',
+        enum: ['high', 'severe', 'critical'],
       },
       {
         name: 'indexFunctions',
@@ -494,9 +494,9 @@ export const uiTools: Tool[] = [
         name: 'minSeverity',
         type: 'string',
         required: false,
-        description: 'Minimum severity level (suggestions included by default).',
-        default: 'suggestion',
-        enum: ['suggestion', 'warning', 'critical'],
+        description: 'Minimum severity level (high included by default).',
+        default: 'high',
+        enum: ['high', 'severe', 'critical'],
       },
     ],
   },
@@ -541,7 +541,7 @@ export class ToolHandlers {
     const options: AuditRunnerOptions = {
       projectRoot: isFile ? path.dirname(auditPath) : auditPath,
       enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'documentation', 'react', 'data-access'],
-      minSeverity: ((args.minSeverity as string) || 'suggestion') as Severity,
+      minSeverity: ((args.minSeverity as string) || 'high') as Severity,
       verbose: false,
       indexFunctions,
       ...(isFile && { includePaths: [auditPath] }),
@@ -639,8 +639,8 @@ export class ToolHandlers {
       summary: {
         totalViolations: auditResult.summary.totalViolations,
         criticalIssues: auditResult.summary.criticalIssues,
-        warnings: auditResult.summary.warnings,
-        suggestions: auditResult.summary.suggestions,
+        severe: auditResult.summary.severe,
+        high: auditResult.summary.high,
         filesAnalyzed: auditResult.metadata.filesAnalyzed,
         executionTime: auditResult.metadata.auditDuration,
         healthScore: ToolHandlers.calculateHealthScore(auditResult),
@@ -674,7 +674,7 @@ export class ToolHandlers {
     const runner = createAuditRunner({
       projectRoot: auditPath,
       enabledAnalyzers: [...MCP_DEFAULT_ANALYZERS],
-      minSeverity: 'suggestion',
+      minSeverity: 'high',
       verbose: false,
       indexFunctions,
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
@@ -772,7 +772,8 @@ export class ToolHandlers {
         filesAnalyzed: auditResult.metadata.filesAnalyzed,
         totalViolations: auditResult.summary.totalViolations,
         criticalViolations: auditResult.summary.criticalIssues,
-        warningViolations: auditResult.summary.warnings,
+        severeViolations: auditResult.summary.severe,
+        highViolations: auditResult.summary.high,
       },
       recommendation: ToolHandlers.getHealthRecommendation(healthScore, auditResult),
       ...(indexingResult && { functionIndexing: indexingResult }),
@@ -1274,33 +1275,33 @@ export class ToolHandlers {
   static calculateHealthScore(result: AuditResult): number {
     const filesAnalyzed = result.metadata?.filesAnalyzed || 1;
     const critical = result.summary.criticalIssues || 0;
-    const warnings = result.summary.warnings || 0;
-    const suggestions = result.summary.suggestions || 0;
-    
+    const severe = result.summary.severe || 0;
+    const high = result.summary.high || 0;
+
     const weights = {
       critical: 10,
-      warning: 3,
-      suggestion: 0.5
+      severe: 3,
+      high: 0.5
     };
-    
-    const weightedViolations = (critical * weights.critical) + 
-                               (warnings * weights.warning) + 
-                               (suggestions * weights.suggestion);
-    
+
+    const weightedViolations = (critical * weights.critical) +
+                               (severe * weights.severe) +
+                               (high * weights.high);
+
     const violationsPerFile = weightedViolations / filesAnalyzed;
     let score = 100 - (violationsPerFile * 2);
-    
+
     return Math.max(0, Math.round(Math.min(100, score)));
   }
 
   static getHealthRecommendation(score: number, result: AuditResult): string {
     const criticals = result.summary.criticalIssues || 0;
-    const warnings = result.summary.warnings || 0;
+    const severe = result.summary.severe || 0;
     if (criticals > 0) {
       return `Fix ${criticals} critical violation${criticals === 1 ? '' : 's'} first`;
     }
-    if (warnings > 0) {
-      return `Resolve ${warnings} warning${warnings === 1 ? '' : 's'} before declaring this clean`;
+    if (severe > 0) {
+      return `Resolve ${severe} severe violation${severe === 1 ? '' : 's'} before declaring this clean`;
     }
     if (score >= 90) return 'Excellent code health!';
     if (score >= 70) return 'Good code health with room for improvement';

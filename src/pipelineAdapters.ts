@@ -1965,12 +1965,9 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             violations.push({
               file: fp,
               line: 1,
-              // Promoted suggestion → warning (Spec 11 R5, one tier). The
-              // method-dispatch fix removed the class-prefixed / isMethod false
-              // positives, so a module that exports and is imported by nothing
-              // is a genuine dead-module signal — a defect that should block,
-              // not a suggestion to weigh. Validated across four corpora.
-              severity: 'warning',
+              // A module that exports and is imported by nothing is a genuine
+              // dead-code signal — anchored severe. Validated across four corpora.
+              severity: 'severe',
               message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
               rule: 'unreferenced-module',
               type: 'unreferenced-module',
@@ -1981,11 +1978,17 @@ export function createDependencyGraphReducer(): Stage4Reducer {
           }
         }
 
+        const HEALTH_SEVERITY: Record<string, Violation['severity']> = {
+          'break-cycles': 'severe',
+          'reduce-coupling': 'high',
+          'split-responsibilities': 'high',
+          'review-orphans': 'severe',
+        };
         for (const s of health.suggestions) {
           violations.push({
             file: '(multiple)',
             line: 0,
-            severity: s.priority === 'low' ? 'suggestion' : 'warning',
+            severity: HEALTH_SEVERITY[s.type] ?? 'high',
             message: s.description,
             rule: s.type,
             type: s.type,
@@ -2556,7 +2559,7 @@ export function createSchemaReducer(): Stage3Reducer {
               file: ref.file,
               line: ref.line,
               column: ref.column,
-              severity: 'suggestion' as const,
+              severity: 'critical' as const,
               message: msg,
               rule: 'unknown-table',
               analyzer: 'schema',

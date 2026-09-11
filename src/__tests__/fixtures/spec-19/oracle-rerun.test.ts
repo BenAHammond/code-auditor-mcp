@@ -190,35 +190,35 @@ describe('Oracle: SOLID false positives', () => {
 
 describe('Oracle: SOLID true positives', () => {
 
-  it('item 13: large switch handler (15+ branches) → method-complexity fires at warning', async () => {
+  it('item 13: large switch handler (15+ branches) → method-complexity fires at high', async () => {
     const r = await runSolidAnalyzer(fixturePath('item-13-large-switch-handler.ts'));
     expect(r.methodComplexity.length, 'Item 13 is genuinely complex — MUST fire').toBeGreaterThan(0);
-    expect(r.methodComplexity[0].severity).toBe('warning');
+    expect(r.methodComplexity[0].severity).toBe('high');
   });
 
-  it('item 14: deep validation (8 nested conditionals) → method-complexity fires at warning', async () => {
+  it('item 14: deep validation (8 nested conditionals) → method-complexity fires at high', async () => {
     const r = await runSolidAnalyzer(fixturePath('item-14-deep-validation.ts'));
     expect(r.methodComplexity.length, 'Item 14 has nested conditionals — MUST fire').toBeGreaterThan(0);
-    expect(r.methodComplexity[0].severity).toBe('warning');
+    expect(r.methodComplexity[0].severity).toBe('high');
   });
 
-  it('item 15: complex query builder (chained conditionals) → method-complexity fires at warning', async () => {
+  it('item 15: complex query builder (chained conditionals) → method-complexity fires at high', async () => {
     const r = await runSolidAnalyzer(fixturePath('item-15-complex-query-builder.ts'));
     expect(r.methodComplexity.length, 'Item 15 has chained conditionals — MUST fire').toBeGreaterThan(0);
-    expect(r.methodComplexity[0].severity).toBe('warning');
+    expect(r.methodComplexity[0].severity).toBe('high');
   });
 
-  it('item 16: field mapping dispatch (20+ branches) → method-complexity fires at warning', async () => {
+  it('item 16: field mapping dispatch (20+ branches) → method-complexity fires at high', async () => {
     const r = await runSolidAnalyzer(fixturePath('item-16-field-mapping-dispatch.ts'));
     expect(r.methodComplexity.length, 'Item 16 has 20+ branches — MUST fire').toBeGreaterThan(0);
-    expect(r.methodComplexity[0].severity).toBe('warning');
+    expect(r.methodComplexity[0].severity).toBe('high');
   });
 
-  it('item 18: large service class (18 methods) → class-size fires at suggestion', async () => {
+  it('item 18: large service class (18 methods) → class-size fires at high', async () => {
     const r = await runSolidAnalyzer(fixturePath('item-18-large-service-class.ts'));
     expect(r.classSize.length, 'Item 18 has 18 methods — class-size MUST fire').toBeGreaterThan(0);
     for (const v of r.classSize) {
-      expect(v.severity).toBe('suggestion');
+      expect(v.severity).toBe('high');
     }
   });
 
@@ -280,34 +280,34 @@ describe('Oracle: Data-access false positives', () => {
 
 describe('Oracle: Data-access true positives', () => {
 
-  it('item 1: INSERT in loop body → loop-query fires at warning', async () => {
+  it('item 1: INSERT in loop body → loop-query fires at severe', async () => {
     const r = await runDataAccessAnalyzer(fixturePath('item-01-real-loop-insert.ts'));
     expect(r.loopQuery.length, 'Item 1: real N+1 — loop-query MUST fire').toBeGreaterThan(0);
-    expect(r.loopQuery[0].severity).toBe('warning');
+    expect(r.loopQuery[0].severity).toBe('severe');
   });
 
-  it('item 3: INSERT RETURNING per iteration → loop-query fires at warning', async () => {
+  it('item 3: INSERT RETURNING per iteration → loop-query fires at severe', async () => {
     const r = await runDataAccessAnalyzer(fixturePath('item-03-real-n-plus-one.ts'));
     expect(r.loopQuery.length, 'Item 3: N+1 INSERT RETURNING — loop-query MUST fire').toBeGreaterThan(0);
-    expect(r.loopQuery[0].severity).toBe('warning');
+    expect(r.loopQuery[0].severity).toBe('severe');
   });
 
-  it('item 4: SQL injection via string concatenation → sql-injection-risk fires at warning', async () => {
+  it('item 4: SQL injection via string concatenation → sql-injection-risk fires at critical', async () => {
     const r = await runDataAccessAnalyzer(fixturePath('item-04-real-sql-injection.ts'));
     expect(r.sqlInjection.length, 'Item 4: concatenated user input — sql-injection-risk MUST fire').toBeGreaterThan(0);
-    expect(r.sqlInjection[0].severity).toBe('warning');
+    expect(r.sqlInjection[0].severity).toBe('critical');
   });
 
-  it('item 7: template literal injection → sql-injection-risk fires at warning', async () => {
+  it('item 7: template literal injection → sql-injection-risk fires at critical', async () => {
     const r = await runDataAccessAnalyzer(fixturePath('item-07-real-template-injection.ts'));
     expect(r.sqlInjection.length, 'Item 7: template literal with ${filter} — sql-injection-risk MUST fire').toBeGreaterThan(0);
-    expect(r.sqlInjection[0].severity).toBe('warning');
+    expect(r.sqlInjection[0].severity).toBe('critical');
   });
 
-  it('item 8: nested N+1 (outer + per-row child queries) → loop-query fires at warning', async () => {
+  it('item 8: nested N+1 (outer + per-row child queries) → loop-query fires at severe', async () => {
     const r = await runDataAccessAnalyzer(fixturePath('item-08-real-nested-n-plus-one.ts'));
     expect(r.loopQuery.length, 'Item 8: classic nested N+1 — loop-query MUST fire').toBeGreaterThan(0);
-    expect(r.loopQuery[0].severity).toBe('warning');
+    expect(r.loopQuery[0].severity).toBe('severe');
   });
 });
 
@@ -329,7 +329,7 @@ describe('Oracle: DRY items 19–27', () => {
     expect(r.dryDuplicate.length,
       'Item 19: two token-identical config blocks ≥15 lines — dry/duplicate MUST fire'
     ).toBeGreaterThan(0);
-    expect(r.dryDuplicate[0].severity).toBe('warning');
+    expect(r.dryDuplicate[0].severity).toBe('high');
   });
 
   it('item 20: i18n block duplicated → dry/duplicate fires', async () => {
@@ -337,7 +337,7 @@ describe('Oracle: DRY items 19–27', () => {
     expect(r.dryDuplicate.length,
       'Item 20: two token-identical i18n blocks ≥15 lines — dry/duplicate MUST fire'
     ).toBeGreaterThan(0);
-    expect(r.dryDuplicate[0].severity).toBe('warning');
+    expect(r.dryDuplicate[0].severity).toBe('high');
   });
 
   // ── duplicate-import retired → 0 ────────────────────────────────────
@@ -393,6 +393,6 @@ describe('Oracle: DRY items 19–27', () => {
     expect(r.structuralSimilarity.length,
       'Item 27: two structurally similar API routers with enabled check — MUST fire'
     ).toBeGreaterThan(0);
-    expect(r.structuralSimilarity[0].severity).toBe('suggestion');
+    expect(r.structuralSimilarity[0].severity).toBe('high');
   });
 });

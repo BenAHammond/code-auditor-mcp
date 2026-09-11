@@ -63,7 +63,7 @@ describe('invariant-rules fixture', () => {
     const boundaryViolations = violations.filter((v: any) => v.rule === 'no-services-from-ui');
     expect(boundaryViolations.length, 'no-services-from-ui count').toBe(1);
     expect(boundaryViolations[0].file).toBe('src/ui/component.ts');
-    expect(boundaryViolations[0].severity).toBe('warning');
+    expect(boundaryViolations[0].severity).toBe('severe');
 
     // naming: 4 violations — exports starting with lowercase
     // (notCapital, runApp, fetchData, helperFunc — all lowercase-starting exports)

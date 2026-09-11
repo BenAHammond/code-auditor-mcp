@@ -71,8 +71,8 @@ export function generateSummaryCSVReport(
   lines.push('Summary');
   lines.push(`Total Violations${delimiter}${result.summary.totalViolations}`);
   lines.push(`Critical Issues${delimiter}${result.summary.criticalIssues}`);
-  lines.push(`Warnings${delimiter}${result.summary.warnings}`);
-  lines.push(`Suggestions${delimiter}${result.summary.suggestions}`);
+  lines.push(`Severe${delimiter}${result.summary.severe}`);
+  lines.push(`High${delimiter}${result.summary.high}`);
   lines.push('');
   
   // Violations by category
@@ -115,7 +115,7 @@ function collectAllViolations(result: AuditResult): Array<Violation & { analyzer
   
   // Sort by severity and file
   return violations.sort((a, b) => {
-    const severityOrder = { critical: 3, warning: 2, suggestion: 1, off: 0 };
+    const severityOrder = { critical: 3, severe: 2, high: 1 };
     const severityDiff = severityOrder[b.severity] - severityOrder[a.severity];
     if (severityDiff !== 0) return severityDiff;
     return a.file.localeCompare(b.file);
@@ -210,18 +210,18 @@ export function generatePivotCSVReport(result: AuditResult): string {
   for (const [, analyzerResult] of Object.entries(result.analyzerResults)) {
     for (const violation of analyzerResult.violations) {
       if (!pivot[violation.file]) {
-        pivot[violation.file] = { critical: 0, warning: 0, suggestion: 0 };
+        pivot[violation.file] = { critical: 0, severe: 0, high: 0 };
       }
       pivot[violation.file][violation.severity]++;
     }
   }
   
   // Generate CSV
-  const lines: string[] = ['File,Critical,Warning,Suggestion,Total'];
-  
+  const lines: string[] = ['File,Critical,Severe,High,Total'];
+
   for (const [file, severities] of Object.entries(pivot)) {
-    const total = severities.critical + severities.warning + severities.suggestion;
-    lines.push(`${escapeCSVValue(file, ',')},${severities.critical},${severities.warning},${severities.suggestion},${total}`);
+    const total = severities.critical + severities.severe + severities.high;
+    lines.push(`${escapeCSVValue(file, ',')},${severities.critical},${severities.severe},${severities.high},${total}`);
   }
   
   return lines.join('\n');

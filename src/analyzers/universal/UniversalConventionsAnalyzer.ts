@@ -2,7 +2,7 @@
  * Universal Conventions Analyzer — Spec 12 R2.
  *
  * Reads mined conventions from the SQLite conventions table and flags
- * deviations at suggestion severity. All detection is cross-file (DB-based);
+ * deviations at high severity. All detection is cross-file (DB-based);
  * no per-AST processing is needed.
  *
  * Five rule IDs:
@@ -94,7 +94,7 @@ interface ConventionsScanContext {
 export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
   readonly name = 'conventions';
   readonly description =
-    'Mines codebase conventions and flags deviations at suggestion severity';
+    'Mines codebase conventions and flags deviations at high severity';
   readonly category = 'style';
 
   /**
@@ -579,7 +579,7 @@ function detectUsagePairForConvention(
         file: func.file_path,
         line: func.line_number,
         column: 1,
-        severity: 'suggestion',
+        severity: 'high',
         message:
           `${pct}% of \`${antecedent}\` callers also call \`${consequent}\` — ` +
           `this function calls \`${antecedent}\` without \`${consequent}\`${exemplarRef(conv)}`,
@@ -642,7 +642,7 @@ function detectImportFormForFile(
       file: fp,
       line: imp.line,
       column: 1,
-      severity: 'suggestion',
+      severity: 'high',
       message:
         `${pct}% of imports of \`${imp.source}\` in \`${directory}/\` ` +
         `use ${conv.form} import — this file uses ${imp.form}${exemplarRef(conv)}`,
@@ -705,7 +705,7 @@ function detectErrorHandlingForRow(
     file: row.file_path,
     line: row.line_number,
     column: 1,
-    severity: 'suggestion',
+    severity: 'high',
     message:
       `${pct}% of error-handling functions in \`${directory}/\` use ` +
       `\`${conv.shape}\` — this function uses \`${shape}\`${exemplarRef(conv)}`,
@@ -754,7 +754,7 @@ function detectExportShapeForRow(
     file: row.file_path,
     line: row.line_number,
     column: 1,
-    severity: 'suggestion',
+    severity: 'high',
     message:
       `${pct}% of exports in \`${directory}/\` use ${conv.form} export — ` +
       `\`${row.name}\` uses ${form}${exemplarRef(conv)}`,
@@ -821,7 +821,7 @@ function detectNamingForRow(
     file: row.file_path,
     line: row.line_number,
     column: 1,
-    severity: 'suggestion',
+    severity: 'high',
     message:
       `${pct}% of ${conv.kind} exports in \`${directory}/\` use ${conv.casing} — ` +
       `\`${row.name}\` uses ${casing}${exemplarRef(conv)}`,

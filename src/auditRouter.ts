@@ -64,8 +64,8 @@ export async function hasFilesWithExtension(target: string, ext: string): Promis
 export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: string): AuditResult {
   const violations = polyglotResult.violations || [];
   const criticalIssues = violations.filter((v: any) => v.severity === 'critical').length;
-  const warnings = violations.filter((v: any) => v.severity === 'warning').length;
-  const suggestions = violations.filter((v: any) => v.severity === 'suggestion').length;
+  const severe = violations.filter((v: any) => v.severity === 'severe').length;
+  const high = violations.filter((v: any) => v.severity === 'high').length;
   const totalFiles = polyglotResult.metrics?.totalFiles || 0;
   const executionTime = polyglotResult.metrics?.executionTime || 0;
 
@@ -121,8 +121,8 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
     summary: {
       totalViolations: violations.length,
       criticalIssues,
-      warnings,
-      suggestions,
+      severe,
+      high,
       totalFiles,
       violationsByCategory,
       topIssues,

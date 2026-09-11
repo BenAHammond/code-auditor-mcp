@@ -2,7 +2,7 @@
  * Base class for universal analyzers that work across languages
  */
 
-import type { AnalyzerResult, Violation, Resolution } from '../types.js';
+import type { AnalyzerResult, Violation, Resolution, Severity } from '../types.js';
 import type { AST, LanguageAdapter } from './types.js';
 import { LanguageRegistry } from './LanguageRegistry.js';
 import { resolvePathProfile } from '../config/pathProfiles.js';
@@ -15,20 +15,12 @@ export interface UniversalAnalyzerOptions {
 }
 
 /**
- * Map of rule-id → severity for overriding built-in severity defaults.
- *
- * Example: `{ "sql-injection-risk": "critical" }` restores the original
- * critical severity for SQL injection findings.
- */
-export type SeverityOverrides = Record<string, 'critical' | 'warning' | 'suggestion'>;
-
-/**
  * Bundled "how is this violation classified" inputs for createViolation: the
  * severity + rule + optional symbol always travel together, so they are passed
  * as one object rather than three trailing positional parameters.
  */
 export interface ViolationClassification {
-  severity: 'critical' | 'warning' | 'suggestion';
+  severity: Severity;
   rule: string;
   symbol?: string;
   /** Spec 37 R1 — structured next action carried on gating findings. */
@@ -70,18 +62,12 @@ export abstract class UniversalAnalyzer {
   ): Promise<AnalyzerResult> {
     const startTime = Date.now();
 
-    // Extract severityOverrides from config before passing to analyzers.
-    // This is a base-class feature — individual analyzers don't need to
-    // know about it. Overrides are applied after analyzeAST returns.
-    const severityOverrides: SeverityOverrides = config.severityOverrides ?? {};
-    const configWithoutOverrides = { ...config };
-    delete configWithoutOverrides.severityOverrides;
-
     // Extract path profiles and project root from config (Spec-20).
     // These are applied per-file in the loop below and should not leak
     // to individual analyzers.
     const pathProfiles = config.pathProfiles;
     const projectRoot: string | undefined = config.projectRoot;
+    const configWithoutOverrides = { ...config };
     delete configWithoutOverrides.pathProfiles;
     delete configWithoutOverrides.projectRoot;
 
@@ -94,10 +80,8 @@ export abstract class UniversalAnalyzer {
       totalFiles: files.length,
     });
 
-    const filteredViolations = this.applySeverityPipeline(violations, severityOverrides);
-
     return {
-      violations: filteredViolations,
+      violations,
       errors,
       status: makeVisitorStatus(filesProcessed),
       executionTime: Date.now() - startTime,
@@ -226,23 +210,6 @@ export abstract class UniversalAnalyzer {
     }
   }
 
-  /**
-   * Apply severity overrides and filter 'off' severities (Spec-11 R5).
-   */
-  private applySeverityPipeline(violations: Violation[], severityOverrides: SeverityOverrides): Violation[] {
-    if (Object.keys(severityOverrides).length > 0) {
-      for (const v of violations) {
-        const override = severityOverrides[v.rule];
-        if (override) {
-          v.severity = override;
-        }
-      }
-    }
-
-    // Filter out violations whose severity was overridden to 'off' (Spec-11 R5).
-    return violations.filter(v => v.severity !== 'off');
-  }
-  
   /**
    * Implement this method to analyze an AST
    */

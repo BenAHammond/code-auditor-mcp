@@ -24,8 +24,8 @@ const INFORMATION_URI = 'https://github.com/BenAHammond/code-auditor-mcp';
 
 const SEVERITY_TO_LEVEL: Record<string, string> = {
   critical: 'error',
-  warning: 'warning',
-  suggestion: 'note',
+  severe: 'error',
+  high: 'error',
 };
 
 // ── Rule ID resolution ──────────────────────────────────────────────────────
@@ -272,7 +272,7 @@ interface SARIFResult {
 }
 
 function mapSeverity(severity: string): string {
-  return SEVERITY_TO_LEVEL[severity] ?? 'warning';
+  return SEVERITY_TO_LEVEL[severity] ?? 'error';
 }
 
 function makeRelativeUri(filePath: string, rootDir: string): string {

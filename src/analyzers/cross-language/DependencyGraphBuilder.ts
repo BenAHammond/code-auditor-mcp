@@ -363,10 +363,10 @@ class DependencyGraphBuilderCore {
         case 'critical':
           score -= 20;
           break;
-        case 'warning':
+        case 'severe':
           score -= 10;
           break;
-        case 'suggestion':
+        case 'high':
           score -= 5;
           break;
       }
@@ -499,7 +499,7 @@ class DependencyGraphBuilderTraversal extends DependencyGraphBuilderCore {
 
           cycles.push({
             nodes: cycleNodes,
-            severity: 'warning',
+            severity: 'severe',
             suggestion: this.generateCycleSuggestion(cycleNodes)
           });
         }
@@ -693,7 +693,7 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
   /** Record the circular-dependency check (cycles rendered node-by-node). */
   private recordCycleCheck(sink: CheckSink, graph: DependencyGraph, idToName: Map<string, string>): void {
     this.recordCheck(sink, graph.cycles.length, graph.cycles.flatMap(c => c.nodes), {
-      issueType: 'circular-dependency', severity: 'warning', impact: 'high',
+      issueType: 'circular-dependency', severity: 'severe', impact: 'high',
       issueDesc: () =>
         graph.cycles.map(c => c.nodes.map(id => idToName.get(id) ?? id).join(' → ')).join('; '),
       suggestionType: 'break-cycles', priority: 'high',
@@ -710,7 +710,7 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     const label = (ids: string[]): string[] => ids.map(id => idToName.get(id) ?? id);
     const clusters = this.findTightlyCoupledClusters(graph);
     this.recordCheck(sink, clusters.length, clusters.flatMap(c => c.nodes), {
-      issueType: 'tight-coupling', severity: 'warning', impact: 'medium',
+      issueType: 'tight-coupling', severity: 'high', impact: 'medium',
       issueDesc: () =>
         clusters.map(c => `${label(c.nodes).join(', ')} (${(c.coupling * 100).toFixed(0)}%)`).join('; '),
       suggestionType: 'reduce-coupling', priority: 'medium',
@@ -726,7 +726,7 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
   private recordHubCheck(sink: CheckSink, graph: DependencyGraph): void {
     const hubNodes = this.findHubNodes(graph);
     this.recordCheck(sink, hubNodes.length, hubNodes.map(h => h.node.id), {
-      issueType: 'hub-nodes', severity: 'warning', impact: 'medium',
+      issueType: 'hub-nodes', severity: 'high', impact: 'medium',
       issueDesc: () => hubNodes.map(h => `${h.node.name} (${h.outDegree})`).join(', '),
       suggestionType: 'split-responsibilities', priority: 'medium',
       suggestionDesc: 'Split large modules to reduce their dependency burden',
@@ -752,7 +752,7 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
   private recordOrphanCheck(sink: CheckSink, graph: DependencyGraph): void {
     const orphanedNodes = this.findOrphanedNodes(graph, this.collectReferencedNames());
     this.recordCheck(sink, orphanedNodes.length, orphanedNodes.map(n => n.id), {
-      issueType: 'orphaned-nodes', severity: 'suggestion', impact: 'low',
+      issueType: 'orphaned-nodes', severity: 'severe', impact: 'low',
       issueDesc: () => orphanedNodes.map(n => n.name).join(', '),
       suggestionType: 'review-orphans', priority: 'low',
       suggestionDesc: 'Review orphaned nodes to ensure they are still needed',
@@ -788,7 +788,7 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
 
 export interface DependencyIssue {
   type: 'circular-dependency' | 'tight-coupling' | 'hub-nodes' | 'orphaned-nodes';
-  severity: 'critical' | 'warning' | 'suggestion';
+  severity: 'critical' | 'severe' | 'high';
   description: string;
   affectedNodes: string[];
   impact: 'high' | 'medium' | 'low';

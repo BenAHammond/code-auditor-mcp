@@ -31,7 +31,7 @@ function makeViolation(overrides: Partial<HookViolation> = {}): HookViolation {
 function makeAuditOutput(overrides: Partial<HookAuditOutput> = {}): HookAuditOutput {
   return {
     violations: [makeViolation()],
-    summary: { total: 1, critical: 1, warning: 0, suggestion: 0 },
+    summary: { total: 1, critical: 1, severe: 0, high: 0 },
     filesAnalyzed: 1,
     ...overrides,
   };
@@ -54,7 +54,7 @@ describe('formatCodexFeedback', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'SQL injection risk', file: 'src/db.ts', line: 42 }),
       ],
-      summary: { total: 1, critical: 1, warning: 0, suggestion: 0 },
+      summary: { total: 1, critical: 1, severe: 0, high: 0 },
     });
     const { feedback, isBlocking } = formatCodexFeedback(output);
     expect(isBlocking).toBe(true);
@@ -67,42 +67,43 @@ describe('formatCodexFeedback', () => {
     expect(violations[0].file).toBe('src/db.ts');
   });
 
-  it('returns advisory feedback for warnings only (not blocking)', () => {
+  it('returns blocking feedback for severe violations', () => {
     const output = makeAuditOutput({
       violations: [
-        makeViolation({ severity: 'warning', message: 'Function too long', file: 'src/foo.ts', line: 10 }),
+        makeViolation({ severity: 'severe', message: 'Function too long', file: 'src/foo.ts', line: 10 }),
       ],
-      summary: { total: 1, critical: 0, warning: 1, suggestion: 0 },
+      summary: { total: 1, critical: 0, severe: 1, high: 0 },
     });
     const { feedback, isBlocking } = formatCodexFeedback(output);
-    expect(isBlocking).toBe(false);
+    expect(isBlocking).toBe(true);
     expect(feedback).toBeTruthy();
-    expect(feedback!.decision).toBe('allow');
-    const warnings = feedback!.warnings as Array<Record<string, unknown>>;
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0].message).toBe('Function too long');
+    expect(feedback!.decision).toBe('block');
+    const violations = feedback!.violations as Array<Record<string, unknown>>;
+    expect(violations).toHaveLength(1);
+    expect(violations[0].message).toBe('Function too long');
   });
 
   it('returns null feedback for clean audit', () => {
     const output = makeAuditOutput({
       violations: [],
-      summary: { total: 0, critical: 0, warning: 0, suggestion: 0 },
+      summary: { total: 0, critical: 0, severe: 0, high: 0 },
     });
     const { feedback, isBlocking } = formatCodexFeedback(output);
     expect(feedback).toBeNull();
     expect(isBlocking).toBe(false);
   });
 
-  it('returns null for suggestion-only violations', () => {
+  it('returns blocking feedback for high-severity violations', () => {
     const output = makeAuditOutput({
       violations: [
-        makeViolation({ severity: 'suggestion', message: 'Use const', file: 'src/foo.ts' }),
+        makeViolation({ severity: 'high', message: 'Use const', file: 'src/foo.ts' }),
       ],
-      summary: { total: 1, critical: 0, warning: 0, suggestion: 1 },
+      summary: { total: 1, critical: 0, severe: 0, high: 1 },
     });
     const { feedback, isBlocking } = formatCodexFeedback(output);
-    expect(feedback).toBeNull();
-    expect(isBlocking).toBe(false);
+    expect(isBlocking).toBe(true);
+    expect(feedback).toBeTruthy();
+    expect(feedback!.decision).toBe('block');
   });
 });
 
@@ -136,7 +137,7 @@ describe('processCodexEvent', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'Broken invariant', file: 'src/bad.ts', line: 5 }),
       ],
-      summary: { total: 1, critical: 1, warning: 0, suggestion: 0 },
+      summary: { total: 1, critical: 1, severe: 0, high: 0 },
     });
     const event = makeRawEvent({ tool_input: { file_path: 'src/bad.ts' } });
 
@@ -149,25 +150,25 @@ describe('processCodexEvent', () => {
     expect(parsed.reason).toContain('critical violation');
   });
 
-  it('returns exitCode 0 with advisory for warnings only', async () => {
+  it('returns exitCode 2 with block for severe violations', async () => {
     const output = makeAuditOutput({
       violations: [
-        makeViolation({ severity: 'warning', message: 'Missing JSDoc', file: 'src/utils.ts' }),
+        makeViolation({ severity: 'severe', message: 'Missing JSDoc', file: 'src/utils.ts' }),
       ],
-      summary: { total: 1, critical: 0, warning: 1, suggestion: 0 },
+      summary: { total: 1, critical: 0, severe: 1, high: 0 },
     });
     const event = makeRawEvent({ tool_input: { file_path: 'src/utils.ts' } });
 
     const result = await processCodexEvent(event, mockAudit(output));
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain('allow');
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout).toContain('block');
     expect(result.stdout).toContain('Missing JSDoc');
   });
 
   it('returns exitCode 0 with empty stdout for clean audit', async () => {
     const output = makeAuditOutput({
       violations: [],
-      summary: { total: 0, critical: 0, warning: 0, suggestion: 0 },
+      summary: { total: 0, critical: 0, severe: 0, high: 0 },
     });
     const event = makeRawEvent({ tool_input: { file_path: 'src/clean.ts' } });
 

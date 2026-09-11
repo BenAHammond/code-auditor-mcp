@@ -47,7 +47,7 @@ describe('single-responsibility — mixed-concern detection (#128)', () => {
 }`;
     const violations = await srpViolations(code, 'handler');
     expect(violations.length).toBeGreaterThan(0);
-    expect(violations[0].severity).toBe('warning');
+    expect(violations[0].severity).toBe('high');
     expect(violations[0].resolution.action).toBe('split-function');
     expect(violations[0].message).toContain('messaging');
     expect(violations[0].message).toContain('rendering');

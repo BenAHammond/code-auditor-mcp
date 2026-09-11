@@ -217,7 +217,7 @@ describe('ruleValidator', async () => {
       const errors = validateRulesConfig({
         rules: [
           { id: 'dup', kind: 'import-ban', severity: 'critical', module: 'a' },
-          { id: 'dup', kind: 'import-ban', severity: 'warning', module: 'b' },
+          { id: 'dup', kind: 'import-ban', severity: 'severe', module: 'b' },
         ],
       });
       expect(errors.some(e => e.ruleId === 'dup' && e.message.includes('Duplicate'))).toBe(true);
@@ -259,7 +259,7 @@ describe('ruleValidator', async () => {
           {
             id: 'r1',
             kind: 'naming',
-            severity: 'warning',
+            severity: 'severe',
             path: 'src/**',
             exports: '[invalid',
           },
@@ -317,12 +317,12 @@ describe('ruleValidator', async () => {
       const errors = validateRulesConfig({
         rules: [
           { id: 'r1', kind: 'import-ban', severity: 'critical', module: 'lodash' },
-          { id: 'r2', kind: 'call-constraint', severity: 'warning', callee: 'f', allowFrom: ['src/**'] },
+          { id: 'r2', kind: 'call-constraint', severity: 'severe', callee: 'f', allowFrom: ['src/**'] },
           { id: 'r3', kind: 'module-boundary', severity: 'critical', from: 'src/a/**', to: 'src/b/**' },
-          { id: 'r4', kind: 'naming', severity: 'suggestion', path: 'src/**', exports: '^I[A-Z]' },
+          { id: 'r4', kind: 'naming', severity: 'high', path: 'src/**', exports: '^I[A-Z]' },
           { id: 'r5', kind: 'ast-pattern', severity: 'critical', pattern: 'new Function($$$)' },
-          { id: 'r6', kind: 'style-mechanism', severity: 'warning', allow: ['tailwind'] },
-          { id: 'r7', kind: 'no-raw-values', severity: 'warning', properties: ['color'] },
+          { id: 'r6', kind: 'style-mechanism', severity: 'severe', allow: ['tailwind'] },
+          { id: 'r7', kind: 'no-raw-values', severity: 'severe', properties: ['color'] },
         ],
       });
       expect(errors).toHaveLength(0);
@@ -348,7 +348,7 @@ describe('ruleValidator', async () => {
           {
             id: 'js-only',
             kind: 'ast-pattern',
-            severity: 'warning',
+            severity: 'severe',
             pattern: 'var $$$',
             language: 'javascript',
           },
@@ -363,7 +363,7 @@ describe('ruleValidator', async () => {
           {
             id: 'scoped',
             kind: 'ast-pattern',
-            severity: 'warning',
+            severity: 'severe',
             pattern: 'eval($$$)',
             path: 'src/features/**',
           },
@@ -516,7 +516,7 @@ describe('import-ban', async () => {
         makeRule({
           id: 'no-ai-sdk',
           kind: 'import-ban',
-          severity: 'warning',
+          severity: 'severe',
           module: '@ai-sdk/*',
         }),
       ],
@@ -545,7 +545,7 @@ describe('import-ban', async () => {
         makeRule({
           id: 'custom-msg',
           kind: 'import-ban',
-          severity: 'suggestion',
+          severity: 'high',
           module: 'banned',
           message: 'Do not use banned; prefer our internal wrapper.',
         }),
@@ -637,7 +637,7 @@ export const helperVar = 42;
         makeRule({
           id: 'pascal-components',
           kind: 'naming',
-          severity: 'warning',
+          severity: 'severe',
           path: 'src/components/**',
           exports: '^[A-Z]', // must start with uppercase
         }),
@@ -661,7 +661,7 @@ export const AppHeader = () => null;
         makeRule({
           id: 'pascal-components',
           kind: 'naming',
-          severity: 'warning',
+          severity: 'severe',
           path: 'src/components/**',
           exports: '^[A-Z]',
         }),
@@ -682,7 +682,7 @@ export function formatDate() {}
         makeRule({
           id: 'pascal-components',
           kind: 'naming',
-          severity: 'warning',
+          severity: 'severe',
           path: 'src/components/**',
           exports: '^[A-Z]',
         }),
@@ -700,7 +700,7 @@ export function formatDate() {}
         makeRule({
           id: 'pascal',
           kind: 'naming',
-          severity: 'warning',
+          severity: 'severe',
           path: 'src/components/**',
           exports: '^[A-Z]',
           message: 'Component exports must be PascalCase.',
@@ -1000,7 +1000,7 @@ export function doThing() {}
     const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
-        makeRule({ id: 'pascal', kind: 'naming', severity: 'warning', path: 'src/**', exports: '^[A-Z]' }),
+        makeRule({ id: 'pascal', kind: 'naming', severity: 'severe', path: 'src/**', exports: '^[A-Z]' }),
       ],
       files: ['src/app.ts'],
       projectDir: testDir,
@@ -1075,7 +1075,7 @@ export function badCasing() {
 `);
     const result = await checkRulesWithSource({
       rules: [
-        makeRule({ id: 'pascal', kind: 'naming', severity: 'warning', path: 'src/**', exports: '^[A-Z]' }),
+        makeRule({ id: 'pascal', kind: 'naming', severity: 'severe', path: 'src/**', exports: '^[A-Z]' }),
       ],
       files: ['src/Component.ts'],
       projectDir: testDir,
@@ -1134,7 +1134,7 @@ describe('ast-pattern', async () => {
         makeRule({
           id: 'no-eval',
           kind: 'ast-pattern',
-          severity: 'warning',
+          severity: 'severe',
           pattern: 'new Function($$$)',
           message: 'new Function() is eval-by-another-name — forbidden in this codebase',
         }),
@@ -1276,8 +1276,8 @@ export function doThing() {}
     const result = await checkRulesWithSource({
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
-        makeRule({ id: 'no-new-fn', kind: 'ast-pattern', severity: 'warning', pattern: 'new Function($$$)' }),
-        makeRule({ id: 'pascal', kind: 'naming', severity: 'suggestion', path: 'src/**', exports: '^[A-Z]' }),
+        makeRule({ id: 'no-new-fn', kind: 'ast-pattern', severity: 'severe', pattern: 'new Function($$$)' }),
+        makeRule({ id: 'pascal', kind: 'naming', severity: 'high', path: 'src/**', exports: '^[A-Z]' }),
       ],
       files: ['src/bad.ts'],
       projectDir: testDir,
@@ -1295,7 +1295,7 @@ export function doThing() {}
         makeRule({
           id: 'no-debugger',
           kind: 'ast-pattern',
-          severity: 'warning',
+          severity: 'severe',
           pattern: 'debugger',
         }),
       ],

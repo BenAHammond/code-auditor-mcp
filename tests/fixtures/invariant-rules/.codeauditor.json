@@ -11,34 +11,34 @@
     {
       "id": "no-services-from-ui",
       "kind": "module-boundary",
-      "severity": "warning",
+      "severity": "severe",
       "from": "src/ui/**",
       "to": "src/services/**"
     },
     {
       "id": "capital-export-naming",
       "kind": "naming",
-      "severity": "warning",
+      "severity": "severe",
       "path": "src/**",
       "exports": "^[A-Z]"
     },
     {
       "id": "api-call-constraint",
       "kind": "call-constraint",
-      "severity": "warning",
+      "severity": "severe",
       "callee": "fetchData",
       "allowFrom": ["src/services/**"]
     },
     {
       "id": "style-mechanism-check",
       "kind": "style-mechanism",
-      "severity": "warning",
+      "severity": "severe",
       "allow": ["css-modules"]
     },
     {
       "id": "no-raw-values-check",
       "kind": "no-raw-values",
-      "severity": "warning",
+      "severity": "severe",
       "properties": ["color", "background-color"],
       "allowValues": ["inherit", "transparent", "currentColor"]
     }

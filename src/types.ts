@@ -5,7 +5,28 @@
 
 import type { FileAccounting } from './services/fileAccounting.js';
 
-export type Severity = 'critical' | 'warning' | 'suggestion' | 'off';
+/**
+ * Severity is urgency, not permission (Spec 54). Three defect levels, nothing
+ * below `high` — every level is a defect; the axis is how fast it bites.
+ *   - `critical` — exploitable or broken now.
+ *   - `severe`   — wrong, and it will surface.
+ *   - `high`     — wrong, and it has not bitten yet.
+ */
+export type Severity = 'critical' | 'severe' | 'high';
+
+/** Rank order, high → low. Used for ordering, `minSeverity` filters, and `--fail-on`. */
+export const SEVERITY_RANK: Record<Severity, number> = { critical: 3, severe: 2, high: 1 };
+
+/** Every severity, in urgency order (highest first). */
+export const SEVERITIES: Severity[] = ['critical', 'severe', 'high'];
+
+/**
+ * Spec 54 R3 — the blocking gate is a fixed all-three set. There is no
+ * configurable gate and nothing below `high`: every level is a defect, so every
+ * finding blocks. `excludeFromGate` still scopes files *out* of the gate; that
+ * is a scope decision, not a severity re-label.
+ */
+export const BLOCKING_SEVERITIES: ReadonlySet<Severity> = new Set(SEVERITIES);
 
 export type ReportFormat = 'html' | 'json' | 'csv' | 'sarif';
 
@@ -360,7 +381,7 @@ export interface PipelineConfig {
   /**
    * Namespaced analyzer configs.
    * Each key is an analyzer name, value is its config bag.
-   * The `_infra` key holds shared infrastructure config (projectRoot, severityOverrides,
+   * The `_infra` key holds shared infrastructure config (projectRoot,
    * pathProfiles, _provenanceTiming) that every visitor/reducer receives alongside its
    * own namespace.
    */
@@ -526,8 +547,8 @@ export interface AuditOptions {
   configFile?: string;
   thresholds?: {
     maxCritical?: number;
-    maxWarnings?: number;
-    maxSuggestions?: number;
+    maxSevere?: number;
+    maxHigh?: number;
     minHealthScore?: number;
   };
   unusedImportsConfig?: {
@@ -535,14 +556,6 @@ export interface AuditOptions {
     includeTypeOnlyImports?: boolean;
     ignorePatterns?: string[];
   };
-  /** Per-rule severity overrides applied globally (before per-file path profile caps). */
-  severityOverrides?: Record<string, Severity>;
-  /**
-   * Spec 45 R2 — the severities that participate in the blocking gate. Defaults
-   * to `['critical', 'warning']`. `suggestion` may be added to make every
-   * finding block; `off` is never a blocking severity.
-   */
-  gateSeverities?: Severity[];
 }
 
 export interface ProgressCallback {
@@ -567,8 +580,8 @@ export interface AuditSummary {
   totalFiles: number;
   totalViolations: number;
   criticalIssues: number;
-  warnings: number;
-  suggestions: number;
+  severe: number;
+  high: number;
   violationsByCategory: Record<string, number>;
   topIssues: Array<{ type: string; count: number }>;
 }
@@ -749,22 +762,14 @@ export interface AuditConfig {
   parallel?: boolean;
   thresholds?: {
     maxCritical?: number;
-    maxWarnings?: number;
-    maxSuggestions?: number;
+    maxSevere?: number;
+    maxHigh?: number;
     minHealthScore?: number;
   };
   /** Per-directory config overrides. Ordered array — later matching profiles win on merge. */
   pathProfiles?: PathProfile[];
   /** Set to false to disable all built-in profiles. */
   builtin?: boolean;
-  /** Per-rule severity overrides applied globally (before per-file path profile caps). */
-  severityOverrides?: Record<string, Severity>;
-  /**
-   * Spec 45 R2 — the severities that participate in the blocking gate. Defaults
-   * to `['critical', 'warning']`; `suggestion` may be added to make every
-   * finding block. `off` is never a blocking severity.
-   */
-  gateSeverities?: Severity[];
   /** Spec 13 — Churn extraction config. */
   churn?: ChurnConfig;
   /** Spec 13 — Diverging-clone detection config. */

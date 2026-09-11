@@ -169,7 +169,7 @@ function declValueKey(d: StyleDeclRow): string {
  * than a 6-arg one (Spec 34 param-count bundling).
  */
 interface StyleViolationClassification {
-  severity: 'critical' | 'warning' | 'suggestion';
+  severity: 'critical' | 'severe' | 'high';
   rule: string;
   symbol?: string;
   /** Spec 37 R1 — structured next action carried on gating findings. */
@@ -508,7 +508,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
           `(${list.length} of ${total} usages, ${(share * 100).toFixed(1)}%). ` +
           `The dominant value "${modeList[0].raw_value}" is used ${modeList.length} times. ` +
           `Consider using a consistent value or design token.`,
-          { severity: 'warning', rule: 'styles/value-drift', symbol: declValueKey(sample) },
+          { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(sample) },
         ));
       }
     }
@@ -558,7 +558,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
             `Off-scale "${property}" value: "${decl.raw_value}" (${px}px) ` +
             `is not on the Tailwind ${scale.label}. ` +
             `Nearest scale values: ${lower}px or ${upper}px.`,
-            { severity: 'warning', rule: 'styles/off-scale', symbol: declValueKey(decl) },
+            { severity: 'high', rule: 'styles/off-scale', symbol: declValueKey(decl) },
           ));
         }
       }
@@ -693,7 +693,7 @@ function flagColorDriftStragglers(
         `(used ${cluster.length} time${cluster.length === 1 ? '' : 's'}, ` +
         `${(share * 100).toFixed(1)}% of ${total} usages). ` +
         `Dominant cluster has ${dominantSize} values. Consider using a design token.`,
-        { severity: 'warning', rule: 'styles/value-drift', symbol: declValueKey(item.decl) },
+        { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(item.decl) },
       ));
     }
   }
@@ -859,7 +859,7 @@ async function initTailwindProbe(
       `undefined-class detection skipped. Classes defined only in Tailwind ` +
       `config will not be checked. Install tailwindcss in the project ` +
       `for full class validation.`,
-      { severity: 'suggestion', rule: 'styles/undefined-class-disabled' },
+      { severity: 'high', rule: 'styles/undefined-class-disabled' },
     )];
   }
 
@@ -886,7 +886,7 @@ function flagUnresolvedClasses(
         `Undefined CSS class: "${u.class_name}" has no matching definition ` +
         `in any stylesheet, Tailwind utility set, or project config.`,
         {
-          severity: 'warning',
+          severity: 'high',
           rule: 'styles/undefined-class',
           symbol: u.class_name,
           resolution: {
@@ -980,7 +980,7 @@ function flagPropertyValueFragmentation(
       `Mechanism fragmentation: "${prop}: ${sample.raw_value}" is applied via ` +
       `${mechs.size} different mechanisms (${[...mechs].sort().join(', ')}). ` +
       `Consolidate to a single mechanism or design token.`,
-      { severity: 'warning', rule: 'styles/mechanism-fragmentation', symbol: declValueKey(sample) },
+      { severity: 'high', rule: 'styles/mechanism-fragmentation', symbol: declValueKey(sample) },
     ));
   }
 
@@ -1008,7 +1008,7 @@ function flagFileMechanismMixing(
       `Mechanism mixing: ${file} uses ${mechs.size} different style ` +
       `mechanisms (${[...mechs].sort().join(', ')}). ` +
       `Consolidate to fewer mechanisms for maintainability.`,
-      { severity: 'suggestion', rule: 'styles/mechanism-mixing' },
+      { severity: 'high', rule: 'styles/mechanism-mixing' },
     ));
   }
 
@@ -1167,7 +1167,7 @@ function verifyCandidates(
         `in ${b.filePath} share ${intersection.size} of ${union.size} ` +
         `declarations (${(similarity * 100).toFixed(0)}%). ` +
         `Consider consolidating these rules or extracting a shared mixin.`,
-        { severity: 'suggestion', rule: 'styles/declaration-set-similarity', symbol: `${a.context} & ${b.context}` },
+        { severity: 'high', rule: 'styles/declaration-set-similarity', symbol: `${a.context} & ${b.context}` },
       ));
     }
   }
@@ -1206,16 +1206,6 @@ function groupDeclarationsByProperty(declarations: StyleDeclRow[]): Map<string, 
   return byProperty;
 }
 
-function applySeverityOverrides(violations: Violation[], config: any): void {
-  const severityOverrides: Record<string, string> = config.severityOverrides ?? {};
-  if (Object.keys(severityOverrides).length === 0) return;
-  for (const v of violations) {
-    const override = severityOverrides[v.rule];
-    if (override) {
-      v.severity = override as 'critical' | 'warning' | 'suggestion';
-    }
-  }
-}
 
 function buildStylesResult(spec: StylesResultSpec): AnalyzerResult {
   return {
@@ -1327,7 +1317,7 @@ class StylesStructureDetectors {
         `Token bypass: "${d.raw_value}" for "${d.property}" matches design ` +
         `token "${tokenInfo.name}" but was used as a raw value. ` +
         `Use the token reference instead to keep styles consistent.`,
-        { severity: 'warning', rule: 'styles/token-bypass', symbol: declValueKey(d) },
+        { severity: 'high', rule: 'styles/token-bypass', symbol: declValueKey(d) },
       ));
     }
 
@@ -1411,7 +1401,7 @@ class StylesStructureDetectors {
         `Z-index sprawl: ${values.size} distinct z-index values ` +
         `(${sortedVals.join(', ')}). Consider defining a z-index scale ` +
         `(e.g., $z-layers: (dropdown: 100, modal: 200, toast: 300)).`,
-        { severity: 'warning', rule: 'styles/z-index-sprawl', symbol: declValueKey(sample) },
+        { severity: 'high', rule: 'styles/z-index-sprawl', symbol: declValueKey(sample) },
       ));
     }
 
@@ -1424,7 +1414,7 @@ class StylesStructureDetectors {
           d.line,
           `Singleton z-index: z-index: ${val} is used only once. ` +
           `Consider whether this value belongs in a shared z-index scale.`,
-          { severity: 'suggestion', rule: 'styles/z-index-singleton', symbol: declValueKey(d) },
+          { severity: 'high', rule: 'styles/z-index-singleton', symbol: declValueKey(d) },
         ));
       }
     }
@@ -1494,10 +1484,8 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
 
     const violations = await this.runAllDetectors(indexHandle, cfg, declarations);
 
-    applySeverityOverrides(violations, config);
-
     return buildStylesResult({
-      violations: violations.filter(v => v.severity !== 'off'),
+      violations,
       fileCount: new Set(declarations.map(d => d.file_path)).size,
       startTime,
       name: this.name,

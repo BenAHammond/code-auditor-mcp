@@ -622,7 +622,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // Global/infrastructure settings passed to all pipeline stages
       pipelineAnalyzerConfig['_infra'] = {
         pathProfiles: mergedOptions.pathProfiles,
-        severityOverrides: mergedOptions.severityOverrides,
         projectRoot: root,
         _provenanceTiming: provenanceTiming,
         files,
@@ -905,8 +904,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         // descending, preserving original order as tiebreaker.
         const severityOrder: Record<string, number> = {
           critical: 0,
-          warning: 1,
-          suggestion: 2,
+          severe: 1,
+          high: 2,
           info: 3,
         };
 
@@ -1000,7 +999,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
                 divergingViolations.push({
                   file: lastRow.file1,
                   line: lastRow.line1,
-                  severity: 'suggestion',
+                  severity: 'severe',
                   message: `Clone pair has diverged: similarity dropped ${drop} (from ${prevSim.toFixed(3)} to ${currentSim.toFixed(3)}) across ${requiredDeclines} consecutive runs (pair: ${fp.slice(0, 12)}…). Review ${lastRow.file1}:${lastRow.line1} and ${lastRow.file2}:${lastRow.line2} for diverged logic.`,
                   analyzer: 'dry',
                   rule: 'dry/diverging-clone',
@@ -1342,8 +1341,8 @@ function getEnabledAnalyzers(
 function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesAnalyzed: number) {
   let totalViolations = 0;
   let criticalIssues = 0;
-  let warnings = 0;
-  let suggestions = 0;
+  let severe = 0;
+  let high = 0;
   const violationsByCategory: Record<string, number> = {};
   const byAnalyzer: Record<string, { violations: number; filesProcessed: number; fatalErrors: number }> = {};
 
@@ -1357,11 +1356,11 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
         case 'critical':
           criticalIssues++;
           break;
-        case 'warning':
-          warnings++;
+        case 'severe':
+          severe++;
           break;
-        case 'suggestion':
-          suggestions++;
+        case 'high':
+          high++;
           break;
       }
 
@@ -1386,8 +1385,8 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
     totalFiles: filesAnalyzed,
     totalViolations,
     criticalIssues,
-    warnings,
-    suggestions,
+    severe,
+    high,
     violationsByCategory,
     byAnalyzer,
     topIssues

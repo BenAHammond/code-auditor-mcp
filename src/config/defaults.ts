@@ -2,16 +2,8 @@
  * Default configurations for the code auditor
  */
 
-import { AuditConfig, PathProfile, Severity } from '../types.js';
+import { AuditConfig, PathProfile } from '../types.js';
 import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
-
-/**
- * Spec 45 R2 — the severities that participate in the blocking gate by default.
- * `critical` + `warning` block; `suggestion` is reported but does not block.
- * Configurable via `gateSeverities` in `.codeauditor.json`; never hardcoded to
- * a narrower set.
- */
-export const DEFAULT_BLOCKING_SEVERITIES: Severity[] = ['critical', 'warning'];
 
 /**
  * Get default configuration
@@ -37,35 +29,18 @@ export function getDefaultConfig(): AuditConfig {
     enabledAnalyzers: [...ALL_ANALYZERS],
     outputFormats: ['html', 'json'],
     outputDirectory: './audit-reports',
-    minSeverity: 'suggestion',
+    minSeverity: 'high',
     failOnCritical: false,
     showProgress: true,
     thresholds: {
       maxCritical: 0,
-      maxWarnings: 100,
+      maxSevere: 100,
       minHealthScore: 75
     },
-    // Spec-11 R5: Mechanical recalibration — audited 2026-07-20.
-    // Audit report: bench/results/spec-11-recalibration-audit.md
-    //
-    // Demoted (suggestion): domain-mismatch confirmed but users with
-    //   applicable domains (multi-tenant SaaS, known-schema projects)
-    //   need these visible and re-enablable.
-    // Promoted (warning): precision ≥ 0.95, judged-true ≥ 0.90,
-    //   one tier only per Spec 11 R5. single-responsibility promotion
-    //   to critical is withheld — length heuristics should not block hooks.
-    // Restored to defaults: sql-injection-risk, loop-query, unfiltered-query,
-    //   single-responsibility. These have external-corpus evidence
-
-    //   of utility or insufficient evidence to recalibrate.
-    severityOverrides: {
-      'missing-org-filter': 'suggestion',
-      'unknown-table': 'suggestion',
-      'solid/class-size': 'warning',
-      'solid/dependency-inversion': 'warning',
-    },
-    // Spec 45 R2 — severity gate default: critical + warning block.
-    gateSeverities: DEFAULT_BLOCKING_SEVERITIES,
+    // Spec 54 R3 — severity is urgency, not permission. There is no
+    // `severityOverrides` and no `gateSeverities`: every rule is assigned on the
+    // urgency axis (critical/severe/high) and every finding blocks. Per-rule
+    // severity tuning disappeared with the old vocabulary.
     // Spec 50 R5 — daemon lifecycle. Never auto-start (a background process the
     // user did not ask for); idle-exit after 5 minutes so it does not linger.
     daemon: {
@@ -127,12 +102,12 @@ export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
       return {
         outputFormats: ['html'],
         showProgress: true,
-        minSeverity: 'suggestion'
+        minSeverity: 'high'
       };
-    
+
     case 'production':
       return {
-        minSeverity: 'warning',
+        minSeverity: 'severe',
         failOnCritical: true
       };
     

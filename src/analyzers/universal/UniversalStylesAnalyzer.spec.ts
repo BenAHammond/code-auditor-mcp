@@ -999,7 +999,7 @@ describe('Detector 5 — Mechanism Fragmentation', () => {
     expect(mixing.length).toBe(1);
     expect(mixing[0].message).toContain('mixed.tsx');
     expect(mixing[0].message).toContain('3 different style mechanisms');
-    expect(mixing[0].severity).toBe('suggestion');
+    expect(mixing[0].severity).toBe('high');
   });
 
   it('does NOT fire when only 2 mechanisms are involved', async () => {
@@ -1160,7 +1160,7 @@ describe('Detector 7 — Z-Index Inventory', () => {
     expect(singles.length).toBe(1);
     expect(singles[0].message).toContain('99');
     expect(singles[0].message).toContain('only once');
-    expect(singles[0].severity).toBe('suggestion');
+    expect(singles[0].severity).toBe('high');
   });
 
   it('does NOT fire sprawl when distinct values ≤ max', async () => {
@@ -1197,20 +1197,18 @@ describe('Edge cases', () => {
     expect(violations.length).toBe(0);
   });
 
-  it('applies severity overrides from config', async () => {
+  it('reports undefined-class at its fixed high severity', async () => {
     // Must have at least one declaration for the analyzer to run detectors
     // (analyze() early-returns when declarations.length === 0).
     insertDecl({ property: 'z-index', raw_value: '1', mechanism: 'css', file_path: 'src/base.css', line: 1 });
     // Seed data for undefined-class detector
     insertClassUsage('missing-class', 'src/comp.tsx', 5, 'className');
 
-    const violations = await runAnalyzer({
-      severityOverrides: { 'styles/undefined-class': 'suggestion' },
-    });
+    const violations = await runAnalyzer();
 
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(1);
-    expect(undef[0].severity).toBe('suggestion');
+    expect(undef[0].severity).toBe('high');
   });
 
   it('handles files parameter correctly', async () => {

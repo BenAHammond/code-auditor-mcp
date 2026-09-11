@@ -162,7 +162,7 @@ export class SchemaValidator {
       violations.push({
         file: current.file,
         line: current.line,
-        severity: 'warning',
+        severity: 'severe',
         message: `Missing required field '${fieldName}' in ${current.type} ${current.name}`,
         rule: "missing-field",
         violationType: 'missing-field',
@@ -195,7 +195,7 @@ export class SchemaValidator {
       violations.push({
         file: current.file,
         line: current.line,
-        severity: 'warning',
+        severity: 'severe',
         message: `Extra field '${fieldName}' in ${current.type} ${current.name}`,
         rule: 'extra-field',
         violationType: 'extra-field',
@@ -253,7 +253,7 @@ export class SchemaValidator {
       return {
         file: current.file,
         line: current.line,
-        severity: 'warning',
+        severity: 'severe',
         message: `Version mismatch: ${reference.name} v${reference.version} vs v${current.version}`,
         rule: "version-mismatch",
         violationType: 'version-mismatch',
@@ -280,7 +280,7 @@ export class SchemaValidator {
         return {
           file: curSchema.file,
           line: curSchema.line,
-          severity: 'warning',
+          severity: 'severe',
           message: `Type-name strings differ for field '${fieldName}': expected ${normalizedRefType}, got ${normalizedCurType}`,
           rule: "schema-field-mismatch",
           violationType: 'schema-field-mismatch',
@@ -299,7 +299,7 @@ export class SchemaValidator {
         return {
           file: curSchema.file,
           line: curSchema.line,
-          severity: 'warning',
+          severity: 'severe',
           message: `Potentially incompatible types for field '${fieldName}': ${normalizedRefType} vs ${normalizedCurType}`,
           rule: "schema-field-mismatch",
           violationType: 'schema-field-mismatch',
@@ -335,7 +335,7 @@ export class SchemaValidator {
       violations.push({
         file: curSchema.file,
         line: curSchema.line,
-        severity: 'warning',
+        severity: 'severe',
         message: `Length constraint mismatch for field '${fieldName}'`,
         rule: "constraint-mismatch",
         violationType: 'constraint-mismatch',
@@ -353,7 +353,7 @@ export class SchemaValidator {
       violations.push({
         file: curSchema.file,
         line: curSchema.line,
-        severity: 'warning',
+        severity: 'severe',
         message: `Numeric constraint mismatch for field '${fieldName}'`,
         rule: "constraint-mismatch",
         violationType: 'constraint-mismatch',

@@ -8,7 +8,7 @@ type Scenario = {
 
 const defaults = {
   defaultAnalyzers: ['solid', 'dry', 'react', 'documentation', 'data-access'],
-  defaultMinSeverity: 'warning' as const,
+  defaultMinSeverity: 'high' as const,
   defaultGenerateCodeMap: false,
 };
 

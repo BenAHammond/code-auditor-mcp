@@ -168,10 +168,10 @@ function safeJson(value: unknown): string {
 function calculateHealthScore(result: AuditResult): number {
   const filesAnalyzed = result.metadata?.filesAnalyzed || 1;
   const critical = result.summary.criticalIssues || 0;
-  const warnings = result.summary.warnings || 0;
-  const suggestions = result.summary.suggestions || 0;
-  const weights = { critical: 10, warning: 3, suggestion: 0.5 };
-  const weightedViolations = critical * weights.critical + warnings * weights.warning + suggestions * weights.suggestion;
+  const severe = result.summary.severe || 0;
+  const high = result.summary.high || 0;
+  const weights = { critical: 10, severe: 3, high: 0.5 };
+  const weightedViolations = critical * weights.critical + severe * weights.severe + high * weights.high;
   const violationsPerFile = weightedViolations / filesAnalyzed;
   const score = 100 - violationsPerFile * 2;
   return Math.max(0, Math.round(Math.min(100, score)));
@@ -179,11 +179,11 @@ function calculateHealthScore(result: AuditResult): number {
 
 function getHealthRecommendation(score: number, result: AuditResult): string {
   const criticals = result.summary.criticalIssues || 0;
-  const warnings = result.summary.warnings || 0;
+  const severe = result.summary.severe || 0;
   if (criticals > 0)
     return `Fix ${criticals} critical violation${criticals === 1 ? '' : 's'} first`;
-  if (warnings > 0)
-    return `Resolve ${warnings} warning${warnings === 1 ? '' : 's'} before declaring this clean`;
+  if (severe > 0)
+    return `Resolve ${severe} severe violation${severe === 1 ? '' : 's'} before declaring this clean`;
   if (score >= 90) return 'Excellent code health!';
   if (score >= 70) return 'Good code health with room for improvement';
   return 'Code health needs attention - run detailed audit';
@@ -248,9 +248,9 @@ function registerAllTools(registry: ToolRegistry): void {
           name: 'minSeverity',
           type: 'string',
           required: false,
-          description: 'Minimum severity level to report (suggestions included by default).',
-          default: 'suggestion',
-          enum: ['suggestion', 'warning', 'critical'],
+          description: 'Minimum severity level to report (high included by default).',
+          default: 'high',
+          enum: ['high', 'severe', 'critical'],
         },
         {
           name: 'indexFunctions',
@@ -278,7 +278,7 @@ function registerAllTools(registry: ToolRegistry): void {
           const auditPath = path.resolve((args.path as string) || process.cwd());
           await assertAuditPathExists(auditPath);
           const analyzers = (args.analyzers as string[]) ?? DEFAULT_ANALYZERS;
-          const minSeverity = ((args.minSeverity as string) || 'suggestion') as Severity;
+          const minSeverity = ((args.minSeverity as string) || 'high') as Severity;
           const indexFunctions = (args.indexFunctions as boolean) !== false;
 
           const db = CodeIndexDB.getInstance();
@@ -320,7 +320,7 @@ function registerAllTools(registry: ToolRegistry): void {
             violations: auditResult.analyzerResults,
             metadata: auditResult.metadata,
             guidance:
-              'The audit takes readings, not verdicts. Severity is triage — the order to act, never a judgment on whether a reading is real; there is no "noise" tier. Work criticals first, then warnings, then suggestions. The coverage panel tells you what was actually measured. Documentation readings (missing JSDoc) are maintainability gaps. If you decline a reading, record why instead of silently dismissing it.',
+              'The audit takes readings, not verdicts. Severity is urgency — how fast a defect bites, never whether you may ignore it; there is no "noise" tier. Work criticals first, then severe, then high. The coverage panel tells you what was actually measured. Documentation readings (missing JSDoc) are maintainability gaps. If you decline a reading, record why instead of silently dismissing it.',
           };
         });
       },
@@ -348,9 +348,9 @@ function registerAllTools(registry: ToolRegistry): void {
           name: 'minSeverity',
           type: 'string',
           required: false,
-          description: 'Minimum severity level to report (suggestions included by default).',
-          default: 'suggestion',
-          enum: ['suggestion', 'warning', 'critical'],
+          description: 'Minimum severity level to report (high included by default).',
+          default: 'high',
+          enum: ['high', 'severe', 'critical'],
         },
         {
           name: 'indexFunctions',
@@ -458,7 +458,7 @@ function registerAllTools(registry: ToolRegistry): void {
         return withAbortSignal(signal, 'audit.start', () =>
           startAuditJob(args, {
             defaultAnalyzers: DEFAULT_ANALYZERS,
-            defaultMinSeverity: 'suggestion',
+            defaultMinSeverity: 'high',
             defaultGenerateCodeMap: false,
           }),
         );
@@ -583,7 +583,7 @@ function registerAllTools(registry: ToolRegistry): void {
         const runner = createAuditRunner({
           projectRoot: auditPath,
           enabledAnalyzers: DEFAULT_ANALYZERS,
-          minSeverity: 'suggestion' as Severity,
+          minSeverity: 'high' as Severity,
           verbose: false,
           indexFunctions,
           ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
@@ -685,7 +685,8 @@ function registerAllTools(registry: ToolRegistry): void {
             filesAnalyzed: auditResult.metadata.filesAnalyzed,
             totalViolations: auditResult.summary.totalViolations,
             criticalViolations: auditResult.summary.criticalIssues,
-            warningViolations: auditResult.summary.warnings,
+            severeViolations: auditResult.summary.severe,
+            highViolations: auditResult.summary.high,
           },
           recommendation: getHealthRecommendation(healthScore, auditResult),
           ...(indexingResult && { functionIndexing: indexingResult }),
@@ -1510,7 +1511,7 @@ function registerAllTools(registry: ToolRegistry): void {
         parameters: [
           { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
           { name: 'auditJobId', type: 'string', required: false, description: 'Audit job ID. Omit to use most recent completed audit.' },
-          { name: 'severities', type: 'array', required: false, description: 'Severities to include (default: critical, warning).' },
+          { name: 'severities', type: 'array', required: false, description: 'Severities to include (default: critical, severe).' },
           { name: 'analyzers', type: 'array', required: false, description: 'Filter violations by analyzer name.' },
           { name: 'paths', type: 'array', required: false, description: 'Filter violations by file path globs.' },
         ],

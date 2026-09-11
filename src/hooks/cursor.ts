@@ -21,12 +21,13 @@
  *
  * Exit codes:
  *   0 — no critical violations found
- *   2 — critical violations found (blocks the action, additional_context injected)
+ *   2 — violations found (blocks the action, additional_context injected)
  *   1 — internal error (adapter crash, not violation-related)
  */
 
 import { readStdin, runHookAudit } from './core.js';
 import type { HookAuditOutput } from './core.js';
+import type { Severity } from '../types.js';
 import chalk from 'chalk';
 
 export interface CursorPostToolUse {
@@ -83,53 +84,29 @@ export function formatViolationContext(output: HookAuditOutput): {
   context: string;
   isBlocking: boolean;
 } {
-  const criticals = output.violations.filter((v) => v.severity === 'critical');
-  const warnings = output.violations.filter((v) => v.severity === 'warning');
-  const suggestions = output.violations.filter((v) => v.severity === 'suggestion');
-
-  if (criticals.length > 0) {
-    const lines = [
-      `🚨 **Code Auditor found ${criticals.length} critical violation(s)**`,
-      '',
-      ...criticals.map((v) =>
-        `- **${v.file}${v.line ? `:${v.line}` : ''}** — ${v.message}` +
-        (v.suggestion ? `\n  Suggestion: ${v.suggestion}` : '')
-      ),
-    ];
-    if (warnings.length > 0 || suggestions.length > 0) {
-      lines.push(
-        '',
-        `Also found: ${warnings.length} warning(s), ${suggestions.length} suggestion(s).`
-      );
-    }
-    lines.push(
-      '',
-      'Fix the critical violations above and retry. The edit has been blocked.',
-    );
-    return { context: lines.join('\n'), isBlocking: true };
+  if (output.violations.length === 0) {
+    return { context: '', isBlocking: false };
   }
 
-  if (warnings.length > 0 || suggestions.length > 0) {
-    const notes: string[] = [];
-    if (warnings.length > 0) {
-      notes.push(`${warnings.length} warning(s):`);
-      warnings.forEach((v) => {
-        notes.push(`  - ${v.file}${v.line ? `:${v.line}` : ''} — ${v.message}`);
-      });
-    }
-    if (suggestions.length > 0) {
-      notes.push(`${suggestions.length} suggestion(s):`);
-      suggestions.forEach((v) => {
-        notes.push(`  - ${v.file}${v.line ? `:${v.line}` : ''} — ${v.message}`);
-      });
-    }
-    return {
-      context: `ℹ️ **Code Auditor notes:**\n${notes.join('\n')}`,
-      isBlocking: false,
-    };
-  }
+  // Every finding is a defect — severity is urgency (how fast to act), not
+  // permission (whether to block). Order worst-first so the agent fixes in
+  // urgency order; the queue is a ranking, not a gate.
+  const order: Severity[] = ['critical', 'severe', 'high'];
+  const ranked = [...output.violations].sort(
+    (a, b) => order.indexOf(a.severity) - order.indexOf(b.severity)
+  );
 
-  return { context: '', isBlocking: false };
+  const lines = [
+    `🚨 **Code Auditor found ${output.violations.length} violation(s)**`,
+    '',
+    ...ranked.map((v) =>
+      `- **[${v.severity}] ${v.file}${v.line ? `:${v.line}` : ''}** — ${v.message}` +
+      (v.suggestion ? `\n  Suggestion: ${v.suggestion}` : '')
+    ),
+    '',
+    'Fix the violations above and retry. The edit has been blocked.',
+  ];
+  return { context: lines.join('\n'), isBlocking: true };
 }
 
 /**
@@ -139,7 +116,7 @@ export function formatViolationContext(output: HookAuditOutput): {
 export async function processCursorEvent(
   rawStdin: string,
   auditFn: (filePaths: string[], projectRoot: string) => Promise<HookAuditOutput> = async (filePaths, projectRoot) =>
-    runHookAudit({ filePaths, projectRoot, failOn: 'critical' })
+    runHookAudit({ filePaths, projectRoot, failOn: 'high' })
 ): Promise<CursorHookResult> {
   const result: CursorHookResult = { exitCode: 0, stdout: '', stderr: '' };
 

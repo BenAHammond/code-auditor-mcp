@@ -158,7 +158,7 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 			violations = append(violations, Violation{
 				File:     filePath,
 				Line:     line,
-				Severity: "suggestion",
+				Severity: "high",
 				Message:  "Import block mixes standard library and third-party imports without grouping",
 				Details: map[string]interface{}{
 					"importCount":        len(file.Imports),
@@ -177,7 +177,7 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 				violations = append(violations, Violation{
 					File:     filePath,
 					Line:     pos.Line,
-					Severity: "warning",
+					Severity: "high",
 					Message:  "Dot import detected - can lead to namespace pollution",
 					Details: map[string]interface{}{
 						"import": importSpec.Path.Value,
@@ -217,7 +217,7 @@ func (a *Analyzer) runErrorAnalysis() []Violation {
 			violations = append(violations, Violation{
 				File:     filePath,
 				Line:     pos.Line,
-				Severity: "suggestion",
+				Severity: "severe",
 				Message:  "Function assigns an error that is never checked, returned, or propagated",
 				Details: map[string]interface{}{
 					"function": funcDecl.Name.Name,
@@ -258,7 +258,7 @@ func (a *Analyzer) runGoroutineAnalysis() []Violation {
 			violations = append(violations, Violation{
 				File:     filePath,
 				Line:     pos.Line,
-				Severity: "warning",
+				Severity: "severe",
 				Message:  "Function launches a goroutine without synchronization",
 				Details: map[string]interface{}{
 					"function": funcDecl.Name.Name,
@@ -305,7 +305,7 @@ func (a *Analyzer) runChannelAnalysis() []Violation {
 			violations = append(violations, Violation{
 				File:     filePath,
 				Line:     pos.Line,
-				Severity: "warning",
+				Severity: "critical",
 				Message:  "Guaranteed deadlock: unbuffered channel is both sent to and received from in the same goroutine",
 				Details: map[string]interface{}{
 					"function": funcDecl.Name.Name,
@@ -329,9 +329,9 @@ func (a *Analyzer) filterViolationsBySeverity(violations []Violation) []Violatio
 	}
 
 	severityOrder := map[string]int{
-		"suggestion": 1,
-		"warning":    2,
-		"critical":   3,
+		"high":     1,
+		"severe":   2,
+		"critical": 3,
 	}
 
 	minLevel := severityOrder[a.options.MinSeverity]

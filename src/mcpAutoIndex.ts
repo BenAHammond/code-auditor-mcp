@@ -24,7 +24,7 @@ export async function runAutoIndex(projectPath: string): Promise<void> {
     projectRoot: root,
     enabledAnalyzers: [],
     indexFunctions: true,
-    minSeverity: 'warning',
+    minSeverity: 'high',
     verbose: false,
     progressCallback: (p) => {
       if (

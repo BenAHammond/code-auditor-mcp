@@ -103,9 +103,9 @@ describe('createDependencyGraphReducer — orphan + reachability', () => {
     const unreferenced = result.violations.filter((v) => v.type === 'unreferenced-module');
     expect(unreferenced).toHaveLength(1);
     expect(unreferenced[0].file).toBe('src/exportedDead.ts');
-    // Promoted suggestion → warning (Spec 11 R5): the method-dispatch fix made
-    // the dead-module signal precise enough to block.
-    expect(unreferenced[0].severity).toBe('warning');
+    // Anchored severe (Spec 11 R5): the method-dispatch fix made the
+    // dead-module signal precise enough to block.
+    expect(unreferenced[0].severity).toBe('severe');
   });
 
   it('does not flag an imported module or an entry-point file', async () => {

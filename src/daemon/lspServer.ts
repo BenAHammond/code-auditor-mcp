@@ -197,9 +197,9 @@ function severityToDiagnosticSeverity(s: Severity): DiagnosticSeverity {
   switch (s) {
     case 'critical':
       return DiagnosticSeverity.Error;
-    case 'warning':
+    case 'severe':
       return DiagnosticSeverity.Warning;
-    case 'suggestion':
+    case 'high':
       return DiagnosticSeverity.Hint;
     default:
       return DiagnosticSeverity.Information;

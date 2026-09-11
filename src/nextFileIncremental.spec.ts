@@ -83,14 +83,14 @@ describe('mergeFindings', () => {
   it('keeps unchanged files, overwrites changed, drops deleted', () => {
     const merged = mergeFindings({
       cachedVisitor: {
-        'keep.ts': [v({ file: 'keep.ts', severity: 'warning' })],
+        'keep.ts': [v({ file: 'keep.ts', severity: 'severe' })],
         'fix.ts': [v({ file: 'fix.ts', severity: 'critical' })],
-        'del.ts': [v({ file: 'del.ts', severity: 'warning' })],
+        'del.ts': [v({ file: 'del.ts', severity: 'severe' })],
       },
       freshVisitor: { 'fix.ts': [] }, // fixed → must become empty, not fall back
       cachedCorpus: [],
-      freshCorpus: [v({ file: 'any.ts', severity: 'warning', analyzer: 'styles' })],
-      freshSchema: [v({ file: 'q.ts', severity: 'suggestion', analyzer: 'schema' })],
+      freshCorpus: [v({ file: 'any.ts', severity: 'severe', analyzer: 'styles' })],
+      freshSchema: [v({ file: 'q.ts', severity: 'high', analyzer: 'schema' })],
       changed: ['fix.ts'],
       added: [],
       deleted: ['del.ts'],
@@ -106,7 +106,7 @@ describe('mergeFindings', () => {
   it('adds fresh findings for added files', () => {
     const merged = mergeFindings({
       cachedVisitor: {},
-      freshVisitor: { 'new.ts': [v({ file: 'new.ts', severity: 'warning' })] },
+      freshVisitor: { 'new.ts': [v({ file: 'new.ts', severity: 'severe' })] },
       cachedCorpus: [],
       freshCorpus: [],
       freshSchema: [],
@@ -122,16 +122,16 @@ describe('mergeFindings', () => {
     // reducers short-circuit (isScoped) and emit nothing, so `freshCorpus` lacks
     // them. Their cached findings must survive, or every warm call silently drops
     // unreferenced-module / circular-dependency / api-contract violations.
-    const cachedDependencyGraph = v({ file: 'a.ts', severity: 'warning', analyzer: 'dependency-graph' });
-    const cachedApiContract = v({ file: 'x.ts', severity: 'warning', analyzer: 'api-contract' });
-    const cachedCrossDomain = v({ file: 'c.ts', severity: 'suggestion', analyzer: 'cross-domain' });
+    const cachedDependencyGraph = v({ file: 'a.ts', severity: 'severe', analyzer: 'dependency-graph' });
+    const cachedApiContract = v({ file: 'x.ts', severity: 'severe', analyzer: 'api-contract' });
+    const cachedCrossDomain = v({ file: 'c.ts', severity: 'high', analyzer: 'cross-domain' });
     const merged = mergeFindings({
       cachedVisitor: {},
       freshVisitor: {},
       cachedCorpus: [cachedDependencyGraph, cachedApiContract, cachedCrossDomain],
       // A scoped run recomputes DB-backed corpus (styles/conventions/cross-domain)
       // but returns nothing for full-corpus-only reducers.
-      freshCorpus: [v({ file: 'd.ts', severity: 'warning', analyzer: 'styles' })],
+      freshCorpus: [v({ file: 'd.ts', severity: 'severe', analyzer: 'styles' })],
       freshSchema: [],
       changed: ['a.ts'],
       added: [],
@@ -152,10 +152,10 @@ describe('splitFindings', () => {
   it('buckets file-local, corpus-DB, and schema findings', () => {
     const split = splitFindings(
       {
-        solid: { violations: [v({ file: '/r/a.ts', severity: 'warning', analyzer: 'solid' })] },
+        solid: { violations: [v({ file: '/r/a.ts', severity: 'severe', analyzer: 'solid' })] },
         invariants: { violations: [v({ file: '/r/b.ts', severity: 'critical', analyzer: 'invariants' })] },
-        styles: { violations: [v({ file: '/r/c.ts', severity: 'warning', analyzer: 'styles' })] },
-        schema: { violations: [v({ file: '/r/q.ts', severity: 'suggestion', analyzer: 'schema' })] },
+        styles: { violations: [v({ file: '/r/c.ts', severity: 'severe', analyzer: 'styles' })] },
+        schema: { violations: [v({ file: '/r/q.ts', severity: 'high', analyzer: 'schema' })] },
       },
       '/r',
     );
@@ -166,7 +166,7 @@ describe('splitFindings', () => {
 
   it('treats unknown analyzers as corpus-DB (never cache unproven-local)', () => {
     const split = splitFindings(
-      { mystery: { violations: [v({ file: '/r/x.ts', severity: 'warning', analyzer: 'mystery' })] } },
+      { mystery: { violations: [v({ file: '/r/x.ts', severity: 'severe', analyzer: 'mystery' })] } },
       '/r',
     );
     expect(split.corpusFindings).toHaveLength(1);
@@ -179,13 +179,13 @@ describe('summarizeViolations', () => {
   it('counts severities and buckets categories', () => {
     const s = summarizeViolations([
       v({ file: 'a.ts', severity: 'critical', analyzer: 'solid' }),
-      v({ file: 'b.ts', severity: 'warning', analyzer: 'solid' }),
-      v({ file: 'c.ts', severity: 'suggestion', analyzer: 'docs' }),
+      v({ file: 'b.ts', severity: 'severe', analyzer: 'solid' }),
+      v({ file: 'c.ts', severity: 'high', analyzer: 'docs' }),
     ]);
     expect(s.totalViolations).toBe(3);
     expect(s.criticalIssues).toBe(1);
-    expect(s.warnings).toBe(1);
-    expect(s.suggestions).toBe(1);
+    expect(s.severe).toBe(1);
+    expect(s.high).toBe(1);
     expect(s.violationsByCategory['solid']).toBe(2);
     expect(s.topIssues[0]).toEqual({ type: 'solid', count: 2 });
   });

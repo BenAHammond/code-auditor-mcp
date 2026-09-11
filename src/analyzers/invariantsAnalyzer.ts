@@ -88,7 +88,7 @@ function engineErrorViolations(errors: string[]): Violation[] {
     file: '.codeauditor.json',
     line: 1,
     column: 1,
-    severity: 'warning' as const,
+    severity: 'severe' as const,
     message: err,
     rule: 'engine-error',
     analyzer: 'invariants',

@@ -226,7 +226,7 @@ export function filterViolationsBySeverity(
     return violations;
   }
 
-  const severityOrder = { critical: 3, warning: 2, suggestion: 1, off: 0 };
+  const severityOrder = { critical: 3, severe: 2, high: 1 };
   const minLevel = severityOrder[minSeverity] || 0;
 
   return violations.filter(v =>
@@ -242,7 +242,7 @@ export function filterViolationsBySeverity(
 export function sortViolations(violations: Violation[]): Violation[] {
   return violations.sort((a, b) => {
     // Sort by severity first
-    const severityOrder = { critical: 3, warning: 2, suggestion: 1, off: 0 };
+    const severityOrder = { critical: 3, severe: 2, high: 1 };
     const severityDiff = severityOrder[b.severity] - severityOrder[a.severity];
     if (severityDiff !== 0) return severityDiff;
 

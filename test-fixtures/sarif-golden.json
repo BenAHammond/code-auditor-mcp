@@ -69,7 +69,7 @@
         },
         {
           "ruleId": "dry/pattern-duplication",
-          "level": "warning",
+          "level": "error",
           "message": {
             "text": "Pattern duplication detected"
           },

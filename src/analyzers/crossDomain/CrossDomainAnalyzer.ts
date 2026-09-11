@@ -15,7 +15,8 @@
  *   R4 — Coverage by Importance:
  *     cross-domain/uncovered-risk        — Top-risk function with no test coverage
  *
- * All findings enter at suggestion severity per the entry rule.
+ * Findings emit at `severe` (read-never-written, no-validator-reachable) or
+ * `high` (written-never-read, multi-table-write, uncovered-risk) severity.
  * Higher tiers require Spec 11 R5 recalibration bars (precision ≥ 0.95
  * AND judged-true ≥ 0.90) on real-corpus evidence.
  */
@@ -415,7 +416,7 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
       file: row.file_path,
       line: row.line,
       column: 0,
-      severity: 'suggestion',
+      severity: 'high',
       message: `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
       rule: 'cross-domain/written-never-read',
       analyzer: ANALYZER_NAME,
@@ -458,7 +459,7 @@ function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Vio
       file: row.file_path,
       line: row.line,
       column: 0,
-      severity: 'suggestion',
+      severity: 'severe',
       message: `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
       rule: 'cross-domain/read-never-written',
       analyzer: ANALYZER_NAME,
@@ -551,7 +552,7 @@ function flagTransactionBoundaryWrites(
         file: funcData.filePath,
         line: funcData.line,
         column: 0,
-        severity: 'suggestion',
+        severity: 'high',
         message: `Function writes to ${allTables.size} distinct tables (threshold: ${txnTableMax}): ${tableList}. This may indicate transaction-boundary risk — consider splitting writes across smaller transactional scopes.`,
         rule: 'cross-domain/multi-table-write',
         analyzer: ANALYZER_NAME,
@@ -788,7 +789,7 @@ function flagUnvalidatedWriters(
           file: w.filePath,
           line: w.line,
           column: 0,
-          severity: 'suggestion',
+          severity: 'severe',
           message:
             `Function '${w.funcName}' does not reach a validator within BFS depth ≤ ${depth}. ` +
             `${coveredCount}/${dirWriterList.length} peer writers in '${dir}' do. ` +
@@ -869,7 +870,7 @@ function detectMeasuredUncovered(indexHandle: IndexHandle, topRiskDecile: number
       file: fn.filePath,
       line: fn.lineNumber ?? 1,
       column: 0,
-      severity: 'suggestion',
+      severity: 'high',
       message:
         `Exported function '${fn.functionName}' (risk ${fn.riskScore.toFixed(3)}) has no measured test coverage. ` +
         `Top imported functions should have test coverage. Import coverage data with 'code-audit coverage --import <path>'.` +
@@ -945,7 +946,7 @@ function flagUnreachedHighRisk(highRiskFns: HighRiskFn[], reachableIds: Set<numb
       file: fn.file_path,
       line: fn.line_number,
       column: 0,
-      severity: 'suggestion',
+      severity: 'high',
       message:
         `Exported function '${fn.name}' (risk ${fn.risk_score.toFixed(3)}) is not reachable from known test files. ` +
         `Add test coverage or import measured coverage with 'code-audit coverage --import <path>'.`,

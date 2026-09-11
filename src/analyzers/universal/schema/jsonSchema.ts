@@ -113,7 +113,7 @@ function loadSchemas(schemaFiles: string[], scan: JsonScanCtx): Map<string, any>
     } catch (error) {
       if (error instanceof SyntaxError) {
         scan.state.violations.push(
-          emitViolation(file, 'warning', `Invalid JSON: ${error.message}`, 'invalid-json')
+          emitViolation(file, 'critical', `Invalid JSON: ${error.message}`, 'invalid-json')
         );
       } else {
         scan.state.errors.push({
@@ -145,7 +145,7 @@ function validatePairedData(schemas: Map<string, any>, scan: JsonScanCtx): void 
             scan.state.violations.push(...dataViolations);
           } else {
             scan.state.violations.push(
-              emitViolation(dataFile, 'warning', 'Invalid JSON in data file', 'invalid-json')
+              emitViolation(dataFile, 'critical', 'Invalid JSON in data file', 'invalid-json')
             );
           }
           scan.state.filesProcessed++;
@@ -178,7 +178,7 @@ function validateDiscoveredData(
       const parsed = scan.readJson(dataFile);
       if (parsed === null) {
         scan.state.violations.push(
-          emitViolation(dataFile, 'warning', 'Invalid JSON: Parse error', 'invalid-json')
+          emitViolation(dataFile, 'critical', 'Invalid JSON: Parse error', 'invalid-json')
         );
       }
     }
@@ -194,7 +194,7 @@ function validateJsonSchema(
   const ctx: ValidationCtx = { filePath, config, violations: [] };
 
   if (!schema.$schema && config.jsonSchemaVersion) {
-    emit(ctx, 'suggestion', 'missing-schema-declaration', 'JSON Schema missing $schema declaration');
+    emit(ctx, 'high', 'missing-schema-declaration', 'JSON Schema missing $schema declaration');
   }
 
   validateSchemaTypes(schema, ctx);
@@ -203,7 +203,7 @@ function validateJsonSchema(
     if (schema.required && Array.isArray(schema.required)) {
       for (const field of schema.required) {
         if (!schema.properties[field]) {
-          emit(ctx, 'warning', 'undefined-required-field', `Required field "${field}" not defined in properties`);
+          emit(ctx, 'severe', 'undefined-required-field', `Required field "${field}" not defined in properties`);
         }
       }
     }
@@ -236,7 +236,7 @@ function checkSchemaTypeField(schema: any, ctx: ValidationCtx, path: string): vo
     const types = Array.isArray(schema.type) ? schema.type : [schema.type];
     for (const type of types) {
       if (!ctx.config.allowedJsonTypes.includes(type)) {
-        emit(ctx, 'warning', 'invalid-type',
+        emit(ctx, 'severe', 'invalid-type',
           `Invalid type "${type}" at ${path || 'root'}. Allowed types: ${ctx.config.allowedJsonTypes.join(', ')}`);
       }
     }
@@ -247,7 +247,7 @@ function checkNumericRangeField(schema: any, ctx: ValidationCtx, path: string): 
   if (schema.type === 'integer' || schema.type === 'number') {
     if (schema.minimum !== undefined && schema.maximum !== undefined) {
       if (schema.minimum > schema.maximum) {
-        emit(ctx, 'warning', 'invalid-range',
+        emit(ctx, 'severe', 'invalid-range',
           `Invalid range at ${path}: minimum (${schema.minimum}) > maximum (${schema.maximum})`);
       }
     }
@@ -300,7 +300,7 @@ function validateAgainstSchema(data: any, schema: any, ctx: ValidationCtx, path 
     const allowedTypes = Array.isArray(schema.type) ? schema.type : [schema.type];
 
     if (!matchesSchemaType(data, actualType, allowedTypes)) {
-      emit(ctx, 'warning', 'type-mismatch',
+      emit(ctx, 'severe', 'type-mismatch',
         `Type mismatch at ${path || 'root'}: expected ${allowedTypes.join(' | ')}, got ${actualType}`);
       return;
     }
@@ -332,15 +332,15 @@ function checkStringConstraints(data: any, schema: any, ctx: ValidationCtx, path
   if (schema.type !== 'string' || typeof data !== 'string') return;
 
   if (schema.minLength !== undefined && data.length < schema.minLength) {
-    emit(ctx, 'warning', 'string-too-short', `String at ${path} too short: ${data.length} < ${schema.minLength}`);
+    emit(ctx, 'severe', 'string-too-short', `String at ${path} too short: ${data.length} < ${schema.minLength}`);
   }
   if (schema.maxLength !== undefined && data.length > schema.maxLength) {
-    emit(ctx, 'warning', 'string-too-long', `String at ${path} too long: ${data.length} > ${schema.maxLength}`);
+    emit(ctx, 'severe', 'string-too-long', `String at ${path} too long: ${data.length} > ${schema.maxLength}`);
   }
   if (schema.pattern) {
     const regex = new RegExp(schema.pattern);
     if (!regex.test(data)) {
-      emit(ctx, 'warning', 'pattern-mismatch', `String at ${path} doesn't match pattern: ${schema.pattern}`);
+      emit(ctx, 'severe', 'pattern-mismatch', `String at ${path} doesn't match pattern: ${schema.pattern}`);
     }
   }
   if (schema.format) {
@@ -480,7 +480,7 @@ const FORMAT_VALIDATORS: Record<string, FormatValidator> = {
 function checkFormatConstraint(data: string, format: string, ctx: ValidationCtx, path: string): void {
   const validator = FORMAT_VALIDATORS[format];
   if (validator && !validator(data)) {
-    emit(ctx, 'warning', 'invalid-format', `Invalid ${format} format at ${path}`);
+    emit(ctx, 'severe', 'invalid-format', `Invalid ${format} format at ${path}`);
   }
 }
 
@@ -488,10 +488,10 @@ function checkNumberConstraints(data: any, schema: any, ctx: ValidationCtx, path
   if ((schema.type !== 'number' && schema.type !== 'integer') || typeof data !== 'number') return;
 
   if (schema.minimum !== undefined && data < schema.minimum) {
-    emit(ctx, 'warning', 'below-minimum', `Value at ${path} below minimum: ${data} < ${schema.minimum}`);
+    emit(ctx, 'severe', 'below-minimum', `Value at ${path} below minimum: ${data} < ${schema.minimum}`);
   }
   if (schema.maximum !== undefined && data > schema.maximum) {
-    emit(ctx, 'warning', 'above-maximum', `Value at ${path} above maximum: ${data} > ${schema.maximum}`);
+    emit(ctx, 'severe', 'above-maximum', `Value at ${path} above maximum: ${data} > ${schema.maximum}`);
   }
 }
 
@@ -499,10 +499,10 @@ function checkArrayConstraints(data: any, schema: any, ctx: ValidationCtx, path:
   if (schema.type !== 'array' || !Array.isArray(data)) return;
 
   if (schema.minItems !== undefined && data.length < schema.minItems) {
-    emit(ctx, 'warning', 'too-few-items', `Array at ${path} has too few items: ${data.length} < ${schema.minItems}`);
+    emit(ctx, 'severe', 'too-few-items', `Array at ${path} has too few items: ${data.length} < ${schema.minItems}`);
   }
   if (schema.maxItems !== undefined && data.length > schema.maxItems) {
-    emit(ctx, 'warning', 'too-many-items', `Array at ${path} has too many items: ${data.length} > ${schema.maxItems}`);
+    emit(ctx, 'severe', 'too-many-items', `Array at ${path} has too many items: ${data.length} > ${schema.maxItems}`);
   }
   if (schema.items) {
     data.forEach((item: any, index: number) => {
@@ -517,7 +517,7 @@ function checkObjectConstraints(data: any, schema: any, ctx: ValidationCtx, path
   if (schema.required && Array.isArray(schema.required)) {
     for (const requiredField of schema.required) {
       if (!(requiredField in data)) {
-        emit(ctx, 'warning', 'missing-required-field', `Missing required field "${requiredField}" at ${path}`);
+        emit(ctx, 'severe', 'missing-required-field', `Missing required field "${requiredField}" at ${path}`);
       }
     }
   }
@@ -541,7 +541,7 @@ function checkUnexpectedProperties(data: any, schema: any, ctx: ValidationCtx, p
   const definedKeys = new Set(Object.keys(schema.properties || {}));
   for (const key of Object.keys(data)) {
     if (!definedKeys.has(key)) {
-      emit(ctx, 'warning', 'unexpected-property', `Unexpected property "${key}" at ${path}`);
+      emit(ctx, 'severe', 'unexpected-property', `Unexpected property "${key}" at ${path}`);
     }
   }
 }
@@ -558,7 +558,7 @@ function checkAdditionalProperties(data: any, schema: any, ctx: ValidationCtx, p
 function checkEnumConstraint(data: any, schema: any, ctx: ValidationCtx, path: string): void {
   if (schema.enum && Array.isArray(schema.enum)) {
     if (!schema.enum.includes(data)) {
-      emit(ctx, 'warning', 'enum-mismatch',
+      emit(ctx, 'severe', 'enum-mismatch',
         `Value at ${path} not in enum: ${JSON.stringify(data)}. Allowed: ${schema.enum.join(', ')}`);
     }
   }

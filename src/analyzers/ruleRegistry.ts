@@ -7,8 +7,8 @@ import type { Resolution } from '../types.js';
  * This is the ONE place that asserts "each rule ID has exactly one emitter."
  * If you add a new emitted ID to an analyzer, add it here. The enforcement
  * test (`registry enforces one emitter per rule ID`) fails the suite on
- * duplicate entries — preventing the `severityOverrides` collision class
- * where two analyzers emit the same string.
+ * duplicate entries — preventing the collision class where two analyzers
+ * emit the same string.
  *
  * Rider 2, Spec 19: the `type-mismatch` duplicate between
  * UniversalSchemaAnalyzer (rule) and SchemaValidator (violationType) was
@@ -17,8 +17,7 @@ import type { Resolution } from '../types.js';
  *
  * NOTE: `contractType` is NOT in the buildFingerprintInput rule-ID chain.
  * APIContractAnalyzer violations currently resolve rule='' in fingerprints.
- * They are listed here for collision detection nonetheless, because
- * severityOverrides may use a different resolution path.
+ * They are listed here for collision detection nonetheless.
  *
  * NOTE: invariants analyzer rule IDs are user-defined and variable —
  * `config-error` and `engine-error` are the only fixed, internal ones.

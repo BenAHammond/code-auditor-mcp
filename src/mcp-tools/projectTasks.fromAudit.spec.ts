@@ -32,7 +32,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             file: 'src/App.tsx',
             line: 88,
             rule: 'single-responsibility',
-            severity: 'warning',
+            severity: 'severe',
             message: 'Class "Helper" appears to have multiple responsibilities',
             principle: 'single-responsibility',
             className: 'Helper',
@@ -49,7 +49,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             analyzer: 'dry',
             file: 'src/utils.ts',
             line: 15,
-            severity: 'suggestion',
+            severity: 'high',
             message: 'Similar code found in 3 locations',
             type: 'similar-code',
             functionName: 'parseConfig',
@@ -80,8 +80,8 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
       totalFiles: 10,
       totalViolations: 4,
       criticalIssues: 2,
-      warnings: 1,
-      suggestions: 1
+      severe: 1,
+      high: 1
     },
     recommendations: [],
     metadata: {
@@ -139,7 +139,7 @@ describe('handleProjectTasks from_audit', () => {
 
   // ---- Tests ----
 
-  it('creates tasks from audit results with default filters (critical + warning)', async () => {
+  it('creates tasks from audit results with default filters (all severities)', async () => {
     await storeFixtureAudit();
 
     const result = await handleProjectTasks({
@@ -148,15 +148,16 @@ describe('handleProjectTasks from_audit', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.created).toBe(3); // 2 critical + 1 warning (suggestion excluded by default)
+    expect(result.created).toBe(4); // 2 critical + 1 severe + 1 high (all included by default)
     expect(result.skipped).toBe(0);
     expect(Array.isArray(result.tasks)).toBe(true);
-    expect(result.tasks).toHaveLength(3);
+    expect(result.tasks).toHaveLength(4);
 
     // Verify severity→priority mapping
     const priorities = result.tasks.map((t: any) => t.priority);
     expect(priorities).toContain('high'); // critical → high
-    expect(priorities).toContain('medium'); // warning → medium
+    expect(priorities).toContain('medium'); // severe → medium
+    expect(priorities).toContain('low'); // high → low
 
     // Verify source is 'audit'
     for (const task of result.tasks) {
@@ -166,19 +167,19 @@ describe('handleProjectTasks from_audit', () => {
     }
   });
 
-  it('includes suggestion severity when explicitly requested', async () => {
+  it('includes high severity when explicitly requested', async () => {
     await storeFixtureAudit();
 
     const result = await handleProjectTasks({
       action: 'from_audit',
       projectPath,
-      severities: ['critical', 'warning', 'suggestion']
+      severities: ['critical', 'severe', 'high']
     });
 
     expect(result.success).toBe(true);
     expect(result.created).toBe(4); // all violations
     const priorities = result.tasks.map((t: any) => t.priority);
-    expect(priorities.filter((p: string) => p === 'low')).toHaveLength(1); // suggestion → low
+    expect(priorities.filter((p: string) => p === 'low')).toHaveLength(1); // high → low
   });
 
   it('filters by analyzer', async () => {
@@ -191,7 +192,7 @@ describe('handleProjectTasks from_audit', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.created).toBe(0); // dry violation is severity 'suggestion', excluded by default
+    expect(result.created).toBe(1); // dry violation is severity 'high', included by default
     expect(result.skipped).toBe(0);
   });
 
@@ -202,7 +203,7 @@ describe('handleProjectTasks from_audit', () => {
       action: 'from_audit',
       projectPath,
       analyzers: ['dry'],
-      severities: ['suggestion']
+      severities: ['high']
     });
 
     expect(result.success).toBe(true);
@@ -232,7 +233,7 @@ describe('handleProjectTasks from_audit', () => {
       action: 'from_audit',
       projectPath
     });
-    expect(first.created).toBe(3);
+    expect(first.created).toBe(4);
 
     // Second run with same audit should skip all
     const second = await handleProjectTasks({
@@ -241,7 +242,7 @@ describe('handleProjectTasks from_audit', () => {
     });
     expect(second.success).toBe(true);
     expect(second.created).toBe(0);
-    expect(second.skipped).toBe(3);
+    expect(second.skipped).toBe(4);
   });
 
   it('creates new task when fingerprint only matches a completed task (resurfaced violation)', async () => {
@@ -252,7 +253,7 @@ describe('handleProjectTasks from_audit', () => {
       action: 'from_audit',
       projectPath
     });
-    expect(first.created).toBe(3);
+    expect(first.created).toBe(4);
 
     // Complete all created tasks
     for (const task of first.tasks) {
@@ -265,7 +266,7 @@ describe('handleProjectTasks from_audit', () => {
       projectPath
     });
     expect(second.success).toBe(true);
-    expect(second.created).toBe(3);
+    expect(second.created).toBe(4);
     expect(second.skipped).toBe(0);
 
     // Verify new task IDs are different from completed ones
@@ -283,7 +284,7 @@ describe('handleProjectTasks from_audit', () => {
       action: 'from_audit',
       projectPath
     });
-    expect(first.created).toBe(3);
+    expect(first.created).toBe(4);
 
     // Complete all tasks
     for (const task of first.tasks) {
@@ -303,7 +304,7 @@ describe('handleProjectTasks from_audit', () => {
       projectPath: otherPath,
       auditJobId: otherAuditId
     });
-    expect(other.created).toBe(3);
+    expect(other.created).toBe(4);
     // Since the completed tasks have different project paths,
     // fingerprints from the other project should NOT match because
     // the fingerprint includes the file path which is the same.
@@ -372,8 +373,8 @@ describe('handleProjectTasks from_audit', () => {
     });
 
     expect(result.success).toBe(true);
-    // Should have tasks from first audit (3 violations), not second (1 violation)
-    expect(result.created).toBe(3);
+    // Should have tasks from first audit (4 violations), not second (1 violation)
+    expect(result.created).toBe(4);
     expect(result.auditJobId).toBe(firstId);
   });
 
@@ -404,7 +405,7 @@ describe('handleProjectTasks from_audit', () => {
     const result = await handleProjectTasks({
       action: 'from_audit',
       projectPath,
-      severities: ['critical', 'warning', 'suggestion']
+      severities: ['critical', 'severe', 'high']
     });
 
     const fingerprints = result.tasks.map((t: any) => t.fingerprint);

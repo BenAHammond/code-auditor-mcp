@@ -6,22 +6,25 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 96 / 106
-- **critical:** 7
-- **severe:** 35
-- **high:** 54
+- **Assigned:** 101 / 111
+- **critical:** 8
+- **severe:** 37
+- **high:** 56
 
-## Inventory note (reconciles to 106, not the spec's 105)
+## Inventory note (reconciles to 111, not the spec's 105)
 
-The spec calls for 105 rules. The accurate inventory is **106** rules, which
-decompose into **96 live** (have an emission site) plus **10 `cannot-fire`**
+The spec calls for 105 rules. The accurate inventory is **111** rules, which
+decompose into **101 live** (have an emission site) plus **10 `cannot-fire`**
 (registered but structurally unreachable — see `CANNOT_FIRE_RULES` in
 `src/analyzers/applicability.ts`).
 
-- **102** in `RULE_REGISTRY`, plus **4 unregistered live** emit sites —
+- **102** in `RULE_REGISTRY`, plus **9 unregistered live** emit sites —
   `dry/diverging-clone` (`auditRunner.ts`), `missing-schemas`
   (`UniversalSchemaAnalyzer.ts`), `reserved-word` and `too-many-queries`
-  (`schema/codeAnalysis.ts`).
+  (`schema/codeAnalysis.ts`), and five Go-subprocess rules in `analyzer.go`
+  (`imports/import-style`, `imports/import-organization`,
+  `errors/error-handling`, `goroutines/concurrency`,
+  `channels/channel-deadlock`).
 - Of the 102 registered, **10 `cannot-fire`**: all six `api-contract` rules,
   `schema/file-error`, and three `schema-validator` rules (`field-mismatch`,
   `constraint-mismatch`, `version-mismatch`).
@@ -32,7 +35,7 @@ note and **no** severity — there is nothing to gate until an emission site exi
 Per-analyzer counts (live / cannot-fire): solid 13/0, secrets 1/0, data-access 6/0,
 dry 6/0, documentation 6/0, react 7/0, schema 23/1, schema-validator 3/3,
 api-contract 0/6, dependency-graph 9/0, invariants 2/0, styles 10/0,
-conventions 5/0, cross-domain 5/0.
+conventions 5/0, cross-domain 5/0, go-subprocess 5/0.
 
 ## Measuring stick for the "Disagrees" column
 
@@ -161,7 +164,7 @@ and `raw-element` is dynamic (`warning` when `componentMap` is set, else
 | `missing-props` | warning | high | Missing prop-types is a type-safety smell that has not bitten. | yes |
 | `no-error-boundary` | warning | severe | A tree without an error boundary crashes the whole app on one throw — anchored severe. | no |
 | `performance` | warning | high | Missing memoization causes re-renders, a performance smell that has not bitten. | yes |
-| `accessibility` | warning | severe | An inaccessible component fails WCAG — a defect that surfaces for assistive-tech users. | yes |
+| `accessibility` | warning | severe | An inaccessible component fails WCAG — a defect that surfaces for assistive-tech users. | no |
 | `raw-element` | warning | high | A raw element where the project uses a wrapper is a convention smell. | yes |
 
 ---
@@ -321,9 +324,28 @@ smells.
 
 ---
 
+## Session 15 — go-subprocess (5 rules)
+
+Emit site: `src/languages/go/analyzer-src/analyzer.go` (the `imports`, `errors`,
+`goroutines`, and `channels` analyzers — the non-SOLID half of the Go subprocess;
+the SOLID half was assigned in Session 1). These five rules were discovered
+during the R4 emit-site sweep: they are live (they fire on Go files) but were
+absent from the original 105-rule inventory, which is why the running total
+reconciles to 111, not 106.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `imports/import-organization` | suggestion | high | Mis-grouped imports (stdlib vs third-party) are a consistency gap that has not bitten. | no |
+| `imports/import-style` | warning | high | A dot import is a latent namespace-pollution hazard that has not bitten until a name collides. | yes |
+| `errors/error-handling` | suggestion | severe | A dropped error is silently swallowed — a defect that surfaces when the error path runs. | yes |
+| `goroutines/concurrency` | warning | severe | A goroutine launched with no synchronization is a race that surfaces intermittently. | no |
+| `channels/channel-deadlock` | warning | critical | A guaranteed same-goroutine unbuffered-channel deadlock is broken now. | yes |
+
+---
+
 ## Sweep complete
 
-All 106 rules accounted for: 96 live assigned across 14 analyzer sessions
-(`critical` 7, `severe` 35, `high` 54) plus 10 `cannot-fire` rules noted with no
+All 111 rules accounted for: 101 live assigned across 15 analyzer sessions
+(`critical` 8, `severe` 37, `high` 56) plus 10 `cannot-fire` rules noted with no
 severity. Every row above records current (effective) severity, new level,
 reason, and whether it departs from the mechanical remap baseline.

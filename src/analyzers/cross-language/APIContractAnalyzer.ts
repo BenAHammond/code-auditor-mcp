@@ -92,7 +92,7 @@ export class APIContractAnalyzer {
         violations.push({
           file: call.file,
           line: call.line,
-          severity: 'warning',
+          severity: 'severe',
           message: `API call to ${call.method} ${call.url} has no matching endpoint`,
           rule: 'missing-endpoint',
           contractType: 'missing-endpoint',
@@ -127,7 +127,7 @@ export class APIContractAnalyzer {
         violations.push({
           file: call.file,
           line: call.line,
-          severity: 'warning',
+          severity: 'severe',
           message: `HTTP method mismatch: call uses ${call.method}, endpoint expects ${endpoint.method}`,
           rule: 'method-mismatch',
           contractType: 'method-mismatch',
@@ -170,7 +170,7 @@ export class APIContractAnalyzer {
         violations.push({
           file: call.file,
           line: call.line,
-          severity: 'warning',
+          severity: 'severe',
           message: `Using deprecated API endpoint: ${endpoint.method} ${endpoint.path}`,
           rule: 'api-type-mismatch',
           contractType: 'api-type-mismatch', // Reusing type for deprecated
@@ -204,7 +204,7 @@ export class APIContractAnalyzer {
         violations.push({
           file: call.file,
           line: call.line,
-          severity: 'warning',
+          severity: 'severe',
           message: `API call missing required authentication for endpoint ${endpoint.method} ${endpoint.path}`,
           rule: 'auth-mismatch',
           contractType: 'auth-mismatch',
@@ -288,7 +288,7 @@ export class APIContractAnalyzer {
       violations.push({
         file: call.file,
         line: call.line,
-        severity: 'warning',
+        severity: 'severe',
         message: `Type mismatch: endpoint returns object, call expects array`,
         rule: 'api-type-mismatch',
         contractType: 'api-type-mismatch',

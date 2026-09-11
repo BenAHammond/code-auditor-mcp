@@ -1,14 +1,13 @@
 /**
- * Spec-19 R3 — SQL injection context gating (severity: warning)
+ * Spec-19 R3 — SQL injection context gating (severity: critical)
  *
  * Verifies:
  * - Item 9: Receiver gating — template literals passed to non-DB functions
  *   (page.evaluate, console.log) are NOT flagged as sql-injection-risk.
  * - Item 10: Parameterized queries with placeholders ($1 / ? / :param) produce
  *   NO finding — they are the remediation, not the problem.
- * - R3.3 (reverted in Spec 33/34): the blanket demotion to `suggestion` is
- *   undone — sql-injection-risk fires at its true `warning` severity (R7 keeps
- *   `critical` reserved for user invariants, so `warning` is full severity).
+ * - Spec 54: sql-injection-risk ships at `critical` (string-concatenated SQL
+ *   from input is exploitable now), so `critical` is full severity.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -88,8 +87,8 @@ export { getAnalytics };
 
 /**
  * Item 10 negative control: Template literal WITHOUT parameterized
- * placeholders. Should get sql-injection-risk at WARNING severity
- * (R3.3's blanket demotion to suggestion was reverted in Spec 33/34).
+ * placeholders. Should get sql-injection-risk at critical severity
+ * (Spec 54 assigns sql-injection-risk to critical — exploitable now).
  */
 const NON_PARAMETERIZED_INJECTION = `
 import { query } from './db';
@@ -139,7 +138,7 @@ type TestCase = {
   /** Expected number of sql-injection-risk violations */
   expectedCount: number;
   /** Expected severity of the first sql-injection-risk violation (if any) */
-  expectedSeverity?: 'warning' | 'suggestion';
+  expectedSeverity?: 'critical' | 'severe' | 'high';
 };
 
 const TEST_CASES: TestCase[] = [
@@ -152,7 +151,7 @@ const TEST_CASES: TestCase[] = [
     name: 'db.query with template literal — should trigger sql-injection-risk (positive control)',
     code: DB_QUERY_TEMPLATE,
     expectedCount: 1,
-    expectedSeverity: 'warning',
+    expectedSeverity: 'critical',
   },
   {
     name: 'parameterized query with dynamic table — should produce NO finding (placeholders = remediation)',
@@ -160,10 +159,10 @@ const TEST_CASES: TestCase[] = [
     expectedCount: 0,
   },
   {
-    name: 'non-parameterized injection — should be warning (R3.3 demotion reverted)',
+    name: 'non-parameterized injection — should be critical (Spec 54)',
     code: NON_PARAMETERIZED_INJECTION,
     expectedCount: 1,
-    expectedSeverity: 'warning',
+    expectedSeverity: 'critical',
   },
   {
     // Spec 17 R2: template literals are SQL candidates only when they sit

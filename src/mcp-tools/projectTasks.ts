@@ -307,7 +307,7 @@ export async function handleProjectTasks(
         // 2. Filters
         const severities: string[] = Array.isArray(args.severities)
           ? (args.severities as string[]).map((s) => String(s).trim()).filter(Boolean)
-          : ['critical', 'warning'];
+          : ['critical', 'severe', 'high'];
         const analyzers: string[] | undefined = Array.isArray(args.analyzers)
           ? (args.analyzers as string[]).map((s) => String(s).trim()).filter(Boolean)
           : undefined;
@@ -325,8 +325,8 @@ export async function handleProjectTasks(
 
         const priorityMap: Record<string, 'high' | 'medium' | 'low'> = {
           critical: 'high',
-          warning: 'medium',
-          suggestion: 'low'
+          severe: 'medium',
+          high: 'low'
         };
 
         let created = 0;
@@ -410,9 +410,7 @@ export async function handleProjectTasks(
                 ]
                   .filter(Boolean)
                   .join('\n\n'),
-                priority:
-                  priorityMap[severity] ??
-                  priorityMap.warning,
+                priority: priorityMap[severity] ?? 'low',
                 source: 'audit',
                 relatedFiles: file ? [file] : [],
                 relatedSymbols: symbol ? [symbol] : [],

@@ -12,8 +12,8 @@
  *   - tool_input.file_path contains the edited file
  *
  * Exit codes:
- *   0 — no critical violations found
- *   2 — critical violations found (blocking feedback loop)
+ *   0 — no violations found
+ *   2 — violations found (blocking feedback loop — severity is urgency, not permission)
  *   1 — internal error (adapter crash, not violation-related)
  */
 
@@ -53,44 +53,27 @@ export function formatCodexFeedback(output: HookAuditOutput): {
     return { feedback: null, isBlocking: false };
   }
 
+  // Every finding is a defect — severity is urgency (how fast to act), not
+  // permission (whether to block). All three levels gate the edit.
   const criticals = output.violations.filter((v) => v.severity === 'critical');
 
-  if (criticals.length > 0) {
-    return {
-      feedback: {
-        decision: 'block',
-        reason: `code-auditor found ${criticals.length} critical violation(s)`,
-        violations: output.violations.map((v) => ({
-          severity: v.severity,
-          message: v.message,
-          file: v.file,
-          line: v.line,
-          rule: v.rule,
-          suggestion: v.suggestion || null,
-        })),
-      },
-      isBlocking: true,
-    };
-  }
-
-  // Non-critical only
-  const warnings = output.violations.filter((v) => v.severity === 'warning');
-  if (warnings.length > 0) {
-    return {
-      feedback: {
-        decision: 'allow',
-        warnings: warnings.map((v) => ({
-          message: v.message,
-          file: v.file,
-          line: v.line,
-          suggestion: v.suggestion || null,
-        })),
-      },
-      isBlocking: false,
-    };
-  }
-
-  return { feedback: null, isBlocking: false };
+  return {
+    feedback: {
+      decision: 'block',
+      reason: criticals.length > 0
+        ? `code-auditor found ${criticals.length} critical violation(s)`
+        : `code-auditor found ${output.violations.length} violation(s)`,
+      violations: output.violations.map((v) => ({
+        severity: v.severity,
+        message: v.message,
+        file: v.file,
+        line: v.line,
+        rule: v.rule,
+        suggestion: v.suggestion || null,
+      })),
+    },
+    isBlocking: true,
+  };
 }
 
 /**
@@ -100,7 +83,7 @@ export function formatCodexFeedback(output: HookAuditOutput): {
 export async function processCodexEvent(
   rawStdin: string,
   auditFn: (filePaths: string[], projectRoot: string) => Promise<HookAuditOutput> = async (filePaths, projectRoot) =>
-    runHookAudit({ filePaths, projectRoot, failOn: 'critical' }),
+    runHookAudit({ filePaths, projectRoot, failOn: 'high' }),
   resolveRoot: (event: CodexPostToolUse) => string = (event) =>
     event.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
 ): Promise<CodexHookResult> {

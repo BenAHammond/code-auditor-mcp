@@ -25,7 +25,7 @@ function makeViolation(overrides: Partial<Violation> = {}): Violation {
     file: 'src/example.ts',
     line: 42,
     column: 10,
-    severity: 'warning',
+    severity: 'severe',
     message: 'A code quality issue was detected',
     ...overrides,
   };
@@ -38,8 +38,8 @@ function makeAuditResult(analyzerResults: Record<string, any> = {}): AuditResult
       totalFiles: 3,
       totalViolations: 1,
       criticalIssues: 0,
-      warnings: 1,
-      suggestions: 0,
+      severe: 1,
+      high: 0,
       violationsByCategory: { solid: 1 },
       topIssues: [{ type: 'single-responsibility', count: 1 }],
     },
@@ -124,7 +124,7 @@ describe('SARIF Report Generator', () => {
             makeViolation({
               file: 'src/other.ts',
               line: 15,
-              severity: 'warning',
+              severity: 'severe',
               message: 'Code appears to be duplicated',
               type: 'exact-duplicate',
               functionName: 'fn2',
@@ -242,11 +242,11 @@ describe('SARIF Report Generator', () => {
       expect(parsed.runs[0].results[0].level).toBe('error');
     });
 
-    it('maps warning to warning', () => {
+    it('maps severe to error', () => {
       const result = makeAuditResult({
         'solid-analyzer': {
           violations: [
-            makeViolation({ severity: 'warning', principle: 'open-closed' }),
+            makeViolation({ severity: 'severe', principle: 'open-closed' }),
           ],
           status: makeVisitorStatus(1),
           executionTime: 10,
@@ -256,15 +256,15 @@ describe('SARIF Report Generator', () => {
       const sarif = generateSARIFReport(result);
       const parsed = JSON.parse(sarif);
 
-      expect(parsed.runs[0].results[0].level).toBe('warning');
+      expect(parsed.runs[0].results[0].level).toBe('error');
     });
 
-    it('maps suggestion to note', () => {
+    it('maps high to error', () => {
       const result = makeAuditResult({
         'documentation-analyzer': {
           violations: [
             makeViolation({
-              severity: 'suggestion',
+              severity: 'high',
               message: 'Function lacks documentation',
               functionName: 'foo',
             }),
@@ -277,7 +277,7 @@ describe('SARIF Report Generator', () => {
       const sarif = generateSARIFReport(result);
       const parsed = JSON.parse(sarif);
 
-      expect(parsed.runs[0].results[0].level).toBe('note');
+      expect(parsed.runs[0].results[0].level).toBe('error');
     });
   });
 
@@ -292,7 +292,7 @@ describe('SARIF Report Generator', () => {
               functionName: 'fn1',
             }),
             makeViolation({
-              severity: 'warning',
+              severity: 'severe',
               principle: 'open-closed',
               functionName: 'fn2',
             }),
@@ -325,7 +325,7 @@ describe('SARIF Report Generator', () => {
             }),
             makeViolation({
               file: 'src/b.ts',
-              severity: 'warning',
+              severity: 'severe',
               principle: 'single-responsibility',
               functionName: 'fnB',
             }),
@@ -511,7 +511,7 @@ describe('SARIF Report Generator', () => {
         'documentation-analyzer': {
           violations: [
             makeViolation({
-              severity: 'suggestion',
+              severity: 'high',
               message: 'Function lacks documentation',
               suggestion: 'Add JSDoc comment describing the function purpose and parameters',
               functionName: 'doWork',
@@ -629,7 +629,7 @@ describe('buildFullRuleId', () => {
           makeViolation({
             file: 'src/utils.ts',
             line: 15,
-            severity: 'warning',
+            severity: 'severe',
             message: 'Pattern duplication detected',
             type: 'pattern-duplication',
             functionName: 'formatDate',

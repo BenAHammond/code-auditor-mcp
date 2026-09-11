@@ -2,7 +2,7 @@
  * Invariant rule type definitions for Spec 05
  */
 
-export type RuleSeverity = 'critical' | 'warning' | 'suggestion';
+export type RuleSeverity = 'critical' | 'severe' | 'high';
 export type RuleKind = 'import-ban' | 'call-constraint' | 'module-boundary' | 'naming' | 'ast-pattern' | 'style-mechanism' | 'no-raw-values';
 
 /** Base fields shared by all rule kinds */

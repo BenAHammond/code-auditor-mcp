@@ -6,7 +6,7 @@
  * R2.3: Template expressions resolve to wildcards for known-table matching.
  * R2.4: Unknown-table findings include SQL kind, line, and Levenshtein suggestions.
  * R2.5: Legacy scan-all-strings path DELETED.
- * R7:   schema/unknown-table severity is "suggestion".
+ * R7:   schema/unknown-table severity is "critical".
  */
 
 import { readFileSync } from 'node:fs';
@@ -163,7 +163,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
         ast.filePath,
         { line: 1, column: 1 },
         'No database schemas loaded for analysis',
-        { severity: 'warning', rule: 'missing-schemas', symbol: 'top-level:missing-schemas' }
+        { severity: 'severe', rule: 'missing-schemas', symbol: 'top-level:missing-schemas' }
       ));
       return violations;
     }

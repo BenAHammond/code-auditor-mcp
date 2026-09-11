@@ -249,32 +249,38 @@ describe('Skill file (SKILL.md)', () => {
 });
 
 /**
- * Spec 46 R1 — guard the skill docs against re-teaching the reverted gate model.
+ * Spec 46 R1 (extended by Spec 54) — guard the skill docs against re-teaching a
+ * reverted gate model.
  *
- * Spec 45 reverted the per-rule `gating: true` opt-in, the binary (severity-free)
- * gate, and diff-scoped enforcement. Those three ideas live in the gate code at
- * `src/enforcement/gate.ts` + `src/config/defaults.ts` (`DEFAULT_BLOCKING_SEVERITIES`
- * = critical + warning). The skill files are what a consuming agent reads to learn
- * how the gate behaves, so a drift here is the highest-leverage place the reverted
- * model could survive. This test fails if any of the three skill files re-mentions
- * the pre-Spec-45 model, so the docs and the code cannot silently diverge again.
+ * Two reversions are guarded here. Spec 45 reverted the per-rule `gating: true`
+ * opt-in, the binary (severity-free) gate, and diff-scoped enforcement. Spec 54
+ * then removed the configurable gate (`gateSeverities`), per-path severity
+ * capping (`severityOverrides`), and the `warning`/`suggestion` vocabulary —
+ * every reading is now `critical`, `severe`, or `high`, and every one of them
+ * blocks. The skill files are what a consuming agent reads to learn how the gate
+ * behaves, so drift here is the highest-leverage place a reverted model could
+ * survive. This test fails if any of the three skill files re-mentions either
+ * reverted model, so the docs and the code cannot silently diverge again.
  */
 describe('Skill gate-model drift guard (Spec 46 R1)', () => {
   const SKILL_FILES = ['SKILL.md', 'SKILL-RULE-KINDS.md', 'SKILL-SEARCH.md'];
   const SKILL_DIR = resolve(PLUGIN_DIR, 'skills', 'code-auditor');
 
-  // Phrases that describe the reverted (pre-Spec-45) gate. Each is a specific
-  // claim a consuming agent would act on wrongly. Kept as literal substrings so
-  // the test fails on the exact regression, not on fuzzy prose. (The bare word
-  // "per-rule" is deliberately NOT here: the corrected SKILL-RULE-KINDS.md
-  // legitimately says "there is no per-rule opt-in", and that negation must pass.)
+  // Phrases that describe a reverted gate model. Each is a specific claim a
+  // consuming agent would act on wrongly. Kept as literal substrings so the test
+  // fails on the exact regression, not on fuzzy prose. (The bare words
+  // "per-rule" and "severity" are deliberately NOT here: the corrected docs
+  // legitimately say "there is no per-rule opt-in" and "severity is urgency",
+  // and those negations must pass.)
   const REVERTED_PHRASES = [
     'gating: true', // the per-rule opt-in (removed — every rule gates)
     'gating:true',
-    'pass the gate', // warnings/suggestions "pass the gate" (removed — severity gates)
+    'pass the gate', // warnings/suggestions "pass the gate" (removed — every severity gates)
     'regardless of severity', // binary gate (removed — severity decides)
     'per-rule gating', // per-rule gating flag (removed)
     'per-rule flag', // per-rule gating flag (removed)
+    'gateSeverities', // the configurable gate (Spec 54 — removed)
+    'severityOverrides', // per-path severity capping (Spec 54 — removed)
   ];
 
   for (const file of SKILL_FILES) {
@@ -284,8 +290,10 @@ describe('Skill gate-model drift guard (Spec 46 R1)', () => {
         expect(
           content.toLowerCase().includes(phrase.toLowerCase()),
           `${file} re-mentions the reverted gate model: "${phrase}". ` +
-            'Spec 45 reverted it — every rule gates, severity decides blocking ' +
-            '(critical + warning by default), and enforcement is not diff-scoped.',
+            'Spec 45 reverted the per-rule gate and Spec 54 removed the ' +
+            'configurable gate and the warning/suggestion vocabulary — every ' +
+            'reading is critical, severe, or high, every severity blocks, and ' +
+            'enforcement is not diff-scoped.',
         ).toBe(false);
       }
     });
@@ -293,12 +301,13 @@ describe('Skill gate-model drift guard (Spec 46 R1)', () => {
 
   it('SKILL.md teaches the current gate model', () => {
     const content = readFileSync(resolve(SKILL_DIR, 'SKILL.md'), 'utf-8');
-    // Severity-scoped, not per-rule, and explicitly not diff-scoped.
+    // Every severity is gating, not per-rule, and explicitly not diff-scoped.
     expect(content).toContain('not diff-scoped');
-    expect(content).toContain('gateSeverities');
-    // Both corrected passages name critical + warning as the default block set.
+    expect(content).toContain('no non-blocking severity tier');
+    // All three severities name themselves as gating defects.
     expect(content).toContain('critical');
-    expect(content).toContain('warning');
+    expect(content).toContain('severe');
+    expect(content).toContain('high');
   });
 });
 
