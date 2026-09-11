@@ -6,9 +6,9 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 84 / 106
-- **critical:** 6
-- **severe:** 32
+- **Assigned:** 86 / 106
+- **critical:** 7
+- **severe:** 33
 - **high:** 36
 
 ## Inventory note (reconciles to 106, not the spec's 105)
@@ -250,3 +250,15 @@ finding, same level.
 | `orphaned-nodes` | suggestion | severe | A node nothing connects to is dead code — same class as `unreferenced-module`. | yes |
 | `review-orphans` | suggestion | severe | The action form of `orphaned-nodes`; same finding. | yes |
 | `unreferenced-module` | warning | severe | A module nothing imports is dead code — anchored severe. | no |
+
+---
+
+## Session 11 — invariants (2 rules)
+
+Emit sites: `invariantsAnalyzer.ts`. These are the two *fixed* internal IDs;
+user-defined invariant rule IDs vary per project and are not in scope here.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `config-error` | critical | critical | A malformed `.codeauditor.json` means declared laws are not enforced — broken now. | no |
+| `engine-error` | warning | severe | The rule engine threw on a rule — a defect that surfaces as an unenforced law. | no |
