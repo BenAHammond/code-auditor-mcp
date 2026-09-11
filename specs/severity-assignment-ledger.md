@@ -6,9 +6,9 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 63 / 106
+- **Assigned:** 69 / 106
 - **critical:** 6
-- **severe:** 24
+- **severe:** 27
 - **high:** 32
 
 ## Inventory note (reconciles to 106, not the spec's 105)
@@ -199,3 +199,19 @@ rules), `UniversalSchemaAnalyzer.ts` (`missing-schemas`). `file-error` is
 | `too-many-queries` | warning | high | A function issuing many queries is a chatty-perf smell that has not bitten. | yes |
 
 `cannot-fire` (no severity): `file-error`.
+
+---
+
+## Session 8 — schema-validator (3 live + 3 cannot-fire)
+
+Emit sites: `SchemaValidator.ts`. `field-mismatch`, `constraint-mismatch`, and
+`version-mismatch` are `cannot-fire` (legacy alias / unpopulated extractor
+fields), so they get no severity.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `schema-field-mismatch` | warning | severe | Declared field type-name strings differ across schemas — anchored severe. | no |
+| `missing-field` | warning | severe | A field is present in one schema but absent in the other — surfaces on integration. | no |
+| `extra-field` | warning | severe | A field is present where the schema does not declare it — surfaces on integration. | no |
+
+`cannot-fire` (no severity): `field-mismatch`, `constraint-mismatch`, `version-mismatch`.
