@@ -2,6 +2,34 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.4] — 2026-09-12
+
+### Spec 55 follow-up — two over-firing regressions corrected
+
+The Spec 55 acceptance pass sampled the new findings — the largest block (381
+"narrower declared scale" off-scale findings) plus the unfiltered-query deltas —
+and both numbers the sample flagged turned out to be real bugs, not
+explanations. Two guards were restored; re-measured corpus baselines are in
+`specs/corpus-baselines.md`.
+
+- **`unfiltered-query` re-added the `tables.length > 0` guard (R5 fix).** The
+  reads→writes re-target had dropped the old rule's guard, so a DELETE/UPDATE-verb
+  *method call* that extracts no string table read as a SQL mass-write — a plain
+  `this.update({…})` / `this.listeners.delete(x)` on an in-memory class, or an ORM
+  `db.update(schema).set(…).where(…)` whose table is a schema object / runtime
+  variable. Re-adding it drops 28 phantom/over-fired findings (recall −23, hhra
+  −4, knex −1). A genuine unfiltered string-literal write
+  (`db.exec("DELETE FROM users")`) still fires (pinned by `unfilteredQuery.spec.ts`).
+  The remaining ORM `.where()` gap — keyword-only `hasQueryFilter` cannot read a
+  Drizzle/Prisma/knex `.where()` chain — is pre-existing, on the read path, and
+  worth its own spec.
+- **`styles/off-scale` no longer flags `px === 0` (R6 fix).** Zero is the absence
+  of a value, not a scale step — `margin: 0` / `padding: 0` (the universal reset)
+  is never off-scale, even when the project declares no `--space-0`.
+  `TRIVIAL_VALUES` already treats `'0'` as trivial, so the two code paths now
+  agree. Drops 225 reset-declaration findings on recall-protocol (off-scale
+  984 → 759).
+
 ## [3.9.3] — 2026-09-11
 
 ### Second external audit (Spec 55)
