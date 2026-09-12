@@ -95,4 +95,26 @@ describe('unfiltered-query — an unfiltered write (DELETE/UPDATE with no WHERE/
     const vs = await unfilteredViolations(BARE_SELECT, 'bare-select');
     expect(vs).toHaveLength(0);
   });
+
+  it('does NOT flag a plain JS .update()/.delete() method call (no SQL table — Spec 55 R5 fix)', async () => {
+    // `update`/`delete` are DB-call method names, so a plain in-memory class's
+    // `this.update({...})` / `this.listeners.delete(x)` used to read as an
+    // unfiltered write (recall's strategist-manager.ts — 23 phantom findings).
+    // A write must target a named table to be a mass mutation; these extract no
+    // table and must not fire.
+    const code = `export class StateManager {
+  private snapshot: Record<string, unknown> = {};
+  private listeners = new Set<() => void>();
+  update(patch: Record<string, unknown>): void {
+    this.snapshot = { ...this.snapshot, ...patch };
+    for (const l of this.listeners) l();
+  }
+  remove(l: () => void): void {
+    this.listeners.delete(l);
+  }
+}
+`;
+    const vs = await unfilteredViolations(code, 'js-methods');
+    expect(vs).toHaveLength(0);
+  });
 });

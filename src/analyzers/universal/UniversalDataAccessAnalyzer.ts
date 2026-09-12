@@ -504,7 +504,13 @@ function analyzeQuery(
   let performanceRisk: 'low' | 'medium' | 'high' = 'low';
   if (call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
     performanceRisk = 'high';
-  } else if (isUnfilteredWrite(call)) {
+  } else if (isUnfilteredWrite(call) && call.tables.length > 0) {
+    // Guard: a write must target a named table to be a meaningful mass-write.
+    // A `DELETE`/`UPDATE` verb on a call that extracts no table (e.g. a plain
+    // JS `this.update({...})` / `set.delete(x)`, or a Drizzle `db.delete(schema.t)`
+    // whose table is a schema-object reference, not a string) is not a SQL mass
+    // mutation — the old read-rule carried this same `tables.length > 0` guard
+    // and the write-rule must too. (Spec 55 R5 fix.)
     performanceRisk = 'medium';
   }
 

@@ -574,6 +574,11 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
 
       // Flag values that are not members of the project's declared scale.
       for (const { decl, px } of parsed) {
+        // Zero is the absence of a value, not a scale step — `margin: 0` /
+        // `padding: 0` (the universal reset) is never "off-scale", even when the
+        // project declares no `--space-0`. Mirrors TRIVIAL_VALUES, which already
+        // treats `'0'` as trivial. (Spec 55 R6 fix.)
+        if (px === 0) continue;
         if (!scaleSet.has(px)) {
           const [lower, upper] = nearestScaleValues(px, scaleValues);
           violations.push(this.makeViolation(

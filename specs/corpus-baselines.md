@@ -293,14 +293,61 @@ fires — pinned by unit tests (`is notApplicable when the project declares no
 scale for the family`, `reads CSS custom-property tokens as a declared spacing
 scale`).
 
+Re-pinned 2026-09-12 after Spec 55 R5/R6 follow-up fixes (the second external
+audit's acceptance pass sampled the new findings and found two over-firing
+regressions in the new contracts — both real bugs, not explanations). Two guards
+were restored; only `data-access::unfiltered-query` and `styles::styles/off-scale`
+moved, on three corpora:
+
+**`unfiltered-query` — the R5 re-target dropped the old rule's `tables.length > 0`
+guard.** A DELETE/UPDATE-verb *method call* that extracts no string table read as
+a SQL mass-write. A `this.update({…})` / `this.listeners.delete(x)` on an
+in-memory class, or an ORM `db.update(schema).set(…).where(…)` whose table is a
+schema object / runtime variable (not a string literal), is not a SQL mass
+mutation. The old read-rule carried this guard and the write-rule must too.
+Re-adding it drops 28 phantom / over-fired findings:
+
+- `data-access::unfiltered-query` 68 → 45 (recall-protocol). **−23** — plain JS
+  `update()`/`delete()` methods (`this.listeners.delete(x)` on a React state
+  manager, etc.) with no SQL table at all.
+- `data-access::unfiltered-query` 4 → 0 (hhra-org). **−4** — filtered Drizzle
+  `.where(eq(…))` writes whose table is a schema-object reference.
+- `data-access::unfiltered-query` 1 → 0 (knex). **−1** — a filtered
+  `getTable(…).where('is_locked','=',0).update({…})` in `Migrator._lockMigrations`,
+  whose table is a runtime variable. (This supersedes the R5 note that knex's lone
+  finding was a genuine unfiltered write — it was a filtered query-builder method.)
+
+  Honest caveat (deferred, not papered over): the guard keys on *extracted string
+  tables*, so an ORM write against a schema object is invisible to the rule whether
+  or not it is filtered — `hasQueryFilter` matches WHERE/HAVING/LIMIT *keywords*
+  only, not an ORM `.where()`. That pre-existing gap is worth its own spec. The
+  re-added guard is a false-positive narrowing, not a weakening: an unfiltered
+  string-literal write (`db.exec("DELETE FROM users")`) still fires (pinned by
+  `unfilteredQuery.spec.ts`).
+
+**`styles/off-scale` — `detectOffScaleValues` flagged `px === 0` as off-scale when
+the declared scale omits a zero step.** Zero is the absence of a value, not a
+scale step — `margin: 0` / `padding: 0` (the universal reset) is never off-scale,
+even when the project declares no `--space-0`. `TRIVIAL_VALUES` already treats
+`'0'` as trivial, so two code paths disagreed about the same concept; the flag
+loop now skips `px === 0`:
+
+- `styles::styles/off-scale` 984 → 759 (recall-protocol). **−225** — the reset
+  decls on every component. Of the 759 survivors, 381 are hardcoded px literals
+  on Tailwind-default intermediate steps (2/6/10/14/28/36/56) that recall's sparse
+  `--space-*` scale intentionally omits — sampled and confirmed genuine, not a
+  config gap; the rest were off-scale before R6 too.
+
+primer-css and blitz are unchanged (both rules are `notApplicable`/0 on them).
+
 ---
 
-## recall-protocol — 4,357 advisory findings (4,268 files)
+## recall-protocol — 4,109 advisory findings (4,268 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | solid::function-length | 902 |
-| styles::styles/off-scale | 984 |
+| styles::styles/off-scale | 759 |
 | documentation::function-documentation | 574 |
 | styles::styles/token-bypass | 456 |
 | data-access::loop-query | 290 |
@@ -318,7 +365,7 @@ scale`).
 | conventions::conventions/error-handling | 51 |
 | styles::styles/undefined-class | 47 |
 | solid::solid/method-complexity | 33 |
-| data-access::unfiltered-query | 68 |
+| data-access::unfiltered-query | 45 |
 | cross-domain::cross-domain/read-never-written | 14 |
 | dry::dry/similar-expression | 21 |
 | styles::styles/declaration-set-similarity | 21 |
@@ -342,7 +389,7 @@ scale`).
 | dependency-graph::hub-nodes | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## hhra-org — 1,129 advisory findings (760 files)
+## hhra-org — 1,125 advisory findings (760 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -362,7 +409,6 @@ scale`).
 | conventions::conventions/naming | 6 |
 | conventions::conventions/usage-pair | 5 |
 | dry::dry/similar-expression | 5 |
-| data-access::unfiltered-query | 4 |
 | cross-domain::cross-domain/written-never-read | 2 |
 | solid::parameter-count | 2 |
 | cross-domain::cross-domain/read-never-written | 1 |
@@ -374,7 +420,7 @@ scale`).
 | schema-code::dynamic-sql-construction | 1 |
 | solid::solid/class-size | 1 |
 
-## knex — 190 advisory findings (474 files)
+## knex — 189 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -385,7 +431,6 @@ scale`).
 | dependency-graph::orphaned-nodes | 7 |
 | schema::unknown-table | 17 |
 | data-access::hardcoded-connection | 16 |
-| data-access::unfiltered-query | 1 |
 | solid::solid/open-closed | 12 |
 | solid::interface-size | 8 |
 | data-access::loop-query | 2 |

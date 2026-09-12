@@ -579,6 +579,43 @@ describe('Detector 2 — Off-Scale Values', () => {
     expect(offScale.length).toBeGreaterThanOrEqual(1);
     expect(offScale.every((v) => v.message.includes('10px'))).toBe(true);
   });
+
+  it('does NOT flag zero as off-scale when the declared scale has no zero step (Spec 55 R6 fix)', async () => {
+    // recall-protocol declares `--space-1`…`--space-24` but no `--space-0`. The
+    // universal reset (`margin: 0` / `padding: 0`) is the *absence* of a value,
+    // not an off-scale step — zero must never be flagged, even though the old
+    // hardcoded Tailwind scale carried a `0` step that recall does not declare.
+    // (Mirrors TRIVIAL_VALUES, which already treats `'0'` as trivial.)
+    insertToken('--space-2', '8px', 'css-custom-property');
+    insertToken('--space-4', '16px', 'css-custom-property');
+    for (let i = 0; i < 4; i++) {
+      insertDecl({ property: 'margin', raw_value: '0', mechanism: 'css', file_path: `src/reset${i}.css`, line: i + 1 });
+    }
+    insertDecl({ property: 'margin', raw_value: '0px', mechanism: 'css', file_path: 'src/reset-px.css', line: 1 });
+
+    const violations = await runAnalyzer({ minCorpus: 1, scaleProperties: ['margin'] });
+
+    expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
+  });
+
+  it('is notApplicable when the only spacing tokens are Sass $spacer-* variables (primer-css gap)', async () => {
+    // primer-css declares its spacing scale as Sass `$spacer-1`…`$spacer-6`
+    // variables. Those are neither CSS custom properties (`--space-*`) nor
+    // Tailwind theme tokens (`spacing.*`), so the declared scale reads empty and
+    // off-scale must be notApplicable — it must not guess a scale from the raw
+    // values. This is the deliberate re-pin behind primer-css's −101 drop.
+    insertToken('$spacer-1', '4px', 'scss-variable');
+    insertToken('$spacer-2', '8px', 'scss-variable');
+    insertToken('$spacer-3', '16px', 'scss-variable');
+    for (let i = 0; i < 4; i++) {
+      insertDecl({ property: 'margin-top', raw_value: '8px', mechanism: 'scss', file_path: `src/comp${i}.scss`, line: i + 1 });
+    }
+    insertDecl({ property: 'margin-top', raw_value: '13px', mechanism: 'scss', file_path: 'src/offscale.scss', line: 1 });
+
+    const violations = await runAnalyzer({ minCorpus: 3, scaleProperties: ['margin-top'] });
+
+    expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
