@@ -49,52 +49,94 @@ export const DEFAULT_STYLES_CONFIG: StylesAnalyzerConfig = {
 };
 
 // ---------------------------------------------------------------------------
-// Tailwind default design scales (px equivalents)
+// Declared design scale — Spec 55 R6
 // ---------------------------------------------------------------------------
 //
-// Two distinct scales: the *spacing* scale (margin/padding/gap) and the
-// *font-size* scale. They are not interchangeable — `14px` is a valid font size
-// (`text-sm`) but not a named spacing step, and `28px` is a valid spacing step
-// (`spacing-7`) but not a named font size. The old proxy collapsed both onto a
-// single inferred step, which is why `font-size` was silently judged against a
-// spacing step it never uses.
+// The off-scale rule must not infer a scale. It reads the project's *declared*
+// tokens — Tailwind theme `spacing.*` / `fontSize.*`, or CSS custom properties
+// named by the conventions the Tailwind v4 `@theme` classifier parses — and
+// treats only those as authoritative. Where a project declares no scale for a
+// family, the rule is notApplicable: a plain-CSS project that never opted into
+// a token system must not have its raw values judged against a scale it did not
+// choose (the same "fabricated finding" the token-bypass rule guards against by
+// excluding `built-in defaults`).
 
-const TAILWIND_SPACING_PX: Record<string, number> = {
-  '0': 0, 'px': 1, '0.5': 2,
-  '1': 4, '1.5': 6, '2': 8, '2.5': 10,
-  '3': 12, '3.5': 14, '4': 16,
-  '5': 20, '6': 24, '7': 28, '8': 32,
-  '9': 36, '10': 40, '11': 44, '12': 48,
-  '14': 56, '16': 64, '20': 80, '24': 96,
-  '28': 112, '32': 128, '36': 144, '40': 160,
-  '44': 176, '48': 192, '52': 208, '56': 224,
-  '60': 240, '64': 256, '72': 288, '80': 320,
-  '96': 384,
-};
+/** A declared design scale, derived from the project's own tokens. */
+interface DeclaredScale {
+  /** px values the project's spacing tokens declare (margin/padding/gap). */
+  spacing: Set<number>;
+  /** px values the project's font-size tokens declare (font-size). */
+  fontSize: Set<number>;
+}
 
-/** Named Tailwind font-size steps (`text-xs` … `text-9xl`), px equivalents. */
-const TAILWIND_FONT_SIZE_PX: readonly number[] = [
-  12, 14, 16, 18, 20, 24, 30, 36, 48, 60, 72, 96, 128,
-];
+/** Parse a CSS length value to px-equivalent, or null if not parseable. */
+function parseLengthToPx(raw: string): number | null {
+  try {
+    const v = raw.trim().toLowerCase();
+    if (v === '0' || v === '0px') return 0;
 
-const TAILWIND_SPACING_VALUES = Object.values(TAILWIND_SPACING_PX).sort((a, b) => a - b);
+    const match = v.match(/^(-?\d+(?:\.\d+)?)\s*(px|rem|em|%|vh|vw|pt|cm|mm)?$/);
+    if (!match) return null;
 
-/** O(1) membership sets for "is this px value on the Tailwind scale". */
-const TAILWIND_SPACING_SET = new Set(TAILWIND_SPACING_VALUES);
-const TAILWIND_FONT_SIZE_SET = new Set(TAILWIND_FONT_SIZE_PX);
+    const num = parseFloat(match[1]);
+    const unit = match[2] || 'px';
 
-/** The design scale a property belongs to. */
-function scaleForProperty(property: string): { values: readonly number[]; set: Set<number>; label: string } {
-  if (property === 'font-size') {
-    return { values: TAILWIND_FONT_SIZE_PX, set: TAILWIND_FONT_SIZE_SET, label: 'font-size scale' };
+    // Approximate conversions (assuming 16px base for rem/em)
+    switch (unit) {
+      case 'px': return num;
+      case 'rem': return num * 16;
+      case 'em': return num * 16;
+      case 'pt': return num * 1.333;
+      case 'cm': return num * 37.795;
+      case 'mm': return num * 3.7795;
+      default: return null; // can't convert %/vh/vw without context
+    }
+  } catch {
+    return null;
   }
-  return { values: TAILWIND_SPACING_VALUES, set: TAILWIND_SPACING_SET, label: 'spacing scale' };
+}
+
+/**
+ * Classify a token name into the scale-family property it declares, or null if
+ * the token does not belong to a scale family (colors, radii, tap targets).
+ *
+ * - Tailwind theme tokens carry explicit category names: `spacing.*`, `fontSize.*`.
+ * - CSS custom properties use the Tailwind v4 `@theme` conventions: `--space-*`/
+ *   `--spacing-*` → spacing, `--font-size-*`/`--text-*` → font-size. (`--font-*`
+ *   is a font-*family* token, not a length, so it is deliberately excluded.)
+ */
+function tokenScaleCategory(name: string): 'spacing' | 'font-size' | null {
+  if (name.startsWith('spacing.')) return 'spacing';
+  if (name.startsWith('fontSize.')) return 'font-size';
+  if (name.startsWith('--')) {
+    const bare = name.slice(2).toLowerCase();
+    if (bare.startsWith('space-') || bare.startsWith('spacing-')) return 'spacing';
+    if (bare === 'font-size' || bare.startsWith('font-size-') || bare.startsWith('text-')) return 'font-size';
+  }
+  return null;
+}
+
+/** Build the declared scale from the project's own token rows. */
+function buildDeclaredScale(tokens: StyleTokenRow[]): DeclaredScale {
+  const scale: DeclaredScale = { spacing: new Set(), fontSize: new Set() };
+  for (const t of tokens) {
+    // Exclude the bundled Tailwind default palette (see buildTokenValueMap) — a
+    // project that did not declare its own tokens has no declared scale.
+    if (t.file_path === 'built-in defaults') continue;
+    const category = tokenScaleCategory(t.name);
+    if (!category) continue;
+    const px = parseLengthToPx(t.value);
+    if (px === null) continue;
+    if (category === 'spacing') scale.spacing.add(px);
+    else scale.fontSize.add(px);
+  }
+  return scale;
 }
 
 /** The nearest scale values on either side of `px` (for the suggestion). */
 function nearestScaleValues(px: number, values: readonly number[]): [number, number] {
   let lower = 0;
-  let upper = values[values.length - 1];
+  let upper = values[values.length - 1] ?? 0;
   for (const s of values) {
     if (s <= px) lower = s;
     if (s >= px) { upper = s; break; }
@@ -321,33 +363,6 @@ abstract class UniversalStylesAnalyzerBase extends UniversalAnalyzer {
 
     return clusters;
   }
-
-  /** Parse a CSS length value to px-equivalent, or null if not parseable. */
-  protected parseLengthToPx(raw: string): number | null {
-    try {
-      const v = raw.trim().toLowerCase();
-      if (v === '0' || v === '0px') return 0;
-
-      const match = v.match(/^(-?\d+(?:\.\d+)?)\s*(px|rem|em|%|vh|vw|pt|cm|mm)?$/);
-      if (!match) return null;
-
-      const num = parseFloat(match[1]);
-      const unit = match[2] || 'px';
-
-      // Approximate conversions (assuming 16px base for rem/em)
-      switch (unit) {
-        case 'px': return num;
-        case 'rem': return num * 16;
-        case 'em': return num * 16;
-        case 'pt': return num * 1.333;
-        case 'cm': return num * 37.795;
-        case 'mm': return num * 3.7795;
-        default: return null; // can't convert %/vh/vw without context
-      }
-    } catch {
-      return null;
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -522,11 +537,14 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
 
   /**
    * For scale-family properties (margin, padding, gap, font-size), flag values
-   * that are not members of the property's Tailwind design scale.
+   * that are not members of the project's declared design scale. Where the
+   * project declares no scale for a family, the rule is notApplicable (Spec 55
+   * R6) — it must not guess a scale.
    */
   protected detectOffScaleValues(
     byProperty: Map<string, StyleDeclRow[]>,
     cfg: StylesAnalyzerConfig,
+    declaredScale: DeclaredScale,
   ): Violation[] {
     const violations: Violation[] = [];
 
@@ -534,10 +552,19 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
       const decls = byProperty.get(property);
       if (!decls || decls.length < cfg.minCorpus) continue;
 
+      // Which declared scale governs this property? Spacing properties are
+      // judged against the spacing scale, `font-size` against the font-size
+      // scale — they are not interchangeable.
+      const isFontSize = property === 'font-size';
+      const scaleSet = isFontSize ? declaredScale.fontSize : declaredScale.spacing;
+      if (scaleSet.size === 0) continue;
+      const scaleValues = [...scaleSet].sort((a, b) => a - b);
+      const label = isFontSize ? 'font-size scale' : 'spacing scale';
+
       // Parse values to px-equivalent numbers
       const parsed: Array<{ decl: StyleDeclRow; px: number }> = [];
       for (const d of decls) {
-        const px = this.parseLengthToPx(d.raw_value);
+        const px = parseLengthToPx(d.raw_value);
         if (px !== null) {
           parsed.push({ decl: d, px });
         }
@@ -545,18 +572,15 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
 
       if (parsed.length < cfg.minCorpus) continue;
 
-      // Flag values that are not members of the property's scale. Spacing
-      // properties are judged against the spacing scale, `font-size` against
-      // the font-size scale — they are not interchangeable.
-      const scale = scaleForProperty(property);
+      // Flag values that are not members of the project's declared scale.
       for (const { decl, px } of parsed) {
-        if (!scale.set.has(px)) {
-          const [lower, upper] = nearestScaleValues(px, scale.values);
+        if (!scaleSet.has(px)) {
+          const [lower, upper] = nearestScaleValues(px, scaleValues);
           violations.push(this.makeViolation(
             decl.file_path,
             decl.line,
             `Off-scale "${property}" value: "${decl.raw_value}" (${px}px) ` +
-            `is not on the Tailwind ${scale.label}. ` +
+            `is not on the project's declared ${label}. ` +
             `Nearest scale values: ${lower}px or ${upper}px.`,
             { severity: 'high', rule: 'styles/off-scale', symbol: declValueKey(decl) },
           ));
@@ -641,6 +665,7 @@ interface StyleDetectorInputs {
   declarations: StyleDeclRow[];
   classUsage: StyleClassUsageRow[];
   tokenValueMap: Map<string, { name: string; valueType: string | null }>;
+  declaredScale: DeclaredScale;
   definedClassIndex?: DefinedClassIndex;
 }
 
@@ -1498,12 +1523,14 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
     cfg: StylesAnalyzerConfig,
     declarations: StyleDeclRow[],
   ): Promise<Violation[]> {
+    const tokens = this.queryTokens(indexHandle);
     return this.runDetectors({
       byProperty: groupDeclarationsByProperty(declarations),
       cfg,
       declarations,
       classUsage: this.queryClassUsage(indexHandle),
-      tokenValueMap: buildTokenValueMap(this.queryTokens(indexHandle)),
+      tokenValueMap: buildTokenValueMap(tokens),
+      declaredScale: buildDeclaredScale(tokens),
       definedClassIndex: {
         lookup: createDefinedClassLookup(indexHandle),
         suggest: createDefinedClassSuggester(indexHandle),
@@ -1513,10 +1540,10 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
 
   /** Run all detectors and return their combined violations. */
   private async runDetectors(inputs: StyleDetectorInputs): Promise<Violation[]> {
-    const { byProperty, cfg, declarations, classUsage, tokenValueMap, definedClassIndex } = inputs;
+    const { byProperty, cfg, declarations, classUsage, tokenValueMap, declaredScale, definedClassIndex } = inputs;
     const violations: Violation[] = [];
     violations.push(...this.detectValueDrift(byProperty, cfg, declarations));
-    violations.push(...this.detectOffScaleValues(byProperty, cfg));
+    violations.push(...this.detectOffScaleValues(byProperty, cfg, declaredScale));
     violations.push(...await this.structure.detectUndefinedClasses(classUsage, cfg, definedClassIndex));
     violations.push(...this.structure.detectTokenBypass(declarations, tokenValueMap, cfg));
     violations.push(...this.structure.detectMechanismFragmentation(declarations, cfg));

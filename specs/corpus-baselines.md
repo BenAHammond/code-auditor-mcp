@@ -97,40 +97,235 @@ by it. Survivors sampled and confirmed field-held (not escaped): `GuildAgent`
 `this.pool = new KnexPool(...)` — still fires despite its many `return new X()`
 factory accessors), `Generator` (`this.enquirer = new Enquirer()`).
 
+Re-pinned 2026-09-11 after Spec 55 R1 (orphaned-nodes call-graph resolver). The
+resolver's reference set was rebuilt: it was a flat global bare-name table built
+from `metadata.callees` (only named `call_expression` callees — so anonymous
+arrow functions, JSX tags, and bare function values were invisible). It is now a
+scope-aware index (same file → same directory → unique global) built from
+whole-file `fileReferences`, which walks every call site, JSX tag, and bare
+identifier-in-`arguments`/`array` in the file. A name defined and called in one
+file can no longer be orphaned, because its own file's reference set contains it.
+Only `dependency-graph::orphaned-nodes` moved; every other rule reproduced
+exactly on all five corpora (the total finding delta equals the orphan delta on
+each):
+
+- `dependency-graph::orphaned-nodes` 104 → 24 (recall-protocol). **−80** — React
+  JSX components, top-level `main()` entry points, callbacks passed to
+  `.map()`/array literals, and object-literal methods, all resolved by the
+  whole-file walk. Sampled and confirmed: no genuine dead code lost.
+- `dependency-graph::orphaned-nodes` 17 → 4 (hhra-org). **−13** — same causes.
+- `dependency-graph::orphaned-nodes` 17 → 7 (knex). **−10** — same causes.
+- `dependency-graph::orphaned-nodes` 5 → 0 (primer-css). **−5** — same causes.
+- `dependency-graph::orphaned-nodes` 47 → 44 (blitz). **−3** — blitz's orphans
+  are almost all a *different* class: `export default <const>` page components
+  (Next.js file-system routing, no in-code call site) and module-internal
+  helper consts (`withBrand`/`branded`/`spinner`/`variable`, `seed`). Those are
+  entry-point-by-convention / default-export-visibility, not "defined and called
+  in one file", so R1's resolver does not (and per the spec should not) touch
+  them. The remaining 44 are unchanged from the prior pin — a clean narrowing,
+  not a regression.
+
+No fourth exclusion was added; the change is a widening of what "referenced"
+means, not a carve-out for any shape.
+
+Re-pinned 2026-09-11 after Spec 55 R2 (`multi-table-write` batch recognition).
+A function whose writes are accumulated into prepared statements and committed
+with a single `.batch()` (Cloudflare D1 / SQLite atomic batch) is now treated as
+its own transaction scope, so the multi-table shape no longer flags. Detection
+re-parses the file and checks whether an enclosing function of the write line
+contains `.batch(` — function-scoped, not file-scoped, so an unrelated batch in
+the same file never suppresses a genuine finding. Only
+`cross-domain::cross-domain/multi-table-write` moved, on recall-protocol; every
+other corpus reproduced exactly:
+
+- `cross-domain::cross-domain/multi-table-write` 10 → 7 (recall-protocol). **−3**
+  — `heroes/[id]/index.ts` `PATCH`, `admin/ability/extraction.ts` `POST`, and
+  `build-articles.ts` `upsertStoredBuildArticle` each commit 4 tables in one
+  `db.batch([…])`; verified by reading the source. The 7 survivors write ≥4
+  tables with no batch commit (eager `.run()` per statement).
+
+(On the Spec 55 target corpus, endless-guessing, the two §1.3 findings —
+`mergeClosed` and `flush` — both drop to 0 by the same rule.)
+
+Re-pinned 2026-09-11 after Spec 55 R3 (`loop-query` / `unfiltered-query` /
+`too-many-queries` test-file exclusion). The three query-shape rules are now
+excluded from test files at the *rule* level — a new language-agnostic
+predicate (`isTestOrSpecPath`: `*.test.*` / `*.spec.*` filenames and `test/` /
+`tests/` / `__tests__/` directory segments, plus Go `*_test.go`) — not a
+severity cap (that mechanism was removed in Spec 54). Security and org-filter
+rules (`sql-injection-risk`, `missing-org-filter`, `hardcoded-connection`)
+still fire on test files, since a hardcoded connection in a test is as real a
+signal as in production. Only the three query-shape rules moved; every other
+rule reproduced exactly (the total delta equals the three-rule delta on each
+corpus):
+
+- `schema-code::too-many-queries` 193 → 3 (knex). **−190** — knex's `test/`
+  integration suite (244 `.js` files exercising the query builder) was
+  essentially the entire rule; the three survivors are in `lib/` (real source).
+- `data-access::unfiltered-query` 15 → 1 (knex), 30 → 22 (blitz), 32 → 31
+  (recall-protocol). **−14 / −8 / −1** — query-without-filter in test fixtures.
+- `schema-code::too-many-queries` 22 → 21 (hhra-org). **−1**.
+- `data-access::loop-query` 6 → 2 (knex). **−4** — test loops that were
+  correctly flagged as N+1 but live in `test/`.
+- `data-access::loop-query` 290 (recall), 18 (hhra), 2 (blitz) — **unchanged**:
+  those findings are on `scripts/**` (real backfill/migration scripts that run
+  genuine queries in loops) and `fixtures/**`, not test files, so R3 does not
+  touch them. This is the correct boundary: scripts and fixtures are not test
+  files.
+
+On the Spec 55 target corpus (endless-guessing), the nine §2 test-file findings
+drop to 0 — `loop-query` ×5, `unfiltered-query` ×2, `too-many-queries` ×2. The
+three §1.4 *non-test* `loop-query` findings (`replayFanOut`, `Leaderboard.apply`,
+the auth uniqueness probe) are deliberately left in place — R3 scopes test files
+only, and those are source files (§1.4 has no R in the spec; flagged separately).
+
+**Removed-capping enumeration (R3's second half).** Spec 54 deleted path-profile
+severity capping; `excludeFromGate` now scopes profile-matched files out of the
+blocking gate, but their findings report at full severity. The reporter asked
+what those findings are. On recall-protocol, the built-in `scripts-and-tests`
+profile (paths `scripts/**`, `tests/**`, `test/**`, `__tests__/**`,
+`fixtures/**`, `*.test.*`, `*.spec.*`) matches **486** advisory findings
+(measured via `scripts/measure-profile-findings.ts`; the reporter's "672" was a
+different snapshot — this tree re-measures 486). Every one is on a
+`scripts/**` or `fixtures/**` file (the test-file subset is 0 after R3 — the
+recall `tests/` files are vitest mocks that do not fire these rules), so the
+query-shape exclusion does not change them. Per-rule:
+
+| analyzer::rule | count |
+| --- | --- |
+| solid::function-length | 244 |
+| data-access::loop-query | 72 |
+| documentation::function-documentation | 60 |
+| conventions::conventions/error-handling | 29 |
+| schema-code::too-many-queries | 24 |
+| solid::parameter-count | 17 |
+| conventions::conventions/import-form | 5 |
+| data-access::unfiltered-query | 5 |
+| dependency-graph::orphaned-nodes | 5 |
+| solid::solid/method-complexity | 5 |
+| dry::dry/similar-expression | 4 |
+| cross-domain::cross-domain/read-never-written | 3 |
+| data-access::complex-query | 3 |
+| conventions::conventions/usage-pair | 2 |
+| data-access::sql-injection-risk | 2 |
+| schema::unknown-table | 2 |
+| styles::styles/undefined-class | 2 |
+| cross-domain::cross-domain/written-never-read | 1 |
+| dependency-graph::tight-coupling | 1 |
+
+These are all gate-excluded (the profile sets `excludeFromGate: true`), so none
+blocks; they report at full severity because a backfill script with a 244-line
+function or an unfiltered query is a real, if lower-priority, signal. The three
+query-shape rules are the only ones R3 excludes from the rule entirely — the
+rest remain profile-scoped, which is the intent: capping is gone, and the honest
+replacement for *query-shape noise in test files* is rule exclusion, not a
+severity ceiling.
+
+Re-pinned 2026-09-11 after Spec 55 R4 (`no-error-boundary` recognizes
+`getDerivedStateFromError`). The rule fires on a class component that renders an
+error UI but implements neither `componentDidCatch` nor the React-recommended
+static form `static getDerivedStateFromError(error)`. The static getter was
+missing from the detection, so a component that *does* implement
+`getDerivedStateFromError` was wrongly flagged. Only `react::no-error-boundary`
+moved; every other rule reproduced exactly:
+
+- `react::no-error-boundary` 103 → 0 (recall-protocol). **−103** — all 103 were
+  class components whose boundary logic is the static `getDerivedStateFromError`
+  lifecycle method (the preferred render-only-fallback form) rather than
+  `componentDidCatch`.
+- `react::no-error-boundary` 79 → 0 (hhra-org). **−79** — same cause.
+- `react::no-error-boundary` 16 → 0 (blitz). **−16** — same cause.
+
+knex and primer-css are unchanged (0). The rule still fires on a component that
+renders an error UI with neither lifecycle method — a genuine missing boundary,
+not a weakening to zero (pinned by `reactErrorBoundary.spec.ts`).
+
+Re-pinned 2026-09-11 after Spec 55 R5 (`unfiltered-query` + `complex-query`
+contracts). Both rules had fired on the wrong shape; each now has an honest
+predicate. `unfiltered-query` targets an unfiltered *write* — a DELETE/UPDATE
+with no WHERE/HAVING/LIMIT row-limiting clause (a mass-mutation foot-gun) — not
+an unfiltered read; `complex-query` targets a genuinely join-heavy query (many
+tables), not a mere subquery. The two rules moved together, only on the corpora
+that had either shape:
+
+- `data-access::unfiltered-query` 31 → 68 (recall-protocol). **+37** — the
+  unfiltered writes now caught outweigh the unfiltered reads no longer flagged.
+- `data-access::complex-query` 67 → 1 (recall-protocol). **−66** — the 66 were
+  subquery-shaped queries, no longer "complex" under the corrected contract.
+- `data-access::unfiltered-query` 0 → 4 (hhra-org). **+4**.
+- `data-access::unfiltered-query` 22 → 0 (blitz). **−22** — all 22 were
+  unfiltered reads.
+- `data-access::unfiltered-query` 1 → 1 (knex). Unchanged — the lone finding is
+  an unfiltered write, which the corrected contract still flags.
+
+primer-css is unchanged (0 on both rules). The corrected contracts are pinned by
+the `data-access-rules` fixture (true positive + near-miss negative for each).
+
+Re-pinned 2026-09-11 after Spec 55 R6 (`styles/off-scale` reads declared tokens).
+The rule no longer infers a scale from hardcoded Tailwind constants; it reads the
+project's *declared* scale from the style index (`style_tokens`: Tailwind theme
+`spacing.*`/`fontSize.*` tokens and CSS custom-property `--space-*`/`--font-size-*`
+tokens) and flags only values outside a scale the project actually declares.
+Where a family declares no scale, the rule is `notApplicable`, not a guess. Only
+`styles::styles/off-scale` moved:
+
+- `styles::styles/off-scale` 735 → 984 (recall-protocol). **+249** — recall
+  declares its spacing scale as CSS custom properties (`--space-*` in
+  `theme.css`/`global.css`) and a Tailwind `@theme`; that declared scale is
+  tighter than the hardcoded Tailwind defaults the old rule inferred, so more
+  genuinely off-scale literals surface.
+- `styles::styles/off-scale` 50 → 0 (blitz). **−50** — blitz's styles are
+  styled-components/inline; it declares no spacing or font-size scale as tokens,
+  so the rule is `notApplicable`.
+- `styles::styles/off-scale` 101 → 0 (primer-css). **−101** — primer declares
+  its spacing scale as Sass `$spacer-*` variables, which the style index does not
+  capture (it captures CSS custom properties and a Tailwind theme only), so no
+  scale is declared and the rule is `notApplicable`. This is within R6's scope —
+  the rule reads what the index can see — but the Sass-variable gap is noted
+  rather than papered over.
+
+On the Spec 55 target corpus (endless-guessing), the 12 §4 off-scale findings
+drop to 0 — `styles.css` declares `--radius`/`--radius-sm`/`--tap` and color
+tokens but no spacing or font-size scale, so `notApplicable` is the honest
+answer, not "13px is off a scale the project never declared". `styles/token-bypass`
+(3 findings) is unchanged. A value genuinely outside a *declared* scale still
+fires — pinned by unit tests (`is notApplicable when the project declares no
+scale for the family`, `reads CSS custom-property tokens as a declared spacing
+scale`).
+
 ---
 
-## recall-protocol — 4,324 advisory findings (4,268 files)
+## recall-protocol — 4,357 advisory findings (4,268 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | solid::function-length | 902 |
-| styles::styles/off-scale | 735 |
+| styles::styles/off-scale | 984 |
 | documentation::function-documentation | 574 |
 | styles::styles/token-bypass | 456 |
 | data-access::loop-query | 290 |
 | dependency-graph::unreferenced-module | 124 |
 | react::raw-element | 111 |
-| dependency-graph::orphaned-nodes | 104 |
-| react::no-error-boundary | 103 |
+| dependency-graph::orphaned-nodes | 24 |
 | react::performance | 95 |
 | schema-code::too-many-queries | 84 |
 | solid::parameter-count | 89 |
 | documentation::method-documentation | 80 |
-| data-access::complex-query | 67 |
+| data-access::complex-query | 1 |
 | react::complexity | 66 |
 | conventions::conventions/usage-pair | 60 |
 | styles::styles/mechanism-fragmentation | 52 |
 | conventions::conventions/error-handling | 51 |
 | styles::styles/undefined-class | 47 |
 | solid::solid/method-complexity | 33 |
-| data-access::unfiltered-query | 32 |
+| data-access::unfiltered-query | 68 |
 | cross-domain::cross-domain/read-never-written | 14 |
 | dry::dry/similar-expression | 21 |
 | styles::styles/declaration-set-similarity | 21 |
 | documentation::class-documentation | 16 |
 | react::accessibility | 13 |
 | conventions::conventions/naming | 10 |
-| cross-domain::cross-domain/multi-table-write | 10 |
+| cross-domain::cross-domain/multi-table-write | 7 |
 | schema::unknown-table | 10 |
 | styles::styles/mechanism-mixing | 9 |
 | cross-domain::cross-domain/written-never-read | 10 |
@@ -147,13 +342,12 @@ factory accessors), `Generator` (`this.enquirer = new Enquirer()`).
 | dependency-graph::hub-nodes | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## hhra-org — 1,218 advisory findings (760 files)
+## hhra-org — 1,129 advisory findings (760 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | solid::function-length | 381 |
 | styles::styles/undefined-class | 346 |
-| react::no-error-boundary | 79 |
 | documentation::method-documentation | 69 |
 | dependency-graph::unreferenced-module | 60 |
 | react::performance | 57 |
@@ -161,13 +355,14 @@ factory accessors), `Generator` (`this.enquirer = new Enquirer()`).
 | documentation::class-documentation | 39 |
 | react::complexity | 36 |
 | data-access::loop-query | 18 |
-| dependency-graph::orphaned-nodes | 17 |
-| schema-code::too-many-queries | 22 |
+| dependency-graph::orphaned-nodes | 4 |
+| schema-code::too-many-queries | 21 |
 | solid::solid/dependency-inversion | 8 |
 | solid::solid/method-complexity | 7 |
 | conventions::conventions/naming | 6 |
 | conventions::conventions/usage-pair | 5 |
 | dry::dry/similar-expression | 5 |
+| data-access::unfiltered-query | 4 |
 | cross-domain::cross-domain/written-never-read | 2 |
 | solid::parameter-count | 2 |
 | cross-domain::cross-domain/read-never-written | 1 |
@@ -179,21 +374,21 @@ factory accessors), `Generator` (`this.enquirer = new Enquirer()`).
 | schema-code::dynamic-sql-construction | 1 |
 | solid::solid/class-size | 1 |
 
-## knex — 408 advisory findings (474 files)
+## knex — 190 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
-| schema-code::too-many-queries | 193 |
+| schema-code::too-many-queries | 3 |
 | solid::function-length | 59 |
 | solid::solid/class-size | 31 |
 | solid::solid/dependency-inversion | 12 |
-| dependency-graph::orphaned-nodes | 17 |
+| dependency-graph::orphaned-nodes | 7 |
 | schema::unknown-table | 17 |
 | data-access::hardcoded-connection | 16 |
-| data-access::unfiltered-query | 15 |
+| data-access::unfiltered-query | 1 |
 | solid::solid/open-closed | 12 |
 | solid::interface-size | 8 |
-| data-access::loop-query | 6 |
+| data-access::loop-query | 2 |
 | solid::parameter-count | 6 |
 | data-access::sql-injection-risk | 5 |
 | cross-domain::cross-domain/read-never-written | 4 |
@@ -205,13 +400,11 @@ factory accessors), `Generator` (`this.enquirer = new Enquirer()`).
 | schema-code::table-naming-convention | 1 |
 | secrets::hardcoded-secret | 1 |
 
-## primer-css — 125 advisory findings (137 files)
+## primer-css — 19 advisory findings (137 files)
 
 | analyzer::rule | count |
 | --- | --- |
-| styles::styles/off-scale | 101 |
 | styles::styles/z-index-singleton | 11 |
-| dependency-graph::orphaned-nodes | 5 |
 | solid::function-length | 3 |
 | dependency-graph::tight-coupling | 1 |
 | dependency-graph::unreferenced-module | 1 |
@@ -219,7 +412,7 @@ factory accessors), `Generator` (`this.enquirer = new Enquirer()`).
 | styles::styles/token-bypass | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## blitz — 917 advisory findings (788 files)
+## blitz — 818 advisory findings (788 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -228,11 +421,8 @@ factory accessors), `Generator` (`this.enquirer = new Enquirer()`).
 | styles::styles/declaration-set-similarity | 161 |
 | solid::function-length | 88 |
 | react::raw-element | 54 |
-| styles::styles/off-scale | 50 |
-| dependency-graph::orphaned-nodes | 47 |
+| dependency-graph::orphaned-nodes | 44 |
 | documentation::class-documentation | 34 |
-| data-access::unfiltered-query | 30 |
-| react::no-error-boundary | 16 |
 | styles::styles/token-bypass | 16 |
 | styles::styles/undefined-class | 15 |
 | solid::solid/dependency-inversion | 11 |

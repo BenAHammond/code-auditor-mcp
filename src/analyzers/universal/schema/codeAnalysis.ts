@@ -16,6 +16,7 @@ import { OrmAdapterRegistry } from '../../orm/index.js';
 import { SQL_TAG_NAMES, DB_CALL_METHOD_NAMES, DB_RECEIVER_NAMES, DEFAULT_SCHEMA_CONFIG } from './config.js';
 import type { SchemaAnalyzerConfig, TableReference } from './types.js';
 import { createSchemaViolation } from './violations.js';
+import { isTestOrSpecPath } from '../../../languages/testConventions.js';
 
 /**
  * Bundled inputs for `findTableReferences`: config, provenance context, and the
@@ -488,6 +489,10 @@ export function checkQueryPatterns(
   config: SchemaAnalyzerConfig
 ): Violation[] {
   const violations: Violation[] = [];
+
+  // Spec 55 R3 — too-many-queries is a query-shape rule excluded from test files.
+  // `skipTestFiles: false` overrides (oracle fixtures assert positive detections).
+  if (config.skipTestFiles !== false && isTestOrSpecPath(ast.filePath)) return violations;
 
   // Resolve the ceiling once — the pipeline's schema config can omit it, and
   // the message must never print "undefined". Falls back to the analyzer's

@@ -6,16 +6,20 @@
  * the rule). The test asserts exact per-file, per-rule counts to catch both
  * false negatives (lost detection) and false positives (over-eager matching).
  *
- * Baseline established 2026-08-09 from cold run; recalibrated 2026-08-31 after
- * the unfiltered-query precision fix — queries scoped by WHERE/HAVING/LIMIT/ON
- * are no longer flagged "unfiltered" (only genuinely unbound reads are).
+ * Baseline established 2026-08-09 from cold run; recalibrated 2026-09-10 for
+ * Spec 55 R5 — `unfiltered-query` now fires on an unfiltered *write* (DELETE/
+ * UPDATE with no WHERE/HAVING/LIMIT), not on an unfiltered read; `complex-query`
+ * now fires on a genuinely join-heavy query (many tables), not on a subquery.
+ * The fixture's `.codeauditor.json` sets `skipTestFiles: false` so the
+ * query-shape rules (loop-query, unfiltered-query) still run against files
+ * under `tests/` (Spec 55 R3 excludes them by default).
  *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  *
- * Total violations: 9
- *   - complex-query: 1 (line 12 in complex-query.ts)
+ * Total violations: 7
+ *   - complex-query: 1 (line 12 in complex-query.ts — 9 tables)
  *   - loop-query: 1 (line 16 in loop-query.ts)
- *   - missing-org-filter: 5 (complex-query.ts:32, loop-query.ts:16/22, missing-org-filter.ts:12, unfiltered-query.ts:12)
- *   - unfiltered-query: 2 (missing-org-filter.ts:12, unfiltered-query.ts:12 — the two genuinely unbound reads)
+ *   - missing-org-filter: 4 (complex-query.ts:32, loop-query.ts:16/22, missing-org-filter.ts:12)
+ *   - unfiltered-query: 1 (unfiltered-query.ts:13 — the unfiltered DELETE)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -70,7 +74,7 @@ describe('data-access-rules fixture', () => {
 
   it('total violations match baseline', () => {
     const violations = runAndGetViolations(testDir);
-    expect(violations.length).toBe(9);
+    expect(violations.length).toBe(7);
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -78,21 +82,21 @@ describe('data-access-rules fixture', () => {
   // ══════════════════════════════════════════════════════════════════
 
   describe('unfiltered-query rule', () => {
-    it('true positive: raw SELECT * with no WHERE/LIMIT triggers unfiltered-query', () => {
+    it('true positive: unfiltered DELETE (no WHERE/HAVING/LIMIT) triggers unfiltered-query', () => {
       const violations = runAndGetViolations(testDir);
       expect(ruleCount(violations, 'unfiltered-query.ts', 'unfiltered-query')).toBe(1);
     });
 
-    it('near-miss negative: SELECT with org_id WHERE filter does NOT trigger unfiltered-query', () => {
+    it('near-miss negative: filtered DELETE (WHERE id = ?) does NOT trigger unfiltered-query', () => {
       const violations = runAndGetViolations(testDir);
-      // The near-miss function at line 18 uses `WHERE org_id = ?` on 'tags' table.
-      // This satisfies the org-filter check, avoiding unfiltered-query.
-      // All 3 unfiltered-query violations in this file are on the true-positive function.
+      // The near-miss function at line 19 uses `DELETE FROM audit_log WHERE id = ?`.
+      // The WHERE clause is a real row-limiting predicate, so it is not "unfiltered".
+      // The only unfiltered-query in this file is the true-positive DELETE at line 13.
       const fileV = fileViolations(violations, 'unfiltered-query.ts');
       const ufViolations = fileV.filter((v: any) => v.rule === 'unfiltered-query');
       // Only 1 unfiltered-query violation — from true positive, not near-miss
       expect(ufViolations.length).toBe(1);
-      expect(ufViolations[0].line).toBe(12);
+      expect(ufViolations[0].line).toBe(13);
     });
   });
 
@@ -153,7 +157,7 @@ describe('data-access-rules fixture', () => {
   // ══════════════════════════════════════════════════════════════════
 
   describe('complex-query rule', () => {
-    it('true positive: query with 9 tables via JOINs/subqueries triggers complex-query', () => {
+    it('true positive: query referencing 9 tables triggers complex-query', () => {
       const violations = runAndGetViolations(testDir);
       expect(ruleCount(violations, 'complex-query.ts', 'complex-query')).toBe(1);
     });
@@ -196,9 +200,9 @@ describe('data-access-rules fixture', () => {
       expect(poolViolations.length).toBe(0);
     });
 
-    it('baseline total is unchanged by non-db-receiver.ts (9 violations)', () => {
+    it('baseline total is unchanged by non-db-receiver.ts (7 violations)', () => {
       const violations = runAndGetViolations(testDir);
-      expect(violations.length).toBe(9);
+      expect(violations.length).toBe(7);
     });
   });
 });

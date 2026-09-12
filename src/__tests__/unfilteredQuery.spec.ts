@@ -1,17 +1,16 @@
 /**
- * Spec-49 — `unfiltered-query` (order #7 remainder, ledger row 32).
+ * Spec-55 R5 — `unfiltered-query` is about unfiltered *writes*, not reads.
  *
- * The authenticity ledger marked `unfiltered-query` crude with one gap:
- * "Unfiltered" is computed as the *absence of WHERE/HAVING/LIMIT/ON keyword
- * substrings*, so `WHERE 1=1` (a tautology that limits nothing) and a bare
- * `JOIN … ON` (a join predicate, not a row-limiting WHERE) both read as
- * "filtered" and suppress a genuinely unbounded read.
+ * The external audit (code-audit-false-positives.md §1.5) flagged two findings
+ * on full-set reads (`SELECT … FROM totals`, `SELECT DISTINCT … FROM leaderboard`)
+ * as false positives: a query with no WHERE is not inherently a defect — loading
+ * a full working set is often the intended design. The genuine foot-gun is an
+ * unfiltered *write*: `DELETE FROM t` or `UPDATE t SET …` with no row-limiting
+ * clause mutates or deletes every row.
  *
- * The honest signal: a read is *unfiltered* when it lacks a row-limiting
- * clause — a WHERE carrying a real predicate, a HAVING, or a LIMIT.  A `JOIN
- * … ON` predicate scopes *how rows match*, not *which rows come back*; a
- * `WHERE 1=1` is the placeholder prepended so a caller can append `AND x = ?`
- * and limits nothing by itself.  Neither is a filter.
+ * The honest contract: `unfiltered-query` fires on a DELETE/UPDATE with no
+ * WHERE (carrying a real predicate), HAVING, or LIMIT. Unfiltered reads are out
+ * of scope. This supersedes the Spec-49 "unfiltered read" contract.
  *
  * These tests run the real `UniversalDataAccessAnalyzer` via `analyzeAST`.
  */
@@ -48,69 +47,52 @@ async function unfilteredViolations(code: string, name: string): Promise<any[]> 
   return vs.filter((v) => v.rule === 'unfiltered-query');
 }
 
-/** A bare single-table SELECT — genuinely unbounded, fires under both old and new. */
+/** An unfiltered DELETE — deletes every row, the foot-gun. */
+const DELETE_ALL = `import { db } from './db';
+export function nuke() {
+  return db.exec("DELETE FROM users");
+}
+`;
+
+/** An unfiltered UPDATE — sets a flag on every row. */
+const UPDATE_ALL = `import { db } from './db';
+export function reset() {
+  return db.exec("UPDATE users SET active = 0");
+}
+`;
+
+/** A filtered DELETE — scoped to a predicate, must NOT fire. */
+const DELETE_FILTERED = `import { db } from './db';
+export function one(id: string) {
+  return db.exec("DELETE FROM users WHERE id = ?");
+}
+`;
+
+/** A bare SELECT — an unfiltered *read*, which is out of scope (intentional full-set load). */
 const BARE_SELECT = `import { db } from './db';
 export function all() {
   return db.query("SELECT * FROM users");
 }
 `;
 
-/** A read with a real WHERE predicate — filtered, must not fire. */
-const WHERE_REAL = `import { db } from './db';
-export function active() {
-  return db.query("SELECT * FROM users WHERE active = ?");
-}
-`;
-
-/** A join scoped only by ON — a join predicate is not a row-limiting WHERE, so
- *  the read is unbounded.  The old proxy saw `ON` and called it filtered; the
- *  honest predicate must fire. */
-const JOIN_ON_ONLY = `import { db } from './db';
-export function joined() {
-  return db.query("SELECT * FROM users u JOIN orders o ON u.id = o.user_id");
-}
-`;
-
-/** `WHERE 1=1` — a tautology that limits nothing.  The old proxy saw `WHERE` and
- *  called it filtered; the honest predicate must fire. */
-const WHERE_TAUTOLOGY = `import { db } from './db';
-export function tautology() {
-  return db.query("SELECT * FROM users WHERE 1=1");
-}
-`;
-
-/** `WHERE 1=1 AND active = ?` — the tautology is present but a real predicate
- *  carries the filter, so the read IS filtered.  Guards against over-broad
- *  tautology detection. */
-const TAUTOLOGY_AND_REAL = `import { db } from './db';
-export function dyn() {
-  return db.query("SELECT * FROM users WHERE 1=1 AND active = ?");
-}
-`;
-
-describe('unfiltered-query — a row-limiting WHERE/HAVING/LIMIT, not ON or a tautology', () => {
-  it('flags a bare SELECT (positive)', async () => {
-    const vs = await unfilteredViolations(BARE_SELECT, 'bare-select');
+describe('unfiltered-query — an unfiltered write (DELETE/UPDATE with no WHERE/HAVING/LIMIT)', () => {
+  it('flags an unfiltered DELETE (positive)', async () => {
+    const vs = await unfilteredViolations(DELETE_ALL, 'delete-all');
     expect(vs.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('does NOT flag a read with a real WHERE predicate (near-miss)', async () => {
-    const vs = await unfilteredViolations(WHERE_REAL, 'where-real');
+  it('flags an unfiltered UPDATE (positive)', async () => {
+    const vs = await unfilteredViolations(UPDATE_ALL, 'update-all');
+    expect(vs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does NOT flag a filtered DELETE (near-miss)', async () => {
+    const vs = await unfilteredViolations(DELETE_FILTERED, 'delete-filtered');
     expect(vs).toHaveLength(0);
   });
 
-  it('flags a JOIN scoped only by ON — the old proxy called it filtered (inverse near-miss)', async () => {
-    const vs = await unfilteredViolations(JOIN_ON_ONLY, 'join-on-only');
-    expect(vs.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('flags WHERE 1=1 — a tautology is not a filter (inverse near-miss)', async () => {
-    const vs = await unfilteredViolations(WHERE_TAUTOLOGY, 'where-tautology');
-    expect(vs.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('does NOT flag WHERE 1=1 AND active = ? — a real predicate still filters', async () => {
-    const vs = await unfilteredViolations(TAUTOLOGY_AND_REAL, 'tautology-and-real');
+  it('does NOT flag an unfiltered read (bare SELECT — full-set load is intentional)', async () => {
+    const vs = await unfilteredViolations(BARE_SELECT, 'bare-select');
     expect(vs).toHaveLength(0);
   });
 });

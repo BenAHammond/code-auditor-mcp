@@ -90,7 +90,11 @@ async function runDataAccessAnalyzer(filePath: string): Promise<{
   if (!ast) throw new Error(`Failed to parse ${filePath}`);
 
   const analyzer = new UniversalDataAccessAnalyzer();
-  const violations = await (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode);
+  // Spec 55 R3 excludes test files by default; the oracle fixtures live under
+  // __tests__ and are positive controls, so re-enable analysis on them.
+  const violations = await (analyzer as any).analyzeAST(
+    ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, skipTestFiles: false }, sourceCode,
+  );
 
   return {
     loopQuery: violations.filter((v: any) => v.rule === 'loop-query'),

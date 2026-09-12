@@ -11,10 +11,15 @@
  * the CrossDomainAnalyzer and asserts the findings.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { CodeIndexDB } from '../../../codeIndexDB.js';
 import { CrossDomainAnalyzer } from '../CrossDomainAnalyzer.js';
 import { getFilesProcessed } from '../../../pipeline.js';
+import { initializeLanguages } from '../../../languages/index.js';
+import { initParsers } from '../../../languages/tree-sitter/parser.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -93,6 +98,13 @@ function seedCallEdge(db: CodeIndexDB, callerFuncId: number, calleeFuncId: numbe
 describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
   let db: CodeIndexDB;
   let analyzer: CrossDomainAnalyzer;
+
+  beforeAll(async () => {
+    // batch()-recognition tests re-parse real files on disk to find the
+    // enclosing function's commit scope.
+    initializeLanguages();
+    await initParsers();
+  });
 
   beforeEach(async () => {
     db = await freshDb();
@@ -523,6 +535,79 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(0);
+    });
+
+    it('does NOT flag a function whose writes are committed via a single batch()', async () => {
+      // Write a real file so enclosingFunctionBatches can re-parse it and see
+      // the `.batch(` inside the enclosing function (D1 atomic commit).
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'ca-mtw-batch-'));
+      const filePath = path.join(dir, 'flush.ts');
+      writeFileSync(
+        filePath,
+        [
+          'export class Store {',
+          '  async flush(env: any) {',
+          '    const stmts: any[] = [];',
+          "    stmts.push(env.DB.prepare('INSERT INTO a VALUES (?)').bind(1));",
+          "    stmts.push(env.DB.prepare('INSERT INTO b VALUES (?)').bind(1));",
+          "    stmts.push(env.DB.prepare('INSERT INTO c VALUES (?)').bind(1));",
+          "    stmts.push(env.DB.prepare('INSERT INTO d VALUES (?)').bind(1));",
+          '    await env.DB.batch(stmts);',
+          '  }',
+          '}',
+        ].join('\n'),
+      );
+
+      seedSchemaUsage(db, [
+        { table_name: 'a', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 4 },
+        { table_name: 'b', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 5 },
+        { table_name: 'c', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 6 },
+        { table_name: 'd', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 7 },
+      ]);
+
+      const result = await analyzer.analyze([filePath], { indexHandle: db, projectRoot: dir });
+
+      const violations = result.violations.filter(
+        v => v.rule === 'cross-domain/multi-table-write',
+      );
+      expect(violations).toHaveLength(0);
+
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('still flags a function writing 4 tables without a batch() commit', async () => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'ca-mtw-nobatch-'));
+      const filePath = path.join(dir, 'flush.ts');
+      writeFileSync(
+        filePath,
+        [
+          'export class Store {',
+          '  async flush(env: any) {',
+          "    await env.DB.prepare('INSERT INTO a VALUES (?)').bind(1).run();",
+          "    await env.DB.prepare('INSERT INTO b VALUES (?)').bind(1).run();",
+          "    await env.DB.prepare('INSERT INTO c VALUES (?)').bind(1).run();",
+          "    await env.DB.prepare('INSERT INTO d VALUES (?)').bind(1).run();",
+          '  }',
+          '}',
+        ].join('\n'),
+      );
+
+      seedSchemaUsage(db, [
+        { table_name: 'a', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 3 },
+        { table_name: 'b', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 4 },
+        { table_name: 'c', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 5 },
+        { table_name: 'd', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 6 },
+      ]);
+
+      const result = await analyzer.analyze([filePath], { indexHandle: db, projectRoot: dir });
+
+      const violations = result.violations.filter(
+        v => v.rule === 'cross-domain/multi-table-write',
+      );
+      expect(violations).toHaveLength(1);
+      expect(violations[0].functionName).toBe('flush');
+
+      rmSync(dir, { recursive: true, force: true });
     });
   });
 

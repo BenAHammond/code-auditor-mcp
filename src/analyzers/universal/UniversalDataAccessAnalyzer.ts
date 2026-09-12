@@ -22,6 +22,7 @@ import {
   DB_WRAPPER_NAMES,
 } from './UniversalSchemaAnalyzer.js';
 import { isSqlKeyword } from './schema/codeAnalysis.js';
+import { isTestOrSpecPath } from '../../languages/testConventions.js';
 
 /**
  * SQL keywords recognized as evidence that a string is a SQL query.
@@ -44,6 +45,11 @@ export interface DataAccessAnalyzerConfig {
   // Enable/disable checks
   checkOrgFilters?: boolean;
   checkSQLInjection?: boolean;
+
+  /** Spec 55 R3 — exclude the query-shape rules (loop-query, unfiltered-query)
+   *  from test files. Defaults true; set false to analyze test files (used by
+   *  the oracle fixtures, which assert positive loop-query detections). */
+  skipTestFiles?: boolean;
 
 
   // Database configurations
@@ -121,6 +127,7 @@ export interface DataAccessAnalyzerConfig {
 export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   checkOrgFilters: true,
   checkSQLInjection: true,
+  skipTestFiles: true,
 
   databases: {
     'primary': {
@@ -188,23 +195,15 @@ interface DatabaseCall {
   column: number;
   tables: string[];
   /** The query statement's own text (the candidate node's text, comments
-   *  stripped) — query-scoped for subquery detection. NOT the whole file: the
-   *  old `analyzeQuery` computed `hasSubquery` from `sourceCode`, so a file with
-   *  two unrelated simple queries read as "has a subquery". */
+   *  stripped) — query-scoped for filter/write-verb detection. NOT the whole
+   *  file: the old `analyzeQuery` read two unrelated queries in one file as one
+   *  statement. */
   queryText: string;
   hasOrganizationFilter: boolean;
-  /** True when the query carries a limiting clause (WHERE/HAVING/LIMIT/ON) —
+  /** True when the query carries a limiting clause (WHERE/HAVING/LIMIT) —
    *  broader than the tenant-isolation org filter, used for the performance
    *  `unfiltered-query` rule. */
   hasFilter: boolean;
-  /** True when the statement is a pure write — carries an INSERT/DELETE/UPDATE
-   *  verb and no SELECT read component.  Drives the `unfiltered-query` gate:
-   *  pure writes (`INSERT ... VALUES`, `DELETE`, `UPDATE`) have no result set
-   *  to sweep, so they are never "unfiltered reads" and must not be surfaced
-   *  by a rule about unbounded reads.  A statement with no DML verb (an ORM
-   *  query-builder read like `.find()` / `.select().from(...)`) is NOT a pure
-   *  write and stays eligible for the gate. */
-  isPureWrite: boolean;
   hasParameterizedQuery: boolean;
   hasSqlInjectionRisk: boolean;
   /** Enclosing function name for stable fingerprinting (Spec 18 Gap 2). */
@@ -215,7 +214,6 @@ interface QueryAnalysis {
   complexity: 'simple' | 'moderate' | 'complex';
   tables: string[];
   hasJoins: boolean;
-  hasSubquery: boolean;
   hasOrganizationFilter: boolean;
   hasFilter: boolean;
   performanceRisk: 'low' | 'medium' | 'high';
@@ -259,6 +257,8 @@ interface ViolationCheckContext {
   filePath: string;
   config: DataAccessAnalyzerConfig;
   symbolOrdinals: Map<string, number>;
+  /** Spec 55 R3 — test/spec files skip the query-shape rules (unfiltered-query). */
+  skipTestRules: boolean;
 }
 
 /**
@@ -400,7 +400,7 @@ function buildDatabaseCall(
 
   const tables = extractTables(nodeText, config);
   const hasOrgFilter = hasOrganizationFilter(nodeText, config);
-  const { hasFilter, isPureWrite } = detectQueryFiltering(nodeText);
+  const hasFilter = hasQueryFilter(nodeText);
   const security = withRuleTiming('sql-injection-risk', () =>
     checkQuerySecurity(node, nodeText, ast, scan));
 
@@ -416,7 +416,6 @@ function buildDatabaseCall(
     queryText: nodeText,
     hasOrganizationFilter: hasOrgFilter,
     hasFilter,
-    isPureWrite,
     hasParameterizedQuery: security.parameterized,
     hasSqlInjectionRisk: security.injectionRisk,
     enclosingFunction: findEnclosingFunctionName(node, adapter),
@@ -479,40 +478,33 @@ function extractDatabaseCalls(
 }
 
 /**
- * True when the query text contains a nested SELECT — i.e. at least two `SELECT`
- * keywords. Scoped to a single query statement's text, not the whole file.
- */
-function hasNestedSelect(queryText: string): boolean {
-  const upper = queryText.toUpperCase();
-  const first = upper.indexOf('SELECT');
-  if (first === -1) return false;
-  return upper.indexOf('SELECT', first + 1) !== -1;
-}
-
-/**
- * Analyze a database query
+ * Analyze a database query.
+ *
+ * Spec 55 R5 — `performanceRisk` is the single driver for both query-shape rules:
+ *   * `high`   → many tables (`complex-query`).  A subquery is NOT complex —
+ *     it is an ordinary, well-optimized SQLite/D1 idiom (indexed `EXISTS`,
+ *     `NOT IN`, correlated `COUNT(*)`, window functions), so it no longer
+ *     contributes.  Only a genuinely join-heavy query is flagged.
+ *   * `medium` → an unfiltered write (`unfiltered-query`).  See
+ *     {@link isUnfilteredWrite}.
  */
 function analyzeQuery(
   call: DatabaseCall,
   config: DataAccessAnalyzerConfig
 ): QueryAnalysis {
   const hasJoins = call.tables.length > 1;
-  // A subquery is a nested SELECT — detected on the *query's own text*, not the
-  // whole file (the old `sourceCode` heuristic read two unrelated queries in one
-  // file as a subquery).
-  const hasSubquery = hasNestedSelect(call.queryText);
 
   let complexity: 'simple' | 'moderate' | 'complex' = 'simple';
-  if (hasSubquery || call.tables.length > 3) {
+  if (call.tables.length > 3) {
     complexity = 'complex';
-  } else if (hasJoins || call.tables.length > 1) {
+  } else if (hasJoins) {
     complexity = 'moderate';
   }
 
   let performanceRisk: 'low' | 'medium' | 'high' = 'low';
-  if (hasSubquery || call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
+  if (call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
     performanceRisk = 'high';
-  } else if (isUnfilteredQuery(call) && call.tables.length > 0) {
+  } else if (isUnfilteredWrite(call)) {
     performanceRisk = 'medium';
   }
 
@@ -520,7 +512,6 @@ function analyzeQuery(
     complexity,
     tables: call.tables,
     hasJoins,
-    hasSubquery,
     hasOrganizationFilter: call.hasOrganizationFilter,
     hasFilter: call.hasFilter,
     performanceRisk
@@ -535,7 +526,7 @@ function checkViolations(
   analysis: QueryAnalysis,
   ctx: ViolationCheckContext,
 ): Violation[] {
-  const { filePath, config, symbolOrdinals } = ctx;
+  const { filePath, config, symbolOrdinals, skipTestRules } = ctx;
   const violations: Violation[] = [];
 
   const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method, symbolOrdinals);
@@ -563,19 +554,18 @@ function checkViolations(
     push(`Query on ${call.tables.join(', ')} missing organization/tenant filter`, { severity: 'severe', rule: 'missing-org-filter' });
   }
 
-  // Performance: Complex Query — a subquery or many joined tables, named honestly.
+  // Performance: Complex Query — a join-heavy query (many tables).  Spec 55 R5:
+  // a subquery alone is no longer "complex" — it is an ordinary SQLite/D1 idiom.
   if (analysis.performanceRisk === 'high') {
-    const reasons: string[] = [];
-    if (analysis.hasSubquery) reasons.push('contains a subquery');
-    if (call.tables.length > (config.performanceThresholds?.joinedTableCount || 4)) {
-      reasons.push(`references ${call.tables.length} tables`);
-    }
-    push(`Query ${reasons.join(' and ')}`, { severity: 'high', rule: 'complex-query' });
+    push(`Query references ${call.tables.length} tables`, { severity: 'high', rule: 'complex-query' });
   }
 
-  // Performance: Unfiltered Query
-  if (isUnfilteredQuery(call) && analysis.performanceRisk === 'medium') {
-    push(`Query on ${call.tables.join(', ')} has no filter`, { severity: 'high', rule: 'unfiltered-query' });
+  // Performance: Unfiltered Query — an unfiltered write (DELETE/UPDATE with no
+  // row-limiting clause), the classic mass-mutation foot-gun.  Spec 55 R3: it is
+  // a query-shape rule excluded from test files; R5: it is about writes now, not
+  // reads (an unfiltered SELECT is often an intentional full-set load).
+  if (!skipTestRules && analysis.performanceRisk === 'medium') {
+    push(`Unfiltered write on ${call.tables.join(', ')} has no WHERE/HAVING/LIMIT`, { severity: 'high', rule: 'unfiltered-query' });
   }
 
   return violations;
@@ -1319,13 +1309,13 @@ function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): 
 
 /**
  * True when a query applies a *row-limiting* filter: a WHERE carrying a real
- * predicate, a HAVING, or a LIMIT.  The `unfiltered-query` rule is about reads
- * that sweep an unbounded result set.  A `JOIN ... ON` predicate scopes *how*
- * rows match, not *which* rows come back, so it is not a filter; and a
- * tautological `WHERE 1=1` (the placeholder prepended so callers can append
- * `AND x = ?`) limits nothing, so it is not a filter either.  Evaluated on
- * comment-stripped text so prose in `//` or `/* *`/ comments cannot fabricate
- * a filter.
+ * predicate, a HAVING, or a LIMIT.  The `unfiltered-query` rule flags a write
+ * (DELETE/UPDATE) that lacks such a clause — a mass mutation that touches every
+ * row.  A `JOIN ... ON` predicate scopes *how* rows match, not *which* rows come
+ * back, so it is not a filter; and a tautological `WHERE 1=1` (the placeholder
+ * prepended so callers can append `AND x = ?`) limits nothing, so it is not a
+ * filter either.  Evaluated on comment-stripped text so prose in `//` or `/* *`/
+ * comments cannot fabricate a filter.
  */
 function hasQueryFilter(text: string): boolean {
   const upper = text.toUpperCase();
@@ -1357,18 +1347,6 @@ function whereClauseIsTautology(text: string): boolean {
 }
 
 /**
- * True when a SQL statement contains a SELECT — a read verb.  True for a bare
- * `SELECT`, an `INSERT ... SELECT`, and a `WITH ... SELECT`, whose source rows
- * are read.  Combined with `hasWriteVerb` it distinguishes a pure write from a
- * read: a statement with a write verb but no SELECT is a pure write, while
- * anything else (a bare SELECT, or text with no DML verb such as an ORM
- * query-builder read) is a read for the `unfiltered-query` gate.
- */
-function hasSelectComponent(text: string): boolean {
-  return /\bSELECT\b/.test(text.toUpperCase());
-}
-
-/**
  * True when a SQL statement carries a write verb (INSERT/DELETE/UPDATE/REPLACE).
  * Spec 52 R2: `REPLACE INTO` is an upsert write — matched as a two-word clause
  * (not a bare `REPLACE` word) so the `REPLACE()` string function is not misread
@@ -1381,28 +1359,26 @@ export function hasWriteVerb(text: string): boolean {
 }
 
 /**
- * Filter/write shape of a SQL statement, computed together for the
- * `unfiltered-query` gate (keeps `buildDatabaseCall` under its line budget).
- * `isPureWrite` is true only for a statement with a write verb and no SELECT —
- * those have no result set to sweep and are out of scope for a rule about
- * unbounded reads.
+ * True when a statement mutates or deletes existing rows — `DELETE` or `UPDATE`.
+ * These are the verbs whose mass effect is a foot-gun when unconstrained;
+ * `INSERT` / `REPLACE INTO` always target specific rows and are not "unfiltered"
+ * in the dangerous sense.
  */
-function detectQueryFiltering(text: string): { hasFilter: boolean; isPureWrite: boolean } {
-  const isPureWrite = hasWriteVerb(text) && !hasSelectComponent(text);
-  return { hasFilter: hasQueryFilter(text), isPureWrite };
+function hasMassWriteVerb(text: string): boolean {
+  const upper = text.toUpperCase();
+  return /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper);
 }
 
 /**
- * True when a call should be surfaced by the `unfiltered-query` rule: a read
- * (a bare `SELECT`, an `INSERT ... SELECT` / `WITH ... SELECT`, or an ORM
- * query-builder read such as `.find()` / `.select().from(...)`) that lacks any
- * row-limiting clause (WHERE/HAVING/LIMIT/ON).  Pure writes (`INSERT ... VALUES`,
- * `DELETE`, `UPDATE`) have no result set to sweep and are therefore never
- * "unfiltered reads" — they are out of scope for a rule about reads that sweep
- * an unbounded result set, so they are not surfaced.
+ * True when a call should be surfaced by the `unfiltered-query` rule (Spec 55
+ * R5): a write statement (`DELETE` / `UPDATE`) with no row-limiting clause
+ * (WHERE carrying a real predicate, HAVING, or LIMIT).  `DELETE FROM t` or
+ * `UPDATE t SET …` with no filter mutates/deletes every row — the classic SQL
+ * foot-gun.  Unfiltered *reads* (`SELECT` without WHERE) are often intentional
+ * full-set loads and are therefore out of scope.
  */
-function isUnfilteredQuery(call: DatabaseCall): boolean {
-  return !call.hasFilter && !call.isPureWrite;
+function isUnfilteredWrite(call: DatabaseCall): boolean {
+  return hasMassWriteVerb(call.queryText) && !call.hasFilter;
 }
 
 /**
@@ -1951,6 +1927,13 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
       provenanceContext,
     };
 
+    // Spec 55 R3 — test/spec files are excluded from the query-shape rules
+    // (loop-query, unfiltered-query). Security and org-filter rules still fire:
+    // a test with a hardcoded connection string or an injected query is as real
+    // a signal as in production code. `skipTestFiles: false` overrides (oracle
+    // fixtures assert positive loop-query detections on files under __tests__).
+    const skipTestRules = finalConfig.skipTestFiles !== false && isTestOrSpecPath(ast.filePath);
+
     // Analyze each database call, tracking symbol ordinals for stable fingerprints.
     const symbolOrdinals = new Map<string, number>();
     for (const call of extractDatabaseCalls(ast, scan)) {
@@ -1959,11 +1942,14 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
         filePath: ast.filePath,
         config: finalConfig,
         symbolOrdinals,
+        skipTestRules,
       }));
     }
 
     // R4.1: loop-query (N+1) detection + general patterns.
-    violations.push(...checkLoopQueries(ast, scan));
+    if (!skipTestRules) {
+      violations.push(...checkLoopQueries(ast, scan));
+    }
     violations.push(...checkGeneralPatterns(ast, adapter, sourceCode, finalConfig));
 
     return violations;

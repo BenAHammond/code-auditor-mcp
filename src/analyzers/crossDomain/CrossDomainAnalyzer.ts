@@ -22,10 +22,13 @@
  */
 
 import * as path from 'node:path';
+import { readFileSync } from 'node:fs';
 
 import type { AnalyzerResult, Violation, ValidatorBypassConfig, CoverageConfig } from '../../types.js';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { IndexHandle } from '../../types.js';
+import type { AST, ASTNode } from '../../languages/types.js';
+import { parseFile } from '../../languages/adapterBridge.js';
 import { VALIDATOR_PACKAGES } from '../provenance.js';
 import { makeVisitorStatus } from '../../pipeline.js';
 
@@ -531,6 +534,64 @@ function groupWriterTables(
 }
 
 /**
+ * Whether the function enclosing `writeLine` commits its writes atomically via a
+ * single `.batch()` call (Cloudflare D1 / SQLite transaction batching). When the
+ * writes are accumulated into prepared statements and committed in one batch,
+ * the multi-table shape carries no transaction-boundary risk, so the rule must
+ * not flag it.
+ *
+ * Resolved by re-parsing the file and walking the ancestor chain of the write
+ * line for an enclosing function whose source span contains `.batch(`. This is
+ * precise (function-scoped, not file-scoped) and only runs for the rare files
+ * whose write set already reached the multi-table threshold.
+ */
+function enclosingFunctionBatches(filePath: string, writeLine: number): boolean {
+  let source: string;
+  try {
+    source = readFileSync(filePath, 'utf8');
+  } catch {
+    return false;
+  }
+  let ast: AST | null = null;
+  try {
+    ast = parseFile(filePath, source);
+  } catch {
+    return false;
+  }
+  if (!ast) return false;
+
+  const FUNCTION_NODE_TYPES = new Set([
+    'function_declaration',
+    'method_definition',
+    'arrow_function',
+    'function_expression',
+    'generator_function_declaration',
+    'generator_function_expression',
+  ]);
+
+  // Collect the enclosing function nodes (outermost first) that span the write
+  // line. Checking any ancestor handles the accumulate-in-an-inner-callback /
+  // commit-in-the-outer-function shape.
+  const chain: ASTNode[] = [];
+  const walk = (node: ASTNode): void => {
+    const loc = node.location;
+    if (loc && loc.start.line <= writeLine && writeLine <= loc.end.line) {
+      if (FUNCTION_NODE_TYPES.has(node.type)) chain.push(node);
+      for (const child of node.children ?? []) walk(child);
+    }
+  };
+  walk(ast.root);
+  ast.dispose?.();
+
+  for (const fn of chain) {
+    const range = fn.range;
+    if (!range) continue;
+    if (source.slice(range[0], range[1]).includes('.batch(')) return true;
+  }
+  return false;
+}
+
+/**
  * Flag functions whose depth-1-expanded write set reaches txnTableMax.
  * When graph_cache is unpopulated, expandWrittenTables degrades gracefully
  * to reporting direct writes only.
@@ -547,6 +608,9 @@ function flagTransactionBoundaryWrites(
     const allTables = expandWrittenTables(indexHandle, key, funcData.tables, graph);
 
     if (allTables.size >= txnTableMax) {
+      // A single `.batch()` commit is the transaction scope — no risk to flag.
+      if (enclosingFunctionBatches(funcData.filePath, funcData.line)) continue;
+
       const tableList = [...allTables].sort().join(', ');
       violations.push({
         file: funcData.filePath,

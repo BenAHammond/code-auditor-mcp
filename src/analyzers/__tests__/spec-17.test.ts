@@ -302,7 +302,7 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
 
   it('R4.1 — query inside for loop → loop-query finding (fixture 15)', async () => {
     const file = join(FIXTURES, 'for-loop-query.ts');
-    const result = await analyzer.analyze([file], {});
+    const result = await analyzer.analyze([file], { skipTestFiles: false });
     expect(result.errors).toHaveLength(0);
 
     const loopViolations = result.violations.filter(v => v.rule === 'loop-query');
@@ -319,7 +319,7 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
 
   it('R4.2 — nested loops → innermost loop cited with depth (fixture 16)', async () => {
     const file = join(FIXTURES, 'nested-loops-query.ts');
-    const result = await analyzer.analyze([file], {});
+    const result = await analyzer.analyze([file], { skipTestFiles: false });
     expect(result.errors).toHaveLength(0);
 
     const loopViolations = result.violations.filter(v => v.rule === 'loop-query');

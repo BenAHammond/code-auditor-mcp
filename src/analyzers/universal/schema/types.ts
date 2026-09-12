@@ -21,6 +21,9 @@ export interface SchemaAnalyzerConfig {
   detectUnusedTables?: boolean;
   validateQueryPatterns?: boolean;
   maxQueriesPerFunction?: number;
+  /** Spec 55 R3 — exclude the query-shape rule (too-many-queries) from test
+   *  files. Defaults true; set false to analyze test files. */
+  skipTestFiles?: boolean;
   requiredSchemas?: string[];
   // In-memory schemas for testing
   schemas?: Array<{

@@ -539,15 +539,15 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
-    message: 'Query is complex: it contains a subquery or references many tables.',
+    message: 'Query references many tables (join-heavy).',
     docs: 'complex-query',
     thresholds: ['performanceThresholds.joinedTableCount'],
     samples: {
       valid: [
         { code: 'db.query("SELECT COUNT(*) FROM users")', nearMiss: true },
+        { code: 'db.query("SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)")', nearMiss: true },
       ],
       invalid: [
-        { code: 'db.query("SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)")' },
         { code: 'db.query("SELECT * FROM a JOIN b JOIN c JOIN d JOIN e JOIN f JOIN g JOIN h JOIN i")' },
       ],
     },
@@ -557,15 +557,16 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
-    message: 'Query on {tables} has no filter.',
+    message: 'Unfiltered write on {tables} has no WHERE/HAVING/LIMIT.',
     docs: 'unfiltered-query',
     thresholds: [],
     samples: {
       valid: [
-        { code: 'db.query("SELECT * FROM users WHERE id = ?", [id])', nearMiss: true },
+        { code: 'db.query("SELECT * FROM users")', nearMiss: true },
+        { code: 'db.query("DELETE FROM users WHERE id = ?", [id])', nearMiss: true },
       ],
       invalid: [
-        { code: 'db.query("SELECT * FROM users")' },
+        { code: 'db.query("DELETE FROM users")' },
       ],
     },
   },

@@ -44,7 +44,9 @@ async function loopQueryCount(fileName: string): Promise<number> {
   const ast = parseFile(fixture(fileName), sourceCode)!;
   if (!ast) throw new Error(`Failed to parse ${fileName}`);
   const analyzer = new UniversalDataAccessAnalyzer();
-  const violations = await (analyzer as any).analyzeAST(ast, tsAdapter, {}, sourceCode);
+  // Spec 55 R3 excludes test files by default; these fixtures are positive
+  // loop-query controls under __tests__, so re-enable analysis on them.
+  const violations = await (analyzer as any).analyzeAST(ast, tsAdapter, { skipTestFiles: false }, sourceCode);
   return violations.filter((v: { rule: string }) => v.rule === 'loop-query').length;
 }
 

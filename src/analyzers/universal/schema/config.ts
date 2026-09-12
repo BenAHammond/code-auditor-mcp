@@ -33,6 +33,7 @@ export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   detectUnusedTables: false,
   validateQueryPatterns: true,
   maxQueriesPerFunction: 5,
+  skipTestFiles: true,
   requiredSchemas: [],
   schemas: [],
   validateJsonSchemas: true,

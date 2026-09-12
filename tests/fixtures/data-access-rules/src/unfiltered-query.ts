@@ -1,21 +1,20 @@
 /**
  * unfiltered-query rule — true positive + near-miss negative
  *
- * True positive: SELECT from a table without WHERE or LIMIT clause.
- * Near-miss negative: SELECT with WHERE clause — should NOT trigger.
+ * True positive: DELETE from a table with no WHERE/HAVING/LIMIT clause —
+ * a mass-mutation foot-gun.
+ * Near-miss negative: DELETE with a WHERE clause — should NOT trigger.
  */
 import { getDB } from './fake-db';
 
-// TRUE POSITIVE — no WHERE/LIMIT clause
-export function getAllUsers(): void {
+// TRUE POSITIVE — unfiltered DELETE, no row-limiting clause
+export function deleteAllLogs(): void {
   const db = getDB();
-  db.prepare(`SELECT * FROM users`).all();
+  db.exec(`DELETE FROM audit_log`);
 }
 
-// NEAR-MISS NEGATIVE — uses org_id filter pattern, which satisfies
-// both unfiltered-query (has filter) and missing-org-filter (has org column).
-// Uses a table NOT in the org filter fallback to avoid cross-contamination.
-export function getTagsByOrg(orgId: string): void {
+// NEAR-MISS NEGATIVE — filtered DELETE, should NOT trigger
+export function deleteOneLog(id: number): void {
   const db = getDB();
-  db.prepare(`SELECT * FROM tags WHERE org_id = ?`).bind(orgId).all();
+  db.exec(`DELETE FROM audit_log WHERE id = ?`);
 }

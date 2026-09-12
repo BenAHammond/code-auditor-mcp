@@ -340,22 +340,25 @@ describe('Detector 1 — Value Drift', () => {
 describe('Detector 2 — Off-Scale Values', () => {
   // The old proxy inferred a uniform step from a hardcoded `[2, 4, 8, 16]`
   // candidate set and flagged any value whose remainder against that step was
-  // not near 0. That (a) overclaims "project's design scale" — it is a step
-  // guess, not a real scale — and (b) mis-flags real Tailwind values that are
-  // on the scale but not a power-of-two multiple (12px, 20px, 28px), while
-  // missing arbitrary values (100px) that happen to be a multiple of 4. In
-  // practice it never fired: every multiple of 4/8/16 is also a multiple of 2,
-  // so the step always resolved to 2 and step 2's 1px tolerance swallowed every
-  // remainder.
+  // not near 0. That overclaimed "project's design scale" — it is a step guess,
+  // not a real scale — and mis-flagged real Tailwind values (12px, 20px, 28px)
+  // while missing arbitrary values (100px). It was also wrong at the next level:
+  // it inferred the *Tailwind* scale for every project, even one that never
+  // opted into Tailwind.
   //
-  // The honest predicate: a scale-family value is off-scale when its px
-  // equivalent is NOT a member of the property's Tailwind design scale —
-  // spacing for margin/padding/gap, font-size for `font-size`. The two scales
-  // are distinct (`14px` is `text-sm` but not a spacing step; `28px` is a
-  // spacing step but not a font size).
+  // Spec 55 R6: the honest predicate reads the project's *declared* tokens
+  // (Tailwind theme `spacing.*` / `fontSize.*`, or CSS custom properties named
+  // `--space-*` / `--font-size-*`) and treats only those as authoritative.
+  // Spacing properties are judged against the declared spacing scale,
+  // `font-size` against the declared font-size scale — they are not
+  // interchangeable. Where a project declares no scale for a family, the rule
+  // is notApplicable: it must not guess.
 
-  it('flags a value that is not on the Tailwind spacing scale (positive)', async () => {
-    // Establish a corpus with on-scale values, then one off-scale straggler.
+  it('flags a value that is not on the declared spacing scale (positive)', async () => {
+    // Declare the project's spacing scale via Tailwind theme tokens, then seed a
+    // corpus with on-scale values plus one off-scale straggler.
+    insertToken('spacing.2', '8px', 'tailwind-theme');
+    insertToken('spacing.4', '16px', 'tailwind-theme');
     for (let i = 0; i < 4; i++) {
       insertDecl({
         property: 'margin-top',
@@ -383,10 +386,15 @@ describe('Detector 2 — Off-Scale Values', () => {
     expect(offScale.every((v) => v.message.includes('13px'))).toBe(true);
   });
 
-  it('does NOT fire for on-scale values that are not power-of-two multiples (near-miss)', async () => {
-    // 12px (Tailwind `3`), 20px (Tailwind `5`), 28px (Tailwind `7`) are all on
-    // the scale but would trip the old `[2,4,8,16]` step proxy (12 % 8 = 4,
-    // 20 % 8 = 4, 28 % 8 = 4). The honest predicate must not flag them.
+  it('does NOT fire for values on the declared scale (near-miss)', async () => {
+    // 12px, 20px, 28px are declared spacing steps here — the rule must not flag
+    // them just because they are not power-of-two multiples.
+    insertToken('spacing.2', '8px', 'tailwind-theme');
+    insertToken('spacing.3', '12px', 'tailwind-theme');
+    insertToken('spacing.4', '16px', 'tailwind-theme');
+    insertToken('spacing.5', '20px', 'tailwind-theme');
+    insertToken('spacing.6', '24px', 'tailwind-theme');
+    insertToken('spacing.7', '28px', 'tailwind-theme');
     const onScale = ['8px', '12px', '20px', '24px', '28px', '16px'];
     onScale.forEach((v, i) => {
       insertDecl({
@@ -406,10 +414,11 @@ describe('Detector 2 — Off-Scale Values', () => {
     expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
   });
 
-  it('flags an arbitrary value the old step proxy would have missed (inverse near-miss)', async () => {
-    // 100px is a multiple of 4 (so the old step-4 proxy passed it as "aligned")
-    // but is NOT a member of the Tailwind spacing scale — it is an arbitrary
-    // value. The honest predicate must fire.
+  it('flags an arbitrary value outside the declared scale (inverse near-miss)', async () => {
+    // 100px is not a declared spacing step — the honest predicate must fire,
+    // unlike the old step proxy that passed it as "aligned".
+    insertToken('spacing.2', '8px', 'tailwind-theme');
+    insertToken('spacing.4', '16px', 'tailwind-theme');
     for (let i = 0; i < 4; i++) {
       insertDecl({
         property: 'margin-top',
@@ -437,9 +446,15 @@ describe('Detector 2 — Off-Scale Values', () => {
     expect(offScale.every((v) => v.message.includes('100px'))).toBe(true);
   });
 
-  it('judges font-size against the font-size scale, not the spacing scale (near-miss)', async () => {
-    // 30px is `text-3xl` — a valid font size — but it is NOT a spacing step.
-    // A naive spacing-scale check would flag it; the honest predicate must not.
+  it('judges font-size against the declared font-size scale, not the spacing scale (near-miss)', async () => {
+    // 30px is a declared font-size step but NOT a declared spacing step. A naive
+    // spacing-scale check would flag it; the honest predicate must not.
+    insertToken('fontSize.sm', '14px', 'tailwind-theme');
+    insertToken('fontSize.base', '16px', 'tailwind-theme');
+    insertToken('fontSize.lg', '18px', 'tailwind-theme');
+    insertToken('fontSize.xl', '20px', 'tailwind-theme');
+    insertToken('fontSize.2xl', '24px', 'tailwind-theme');
+    insertToken('fontSize.3xl', '30px', 'tailwind-theme');
     const onScale = ['14px', '16px', '18px', '20px', '30px', '24px'];
     onScale.forEach((v, i) => {
       insertDecl({
@@ -459,10 +474,10 @@ describe('Detector 2 — Off-Scale Values', () => {
     expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
   });
 
-  it('flags a font-size that is on the spacing scale but off the font-size scale (inverse near-miss)', async () => {
-    // 28px is a valid spacing step (`spacing-7`) but NOT a named font size.
-    // A spacing-scale check would pass it; the honest font-size scale must flag
-    // it.
+  it('flags a font-size that is on the spacing scale but off the declared font-size scale (inverse near-miss)', async () => {
+    // 28px is a declared spacing step but NOT a declared font size. A spacing-
+    // scale check would pass it; the honest font-size scale must flag it.
+    insertToken('fontSize.sm', '14px', 'tailwind-theme');
     for (let i = 0; i < 4; i++) {
       insertDecl({
         property: 'font-size',
@@ -488,6 +503,81 @@ describe('Detector 2 — Off-Scale Values', () => {
     const offScale = findViolations(violations, 'styles/off-scale');
     expect(offScale.length).toBeGreaterThanOrEqual(1);
     expect(offScale.every((v) => v.message.includes('28px'))).toBe(true);
+  });
+
+  // ── Spec 55 R6: notApplicable where no scale is declared ──────────────
+
+  it('is notApplicable when the project declares no scale for the family', async () => {
+    // A plain-CSS project declaring only color + radius/tap length tokens — none
+    // a spacing or font-size scale — must not have raw values judged against a
+    // guessed scale. Mirrors the endless-guessing corpus (styles.css declares
+    // --radius/--tap but no spacing/font-size tokens).
+    insertToken('--radius', '14px', 'css-custom-property');
+    insertToken('--radius-sm', '9px', 'css-custom-property');
+    insertToken('--tap', '44px', 'css-custom-property');
+    insertToken('--bg', '#0f0f14', 'css-custom-property');
+    for (let i = 0; i < 4; i++) {
+      insertDecl({
+        property: 'margin-top',
+        raw_value: '8px',
+        mechanism: 'css',
+        file_path: `src/comp${i}.css`,
+        line: i + 1,
+      });
+    }
+    insertDecl({
+      property: 'font-size',
+      raw_value: '13px',
+      mechanism: 'css',
+      file_path: 'src/offscale.css',
+      line: 1,
+    });
+    insertDecl({
+      property: 'font-size',
+      raw_value: '22px',
+      mechanism: 'css',
+      file_path: 'src/offscale.css',
+      line: 2,
+    });
+
+    const violations = await runAnalyzer({
+      minCorpus: 1,
+      scaleProperties: ['margin-top', 'font-size'],
+    });
+
+    expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
+  });
+
+  it('reads CSS custom-property tokens as a declared spacing scale', async () => {
+    // CSS custom properties named by the Tailwind v4 `@theme` convention are a
+    // declared scale too — the rule reads them, not just Tailwind theme tokens.
+    insertToken('--space-2', '8px', 'css-custom-property');
+    insertToken('--space-4', '16px', 'css-custom-property');
+    for (let i = 0; i < 4; i++) {
+      insertDecl({
+        property: 'padding',
+        raw_value: '16px',
+        mechanism: 'css',
+        file_path: `src/comp${i}.css`,
+        line: i + 1,
+      });
+    }
+    insertDecl({
+      property: 'padding',
+      raw_value: '10px',
+      mechanism: 'css',
+      file_path: 'src/offscale.css',
+      line: 1,
+    });
+
+    const violations = await runAnalyzer({
+      minCorpus: 3,
+      scaleProperties: ['padding'],
+    });
+
+    const offScale = findViolations(violations, 'styles/off-scale');
+    expect(offScale.length).toBeGreaterThanOrEqual(1);
+    expect(offScale.every((v) => v.message.includes('10px'))).toBe(true);
   });
 });
 

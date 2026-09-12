@@ -67,8 +67,10 @@ export function analyzeComponent(
   // Check for missing props validation (TypeScript users might skip this)
   violations.push(...checkPropsValidation(component, config));
 
-  // Check for missing error boundary in complex components
-  violations.push(...checkErrorBoundary(component, config));
+  // NOTE: per-component `no-error-boundary` is intentionally NOT emitted here.
+  // A complex component is only missing an error boundary if NO boundary exists
+  // anywhere in the app — which is an app-level fact, not a per-component one.
+  // It is checked in `checkErrorBoundaryUsage` (Spec 55 R4).
 
   // Check for performance issues
   if (config.checkUnnecessaryRerenders) {
@@ -132,26 +134,6 @@ function checkPropsValidation(
   }];
 }
 
-/** Check for a missing error boundary on complex components. */
-function checkErrorBoundary(
-  component: ComponentMetadata,
-  config: ReactAnalyzerConfig
-): ReactViolation[] {
-  if (!config.requireErrorBoundaries || !shouldHaveErrorBoundary(component)) {
-    return [];
-  }
-  return [{
-    file: component.filePath,
-    line: component.lineNumber,
-    severity: 'severe',
-    message: `Complex component '${component.name}' should be wrapped in an error boundary`,
-    componentName: component.name,
-    rule: 'no-error-boundary',
-    violationType: 'no-error-boundary',
-    suggestion: 'Wrap this component in an error boundary to handle runtime errors gracefully'
-  }];
-}
-
 /**
  * Check React hooks rules
  */
@@ -202,15 +184,6 @@ function hasPropsValidation(component: ComponentMetadata): boolean {
   
   // Could also check for PropTypes usage, but TypeScript is preferred
   return false;
-}
-
-/**
- * Determine if component should have an error boundary
- */
-function shouldHaveErrorBoundary(component: ComponentMetadata): boolean {
-  // Complex components or components with async operations should have error boundaries
-  return (component.complexity != null && component.complexity > 7) ||
-         (component.hooks != null && component.hooks.some(h => h.name === 'useEffect'));
 }
 
 /**
@@ -513,9 +486,17 @@ const NEXT_ERROR_BOUNDARY_BASENAMES = new Set([
 ]);
 
 /**
- * Check for proper error boundary usage
- * @param scanResults
- * @returns
+ * Check for proper error boundary usage — the app-level authority for
+ * `no-error-boundary`.
+ *
+ * Spec 55 R4: the per-component "complex component should be wrapped" check was
+ * removed. It was unsound — a single root `<ErrorBoundary>` (class component
+ * with `static getDerivedStateFromError`, recognized via `hasErrorBoundary`)
+ * protects the whole tree, so flagging every complex/`useEffect` component as
+ * "unwrapped" produced false positives. Whether a boundary exists is an
+ * app-level fact, so it is decided here: if any boundary exists anywhere in the
+ * app, no finding is emitted; only a boundary-less app of meaningful size is
+ * flagged.
  */
 export function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViolation[] {
   const violations: ReactViolation[] = [];

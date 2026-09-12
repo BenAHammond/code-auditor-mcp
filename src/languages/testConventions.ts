@@ -58,3 +58,24 @@ export function isTestFunction(language: string, name: string): boolean {
   const convention = TEST_CONVENTIONS[language];
   return !!convention && convention.functionPatterns.some((re) => re.test(name));
 }
+
+/**
+ * Language-agnostic test/spec path predicate for RULE-LEVEL test exclusion
+ * (Spec 55 R3). Unlike the per-language `isTestFile` above (driven by
+ * `TEST_CONVENTIONS`), this is a single shared path heuristic for the generic
+ * TS/JS test-file shapes — `*.test.*` / `*.spec.*` filenames and `test/` /
+ * `tests/` / `__tests__/` directory segments, plus Go's `*_test.go`. It is
+ * used by rules that must never fire on test files at all (`loop-query`,
+ * `unfiltered-query`, `too-many-queries`): the shape is a file-scope signal,
+ * not a per-language convention, so it is one predicate rather than a table
+ * entry. Segment anchoring (`/test/`) avoids matching `contest/`, `latest/`,
+ * etc., which a bare `/test\//` substring would.
+ */
+export function isTestOrSpecPath(filePath: string): boolean {
+  const p = filePath.replace(/\\/g, '/');
+  return (
+    /\.(test|spec)\.[^/]+$/.test(p) ||
+    /(^|\/)(test|tests|__tests__)(\/|$)/.test(p) ||
+    /_test\.go$/.test(p)
+  );
+}

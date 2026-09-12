@@ -321,7 +321,7 @@ class DependencyGraphBuilderCore {
    * collides with many entities is treated as "unknown", not "absent", so the
    * dropped edge must not become evidence that the target is unreferenced.
    */
-  protected findOrphanedNodes(graph: DependencyGraph, referencedNames: Set<string>): DependencyNode[] {
+  protected findOrphanedNodes(graph: DependencyGraph, index: ReferenceIndex): DependencyNode[] {
     const connectedNodes = new Set<string>();
 
     for (const edge of graph.edges) {
@@ -347,7 +347,7 @@ class DependencyGraphBuilderCore {
       if (node.isMethod || node.name.includes('.')) return false;
       if (connectedNodes.has(node.id)) return false;
       if (node.exported) return false;
-      if (referencedNames.has(node.name.toLowerCase())) return false;
+      if (isNameReferenced(node.name, node.file, index)) return false;
       return true;
     });
   }
@@ -737,20 +737,50 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     });
   }
 
-  /** Collect bare callee names referenced anywhere in the corpus (for orphan detection). */
-  private collectReferencedNames(): Set<string> {
-    const referencedNames = new Set<string>();
+  /**
+   * Build the scope-aware name-reference index for orphan detection.
+   *
+   * Each entity carries its file's complete reference set (`fileReferences`),
+   * collected from the whole file — including anonymous functions, JSX tags and
+   * bare function values — rather than just the callees of extracted bodies.
+   * The index folds those into per-file and global maps so a name can be
+   * resolved same-file first (then same-directory, then unique-global), instead
+   * of against a flat entity table with no scope awareness.
+   */
+  private collectReferenceIndex(): ReferenceIndex {
+    const byFile = new Map<string, Set<string>>();
+    const globalFiles = new Map<string, Set<string>>();
     for (const e of this.entities) {
-      for (const callee of (e.metadata?.callees as string[] | undefined) ?? []) {
-        referencedNames.add((callee.split('.').pop() ?? callee).toLowerCase());
+      // `fileReferences` is the complete whole-file reference set; `callees` is
+      // the legacy per-body subset (⊆ fileReferences when both are present), kept
+      // as a fallback for entities that predate fileReferences (e.g. unit fixtures).
+      const refs =
+        (e.metadata?.fileReferences as string[] | undefined) ??
+        (e.metadata?.callees as string[] | undefined) ??
+        [];
+      if (refs.length === 0) continue;
+      let fileSet = byFile.get(e.file);
+      if (!fileSet) {
+        fileSet = new Set<string>();
+        byFile.set(e.file, fileSet);
+      }
+      for (const ref of refs) {
+        const lower = (ref.split('.').pop() ?? ref).toLowerCase();
+        fileSet.add(lower);
+        let files = globalFiles.get(lower);
+        if (!files) {
+          files = new Set<string>();
+          globalFiles.set(lower, files);
+        }
+        files.add(e.file);
       }
     }
-    return referencedNames;
+    return { byFile, globalFiles };
   }
 
   /** Record the orphaned-node check. */
   private recordOrphanCheck(sink: CheckSink, graph: DependencyGraph): void {
-    const orphanedNodes = this.findOrphanedNodes(graph, this.collectReferencedNames());
+    const orphanedNodes = this.findOrphanedNodes(graph, this.collectReferenceIndex());
     this.recordCheck(sink, orphanedNodes.length, orphanedNodes.map(n => n.id), {
       issueType: 'orphaned-nodes', severity: 'severe', impact: 'low',
       issueDesc: () => orphanedNodes.map(n => n.name).join(', '),
@@ -785,6 +815,30 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
 }
 
 // Supporting interfaces
+
+/**
+ * Scope-aware name resolution for orphan detection, mirroring the reference
+ * resolver's order: same file → same directory → unique global. A node is
+ * "referenced" (and therefore not orphaned) when its bare name appears in any
+ * of those scopes; the same-file case is what makes "defined and called in one
+ * file" an impossibility to orphan.
+ */
+function isNameReferenced(name: string, file: string, index: ReferenceIndex): boolean {
+  const lower = name.toLowerCase();
+  if (index.byFile.get(file)?.has(lower)) return true;
+  const dir = file.split('/').slice(0, -1).join('/');
+  for (const [otherFile, names] of index.byFile) {
+    if (otherFile === file) continue;
+    if (otherFile.split('/').slice(0, -1).join('/') === dir && names.has(lower)) return true;
+  }
+  return (index.globalFiles.get(lower)?.size ?? 0) === 1;
+}
+
+/** Per-file and global name-reference maps used by {@link isNameReferenced}. */
+interface ReferenceIndex {
+  byFile: Map<string, Set<string>>;
+  globalFiles: Map<string, Set<string>>;
+}
 
 export interface DependencyIssue {
   type: 'circular-dependency' | 'tight-coupling' | 'hub-nodes' | 'orphaned-nodes';

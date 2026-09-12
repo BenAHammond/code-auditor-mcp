@@ -1264,6 +1264,51 @@ function clCollectCallees(raw: any): string[] {
   return [...names];
 }
 
+/**
+ * Collect every reference name in a file's AST, independent of entity
+ * boundaries. Orphan detection needs the complete same-file reference set —
+ * `clCollectCallees` only walks the bodies of *extracted* entities, so a
+ * reference made from an anonymous function (an inline route handler, an
+ * object-literal method), a JSX component tag, or a bare function value
+ * (`arr.map(singularize)`, `[missedClose, …]`) is invisible to it and leaves
+ * the genuinely-referenced target looking orphaned.
+ */
+function clCollectFileReferences(raw: any): string[] {
+  const names = new Set<string>();
+  const isIdentPath = (t: string) => /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(t);
+  const walk = (node: any): void => {
+    if (!node) return;
+    const t = node.type;
+    if (t === 'call_expression') {
+      const fn = typeof node.childForFieldName === 'function'
+        ? node.childForFieldName('function')
+        : null;
+      const text = (fn ?? node.namedChildren?.[0])?.text?.trim();
+      if (text && isIdentPath(text)) names.add(text);
+    } else if (t === 'jsx_opening_element' || t === 'jsx_self_closing_element') {
+      const nameNode = typeof node.childForFieldName === 'function'
+        ? node.childForFieldName('name')
+        : null;
+      const text = (nameNode ?? node.namedChildren?.[0])?.text?.trim();
+      if (text && isIdentPath(text)) names.add(text);
+    } else if (t === 'identifier') {
+      // A bare identifier used as a value — an argument to a call
+      // (`arr.map(singularize)`) or an array element (`[missedClose, …]`) — is a
+      // function reference. Declaration names (`name` fields) and member
+      // accesses (`property_identifier`) are separate node types and are not
+      // captured here.
+      const parent = node.parent;
+      if (parent && (parent.type === 'arguments' || parent.type === 'array')) {
+        const text = node.text?.trim();
+        if (text && /^[A-Za-z_$][\w$]*$/.test(text)) names.add(text);
+      }
+    }
+    for (const child of node.namedChildren ?? []) walk(child);
+  };
+  walk(raw);
+  return [...names];
+}
+
 function clMakeFunction(
   filePath: string,
   lang: string,
@@ -1377,6 +1422,7 @@ function clExtractTSEntities(
   lang: string,
   out: CrossLanguageEntity[],
 ): void {
+  const fileReferences = clCollectFileReferences(root.raw);
   walkAST(root, (node) => {
     const raw = (node as any).raw as any;
 
@@ -1396,7 +1442,7 @@ function clExtractTSEntities(
         }
       }
       const line = (raw?.startPosition?.row ?? 0) + 1;
-      out.push(clMakeFunction(
+      const entity = clMakeFunction(
         filePath, lang, displayName, line,
         clSignatureText(raw, sourceCode) || raw?.text || '',
         clBodyText(raw, sourceCode),
@@ -1405,7 +1451,9 @@ function clExtractTSEntities(
         isExported(node),
         calculateComplexity(node),
         node.type === 'method_definition',
-      ));
+      );
+      entity.metadata!.fileReferences = fileReferences;
+      out.push(entity);
       return;
     }
 
@@ -1415,7 +1463,7 @@ function clExtractTSEntities(
       const name = clRawNamedChild(raw, 'identifier')?.text;
       if (!name) return;
       const line = (raw?.startPosition?.row ?? 0) + 1;
-      out.push(clMakeFunction(
+      const entity = clMakeFunction(
         filePath, lang, name, line,
         clSignatureText(arrow, sourceCode) || arrow?.text || '',
         clBodyText(arrow, sourceCode),
@@ -1423,7 +1471,9 @@ function clExtractTSEntities(
         clCollectCallees(arrow),
         isExported(node),
         calculateComplexity(node),
-      ));
+      );
+      entity.metadata!.fileReferences = fileReferences;
+      out.push(entity);
       return;
     }
 
@@ -1497,6 +1547,7 @@ function clExtractGoEntities(
   sourceCode: string,
   out: CrossLanguageEntity[],
 ): void {
+  const fileReferences = clCollectFileReferences(root.raw);
   walkAST(root, (node) => {
     const raw = (node as any).raw as any;
 
@@ -1507,7 +1558,7 @@ function clExtractGoEntities(
       const receiverType = receiver ? clGoReceiverType(receiver) : undefined;
       const displayName = receiverType ? `${receiverType}.${name}` : name;
       const line = (raw?.startPosition?.row ?? 0) + 1;
-      out.push(clMakeFunction(
+      const entity = clMakeFunction(
         filePath, 'go', displayName, line,
         clSignatureText(raw, sourceCode) || raw?.text || '',
         clBodyText(raw, sourceCode),
@@ -1515,7 +1566,9 @@ function clExtractGoEntities(
         clCollectCallees(raw),
         clIsExportedGo(name),
         calculateComplexity(node),
-      ));
+      );
+      entity.metadata!.fileReferences = fileReferences;
+      out.push(entity);
       return;
     }
 
