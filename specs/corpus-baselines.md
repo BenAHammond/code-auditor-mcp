@@ -345,8 +345,11 @@ loop now skips `px === 0`:
   off-by-one (+1) for findings inside Astro `.astro` `<style>` blocks (e.g.
   `pricing.astro`, `DiscordCtaBand.astro`, `DuoArticleInline.astro`), where the
   reported line is one below the literal. `.css` files and inline-style cases are
-  exact. This is a pre-existing Astro-CSS line-reporting quirk, not R6-specific,
-  and does not affect the value/severity of the finding.
+  exact. This is a pre-existing line-positioning quirk in the language layer
+  (positions inside embedded `.astro` `<style>` blocks report one line low), not
+  R6-specific: it affects any rule reporting a position inside an embedded style
+  block, not just `off-scale`. The value/property of a finding is unaffected —
+  only its line anchor — so it is a line-position fix of its own, not a rule fix.
 
 primer-css and blitz are unchanged (both rules are `notApplicable`/0 on them).
 
