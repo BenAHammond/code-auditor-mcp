@@ -335,8 +335,18 @@ loop now skips `px === 0`:
 - `styles::styles/off-scale` 984 → 759 (recall-protocol). **−225** — the reset
   decls on every component. Of the 759 survivors, 381 are hardcoded px literals
   on Tailwind-default intermediate steps (2/6/10/14/28/36/56) that recall's sparse
-  `--space-*` scale intentionally omits — sampled and confirmed genuine, not a
-  config gap; the rest were off-scale before R6 too.
+  `--space-*` scale intentionally omits; the rest were off-scale before R6 too.
+
+  Survivor-check (the 381 narrower-scale findings, the largest new block): all
+  eight distinct values were read against source, one example each, and every one
+  is a genuine hardcoded px literal off recall's declared scale — no false
+  positives. Histogram `1×9, 2×50, 6×81, 10×117, 14×105, 28×13, 36×2, 56×4`.
+  The values and properties report correctly; the only inaccuracy is line-number
+  off-by-one (+1) for findings inside Astro `.astro` `<style>` blocks (e.g.
+  `pricing.astro`, `DiscordCtaBand.astro`, `DuoArticleInline.astro`), where the
+  reported line is one below the literal. `.css` files and inline-style cases are
+  exact. This is a pre-existing Astro-CSS line-reporting quirk, not R6-specific,
+  and does not affect the value/severity of the finding.
 
 primer-css and blitz are unchanged (both rules are `notApplicable`/0 on them).
 

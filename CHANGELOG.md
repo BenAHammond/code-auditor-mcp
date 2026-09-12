@@ -29,6 +29,12 @@ explanations. Two guards were restored; re-measured corpus baselines are in
   `TRIVIAL_VALUES` already treats `'0'` as trivial, so the two code paths now
   agree. Drops 225 reset-declaration findings on recall-protocol (off-scale
   984 → 759).
+- **Test suite no longer flakes under parallel load (dev-infra).** The
+  subprocess-spawning tests (Go analyzer, CLI, WASM pipeline) exceeded vitest's
+  5000ms default timeout under 10-core parallelism and failed nondeterministically
+  in `verify:close` — a different test each run, all passing in isolation. The
+  vitest configs now cap `maxWorkers: 4` / `minWorkers: 1` and raise `testTimeout`
+  (15s unit, 30s integration), so the *default* invocation is the one that passes.
 
 ## [3.9.3] — 2026-09-11
 
