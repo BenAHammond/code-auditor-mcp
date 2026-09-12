@@ -2,6 +2,50 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.3] — 2026-09-11
+
+### Second external audit (Spec 55)
+
+A second external audit (an unseen Next.js / Cloudflare D1 game project,
+"crowd-answer-game") surfaced six rule defects. Each is fixed with a
+true-positive / near-miss two-direction proof and re-pinned against every corpus
+baseline.
+
+- **`orphaned-nodes` call-graph resolver (R1).** The reference set was a flat
+  global bare-name table built from `metadata.callees`, so anonymous arrow
+  functions, JSX tags, and bare function values were invisible and a function
+  defined-and-called in one file was wrongly orphaned. It is now a scope-aware
+  index built from whole-file `fileReferences` (every call site, JSX tag, and
+  bare identifier in `arguments`/`array`). A name defined and called in one file
+  can no longer be orphaned.
+- **`multi-table-write` batch recognition (R2).** Writes accumulated into
+  prepared statements and committed with a single `.batch()` (D1/SQLite atomic
+  batch) are now their own transaction scope, so the multi-table shape no longer
+  fires. Detection is function-scoped, not file-scoped.
+- **Test-file exclusion at the rule level (R3).** `loop-query`, `unfiltered-query`,
+  and `too-many-queries` are excluded from test files (`*.test.*`/`*.spec.*`,
+  `test/`/`tests/`/`__tests__/`, Go `*_test.go`) at the rule level — not a
+  severity cap (that mechanism is gone). Security and org-filter rules still fire
+  on tests, since a hardcoded connection in a test is as real a signal as in
+  production. The Spec 54 capping removal is enumerated by
+  `scripts/measure-profile-findings.ts`.
+- **`no-error-boundary` recognizes `getDerivedStateFromError` (R4).** A class
+  component implementing the static `getDerivedStateFromError(error)` lifecycle
+  method is a legitimate error boundary and is no longer flagged.
+- **`unfiltered-query` / `complex-query` contracts (R5).** `unfiltered-query`
+  now fires on an unfiltered *write* (DELETE/UPDATE with no WHERE/HAVING/LIMIT),
+  not an unfiltered read; `complex-query` fires on a genuinely join-heavy query
+  (many tables), not a subquery.
+- **`styles/off-scale` reads declared tokens (R6).** The rule reads the project's
+  declared scale (Tailwind theme `spacing.*`/`fontSize.*` and CSS custom-property
+  `--space-*`/`--font-size-*` tokens) and flags only values outside a scale the
+  project actually declares. Where a family declares no scale, the rule is
+  `notApplicable`, not a guess. A value genuinely outside a declared scale still
+  fires.
+
+Corpus baselines re-measured on all five corpora; every delta is attributed in
+`specs/corpus-baselines.md`.
+
 ## [3.9.2] — 2026-09-11
 
 ### Severity as urgency, not permission (Spec 54)
