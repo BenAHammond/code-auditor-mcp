@@ -70,6 +70,7 @@ export function generateSummaryCSVReport(
   // Summary section
   lines.push('Summary');
   lines.push(`Total Violations${delimiter}${result.summary.totalViolations}`);
+  lines.push(`Dismissed${delimiter}${result.summary.dismissed ?? 0}`);
   lines.push(`Critical Issues${delimiter}${result.summary.criticalIssues}`);
   lines.push(`Severe${delimiter}${result.summary.severe}`);
   lines.push(`High${delimiter}${result.summary.high}`);

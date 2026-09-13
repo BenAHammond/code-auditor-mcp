@@ -24,6 +24,7 @@ import { RuntimeManager } from './languages/RuntimeManager.js';
 import { LanguageOrchestrator, PolyglotAnalysisOptions } from './languages/LanguageOrchestrator.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { makeVisitorStatus } from './pipeline.js';
+import { applyDismissals } from './dismissals.js';
 import { DEFAULT_EXCLUDED_ANY_DEPTH_DIRS } from './utils/fileDiscovery.js';
 
 /**
@@ -185,5 +186,11 @@ export async function runAuditDispatch(options: AuditRunnerOptions): Promise<Aud
     enableCrossLanguageAnalysis: true,
   });
 
-  return convertPolyglotToAuditResult(polyglotResult, projectRoot);
+  const result = convertPolyglotToAuditResult(polyglotResult, projectRoot);
+
+  // Spec 57 — the polyglot (Go) path builds its summary directly and never
+  // runs the TS pipeline, so dismissals must be applied here too.
+  applyDismissals(result, projectRoot);
+
+  return result;
 }

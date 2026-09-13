@@ -2,6 +2,55 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.8] — 2026-09-13
+
+### Spec 57 — Dismissals and feedback
+
+The tool produces false positives. An agent needs a way past one, and the reason
+it gives is the most useful signal available. A dismissal clears one finding; an
+opt-in endpoint collects the dismissal and its reason.
+
+**Dismissals.** `code-audit dismiss <fingerprint> --reason "…"` clears exactly
+one finding, scoped by its fingerprint (rule + file + symbol — the same tuple the
+baseline uses). A written reason is required; the finding clears as an *instance*,
+never the rule everywhere (the same rule still fires elsewhere). Dismissals live
+in a committed `.codeauditor.dismissals.json` (reviewable in a diff), are counted
+in every report ("43 findings, 3 dismissed", never a silently reduced total), and
+never gate. New `src/dismissals.ts` plus wiring through `auditRunner.run()`, the Go
+polyglot branch, the gate, and all four report generators; the fingerprint is
+surfaced in the JSON report and `changed --json` so it can be copied exactly.
+
+**Opt-in feedback.** Dismissals can be sent to a feedback service — off by default,
+turned on only by an explicit opt-in: the new `telemetry` MCP tool
+(`status`/`enable`/`disable`), persisted to the user's config dir. When enabled,
+each dismissal sends a small anonymized payload: schema version, an **anonymous
+install ID** (a random value generated locally, never derived from the machine,
+user, or project — it groups submissions by source without tracking anything
+personal), tool version, rule ID, urgency, reason (verbatim), a structural AST
+signature, and a coarse language hint. The signature is built from grammar kinds
+only (a node's `type`, never its text), so identifiers, literals, paths, and source
+text are structurally impossible to include. Sending is best-effort: offline or a
+dead endpoint is silent and never blocks or fails a gate. New
+`src/installConfig.ts`, `src/structuralSignature.ts`, `src/telemetry.ts`.
+
+**The service.** A Cloudflare Worker + D1 in `services/` (separate repo): a flat
+dismissals table (`install_id`, `version`, `rule_id`, `level`, `reason`,
+`signature`, `lang`, `created_at`), write-only `/ingest` with a per-IP
+Durable-Object rate limit (10,000/hour — a provisional ceiling a large team never
+trips, with bot protection carrying the abuse-detection weight) and a hard size cap,
+and an operator-gated `/report` returning most-dismissed rules + reasons grouped by
+install ID. Deployment requires Cloudflare auth and is a flagged manual step (not
+performed here). The payload carries a pinned `schema` version — now `2`, bumped for
+the `install_id` field — with a pinned-shape test on each side, so a cross-repo wire
+contract drift fails loudly instead of being silently stored.
+
+Fix contracts: `dismissals.spec.ts` (instance-scoped positive / near-miss / guard /
+absence), `installConfig.spec.ts` (random stable ID, opt-in default-off + round-trip),
+`structuralSignature.spec.ts` and `telemetry.spec.ts` (the acceptance-4 boundary test
+— a secret, a table name, and a distinctive identifier none of which enter the
+signature or payload — plus offline safety). The service type-checks against
+`@cloudflare/workers-types`.
+
 ## [3.9.7] — 2026-09-12
 
 ### Spec 50 — size-threshold defaults recalculated, project lint config as authority

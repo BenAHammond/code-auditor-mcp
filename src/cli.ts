@@ -24,6 +24,10 @@ import { CodeIndexDB } from './codeIndexDB.js';
 import type { Severity, AuditScope, SearchOptions } from './types.js';
 import { getFilesProcessed, getFactsConsumed, isVisitorStatus, isReducerStatus } from './pipeline.js';
 import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
+import { fingerprint, buildFingerprintInput } from './fingerprint.js';
+import { buildDismissalEntry, upsertDismissal } from './dismissals.js';
+import { resolveTelemetryConfig, signatureForFinding, buildTelemetryPayload, formatTelemetryPreview, sendTelemetry, languageHint } from './telemetry.js';
+import { getInstallId } from './installConfig.js';
 import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { computeGatingDecision } from './enforcement/gate.js';
 import { BLOCKING_SEVERITIES } from './types.js';
@@ -170,6 +174,10 @@ program
         (r: any) => r.violations || []
       );
       const baseline = result.metadata?.baseline;
+      // Spec 57 — dismissed count is reported alongside the total, never
+      // subtracted from it ("43 findings, 3 dismissed").
+      const dismissedCount = result.summary.dismissed ?? 0;
+      const dismissedSuffix = dismissedCount > 0 ? `, ${dismissedCount} dismissed` : '';
 
       // ── Coverage panel leads the report (Spec 47 R2) ─────────────
       // A diagnostic report opens with what was measured before it lists any
@@ -255,7 +263,7 @@ program
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit --full')} to see all ${currentDebt.toLocaleString()} readings.`));
       } else if (!baseline) {
         // No baseline: current behavior + hint
-        console.log(`\nFound ${result.summary.totalViolations} readings`);
+        console.log(`\nFound ${result.summary.totalViolations} findings${dismissedSuffix}`);
         console.log(`Critical: ${result.summary.criticalIssues}`);
         console.log(`Severe: ${result.summary.severe}`);
         console.log(`High: ${result.summary.high}`);
@@ -264,7 +272,7 @@ program
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
       } else {
         // --full with baseline: full itemized inventory (current behavior)
-        console.log(`\nFound ${result.summary.totalViolations} readings`);
+        console.log(`\nFound ${result.summary.totalViolations} findings${dismissedSuffix}`);
         console.log(`Critical: ${result.summary.criticalIssues}`);
         console.log(`Severe: ${result.summary.severe}`);
         console.log(`High: ${result.summary.high}`);
@@ -438,6 +446,8 @@ program
         const severityOrder: Severity[] = ['critical', 'severe', 'high'];
         const failIndex = severityOrder.indexOf(failOnSeverity);
         const hasAtOrAbove = evaluableViolations.some((v: any) => {
+          // Spec 57 — a dismissed finding never blocks the gate.
+          if (v.dismissed) return false;
           const vIndex = severityOrder.indexOf(v.severity);
           return vIndex >= 0 && vIndex <= failIndex;
         });
@@ -534,6 +544,10 @@ program
       const violations = Object.values(result.analyzerResults).flatMap(
         (r: any) => r.violations || []
       );
+      // Spec 57 — dismissed count is reported alongside the total, never
+      // subtracted from it. The hook surface (`changed`) is agent-facing, so it
+      // must show the same "N findings, M dismissed" figure as the full report.
+      const dismissedCount = result.summary.dismissed ?? 0;
 
       // Blocking gate decision (Spec 45 R1/R4, Spec 54 R3), computed once so the
       // agent-facing before/after count (Spec 45 A2) and the exit code agree on
@@ -575,7 +589,9 @@ program
             enclosingSymbol: v.symbol || v.enclosingFunction || '',
             suggestion: v.suggestion || '',
             details: v.details || '',
-            ...(v.new !== undefined && { new: v.new })
+            ...(v.new !== undefined && { new: v.new }),
+            ...(v.dismissed !== undefined && { dismissed: v.dismissed }),
+            fingerprint: fingerprint(buildFingerprintInput(v))
           };
         });
         process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
@@ -591,6 +607,9 @@ program
           console.log('');
           printCountSummary(violations);
           console.log(chalk.bold(`gate before/after: ${violations.length} → ${blocking.length} blocking`));
+          if (dismissedCount > 0) {
+            console.log(chalk.dim(`  ${dismissedCount} dismissed — still counted above, excluded from the gate`));
+          }
           console.log(chalk.gray('── Violations ────────────────────────────────────'));
           for (const v of violations) {
             const icon =
@@ -599,8 +618,11 @@ program
             const statusTag = (v as any).new === false
               ? chalk.dim(' [known — still open]')
               : '';
+            const dismissedTag = v.dismissed
+              ? chalk.dim(' [dismissed]')
+              : '';
             console.log(
-              `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}${statusTag}`
+              `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}${statusTag}${dismissedTag}`
             );
           }
         } else {
@@ -1061,6 +1083,102 @@ program
         if (totalKnown > 0) {
           console.log(chalk.gray(`\nRun ${chalk.cyan('code-audit')} to see your delta view.`));
         }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Dismiss command (Spec 57)
+program
+  .command('dismiss <fingerprint>')
+  .description('Dismiss one finding by fingerprint — a written reason is required')
+  .requiredOption('--reason <reason>', 'Why this finding is dismissed (required — a dismissal without a reason is a config error)')
+  .option('-p, --path <path>', 'Project path', process.cwd())
+  .option('--telemetry-endpoint <url>', 'Feedback service endpoint override (defaults to the opt-in endpoint recorded by the telemetry tool)')
+  .option('--json', 'Output as JSON')
+  .action(async (fingerprintArg: string, options: Record<string, any>) => {
+    try {
+      const reason = (options.reason ?? '').trim();
+      if (!reason) {
+        console.error(chalk.red('Error: --reason is required and must be non-empty. A dismissal without a reason is a config error, not a suppression.'));
+        process.exit(1);
+      }
+
+      const projectRoot = resolve(options.path || process.cwd());
+      await initParsers();
+
+      // Re-audit so the fingerprint resolves against the live finding. The
+      // fingerprint is a content hash of rule+file+symbol, so it is stable
+      // across runs on the same machine (same tuple the baseline uses).
+      const runner = createAuditRunner({ projectRoot });
+      const result = await runner.run();
+      const violations = Object.values(result.analyzerResults).flatMap(
+        (r: any) => r.violations || []
+      );
+
+      const match = violations.find(
+        (v: any) => fingerprint(buildFingerprintInput(v)) === fingerprintArg
+      );
+
+      if (!match) {
+        console.error(chalk.red(`Error: no finding matches fingerprint "${fingerprintArg}".`));
+        console.error(chalk.gray(`The fingerprint is a content hash of rule+file+symbol. Get the exact value from `));
+        console.error(chalk.gray(`the JSON report: run ${chalk.cyan('code-audit audit --format json')} (or ${chalk.cyan('code-audit changed --json')}) `));
+        console.error(chalk.gray(`and copy the "fingerprint" field of the finding you want to dismiss.`));
+        process.exit(1);
+      }
+
+      const entry = buildDismissalEntry(match, reason, packageJson.version);
+      const dismissals = upsertDismissal(projectRoot, entry);
+
+      // Spec 57 — opt-in telemetry. Nothing is sent unless the user opted in via
+      // the `telemetry` MCP tool (default OFF) AND an endpoint is configured. The
+      // payload is printed for review before sending; any send failure is silent
+      // and never affects the dismissal or the exit code.
+      const telemetry = resolveTelemetryConfig({ endpoint: options.telemetryEndpoint });
+      if (telemetry.enabled && telemetry.endpoint) {
+        const signature = signatureForFinding(
+          match.file,
+          match.line ?? match.start?.line ?? 1,
+          match.column ?? match.start?.column ?? 1,
+        ) ?? 'unknown';
+        const payload = buildTelemetryPayload({
+          install_id: getInstallId(),
+          toolVersion: packageJson.version,
+          rule: entry.rule,
+          level: match.severity,
+          reason: entry.reason,
+          signature,
+          lang: languageHint(match.file),
+        });
+        process.stderr.write(formatTelemetryPreview(payload));
+        const sendResult = await sendTelemetry(payload, telemetry.endpoint);
+        if (options.json) {
+          // Surface the send outcome in machine output without ever failing on it.
+          process.stderr.write(`  telemetry: ${sendResult.sent ? 'sent' : 'not sent'}${sendResult.error ? ` (${sendResult.error})` : ''}\n`);
+        } else if (!sendResult.sent) {
+          console.log(chalk.gray(`  Telemetry not sent${sendResult.error ? ` (${sendResult.error})` : ''} — offline is never an error.`));
+        } else {
+          console.log(chalk.gray('  Telemetry sent.'));
+        }
+      }
+
+      if (options.json) {
+        process.stdout.write(JSON.stringify({
+          success: true,
+          fingerprint: entry.fingerprint,
+          rule: entry.rule,
+          file: entry.file,
+          symbol: entry.symbol,
+          reason: entry.reason,
+          totalDismissed: dismissals.entries.length,
+        }, null, 2) + '\n');
+      } else {
+        console.log(chalk.green(`\n✓ Dismissed ${chalk.bold(entry.rule)} @ ${entry.symbol || entry.file} — "${entry.reason}"`));
+        console.log(chalk.gray(`  ${dismissals.entries.length} dismissal(s) recorded in .codeauditor.dismissals.json.`));
+        console.log(chalk.gray(`  The finding is still counted in every report, but excluded from the gate.`));
       }
     } catch (error) {
       console.error(chalk.red('Error:'), error);

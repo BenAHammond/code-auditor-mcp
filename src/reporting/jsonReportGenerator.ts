@@ -5,6 +5,7 @@
 
 import { AuditResult } from '../types.js';
 import { getFilesProcessed } from '../pipeline.js';
+import { fingerprint, buildFingerprintInput } from '../fingerprint.js';
 
 export interface JSONReportConfig {
   pretty?: boolean;
@@ -95,6 +96,9 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
         // only normalize the one field that needs it.
         ...violation,
         ...(violation.hotspot !== undefined && violation.hotspot > 0 && { hotspot: Math.round(violation.hotspot * 1000) / 1000 }),
+        // Spec 57 — surface the fingerprint so `code-audit dismiss <fp>` can
+        // address exactly this finding (same tuple SARIF's partialFingerprints uses).
+        fingerprint: fingerprint(buildFingerprintInput(violation)),
       })),
       ...(result.errors && { errors: result.errors })
     };
@@ -121,6 +125,8 @@ export function generateCompactJSONReport(result: AuditResult): string {
     t: result.timestamp,
     s: {
       tv: result.summary.totalViolations,
+      // Spec 57 — dismissed count, alongside (never subtracted from) `tv`.
+      d: result.summary.dismissed ?? 0,
       c: result.summary.criticalIssues,
       se: result.summary.severe,
       h: result.summary.high

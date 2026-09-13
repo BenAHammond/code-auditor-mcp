@@ -130,6 +130,13 @@ export interface Violation {
    * `severityCap` soften-in-place mechanism.
    */
   gateExcluded?: boolean;
+  /**
+   * Spec 57 — true when a committed dismissal matches this finding's
+   * fingerprint. A dismissed finding never blocks the gate, but it is still
+   * counted in `summary.totalViolations` — dismissal never silently reduces the
+   * total; the reduced count is reported separately as `summary.dismissed`.
+   */
+  dismissed?: boolean;
   violationType?: string;
   symbol?: string;
   principle?: string;
@@ -584,6 +591,12 @@ export interface AuditSummary {
   high: number;
   violationsByCategory: Record<string, number>;
   topIssues: Array<{ type: string; count: number }>;
+  /**
+   * Spec 57 — number of findings cleared by a committed dismissal. Reported
+   * alongside `totalViolations` ("43 findings, 3 dismissed"), never subtracted
+   * from it. Absent/0 when no dismissals apply.
+   */
+  dismissed?: number;
 }
 
 export interface AuditResult {

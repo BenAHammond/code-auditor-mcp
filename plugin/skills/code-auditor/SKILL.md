@@ -5,7 +5,7 @@ description: Audit code quality, search the codebase semantically, enforce invar
 
 # Code Auditor Skill
 
-> **Version 3.9.7** • Run `code-audit --version` to check your installed version.
+> **Version 3.9.8** • Run `code-audit --version` to check your installed version.
 > If versions differ, the CLI is authoritative — use `code-audit <command> --help` to see what your install actually supports.
 
 You have the `code-audit` CLI available. It indexes every function, component, and struct in the codebase for semantic search and invariant enforcement. Use these commands instead of raw grep/find whenever possible.
@@ -64,7 +64,28 @@ code-audit next-file --path . --json # Machine-readable
 
 This is the refactoring loop. `next-file` audits the project and returns the single highest-priority file — ranked by highest-severity reading, then total reading count — with every reading on it, ordered critical → severe → high. Fix that file, then run it again: a still-broken file comes back, otherwise the next-worst file surfaces. `{done:true}` means the tree is clean.
 
-There is **no skip or decline affordance**. A reading leaves the queue only by being fixed, or by editing the rule that produces it in `.codeauditor.json` (your rules editor). If a rule keeps firing on something you judge correct, change the rule — never work around it.
+There is **no skip or decline affordance** in `next-file`. A reading leaves the queue only by being fixed, by editing the rule that produces it in `.codeauditor.json` (your rules editor), or — if it is a genuine false positive — by dismissing that one instance with a written reason (`code-audit dismiss`, below). If a rule keeps firing on something you judge correct, change the rule — never work around it.
+
+### `code-audit dismiss` — a way past a false positive
+
+A reading that is a **false positive** — the rule is right in general but wrong for this specific code — is dismissed by instance, not suppressed everywhere:
+
+```bash
+code-audit dismiss <fingerprint> --reason "generated code, not hand-written"
+```
+
+Get the exact `<fingerprint>` from a JSON report (`code-audit changed --json` or `code-audit audit --format json` — every violation carries a `fingerprint` field). The dismissal clears **that one finding** (rule + file + symbol); the same rule still fires everywhere else. A **written `--reason` is required** — a dismissal without one is an error. Dismissals are recorded in the committed `.codeauditor.dismissals.json`, so they are reviewable in a diff.
+
+A dismissal is for *this finding is not relevant*, not for *I don't want to fix this now* — for the latter, fix it or edit the rule in `.codeauditor.json`.
+
+#### Anonymous dismissal feedback (opt-in)
+
+The tool can send dismissed findings to a feedback service that reports "most dismissed rules + reasons" back to the operator. It is **off by default** and is turned on only by an explicit opt-in:
+
+- `mcp__code-auditor__telemetry` `status` / `enable` / `disable` manage the opt-in (the `enable` action records the endpoint and generates the anonymous install ID).
+- When opted in, each dismissal sends only the reason plus a structural shape — **no code, identifiers, or file paths**.
+
+Before enabling, tell the user the privacy facts: **data is anonymous, and the ID is generated locally to avoid tracking anything personal.** Only the reason and enough shape to reproduce the finding are sent; nothing derived from their code or environment.
 
 ### `code-audit config` — know the project's laws
 
@@ -213,6 +234,7 @@ The hook auto-installs the package via npx on first use — no manual npm step n
 | Inspect path profiles | `code-audit config profiles` |
 | Resolve file profiles | `code-audit config profiles --file <path>` |
 | Next file to fix | `code-audit next-file` |
+| Dismiss a false positive | `code-audit dismiss <fingerprint> --reason "…"` |
 | Sync index | `code-audit index sync --path .` |
 | Codebase map | `code-audit map -p .` |
 | Mine conventions | `code-audit conventions list` |

@@ -6,7 +6,7 @@
       "tool": {
         "driver": {
           "name": "code-auditor-mcp",
-          "version": "3.9.7",
+          "version": "3.9.8",
           "informationUri": "https://github.com/BenAHammond/code-auditor-mcp",
           "rules": [
             {
@@ -121,7 +121,8 @@
           "solid-analyzer": 3,
           "dry-analyzer": 3,
           "invariants-analyzer": 5
-        }
+        },
+        "dismissed": 0
       }
     }
   ]

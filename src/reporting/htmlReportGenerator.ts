@@ -70,6 +70,11 @@ function generateSummarySection(result: AuditResult): string {
                 <h3>${summary.totalViolations}</h3>
                 <p>Total Violations</p>
             </div>
+            ${summary.dismissed ? `
+            <div class="stat-card dismissed">
+                <h3>${summary.dismissed}</h3>
+                <p>Dismissed</p>
+            </div>` : ''}
         </div>
         
         ${generateViolationsByCategoryChart(summary.violationsByCategory)}

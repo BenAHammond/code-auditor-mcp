@@ -233,6 +233,9 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
         results,
         properties: {
           analyzerFilesProcessed: analyzerFileCounts,
+          // Spec 57 — the dismissed count is reported alongside the total
+          // (results.length), never subtracted from it.
+          dismissed: result.summary.dismissed ?? 0,
         },
       },
     ],

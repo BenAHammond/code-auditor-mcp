@@ -114,6 +114,28 @@ function getFallbackCacheRoot(): string {
 }
 
 /**
+ * OS-specific per-user config root for persistent, user-scoped state (the anonymous
+ * install ID and the telemetry opt-in). Deliberately NOT the cache root above: the
+ * cache is wiped by clean installs, and a regenerated install ID would break source
+ * grouping — this state must survive a cache wipe. This is the OS's designated
+ * location for exactly this kind of config, so it adds no new `~/` dotdir.
+ */
+export function getUserConfigRoot(): string {
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  if (xdg) {
+    return path.join(path.resolve(xdg), 'code-auditor');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'code-auditor');
+  }
+  if (process.platform === 'win32') {
+    const local = process.env.LOCALAPPDATA?.trim();
+    return path.join(local ? path.resolve(local) : os.homedir(), 'code-auditor');
+  }
+  return path.join(os.homedir(), '.config', 'code-auditor');
+}
+
+/**
  * Resolve symlinks (and other path aliases) so the same physical project
  * hashes identically regardless of how it was spelled. On macOS `/tmp` is a
  * symlink to `/private/tmp`, so `-p /tmp/foo` and `process.cwd()` (which

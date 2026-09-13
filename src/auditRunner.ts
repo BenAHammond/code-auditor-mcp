@@ -37,6 +37,7 @@ import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
 import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
+import { applyDismissals } from './dismissals.js';
 import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
 
 // Import universal analyzers
@@ -1171,6 +1172,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         handoffRemaining
       );
     }
+
+    // Spec 57 — apply committed dismissals: mark matching findings dismissed
+    // (they never gate) and record the dismissed count in the summary (never
+    // subtracted from totalViolations).
+    applyDismissals(result, projectRoot);
 
     // Spec 11 R1 — write to findings ledger (non-fatal: ledger is advisory).
     // Forked shard workers set writeToLedger:false so the parent run is the

@@ -60,6 +60,10 @@ export function computeGatingDecision(
   for (const v of violations) {
     // A path-profile-excluded file never blocks.
     if (v.gateExcluded) continue;
+    // Spec 57 — a dismissed finding never blocks. Dismissal is a recorded
+    // decision about one specific finding, not a narrowing of what is reported:
+    // the finding still appears in every report at its real severity.
+    if (v.dismissed) continue;
     // R2 — only findings at a blocking severity block.
     if (!blockingSeverities.has(v.severity)) continue;
 

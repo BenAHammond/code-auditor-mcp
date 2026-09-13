@@ -130,6 +130,24 @@ The `sql-injection-risk` rule is **disabled by default** (`off`) after recalibra
 
 With `sql-injection-risk: critical` (and the rule marked `gating`), your agent's hook will block edits that introduce AST-level SQL injection patterns.
 
+## Dismissals
+
+Every finding is a measurement, not a verdict — but measurements are occasionally wrong. When the agent hits a **false positive** (the rule is right in general, wrong for this specific code), it can dismiss *that one instance* rather than work around it:
+
+```bash
+code-audit dismiss <fingerprint> --reason "generated code, not hand-written"
+```
+
+The `<fingerprint>` comes from the JSON report (every violation carries a `fingerprint` field). A **written `--reason` is required**, and the dismissal clears exactly one finding — rule + file + symbol — so the same rule still fires everywhere else. Dismissals live in a committed `.codeauditor.dismissals.json`, reviewable in a diff.
+
+## Anonymous dismissal feedback (opt-in)
+
+The reason an agent gives for dismissing a finding is the most useful signal for improving the rules. Code Auditor can send dismissed findings to an optional feedback service that reports "most-dismissed rules + reasons" back to the operator.
+
+It is **off by default** and turned on only by an explicit opt-in — the `telemetry` MCP tool (`status` / `enable` / `disable`), which records the choice in your user config dir. Opting in generates an **anonymous install ID**: a random value generated locally, never derived from your machine, user, or project, used only to group submissions by source.
+
+**What is sent** — the reason (verbatim) plus a structural AST signature (grammar kinds only, built from a node's `type` — never its text) and a coarse language hint. **What is never sent** — source code, identifiers, literals, file paths, or anything derived from your code or environment. Sending is best-effort: offline or an unreachable endpoint is silent and never blocks an edit or fails a gate.
+
 ## Style Intelligence
 
 Code Auditor indexes every style declaration in your project — CSS, SCSS, Tailwind, inline styles, and CSS-in-JS. The styles analyzer reads global distributions and flags fragmentation that no single-file linter can see.
