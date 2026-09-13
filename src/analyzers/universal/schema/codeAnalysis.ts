@@ -200,9 +200,13 @@ interface SqlParseContext {
  * greedy [\p{L}\p{N}_]* consumes the full identifier and \b after a closing
  * quote (non-word char) fails, blocking quoted-table extraction.
  */
-function sqlTablePatterns(): Array<{ regex: RegExp; type: TableReference['type'] }> {
+function sqlTablePatterns(): Array<{ regex: RegExp; type: TableReference['type']; fromKeyword?: boolean }> {
   return [
-    { regex: /\bFROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
+    // `fromKeyword` marks the generic FROM pattern so the match loop can
+    // exclude `DELETE FROM` — a write context whose table is already captured
+    // by the DELETE pattern below. Without the gate, `DELETE FROM users` is
+    // also tagged `select`, misclassifying a delete-only table as read.
+    { regex: /\bFROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select', fromKeyword: true },
     { regex: /\bJOIN\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
     // Spec 52 R2 — the four D1/SQLite upsert forms are writes. MySQL's
     // `INSERT IGNORE INTO` (no OR) and `ON DUPLICATE KEY UPDATE` are
@@ -225,7 +229,7 @@ function matchSqlPatterns(ctx: SqlParseContext): TableReference[] {
   const { sqlText, cleaned, baseLocation, sourceCode, allTables } = ctx;
   const references: TableReference[] = [];
 
-  for (const { regex, type } of sqlTablePatterns()) {
+  for (const { regex, type, fromKeyword } of sqlTablePatterns()) {
     // Create fresh regex since we might consume with exec
     const re = new RegExp(regex.source, regex.flags);
     let match;
@@ -236,6 +240,12 @@ function matchSqlPatterns(ctx: SqlParseContext): TableReference[] {
       // Skip JS/TS module specifiers (`import x from 'mod'`) that step (3)'s
       // full-source scan of migration `.ts` files otherwise captures as tables.
       if (isModuleImportFrom(cleaned, match.index)) continue;
+
+      // `DELETE FROM` is a write, not a read — the DELETE pattern below already
+      // classifies the table, so the generic FROM pattern must not also tag it
+      // `select` (Spec 56 R4 finding: a delete-only table was misread as
+      // also-read, suppressing written-never-read).
+      if (fromKeyword && isDeleteFrom(cleaned, match.index)) continue;
 
       // Skip very short identifiers (likely CTE names / bare aliases like 'x',
       // 't', 'o', 'c') unless they are known table names — the guard catches
@@ -985,6 +995,15 @@ export function isSqlKeyword(word: string): boolean {
  * @param fromIndex The character index of the `from` keyword within `sqlText`.
  * @returns True when the introducer preceding `fromIndex` is an import/export.
  */
+export function isDeleteFrom(sqlText: string, fromIndex: number): boolean {
+  // `DELETE FROM` is a write: the table is captured by the DELETE pattern, and
+  // the generic FROM pattern must not re-tag it as a read. Check whether the
+  // word immediately preceding the FROM keyword (across any whitespace) is
+  // `DELETE` — the only SQL keyword that introduces a write-FROM. `SELECT …
+  // FROM`, `JOIN`, and `INSERT INTO … SELECT … FROM` all keep their read FROM.
+  return /\bDELETE\s+$/iu.test(sqlText.slice(0, fromIndex));
+}
+
 export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean {
   let start = fromIndex;
   while (start > 0) {

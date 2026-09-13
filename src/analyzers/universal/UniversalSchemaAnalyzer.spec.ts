@@ -436,6 +436,44 @@ describe('parseSqlTables — table-valued function and module-import guards', ()
   });
 });
 
+describe('parseSqlTables — DELETE FROM is a write, not a read (Spec 56 R4)', () => {
+  function refs(sql: string): Array<{ table: string; type: string }> {
+    return parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set())
+      .map(r => ({ table: r.table, type: r.type }))
+      .sort((a, b) => a.table.localeCompare(b.table) || a.type.localeCompare(b.type));
+  }
+
+  it('classifies DELETE FROM as a write only (positive)', () => {
+    expect(refs('DELETE FROM users')).toEqual([{ table: 'users', type: 'delete' }]);
+  });
+
+  it('classifies a plain SELECT ... FROM as a read (guard)', () => {
+    expect(refs('SELECT * FROM users')).toEqual([{ table: 'users', type: 'select' }]);
+  });
+
+  it('classifies a table both selected and deleted as both (near-miss)', () => {
+    expect(refs('SELECT * FROM users;\nDELETE FROM users')).toEqual([
+      { table: 'users', type: 'delete' },
+      { table: 'users', type: 'select' },
+    ]);
+  });
+
+  it('classifies INSERT INTO ... SELECT ... FROM as both a write and a read', () => {
+    expect(refs('INSERT INTO target SELECT * FROM source')).toEqual([
+      { table: 'source', type: 'select' },
+      { table: 'target', type: 'insert' },
+    ]);
+  });
+
+  it('handles a newline between DELETE and FROM', () => {
+    expect(refs('DELETE\nFROM users')).toEqual([{ table: 'users', type: 'delete' }]);
+  });
+
+  it('handles multiple spaces between DELETE and FROM', () => {
+    expect(refs('DELETE   FROM users')).toEqual([{ table: 'users', type: 'delete' }]);
+  });
+});
+
 describe('checkQueryPatterns — ceiling fallback', () => {
   it('uses the analyzer default, not "undefined", when maxQueriesPerFunction is absent', async () => {
     const source = [

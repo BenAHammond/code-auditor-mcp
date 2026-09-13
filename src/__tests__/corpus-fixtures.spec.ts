@@ -134,20 +134,20 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  // R4 — findings surfaced by running the full set over the fixtures. These are
-  // NOT folded into the fixtures; they are reported, with reasoning.
+  // R4 — findings surfaced by running the full set over the fixtures.
   //
-  // 1. `DELETE FROM` emits a spurious `select` reference. The generic `FROM`
-  //    pattern in `sqlTablePatterns()` (`/\bFROM\s+…/`) matches `FROM users` in
+  // 1. `DELETE FROM` emitted a spurious `select` reference. The generic `FROM`
+  //    pattern in `sqlTablePatterns()` (`/\bFROM\s+…/`) matched `FROM users` in
   //    `DELETE FROM users` as a `select` (read), *in addition* to the `delete`
   //    reference from the DELETE pattern. A table that is only ever deleted —
-  //    never SELECTed — is therefore misclassified as also-read, which suppresses
-  //    `written-never-read`. This is exactly why the composite data-access
-  //    fixture (which has `DELETE FROM users` and no SELECT) does not fire
-  //    `written-never-read`, while this D1 fixture (INSERT/UPDATE/ON CONFLICT
-  //    only) does. It is a pre-existing gap in schema table extraction, distinct
-  //    from the Spec 52 R2 upsert-write fix, and is worth its own fix with
-  //    corpus attribution.
+  //    never SELECTed — was misclassified as also-read, suppressing
+  //    `written-never-read`. **Fixed**: `isDeleteFrom` now gates the generic FROM
+  //    pattern so `DELETE FROM` classifies as a write only. The composite
+  //    data-access fixture (which has `DELETE FROM users` and no SELECT) now
+  //    fires `written-never-read`, and the composite spec asserts it. This was a
+  //    pre-existing gap in schema table extraction, distinct from the Spec 52 R2
+  //    upsert-write fix, and was resolved on its own rather than folded into the
+  //    fixture.
   //
   // 2. `no-error-boundary` (and its `getDerivedStateFromError` recognition) is
   //    app-level — it needs >10 components and no boundary. A minimal single-
@@ -157,10 +157,10 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
   //    is a scope limitation of the fixture harness, not a silently-skipped rule.
   // ─────────────────────────────────────────────────────────────────────
   describe('R4 — findings from the full-set run', () => {
-    it('is documented in the spec comments above (no fixture to adjust)', () => {
-      // The two findings are reasoned about in the block comment above. They are
-      // kept out of the fixture declared sets on purpose: R4 says report, not
-      // silently fold into the fixture.
+    it('documents finding 1 as fixed and finding 2 as a scope limitation', () => {
+      // Finding 1 (DELETE FROM spurious select) is now fixed and asserted by the
+      // composite data-access fixture; finding 2 (app-level error boundary) stays
+      // pinned at the unit level. Neither is silently folded into this fixture.
       expect(true).toBe(true);
     });
   });

@@ -84,10 +84,17 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
   // upsert, the filtered write, and the non-SQL `update()` method must NOT
   // fire anything — the upsert in particular is the R1 fix (an upsert is
   // keyed by its conflict target, not an unfiltered write).
+  //
+  // `users` is written (INSERT/UPDATE/DELETE) but never SELECTed, so
+  // `written-never-read` fires. This is the Spec 56 R4 finding, now fixed:
+  // the generic `FROM` pattern used to read `DELETE FROM users` as a `select`,
+  // silently classifying the delete-only table as also-read and suppressing
+  // `written-never-read`. The context-aware FROM no longer does.
   // ─────────────────────────────────────────────────────────────────────
   describe('data-access', () => {
-    it('fires exactly the N+1 and the bare DELETE', async () => {
+    it('fires exactly the N+1, the bare DELETE, and the never-read write', async () => {
       await expectCompleteSet('data-access', [
+        'cross-domain::cross-domain/written-never-read@src/mixed.ts:38',
         'data-access::loop-query@src/mixed.ts:31',
         'data-access::unfiltered-query@src/mixed.ts:38',
       ]);

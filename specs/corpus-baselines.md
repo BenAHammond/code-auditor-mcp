@@ -376,9 +376,42 @@ live upsert on the unfiltered-query path. The rule still fires on a bare
 `UPDATE t SET x = 1` / `DELETE FROM t` with no row-limiting clause (pinned by
 `unfilteredQuery.spec.ts`, which now also pins the four upsert near-misses).
 
+Re-pinned 2026-09-12 after the Spec 56 R4 `DELETE FROM` fix. The generic `FROM`
+pattern in `sqlTablePatterns()` was matching `FROM users` in `DELETE FROM users`
+as a *read* (a `select` ref), in addition to the `delete` ref — the same
+token-without-context family as `SKIP LOCKED` read as a table and `REPLACE()`
+mistaken for `REPLACE INTO`. `isDeleteFrom` now gates the `FROM` pattern so
+`DELETE FROM` classifies as a write only. Two rules moved, on two corpora; every
+other rule reproduced exactly:
+
+- `cross-domain::cross-domain/written-never-read` 10 → 20 (recall-protocol).
+  **+10** — tables that are only ever deleted (never SELECTed) were misread as
+  "read" by the spurious `select` ref, which suppressed the finding. Ten such
+  tables now fire: eight delete-only (`foundational_migration_flags`,
+  `hero_knowledge_flags`, `hero_stadium_matchup`, `hero_stadium_synergy`,
+  `hero_synergy`, `suggestions`, `hero_strategies_pruned`,
+  `hero_technique_abilities`) and two written-and-deleted (`build_item_scores`
+  update+delete, `build_read_sources` insert+delete). Sampled and confirmed: none
+  of the ten has a `SELECT` anywhere, so each is a genuine write-never-read, not a
+  reclassified false positive.
+- `schema::unknown-table` 17 → 16 (knex). **−1** — `sqlite_sequence` in
+  `lib/dialects/sqlite3/query/sqlite-querycompiler.js`
+  (`delete from sqlite_sequence where name = …`) fired once for the `delete` ref
+  and once for the spurious `select` ref; the second is gone.
+
+`cross-domain::cross-domain/read-never-written` is **unchanged** on all five
+corpora (recall 14, hhra 1, knex 4). A delete-only table still carries a `delete`
+write row, so `read-never-written` ("read but never written") correctly does not
+fire for it — the fix does not invert that rule. `schema-code::table-naming-convention`
+(knex 1) and `schema-code::reserved-word` (blitz 4) are unchanged: their findings
+are on `SELECT`/other contexts, not `DELETE FROM`. hhra-org, primer-css, and
+blitz show zero delta (no raw `DELETE FROM` string literals / no SQL /
+variable-named deletes). `multi-table-write` and `no-validator-reachable` read
+the write set only, so they are unaffected.
+
 ---
 
-## recall-protocol — 4,070 advisory findings (4,268 files)
+## recall-protocol — 4,080 advisory findings (4,268 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -411,7 +444,7 @@ live upsert on the unfiltered-query path. The rule still fires on a bare
 | cross-domain::cross-domain/multi-table-write | 7 |
 | schema::unknown-table | 10 |
 | styles::styles/mechanism-mixing | 9 |
-| cross-domain::cross-domain/written-never-read | 10 |
+| cross-domain::cross-domain/written-never-read | 20 |
 | styles::styles/z-index-singleton | 7 |
 | dry::dry/duplicate | 6 |
 | conventions::conventions/import-form | 5 |
@@ -456,7 +489,7 @@ live upsert on the unfiltered-query path. The rule still fires on a bare
 | schema-code::dynamic-sql-construction | 1 |
 | solid::solid/class-size | 1 |
 
-## knex — 189 advisory findings (474 files)
+## knex — 188 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -465,7 +498,7 @@ live upsert on the unfiltered-query path. The rule still fires on a bare
 | solid::solid/class-size | 31 |
 | solid::solid/dependency-inversion | 12 |
 | dependency-graph::orphaned-nodes | 7 |
-| schema::unknown-table | 17 |
+| schema::unknown-table | 16 |
 | data-access::hardcoded-connection | 16 |
 | solid::solid/open-closed | 12 |
 | solid::interface-size | 8 |
