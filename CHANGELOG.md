@@ -2,6 +2,39 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.6] — 2026-09-12
+
+### Spec 56 R4 fix — `DELETE FROM` is a write, not a read
+
+The gap documented in 3.9.5 ("Documented (not fixed)") is now fixed: the generic
+`FROM` pattern in `sqlTablePatterns()` matched `FROM users` in `DELETE FROM users`
+as a *read* (`select` ref), in addition to the `delete` ref from the DELETE
+pattern. A table that is only ever deleted (never SELECTed) was therefore
+misclassified as also-read, silently suppressing `written-never-read`. `isDeleteFrom`
+now gates the generic `FROM` pattern so `DELETE FROM` classifies as a write only,
+while an ordinary `SELECT … FROM` still classifies as a read, and
+`INSERT INTO … SELECT … FROM` still classifies as both (a write of the target and
+a read of the source). This is the same token-without-context family as
+`SKIP LOCKED` parsed as a table and `REPLACE()` mistaken for `REPLACE INTO`.
+
+Re-measured corpus baselines (updated in `specs/corpus-baselines.md`) — every
+rule reading the read or write set was enumerated and attributed:
+
+- `cross-domain::cross-domain/written-never-read` 10 → 20 (recall-protocol).
+  **+10** — eight delete-only tables and two written-and-deleted tables now fire
+  correctly (they were previously "read" via the spurious `select` ref).
+- `schema::unknown-table` 17 → 16 (knex). **−1** — `sqlite_sequence` in
+  `DELETE FROM` no longer double-fires.
+- `cross-domain::cross-domain/read-never-written` — unchanged everywhere (a
+  delete-only table still has a `delete` write row, so it is not "read but never
+  written"). `table-naming-convention`, `reserved-word`, `multi-table-write`, and
+  `no-validator-reachable` — unchanged (their findings are not on `DELETE FROM`
+  / they read the write set only). hhra-org, primer-css, and blitz show zero delta.
+
+Fix contract, pinned by unit tests in `UniversalSchemaAnalyzer.spec.ts`:
+a table only deleted from fires `written-never-read`; a table both selected and
+deleted does not; an ordinary `SELECT … FROM` still classifies as read.
+
 ## [3.9.5] — 2026-09-12
 
 ### Spec 56 — composite and corpus fixtures prove the rules interact
