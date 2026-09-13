@@ -1376,15 +1376,34 @@ function hasMassWriteVerb(text: string): boolean {
 }
 
 /**
+ * True when a statement is an upsert — one of the four write spellings Spec 52
+ * R2 taught the write classifier, plus MySQL's `ON DUPLICATE KEY UPDATE`.  An
+ * upsert is keyed by construction: its conflict target / unique key is what
+ * scopes the row, and an `INSERT` has no `WHERE` by definition.  So an upsert is
+ * never an "unfiltered" mass write, even though `INSERT … ON CONFLICT … DO UPDATE`
+ * carries the word `UPDATE` (in `DO UPDATE`) with no WHERE clause.
+ */
+function isUpsertForm(text: string): boolean {
+  const upper = text.toUpperCase();
+  return /\bINSERT\s+OR\s+(?:IGNORE|REPLACE)\b/.test(upper)
+    || /\bREPLACE\s+INTO\b/.test(upper)
+    || /\bON\s+CONFLICT\b/.test(upper)
+    || /\bON\s+DUPLICATE\s+KEY\b/.test(upper);
+}
+
+/**
  * True when a call should be surfaced by the `unfiltered-query` rule (Spec 55
- * R5): a write statement (`DELETE` / `UPDATE`) with no row-limiting clause
- * (WHERE carrying a real predicate, HAVING, or LIMIT).  `DELETE FROM t` or
+ * R5, Spec 56 R1): a write statement (`DELETE` / `UPDATE`) with no row-limiting
+ * clause (WHERE carrying a real predicate, HAVING, or LIMIT).  `DELETE FROM t` or
  * `UPDATE t SET …` with no filter mutates/deletes every row — the classic SQL
  * foot-gun.  Unfiltered *reads* (`SELECT` without WHERE) are often intentional
- * full-set loads and are therefore out of scope.
+ * full-set loads and are therefore out of scope, and an upsert (any of the four
+ * spellings) is keyed by construction, so it never fires.
  */
 function isUnfilteredWrite(call: DatabaseCall): boolean {
-  return hasMassWriteVerb(call.queryText) && !call.hasFilter;
+  return !isUpsertForm(call.queryText)
+    && hasMassWriteVerb(call.queryText)
+    && !call.hasFilter;
 }
 
 /**

@@ -52,7 +52,8 @@ single source of truth:
 | --- | --- | --- |
 | `sqlTablePatterns` INSERT/REPLACE pattern | `codeAnalysis.ts:206` (regex, `\b`-anchored) | table extraction → the five rules in §1 |
 | `countQueries` `sqlPatterns` INSERT/REPLACE pattern | `codeAnalysis.ts:1029` (regex, **not** `\b`-anchored) | `too-many-queries` (§2) |
-| `hasWriteVerb` | `UniversalDataAccessAnalyzer.ts:1377` (`\bINSERT\b \| \bDELETE\b \| \bUPDATE\b \| \bREPLACE\s+INTO\b`) | `unfiltered-query` gate (`isUnfilteredQuery`) |
+| `hasWriteVerb` | `UniversalDataAccessAnalyzer.ts:1361` (`\bINSERT\b \| \bDELETE\b \| \bUPDATE\b \| \bREPLACE\s+INTO\b`) | **dead** — exported, no production caller (only `property-based-generators.spec.ts`) |
+| `hasMassWriteVerb` + `isUpsertForm` | `UniversalDataAccessAnalyzer.ts:1373` / `:1386` | `unfiltered-query` gate (`isUnfilteredWrite`) |
 | `hasSqlTag` | `analyzers/universal/schema/discovery.ts:351` (`sql\`INSERT\|REPLACE\|UPDATE\|DELETE\|CREATE`) | file gate (`passesFileGate`) |
 
 The Spec 52 R2 change (`INSERT OR IGNORE`/`OR REPLACE`/`REPLACE INTO` recognized as
@@ -60,6 +61,21 @@ writes) edited the first two sites and was already satisfied by the `\bINSERT\b`
 `INSERT` keyword in the last two — but the *second* site's `UPDATE` bare-SQL pattern
 double-counted the upsert's `DO UPDATE` clause, a regression found only by corpus
 re-measurement. §3 is the reason R4 exists.
+
+**The Spec 56 R1 pairing (the "second consumer" the map exists to catch).** Spec 52
+R2 taught the write classifier the four upsert spellings so they would count as
+*writes* (feeding `written-never-read` / `read-never-written` /
+`multi-table-write` via §1). `unfiltered-query` is a second consumer of the same
+"is this a write" concept but needs the **opposite** conclusion about an upsert:
+an upsert is keyed by construction (its conflict target / unique key scopes the
+row, and an `INSERT` has no `WHERE` by definition), so it is *not* an "unfiltered
+write" — even though `INSERT … ON CONFLICT … DO UPDATE` carries the word `UPDATE`
+in its `DO UPDATE` clause with no `WHERE`. The old gate (`\bUPDATE\b` via
+`hasMassWriteVerb`) read that `DO UPDATE` as a mass `UPDATE` and flagged 39 recall
+upserts. `isUpsertForm` (`INSERT OR IGNORE`/`OR REPLACE`, `REPLACE INTO`,
+`ON CONFLICT`, `ON DUPLICATE KEY`) now gates `isUnfilteredWrite` ahead of the verb
+check. This is the same hazard as the §3 `DO UPDATE` double-count: a shared SQL
+pattern changed at one site, and a second consumer needed re-measuring.
 
 ---
 

@@ -353,9 +353,32 @@ loop now skips `px === 0`:
 
 primer-css and blitz are unchanged (both rules are `notApplicable`/0 on them).
 
+Re-pinned 2026-09-12 after Spec 56 R1 (`unfiltered-query` excludes upserts). An
+upsert is keyed by construction — its conflict target / unique key scopes the row,
+and an `INSERT` has no `WHERE` by definition — so "unfiltered INSERT" is not a
+category. The rule's verb check read the `DO UPDATE` clause of
+`INSERT … ON CONFLICT … DO UPDATE` as a mass `UPDATE`, flagging it. `isUpsertForm`
+now gates the write check ahead of the verb (the four Spec 52 R2 spellings —
+`INSERT OR IGNORE`, `INSERT OR REPLACE`, `REPLACE INTO`, `ON CONFLICT` — plus
+MySQL's `ON DUPLICATE KEY UPDATE`). Only `data-access::unfiltered-query` moved, on
+recall-protocol (the only corpus with live upserts); every other rule reproduced
+exactly:
+
+- `data-access::unfiltered-query` 45 → 6 (recall-protocol). **−39** — D1 upserts
+  (`INSERT … ON CONFLICT … DO UPDATE` across `lib/`, `pages/api/`, `ops/`) were
+  false positives. The 6 survivors are genuine `DELETE FROM t` with no WHERE
+  (`hero-data-sync.ts` ×5: `powers`/`items`/`strategy_knowledge`/`hero_strategies`/
+  `popular_builds`, and `reconciliation/fts-repair.ts` `strategies_fts`) — sampled
+  and confirmed.
+
+hhra-org (0), knex (0), blitz (0), and primer-css (0) are unchanged — none has a
+live upsert on the unfiltered-query path. The rule still fires on a bare
+`UPDATE t SET x = 1` / `DELETE FROM t` with no row-limiting clause (pinned by
+`unfilteredQuery.spec.ts`, which now also pins the four upsert near-misses).
+
 ---
 
-## recall-protocol — 4,109 advisory findings (4,268 files)
+## recall-protocol — 4,070 advisory findings (4,268 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -378,7 +401,7 @@ primer-css and blitz are unchanged (both rules are `notApplicable`/0 on them).
 | conventions::conventions/error-handling | 51 |
 | styles::styles/undefined-class | 47 |
 | solid::solid/method-complexity | 33 |
-| data-access::unfiltered-query | 45 |
+| data-access::unfiltered-query | 6 |
 | cross-domain::cross-domain/read-never-written | 14 |
 | dry::dry/similar-expression | 21 |
 | styles::styles/declaration-set-similarity | 21 |

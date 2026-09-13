@@ -75,6 +75,46 @@ export function all() {
 }
 `;
 
+// Spec 56 R1 — the four upsert spellings are keyed by construction (conflict
+// target / unique key), so "unfiltered INSERT" is not a category. Each must NOT
+// fire, even though an `ON CONFLICT … DO UPDATE` carries the word UPDATE and no
+// WHERE. (The crowd-answer-game report §6 flagged these as false positives.)
+
+/** Upsert — `INSERT … ON CONFLICT … DO UPDATE` (the reported false positive). */
+const UPSERT_ON_CONFLICT_DO_UPDATE = `import { db } from './db';
+export function touch(kind: string, value: number) {
+  return db.exec("INSERT INTO metrics (hour_key, value) VALUES ('x', 1) ON CONFLICT(hour_key) DO UPDATE SET value = excluded.value");
+}
+`;
+
+/** Upsert — `INSERT OR IGNORE`. */
+const UPSERT_INSERT_OR_IGNORE = `import { db } from './db';
+export function ignore(name: string) {
+  return db.exec("INSERT OR IGNORE INTO tags (name) VALUES ('x')");
+}
+`;
+
+/** Upsert — `INSERT OR REPLACE INTO`. */
+const UPSERT_INSERT_OR_REPLACE = `import { db } from './db';
+export function replace(name: string) {
+  return db.exec("INSERT OR REPLACE INTO tags (name) VALUES ('x')");
+}
+`;
+
+/** Upsert — `REPLACE INTO`. */
+const UPSERT_REPLACE_INTO = `import { db } from './db';
+export function repl(name: string) {
+  return db.exec("REPLACE INTO tags (name) VALUES ('x')");
+}
+`;
+
+/** Upsert — `INSERT … ON DUPLICATE KEY UPDATE` (MySQL variant, same class). */
+const UPSERT_ON_DUPLICATE_KEY_UPDATE = `import { db } from './db';
+export function mysqlUpsert(id: number, value: number) {
+  return db.exec("INSERT INTO metrics (id, value) VALUES (1, 2) ON DUPLICATE KEY UPDATE value = VALUES(value)");
+}
+`;
+
 describe('unfiltered-query — an unfiltered write (DELETE/UPDATE with no WHERE/HAVING/LIMIT)', () => {
   it('flags an unfiltered DELETE (positive)', async () => {
     const vs = await unfilteredViolations(DELETE_ALL, 'delete-all');
@@ -93,6 +133,31 @@ describe('unfiltered-query — an unfiltered write (DELETE/UPDATE with no WHERE/
 
   it('does NOT flag an unfiltered read (bare SELECT — full-set load is intentional)', async () => {
     const vs = await unfilteredViolations(BARE_SELECT, 'bare-select');
+    expect(vs).toHaveLength(0);
+  });
+
+  it('does NOT flag an INSERT … ON CONFLICT … DO UPDATE upsert (near-miss — Spec 56 R1)', async () => {
+    const vs = await unfilteredViolations(UPSERT_ON_CONFLICT_DO_UPDATE, 'upsert-on-conflict');
+    expect(vs).toHaveLength(0);
+  });
+
+  it('does NOT flag an INSERT OR IGNORE upsert (near-miss)', async () => {
+    const vs = await unfilteredViolations(UPSERT_INSERT_OR_IGNORE, 'upsert-or-ignore');
+    expect(vs).toHaveLength(0);
+  });
+
+  it('does NOT flag an INSERT OR REPLACE upsert (near-miss)', async () => {
+    const vs = await unfilteredViolations(UPSERT_INSERT_OR_REPLACE, 'upsert-or-replace');
+    expect(vs).toHaveLength(0);
+  });
+
+  it('does NOT flag a REPLACE INTO upsert (near-miss)', async () => {
+    const vs = await unfilteredViolations(UPSERT_REPLACE_INTO, 'upsert-replace-into');
+    expect(vs).toHaveLength(0);
+  });
+
+  it('does NOT flag an INSERT … ON DUPLICATE KEY UPDATE upsert (near-miss)', async () => {
+    const vs = await unfilteredViolations(UPSERT_ON_DUPLICATE_KEY_UPDATE, 'upsert-on-duplicate-key');
     expect(vs).toHaveLength(0);
   });
 
