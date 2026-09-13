@@ -2,6 +2,45 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.7] — 2026-09-12
+
+### Spec 50 — size-threshold defaults recalculated, project lint config as authority
+
+The size-threshold rules fired on idiomatic code because their numbers were never
+chosen deliberately — `function-length` at 50 produced 23 findings on a small
+React project where every correctness rule was at zero. Three changes:
+
+1. **Defaults raised to defensible numbers**, each with a written rationale
+   recorded in the rule registry (`thresholdRationale`), not just the number.
+   Headliners: `function-length` 50→200, `parameter-count` 4→6, `class-size`
+   15→20 methods / 100→150 aggregate complexity, `interface-size` 20→25,
+   `react::complexity` 10→20, and the Go size rules (`function-size` complexity
+   10→20 / params 5→6, `struct-size` 10→15, `switch-size` 5→8, `interface-size`
+   5→10). `method-complexity` (McCC 50) and `tight-coupling` (0.7) are kept, with
+   rationale recorded for why.
+2. **Project lint config is now the authoritative threshold source.** New
+   `src/config/lintConfigReader.ts` reads the project's own ESLint config (flat
+   `eslint.config.*` or legacy `.eslintrc.*`) and maps `max-lines-per-function`,
+   `max-params`, and `complexity` onto the SOLID size thresholds; `max-depth` /
+   `max-statements` are recognized but unmapped (no equivalent), surfaced for
+   transparency. Precedence: `.codeauditor.json` > project lint config > presets >
+   defaults. Every size threshold reports its source in
+   `metadata.thresholdSources` (`project-config` / `project-lint-config` /
+   `preset:<id>` / `default`).
+3. **Re-measured all five corpora** — every delta attributed to a default raise.
+   None of the five corpora configures a size rule in ESLint, so the lint reader
+   contributed no corpus delta (validated by the fix contract, not a corpus).
+
+Corpus totals: recall-protocol 4,080→3,157 (−923), hhra-org 1,125→743 (−382),
+knex 188→112 (−76), primer-css 19→16 (−3), blitz 818→721 (−97). Five survivors
+sampled and confirmed genuine outliers: a 12-param `executePipeline`, the 675-line
+build-editor `reducer`, knex's 191-member `QueryInterface`, hhra's 1,103-line /
+McCC-120 `EtlPageClient`, and blitz's 1,383-line `upgradeLegacy` codemod.
+
+Fix contract (`lintConfigReader.spec.ts`, unit + integration): positive (lint
+`max-params` beats the default), near-miss (unrelated rules → defaults), guard
+(`.codeauditor.json` wins over lint), absence (no config → defaults, no error).
+
 ## [3.9.6] — 2026-09-12
 
 ### Spec 56 R4 fix — `DELETE FROM` is a write, not a read
