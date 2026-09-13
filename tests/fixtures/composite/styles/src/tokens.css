@@ -1,0 +1,26 @@
+/* Design tokens + defined classes + a z-index inventory. */
+:root {
+  --color-brand: #1a2b3c;
+  --space-4: 16px;
+}
+
+.card {
+  padding: 16px;
+  z-index: 10;
+}
+
+.modal {
+  z-index: 20;
+}
+
+.dropdown {
+  z-index: 20;
+}
+
+.toast {
+  z-index: 30;
+}
+
+.banner {
+  z-index: 30;
+}

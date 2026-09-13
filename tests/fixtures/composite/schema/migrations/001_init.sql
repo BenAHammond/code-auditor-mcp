@@ -1,0 +1,9 @@
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+
+CREATE TABLE userProfiles (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER
+);
