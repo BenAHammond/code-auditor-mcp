@@ -2,6 +2,46 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.5] — 2026-09-12
+
+### Spec 56 — composite and corpus fixtures prove the rules interact
+
+Minimal single-construct fixtures prove a rule fires on its shape, but the recent
+bugs lived in the *interaction* between constructs. Two fixture families are
+added, each asserted by **equality** — the *complete* finding set (presence AND
+absence), not "contains" — and run through the full 14-analyzer set via a
+temp-copy harness (the `/tests/` path segment would otherwise trip per-analyzer
+`skipTestFiles`).
+
+- **`unfiltered-query` excludes INSERT/upsert forms (R1).** A
+  `INSERT … ON CONFLICT(…) DO UPDATE` statement is keyed by its conflict target,
+  not an unfiltered mass-write, but the re-targeted writes rule was still flagging
+  it. The `isUpsertForm` gate clears the upsert while a bare `DELETE FROM` (no
+  WHERE) still fires — pinned by the crowd-answer-game corpus fixture.
+- **Six composite fixtures (R2/R4).** data-access, class-structure, cross-file,
+  styles, schema, and wrapping-matrix each mix constructs that historically
+  interacted. Every fixture carries a declared complete finding set, asserted by
+  equality, so the *absence* of a false positive is as enforced as the presence
+  of a true one.
+- **Two corpus-derived fixtures from the two external reports (R3/R4).** The
+  D1/Workers (Spec 52) and crowd-answer-game (Spec 55) findings are reduced to
+  minimal constructs, tagged with source report + project, and pinned to their
+  expected result: `prepare()`→`batch()` and `Promise.all` of statements are
+  construction (not N+1), an `ON CONFLICT` upsert is a keyed write, `throw new
+  AppError()` / `return new QueryBuilder(this)` are escapes (not held), a bare
+  `[normalize]` array value is a same-file reference (not orphaned), and a
+  `FOR UPDATE SKIP LOCKED` clause is not extra tables.
+
+### Documented (not fixed) — one pre-existing gap in schema table extraction
+
+R4's full-set run surfaced a gap left deliberately for its own spec:
+`DELETE FROM` emits a spurious `select` reference — the generic `FROM` pattern in
+`sqlTablePatterns()` matches `FROM users` in `DELETE FROM users` as a read, in
+addition to the `delete` reference — so a table that is only ever deleted (never
+SELECTed) is misclassified as also-read, suppressing `written-never-read`. It is
+distinct from the Spec 52 R2 upsert-write fix, and is documented in
+`corpus-fixtures.spec.ts` rather than folded into the fixtures.
+
 ## [3.9.4] — 2026-09-12
 
 ### Spec 55 follow-up — two over-firing regressions corrected
