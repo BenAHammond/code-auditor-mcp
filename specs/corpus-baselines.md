@@ -409,13 +409,61 @@ blitz show zero delta (no raw `DELETE FROM` string literals / no SQL /
 variable-named deletes). `multi-table-write` and `no-validator-reachable` read
 the write set only, so they are unaffected.
 
+Re-pinned 2026-09-12 after Spec 50 (size-threshold defaults recalculated, and the
+project lint config made an authoritative threshold source). The size rules'
+numbers were never chosen deliberately — `function-length` at 50 fired on any
+function over ~one screen. Every default was raised to a defensible number with a
+rationale recorded in the rule registry; the full old→new table lives in the Spec
+50 plan and the CHANGELOG entry. Only the size rules moved; every other rule
+reproduced exactly on all five corpora (the total finding delta equals the
+size-rule delta on each). **None of the five corpora configures a size rule in
+ESLint** (recall-protocol's flat config has only `no-restricted-syntax` + Node
+globals; knex's `.eslintrc.js` only mocha/unused-vars; primer-css only
+`languageOptions`), so the deltas below are entirely default raises — the lint
+reader is validated by the fix contract, not a corpus delta. The Go size rules
+fire on zero of the five corpora (no corpus contains `.go`), so their raises are
+code-correctness changes validated by the Go specs, not a corpus delta.
+
+- `solid::function-length` 902 → 95 (recall-protocol) / 381 → 32 (hhra-org) /
+  59 → 9 (knex) / 3 → 0 (primer-css) / 88 → 3 (blitz). **−807 / −349 / −50 / −3 /
+  −85** — the 50-line ceiling flagged ordinary handlers, React components, and
+  backfill scripts; at 200 the survivors are genuine >200-line functions.
+- `solid::parameter-count` 89 → 11 (recall-protocol) / 2 → 0 (hhra-org) /
+  6 → 0 (knex) / 9 → 0 (blitz). **−78 / −2 / −6 / −9** — at 4 it flagged ordinary
+  dependency-injected constructors and config functions; at 6 the survivors are
+  genuinely >6-param signatures (an options object is warranted).
+- `solid::solid/class-size` 31 → 15 (knex) / 3 → 2 (recall-protocol) / 1 → 0
+  (hhra-org). **−16 / −1 / −1** — the 15-method ceiling flagged ordinary domain
+  models and query builders; at 20 methods (and 150 aggregate complexity) the
+  survivors are genuine god-objects.
+- `solid::interface-size` 8 → 4 (knex). **−4** — at 20 members it flagged
+  legitimate query-builder interfaces; at 25 the survivors (52-member
+  `JoinClause`, 57-member `TableBuilder`, 191-member `QueryInterface`, 30-member
+  `SchemaBuilder`) are genuinely oversized.
+- `react::complexity` 66 → 29 (recall-protocol) / 36 → 6 (hhra-org) / 3 → 0
+  (blitz). **−37 / −30 / −3** — at 10 it flagged ordinary components with a few
+  conditionals; at 20 (ESLint's own `complexity` default) the survivors are
+  genuinely intricate components.
+
+`solid::solid/method-complexity` is unchanged (33 recall / 7 hhra / 1 blitz) —
+McCC 50 was already a huge function and its survivors were genuine outliers, not
+idiomatic code; the rationale documents why it is kept. `dependency-graph::tight-coupling`
+(0.7) is unchanged — a density ratio, not a "size" number. recall-protocol
+`interface-size` (2) and `method-complexity` (33) are unchanged.
+
+Survivor sample (five, confirmed genuine by reading source): `executePipeline`
+(12 params, `workers/discovery-drain.ts`), the build-editor `reducer` (675 lines),
+knex `QueryInterface` (191 members), hhra `EtlPageClient` (1,103 lines, McCC 120),
+blitz `upgradeLegacy` (1,383 lines). Each is unambiguously over the raised
+threshold — no false positives.
+
 ---
 
-## recall-protocol — 4,080 advisory findings (4,268 files)
+## recall-protocol — 3,157 advisory findings (4,268 files)
 
 | analyzer::rule | count |
 | --- | --- |
-| solid::function-length | 902 |
+| solid::function-length | 95 |
 | styles::styles/off-scale | 759 |
 | documentation::function-documentation | 574 |
 | styles::styles/token-bypass | 456 |
@@ -425,10 +473,10 @@ the write set only, so they are unaffected.
 | dependency-graph::orphaned-nodes | 24 |
 | react::performance | 95 |
 | schema-code::too-many-queries | 84 |
-| solid::parameter-count | 89 |
+| solid::parameter-count | 11 |
 | documentation::method-documentation | 80 |
 | data-access::complex-query | 1 |
-| react::complexity | 66 |
+| react::complexity | 29 |
 | conventions::conventions/usage-pair | 60 |
 | styles::styles/mechanism-fragmentation | 52 |
 | conventions::conventions/error-handling | 51 |
@@ -450,7 +498,7 @@ the write set only, so they are unaffected.
 | conventions::conventions/import-form | 5 |
 | data-access::sql-injection-risk | 4 |
 | solid::solid/dependency-inversion | 3 |
-| solid::solid/class-size | 3 |
+| solid::solid/class-size | 2 |
 | solid::interface-size | 2 |
 | conventions::conventions/export-shape | 1 |
 | dependency-graph::tight-coupling | 1 |
@@ -458,18 +506,18 @@ the write set only, so they are unaffected.
 | dependency-graph::hub-nodes | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## hhra-org — 1,125 advisory findings (760 files)
+## hhra-org — 743 advisory findings (760 files)
 
 | analyzer::rule | count |
 | --- | --- |
-| solid::function-length | 381 |
+| solid::function-length | 32 |
 | styles::styles/undefined-class | 346 |
 | documentation::method-documentation | 69 |
 | dependency-graph::unreferenced-module | 60 |
 | react::performance | 57 |
 | documentation::function-documentation | 51 |
 | documentation::class-documentation | 39 |
-| react::complexity | 36 |
+| react::complexity | 6 |
 | data-access::loop-query | 18 |
 | dependency-graph::orphaned-nodes | 4 |
 | schema-code::too-many-queries | 21 |
@@ -479,7 +527,6 @@ the write set only, so they are unaffected.
 | conventions::conventions/usage-pair | 5 |
 | dry::dry/similar-expression | 5 |
 | cross-domain::cross-domain/written-never-read | 2 |
-| solid::parameter-count | 2 |
 | cross-domain::cross-domain/read-never-written | 1 |
 | dependency-graph::circular-dependency | 1 |
 | dependency-graph::tight-coupling | 1 |
@@ -487,23 +534,21 @@ the write set only, so they are unaffected.
 | react::accessibility | 1 |
 | schema::invalid-json | 1 |
 | schema-code::dynamic-sql-construction | 1 |
-| solid::solid/class-size | 1 |
 
-## knex — 188 advisory findings (474 files)
+## knex — 112 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | schema-code::too-many-queries | 3 |
-| solid::function-length | 59 |
-| solid::solid/class-size | 31 |
+| solid::function-length | 9 |
+| solid::solid/class-size | 15 |
 | solid::solid/dependency-inversion | 12 |
 | dependency-graph::orphaned-nodes | 7 |
 | schema::unknown-table | 16 |
 | data-access::hardcoded-connection | 16 |
 | solid::solid/open-closed | 12 |
-| solid::interface-size | 8 |
+| solid::interface-size | 4 |
 | data-access::loop-query | 2 |
-| solid::parameter-count | 6 |
 | data-access::sql-injection-risk | 5 |
 | cross-domain::cross-domain/read-never-written | 4 |
 | cross-domain::cross-domain/written-never-read | 1 |
@@ -514,26 +559,25 @@ the write set only, so they are unaffected.
 | schema-code::table-naming-convention | 1 |
 | secrets::hardcoded-secret | 1 |
 
-## primer-css — 19 advisory findings (137 files)
+## primer-css — 16 advisory findings (137 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | styles::styles/z-index-singleton | 11 |
-| solid::function-length | 3 |
 | dependency-graph::tight-coupling | 1 |
 | dependency-graph::unreferenced-module | 1 |
 | documentation::function-documentation | 1 |
 | styles::styles/token-bypass | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## blitz — 818 advisory findings (788 files)
+## blitz — 721 advisory findings (788 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | documentation::function-documentation | 191 |
 | documentation::method-documentation | 161 |
 | styles::styles/declaration-set-similarity | 161 |
-| solid::function-length | 88 |
+| solid::function-length | 3 |
 | react::raw-element | 54 |
 | dependency-graph::orphaned-nodes | 44 |
 | documentation::class-documentation | 34 |
@@ -541,10 +585,8 @@ the write set only, so they are unaffected.
 | styles::styles/undefined-class | 15 |
 | solid::solid/dependency-inversion | 11 |
 | react::performance | 9 |
-| solid::parameter-count | 9 |
 | schema::unknown-table | 4 |
 | schema-code::reserved-word | 4 |
-| react::complexity | 3 |
 | secrets::hardcoded-secret | 3 |
 | conventions::conventions/naming | 2 |
 | data-access::loop-query | 2 |

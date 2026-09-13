@@ -151,6 +151,10 @@ type Machine interface {
 	Collate()
 	Bind()
 	Laminate()
+	Shred()
+	Archive()
+	Copy()
+	Sort()
 }
 `;
     const violations = await analyzeContent(code, ['solid']);

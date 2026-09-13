@@ -2,7 +2,7 @@
  * Spec-49 — Go `switch-size` (order #4, open-closed switch + type-switch).
  *
  * The old `open-closed` category claimed to detect the Open/Closed Principle
- * from a raw case count (`if caseCount > 5`). Case count is a size reading, not
+ * from a raw case count (`if caseCount > 8`). Case count is a size reading, not
  * an OCP reading — whether a switch is "closed to extension" depends on whether
  * it dispatches over a stable enum vs an extensible type, which the
  * syntax-only `go/parser` cannot resolve. The honest OCP computation is
@@ -113,6 +113,10 @@ func dispatch(x int) int {
 		return 6
 	case 7:
 		return 7
+	case 8:
+		return 8
+	case 9:
+		return 9
 	}
 	return 0
 }
@@ -146,6 +150,10 @@ func describe(v interface{}) {
 		fmt.Println("map")
 	case chan int:
 		fmt.Println("chan")
+	case int32:
+		fmt.Println("int32")
+	case uint64:
+		fmt.Println("uint64")
 	}
 }
 `;
@@ -155,7 +163,7 @@ func describe(v interface{}) {
     expect(sized[0].message ?? '').not.toMatch(/interfaces/i);
   });
 
-  it('does NOT flag a small switch (≤5 cases) — the size threshold is the only signal', async () => {
+  it('does NOT flag a small switch (≤8 cases) — the size threshold is the only signal', async () => {
     const code = `package main
 
 func small(x int) int {
@@ -196,6 +204,10 @@ func dispatch(x int) int {
 		return 6
 	case 7:
 		return 7
+	case 8:
+		return 8
+	case 9:
+		return 9
 	}
 	return 0
 }

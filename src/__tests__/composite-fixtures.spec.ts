@@ -107,7 +107,7 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
   // Target rules: class-size (god class), liskov-substitution (override that
   // throws where the parent does not), open-closed (instanceof a user type
   // inside a class method), dependency-inversion (concrete `new` held), and
-  // parameter-count (five params). Every public member is JSDoc'd so the
+  // parameter-count (seven params). Every public member is JSDoc'd so the
   // documentation analyzer stays silent.
   // ─────────────────────────────────────────────────────────────────────
   describe('class-structure', () => {
@@ -117,7 +117,7 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
         'solid::solid/dependency-inversion@src/classes.ts:41',
         'solid::solid/open-closed@src/classes.ts:62',
         'solid::parameter-count@src/classes.ts:73',
-        'solid::solid/class-size@src/classes.ts:84',
+        'solid::solid/class-size@src/classes.ts:86',
       ]);
     });
   });

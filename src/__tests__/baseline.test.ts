@@ -38,6 +38,7 @@ import type { Violation, Baseline, BaselineEntry } from '../types.js';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
 import { RULE_ALIASES, canonicalRuleId, describeRuleId } from '../ruleAliases.js';
 import { DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
+import { DEFAULT_REACT_CONFIG } from '../analyzers/reactAnalyzer.js';
 import { DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
 import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import { DEFAULT_DOCUMENTATION_CONFIG } from '../analyzers/universal/UniversalDocumentationAnalyzer.js';
@@ -1486,6 +1487,7 @@ describe('Rule Registry', () => {
       'documentation': DEFAULT_DOCUMENTATION_CONFIG,
       'styles': DEFAULT_STYLES_CONFIG,
       'conventions': DEFAULT_CONVENTIONS_CONFIG,
+      'react': DEFAULT_REACT_CONFIG,
       'cross-domain': DEFAULT_ANALYZER_CONFIGS.crossDomain,
     };
     const flatKeys = new Map<string, Set<string>>();

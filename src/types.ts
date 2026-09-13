@@ -634,6 +634,9 @@ export interface AuditResult {
     inputPresence?: InputPresence;
     /** Spec 44: per-file accounting (analyzed vs. dropped, with reasons). */
     fileAccounting?: FileAccountingSummary;
+    /** Spec 50 R2 — which config layer supplied each size threshold (default,
+     *  project-config, project-lint-config, preset:<id>). */
+    thresholdSources?: ThresholdSource[];
   };
 }
 
@@ -830,6 +833,25 @@ export interface AuditMetadata {
   stageTiming?: Record<string, number>;
   /** Spec 36 R5 — thresholds the run changed from default, with the delta. */
   thresholdChanges?: Array<{ key: string; defaultValue: unknown; effectiveValue: unknown }>;
+  /** Spec 50 R2 — which config layer supplied each size threshold. */
+  thresholdSources?: ThresholdSource[];
+}
+
+/**
+ * Spec 50 R2 — a size threshold and the config layer that supplied its value.
+ * Surfaces in audit metadata and `print-config` so a threshold that came from
+ * the project's ESLint config (vs. a default or an explicit .codeauditor.json)
+ * is named, not archaeology.
+ */
+export interface ThresholdSource {
+  /** Dot-notation key within the analyzer namespace, e.g. `solid.maxLinesPerMethod`. */
+  key: string;
+  /** The effective value the run used. */
+  value: unknown;
+  /** Where the value came from: `default`, `project-config`, `project-lint-config`, `preset:<id>`, `path-profile:<name>`. */
+  source: string;
+  /** The analyzer's runtime default (for the `[differs from default]` display). */
+  defaultValue: unknown;
 }
 
 export interface BaseAnalyzerOptions {

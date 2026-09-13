@@ -42,10 +42,10 @@ describe('computeEffectiveConfig — source attribution (Spec 38 R1)', () => {
     const solid = result.analyzers.find((a) => a.namespace === 'solid')!;
     const key = solid.keys.find((k) => k.key === 'solid.maxMethodsPerClass')!;
 
-    expect(key.value).toBe(15);
+    expect(key.value).toBe(20);
     expect(key.source).toBe('default');
     expect(key.differsFromDefault).toBe(false);
-    expect(key.defaultValue).toBe(15);
+    expect(key.defaultValue).toBe(20);
 
     // No key anywhere may differ when no override exists.
     for (const analyzer of result.analyzers) {
@@ -68,7 +68,7 @@ describe('computeEffectiveConfig — source attribution (Spec 38 R1)', () => {
     expect(key.value).toBe(5);
     expect(key.source).toBe('project-config');
     expect(key.differsFromDefault).toBe(true);
-    expect(key.defaultValue).toBe(15);
+    expect(key.defaultValue).toBe(20);
   });
 
   it('attributes a path-profile override to the matching profile and reports the excludeFromGate', () => {

@@ -4,8 +4,8 @@
  * The old `single-responsibility` category claimed the Single Responsibility
  * Principle from two composite size proxies, one per entity kind:
  *
- *  - function: `countFunctionResponsibilities` = `1 + (complexity > 10) +
- *    (returnCount > 2) + (paramCount > 5)`, firing when the total exceeds 3 —
+ *  - function: `countFunctionResponsibilities` = `1 + (complexity > 20) +
+ *    (returnCount > 2) + (paramCount > 6)`, firing when the total exceeds 3 —
  *    i.e. only when *all three* size signals are elevated at once.
  *  - struct: `countStructResponsibilities` = `1 + fieldCountScore +
  *    mixedTypesScore`, firing when the total exceeds 5 — which the arithmetic
@@ -20,7 +20,7 @@
  *
  *  - `function-size` — the composite "many params + multiple returns + high
  *    complexity" reading, kept as-is (all three must be elevated).
- *  - `struct-size` — the "many fields" reading, now a *direct* `fieldCount > 10`
+ *  - `struct-size` — the "many fields" reading, now a *direct* `fieldCount > 15`
  *    check; the buggy `mixedTypes` substring heuristic is removed.
  *
  * Both drop the `principle: "SRP"` claim. These tests spawn the real Go binary.
@@ -88,10 +88,10 @@ beforeAll(async () => {
   await ensureBinaryFresh();
 }, 60_000);
 
-/** 11 if-statements (complexity 12) + 6 params + 3 returns — all three signals. */
+/** 21 if-statements (complexity 22) + 7 params + 3 returns — all three signals. */
 const BIG_FUNCTION = `package main
 
-func doEverything(a int, b int, c int, d int, e int, f int) (int, string, bool) {
+func doEverything(a int, b int, c int, d int, e int, f int, g int) (int, string, bool) {
 	x := 0
 	if a > 0 { x++ }
 	if b > 0 { x++ }
@@ -99,16 +99,26 @@ func doEverything(a int, b int, c int, d int, e int, f int) (int, string, bool) 
 	if d > 0 { x++ }
 	if e > 0 { x++ }
 	if f > 0 { x++ }
+	if g > 0 { x++ }
 	if a > 1 { x++ }
 	if b > 1 { x++ }
 	if c > 1 { x++ }
 	if d > 1 { x++ }
 	if e > 1 { x++ }
+	if f > 1 { x++ }
+	if g > 1 { x++ }
+	if a > 2 { x++ }
+	if b > 2 { x++ }
+	if c > 2 { x++ }
+	if d > 2 { x++ }
+	if e > 2 { x++ }
+	if f > 2 { x++ }
+	if g > 2 { x++ }
 	return x, "ok", true
 }
 `;
 
-/** 11 fields — over the 10-field "many fields" size threshold. */
+/** 16 fields — over the 15-field "many fields" size threshold. */
 const BIG_STRUCT = `package main
 
 type Everything struct {
@@ -123,6 +133,11 @@ type Everything struct {
 	Field9  int
 	Field10 string
 	Field11 string
+	Field12 string
+	Field13 int
+	Field14 int
+	Field15 string
+	Field16 string
 }
 `;
 
@@ -141,11 +156,21 @@ func deep(x int) int {
 	if x > 8 { x++ }
 	if x > 9 { x++ }
 	if x > 10 { x++ }
+	if x > 11 { x++ }
+	if x > 12 { x++ }
+	if x > 13 { x++ }
+	if x > 14 { x++ }
+	if x > 15 { x++ }
+	if x > 16 { x++ }
+	if x > 17 { x++ }
+	if x > 18 { x++ }
+	if x > 19 { x++ }
+	if x > 20 { x++ }
 	return x
 }
 `;
 
-/** ≤10 fields, but a field type whose name contains "int" as a substring. */
+/** ≤15 fields, but a field type whose name contains "int" as a substring. */
 const POINTER_FIELD = `package main
 
 type Small struct {
@@ -164,7 +189,7 @@ describe('Go single-responsibility — split into function-size / struct-size', 
     expect(sized.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('flags an 11-field struct under struct-size (positive)', async () => {
+  it('flags a 16-field struct under struct-size (positive)', async () => {
     const vs = await analyzeContent(BIG_STRUCT);
     const sized = vs.filter((v) => v.rule === 'struct-size');
     expect(sized.length).toBeGreaterThanOrEqual(1);

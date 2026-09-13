@@ -57,9 +57,12 @@ func (s *SOLIDAnalyzer) analyzeFunctionSize() []Violation {
 
 	for _, function := range s.functions {
 		returns := strings.Split(function.ReturnType, ",")
-		complex := function.Complexity > 10
+		// 2026-09-12 recalibration: complexity ceiling aligned to the 20-cyclomatic
+		// threshold, params aligned to the TS `parameter-count` default of 6. The
+		// rule is AND-combined (complexity + returns + params) so it stays conservative.
+		complex := function.Complexity > 20
 		multiReturn := len(returns) > 2
-		manyParams := len(function.Parameters) > 5
+		manyParams := len(function.Parameters) > 6
 		if complex && multiReturn && manyParams {
 			violations = append(violations, Violation{
 				File:     function.File,
@@ -94,7 +97,8 @@ func (s *SOLIDAnalyzer) analyzeStructSize() []Violation {
 	var violations []Violation
 
 	for _, structInfo := range s.structs {
-		if len(structInfo.Fields) > 10 {
+		// 2026-09-12 recalibration: 10 flags ordinary config/model structs; 15 is a god-struct.
+		if len(structInfo.Fields) > 15 {
 			violations = append(violations, Violation{
 				File:     structInfo.File,
 				Line:     structInfo.StartLine,
@@ -131,7 +135,9 @@ func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 			switch node := n.(type) {
 			case *ast.SwitchStmt:
 				caseCount := s.countSwitchCases(node)
-				if caseCount > 5 {
+				// 2026-09-12 recalibration: 5 flags idiomatic dispatch (HTTP status /
+				// command maps); 8 suggests table-driven lookup.
+				if caseCount > 8 {
 					pos := s.parser.fileSet.Position(node.Pos())
 					violations = append(violations, Violation{
 						File:     filePath,
@@ -149,7 +155,7 @@ func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 				}
 			case *ast.TypeSwitchStmt:
 				caseCount := s.countTypeSwitchCases(node)
-				if caseCount > 5 {
+				if caseCount > 8 {
 					pos := s.parser.fileSet.Position(node.Pos())
 					violations = append(violations, Violation{
 						File:     filePath,
@@ -233,7 +239,9 @@ func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 	var violations []Violation
 
 	for _, interfaceInfo := range s.interfaces {
-		if len(interfaceInfo.Methods) > 5 {
+		// 2026-09-12 recalibration: 5 flags idiomatic Reader/Writer-style interfaces;
+		// 10 is where segregation is warranted.
+		if len(interfaceInfo.Methods) > 10 {
 			violations = append(violations, Violation{
 				File:     interfaceInfo.File,
 				Line:     interfaceInfo.StartLine,

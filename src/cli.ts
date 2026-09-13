@@ -3141,6 +3141,7 @@ program
         computeTopLevelConfig,
       } = await import('./config/effectiveConfig.js');
       const { getPreset, PRESET_IDS } = await import('./presets/presets.js');
+      const { readProjectLintThresholds, thresholdsToAnalyzerConfig } = await import('./config/lintConfigReader.js');
 
       const projectRoot = pathModule.resolve(options.path);
       const filePath = pathModule.resolve(file);
@@ -3182,6 +3183,11 @@ program
       }
       const presets = presetIds.map((id) => getPreset(id)!);
 
+      // Spec 50 R2 — read the project's own lint config so size thresholds sourced
+      // from ESLint are named `project-lint-config` rather than `default`.
+      const lintResult = await readProjectLintThresholds(projectRoot);
+      const lintConfig = lintResult ? thresholdsToAnalyzerConfig(lintResult.thresholds) : {};
+
       const effective = computeEffectiveConfig({
         filePath,
         projectRoot,
@@ -3189,6 +3195,7 @@ program
         pathProfiles,
         enabledAnalyzers,
         presets,
+        lintConfig,
       });
 
       const topLevel = computeTopLevelConfig(
@@ -3202,6 +3209,7 @@ program
           projectRoot,
           configPath,
           presets: presetIds,
+          lintConfigPath: lintResult?.configPath ?? null,
           matchedProfiles: effective.matchedProfiles,
           excludeFromGate: effective.excludeFromGate ?? null,
           topLevel,
@@ -3215,6 +3223,7 @@ program
       console.log(`${chalk.bold('file:')}        ${effective.relativePath}`);
       console.log(`${chalk.bold('project root:')} ${projectRoot}`);
       console.log(`${chalk.bold('presets:')}     ${presetIds.length > 0 ? presetIds.join(', ') : chalk.gray('(none)')}`);
+      console.log(`${chalk.bold('lint config:')} ${lintResult?.configPath ? chalk.cyan(lintResult.configKind) + ' ' + chalk.dim(lintResult.configPath) : chalk.gray('(none — defaults)')}`);
       console.log(`${chalk.bold('profiles:')}    ${effective.matchedProfiles.length > 0 ? effective.matchedProfiles.join(', ') : chalk.gray('(none)')}`);
       if (effective.excludeFromGate) {
         console.log(`${chalk.bold('excludeFromGate:')} ${chalk.yellow('true')}`);

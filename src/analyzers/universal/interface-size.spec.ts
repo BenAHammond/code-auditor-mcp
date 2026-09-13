@@ -35,11 +35,11 @@ async function interfaceSize(code: string): Promise<any[]> {
 
 describe('interface-size — honest size reading (spec-49 order #3)', () => {
   it('positive: an interface with many method members fires', async () => {
-    const methods = Array.from({ length: 21 }, (_, i) => `m${i}(): void;`).join(' ');
+    const methods = Array.from({ length: 26 }, (_, i) => `m${i}(): void;`).join(' ');
     const code = `export interface Big { ${methods} }`;
     const vs = await interfaceSize(code);
     expect(vs).toHaveLength(1);
-    expect(vs[0].message).toContain('21 members');
+    expect(vs[0].message).toContain('26 members');
   });
 
   it('near-miss: a data-shape interface (only property signatures) does NOT fire', async () => {

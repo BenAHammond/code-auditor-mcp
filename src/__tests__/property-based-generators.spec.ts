@@ -77,15 +77,15 @@ const wraps: Record<string, (s: string) => string> = {
   'comment+reindent': (s) => s.split('\n').map((l) => '  // c\n  ' + l).join('\n'),
 };
 
-describe('R3 property — parameter-count (threshold 4)', () => {
-  it('fires iff the generated function has more than 4 parameters, under every wrap', async () => {
+describe('R3 property — parameter-count (threshold 6)', () => {
+  it('fires iff the generated function has more than 6 parameters, under every wrap', async () => {
     await fc.assert(
-      fc.asyncProperty(fc.integer({ min: 0, max: 12 }), async (n) => {
+      fc.asyncProperty(fc.integer({ min: 0, max: 14 }), async (n) => {
         const params = Array.from({ length: n }, (_, i) => `p${i}`).join(', ');
         const body = `function f(${params}) { return ${n || 0}; }`;
         for (const wrap of Object.values(wraps)) {
           const vs = await solidByRule(wrap(body), 'param', 'parameter-count');
-          expect(vs.length > 0).toBe(n > 4);
+          expect(vs.length > 0).toBe(n > 6);
         }
       }),
       { numRuns: 40 },
@@ -93,15 +93,15 @@ describe('R3 property — parameter-count (threshold 4)', () => {
   });
 });
 
-describe('R3 property — solid/class-size (threshold 15)', () => {
-  it('fires iff the generated class has more than 15 methods, under every wrap', async () => {
+describe('R3 property — solid/class-size (threshold 20)', () => {
+  it('fires iff the generated class has more than 20 methods, under every wrap', async () => {
     await fc.assert(
-      fc.asyncProperty(fc.integer({ min: 0, max: 24 }), async (m) => {
+      fc.asyncProperty(fc.integer({ min: 0, max: 28 }), async (m) => {
         const methods = Array.from({ length: m }, (_, i) => `m${i}(){return 1;}`).join(' ');
         const body = `class Big { ${methods} }`;
         for (const wrap of Object.values(wraps)) {
           const vs = await solidByRule(wrap(body), 'cls', 'solid/class-size');
-          expect(vs.length > 0).toBe(m > 15);
+          expect(vs.length > 0).toBe(m > 20);
         }
       }),
       { numRuns: 40 },

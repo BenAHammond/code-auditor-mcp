@@ -9,7 +9,7 @@ describe('checkThresholdRationales (Spec 36 R5)', () => {
     );
     expect(changes).toContainEqual({
       key: 'solid.maxLinesPerMethod',
-      defaultValue: 50,
+      defaultValue: 200,
       effectiveValue: 100,
       hasRationale: false,
     });
@@ -25,7 +25,7 @@ describe('checkThresholdRationales (Spec 36 R5)', () => {
     );
     expect(changes).toContainEqual({
       key: 'solid.maxLinesPerMethod',
-      defaultValue: 50,
+      defaultValue: 200,
       effectiveValue: 100,
       hasRationale: true,
     });
@@ -35,7 +35,7 @@ describe('checkThresholdRationales (Spec 36 R5)', () => {
   it('ignores unchanged thresholds and non-threshold config keys', () => {
     const { errors, changes } = checkThresholdRationales(
       {
-        solid: { maxLinesPerMethod: 50 }, // equals default
+        solid: { maxLinesPerMethod: 200 }, // equals default
         'data-access': { dbWrapperNames: ['db'] }, // not a registry threshold
       },
       undefined,

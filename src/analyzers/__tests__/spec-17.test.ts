@@ -344,12 +344,12 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
 describe('Spec-17 R5 — SOLID Analyzer', () => {
   const analyzer = new UniversalSOLIDAnalyzer();
 
-  it('R5.1/R5.2 — 20 small methods → class-size; complex function → method-complexity (fixture 17)', async () => {
+  it('R5.1/R5.2 — 21 small methods → class-size; complex function → method-complexity (fixture 17)', async () => {
     const file = join(FIXTURES, 'twenty-methods-vs-complex.ts');
     const result = await analyzer.analyze([file], { skipTestFiles: false });
     expect(result.errors).toHaveLength(0);
 
-    // Class-size: DataProcessor has 20 methods > 15 threshold
+    // Class-size: DataProcessor has 21 methods > 20 threshold
     const classSizeViolations = result.violations.filter(v => v.rule === 'solid/class-size');
     expect(classSizeViolations.length).toBeGreaterThanOrEqual(1);
 

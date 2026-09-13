@@ -122,17 +122,25 @@ export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
 export const DEFAULT_ANALYZER_CONFIGS = {
   // Spec-17 R5: maxComplexity (old heuristic) deprecated; use maxMethodComplexity
   // and classAggregateComplexity for true cyclomatic complexity.
+  //
+  // AUTHORITATIVE source is DEFAULT_SOLID_CONFIG (UniversalSOLIDAnalyzer.ts) —
+  // the pipeline and `--print-config` resolve from there (RUNTIME_DEFAULT_CONFIGS),
+  // NOT from this copy. This namespace is exported from the library (`src/index.ts`)
+  // but must not drift: the size thresholds below are kept identical to
+  // DEFAULT_SOLID_CONFIG (re-calibrated 2026-09-12 — see the rule registry's
+  // `thresholdRationale` for the per-rule rationale).
   solid: {
-    maxMethodsPerClass: 10,
-    maxLinesPerMethod: 50,               // Spec 11 R3 sweep: confirmed
-    maxParametersPerMethod: 4,           // Spec 11 R3 sweep: confirmed
+    maxMethodsPerClass: 20,
+    maxLinesPerMethod: 200,
+    maxParametersPerMethod: 6,
     maxImportsPerFile: 5,                // Spec 11 R3 sweep: 20 → 5 (precision-first)
     maxComplexity: 10,                   // DEPRECATED — old heuristic
+    maxInterfaceMembers: 25,
     // R5.1: Per-method cyclomatic complexity threshold (true McCC)
-    maxMethodComplexity: 10,            // Spec 11 R3 sweep: 50 → 10 (precision-first)
+    maxMethodComplexity: 50,
     // R5.2: Class-level aggregation thresholds
-    classMethodsThreshold: 5,            // Spec 11 R3 sweep: 15 → 5 (precision-first)
-    classAggregateComplexity: 80,        // Spec 11 R3 sweep: 100 → 80 (precision-first)
+    classMethodsThreshold: 20,
+    classAggregateComplexity: 150,
   },
   
   // Keep in sync with `DEFAULT_DRY_CONFIG` (UniversalDRYAnalyzer.ts) — that is the

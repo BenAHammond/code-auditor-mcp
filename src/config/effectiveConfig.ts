@@ -16,6 +16,8 @@
 import { BUILTIN_PATH_PROFILES } from './defaults.js';
 import { resolvePathProfile, type PathProfile } from './pathProfiles.js';
 import type { Preset } from '../presets/presets.js';
+import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
+import type { ThresholdSource } from '../types.js';
 
 import { DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
 import { DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
@@ -30,6 +32,7 @@ import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 export type ConfigSource =
   | 'default'
   | 'project-config'
+  | 'project-lint-config'
   | 'env'
   | 'cli'
   | `path-profile:${string}`
@@ -177,8 +180,11 @@ export function computeEffectiveConfig(opts: {
   enabledAnalyzers?: string[];
   /** Ordered presets; later presets win on key collision (Spec 38 R4). */
   presets?: Preset[];
+  /** Lint-sourced thresholds (analyzerConfigs-shaped, e.g. `{ solid: { maxLinesPerMethod } }`),
+   *  merged as a base under `analyzerConfigs` (Spec 50 R2). */
+  lintConfig?: Record<string, unknown>;
 }): EffectiveConfigResult {
-  const { filePath, projectRoot, analyzerConfigs = {}, pathProfiles = [], enabledAnalyzers, presets = [] } = opts;
+  const { filePath, projectRoot, analyzerConfigs = {}, pathProfiles = [], enabledAnalyzers, presets = [], lintConfig = {} } = opts;
 
   const resolved = pathProfiles.length > 0
     ? resolvePathProfile(filePath, projectRoot, pathProfiles)
@@ -197,11 +203,13 @@ export function computeEffectiveConfig(opts: {
     const flatDefaults = flatten(defaults, namespace);
     const flatPreset = flattenPresetLayer(namespace, presets);
     const flatProject = flatten(projectOverride, namespace);
+    // Lint-sourced thresholds sit between project config and presets (Spec 50 R2).
+    const flatLint = flatten((lintConfig[namespace] as Record<string, unknown>) ?? {}, namespace);
     // Path-profile overrides are flat and unnamespaced; the pipeline spreads
     // them into every visitor, so namespace them for display parity.
     const flatProfile = flatten(resolved.overrides, namespace);
 
-    const merged = { ...flatDefaults, ...flatPreset.flat, ...flatProject, ...flatProfile };
+    const merged = { ...flatDefaults, ...flatPreset.flat, ...flatLint, ...flatProject, ...flatProfile };
     const keys: EffectiveKey[] = Object.keys(merged)
       .sort()
       .map((key) => {
@@ -216,6 +224,8 @@ export function computeEffectiveConfig(opts: {
           source = profile ? profileSource(profile) : 'path-profile:unknown';
         } else if (key in flatProject) {
           source = 'project-config';
+        } else if (key in flatLint) {
+          source = 'project-lint-config';
         } else if (key in flatPreset.sourceByKey) {
           source = `preset:${flatPreset.sourceByKey[key]}`;
         }
@@ -278,4 +288,74 @@ function relativePosix(root: string, file: string): string {
     ? file.slice(root.length).replace(/^[/\\]+/, '')
     : file;
   return rel.split('\\').join('/');
+}
+
+/**
+ * Spec 50 R2 — enumerate every size threshold named by the rule registry and
+ * name which config layer supplied its effective value.
+ *
+ * This is the run-level (non-file) counterpart to `computeEffectiveConfig`:
+ * it has no filePath, so path-profile overrides are out of scope. Precedence
+ * mirrors the pipeline: project-config > project-lint-config > preset > default.
+ *
+ * @param projectConfig   User-facing `analyzerConfigs` (.codeauditor.json + inline options).
+ * @param lintThresholds  Dot-notation lint thresholds (`solid.maxLinesPerMethod`, …).
+ * @param presets         Ordered presets; later presets win.
+ */
+export function computeThresholdSources(opts: {
+  projectConfig?: Record<string, unknown>;
+  lintThresholds?: Record<string, number>;
+  presets?: Preset[];
+}): ThresholdSource[] {
+  const { projectConfig = {}, lintThresholds = {}, presets = [] } = opts;
+
+  // Flatten the ordered preset layer once into a merged flat map + source map.
+  const flatPreset: Record<string, unknown> = {};
+  const presetSourceByKey: Record<string, string> = {};
+  for (const preset of presets) {
+    for (const [namespace, fragment] of Object.entries(preset.config)) {
+      for (const [key, value] of Object.entries(flatten(fragment, namespace))) {
+        flatPreset[key] = value;
+        presetSourceByKey[key] = preset.id;
+      }
+    }
+  }
+
+  const out: ThresholdSource[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of Object.values(RULE_REGISTRY)) {
+    const analyzer = entry.analyzer;
+    const defaults = RUNTIME_DEFAULT_CONFIGS[analyzer];
+    if (!defaults) continue;
+
+    const flatDefaults = flatten(defaults, analyzer);
+    const flatProject = flatten(projectConfig[analyzer] ?? {}, analyzer);
+
+    for (const threshold of entry.thresholds) {
+      const fullKey = `${analyzer}.${threshold}`;
+      if (seen.has(fullKey)) continue;
+      seen.add(fullKey);
+
+      const defaultValue = flatDefaults[fullKey];
+      if (defaultValue === undefined) continue;
+
+      let value: unknown = defaultValue;
+      let source = 'default';
+      if (fullKey in flatProject) {
+        value = flatProject[fullKey];
+        source = 'project-config';
+      } else if (fullKey in lintThresholds) {
+        value = lintThresholds[fullKey];
+        source = 'project-lint-config';
+      } else if (fullKey in flatPreset) {
+        value = flatPreset[fullKey];
+        source = `preset:${presetSourceByKey[fullKey]}`;
+      }
+
+      out.push({ key: fullKey, value, source, defaultValue });
+    }
+  }
+
+  return out;
 }

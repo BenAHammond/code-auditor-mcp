@@ -133,7 +133,7 @@ func bigSwitch(n int) string {
     }
 }
 
-func complexFunc(p1, p2, p3, p4, p5, p6 int) (int, int, int) {
+func complexFunc(p1, p2, p3, p4, p5, p6, p7 int) (int, int, int) {
     x := p1
     if x > 0 { x++ }
     if x > 1 { x++ }
@@ -147,6 +147,15 @@ func complexFunc(p1, p2, p3, p4, p5, p6 int) (int, int, int) {
     if x > 9 { x++ }
     if x > 10 { x++ }
     if x > 11 { x++ }
+    if x > 12 { x++ }
+    if x > 13 { x++ }
+    if x > 14 { x++ }
+    if x > 15 { x++ }
+    if x > 16 { x++ }
+    if x > 17 { x++ }
+    if x > 18 { x++ }
+    if x > 19 { x++ }
+    if x > 20 { x++ }
     return x, p2, p3
 }
 

@@ -2,8 +2,8 @@
  * Spec-17 R8 Fixture 17: twenty-methods-vs-complex
  * Report section: R5.1/R5.2 — method-complexity vs class-size
  *
- * A class with 20 small methods (≤5 complexity each) should trigger
- * `solid/class-size` (suggestion) because 20 > classMethodsThreshold (15).
+ * A class with 21 small methods (≤5 complexity each) should trigger
+ * `solid/class-size` (suggestion) because 21 > classMethodsThreshold (20).
  *
  * A standalone function with cyclomatic complexity > 50 should trigger
  * `solid/method-complexity` (warning) at the shipped default of 50.
@@ -33,6 +33,7 @@ export class DataProcessor {
   m18(n: number): number { return n + 18; }
   m19(n: number): number { return n + 19; }
   m20(n: number): number { return n + 20; }
+  m21(n: number): number { return n + 21; }
 }
 
 /**

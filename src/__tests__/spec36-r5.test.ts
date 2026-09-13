@@ -57,7 +57,7 @@ describe('Spec 36 R5 — threshold rationale guard', () => {
     });
 
     expect(result.metadata.thresholdChanges).toEqual([
-      { key: 'solid.maxLinesPerMethod', defaultValue: 50, effectiveValue: 100 },
+      { key: 'solid.maxLinesPerMethod', defaultValue: 200, effectiveValue: 100 },
     ]);
   });
 
@@ -78,7 +78,7 @@ describe('Spec 36 R5 — threshold rationale guard', () => {
     });
 
     expect(result.metadata.thresholdChanges).toEqual([
-      { key: 'solid.maxLinesPerMethod', defaultValue: 50, effectiveValue: 100 },
+      { key: 'solid.maxLinesPerMethod', defaultValue: 200, effectiveValue: 100 },
     ]);
   });
 });

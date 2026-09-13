@@ -26,7 +26,10 @@ export const DEFAULT_REACT_CONFIG: ReactAnalyzerConfig = {
   requirePropTypes: false, // TypeScript provides type safety
   requireErrorBoundaries: true,
   checkHooksRules: true,
-  maxComponentComplexity: 10,
+  // Raised 2026-09-12 (size-threshold calibration) — 10 flagged ordinary
+  // components with a few conditionals (66 findings on recall-protocol, where
+  // every correctness rule is at zero). ESLint's own `complexity` default is 20.
+  maxComponentComplexity: 20,
   
   // Performance
   checkUnnecessaryRerenders: true,

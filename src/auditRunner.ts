@@ -29,8 +29,10 @@ import { FileAccounting } from './services/fileAccounting.js';
 import { loadConfig, findConfigFileUp } from './config/configLoader.js';
 import { mergePathProfiles } from './config/defaults.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
+import { readProjectLintThresholds, thresholdsToAnalyzerConfig } from './config/lintConfigReader.js';
+import { computeThresholdSources } from './config/effectiveConfig.js';
 import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
-import { applyPresets, getPreset } from './presets/presets.js';
+import { applyPresets, getPreset, type Preset } from './presets/presets.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
 import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js';
@@ -143,6 +145,25 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       effectiveValue: c.effectiveValue,
     }));
 
+    // ── Spec 50 R2 — project lint config as threshold authority ──────────
+    // Read the project's own ESLint config (flat or legacy) and merge its size
+    // thresholds (max-lines-per-function, max-params, complexity) as a base layer
+    // UNDER the user's analyzerConfigs. Because we only fill keys the project did
+    // not set, `.codeauditor.json` always wins. Runs AFTER checkThresholdRationales
+    // so lint-sourced values (the project's own declared lint rules, not a
+    // code-auditor threshold decision) never trip the Spec 36 R5 guard. Fail-open:
+    // no config, or an unloadable config, is absent — defaults, not an error.
+    const projectAnalyzerConfigs = (mergedOptions.analyzerConfigs ?? {}) as Record<string, unknown>;
+    const lintRoot = path.resolve(mergedOptions.projectRoot || process.cwd());
+    const lintResult = await readProjectLintThresholds(lintRoot);
+    const lintThresholds: Record<string, number> = lintResult?.thresholds ?? {};
+    if (Object.keys(lintThresholds).length > 0) {
+      mergedOptions.analyzerConfigs = mergeLintUnderProject(
+        thresholdsToAnalyzerConfig(lintThresholds),
+        projectAnalyzerConfigs,
+      );
+    }
+
     // Resolve shareable presets (Spec 38 R4). Unknown ids are dropped (matching
     // mergePresets semantics); the merged preset layer becomes the base under
     // the project config / run options already present in mergedOptions.
@@ -153,6 +174,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         mergedOptions.analyzerConfigs
       );
     }
+
+    // Spec 50 R2 — which config layer supplied each size threshold (coverage output).
+    const resolvedPresets: Preset[] = presetIds
+      .map((id) => getPreset(id))
+      .filter((p): p is Preset => p !== undefined);
+    const thresholdSources = computeThresholdSources({
+      projectConfig: projectAnalyzerConfigs,
+      lintThresholds,
+      presets: resolvedPresets,
+    });
 
     // Always merge built-in path profiles — corpus audits and projects without
     // .codeauditor.json must still get the built-in scripts-and-tests profile.
@@ -1113,6 +1144,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(pipelineTableCatalog && { tableCatalog: pipelineTableCatalog }),
         ...(pipelineStageTiming && { stageTiming: pipelineStageTiming }),
         ...(thresholdChanges.length > 0 && { thresholdChanges }),
+        ...(thresholdSources.length > 0 && { thresholdSources }),
         ...(pipelineSkippedFiles && pipelineSkippedFiles.length > 0 && { skippedFiles: pipelineSkippedFiles }),
         ...(pipelineUnparsedFiles && pipelineUnparsedFiles.length > 0 && { unparsedFiles: pipelineUnparsedFiles }),
         ...(skippedExtensions && skippedExtensions.length > 0 && { skippedExtensions }),
@@ -1455,6 +1487,29 @@ function reportError(options: AuditRunnerOptions, error: Error, context: string)
   } else {
     console.error(`Error in ${context}:`, error);
   }
+}
+
+/**
+ * Merge lint-sourced thresholds (namespace-scoped fragments) as a base layer
+ * under the project config, filling only keys the project did not set. The
+ * lint fragment holds flat scalar keys (e.g. `solid.maxLinesPerMethod`), so a
+ * shallow per-namespace merge is sufficient — project values win on collision,
+ * and any other keys in the project's namespace survive untouched.
+ */
+function mergeLintUnderProject(
+  lintFragment: Record<string, Record<string, number>>,
+  projectConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...projectConfig };
+  for (const [namespace, fragment] of Object.entries(lintFragment)) {
+    const existing = out[namespace];
+    if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+      out[namespace] = { ...fragment, ...(existing as Record<string, unknown>) };
+    } else {
+      out[namespace] = { ...fragment };
+    }
+  }
+  return out;
 }
 
 // ── Zero-files diagnostic (extracted for testability) ───────────────────────

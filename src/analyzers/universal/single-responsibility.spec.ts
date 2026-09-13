@@ -128,15 +128,16 @@ describe('single-responsibility — mixed-concern detection (#128)', () => {
     expect(violations).toHaveLength(0);
   });
 
-  it('does not flag a cohesive 180-line handler (near-miss for the old line-count proxy)', async () => {
+  it('does not flag a cohesive 230-line handler (near-miss for the old line-count proxy)', async () => {
     // Spec-49 near-miss. The old `single-responsibility` fired on line count, so
     // any long function was a "responsibility" violation. This function is long
-    // enough to trip `maxLinesPerMethod` but does a single cohesive job — a
-    // straight-line accumulation with no cross-cutting calls. The honest size
-    // rule `function-length` still fires on it; `solid/single-responsibility`
-    // must stay silent because there is no mixed concern.
+    // enough to trip the 2026-09-12 `maxLinesPerMethod` (200) but does a single
+    // cohesive job — a straight-line accumulation with no cross-cutting calls.
+    // The honest size rule `function-length` still fires on it;
+    // `solid/single-responsibility` must stay silent because there is no mixed
+    // concern.
     const body: string[] = [];
-    for (let i = 1; i <= 180; i++) body.push(`  total = total + step${i};`);
+    for (let i = 1; i <= 230; i++) body.push(`  total = total + step${i};`);
     const code = `function accumulate(steps) {\n  let total = 0;\n${body.join('\n')}\n  return total;\n}`;
     const violations = await allViolations(code, 'accumulate');
     const rules = violations.map((v: any) => v.rule);

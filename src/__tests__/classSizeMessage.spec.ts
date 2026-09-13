@@ -52,25 +52,27 @@ async function classSizeViolations(code: string): Promise<Emitted[]> {
   return vs.filter((v) => v.rule === 'solid/class-size');
 }
 
-/** 16 methods — one over the 15-method threshold. */
+/** 21 methods — one over the 20-method threshold. */
 const BIG = `class Big {
-  m1() {} m2() {} m3() {} m4() {} m5() {} m6() {} m7() {} m8() {}
-  m9() {} m10() {} m11() {} m12() {} m13() {} m14() {} m15() {} m16() {}
+  m1() {} m2() {} m3() {} m4() {} m5() {} m6() {} m7() {}
+  m8() {} m9() {} m10() {} m11() {} m12() {} m13() {} m14() {}
+  m15() {} m16() {} m17() {} m18() {} m19() {} m20() {} m21() {}
 }`;
 
-/** 15 methods — exactly at the threshold, must not fire. */
+/** 20 methods — exactly at the threshold, must not fire. */
 const AT_THRESHOLD = `class AtThreshold {
-  m1() {} m2() {} m3() {} m4() {} m5() {} m6() {} m7() {} m8() {}
-  m9() {} m10() {} m11() {} m12() {} m13() {} m14() {} m15() {}
+  m1() {} m2() {} m3() {} m4() {} m5() {} m6() {} m7() {}
+  m8() {} m9() {} m10() {} m11() {} m12() {} m13() {} m14() {}
+  m15() {} m16() {} m17() {} m18() {} m19() {} m20() {}
 }`;
 
 describe('solid/class-size — size reading must not overclaim responsibility', () => {
-  it('flags a 16-method class under class-size (positive)', async () => {
+  it('flags a 21-method class under class-size (positive)', async () => {
     const vs = await classSizeViolations(BIG);
     expect(vs.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('does NOT flag a 15-method class — size threshold is the only signal (near-miss)', async () => {
+  it('does NOT flag a 20-method class — size threshold is the only signal (near-miss)', async () => {
     const vs = await classSizeViolations(AT_THRESHOLD);
     expect(vs).toHaveLength(0);
   });

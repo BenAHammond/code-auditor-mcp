@@ -35,22 +35,25 @@ export interface SOLIDAnalyzerConfig {
 }
 
 export const DEFAULT_SOLID_CONFIG: SOLIDAnalyzerConfig = {
-  maxMethodsPerClass: 15,
-  // Confirmed by the Spec-11 R3 sweep; must match src/config/defaults.ts.
-  // Reverted 2026-08-14: a 50→100 / 4→6 calibration (made to clear
-  // UniversalSchemaAnalyzer during Spec 33) silently dropped 660
-  // single-responsibility findings on recall-protocol. Undone rather than
-  // re-baselined — a threshold change must be decided on its own merits with
-  // recall's numbers in front of you, not as a side effect of one file passing.
-  maxLinesPerMethod: 50,
-  maxParametersPerMethod: 4,
+  // Size thresholds re-calibrated 2026-09-12 (Spec — "size thresholds fire on
+  // idiomatic code"). Old numbers (15/50/4/20/15/100) were never chosen
+  // deliberately and flagged ordinary code: `function-length` at 50 produced 23
+  // findings on a small React project with every correctness rule at zero.
+  // Each new value is justified in the rule registry's `thresholdRationale`
+  // (Spec 36 R5); see ruleRegistry.ts for the per-rule "old → new → why".
+  // Must stay in sync with src/config/defaults.ts.
+  maxMethodsPerClass: 20,
+  maxLinesPerMethod: 200,
+  maxParametersPerMethod: 6,
   maxClassComplexity: 50,              // DEPRECATED — kept for back-compat
-  maxInterfaceMembers: 20,
-  // R5.1: Per-method cyclomatic complexity (true McCC)
+  maxInterfaceMembers: 25,
+  // R5.1: Per-method cyclomatic complexity (true McCC). Left at 50 — McCC 50 is
+  // already a genuinely large function, not idiomatic code (33 findings on
+  // recall-protocol, all real outliers). No raise; rationale in the registry.
   maxMethodComplexity: 50,
   // R5.2: Class-level aggregation
-  classMethodsThreshold: 15,
-  classAggregateComplexity: 100,
+  classMethodsThreshold: 20,
+  classAggregateComplexity: 150,
   checkDependencyInversion: true,
   checkInterfaceSize: true,
   checkLiskovSubstitution: true,
@@ -200,7 +203,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     const { ast, config } = ctx;
 
     withRuleTiming('solid/class-size', () => {
-      const methodsThreshold = config.classMethodsThreshold ?? config.maxMethodsPerClass ?? 15;
+      const methodsThreshold = config.classMethodsThreshold ?? config.maxMethodsPerClass ?? 20;
       if (cls.methods.length > methodsThreshold) {
         violations.push(this.createViolation(
           ast.filePath,
@@ -221,7 +224,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     const aggregateComplexity = this.analyzeClassMethods(cls, ctx, violations);
 
     withRuleTiming('solid/class-size', () => {
-      const maxAggregate = config.classAggregateComplexity ?? 100;
+      const maxAggregate = config.classAggregateComplexity ?? 150;
       if (aggregateComplexity > maxAggregate) {
         violations.push(this.createViolation(
           ast.filePath,
@@ -320,11 +323,11 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     const { ast, config } = ctx;
 
     withRuleTiming('parameter-count', () => {
-      if (func.parameters.length > (config.maxParametersPerMethod || 4)) {
+      if (func.parameters.length > (config.maxParametersPerMethod || 6)) {
         violations.push(this.createViolation(
           ast.filePath,
           func.location.start,
-          `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 4}. Consider using an options object.`,
+          `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 6}. Consider using an options object.`,
           { severity: 'high', rule: 'parameter-count', symbol: functionSymbol(func),
             resolution: {
               action: 'bundle-params',
@@ -339,11 +342,11 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
 
     withRuleTiming('function-length', () => {
       const lineCount = func.location.end.line - func.location.start.line + 1;
-      if (lineCount > (config.maxLinesPerMethod || 50)) {
+      if (lineCount > (config.maxLinesPerMethod || 200)) {
         violations.push(this.createViolation(
           ast.filePath,
           func.location.start,
-          `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 50}. Consider breaking it down.`,
+          `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 200}. Consider breaking it down.`,
           { severity: 'high', rule: 'function-length', symbol: functionSymbol(func),
             resolution: {
               action: 'break-down-function',
@@ -441,7 +444,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
 
     const members = iface.members || [];
     const memberCount = members.length;
-    const maxMembers = config.maxInterfaceMembers || 20;
+    const maxMembers = config.maxInterfaceMembers || 25;
 
     // A pure data-shape interface (every member is a property signature, e.g. a
     // config/options bag) is a record type, not a large behavior interface;

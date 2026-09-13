@@ -88,6 +88,14 @@ export interface RuleRegistryEntry {
    */
   thresholds: string[];
   /**
+   * Why the thresholds are set where they are. Required whenever a rule carries a
+   * tunable size threshold — a number must never be an unexplained magic value.
+   * For a re-calibration, record the "old → new → why" so the decision is auditable
+   * (the Spec 33 failure: 50→100 / 4→6 silently dropped 660 single-responsibility
+   * findings because the change was a side effect, not a reasoned decision).
+   */
+  thresholdRationale?: string;
+  /**
    * Spec 37 R3 — inline valid/invalid samples for this rule. At least one
    * valid sample must be a near-miss (syntactically close to an invalid case
    * but semantically different). Invalid samples on a resolvable rule must
@@ -138,13 +146,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Class "{name}" has {methods} methods, exceeding the maximum of {max}. Consider splitting into smaller classes.',
     docs: 'solid/class-size',
     thresholds: ['maxMethodsPerClass', 'classMethodsThreshold', 'classAggregateComplexity'],
+    thresholdRationale: 'A class is a god-object boundary, not a style nit. 20 methods / 150 aggregate cyclomatic complexity are where a class unambiguously holds too much. The old 15/100 flagged ordinary domain models and controllers (31 findings on knex).',
     samples: {
       valid: [
         { code: 'class Small {\n  load() { return this.fetch(); }\n  save() { return this.persist(); }\n}', nearMiss: true },
       ],
       invalid: [
         {
-          code: 'class Big {\n  m1() {} m2() {} m3() {} m4() {} m5() {} m6() {} m7() {} m8() {}\n  m9() {} m10() {} m11() {} m12() {} m13() {} m14() {} m15() {} m16() {}\n}',
+          code: 'class Big {\n  m1() {} m2() {} m3() {} m4() {} m5() {} m6() {} m7() {}\n  m8() {} m9() {} m10() {} m11() {} m12() {} m13() {} m14() {}\n  m15() {} m16() {} m17() {} m18() {} m19() {} m20() {} m21() {}\n}',
           resolution: { action: 'extract-methods', summary: 'Extract the methods that touch only migration state into a separate class and delegate to it.', symbols: ['Big'] },
         },
       ],
@@ -158,6 +167,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Method "{name}" has cyclomatic complexity {complexity}, exceeding the maximum of {max}.',
     docs: 'solid/method-complexity',
     thresholds: ['maxMethodComplexity'],
+    thresholdRationale: 'McCC 50 is already a genuinely large function, not idiomatic code (33 findings on recall-protocol, all real outliers). Kept at 50 — the cyclomatic-complexity ceiling where a function cannot be held in working memory; no raise needed.',
     samples: {
       valid: [
         { code: 'function simple(x) {\n  if (x > 0) return x;\n  return -x;\n}', nearMiss: true },
@@ -214,13 +224,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Function "{name}" has {lines} lines, exceeding the maximum of {max}. Consider breaking it down.',
     docs: 'function-length',
     thresholds: ['maxLinesPerMethod'],
+    thresholdRationale: '50 flagged any function over ~one screen; idiomatic handlers/setup/config builders run 50–150 lines (23 findings on a small React project with every correctness rule at zero). 200 is the working-memory ceiling where a function is unambiguously too long.',
     samples: {
       valid: [
         { code: 'function short(x) {\n  const a = transform(x);\n  const b = validate(a);\n  return b;\n}', nearMiss: true },
       ],
       invalid: [
         {
-          code: 'function long(input) {\n  let a = step1(input);\n  let b = step2(a);\n  let c = step3(b);\n  let d = step4(c);\n  let e = step5(d);\n  let f = step6(e);\n  let g = step7(f);\n  let h = step8(g);\n  let i = step9(h);\n  let j = step10(i);\n  let k = step11(j);\n  let l = step12(k);\n  let m = step13(l);\n  let n = step14(m);\n  let o = step15(n);\n  let p = step16(o);\n  let q = step17(p);\n  let r = step18(q);\n  let s = step19(r);\n  let t = step20(s);\n  let u = step21(t);\n  let v = step22(u);\n  let w = step23(v);\n  let x = step24(w);\n  let y = step25(x);\n  let z = step26(y);\n  let aa = step27(z);\n  let ab = step28(aa);\n  let ac = step29(ab);\n  let ad = step30(ac);\n  let ae = step31(ad);\n  let af = step32(ae);\n  let ag = step33(af);\n  let ah = step34(ag);\n  let ai = step35(ah);\n  let aj = step36(ai);\n  let ak = step37(aj);\n  let al = step38(ak);\n  let am = step39(al);\n  let an = step40(am);\n  let ao = step41(an);\n  let ap = step42(ao);\n  let aq = step43(ap);\n  let ar = step44(aq);\n  let as = step45(ar);\n  let at = step46(as);\n  let au = step47(at);\n  let av = step48(au);\n  let aw = step49(av);\n  let ax = step50(aw);\n  let ay = step51(ax);\n  return ay;\n}',
+          code: 'function long(input) {\n  let v1 = step1(input);\n  let v2 = step2(v1);\n  let v3 = step3(v2);\n  let v4 = step4(v3);\n  let v5 = step5(v4);\n  let v6 = step6(v5);\n  let v7 = step7(v6);\n  let v8 = step8(v7);\n  let v9 = step9(v8);\n  let v10 = step10(v9);\n  let v11 = step11(v10);\n  let v12 = step12(v11);\n  let v13 = step13(v12);\n  let v14 = step14(v13);\n  let v15 = step15(v14);\n  let v16 = step16(v15);\n  let v17 = step17(v16);\n  let v18 = step18(v17);\n  let v19 = step19(v18);\n  let v20 = step20(v19);\n  let v21 = step21(v20);\n  let v22 = step22(v21);\n  let v23 = step23(v22);\n  let v24 = step24(v23);\n  let v25 = step25(v24);\n  let v26 = step26(v25);\n  let v27 = step27(v26);\n  let v28 = step28(v27);\n  let v29 = step29(v28);\n  let v30 = step30(v29);\n  let v31 = step31(v30);\n  let v32 = step32(v31);\n  let v33 = step33(v32);\n  let v34 = step34(v33);\n  let v35 = step35(v34);\n  let v36 = step36(v35);\n  let v37 = step37(v36);\n  let v38 = step38(v37);\n  let v39 = step39(v38);\n  let v40 = step40(v39);\n  let v41 = step41(v40);\n  let v42 = step42(v41);\n  let v43 = step43(v42);\n  let v44 = step44(v43);\n  let v45 = step45(v44);\n  let v46 = step46(v45);\n  let v47 = step47(v46);\n  let v48 = step48(v47);\n  let v49 = step49(v48);\n  let v50 = step50(v49);\n  let v51 = step51(v50);\n  let v52 = step52(v51);\n  let v53 = step53(v52);\n  let v54 = step54(v53);\n  let v55 = step55(v54);\n  let v56 = step56(v55);\n  let v57 = step57(v56);\n  let v58 = step58(v57);\n  let v59 = step59(v58);\n  let v60 = step60(v59);\n  let v61 = step61(v60);\n  let v62 = step62(v61);\n  let v63 = step63(v62);\n  let v64 = step64(v63);\n  let v65 = step65(v64);\n  let v66 = step66(v65);\n  let v67 = step67(v66);\n  let v68 = step68(v67);\n  let v69 = step69(v68);\n  let v70 = step70(v69);\n  let v71 = step71(v70);\n  let v72 = step72(v71);\n  let v73 = step73(v72);\n  let v74 = step74(v73);\n  let v75 = step75(v74);\n  let v76 = step76(v75);\n  let v77 = step77(v76);\n  let v78 = step78(v77);\n  let v79 = step79(v78);\n  let v80 = step80(v79);\n  let v81 = step81(v80);\n  let v82 = step82(v81);\n  let v83 = step83(v82);\n  let v84 = step84(v83);\n  let v85 = step85(v84);\n  let v86 = step86(v85);\n  let v87 = step87(v86);\n  let v88 = step88(v87);\n  let v89 = step89(v88);\n  let v90 = step90(v89);\n  let v91 = step91(v90);\n  let v92 = step92(v91);\n  let v93 = step93(v92);\n  let v94 = step94(v93);\n  let v95 = step95(v94);\n  let v96 = step96(v95);\n  let v97 = step97(v96);\n  let v98 = step98(v97);\n  let v99 = step99(v98);\n  let v100 = step100(v99);\n  let v101 = step101(v100);\n  let v102 = step102(v101);\n  let v103 = step103(v102);\n  let v104 = step104(v103);\n  let v105 = step105(v104);\n  let v106 = step106(v105);\n  let v107 = step107(v106);\n  let v108 = step108(v107);\n  let v109 = step109(v108);\n  let v110 = step110(v109);\n  let v111 = step111(v110);\n  let v112 = step112(v111);\n  let v113 = step113(v112);\n  let v114 = step114(v113);\n  let v115 = step115(v114);\n  let v116 = step116(v115);\n  let v117 = step117(v116);\n  let v118 = step118(v117);\n  let v119 = step119(v118);\n  let v120 = step120(v119);\n  let v121 = step121(v120);\n  let v122 = step122(v121);\n  let v123 = step123(v122);\n  let v124 = step124(v123);\n  let v125 = step125(v124);\n  let v126 = step126(v125);\n  let v127 = step127(v126);\n  let v128 = step128(v127);\n  let v129 = step129(v128);\n  let v130 = step130(v129);\n  let v131 = step131(v130);\n  let v132 = step132(v131);\n  let v133 = step133(v132);\n  let v134 = step134(v133);\n  let v135 = step135(v134);\n  let v136 = step136(v135);\n  let v137 = step137(v136);\n  let v138 = step138(v137);\n  let v139 = step139(v138);\n  let v140 = step140(v139);\n  let v141 = step141(v140);\n  let v142 = step142(v141);\n  let v143 = step143(v142);\n  let v144 = step144(v143);\n  let v145 = step145(v144);\n  let v146 = step146(v145);\n  let v147 = step147(v146);\n  let v148 = step148(v147);\n  let v149 = step149(v148);\n  let v150 = step150(v149);\n  let v151 = step151(v150);\n  let v152 = step152(v151);\n  let v153 = step153(v152);\n  let v154 = step154(v153);\n  let v155 = step155(v154);\n  let v156 = step156(v155);\n  let v157 = step157(v156);\n  let v158 = step158(v157);\n  let v159 = step159(v158);\n  let v160 = step160(v159);\n  let v161 = step161(v160);\n  let v162 = step162(v161);\n  let v163 = step163(v162);\n  let v164 = step164(v163);\n  let v165 = step165(v164);\n  let v166 = step166(v165);\n  let v167 = step167(v166);\n  let v168 = step168(v167);\n  let v169 = step169(v168);\n  let v170 = step170(v169);\n  let v171 = step171(v170);\n  let v172 = step172(v171);\n  let v173 = step173(v172);\n  let v174 = step174(v173);\n  let v175 = step175(v174);\n  let v176 = step176(v175);\n  let v177 = step177(v176);\n  let v178 = step178(v177);\n  let v179 = step179(v178);\n  let v180 = step180(v179);\n  let v181 = step181(v180);\n  let v182 = step182(v181);\n  let v183 = step183(v182);\n  let v184 = step184(v183);\n  let v185 = step185(v184);\n  let v186 = step186(v185);\n  let v187 = step187(v186);\n  let v188 = step188(v187);\n  let v189 = step189(v188);\n  let v190 = step190(v189);\n  let v191 = step191(v190);\n  let v192 = step192(v191);\n  let v193 = step193(v192);\n  let v194 = step194(v193);\n  let v195 = step195(v194);\n  let v196 = step196(v195);\n  let v197 = step197(v196);\n  let v198 = step198(v197);\n  let v199 = step199(v198);\n  let v200 = step200(v199);\n  let v201 = step201(v200);\n  let v202 = step202(v201);\n  let v203 = step203(v202);\n  let v204 = step204(v203);\n  let v205 = step205(v204);\n  return v205;\n}',
           resolution: { action: 'break-down-function', summary: 'Break "long" into smaller functions, extracting named helper blocks for each pipeline stage.', symbols: ['long'] },
         },
       ],
@@ -234,14 +245,15 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Function "{name}" has {params} parameters, exceeding the maximum of {max}. Consider using an options object.',
     docs: 'parameter-count',
     thresholds: ['maxParametersPerMethod'],
+    thresholdRationale: '4 flagged ordinary dependency-injected constructors and config functions. 6 is where an options object is clearly warranted.',
     samples: {
       valid: [
         { code: 'function combine(a, b, c, d) {\n  return a + b + c + d;\n}', nearMiss: true },
       ],
       invalid: [
         {
-          code: 'function combine(a, b, c, d, e) {\n  return a + b + c + d + e;\n}',
-          resolution: { action: 'bundle-params', summary: 'Bundle the 5 parameters of "combine" into an options object.', symbols: ['a', 'b', 'c', 'd', 'e'] },
+          code: 'function combine(a, b, c, d, e, f, g) {\n  return a + b + c + d + e + f + g;\n}',
+          resolution: { action: 'bundle-params', summary: 'Bundle the 7 parameters of "combine" into an options object.', symbols: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] },
         },
       ],
     },
@@ -253,13 +265,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     resolvable: false,
     message: 'Interface "{name}" has many members.',
     docs: 'interface-size',
-    thresholds: [],
+    thresholds: ['maxInterfaceMembers'],
+    thresholdRationale: '20 flagged a legitimate service/repository interface; 25 method-bearing members is where splitting into smaller, more focused interfaces is warranted.',
     samples: {
       valid: [
         { code: 'interface Printer {\n  print(doc) { return doc; }\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'interface Machine {\n  print() {}\n  scan() {}\n  fax() {}\n  staple() {}\n}' },
+        { code: 'interface Machine {\n  op1() {}\n  op2() {}\n  op3() {}\n  op4() {}\n  op5() {}\n  op6() {}\n  op7() {}\n  op8() {}\n  op9() {}\n  op10() {}\n  op11() {}\n  op12() {}\n  op13() {}\n  op14() {}\n  op15() {}\n  op16() {}\n  op17() {}\n  op18() {}\n  op19() {}\n  op20() {}\n  op21() {}\n  op22() {}\n  op23() {}\n  op24() {}\n  op25() {}\n  op26() {}\n}' },
       ],
     },
   },
@@ -277,6 +290,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Switch or type switch has many case clauses.',
     docs: 'switch-size',
     thresholds: [],
+    thresholdRationale: 'Go analyzer: 5 flagged idiomatic dispatch switches (HTTP status / command maps). 8 cases suggests a table-driven lookup. Hardcoded in the Go analyzer (not a TS config key).',
     samples: {
       valid: [
         {
@@ -285,7 +299,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         },
       ],
       invalid: [
-        { code: 'package main\n\nfunc dispatch(x int) int {\n\tswitch x {\n\tcase 1:\n\t\treturn 1\n\tcase 2:\n\t\treturn 2\n\tcase 3:\n\t\treturn 3\n\tcase 4:\n\t\treturn 4\n\tcase 5:\n\t\treturn 5\n\tcase 6:\n\t\treturn 6\n\tcase 7:\n\t\treturn 7\n\t}\n\treturn 0\n}' },
+        { code: 'package main\n\nfunc dispatch(x int) int {\n\tswitch x {\n\tcase 1:\n\t\treturn 1\n\tcase 2:\n\t\treturn 2\n\tcase 3:\n\t\treturn 3\n\tcase 4:\n\t\treturn 4\n\tcase 5:\n\t\treturn 5\n\tcase 6:\n\t\treturn 6\n\tcase 7:\n\t\treturn 7\n\tcase 8:\n\t\treturn 8\n\tcase 9:\n\t\treturn 9\n\t}\n\treturn 0\n}' },
       ],
     },
   },
@@ -297,6 +311,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Function has many parameters, multiple returns, and high complexity.',
     docs: 'function-size',
     thresholds: [],
+    thresholdRationale: 'Go analyzer: AND-combined (complexity > 20 && returns > 2 && params > 6) — a function large in every dimension. Complexity raised 10→20 and params 5→6 to align with the TS ceilings while staying conservative (all three must exceed).',
     samples: {
       valid: [
         {
@@ -305,7 +320,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         },
       ],
       invalid: [
-        { code: 'package main\n\nfunc doEverything(a int, b int, c int, d int, e int, f int) (int, string, bool) {\n\tx := 0\n\tif a > 0 { x++ }\n\tif b > 0 { x++ }\n\tif c > 0 { x++ }\n\tif d > 0 { x++ }\n\tif e > 0 { x++ }\n\tif f > 0 { x++ }\n\tif a > 1 { x++ }\n\tif b > 1 { x++ }\n\tif c > 1 { x++ }\n\tif d > 1 { x++ }\n\tif e > 1 { x++ }\n\treturn x, "ok", true\n}' },
+        { code: 'package main\n\nfunc doEverything(a int, b int, c int, d int, e int, f int, g int) (int, string, bool) {\n\tx := 0\n\tif b > 1 { x++ }\n\tif c > 2 { x++ }\n\tif d > 3 { x++ }\n\tif e > 4 { x++ }\n\tif f > 5 { x++ }\n\tif g > 6 { x++ }\n\tif a > 7 { x++ }\n\tif b > 8 { x++ }\n\tif c > 9 { x++ }\n\tif d > 10 { x++ }\n\tif e > 11 { x++ }\n\tif f > 12 { x++ }\n\tif g > 13 { x++ }\n\tif a > 14 { x++ }\n\tif b > 15 { x++ }\n\tif c > 16 { x++ }\n\tif d > 17 { x++ }\n\tif e > 18 { x++ }\n\tif f > 19 { x++ }\n\tif g > 20 { x++ }\n\treturn x, "ok", true\n}' },
       ],
     },
   },
@@ -317,6 +332,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Struct has many fields.',
     docs: 'struct-size',
     thresholds: [],
+    thresholdRationale: 'Go analyzer: 10 flagged ordinary config/model structs; 15 fields is a god-struct. Hardcoded in the Go analyzer (not a TS config key).',
     samples: {
       valid: [
         {
@@ -325,7 +341,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         },
       ],
       invalid: [
-        { code: 'package main\n\ntype Everything struct {\n\tField1  string\n\tField2  string\n\tField3  string\n\tField4  int\n\tField5  int\n\tField6  int\n\tField7  string\n\tField8  string\n\tField9  int\n\tField10 string\n\tField11 string\n}' },
+        { code: 'package main\n\ntype Everything struct {\n\tField1  string\n\tField2  string\n\tField3  string\n\tField4  int\n\tField5  int\n\tField6  int\n\tField7  string\n\tField8  string\n\tField9  int\n\tField10 string\n\tField11 string\n\tField12 int\n\tField13 int\n\tField14 string\n\tField15 string\n\tField16 int\n}' },
       ],
     },
   },
@@ -1139,7 +1155,8 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     resolvable: false,
     message: 'React component "{name}" has complexity {complexity}, exceeding the maximum.',
     docs: 'complexity',
-    thresholds: [],
+    thresholds: ['maxComponentComplexity'],
+    thresholdRationale: '10 flagged ordinary components with a few conditionals (66 findings on recall-protocol). ESLint\'s own `complexity` default is 20; a component with 20 branches is genuinely complex.',
     samples: {
       valid: [
         { code: 'function Simple({ x }) {\n  return <div>{x}</div>;\n}', nearMiss: true },
@@ -1528,6 +1545,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Tight coupling detected between {a} and {b}.',
     docs: 'tight-coupling',
     thresholds: [],
+    thresholdRationale: 'Cohesion (internal edges / incident edges) > 0.7 — 70% of a cluster\'s edges staying internal is genuinely tight. A density ratio, not a "size" number; fires once per corpus. Kept at 0.7.',
     samples: {
       valid: [
         { code: 'import { one } from "./m";', nearMiss: true },

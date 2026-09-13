@@ -2,11 +2,11 @@
  * Composite class-structure fixture — a class hierarchy that stacks several
  * historically-interacting SOLID / DRY constructs in one file:
  *
- *  1. a god class (16 methods) — `solid/class-size`
+ *  1. a god class (21 methods) — `solid/class-size`
  *  2. a subclass overriding a parent method to throw — `solid/liskov-substitution`
  *  3. `instanceof` against a user-defined type inside a class method — `solid/open-closed`
  *  4. a concrete dependency held by construction — `solid/dependency-inversion`
- *  5. a function with five parameters — `parameter-count`
+ *  5. a function with seven parameters — `parameter-count`
  *
  * Every public member carries a JSDoc comment so the documentation analyzer
  * (a non-target here) stays silent and the declared finding set is exactly the
@@ -69,18 +69,20 @@ export class AreaCalculator {
   }
 }
 
-/** 6. Five parameters — should be an options object. */
+/** 6. Seven parameters — should be an options object. */
 export function configure(
   host: string,
   port: number,
   user: string,
   pass: string,
   retries: number,
+  timeout: number,
+  tls: boolean,
 ): void {
-  void host; void port; void user; void pass; void retries;
+  void host; void port; void user; void pass; void retries; void timeout; void tls;
 }
 
-/** 1. A god class — sixteen methods exceed the class-size threshold. */
+/** 1. A god class — twenty-one methods exceed the class-size threshold. */
 export class LegacyFacade {
   /** Returns 1. */
   m01(): number { return 1; }
@@ -114,4 +116,14 @@ export class LegacyFacade {
   m15(): number { return 15; }
   /** Returns 16. */
   m16(): number { return 16; }
+  /** Returns 17. */
+  m17(): number { return 17; }
+  /** Returns 18. */
+  m18(): number { return 18; }
+  /** Returns 19. */
+  m19(): number { return 19; }
+  /** Returns 20. */
+  m20(): number { return 20; }
+  /** Returns 21. */
+  m21(): number { return 21; }
 }
