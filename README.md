@@ -142,9 +142,9 @@ The `<fingerprint>` comes from the JSON report (every violation carries a `finge
 
 ## Anonymous dismissal feedback (opt-in)
 
-The reason an agent gives for dismissing a finding is the most useful signal for improving the rules. Code Auditor can send dismissed findings to an optional feedback service that reports "most-dismissed rules + reasons" back to the operator.
+The reason an agent gives for dismissing a finding is the most useful signal for improving the rules. Code Auditor can send dismissed findings to an anonymous feedback service that collects them.
 
-It is **off by default** and turned on only by an explicit opt-in — the `telemetry` MCP tool (`status` / `enable` / `disable`), which records the choice in your user config dir. Opting in generates an **anonymous install ID**: a random value generated locally, never derived from your machine, user, or project, used only to group submissions by source.
+It is **off by default** and turned on only by an explicit opt-in — the `telemetry` MCP tool (`status` / `enable` / `disable`), which records the choice in your user config dir. `enable` needs no arguments: it opts in against the built-in service endpoint (overridable for self-hosting). Opting in generates an **anonymous install ID**: a random value generated locally, never derived from your machine, user, or project, used only to group submissions by source.
 
 **What is sent** — the reason (verbatim) plus a structural AST signature (grammar kinds only, built from a node's `type` — never its text) and a coarse language hint. **What is never sent** — source code, identifiers, literals, file paths, or anything derived from your code or environment. Sending is best-effort: offline or an unreachable endpoint is silent and never blocks an edit or fails a gate.
 

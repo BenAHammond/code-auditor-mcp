@@ -20,6 +20,21 @@ import { getUserConfigRoot } from './dataPaths.js';
 export const PRIVACY_MESSAGE =
   'Data is anonymous, and the ID is generated locally to avoid tracking anything personal.';
 
+/**
+ * The default ingest endpoint (the operator's service). Shipped so opt-in is a
+ * one-step toggle with a known destination; overridable at enable time and via
+ * the CLI `--telemetry-endpoint` flag. It is a default, not a contract — a
+ * domain can be pointed at the service later by changing this one value.
+ */
+export const DEFAULT_TELEMETRY_ENDPOINT =
+  'https://code-auditor-dismissals.ben-a-hammond.workers.dev/ingest';
+
+/** Resolve the effective endpoint: an explicit non-blank value wins, else the shipped default. */
+export function resolveTelemetryEndpoint(input?: string): string {
+  const trimmed = (input ?? '').trim();
+  return trimmed || DEFAULT_TELEMETRY_ENDPOINT;
+}
+
 const INSTALL_ID_FILENAME = 'install-id';
 const TELEMETRY_FILENAME = 'telemetry.json';
 

@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   PRIVACY_MESSAGE,
+  DEFAULT_TELEMETRY_ENDPOINT,
+  resolveTelemetryEndpoint,
   getInstallId,
   getTelemetryOptIn,
   setTelemetryOptIn,
@@ -78,5 +80,17 @@ describe('PRIVACY_MESSAGE', () => {
   it('states the data is anonymous and the ID is generated locally', () => {
     expect(PRIVACY_MESSAGE).toContain('anonymous');
     expect(PRIVACY_MESSAGE).toContain('generated locally');
+  });
+});
+
+describe('DEFAULT_TELEMETRY_ENDPOINT', () => {
+  it('positive — ships a concrete ingest endpoint so opt-in is a one-step toggle', () => {
+    expect(DEFAULT_TELEMETRY_ENDPOINT).toMatch(/^https:\/\/.+\/ingest$/);
+  });
+
+  it('positive — resolveTelemetryEndpoint defaults to it, but an explicit value wins', () => {
+    expect(resolveTelemetryEndpoint()).toBe(DEFAULT_TELEMETRY_ENDPOINT);
+    expect(resolveTelemetryEndpoint('   ')).toBe(DEFAULT_TELEMETRY_ENDPOINT);
+    expect(resolveTelemetryEndpoint('http://localhost:8787/ingest')).toBe('http://localhost:8787/ingest');
   });
 });

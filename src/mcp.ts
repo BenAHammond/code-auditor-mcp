@@ -71,7 +71,7 @@ import { searchFunctions, findDefinition, syncFileIndex, getDatabase } from './c
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
-import { getInstallId, getTelemetryOptIn, setTelemetryOptIn, PRIVACY_MESSAGE } from './installConfig.js';
+import { getInstallId, getTelemetryOptIn, setTelemetryOptIn, PRIVACY_MESSAGE, resolveTelemetryEndpoint } from './installConfig.js';
 import { MCP_DEFAULT_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
@@ -1356,18 +1356,17 @@ function registerAllTools(registry: ToolRegistry): void {
       },
       {
         name: 'enable',
-        description: 'Opt in to anonymous dismissal feedback. Requires the service endpoint URL. Generates the anonymous install ID on first use.',
+        description: 'Opt in to anonymous dismissal feedback. Defaults to the built-in service endpoint. Generates the anonymous install ID on first use.',
         parameters: [
           {
             name: 'endpoint',
             type: 'string',
-            required: true,
-            description: 'Feedback service ingest URL (e.g. https://<worker>.workers.dev/ingest).',
+            required: false,
+            description: 'Optional ingest URL. Defaults to the built-in service endpoint.',
           },
         ],
         handler: async (args) => {
-          const endpoint = ((args.endpoint as string) ?? '').trim();
-          if (!endpoint) throw new Error('endpoint is required to enable telemetry');
+          const endpoint = resolveTelemetryEndpoint(args.endpoint as string | undefined);
           setTelemetryOptIn({ enabled: true, endpoint });
           return {
             enabled: true,

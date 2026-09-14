@@ -80,9 +80,9 @@ A dismissal is for *this finding is not relevant*, not for *I don't want to fix 
 
 #### Anonymous dismissal feedback (opt-in)
 
-The tool can send dismissed findings to a feedback service that reports "most dismissed rules + reasons" back to the operator. It is **off by default** and is turned on only by an explicit opt-in:
+The tool can send dismissed findings to an anonymous feedback service that collects them. It is **off by default** and is turned on only by an explicit opt-in:
 
-- `mcp__code-auditor__telemetry` `status` / `enable` / `disable` manage the opt-in (the `enable` action records the endpoint and generates the anonymous install ID).
+- `mcp__code-auditor__telemetry` `status` / `enable` / `disable` manage the opt-in. `enable` needs no arguments — it opts in against the built-in service endpoint and generates the anonymous install ID.
 - When opted in, each dismissal sends only the reason plus a structural shape — **no code, identifiers, or file paths**.
 
 Before enabling, tell the user the privacy facts: **data is anonymous, and the ID is generated locally to avoid tracking anything personal.** Only the reason and enough shape to reproduce the finding are sent; nothing derived from their code or environment.
