@@ -1509,7 +1509,7 @@ export class CodeIndexDB {
     } as EnhancedFunctionMetadata;
   }
 
-  private functionToRow(func: FunctionMetadata | EnhancedFunctionMetadata): Record<string, any> {
+  private functionToRow(func: FunctionMetadata | EnhancedFunctionMetadata, lastModified?: string): Record<string, any> {
     const enhanced = func as EnhancedFunctionMetadata;
     const jsDoc = (func as any).jsDoc;
     return {
@@ -1541,7 +1541,7 @@ export class CodeIndexDB {
       context: func.context ?? '',
       body: (func as any).body ?? (func.metadata as any)?.body ?? null,
       content_hash: enhanced.content_hash ?? computeContentHash((func as any).body ?? (func.metadata as any)?.body, enhanced.signature),
-      last_modified: new Date().toISOString(),
+      last_modified: lastModified ?? new Date().toISOString(),
       metadata_json: func.metadata ? JSON.stringify(func.metadata) : '{}',
     };
   }
@@ -1627,7 +1627,8 @@ export class CodeIndexDB {
   private syncFileIndexRow(
     filePath: string,
     currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[],
-    stats: { added: number; updated: number; removed: number }
+    stats: { added: number; updated: number; removed: number },
+    lastModified?: string
   ): void {
     const existing = this.db.prepare(
       'SELECT id, name, file_path, line_number FROM functions WHERE file_path = ?'
@@ -1640,14 +1641,14 @@ export class CodeIndexDB {
     for (const func of currentFunctions) {
       const exists = existing.find(e => e.name === func.name && e.line_number === func.lineNumber);
       if (exists) {
-        const row = this.functionToRow(func);
+        const row = this.functionToRow(func, lastModified);
         const keys = Object.keys(row);
         const sets = keys.filter(k => k !== 'name' && k !== 'file_path').map(k => `"${k}" = @${k}`);
         const params = { ...row, _id: exists.id };
         this.db.prepare(`UPDATE functions SET ${sets.join(', ')} WHERE id = @_id`).run(params);
         stats.updated++;
       } else {
-        const row = this.functionToRow(func);
+        const row = this.functionToRow(func, lastModified);
         const keys = Object.keys(row);
         const sql = `INSERT INTO functions ("${keys.join('", "')}") VALUES (${keys.map(k => '@' + k).join(', ')})`;
         this.db.prepare(sql).run(row);
@@ -1672,7 +1673,18 @@ export class CodeIndexDB {
     this.ensureInitialized();
     const stats = { added: 0, updated: 0, removed: 0 };
 
-    this.db.transaction(() => this.syncFileIndexRow(filePath, currentFunctions, stats)).immediate();
+    // Record the file's actual mtime (not wall clock) so detectModifiedFiles can
+    // compare like-for-like: an unchanged file's mtime round-trips to an identical
+    // ISO string and never reads as "newer".
+    let lastModified: string | undefined;
+    try {
+      lastModified = (await fs.stat(filePath)).mtime.toISOString();
+    } catch {
+      // stat failed — fall back to wall clock; detectModifiedFiles will then treat
+      // an unreadable file as modified, which is the safe direction.
+    }
+
+    this.db.transaction(() => this.syncFileIndexRow(filePath, currentFunctions, stats, lastModified)).immediate();
     await this.updateDependencyGraph(filePath);
     return stats;
   }
@@ -1691,9 +1703,22 @@ export class CodeIndexDB {
     this.ensureInitialized();
     const stats = { added: 0, updated: 0, removed: 0 };
 
+    // Stat every file once (in parallel) so each row stores that file's real mtime,
+    // not wall clock — the same baseline detectModifiedFiles compares against.
+    const mtimes = new Map<string, string | undefined>();
+    await Promise.all(
+      entries.map(async ({ filePath }) => {
+        try {
+          mtimes.set(filePath, (await fs.stat(filePath)).mtime.toISOString());
+        } catch {
+          mtimes.set(filePath, undefined);
+        }
+      })
+    );
+
     this.db.transaction(() => {
       for (const { filePath, currentFunctions } of entries) {
-        this.syncFileIndexRow(filePath, currentFunctions, stats);
+        this.syncFileIndexRow(filePath, currentFunctions, stats, mtimes.get(filePath));
       }
     }).immediate();
     await this.updateDependencyGraph();

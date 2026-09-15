@@ -14,15 +14,13 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import chalk from 'chalk';
+import { PACKAGE_VERSION } from './constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Source: the repo's skill folder (shipped in the npm package at dist/../plugin/skills/code-auditor)
 const SKILL_SOURCE = join(__dirname, '..', 'plugin', 'skills', 'code-auditor');
-
-// Version recorded in the copied skill folder for idempotent updates
-const PACKAGE_JSON_PATH = join(__dirname, '..', 'package.json');
 
 interface AgentInfo {
   name: string;
@@ -152,7 +150,7 @@ export async function runInstall(options: InstallOptions): Promise<void> {
  * Print the support matrix (--list).
  */
 async function printMatrix(): Promise<void> {
-  const packageVersion = await getPackageVersion();
+  const packageVersion = PACKAGE_VERSION;
   console.log(chalk.blue('\ncode-audit install — Support Matrix'));
   console.log(chalk.gray(`Version: ${packageVersion}`));
   console.log(chalk.gray(`Source: ${SKILL_SOURCE}`));
@@ -403,16 +401,4 @@ function deepMerge(a: any, b: any): any {
     result[key] = deepMerge(a[key], b[key]);
   }
   return result;
-}
-
-/**
- * Get the package version from package.json.
- */
-async function getPackageVersion(): Promise<string> {
-  try {
-    const raw = await fs.readFile(PACKAGE_JSON_PATH, 'utf-8');
-    return JSON.parse(raw).version || 'unknown';
-  } catch {
-    return 'unknown';
-  }
 }

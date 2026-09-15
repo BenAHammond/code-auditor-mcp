@@ -11,11 +11,10 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { createAuditRunner } from './auditRunner.js';
 import { runAuditDispatch } from './auditRouter.js';
-import { readFileSync } from 'fs';
 import { promises as fs } from 'fs';
 import { createInterface } from 'readline';
-import { fileURLToPath } from 'url';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
+import { PACKAGE_VERSION } from './constants.js';
 import inquirer from 'inquirer';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { initParsers } from './languages/index.js';
@@ -34,13 +33,6 @@ import { BLOCKING_SEVERITIES } from './types.js';
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 import { describeSqliteBackend } from './sqlite/driver.js';
-
-// Get package.json for version info
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const packageJson = JSON.parse(
-  readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')
-);
 
 const program = new Command();
 
@@ -106,7 +98,7 @@ function printFileAccounting(result: any, explainSkipped: boolean): void {
 program
   .name('code-auditor')
   .description('TypeScript/JavaScript code quality auditor with AI tool integration')
-  .version(`${packageJson.version} (sqlite: ${describeSqliteBackend()})`);
+  .version(`${PACKAGE_VERSION} (sqlite: ${describeSqliteBackend()})`);
 
 // Legacy audit command (default behavior)
 program
@@ -1052,7 +1044,7 @@ program
 
       // Create new baseline
       const newBaseline = createBaselineFromFindings(allViolations, {
-        toolVersion: packageJson.version,
+        toolVersion: PACKAGE_VERSION,
         totalFindings: allViolations.filter((v) => v.analyzer !== 'invariants').length,
         analyzerCounts,
         corpusStats,
@@ -1130,7 +1122,7 @@ program
         process.exit(1);
       }
 
-      const entry = buildDismissalEntry(match, reason, packageJson.version);
+      const entry = buildDismissalEntry(match, reason, PACKAGE_VERSION);
       const dismissals = upsertDismissal(projectRoot, entry);
 
       // Spec 57 — opt-in telemetry. Nothing is sent unless the user opted in via
@@ -1146,7 +1138,7 @@ program
         ) ?? 'unknown';
         const payload = buildTelemetryPayload({
           install_id: getInstallId(),
-          toolVersion: packageJson.version,
+          toolVersion: PACKAGE_VERSION,
           rule: entry.rule,
           level: match.severity,
           reason: entry.reason,

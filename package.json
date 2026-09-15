@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "3.9.9",
+  "version": "3.9.10",
   "description": "Architectural invariants and code quality analysis, enforced inside your AI agent's edit loop. MCP server + CLI + Claude Code plugin. TypeScript, JavaScript, Go.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,7 +12,8 @@
     "code-auditor-daemon": "dist/daemon/main.js"
   },
   "scripts": {
-    "build": "tsc && pnpm run build:go && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
+    "build": "pnpm run build:version && tsc && pnpm run build:go && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
+    "build:version": "node scripts/write-version.mjs",
     "download:natives": "bash scripts/download-natives.sh",
     "build:grammars": "mkdir -p dist/grammars && cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-javascript/tree-sitter-javascript.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm node_modules/tree-sitter-css/tree-sitter-css.wasm grammars/tree-sitter-scss.wasm dist/grammars/",
     "build:skills": "node scripts/build-skills.mjs",

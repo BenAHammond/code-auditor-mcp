@@ -4,9 +4,7 @@
  */
 
 import { promises as fs } from 'fs';
-import { readFileSync } from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { randomUUID } from 'node:crypto';
 import {
@@ -78,10 +76,10 @@ import {
 import type { DryVisitorBundle, ReactVisitorBundle } from './pipelineAdapters.js';
 import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer } from './types.js';
 
-// Package version — read once at module load
-const __auditRunnerDirname = path.dirname(fileURLToPath(import.meta.url));
-const _pkg = JSON.parse(readFileSync(path.join(__auditRunnerDirname, '..', 'package.json'), 'utf-8'));
-const TOOL_VERSION = String(_pkg.version || '0.0.0');
+// Package version — stamped into the build (see constants.ts), not read from
+// package.json at runtime, so a stale binary reports the version it was built as.
+import { PACKAGE_VERSION } from './constants.js';
+const TOOL_VERSION = PACKAGE_VERSION;
 
 // Initialize the canonical language system once
 initializeLanguages();

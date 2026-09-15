@@ -211,6 +211,30 @@ describe('Hook script (hook-audit.sh)', () => {
   });
 });
 
+describe('Hook compatibility pin (hook-common.sh)', () => {
+  const content = readFileSync(
+    resolve(PLUGIN_DIR, 'scripts', 'hook-common.sh'),
+    'utf-8',
+  );
+
+  it('compares semvers, not the full --version banner', () => {
+    // The `--version` output carries a "(sqlite: …)" suffix, so the pin must
+    // extract a bare semver before comparing against the manifest version.
+    expect(content).toContain('semver_of');
+    expect(content).toContain('[0-9]+\\.[0-9]+\\.[0-9]+');
+  });
+
+  it('fails loudly when a version cannot be determined (never trusts an unidentified binary)', () => {
+    expect(content).toContain('cannot verify CLI version');
+    expect(content).toContain('refusing to run an unidentified binary');
+  });
+
+  it('names both versions on a mismatch', () => {
+    expect(content).toContain('version mismatch: plugin');
+    expect(content).toContain('vs CLI');
+  });
+});
+
 describe('Skill file (SKILL.md)', () => {
   const content = readFileSync(
     resolve(PLUGIN_DIR, 'skills', 'code-auditor', 'SKILL.md'),

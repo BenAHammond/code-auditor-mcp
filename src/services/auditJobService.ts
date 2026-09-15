@@ -11,9 +11,6 @@
  * resolve the per-project DB via `CodeIndexDB.getInstance(undefined, projectRoot)`.
  */
 
-import path from 'node:path';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import type { SqliteDatabase } from '../sqlite/types.js';
 import {
   createLedgerRun,
@@ -58,10 +55,10 @@ export interface CreateAuditJobMeta {
   command?: string;
 }
 
-// Package version — read once at module load (mirrors auditRunner.ts).
-const __svcDirname = path.dirname(fileURLToPath(import.meta.url));
-const _pkg = JSON.parse(readFileSync(path.join(__svcDirname, '..', '..', 'package.json'), 'utf-8'));
-const TOOL_VERSION = String(_pkg.version || '0.0.0');
+// Package version — stamped into the build (see constants.ts), not read from
+// package.json at runtime, so a stale binary reports the version it was built as.
+import { PACKAGE_VERSION } from '../constants.js';
+const TOOL_VERSION = PACKAGE_VERSION;
 
 function toAuditJobRecord(detail: LedgerRunDetail): AuditJobRecord {
   let progress: AuditJobProgress | undefined;

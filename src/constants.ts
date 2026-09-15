@@ -2,16 +2,17 @@
  * Global constants for the code-auditor MCP server
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { VERSION } from './version.generated.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-/** Package version from package.json (works from src via tsx and from dist). */
-export const PACKAGE_VERSION = JSON.parse(
-  readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')
-).version as string;
+/**
+ * Package version, stamped into the build by `scripts/write-version.mjs`.
+ *
+ * This is a compile-time literal, not a runtime `package.json` read. A stale
+ * binary therefore reports the version it was actually built as — not the
+ * version of whatever package.json sits next to it on disk (the defect where a
+ * pre-3.9.4 binary announced itself as 3.9.9).
+ */
+export const PACKAGE_VERSION = VERSION;
 
 // Default port for the REST API server
 // Using 11437 to avoid conflicts with common development servers

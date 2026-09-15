@@ -2,6 +2,39 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.10] — 2026-09-15
+
+### The version a binary reports is now stamped at build time
+
+`code-audit --version` (and every `toolVersion` in a report) read `package.json`
+at runtime, so a stale build announced the source tree's version — a binary
+running pre-3.9.4 analyzer code reported 3.9.9 and produced findings that looked
+like eight rules reverting at once. The version is now a compile-time literal:
+`scripts/write-version.mjs` stamps `package.json`'s version into
+`src/version.generated.ts`, and the CLI, MCP server, audit runner, job service,
+and installer read that. A stale binary now reports the version it actually is.
+A new `version.spec.ts` fails the suite if a version bump is not rebuilt, so a
+"lying binary" cannot ship.
+
+### The plugin version pin actually fires
+
+`assert_compatible` compared the plugin's bare semver (`3.9.9`) against the CLI's
+full `--version` banner (`3.9.9 (sqlite: node-sqlite)`), so it could never match,
+and it returned 0 on an empty result — a guard that can only fail, failing open.
+That is why it never fired, and why it looked like it was working since 3.6.0.
+The pin now extracts the semver from `--version`, compares semver-vs-semver, and
+fails loudly (exit 1, naming both versions) on a mismatch or when either version
+cannot be determined. The plugin cache ships no bundled `dist/` (marketplace
+installs), so this pin is the guard for the global/PATH fallback.
+
+### Diff detection no longer flakes on unchanged files
+
+`detectModifiedFiles` compared a file's live mtime against a `last_modified`
+timestamp recorded as wall clock at index time rather than the file's mtime —
+an apples-to-oranges comparison that intermittently flagged an unchanged file as
+modified. Indexing now stores the file's actual mtime, so the stored baseline is
+the same value the check compares against and unchanged files round-trip cleanly.
+
 ## [3.9.9] — 2026-09-15
 
 ### Telemetry opt-in is a one-step toggle
