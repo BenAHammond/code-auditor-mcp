@@ -42,12 +42,27 @@ site — a live dependency might be missed, so `unreferenced-module` is not exha
 on that corpus. A *no-interpolation* template literal (`` import(`./x`) ``) is a
 compile-time constant and resolves to an edge just like a quoted string.
 
-Survey of other reference forms (each handled or a known, pre-existing separation):
-static `import`/`import_declaration` (Go) and `export {x} from './y'` barrel re-exports
-are already edges; JSX `<Component/>`, decorators, `new X()`, and type references are
-*entity*-level references feeding the entity dependency graph (`orphaned-nodes`, Martin
-metrics), not file-level import edges, so they do not and should not affect
-`unreferenced-module`. No new reference form is silently dropped.
+Survey of other reference forms — verified against `clCollectFileInfo` (file-level
+reachability, feeds `unreferenced-module`) and `clCollectFileReferences` (entity-level
+reference set, feeds `orphaned-nodes`). Each form is handled or recorded as a gap:
+
+- `require('./x')` — **handled**: `clDynamicImport` treats a static-string `require`
+  identically to `import()`; it records an import edge (computed → `unresolved-dynamic-import`).
+- Re-export chains (`export {x} from './y'`, `export * from './y'`) — **handled**:
+  `clCollectFileInfo` reads the `source` field of an `export_statement` as an import edge,
+  so a barrel re-export marks its target live rather than dead.
+- JSX usage (`<Component/>`) — **handled at the entity level**: `clCollectFileReferences`
+  collects `jsx_opening_element` / `jsx_self_closing_element` names as references, so a
+  component reached only through JSX is not orphaned. Correctly *not* a file-level edge —
+  JSX does not import; the component is in scope via a separate static import (already an
+  edge) or a same-file definition.
+- Decorators (`@Foo`, `@Component()`) — **known gap at the entity level**: a decorator
+  does not import, so it is correctly absent from file-level reachability, but it is also
+  not collected by `clCollectFileReferences`, so a symbol referenced *only* as a decorator
+  can be misreported as orphaned. Decorator *table* extraction (`@Entity('tbl')`) is handled
+  separately by the schema analyzer (`extractDecoratorTables`); the decorator-reference gap
+  in the entity set is recorded here rather than claimed closed. No new reference form is
+  silently dropped.
 
 ## [3.9.10] — 2026-09-15
 
