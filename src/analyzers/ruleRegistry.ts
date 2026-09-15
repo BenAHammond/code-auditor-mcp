@@ -1129,6 +1129,27 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
+  // Spec 58 R1 — DB-call SQL held in an unresolvable identifier (imported
+  // constant, computed/concatenated expression, call result). Reported rather
+  // than silently treated as "no tables", so read/written-never lifecycle
+  // rules don't over-claim on a file whose DB access is only partly visible.
+  'unresolved-query': {
+    analyzer: 'schema',
+    field: 'rule',
+    input: ['schema-code'],
+    resolvable: false,
+    message: 'Query SQL is held in an identifier ("{symbol}") that cannot be statically resolved — table read/write status is unknown.',
+    docs: 'unresolved-query',
+    thresholds: [],
+    samples: {
+      valid: [
+        { code: 'db.prepare("SELECT * FROM users")', nearMiss: true },
+      ],
+      invalid: [
+        { code: 'import { UPSERT_SQL } from "./queries";\ndb.prepare(UPSERT_SQL)' },
+      ],
+    },
+  },
 
   // ── react (reactAnalyzer) ───────────────────────────────────────────────
   'hooks-naming': {
@@ -1654,6 +1675,26 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
       invalid: [
         { code: '// file exports symbols but nothing imports it' },
+      ],
+    },
+  },
+  // Spec 58 R2 — a dynamic import()/require() with a computed (non-static)
+  // specifier. The target module is unresolvable, so unreferenced-module is
+  // not exhaustive; reported at the call site rather than silently dropped.
+  'unresolved-dynamic-import': {
+    analyzer: 'dependency-graph',
+    field: 'type',
+    input: ['cross-language-entities'],
+    resolvable: false,
+    message: 'Dynamic import/require has a computed specifier ({expression}) that cannot be resolved — its target module is unknown.',
+    docs: 'unresolved-dynamic-import',
+    thresholds: [],
+    samples: {
+      valid: [
+        { code: 'await import("./email")', nearMiss: true },
+      ],
+      invalid: [
+        { code: 'await import(someVariable)' },
       ],
     },
   },

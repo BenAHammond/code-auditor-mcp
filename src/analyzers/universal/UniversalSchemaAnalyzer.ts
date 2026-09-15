@@ -54,12 +54,14 @@ import type {
 import {
   findTableReferences,
   checkMissingReferences,
+  checkUnresolvedQueries,
   checkNamingConventions,
   checkQueryPatterns,
   checkSQLInjection,
   findClosestNodeAt,
   findEnclosingFunctionName,
 } from './schema/codeAnalysis.js';
+import type { UnresolvedQuery } from './schema/codeAnalysis.js';
 import {
   discoverTablesFromMigrations,
   discoverTablesFromWrangler,
@@ -169,7 +171,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     }
 
     // R2.1 — AST-based table reference extraction (replaces legacy regex scan-all-strings)
-    const tableRefs = findTableReferences(ast, adapter, sourceCode, { config: finalConfig, provenanceContext, allTables });
+    const { references: tableRefs, unresolved } = findTableReferences(ast, adapter, sourceCode, { config: finalConfig, provenanceContext, allTables });
 
     // Spec 15 R1 — Record schema usage for cross-domain lifecycle analysis.
     if (finalConfig.enableTableUsageTracking) {
@@ -182,6 +184,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       sourceCode,
       config: finalConfig,
       tableRefs,
+      unresolved,
       allTables,
     });
 
@@ -351,6 +354,7 @@ interface SchemaViolationContext {
   sourceCode: string;
   config: SchemaAnalyzerConfig;
   tableRefs: TableReference[];
+  unresolved: UnresolvedQuery[];
   allTables: Set<string>;
 }
 
@@ -358,11 +362,15 @@ function appendSchemaViolations(
   violations: Violation[],
   ctx: SchemaViolationContext,
 ): void {
-  const { ast, adapter, sourceCode, config, tableRefs, allTables } = ctx;
+  const { ast, adapter, sourceCode, config, tableRefs, unresolved, allTables } = ctx;
   // Check for missing table references — R2.4: Levenshtein suggestions
   if (config.checkMissingReferences) {
     violations.push(...withRuleTiming('unknown-table', () =>
       checkMissingReferences(tableRefs, allTables, ast.filePath)));
+  }
+  // Spec 58 R1 — report DB-call SQL held in an unresolvable identifier.
+  if (config.reportUnresolvedQueries !== false) {
+    violations.push(...checkUnresolvedQueries(unresolved, ast.filePath));
   }
   if (config.checkNamingConventions) {
     violations.push(...checkNamingConventions(tableRefs, ast.filePath));

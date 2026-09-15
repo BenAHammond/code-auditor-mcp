@@ -56,6 +56,7 @@ import {
   checkNamingConventions,
   checkQueryPatterns,
   checkSQLInjection,
+  checkUnresolvedQueries,
   getNearestTableSuggestions,
 } from './analyzers/universal/schema/codeAnalysis.js';
 import {
@@ -1345,6 +1346,55 @@ function clMakeFunction(
 interface ClFileInfo {
   imports: string[];
   hasExports: boolean;
+  /** Dynamic `import()`/`require()` calls whose specifier is computed (not a
+   *  static string) and therefore cannot be resolved into an import edge. */
+  unresolvedDynamicImports: Array<{ line: number; expression: string }>;
+}
+
+/**
+ * Detect a dynamic `import('…')`/`require('…')` call expression.
+ *
+ * Returns `{ specifier }` for a static-string argument (resolvable into an
+ * import edge), `{ computed, expression }` for a computed specifier
+ * (`import(someVariable)` — unresolvable, reported rather than silenced), or
+ * `null` when the call is not a dynamic import/require.
+ */
+function clDynamicImport(raw: any): { specifier: string } | { computed: boolean; expression: string } | null {
+  if (raw?.type !== 'call_expression') return null;
+  const fn = raw.firstChild;
+  const isImport = fn?.type === 'import';
+  const isRequire = fn?.type === 'identifier' && fn?.text === 'require';
+  if (!isImport && !isRequire) return null;
+
+  const args = raw.children?.find((c: any) => c.type === 'arguments');
+  const stringNode = args?.children?.find((c: any) => c.type === 'string');
+  if (stringNode && stringNode.text.length >= 2) {
+    return { specifier: stringNode.text.slice(1, -1) };
+  }
+
+  // A template literal with no `${…}` substitution is a compile-time constant,
+  // not a computed specifier — `import(\`@babel/plugin-syntax-jsx\`)` resolves
+  // to an edge just like `import('@babel/plugin-syntax-jsx')`. Only an
+  // interpolated template (`` import(`./${name}.js`) ``) is genuinely computed.
+  const templateNode = args?.children?.find(
+    (c: any) => c.type === 'template_string' || c.type === 'template_literal',
+  );
+  if (templateNode) {
+    const hasSubstitution = (templateNode.children ?? []).some(
+      (c: any) => c.type === 'template_substitution',
+    );
+    if (!hasSubstitution) {
+      const t = templateNode.text;
+      if (t.length >= 2 && t.startsWith('`') && t.endsWith('`')) {
+        return { specifier: t.slice(1, -1) };
+      }
+    }
+  }
+
+  // Computed specifier — the target module cannot be resolved statically.
+  const named = args?.namedChildren?.[0];
+  const expression = named?.text ?? (args?.text ?? '').replace(/^\(|\)$/g, '').trim();
+  return { computed: true, expression };
 }
 
 /**
@@ -1354,10 +1404,12 @@ interface ClFileInfo {
  * `import_declaration` (Go) records a dependency; an `export_statement`
  * (TS/JS) records that the file exposes symbols to importers. Go exports are
  * computed separately from the extracted entities (capitalized top-level
- * names), since Go has no `export` keyword.
+ * names), since Go has no `export` keyword. Dynamic `import()`/`require()`
+ * with a static string argument also record an import edge (Spec 58 R2).
  */
 function clCollectFileInfo(root: any, lang: string): ClFileInfo {
   const imports = new Set<string>();
+  const unresolvedDynamicImports: Array<{ line: number; expression: string }> = [];
   let hasExports = false;
   walkAST(root, (node) => {
     const raw = (node as any).raw as any;
@@ -1378,9 +1430,16 @@ function clCollectFileInfo(root: any, lang: string): ClFileInfo {
       // not dead. The `source` field is present only on the `from` form.
       const source = clRawField(raw, 'source');
       if (source?.text) imports.add(source.text.replace(/^['"]|['"]$/g, ''));
+    } else if (node.type === 'call_expression') {
+      const dyn = clDynamicImport(raw);
+      if (dyn && 'specifier' in dyn) {
+        imports.add(dyn.specifier);
+      } else if (dyn) {
+        unresolvedDynamicImports.push({ line: (raw?.startPosition?.row ?? 0) + 1, expression: dyn.expression });
+      }
     }
   });
-  return { imports: [...imports], hasExports };
+  return { imports: [...imports], hasExports, unresolvedDynamicImports };
 }
 
 // ── TS/JS extraction ─────────────────────────────────────────────────────────
@@ -1653,7 +1712,7 @@ export function createCrossLanguageEntityVisitor(): Stage2Visitor {
 
       return {
         violations: [],
-        facts: { [filePath]: { entities, imports: fileInfo.imports, hasExports } },
+        facts: { [filePath]: { entities, imports: fileInfo.imports, hasExports, unresolvedDynamicImports: fileInfo.unresolvedDynamicImports } },
       };
     },
     defaultConfig: {},
@@ -1679,13 +1738,17 @@ function clFlattenEntities(allFacts: Readonly<Record<string, unknown>>): CrossLa
 /** Extract per-file `{ imports, hasExports }` from the cross-language facts. */
 function clFileFacts(allFacts: Readonly<Record<string, unknown>>): Map<string, ClFileInfo> {
   const facts = allFacts['cross-language-entities'] as
-    | Record<string, { entities?: CrossLanguageEntity[]; imports?: string[]; hasExports?: boolean }>
+    | Record<string, { entities?: CrossLanguageEntity[]; imports?: string[]; hasExports?: boolean; unresolvedDynamicImports?: Array<{ line: number; expression: string }> }>
     | undefined;
   const map = new Map<string, ClFileInfo>();
   if (!facts) return map;
   for (const [filePath, data] of Object.entries(facts)) {
     if (!data) continue;
-    map.set(filePath, { imports: data.imports ?? [], hasExports: data.hasExports ?? false });
+    map.set(filePath, {
+      imports: data.imports ?? [],
+      hasExports: data.hasExports ?? false,
+      unresolvedDynamicImports: data.unresolvedDynamicImports ?? [],
+    });
   }
   return map;
 }
@@ -2029,6 +2092,26 @@ export function createDependencyGraphReducer(): Stage4Reducer {
               details: { imports: info.imports },
             } as Violation);
           }
+
+          // Spec 58 R2 — computed-specifier dynamic imports. `import(someVar)`
+          // cannot be resolved into an edge, so any module in this corpus could
+          // be its target and `unreferenced-module` is therefore not exhaustive.
+          // Reported (not silenced, not confidently resolved) at the call site.
+          for (const [fp, info] of fileFacts) {
+            for (const dyn of info.unresolvedDynamicImports) {
+              violations.push({
+                file: fp,
+                line: dyn.line,
+                severity: 'high',
+                message: `Dynamic import/require has a computed specifier (${dyn.expression || '…'}) that cannot be resolved — its target module is unknown, so unreferenced-module may miss a live dependency.`,
+                rule: 'unresolved-dynamic-import',
+                type: 'unresolved-dynamic-import',
+                analyzer: 'dependency-graph',
+                category: 'cross-language-dependency',
+                details: { expression: dyn.expression },
+              } as Violation);
+            }
+          }
         }
 
         const HEALTH_SEVERITY: Record<string, Violation['severity']> = {
@@ -2302,7 +2385,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       }
 
       // Find table references (per-file, uses allTables for short-id false-positive filtering)
-      const tableRefs = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, { config: schemaConfig, provenanceContext, allTables });
+      const { references: tableRefs, unresolved } = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, { config: schemaConfig, provenanceContext, allTables });
 
       // Record schema usage → emit as indexFacts via the shared instance
       a.recordTableUsage(ast as AST, adapter as LanguageAdapter, context.filePath, tableRefs);
@@ -2332,6 +2415,11 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       // Check naming conventions
       if (schemaConfig.checkNamingConventions !== false) {
         violations.push(...checkNamingConventions(tableRefs, context.filePath));
+      }
+
+      // Spec 58 R1 — report DB-call SQL held in an unresolvable identifier.
+      if (schemaConfig.reportUnresolvedQueries !== false) {
+        violations.push(...checkUnresolvedQueries(unresolved, context.filePath));
       }
 
       // Check query patterns

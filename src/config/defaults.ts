@@ -250,6 +250,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     checkNamingConventions: true,
     detectUnusedTables: false,
     validateQueryPatterns: true,
+    reportUnresolvedQueries: true,
     maxQueriesPerFunction: 1,      // Spec 11 R3 sweep: 5 → 1 (precision-first)
     requiredSchemas: [],
     sqlTagNames: ['sql', 'db'],

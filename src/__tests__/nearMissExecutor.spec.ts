@@ -220,6 +220,7 @@ const RUNNERS: Record<string, Runner> = {
   'dynamic-sql-construction': runSchemaCode,
   'table-naming-convention': runSchemaCode,
   'unknown-table': runSchemaCode,
+  'unresolved-query': runSchemaCode,
   // react — the per-component near-misses that are a complete component, plus
   // `accessibility` whose bare-JSX near-miss is wrapped into one.
   complexity: runReactComponent,

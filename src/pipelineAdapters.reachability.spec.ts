@@ -169,6 +169,26 @@ describe('createDependencyGraphReducer — orphan + reachability', () => {
     expect(files).not.toContain(`${abs}/util.ts`); // imported via './util'
   });
 
+  it('emits unresolved-dynamic-import for a computed specifier (Spec 58 R2)', async () => {
+    const facts = {
+      'cross-language-entities': {
+        'src/plugin.ts': {
+          entities: [entity('p1', 'load', 'src/plugin.ts', 3)],
+          imports: [],
+          hasExports: false,
+          unresolvedDynamicImports: [{ line: 12, expression: 'specifier' }],
+        },
+      },
+    };
+
+    const result = await run(facts);
+    const unresolved = result.violations.filter((v) => v.type === 'unresolved-dynamic-import');
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0].file).toBe('src/plugin.ts');
+    expect(unresolved[0].line).toBe(12);
+    expect(unresolved[0].severity).toBe('high');
+  });
+
   it('persists reachability to graph_cache', async () => {
     const facts = {
       'cross-language-entities': {

@@ -13,7 +13,7 @@ import type { Violation } from '../../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../../languages/types.js';
 import { isDBProvenanced, DB_CALL_METHODS, type ProvenanceContext } from '../../provenance.js';
 import { OrmAdapterRegistry } from '../../orm/index.js';
-import { SQL_TAG_NAMES, DB_CALL_METHOD_NAMES, DB_RECEIVER_NAMES, DEFAULT_SCHEMA_CONFIG } from './config.js';
+import { SQL_TAG_NAMES, DB_CALL_METHOD_NAMES, DB_RECEIVER_NAMES, SQL_CARRYING_METHOD_NAMES, DEFAULT_SCHEMA_CONFIG } from './config.js';
 import type { SchemaAnalyzerConfig, TableReference } from './types.js';
 import { createSchemaViolation } from './violations.js';
 import { isTestOrSpecPath } from '../../../languages/testConventions.js';
@@ -26,6 +26,28 @@ export interface FindTableReferencesContext {
   config: SchemaAnalyzerConfig;
   provenanceContext?: ProvenanceContext;
   allTables?: Set<string>;
+}
+
+/**
+ * A DB-call whose SQL argument is held in an identifier we cannot statically
+ * resolve (imported constant, computed/concatenated expression, call result).
+ * The query's table read/write status is unknown — reported as an
+ * `unresolved-query` finding rather than silently treated as "no tables".
+ */
+export interface UnresolvedQuery {
+  /** The identifier text at the call site (e.g. `UPSERT_SQL`). */
+  identifier: string;
+  /** The call-site location. */
+  location: { line: number; column: number };
+}
+
+/**
+ * Bundled result of `findTableReferences`: extracted table references plus any
+ * unresolvable DB-call SQL arguments encountered during extraction.
+ */
+export interface TableReferenceResult {
+  references: TableReference[];
+  unresolved: UnresolvedQuery[];
 }
 
 /**
@@ -45,14 +67,17 @@ export function findTableReferences(
   adapter: LanguageAdapter,
   sourceCode: string,
   ctx: FindTableReferencesContext,
-): TableReference[] {
+): TableReferenceResult {
   const references: TableReference[] = [];
+  const unresolved: UnresolvedQuery[] = [];
 
   // (1) Tagged template SQL — e.g. sql`SELECT * FROM heroes`
   references.push(...extractTaggedTemplateRefs(ast, adapter, sourceCode, ctx));
 
   // (2) DB-call patterns — e.g. db.exec("SELECT * FROM heroes")
-  references.push(...extractDbCallRefs(ast, adapter, sourceCode, ctx));
+  const dbRefs = extractDbCallRefs(ast, adapter, sourceCode, ctx);
+  references.push(...dbRefs.references);
+  unresolved.push(...dbRefs.unresolved);
 
   // (3) .sql files — scan the entire source (the whole file IS SQL).
   if (ast.filePath.endsWith('.sql')) {
@@ -63,7 +88,7 @@ export function findTableReferences(
   // (4) Spec 15 R2 — ORM-aware extraction (Drizzle + Prisma)
   references.push(...extractOrmRefs(ast, adapter, sourceCode));
 
-  return references;
+  return { references, unresolved };
 }
 
 /**
@@ -111,9 +136,10 @@ function extractDbCallRefs(
   adapter: LanguageAdapter,
   sourceCode: string,
   ctx: FindTableReferencesContext,
-): TableReference[] {
+): TableReferenceResult {
   const { config, provenanceContext, allTables } = ctx;
   const references: TableReference[] = [];
+  const unresolved: UnresolvedQuery[] = [];
 
   const dbCalls = adapter.findNodes(ast, {
     custom: (node: ASTNode) => {
@@ -132,13 +158,48 @@ function extractDbCallRefs(
   });
 
   for (const callNode of dbCalls) {
-    const firstArg = getFirstStringArgument(callNode, adapter, sourceCode);
-    if (!firstArg) continue;
+    // A string/template argument is always SQL text, for *every* DB-call method:
+    // node-sqlite3's `db.all(sql, cb)` / `db.run(sql, cb)` pass SQL as a literal
+    // just as D1's `db.prepare(sql)` does. Only the identifier-resolution path
+    // is method-gated — `batch`/`run`/`all`/`first` take a statements array or a
+    // bound-parameter object, so `db.batch(stmts)` (where `stmts` is an array)
+    // must not resolve `stmts` as SQL and emit a spurious `unresolved-query`.
+    const methodName = extractDbCallMethodName(callNode, adapter, sourceCode);
+    const resolveIdentifier =
+      methodName === null ||
+      (SQL_CARRYING_METHOD_NAMES as readonly string[]).includes(methodName);
+
     const location = getCallLocation(callNode);
-    references.push(...parseSqlTables(firstArg, location, sourceCode, allTables));
+    const resolved = resolveQuerySql(callNode, ast, adapter, sourceCode, resolveIdentifier);
+    if (resolved.sqlText !== null) {
+      references.push(...parseSqlTables(resolved.sqlText, location, sourceCode, allTables));
+    } else if (resolved.unresolved !== null) {
+      unresolved.push(resolved.unresolved);
+    }
   }
 
-  return references;
+  return { references, unresolved };
+}
+
+/**
+ * Extract the method name from a DB call's callee, returning the final
+ * identifier segment stripped of any chained call / type-argument text.
+ * Handles bare identifiers (`query(...)`) and member expressions, including
+ * chained ones (`db.prepare(sql).run()` → `run`, `env.DB.prepare(...)` →
+ * `prepare`). Returns null only when the callee text cannot be read.
+ */
+function extractDbCallMethodName(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const callee = getCallee(node, adapter, sourceCode);
+  if (!callee) return null;
+  const dotIdx = callee.lastIndexOf('.');
+  const segment = dotIdx === -1 ? callee : callee.substring(dotIdx + 1);
+  // Strip a chained argument list (`run(...)`) or generic type args (`all<Row>`).
+  const name = segment.replace(/[<(].*$/, '').trim();
+  return name.length > 0 ? name : null;
 }
 
 /**
@@ -845,6 +906,125 @@ export function getFirstStringArgument(
     }
   }
   return null;
+}
+
+/**
+ * Get the first identifier argument of a call expression, or null when the
+ * first argument is not a bare identifier (string/template literals, member
+ * expressions, etc. are excluded — those are handled by other paths).
+ *
+ * @param node The call_expression node.
+ * @param adapter The language adapter for the file's syntax.
+ * @returns The first identifier argument node, or null.
+ */
+export function getFirstIdentifierArgument(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  if (!node.children) return null;
+  for (const child of node.children) {
+    if (adapter.getNodeType(child) !== 'arguments') continue;
+    if (!child.children) return null;
+    for (const arg of child.children) {
+      if (adapter.getNodeType(arg) === 'identifier') return arg;
+    }
+  }
+  return null;
+}
+
+/**
+ * Strip surrounding quotes/backticks from a string/template literal's raw text.
+ * Returns null when the text is not a string literal (e.g. a call result or
+ * binary expression), which is how unresolvable SQL is distinguished.
+ */
+function unquoteLiteral(text: string): string | null {
+  const t = text.trim();
+  if (
+    (t.startsWith("'") && t.endsWith("'")) ||
+    (t.startsWith('"') && t.endsWith('"')) ||
+    (t.startsWith('`') && t.endsWith('`'))
+  ) {
+    return t.slice(1, -1);
+  }
+  return null;
+}
+
+/**
+ * Resolve the SQL text held by a DB call's first argument.
+ *
+ * Strategy: a direct string/template argument is used as-is. Otherwise, a bare
+ * identifier argument is resolved via the adapter's `resolveLocalConstant`
+ * capability — a same-module `const` bound to a string/template literal yields
+ * its SQL text (template substitutions are left in place; `parseSqlTables`
+ * resolves them). Anything else (imported constant, reassigned/concatenated
+ * expression, call result, parameter, unsupported language) is reported as
+ * `unresolved` so the query is not silently treated as table-free.
+ *
+ * @param callNode The DB call_expression node.
+ * @param ast The full AST (for local-constant scope traversal).
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param resolveIdentifier When false, skip identifier resolution entirely (the
+ *   call's first argument is not SQL — e.g. `db.batch(stmts)`).
+ * @returns The resolved SQL text, an unresolved-query record, or neither.
+ */
+function resolveQuerySql(
+  callNode: ASTNode,
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  resolveIdentifier = true,
+): { sqlText: string | null; unresolved: UnresolvedQuery | null } {
+  // Direct string/template argument — the common, fully-static path. This runs
+  // for every DB-call method (node-sqlite3 `db.all(sql)` / `db.run(sql)` pass
+  // SQL as a literal, not just `prepare`/`exec`).
+  const direct = getFirstStringArgument(callNode, adapter, sourceCode);
+  if (direct !== null) return { sqlText: direct, unresolved: null };
+
+  // Identifier resolution is method-gated by the caller: `batch`/`run`/`all`/
+  // `first` take statements/parameters, not SQL, so a bare identifier argument
+  // there is not SQL and must not be reported as unresolvable.
+  if (!resolveIdentifier) return { sqlText: null, unresolved: null };
+
+  // Bare identifier argument — resolve the local constant.
+  const identNode = getFirstIdentifierArgument(callNode, adapter);
+  if (!identNode) return { sqlText: null, unresolved: null };
+
+  const identifier = adapter.getNodeText(identNode, sourceCode).trim();
+  const location = getCallLocation(callNode);
+  if (!identifier) return { sqlText: null, unresolved: null };
+
+  if (!adapter.resolveLocalConstant) {
+    // Language has no constant-resolution capability (e.g. Go) — can't resolve.
+    return { sqlText: null, unresolved: { identifier, location } };
+  }
+
+  const resolved = adapter.resolveLocalConstant(identNode, ast, sourceCode);
+  if (!resolved || resolved.initText === '__imported_constant__') {
+    // Imported constant (initText sentinel) or unresolvable identifier.
+    return { sqlText: null, unresolved: { identifier, location } };
+  }
+
+  const sqlText = unquoteLiteral(resolved.initText);
+  if (sqlText === null) {
+    // initText is not a string literal — a call result, binary expr, or a
+    // chained identifier (`const B = A`). Cannot statically read the SQL.
+    return { sqlText: null, unresolved: { identifier, location } };
+  }
+
+  return { sqlText, unresolved: null };
+}
+
+/**
+ * Build `unresolved-query` violations for DB calls whose SQL argument could not
+ * be statically resolved. Reporting (rather than skipping) is what keeps the
+ * read/written-never lifecycle rules from silently over-claiming on a file
+ * whose DB access is only partly visible.
+ */
+export function checkUnresolvedQueries(unresolved: UnresolvedQuery[], filePath: string): Violation[] {
+  return unresolved.map((u) => createSchemaViolation(
+    filePath,
+    u.location,
+    `Query SQL is held in an identifier ('${u.identifier}') that cannot be statically resolved — its table read/write status is unknown, so cross-domain lifecycle rules (read-never-written, written-never-read) may be unreliable for this file.`,
+    { severity: 'high', rule: 'unresolved-query', symbol: u.identifier },
+  ));
 }
 
 /**

@@ -2,6 +2,53 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [Unreleased] — Spec 58
+
+### SQL assembled in a variable is no longer read as table-free
+
+The schema table extractor (`extractDbCallRefs`) used to read only a *direct*
+string/template-literal argument to a DB call, so `db.prepare(UPSERT_SQL)` — SQL
+held in a module-level `const` — contributed no table references and the table was
+misreported as read-never-written / written-never-read. The identifier now resolves
+via the adapter's `resolveLocalConstant` (same-module `const` bound to a
+string/template literal, template substitutions preserved). When it cannot resolve —
+imported constant, concatenated/ternary expression, call result, or a language with
+no constant-resolution capability — the query is reported as a new
+`schema-code::unresolved-query` finding (severity `high`) instead of being silently
+treated as absent. Reporting rather than skipping is what keeps the cross-domain
+lifecycle rules from over-claiming on a file whose DB access is only partly visible.
+
+The identifier-resolution path is method-gated: only SQL-carrying methods
+(`exec`/`prepare`/`query`/`raw`/`execute`) resolve a bare-identifier argument, because
+`batch`/`run`/`all`/`first` take a statements array or bound-parameter object — a bare
+identifier there is not SQL and must not be reported as unresolvable. A direct
+string/template literal is parsed for *every* method, since node-sqlite3's
+`db.all(sql)`/`db.run(sql)` pass SQL as a literal just as D1's `db.prepare(sql)` does.
+`reportUnresolvedQueries` defaults on and is configurable per-analyzer.
+
+### Dynamic `import()`/`require()` now contribute import edges
+
+`clCollectFileInfo` — the file-level reachability graph behind `unreferenced-module` —
+indexed only static `import`/`export … from` statements, so a module reached *only* by
+`await import('../lib/email')` looked dead. A dynamic `import('./x')` or
+`require('./x')` with a static string argument now records an import edge, so its
+target counts as live.
+
+Computed-specifier decision (recorded, not silenced): a bare variable
+(`import(someVar)`), an interpolated template (`` import(`./${name}.js`) ``), or a call
+(`import(path.join(...))`) cannot resolve into an edge. These are reported as a new
+`dependency-graph::unresolved-dynamic-import` finding (severity `high`) at the call
+site — a live dependency might be missed, so `unreferenced-module` is not exhaustive
+on that corpus. A *no-interpolation* template literal (`` import(`./x`) ``) is a
+compile-time constant and resolves to an edge just like a quoted string.
+
+Survey of other reference forms (each handled or a known, pre-existing separation):
+static `import`/`import_declaration` (Go) and `export {x} from './y'` barrel re-exports
+are already edges; JSX `<Component/>`, decorators, `new X()`, and type references are
+*entity*-level references feeding the entity dependency graph (`orphaned-nodes`, Martin
+metrics), not file-level import edges, so they do not and should not affect
+`unreferenced-module`. No new reference form is silently dropped.
+
 ## [3.9.10] — 2026-09-15
 
 ### The version a binary reports is now stamped at build time

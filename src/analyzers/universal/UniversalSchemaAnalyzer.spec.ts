@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../../languages/index.js';
 import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { extractTablesFromRegistry } from './schema/discovery.js';
-import { parseSqlTables, checkQueryPatterns } from './schema/codeAnalysis.js';
+import { parseSqlTables, checkQueryPatterns, findTableReferences, checkUnresolvedQueries } from './schema/codeAnalysis.js';
 import type { TableSourceEntry, TableProvenance } from './schema/types.js';
 import type { LanguageAdapter, AST } from '../../languages/types.js';
 
@@ -491,5 +491,65 @@ describe('checkQueryPatterns — ceiling fallback', () => {
     expect(violations).toHaveLength(1);
     expect(violations[0].message).toContain('exceeding the maximum of 5');
     expect(violations[0].message).not.toContain('undefined');
+  });
+});
+
+// ── Spec 58 R1 — SQL held in a variable ──────────────────────────────────────
+
+describe('findTableReferences — SQL assembled in a constant (Spec 58 R1)', () => {
+  async function refs(source: string) {
+    const ast = await parseSource(source);
+    return findTableReferences(ast, getAdapter(), source, { config: {} });
+  }
+
+  it('resolves a module-level template-literal constant at a DB call site', async () => {
+    const source = [
+      'const UPSERT_SQL = `INSERT INTO metrics (hour_key, a) VALUES (?, ?) ON CONFLICT(hour_key) DO UPDATE SET a = a + excluded.a`;',
+      'db.prepare(UPSERT_SQL);',
+    ].join('\n');
+    const { references, unresolved } = await refs(source);
+    expect(unresolved).toHaveLength(0);
+    expect(references.some(r => r.table === 'metrics' && r.type === 'insert')).toBe(true);
+  });
+
+  it('reports an imported constant as unresolved (not silent absence)', async () => {
+    const source = [
+      'import { UPSERT_SQL } from "./queries";',
+      'db.prepare(UPSERT_SQL);',
+    ].join('\n');
+    const { references, unresolved } = await refs(source);
+    expect(references).toHaveLength(0);
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0].identifier).toBe('UPSERT_SQL');
+  });
+
+  it('reports a call-result initializer as unresolved', async () => {
+    const source = [
+      'const SQL = buildQuery();',
+      'db.prepare(SQL);',
+    ].join('\n');
+    const { references, unresolved } = await refs(source);
+    expect(references).toHaveLength(0);
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0].identifier).toBe('SQL');
+  });
+
+  it('still extracts a direct string argument without an unresolved record', async () => {
+    const source = 'db.prepare("INSERT INTO users VALUES (?)");';
+    const { references, unresolved } = await refs(source);
+    expect(unresolved).toHaveLength(0);
+    expect(references.some(r => r.table === 'users' && r.type === 'insert')).toBe(true);
+  });
+
+  it('builds unresolved-query violations with the identifier as symbol', async () => {
+    const v = checkUnresolvedQueries(
+      [{ identifier: 'UPSERT_SQL', location: { line: 2, column: 1 } }],
+      'src/a.ts',
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0].rule).toBe('unresolved-query');
+    expect(v[0].severity).toBe('high');
+    expect(v[0].functionName).toBe('UPSERT_SQL');
+    expect(v[0].message).toContain('UPSERT_SQL');
   });
 });

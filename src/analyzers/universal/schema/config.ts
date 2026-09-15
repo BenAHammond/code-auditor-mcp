@@ -22,6 +22,14 @@ import type { SchemaAnalyzerConfig } from './types.js';
  */
 export const DB_RECEIVER_NAMES = ['db', 'database', 'sql', 'stmt'] as const;
 export const DB_CALL_METHOD_NAMES = ['exec', 'prepare', 'batch', 'run', 'all', 'first'] as const;
+/**
+ * DB-call methods whose first argument is SQL text (as opposed to bound
+ * parameters, prepared statements, or a batch array). `extractDbCallRefs` only
+ * resolves the first argument as SQL for these methods — `batch`/`run`/`all`/
+ * `first` take a statements array or parameter object, so their first argument
+ * is never SQL and must not be reported as an unresolvable query (Spec 58 R1).
+ */
+export const SQL_CARRYING_METHOD_NAMES = ['exec', 'prepare', 'query', 'raw', 'execute'] as const;
 export const DB_BINDING_NAMES = ['env.DB'] as const;
 export const DB_WRAPPER_NAMES = ['d1Query', 'd1Exec'] as const;
 export const SQL_TAG_NAMES = ['sql', 'db'] as const;
@@ -32,6 +40,7 @@ export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   checkNamingConventions: true,
   detectUnusedTables: false,
   validateQueryPatterns: true,
+  reportUnresolvedQueries: true,
   maxQueriesPerFunction: 5,
   skipTestFiles: true,
   requiredSchemas: [],

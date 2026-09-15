@@ -9,7 +9,7 @@ Measured read-only with `scripts/measure-corpus-counts.ts`
 which runs the same `runAuditDispatch` path the CLI uses and writes nothing into
 the target project.
 
-**Corpora measured**: recall-protocol, hhra-org, knex, primer-css, blitz.
+**Corpora measured**: recall-protocol, hhra-org, knex, primer-css, blitz, endless-guessing.
 **Corpora not on disk** (could not be re-measured): gin, svelte-realworld.
 
 Timestamp: 2026-09-07.
@@ -457,9 +457,71 @@ knex `QueryInterface` (191 members), hhra `EtlPageClient` (1,103 lines, McCC 120
 blitz `upgradeLegacy` (1,383 lines). Each is unambiguously over the raised
 threshold — no false positives.
 
+Re-pinned 2026-09-15 after Spec 58 (two analyzer gaps on a real D1/Workers project,
+endless-guessing — SQL assembled in a variable, and dynamic imports missing from
+the import graph). Both fixes make the affected rules *see more*, so counts move in
+both directions; a rule that stopped firing everywhere would have been broken. No
+read/write-set or import-graph rule did.
+
+**R1 — SQL assembled in a variable.** The schema table extractor
+(`extractDbCallRefs`) read only a *direct* string/template-literal argument to a DB
+call; a bare identifier holding SQL (`db.prepare(UPSERT_SQL)`) was silently treated
+as table-free. Now the identifier resolves via the adapter's `resolveLocalConstant`
+(same-module `const` bound to a string/template literal), and when it cannot resolve
+(imported const, concatenated/ternary expression, call result) the query is reported
+as `schema-code::unresolved-query` rather than as absence. Boundary: only
+SQL-carrying methods (`exec`/`prepare`/`query`/`raw`/`execute`) resolve identifiers —
+`batch`/`run`/`all`/`first` take a statements array or bound params, so a bare
+identifier there is not SQL and is not reported; a direct string/template literal is
+parsed for *every* method (node-sqlite3 `db.all(sql)` passes SQL as a literal).
+
+**R2 — dynamic imports in the import graph.** `clCollectFileInfo` indexes
+`import('./x')` / `require('./x')` with a static string argument as an import edge,
+so a module reached only via `await import()` is live, not `unreferenced-module`. A
+no-interpolation template literal (`` import(`./x`) ``) is a compile-time constant and
+also resolves to an edge. A computed specifier (`import(someVar)`, an interpolated
+template, or a call like `path.join(...)`) cannot resolve and is reported as
+`dependency-graph::unresolved-dynamic-import` (reported, not silenced, not a confident
+edge).
+
+Deltas (every one attributed):
+
+- recall-protocol **3157 → 3183** (+26).
+  - `dependency-graph::unreferenced-module` 124 → 114 (**−10**, R2) — ten modules
+    reached only via a static-string dynamic import are now counted live.
+  - `schema-code::unresolved-query` 0 → 37 (**+37**, R1) — identifier-held SQL that
+    cannot statically resolve (sampled: all `fn=sql` / `fn=countSql` / `fn=liveQuery`
+    held in concatenated/ternary/imported expressions).
+  - `cross-domain::cross-domain/written-never-read` 20 → 19 (**−1**, R1) — a table
+    previously seen as written-only now has its const-bound SELECT read recognized.
+- hhra-org **743 → 743** (0) — no computed dynamic imports, no identifier-held SQL.
+- knex **112 → 124** (+12).
+  - `dependency-graph::unresolved-dynamic-import` 0 → 11 (**+11**, R2).
+  - `schema-code::unresolved-query` 0 → 1 (**+1**, R1) — `lib/execution/runner.js:241`,
+    `fn=query`.
+- primer-css **16 → 16** (0) — no DB access, no dynamic imports.
+- blitz **721 → 736** (+15).
+  - `dependency-graph::unresolved-dynamic-import` 0 → 14 (**+14**, R2).
+  - `schema-code::unresolved-query` 0 → 1 (**+1**, R1).
+- endless-guessing (now on disk, 87 files) → **23** (first pin). Its only
+  `read-never-written` is gone (the metrics `UPSERT_SQL` const is now resolved, so the
+  `metrics` table is seen as both written and read), and its only `unreferenced-module`
+  is gone (`email.ts` reached via `await import('../lib/email')` now counts as live).
+  The 3 `unresolved-query` are all `fn=sql` ternary/concatenated SQL
+  (`routes/questions.ts:75`, `tests/e2e/harness-dev.ts:29`, `tests/e2e/helpers.ts:58`).
+
+Survivor sample (standing contract — confirm the survivors are genuine, not a rule
+gone silent): recall `written-never-read` survivors include `anon_strategist_claims`
+(`INSERT OR IGNORE`, never SELECTed) and `foundational_migration_flags` (`DELETE`,
+never SELECTed) — genuine written-only tables. blitz/knex `unresolved-dynamic-import`
+are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(...)`).
+`read-never-written` still fires at 14 (recall) / 4 (knex) / 1 (hhra);
+`written-never-read` at 19 (recall) / 1 (knex) / 2 (hhra); `unreferenced-module` at 114
+(recall) / 60 (hhra) / 1 (primer).
+
 ---
 
-## recall-protocol — 3,157 advisory findings (4,268 files)
+## recall-protocol — 3,183 advisory findings (4,268 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -468,7 +530,7 @@ threshold — no false positives.
 | documentation::function-documentation | 574 |
 | styles::styles/token-bypass | 456 |
 | data-access::loop-query | 290 |
-| dependency-graph::unreferenced-module | 124 |
+| dependency-graph::unreferenced-module | 114 |
 | react::raw-element | 111 |
 | dependency-graph::orphaned-nodes | 24 |
 | react::performance | 95 |
@@ -481,6 +543,7 @@ threshold — no false positives.
 | styles::styles/mechanism-fragmentation | 52 |
 | conventions::conventions/error-handling | 51 |
 | styles::styles/undefined-class | 47 |
+| schema-code::unresolved-query | 37 |
 | solid::solid/method-complexity | 33 |
 | data-access::unfiltered-query | 6 |
 | cross-domain::cross-domain/read-never-written | 14 |
@@ -492,7 +555,7 @@ threshold — no false positives.
 | cross-domain::cross-domain/multi-table-write | 7 |
 | schema::unknown-table | 10 |
 | styles::styles/mechanism-mixing | 9 |
-| cross-domain::cross-domain/written-never-read | 20 |
+| cross-domain::cross-domain/written-never-read | 19 |
 | styles::styles/z-index-singleton | 7 |
 | dry::dry/duplicate | 6 |
 | conventions::conventions/import-form | 5 |
@@ -535,7 +598,7 @@ threshold — no false positives.
 | schema::invalid-json | 1 |
 | schema-code::dynamic-sql-construction | 1 |
 
-## knex — 112 advisory findings (474 files)
+## knex — 124 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -544,6 +607,7 @@ threshold — no false positives.
 | solid::solid/class-size | 15 |
 | solid::solid/dependency-inversion | 12 |
 | dependency-graph::orphaned-nodes | 7 |
+| dependency-graph::unresolved-dynamic-import | 11 |
 | schema::unknown-table | 16 |
 | data-access::hardcoded-connection | 16 |
 | solid::solid/open-closed | 12 |
@@ -557,6 +621,7 @@ threshold — no false positives.
 | dependency-graph::tight-coupling | 1 |
 | dry::dry/similar-expression | 1 |
 | schema-code::table-naming-convention | 1 |
+| schema-code::unresolved-query | 1 |
 | secrets::hardcoded-secret | 1 |
 
 ## primer-css — 16 advisory findings (137 files)
@@ -570,7 +635,7 @@ threshold — no false positives.
 | styles::styles/token-bypass | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## blitz — 721 advisory findings (788 files)
+## blitz — 736 advisory findings (788 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -581,6 +646,7 @@ threshold — no false positives.
 | react::raw-element | 54 |
 | dependency-graph::orphaned-nodes | 44 |
 | documentation::class-documentation | 34 |
+| dependency-graph::unresolved-dynamic-import | 14 |
 | styles::styles/token-bypass | 16 |
 | styles::styles/undefined-class | 15 |
 | solid::solid/dependency-inversion | 11 |
@@ -595,4 +661,16 @@ threshold — no false positives.
 | dependency-graph::tight-coupling | 1 |
 | dependency-graph::circular-dependency | 1 |
 | dependency-graph::hub-nodes | 1 |
+| schema-code::unresolved-query | 1 |
 | solid::solid/method-complexity | 1 |
+
+## endless-guessing — 23 advisory findings (87 files)
+
+| analyzer::rule | count |
+| --- | --- |
+| react::performance | 12 |
+| data-access::loop-query | 3 |
+| schema-code::unresolved-query | 3 |
+| styles::styles/token-bypass | 3 |
+| dependency-graph::tight-coupling | 1 |
+| solid::function-length | 1 |
