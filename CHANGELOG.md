@@ -2,6 +2,24 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [3.9.9] — 2026-09-15
+
+### Telemetry opt-in is a one-step toggle
+
+The feedback-service opt-in required an endpoint URL, so enabling it was
+"turn on *and* paste the URL". The client now ships a default ingest endpoint
+(`https://code-auditor-dismissals.ben-a-hammond.workers.dev/ingest`), so the
+`telemetry` `enable` action needs no arguments — opt-in is a one-step toggle
+with a known destination. The endpoint remains overridable (self-hosting and
+the `--telemetry-endpoint` flag).
+
+### Feedback service is ingest-only
+
+The operator-facing `/report` access layer described in 3.9.8 is withdrawn:
+the service is write-only `/ingest`, and the data is read directly from D1 when
+needed — no `/report`, no `REPORT_SECRET`. The access layer is not designed
+yet; this keeps the client and service inside the ingest scope.
+
 ## [3.9.8] — 2026-09-13
 
 ### Spec 57 — Dismissals and feedback
