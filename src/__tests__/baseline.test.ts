@@ -1165,15 +1165,48 @@ describe('Spec-18 — CLI end-to-end', () => {
     const r = runCli(`changed "${join(testDir, 'src', 'lib.ts')}" -p "${testDir}" --json`, '/tmp');
     expect(r.exitCode).toBe(2);
 
-    // changed --json outputs an array of violations
+    // changed --json outputs an object carrying violations + diagnostics
     const parsed = JSON.parse(r.stdout);
-    expect(Array.isArray(parsed)).toBe(true);
+    expect(Array.isArray(parsed.violations)).toBe(true);
+    expect(Array.isArray(parsed.diagnostics)).toBe(true);
 
     // Known findings should have new: false
-    const knownViolations = parsed.filter((v: any) => v.new === false);
+    const knownViolations = parsed.violations.filter((v: any) => v.new === false);
     expect(knownViolations.length).toBeGreaterThanOrEqual(1);
-    const newViolations = parsed.filter((v: any) => v.new === true);
+    const newViolations = parsed.violations.filter((v: any) => v.new === true);
     expect(newViolations.length).toBe(0);
+  });
+
+  it('R6.7b — changed --json carries the unresolved-query coverage diagnostic (file+line) without gating', async () => {
+    // Spec 58 follow-up: `unresolved-query` moved from a high-severity finding to a
+    // coverage diagnostic. This pins the agent-facing surface — `changed --json` (the
+    // hook gate) must carry the diagnostic with file + line, and it must NOT block
+    // (exit 0, not 2). The prior assertions only checked `Array.isArray(diagnostics)`;
+    // this one asserts the coverage diagnostic actually flows through with its anchor.
+    await writeFile(join(testDir, 'src', 'queries.ts'), 'export const UPSERT_SQL = `INSERT INTO metrics (hour_key, a) VALUES (?, ?)`;\n');
+    await writeFile(
+      join(testDir, 'src', 'lib.ts'),
+      'import { UPSERT_SQL } from "./queries";\n\nexport function record(db: any) {\n  return db.prepare(UPSERT_SQL).run();\n}\n',
+    );
+    await writeConfig(testDir, { enabledAnalyzers: ['schema'] });
+
+    // Seed a baseline so `changed` resolves the project (mirrors R6.7).
+    runCli(`baseline -p "${testDir}" --json`, testDir);
+
+    const r = runCli(`changed "${join(testDir, 'src', 'lib.ts')}" -p "${testDir}" --json`, testDir);
+    // Coverage diagnostics never gate — no violation, so exit 0, not 2.
+    expect(r.exitCode).toBe(0);
+
+    const parsed = JSON.parse(r.stdout);
+    expect(Array.isArray(parsed.violations)).toBe(true);
+    expect(parsed.violations).toHaveLength(0);
+    expect(Array.isArray(parsed.diagnostics)).toBe(true);
+
+    const unresolved = parsed.diagnostics.filter((d: any) => d.kind === 'unresolved-query');
+    expect(unresolved.length).toBeGreaterThanOrEqual(1);
+    expect(unresolved[0].file).toContain('lib.ts');
+    expect(typeof unresolved[0].line).toBe('number');
+    expect(unresolved[0].details).toMatchObject({ identifier: 'UPSERT_SQL' });
   });
 
   it('R6.8 — CLI: --fail-on-regression exits 2 when debt increases', async () => {
@@ -1676,7 +1709,8 @@ describe('JSON output purity', () => {
     // migration notices. JSON.parse throws on any preamble/postamble text.
     let parsed: any;
     expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
-    expect(Array.isArray(parsed)).toBe(true);
+    expect(Array.isArray(parsed.violations)).toBe(true);
+    expect(Array.isArray(parsed.diagnostics)).toBe(true);
   });
 
   it('changed --stdin --json produces parseable JSON (hook invocation path)', () => {
@@ -1702,7 +1736,8 @@ describe('JSON output purity', () => {
     expect(exitCode).toBe(2);
     let parsed: any;
     expect(() => { parsed = JSON.parse(stdout.trim()); }).not.toThrow();
-    expect(Array.isArray(parsed)).toBe(true);
+    expect(Array.isArray(parsed.violations)).toBe(true);
+    expect(Array.isArray(parsed.diagnostics)).toBe(true);
   });
 
   it('changed --stdin --json with zero matches produces empty array, not empty string', () => {
@@ -1718,7 +1753,8 @@ describe('JSON output purity', () => {
     });
     let parsed: any;
     expect(() => { parsed = JSON.parse(result.trim()); }).not.toThrow();
-    expect(parsed).toEqual([]);
+    expect(parsed.violations).toEqual([]);
+    expect(Array.isArray(parsed.diagnostics)).toBe(true);
   });
 
   // ── Extended purity coverage: all --json CLI commands ──

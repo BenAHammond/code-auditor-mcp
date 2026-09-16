@@ -207,9 +207,9 @@ describe('CLI integration — foreign CWD with -p', () => {
     // right project: the finding path is project-relative, not resolved from the CWD.
     expect(exitCode).toBe(2);
     const parsed = JSON.parse(stdout.trim());
-    expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed[0].file).toBe('src/helper.ts');
-    expect(parsed[0].severity).toBe('high');
+    expect(Array.isArray(parsed.violations)).toBe(true);
+    expect(parsed.violations[0].file).toBe('src/helper.ts');
+    expect(parsed.violations[0].severity).toBe('high');
   });
 
   it('changed with -p from foreign CWD finds project-specific config', async () => {
@@ -255,7 +255,8 @@ describe('CLI integration — foreign CWD with -p', () => {
     const trimmed = result.trim();
     if (trimmed) {
       const parsed = JSON.parse(trimmed);
-      expect(Array.isArray(parsed)).toBe(true);
+      expect(Array.isArray(parsed.violations)).toBe(true);
+      expect(Array.isArray(parsed.diagnostics)).toBe(true);
     }
   });
 });

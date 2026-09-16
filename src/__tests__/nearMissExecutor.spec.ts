@@ -220,7 +220,6 @@ const RUNNERS: Record<string, Runner> = {
   'dynamic-sql-construction': runSchemaCode,
   'table-naming-convention': runSchemaCode,
   'unknown-table': runSchemaCode,
-  'unresolved-query': runSchemaCode,
   // react — the per-component near-misses that are a complete component, plus
   // `accessibility` whose bare-JSX near-miss is wrapped into one.
   complexity: runReactComponent,
@@ -334,5 +333,27 @@ describe('near-miss executor — every declared near-miss runs through its real 
     // And the registry itself must still declare near-misses — a silent empty
     // registry would trivially pass the loop above.
     expect(cases.length).toBeGreaterThan(0);
+  });
+
+  // Spec 58 follow-up — `unresolved-query` is no longer a violation rule, so its
+  // near-miss (a literal SQL string) has nothing to falsify. The guard that used
+  // to live here is replaced by a diagnostic-emission assertion: the SAME
+  // unresolvable sample that used to produce a finding must now produce a
+  // `unresolved-query` coverage diagnostic (file + line) and ZERO violations —
+  // same test, different channel. This is what keeps the reclassification honest:
+  // dropping the registry entry must not also drop the only guard on the
+  // unresolved-SQL detection path.
+  it('unresolved-query: unresolvable SQL emits a coverage diagnostic, not a violation', async () => {
+    const p = await writeTemp('import { UPSERT_SQL } from "./queries";\ndb.prepare(UPSERT_SQL)', 'ts');
+    const result = await schema.analyze([p], SCHEMA_CODE_CONFIG);
+
+    // No finding — the rule is gone from the violation channel.
+    expect(ruleIds(result.violations)).not.toContain('unresolved-query');
+
+    // The diagnostic fires on the new channel, with file + line.
+    const diags = (result.diagnostics ?? []).filter((d) => d.kind === 'unresolved-query');
+    expect(diags.length).toBeGreaterThanOrEqual(1);
+    expect(diags[0].file).toBe(p);
+    expect(typeof diags[0].line).toBe('number');
   });
 });

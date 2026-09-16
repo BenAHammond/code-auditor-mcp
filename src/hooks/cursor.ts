@@ -84,7 +84,10 @@ export function formatViolationContext(output: HookAuditOutput): {
   context: string;
   isBlocking: boolean;
 } {
-  if (output.violations.length === 0) {
+  const hasViolations = output.violations.length > 0;
+  const diagnostics = output.diagnostics ?? [];
+
+  if (!hasViolations && diagnostics.length === 0) {
     return { context: '', isBlocking: false };
   }
 
@@ -96,17 +99,35 @@ export function formatViolationContext(output: HookAuditOutput): {
     (a, b) => order.indexOf(a.severity) - order.indexOf(b.severity)
   );
 
-  const lines = [
-    `🚨 **Code Auditor found ${output.violations.length} violation(s)**`,
-    '',
-    ...ranked.map((v) =>
-      `- **[${v.severity}] ${v.file}${v.line ? `:${v.line}` : ''}** — ${v.message}` +
-      (v.suggestion ? `\n  Suggestion: ${v.suggestion}` : '')
-    ),
-    '',
-    'Fix the violations above and retry. The edit has been blocked.',
-  ];
-  return { context: lines.join('\n'), isBlocking: true };
+  const lines: string[] = [];
+  if (hasViolations) {
+    lines.push(
+      `🚨 **Code Auditor found ${output.violations.length} violation(s)**`,
+      '',
+      ...ranked.map((v) =>
+        `- **[${v.severity}] ${v.file}${v.line ? `:${v.line}` : ''}** — ${v.message}` +
+        (v.suggestion ? `\n  Suggestion: ${v.suggestion}` : '')
+      ),
+      '',
+      'Fix the violations above and retry. The edit has been blocked.'
+    );
+  }
+
+  // Coverage gaps are non-blocking: the agent sees "the analyzer couldn't fully
+  // see this" without the edit being gated on it. Always appended, even on a
+  // clean run with diagnostics.
+  if (diagnostics.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      `🔍 **Coverage gaps** (${diagnostics.length} — the analyzer could not fully resolve these; not defects)`,
+      '',
+      ...diagnostics.map((d) =>
+        `- ${d.file ?? '(unknown)'}${d.line ? `:${d.line}` : ''} [${d.kind}] — ${d.message}`
+      )
+    );
+  }
+
+  return { context: lines.join('\n'), isBlocking: hasViolations };
 }
 
 /**

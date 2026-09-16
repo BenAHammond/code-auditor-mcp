@@ -49,7 +49,10 @@ export function formatCodexFeedback(output: HookAuditOutput): {
   feedback: Record<string, unknown> | null;
   isBlocking: boolean;
 } {
-  if (output.violations.length === 0) {
+  const hasViolations = output.violations.length > 0;
+  const diagnostics = output.diagnostics ?? [];
+
+  if (!hasViolations && diagnostics.length === 0) {
     return { feedback: null, isBlocking: false };
   }
 
@@ -59,10 +62,12 @@ export function formatCodexFeedback(output: HookAuditOutput): {
 
   return {
     feedback: {
-      decision: 'block',
-      reason: criticals.length > 0
-        ? `code-auditor found ${criticals.length} critical violation(s)`
-        : `code-auditor found ${output.violations.length} violation(s)`,
+      decision: hasViolations ? 'block' : 'info',
+      reason: hasViolations
+        ? (criticals.length > 0
+          ? `code-auditor found ${criticals.length} critical violation(s)`
+          : `code-auditor found ${output.violations.length} violation(s)`)
+        : `code-auditor could not fully resolve ${diagnostics.length} location(s) — coverage gaps, not defects`,
       violations: output.violations.map((v) => ({
         severity: v.severity,
         message: v.message,
@@ -71,8 +76,16 @@ export function formatCodexFeedback(output: HookAuditOutput): {
         rule: v.rule,
         suggestion: v.suggestion || null,
       })),
+      ...(diagnostics.length > 0 && {
+        diagnostics: diagnostics.map((d) => ({
+          kind: d.kind,
+          message: d.message,
+          file: d.file,
+          line: d.line,
+        })),
+      }),
     },
-    isBlocking: true,
+    isBlocking: hasViolations,
   };
 }
 

@@ -21,7 +21,9 @@ export interface SchemaAnalyzerConfig {
   detectUnusedTables?: boolean;
   validateQueryPatterns?: boolean;
   /** Spec 58 R1 — report DB-call SQL held in an unresolvable identifier as an
-   *  `unresolved-query` finding (rather than silently skipping it). Default true. */
+   *  `unresolved-query` coverage diagnostic (rather than silently skipping it).
+   *  A diagnostic, not a finding — the code isn't wrong, the analyzer just can't
+   *  see the SQL. Default true. */
   reportUnresolvedQueries?: boolean;
   maxQueriesPerFunction?: number;
   /** Spec 55 R3 — exclude the query-shape rule (too-many-queries) from test

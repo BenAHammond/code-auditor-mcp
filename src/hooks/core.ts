@@ -44,6 +44,16 @@ export interface HookViolation {
   details?: string;
 }
 
+/** A non-blocking coverage diagnostic — "the analyzer couldn't see this",
+ *  never "the code is wrong". Surfaced alongside violations, never gating. */
+export interface HookDiagnostic {
+  analyzerName: string;
+  kind: string;
+  message: string;
+  file?: string;
+  line?: number;
+}
+
 export interface HookAuditOutput {
   violations: HookViolation[];
   summary: {
@@ -53,6 +63,9 @@ export interface HookAuditOutput {
     high: number;
   };
   filesAnalyzed: number;
+  /** Coverage diagnostics (unresolved SQL/specifier, zero-files, not-run).
+   *  Non-blocking — the gate reads only `violations`. */
+  diagnostics?: HookDiagnostic[];
 }
 
 /**
@@ -101,6 +114,7 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
       violations: [],
       summary: { total: 0, critical: 0, severe: 0, high: 0 },
       filesAnalyzed: 0,
+      diagnostics: [],
     };
   }
 
@@ -119,7 +133,7 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
   if (daemon.mode === 'ready') {
     const diag = await readDaemonDiagnostics(daemon.socketPath, resolvedPaths);
     if (diag && diag.status === 'ready' && diag.staleFiles.length === 0) {
-      return buildHookOutput(diag.diagnostics, resolvedPaths.length);
+      return buildHookOutput(diag.diagnostics, [], resolvedPaths.length);
     }
   }
 
@@ -140,11 +154,11 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
     (r: any) => r.violations || []
   );
 
-  return buildHookOutput(allViolations, result.metadata.filesAnalyzed);
+  return buildHookOutput(allViolations, result.metadata?.diagnostics ?? [], result.metadata.filesAnalyzed);
 }
 
 /** Map raw violations to the hook's output contract and summarize by severity. */
-function buildHookOutput(allViolations: any[], filesAnalyzed: number): HookAuditOutput {
+function buildHookOutput(allViolations: any[], diagnostics: any[], filesAnalyzed: number): HookAuditOutput {
   const violations: HookViolation[] = allViolations.map((v: any) => ({
     analyzer: v.analyzer || '',
     rule: v.rule,
@@ -160,6 +174,14 @@ function buildHookOutput(allViolations: any[], filesAnalyzed: number): HookAudit
     details: v.details || '',
   }));
 
+  const hookDiagnostics: HookDiagnostic[] = diagnostics.map((d: any) => ({
+    analyzerName: d.analyzerName ?? d.analyzer ?? '',
+    kind: d.kind ?? 'diagnostic',
+    message: d.message,
+    ...(d.file ? { file: d.file } : {}),
+    ...(typeof d.line === 'number' ? { line: d.line } : {}),
+  }));
+
   const criticalCount = violations.filter((v) => v.severity === 'critical').length;
   const severeCount = violations.filter((v) => v.severity === 'severe').length;
   const highCount = violations.filter((v) => v.severity === 'high').length;
@@ -173,6 +195,7 @@ function buildHookOutput(allViolations: any[], filesAnalyzed: number): HookAudit
       high: highCount,
     },
     filesAnalyzed,
+    ...(hookDiagnostics.length > 0 && { diagnostics: hookDiagnostics }),
   };
 }
 

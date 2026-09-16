@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
-import type { Violation, Violation as BaseViolation, AnalyzerResult, SchemaUsage } from '../../types.js';
+import type { Violation, Violation as BaseViolation, AnalyzerResult, SchemaUsage, CoverageDiagnostic } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
 import {
   buildProvenanceContext,
@@ -108,6 +108,10 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
   // Was: direct CodeIndexDB.getInstance() call in recordTableUsage.
   private _pendingSchemaRecords: { clearFiles: string[]; usages: SchemaUsage[] } = { clearFiles: [], usages: [] };
 
+  // Spec 58 follow-up — coverage diagnostics accumulated by analyzeAST() and
+  // drained by analyze() (mirrors the _pendingSchemaRecords side-channel).
+  private _pendingDiagnostics: CoverageDiagnostic[] = [];
+
   /**
    * Standalone analyze() override for backward compatibility with direct analyzer
    * calls (e.g., tests and non-pipeline audit paths). All production analysis now
@@ -124,10 +128,13 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     // Auto-discover known tables when no schemas are configured.
     config = await resolveSchemasViaAutoDiscovery(config, codeFiles);
 
+    this._pendingDiagnostics = [];
     const codeResult = codeFiles.length > 0
       ? await super.analyze(codeFiles, config)
       : emptySchemaResult(this.name);
     const jsonResult = analyzeJsonFiles(jsonFiles, config, this.name);
+
+    const diagnostics = this._pendingDiagnostics.splice(0);
 
     return {
       violations: [...codeResult.violations, ...jsonResult.violations],
@@ -136,6 +143,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       analyzerName: this.name,
       errors: [...(codeResult.errors || []), ...(jsonResult.errors || [])],
       filesProcessed: (codeResult.filesProcessed ?? 0) + (jsonResult.filesProcessed ?? 0),
+      ...(diagnostics.length > 0 && { diagnostics }),
     };
   }
 
@@ -178,7 +186,8 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       this.recordTableUsage(ast, adapter, ast.filePath, tableRefs);
     }
 
-    appendSchemaViolations(violations, {
+    const diagnostics: CoverageDiagnostic[] = [];
+    appendSchemaViolations(violations, diagnostics, {
       ast,
       adapter,
       sourceCode,
@@ -187,6 +196,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       unresolved,
       allTables,
     });
+    this._pendingDiagnostics.push(...diagnostics);
 
     return violations;
   }
@@ -360,6 +370,7 @@ interface SchemaViolationContext {
 
 function appendSchemaViolations(
   violations: Violation[],
+  diagnostics: CoverageDiagnostic[],
   ctx: SchemaViolationContext,
 ): void {
   const { ast, adapter, sourceCode, config, tableRefs, unresolved, allTables } = ctx;
@@ -368,9 +379,10 @@ function appendSchemaViolations(
     violations.push(...withRuleTiming('unknown-table', () =>
       checkMissingReferences(tableRefs, allTables, ast.filePath)));
   }
-  // Spec 58 R1 — report DB-call SQL held in an unresolvable identifier.
+  // Spec 58 R1 — DB-call SQL held in an unresolvable identifier is a coverage
+  // diagnostic (the analyzer can't see the SQL), not a finding (the code isn't wrong).
   if (config.reportUnresolvedQueries !== false) {
-    violations.push(...checkUnresolvedQueries(unresolved, ast.filePath));
+    diagnostics.push(...checkUnresolvedQueries(unresolved, ast.filePath));
   }
   if (config.checkNamingConventions) {
     violations.push(...checkNamingConventions(tableRefs, ast.filePath));

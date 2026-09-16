@@ -541,15 +541,17 @@ describe('findTableReferences — SQL assembled in a constant (Spec 58 R1)', () 
     expect(references.some(r => r.table === 'users' && r.type === 'insert')).toBe(true);
   });
 
-  it('builds unresolved-query violations with the identifier as symbol', async () => {
+  it('builds unresolved-query coverage diagnostics (not violations) with file + line', async () => {
     const v = checkUnresolvedQueries(
       [{ identifier: 'UPSERT_SQL', location: { line: 2, column: 1 } }],
       'src/a.ts',
     );
     expect(v).toHaveLength(1);
-    expect(v[0].rule).toBe('unresolved-query');
-    expect(v[0].severity).toBe('high');
-    expect(v[0].functionName).toBe('UPSERT_SQL');
+    expect(v[0].kind).toBe('unresolved-query');
+    expect(v[0].analyzerName).toBe('schema');
+    expect(v[0].file).toBe('src/a.ts');
+    expect(v[0].line).toBe(2);
     expect(v[0].message).toContain('UPSERT_SQL');
+    expect(v[0].details).toEqual({ identifier: 'UPSERT_SQL' });
   });
 });

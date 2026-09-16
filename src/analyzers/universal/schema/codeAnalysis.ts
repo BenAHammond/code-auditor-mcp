@@ -9,7 +9,7 @@
  * with `createSchemaViolation` instead of `this.createViolation`.
  */
 
-import type { Violation } from '../../../types.js';
+import type { Violation, CoverageDiagnostic } from '../../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../../languages/types.js';
 import { isDBProvenanced, DB_CALL_METHODS, type ProvenanceContext } from '../../provenance.js';
 import { OrmAdapterRegistry } from '../../orm/index.js';
@@ -1013,18 +1013,22 @@ function resolveQuerySql(
 }
 
 /**
- * Build `unresolved-query` violations for DB calls whose SQL argument could not
- * be statically resolved. Reporting (rather than skipping) is what keeps the
- * read/written-never lifecycle rules from silently over-claiming on a file
- * whose DB access is only partly visible.
+ * Build `unresolved-query` coverage diagnostics for DB calls whose SQL argument
+ * could not be statically resolved. Reporting (rather than skipping) is what
+ * keeps the read/written-never lifecycle rules from silently over-claiming on a
+ * file whose DB access is only partly visible. These are diagnostics — "the
+ * tool could not see this query" — not findings that the code is wrong, so they
+ * are non-blocking (see CoverageDiagnostic).
  */
-export function checkUnresolvedQueries(unresolved: UnresolvedQuery[], filePath: string): Violation[] {
-  return unresolved.map((u) => createSchemaViolation(
-    filePath,
-    u.location,
-    `Query SQL is held in an identifier ('${u.identifier}') that cannot be statically resolved — its table read/write status is unknown, so cross-domain lifecycle rules (read-never-written, written-never-read) may be unreliable for this file.`,
-    { severity: 'high', rule: 'unresolved-query', symbol: u.identifier },
-  ));
+export function checkUnresolvedQueries(unresolved: UnresolvedQuery[], filePath: string): CoverageDiagnostic[] {
+  return unresolved.map((u) => ({
+    analyzerName: 'schema',
+    kind: 'unresolved-query',
+    message: `Query SQL is held in an identifier ('${u.identifier}') that cannot be statically resolved — its table read/write status is unknown, so cross-domain lifecycle rules (read-never-written, written-never-read) may be unreliable for this file.`,
+    file: filePath,
+    line: u.location.line,
+    details: { identifier: u.identifier },
+  }));
 }
 
 /**

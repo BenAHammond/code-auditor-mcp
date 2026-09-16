@@ -90,6 +90,23 @@ async function main() {
   for (const [name, count] of sortedAnalyzers) console.log(`${name}: ${count}`);
   console.log('\n--- per-rule (analyzer::rule) ---');
   for (const [rule, count] of sortedRules) console.log(`${rule}: ${count}`);
+
+  // Coverage diagnostics (Spec 58 follow-up) — the analyzer's visibility-ended
+  // channel, not findings. `unresolved-query` / `unresolved-dynamic-import` carry
+  // file + line; `not-run` and zero-files entries are excluded from this count.
+  const diagnostics = ((result as any).metadata?.diagnostics ?? []) as Array<{
+    kind?: string;
+  }>;
+  const byDiagnosticKind = new Map<string, number>();
+  for (const d of diagnostics) {
+    if (!d.kind || d.kind === 'not-run') continue;
+    byDiagnosticKind.set(d.kind, (byDiagnosticKind.get(d.kind) ?? 0) + 1);
+  }
+  if (byDiagnosticKind.size > 0) {
+    const sortedKinds = [...byDiagnosticKind.entries()].sort((a, b) => b[1] - a[1]);
+    console.log('\n--- coverage diagnostics (kind) ---');
+    for (const [kind, count] of sortedKinds) console.log(`${kind}: ${count}`);
+  }
 }
 
 main()

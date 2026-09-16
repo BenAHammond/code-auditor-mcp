@@ -519,9 +519,38 @@ are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(
 `written-never-read` at 19 (recall) / 1 (knex) / 2 (hhra); `unreferenced-module` at 114
 (recall) / 60 (hhra) / 1 (primer).
 
+Re-pinned 2026-09-15 after the Spec 58 follow-up (severity reclassification). The two
+Spec 58 rules that reported an *unresolvable* case as a `high`-severity `Violation` —
+`schema-code::unresolved-query` (SQL held in an unresolvable identifier) and
+`dependency-graph::unresolved-dynamic-import` (a computed `import()`/`require()`
+specifier) — are moved off the findings channel onto the coverage-diagnostics channel.
+They are not defects: "the code is wrong" vs "the tool couldn't see" is the category
+boundary, and every severity in the findings model is blocking, so unresolvable-but-
+legitimate code (`` import(path.join(...)) ``, SQL in an imported constant) was gating
+edits it could never fix. They now land in `metadata.diagnostics` as
+`CoverageDiagnostic` (`unresolved-query` / `unresolved-dynamic-import`), still
+**visible, counted, with file + line**, rendered in the "Coverage gaps" report section
+that leads the report, and carried through `changed --json` — but never a gate. The
+two rules are removed from the rule registry and the near-miss executor.
+
+This is a 1:1 move, so each corpus's delta is exactly the removed-rule count and no
+other rule moved (confirmed by re-measure; diagnostics re-counted via the measure
+script's new "coverage diagnostics" section):
+
+- recall-protocol **3183 → 3146** (−37). `schema-code::unresolved-query` 37 → a
+  `unresolved-query` diagnostic (37).
+- knex **124 → 112** (−12). `dependency-graph::unresolved-dynamic-import` 11 and
+  `schema-code::unresolved-query` 1 → diagnostics (11 + 1).
+- blitz **736 → 721** (−15). `dependency-graph::unresolved-dynamic-import` 14 and
+  `schema-code::unresolved-query` 1 → diagnostics (14 + 1).
+- endless-guessing **23 → 20** (−3). `schema-code::unresolved-query` 3 → a
+  `unresolved-query` diagnostic (3).
+- hhra-org **743 → 743** (0) and primer-css **16 → 16** (0) — neither corpus has an
+  unresolvable query or computed specifier, so nothing moved.
+
 ---
 
-## recall-protocol — 3,183 advisory findings (4,268 files)
+## recall-protocol — 3,146 advisory findings (4,268 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -543,7 +572,6 @@ are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(
 | styles::styles/mechanism-fragmentation | 52 |
 | conventions::conventions/error-handling | 51 |
 | styles::styles/undefined-class | 47 |
-| schema-code::unresolved-query | 37 |
 | solid::solid/method-complexity | 33 |
 | data-access::unfiltered-query | 6 |
 | cross-domain::cross-domain/read-never-written | 14 |
@@ -598,7 +626,7 @@ are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(
 | schema::invalid-json | 1 |
 | schema-code::dynamic-sql-construction | 1 |
 
-## knex — 124 advisory findings (474 files)
+## knex — 112 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -607,7 +635,6 @@ are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(
 | solid::solid/class-size | 15 |
 | solid::solid/dependency-inversion | 12 |
 | dependency-graph::orphaned-nodes | 7 |
-| dependency-graph::unresolved-dynamic-import | 11 |
 | schema::unknown-table | 16 |
 | data-access::hardcoded-connection | 16 |
 | solid::solid/open-closed | 12 |
@@ -621,7 +648,6 @@ are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(
 | dependency-graph::tight-coupling | 1 |
 | dry::dry/similar-expression | 1 |
 | schema-code::table-naming-convention | 1 |
-| schema-code::unresolved-query | 1 |
 | secrets::hardcoded-secret | 1 |
 
 ## primer-css — 16 advisory findings (137 files)
@@ -635,7 +661,7 @@ are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(
 | styles::styles/token-bypass | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## blitz — 736 advisory findings (788 files)
+## blitz — 721 advisory findings (788 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -646,7 +672,6 @@ are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(
 | react::raw-element | 54 |
 | dependency-graph::orphaned-nodes | 44 |
 | documentation::class-documentation | 34 |
-| dependency-graph::unresolved-dynamic-import | 14 |
 | styles::styles/token-bypass | 16 |
 | styles::styles/undefined-class | 15 |
 | solid::solid/dependency-inversion | 11 |
@@ -661,16 +686,14 @@ are genuinely computed (`path.join(...)`, `process.env.KNEX_TEST`, `resolveFrom(
 | dependency-graph::tight-coupling | 1 |
 | dependency-graph::circular-dependency | 1 |
 | dependency-graph::hub-nodes | 1 |
-| schema-code::unresolved-query | 1 |
 | solid::solid/method-complexity | 1 |
 
-## endless-guessing — 23 advisory findings (87 files)
+## endless-guessing — 20 advisory findings (87 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | react::performance | 12 |
 | data-access::loop-query | 3 |
-| schema-code::unresolved-query | 3 |
 | styles::styles/token-bypass | 3 |
 | dependency-graph::tight-coupling | 1 |
 | solid::function-length | 1 |

@@ -28,6 +28,7 @@ import type {
   Violation,
   VisitorContext,
   ReducerContext,
+  CoverageDiagnostic,
 } from './types.js';
 import type { AST, LanguageAdapter } from './languages/types.js';
 import type { MigrationOp } from './analyzers/universal/UniversalSchemaAnalyzer.js';
@@ -2004,6 +2005,7 @@ export function createDependencyGraphReducer(): Stage4Reducer {
         const health = await builder.analyzeDependencyHealth(graph);
         const idToEntity = new Map(entities.map((e) => [e.id, e] as const));
         const violations: Violation[] = [];
+        const diagnostics: CoverageDiagnostic[] = [];
         for (const issue of health.issues) {
           if (issue.type === 'orphaned-nodes') {
             // Emit one violation per orphan so each is attributed to its own
@@ -2096,20 +2098,18 @@ export function createDependencyGraphReducer(): Stage4Reducer {
           // Spec 58 R2 — computed-specifier dynamic imports. `import(someVar)`
           // cannot be resolved into an edge, so any module in this corpus could
           // be its target and `unreferenced-module` is therefore not exhaustive.
-          // Reported (not silenced, not confidently resolved) at the call site.
+          // This is a coverage diagnostic (the analyzer can't resolve the target),
+          // not a finding (the code isn't wrong) — surfaced, not gated.
           for (const [fp, info] of fileFacts) {
             for (const dyn of info.unresolvedDynamicImports) {
-              violations.push({
+              diagnostics.push({
+                analyzerName: 'dependency-graph',
+                kind: 'unresolved-dynamic-import',
+                message: `Dynamic import/require has a computed specifier (${dyn.expression || '…'}) that cannot be resolved — its target module is unknown, so unreferenced-module may miss a live dependency.`,
                 file: fp,
                 line: dyn.line,
-                severity: 'high',
-                message: `Dynamic import/require has a computed specifier (${dyn.expression || '…'}) that cannot be resolved — its target module is unknown, so unreferenced-module may miss a live dependency.`,
-                rule: 'unresolved-dynamic-import',
-                type: 'unresolved-dynamic-import',
-                analyzer: 'dependency-graph',
-                category: 'cross-language-dependency',
                 details: { expression: dyn.expression },
-              } as Violation);
+              });
             }
           }
         }
@@ -2133,7 +2133,7 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             details: s.affectedNodes ? { affectedNodes: s.affectedNodes } : undefined,
           } as Violation);
         }
-        return { violations, facts: {}, factsConsumed: entities.length };
+        return { violations, facts: {}, factsConsumed: entities.length, ...(diagnostics.length > 0 && { diagnostics }) };
       } catch (e: any) {
         console.error('[dependency-graph reducer] error:', e.message);
         return { violations: [], facts: {}, factsConsumed: 0 };
@@ -2305,6 +2305,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       const { analyzer: a, defaults, parseMigrationOps, extractDdlColumnNames } = await getAnalyzer();
       const pm = await _getProvenanceModule();
       const violations: Violation[] = [];
+      const diagnostics: CoverageDiagnostic[] = [];
       const indexFacts: IndexFactsEntry[] = [];
 
       // Pipeline config for this analyzer (moved before table extraction, needed
@@ -2417,9 +2418,10 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         violations.push(...checkNamingConventions(tableRefs, context.filePath));
       }
 
-      // Spec 58 R1 — report DB-call SQL held in an unresolvable identifier.
+      // Spec 58 R1 — DB-call SQL held in an unresolvable identifier is a coverage
+      // diagnostic (the analyzer can't see the SQL), not a finding (the code isn't wrong).
       if (schemaConfig.reportUnresolvedQueries !== false) {
-        violations.push(...checkUnresolvedQueries(unresolved, context.filePath));
+        diagnostics.push(...checkUnresolvedQueries(unresolved, context.filePath));
       }
 
       // Check query patterns
@@ -2451,6 +2453,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         violations,
         facts: { [context.filePath]: fileFacts },
         indexFacts: indexFacts.length > 0 ? indexFacts : undefined,
+        ...(diagnostics.length > 0 && { diagnostics }),
       };
     },
     defaultConfig: {},

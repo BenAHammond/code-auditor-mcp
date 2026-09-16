@@ -64,6 +64,25 @@ reference set, feeds `orphaned-nodes`). Each form is handled or recorded as a ga
   in the entity set is recorded here rather than claimed closed. No new reference form is
   silently dropped.
 
+### Follow-up — `unresolved-query` / `unresolved-dynamic-import` reclassified as coverage diagnostics
+
+The two `high`-severity findings introduced above were on the wrong channel. They are
+not defects — "the code is wrong" — they say "my visibility ends here," and every
+severity in the findings model is blocking, so unresolvable-but-legitimate code
+(`` import(path.join(...)) ``, SQL held in an imported constant) was gating edits it
+could never fix. Both are moved to the diagnostics channel:
+
+- `schema-code::unresolved-query` → `CoverageDiagnostic { analyzerName: 'schema', kind: 'unresolved-query' }`.
+- `dependency-graph::unresolved-dynamic-import` → `CoverageDiagnostic { analyzerName: 'dependency-graph', kind: 'unresolved-dynamic-import' }`.
+
+They land in `metadata.diagnostics`, still **visible, counted, with file + line**
+(`details` carries the identifier/expression), rendered in the "Coverage gaps" report
+section that leads the report, and carried through `changed --json` (whose output is now
+a `{ violations, diagnostics }` envelope) — but they never gate. The two rules are
+removed from the rule registry and the near-miss executor. This is a category boundary,
+not a softening of the gate: a *finding* still says the code is wrong; a *diagnostic*
+says the analyzer could not see.
+
 ## [3.9.10] — 2026-09-15
 
 ### The version a binary reports is now stamped at build time

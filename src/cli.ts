@@ -190,6 +190,30 @@ program
         );
       }
 
+      // ── Coverage gaps (Spec 58 follow-up) ─────────────────────────
+      // Coverage diagnostics are the analyzer saying "my visibility ends here",
+      // not "the code is wrong". They lead with counts, then per-occurrence
+      // file:line — visible and counted, never blocking (they never reach the
+      // gate). Rendered alongside the coverage panel that leads the report.
+      const coverageDiagnostics = (result.metadata?.diagnostics ?? []).filter(
+        (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import'
+      );
+      if (coverageDiagnostics.length > 0) {
+        const byKind: Record<string, number> = {};
+        for (const d of coverageDiagnostics) byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
+        const totals = Object.entries(byKind)
+          .map(([kind, n]) => `${n} ${kind}`)
+          .join(' · ');
+        console.log(chalk.gray(`── Coverage gaps ── ${totals}`));
+        for (const d of coverageDiagnostics.slice(0, 20)) {
+          const loc = d.file ? `${d.file}${typeof d.line === 'number' ? `:${d.line}` : ''}` : '(unknown)';
+          console.log(chalk.gray(`  ${loc} [${d.kind}] — ${d.message}`));
+        }
+        if (coverageDiagnostics.length > 20) {
+          console.log(chalk.gray(`  … and ${coverageDiagnostics.length - 20} more`));
+        }
+      }
+
       // ── Delta output (Spec 18 R2) ─────────────────────────────────
       if (baseline && !options.full) {
         const newViolations = violations.filter((v: any) => v.new === true);
@@ -556,7 +580,7 @@ program
         process.stdout.write(sarifOutput + '\n');
       } else if (options.json) {
         const projectDir = resolve(options.path || process.cwd());
-        const jsonOutput = violations.map((v: any) => {
+        const jsonViolations = violations.map((v: any) => {
           // Compute relative path if file resolves inside the project
           let filePath = v.file || '';
           if (filePath.startsWith('/') || filePath.startsWith('\\\\')) {
@@ -586,6 +610,18 @@ program
             fingerprint: fingerprint(buildFingerprintInput(v))
           };
         });
+        // Coverage diagnostics ride alongside violations so an agent sees "the
+        // analyzer couldn't resolve this" without a metadata flag — and without
+        // it ever gating (diagnostics never reach computeGatingDecision).
+        const jsonDiagnostics = (result.metadata?.diagnostics ?? []).map((d: any) => ({
+          analyzer: d.analyzerName ?? d.analyzer ?? '',
+          kind: d.kind,
+          message: d.message,
+          ...(d.file ? { file: d.file } : {}),
+          ...(typeof d.line === 'number' ? { line: d.line } : {}),
+          ...(d.details ? { details: d.details } : {}),
+        }));
+        const jsonOutput = { violations: jsonViolations, diagnostics: jsonDiagnostics };
         process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
       } else if (!options.quiet || violations.length > 0) {
         // Console output — Spec 45 A2: agent-facing output emits counts (per

@@ -169,7 +169,7 @@ describe('createDependencyGraphReducer — orphan + reachability', () => {
     expect(files).not.toContain(`${abs}/util.ts`); // imported via './util'
   });
 
-  it('emits unresolved-dynamic-import for a computed specifier (Spec 58 R2)', async () => {
+  it('emits unresolved-dynamic-import as a coverage diagnostic, not a violation (Spec 58 R2)', async () => {
     const facts = {
       'cross-language-entities': {
         'src/plugin.ts': {
@@ -182,11 +182,17 @@ describe('createDependencyGraphReducer — orphan + reachability', () => {
     };
 
     const result = await run(facts);
-    const unresolved = result.violations.filter((v) => v.type === 'unresolved-dynamic-import');
-    expect(unresolved).toHaveLength(1);
-    expect(unresolved[0].file).toBe('src/plugin.ts');
-    expect(unresolved[0].line).toBe(12);
-    expect(unresolved[0].severity).toBe('high');
+    // No violation — the reclassified diagnostic must not gate.
+    const unresolvedViolations = result.violations.filter((v) => v.type === 'unresolved-dynamic-import');
+    expect(unresolvedViolations).toHaveLength(0);
+
+    // The diagnostic fires on the new channel, with file + line.
+    const diagnostics = (result.diagnostics ?? []).filter((d) => d.kind === 'unresolved-dynamic-import');
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].analyzerName).toBe('dependency-graph');
+    expect(diagnostics[0].file).toBe('src/plugin.ts');
+    expect(diagnostics[0].line).toBe(12);
+    expect(diagnostics[0].details).toEqual({ expression: 'specifier' });
   });
 
   it('persists reachability to graph_cache', async () => {

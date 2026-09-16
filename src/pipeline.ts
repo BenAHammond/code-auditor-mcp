@@ -379,6 +379,10 @@ export async function runStage2(
           // Accumulate violations
           const ar = visitorResults.get(visitor.name)!;
           ar.violations.push(...processedViolations);
+          // Accumulate per-occurrence coverage diagnostics (non-blocking)
+          if (result.diagnostics && result.diagnostics.length > 0) {
+            (ar.diagnostics ??= []).push(...result.diagnostics);
+          }
           const prevFiles = ar.status.status === 'visitor-ran' ? ar.status.filesProcessed : 0;
           ar.status = {
             status: 'visitor-ran',
@@ -548,6 +552,7 @@ async function runStage3(
           status: { status: 'reducer-ran', factsConsumed: result.factsConsumed ?? factsConsumed },
           executionTime: rMs,
           analyzerName: reducer.name,
+          ...(result.diagnostics && result.diagnostics.length > 0 && { diagnostics: result.diagnostics }),
         });
 
         if (result.facts && Object.keys(result.facts).length > 0) {
@@ -642,6 +647,7 @@ async function runStage4(
           status: { status: 'reducer-ran', factsConsumed: result.factsConsumed ?? factsConsumed },
           executionTime: rMs,
           analyzerName: dr.name,
+          ...(result.diagnostics && result.diagnostics.length > 0 && { diagnostics: result.diagnostics }),
         });
       }
     } catch (err: any) {
@@ -836,8 +842,10 @@ export async function runPipeline(
     analyzerResults[name] = result;
   }
 
-  // Collect diagnostics
-  const diagnostics: Array<{ analyzerName: string; kind: string; message: string }> = [];
+  // Collect diagnostics — both `not-run` statuses (the analyzer never ran) and
+  // per-occurrence coverage diagnostics (the analyzer ran but couldn't see some
+  // SQL/import). Both are "the tool couldn't see", never "the code is wrong".
+  const diagnostics: Array<{ analyzerName: string; kind: string; message: string; file?: string; line?: number; details?: Record<string, unknown> }> = [];
   for (const [name, result] of Object.entries(analyzerResults)) {
     if (result.status && result.status.status === 'notRun') {
       diagnostics.push({
@@ -845,6 +853,9 @@ export async function runPipeline(
         kind: 'not-run',
         message: result.status.reason,
       });
+    }
+    if (result.diagnostics && result.diagnostics.length > 0) {
+      diagnostics.push(...result.diagnostics);
     }
   }
 

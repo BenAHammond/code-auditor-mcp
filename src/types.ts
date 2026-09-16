@@ -170,6 +170,29 @@ export interface Violation {
 }
 
 /**
+ * A coverage diagnostic — a per-occurrence record that the analyzer could not
+ * *see* a region of the code, as distinct from a {@link Violation}, which says
+ * the code is wrong. Diagnostics are never blocking: the gate only ever reads
+ * violations. They are surfaced (counted, with file + line) in the report's
+ * coverage section and in the `metadata.diagnostics` channel alongside
+ * `zero-files` / `no-result` ("the tool couldn't do its job").
+ */
+export interface CoverageDiagnostic {
+  /** Owning analyzer (e.g. `schema`, `dependency-graph`). */
+  analyzerName: string;
+  /** The diagnostic kind — currently `unresolved-query` or `unresolved-dynamic-import`. */
+  kind: 'unresolved-query' | 'unresolved-dynamic-import';
+  /** Human-readable explanation of what could not be resolved. */
+  message: string;
+  /** File the unresolved construct is in. */
+  file: string;
+  /** 1-based line of the unresolved construct. */
+  line: number;
+  /** Kind-specific detail (e.g. `{ identifier }` or `{ expression }`). */
+  details?: Record<string, unknown>;
+}
+
+/**
  * Per-rule coverage classification — emitted on every audit.
  * @see buildCoverageReport() in pipeline.ts
  */
@@ -234,6 +257,8 @@ export interface AnalyzerResult {
   status: AnalyzerStatus;
   analyzerName: string;
   errors?: Array<{ file: string; error: string }>;
+  /** Per-occurrence coverage diagnostics (non-blocking). */
+  diagnostics?: CoverageDiagnostic[];
   /** Number of files processed by the analyzer. */
   filesProcessed?: number;
   /** Arbitrary metrics bag — used by cross-domain, visualizations, etc. */
@@ -297,6 +322,9 @@ export interface VisitorResult {
   violations: Violation[];
   facts: Record<string, unknown>;
   indexFacts?: IndexFactsEntry[];
+  /** Per-occurrence coverage diagnostics (non-blocking). Collected into
+   *  `metadata.diagnostics` by the pipeline. */
+  diagnostics?: CoverageDiagnostic[];
 }
 
 /** Return type from stage-3/4 reducer reduce(). */
@@ -315,6 +343,9 @@ export interface ReducerResult {
    * `context.readSource` do not need to report here.
    */
   consumedFiles?: string[];
+  /** Per-occurrence coverage diagnostics (non-blocking). Collected into
+   *  `metadata.diagnostics` by the pipeline. */
+  diagnostics?: CoverageDiagnostic[];
 }
 
 /** Per-file visitor — runs on every AST in stage 2. */
@@ -505,7 +536,7 @@ export interface PipelineResult {
     filesAnalyzed: number;
     stageTiming: Record<string, number>;
     scoped?: boolean;
-    diagnostics?: Array<{ analyzerName: string; kind: string; message: string }>;
+    diagnostics?: Array<{ analyzerName: string; kind: string; message: string; file?: string; line?: number; details?: Record<string, unknown> }>;
     coverage?: RuleCoverage[];
     /** Spec 29: Per-table provenance catalog from schema reducer */
     tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
@@ -619,8 +650,9 @@ export interface AuditResult {
     provenanceResolutionMs?: number;
     /** Blast radius impact for changed functions (Spec 14 R6 — scoped audits only). */
     blastRadius?: BlastRadiusImpact;
-    /** Zero-files or missing-result diagnostics (v3.4.8 — verify:dist gate hardening). */
-    diagnostics?: Array<{analyzerName: string; kind: string; message: string}>;
+    /** Zero-files / missing-result diagnostics plus per-occurrence coverage
+     *  diagnostics (unresolved SQL/specifier). Non-blocking — see CoverageDiagnostic. */
+    diagnostics?: Array<{analyzerName: string; kind: string; message: string; file?: string; line?: number; details?: Record<string, unknown>}>;
     baseline?: {
       present: boolean;
       hash?: string;

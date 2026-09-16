@@ -462,6 +462,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let pipelineInputPresence: InputPresence | undefined;
     let pipelineRuleTiming: Array<{ ruleId: string; totalMs: number; calls: number }> | undefined;
     let pipelineFileAccounting: FileAccountingSummary | undefined;
+    let pipelineDiagnostics: Array<{ analyzerName: string; kind: string; message: string; file?: string; line?: number; details?: Record<string, unknown> }> | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -766,6 +767,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         pipelineInputPresence = pipelineResult.metadata?.inputPresence;
         pipelineRuleTiming = pipelineResult.metadata?.ruleTiming;
         pipelineFileAccounting = pipelineResult.metadata?.fileAccounting;
+        pipelineDiagnostics = pipelineResult.metadata?.diagnostics;
       } catch (error) {
         if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
           throw error;
@@ -1137,7 +1139,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         scope: scopeResultType,
         provenanceResolutionMs: provenanceTiming.totalMs,
         ...(blastRadius && { blastRadius }),
-        ...(zeroFilesDiagnostics.length > 0 && { diagnostics: zeroFilesDiagnostics }),
+        ...((zeroFilesDiagnostics.length > 0 || (pipelineDiagnostics?.length ?? 0) > 0) && {
+          diagnostics: [...zeroFilesDiagnostics, ...(pipelineDiagnostics ?? [])],
+        }),
         ...(baselineMetadata && { baseline: baselineMetadata }),
         ...(pipelineCoverage && { coverage: pipelineCoverage }),
         ...(pipelineTableCatalog && { tableCatalog: pipelineTableCatalog }),
