@@ -381,6 +381,80 @@ else
 fi
 cd "$SCRATCH"
 
+# --- Guard 10: pinned-npx fallback resolves to a running CLI -------------------
+# The hook's last-resort path is `npx -y -p code-auditor-mcp@<version> code-audit`.
+# A marketplace install copies only `plugin/` (no sibling `../dist/`), so on a
+# machine with no project-local or global code-audit this is the ONLY path to a
+# CLI. Prove two things: (a) resolve_code_audit pins npx to the plugin's exact
+# manifest version (never a `^` range), and (b) that pinned npx command — in the
+# environment the hook actually reaches it in, i.e. no other code-audit on PATH —
+# resolves to a running CLI reporting that exact version.
+echo ""
+echo "Checking pinned-npx fallback..."
+
+# npx prefers an already-installed `code-audit` on PATH over the `-p` package, so
+# a global would make this guard test a scenario the hook never sees (the hook only
+# reaches npx after `command -v code-audit` has already failed). Build a PATH that
+# drops only the directories that provide `code-audit`, leaving node/npm/npx at
+# their real locations. Symlinking is NOT safe here: npm's bin wrappers resolve
+# `npx-cli.js`/`npm-cli.js` relative to `dirname "$0"`, so a symlinked copy looks
+# for the script next to itself and dies with "Cannot find module …/npx-cli.js".
+CLEAN_PATH=""
+OLDIFS="$IFS"; IFS=:
+for _d in $PATH; do
+  _d="${_d:-.}"
+  [ -x "$_d/code-audit" ] && continue
+  if [ -n "$CLEAN_PATH" ]; then CLEAN_PATH="${CLEAN_PATH}:$_d"; else CLEAN_PATH="$_d"; fi
+done
+IFS="$OLDIFS"
+
+PLUGIN_SRC="node_modules/code-auditor-mcp/plugin"
+MANIFEST_VERSION="$(node -p "require('./${PLUGIN_SRC}/.claude-plugin/plugin.json').version" 2>/dev/null || true)"
+
+# (a) Static pin — resolve_code_audit in a marketplace layout emits an exact pin.
+FAKE_PLUGIN="$SCRATCH/marketplace-plugin"
+mkdir -p "$FAKE_PLUGIN/.claude-plugin" "$FAKE_PLUGIN/scripts"
+cp "$PLUGIN_SRC/.claude-plugin/plugin.json" "$FAKE_PLUGIN/.claude-plugin/plugin.json"
+cp "$PLUGIN_SRC/scripts/hook-common.sh" "$FAKE_PLUGIN/scripts/hook-common.sh"
+RESOLVED="$(CLAUDE_PLUGIN_ROOT="$FAKE_PLUGIN" PATH="$CLEAN_PATH" bash -c '
+  unset CLAUDE_PROJECT_DIR
+  . "$CLAUDE_PLUGIN_ROOT/scripts/hook-common.sh"
+  resolve_code_audit
+' 2>/dev/null || true)"
+EXPECTED_PIN="npx -y -p code-auditor-mcp@${MANIFEST_VERSION} code-audit"
+if [ -n "$MANIFEST_VERSION" ] && [ "$RESOLVED" = "$EXPECTED_PIN" ]; then
+  pass "resolve_code_audit pins npx to exact manifest version ${MANIFEST_VERSION}"
+else
+  fail "resolve_code_audit emitted '$RESOLVED' — expected exact pin '$EXPECTED_PIN' (a ^range can resolve a stale cached CLI and drive the plugin with the wrong analyzer code)"
+fi
+
+# (b) Runtime — the pinned npx command resolves to a running CLI at that version.
+# Pin to the latest PUBLISHED version (the to-be-released manifest version is not
+# on the registry yet at verify time); the mechanism is identical.
+PUBLISHED_VERSION="$(npm view code-auditor-mcp version 2>/dev/null || true)"
+if [ -z "$PUBLISHED_VERSION" ]; then
+  warn "npm registry unreachable — skipping pinned-npx runtime check"
+else
+  # Run from a neutral directory, NOT $SCRATCH. npx resolves a `code-auditor-mcp`
+  # already present on the local node_modules (the tarball we just installed into
+  # $SCRATCH — or a dev running this from inside the package itself) as "already
+  # available" and skips the `_npx` install, leaving `code-audit` unresolvable.
+  # The hook runs from the user's project (no such package), so reproduce that.
+  NPX_CHECK_DIR="$(mktemp -d -t ca-npx-check-XXXXX)"
+  cd "$NPX_CHECK_DIR"
+  # 2>&1 (not 2>/dev/null): a failure must name the cause, not vanish into an
+  # empty RUNTIME_OUT that the semver grep then turns into "semver none".
+  RUNTIME_OUT="$(PATH="$CLEAN_PATH" npx -y -p "code-auditor-mcp@${PUBLISHED_VERSION}" code-audit --version 2>&1 || true)"
+  cd "$SCRATCH"
+  rm -rf "$NPX_CHECK_DIR"
+  RUNTIME_SEM="$(printf '%s' "$RUNTIME_OUT" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?' | head -n 1 || true)"
+  if [ "$RUNTIME_SEM" = "$PUBLISHED_VERSION" ]; then
+    pass "npx -y -p code-auditor-mcp@${PUBLISHED_VERSION} code-audit --version → ${RUNTIME_SEM} (matches)"
+  else
+    fail "npx -y -p code-auditor-mcp@${PUBLISHED_VERSION} reported '${RUNTIME_OUT}' (semver ${RUNTIME_SEM:-none}) — expected ${PUBLISHED_VERSION}"
+  fi
+fi
+
 # --- Done ---------------------------------------------------------------------
 echo ""
 echo -e "${GREEN}========================================${NC}"

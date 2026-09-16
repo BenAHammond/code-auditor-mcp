@@ -28,7 +28,9 @@
 #    when installed from npm, not from the marketplace.
 # 2. Project-local install (consumer project's own node_modules).
 # 3. Global install / PATH.
-# 4. npx auto-install (only if nothing else resolves).
+# 4. npx auto-install (only if nothing else resolves), pinned to the plugin's
+#    exact manifest version — never a range — so this last-resort path cannot
+#    pull a different CLI than the plugin was built against.
 resolve_code_audit() {
   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js" ]; then
     echo "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js"
@@ -42,7 +44,17 @@ resolve_code_audit() {
     echo "code-audit"
     return
   fi
-  echo "npx -y -p code-auditor-mcp@^3.0.0 code-audit"
+  # Pin to the plugin's exact version, not a range: `@^3.0.0` could resolve a
+  # cached older CLI and silently drive this plugin with the wrong analyzer code.
+  local pv
+  pv="$(plugin_version)"
+  if [ -n "${pv}" ]; then
+    echo "npx -y -p code-auditor-mcp@${pv} code-audit"
+  else
+    # Manifest unreadable — assert_compatible will reject whatever this fetches,
+    # so `@latest` is only a last-ditch command that never survives the pin.
+    echo "npx -y -p code-auditor-mcp@latest code-audit"
+  fi
 }
 
 # plugin_version — the version this plugin declares in its manifest, or ''.
@@ -63,8 +75,8 @@ semver_of() {
 # assert_compatible <bin> — pin the plugin to a compatible CLI.
 #
 # The bundled CLI always matches (same package), so it needs no check. Any
-# fallback path can drift — a stale global, a project-local pin, or a wider npx
-# range — and a 3.4.0 plugin silently driving a 3.5.0 CLI is exactly the
+# fallback path can drift — a stale global, a project-local pin, or a stale npx
+# cache entry — and a 3.4.0 plugin silently driving a 3.5.0 CLI is exactly the
 # failure this guards.
 #
 # The comparison is semver-vs-semver (the CLI's real `--version`, not its full

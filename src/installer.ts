@@ -13,11 +13,15 @@ import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import chalk from 'chalk';
 import { PACKAGE_VERSION } from './constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// How long to wait for the npx cache-warm before giving up (never fatal).
+const NPM_CACHE_WARM_TIMEOUT_MS = 60_000;
 
 // Source: the repo's skill folder (shipped in the npm package at dist/../plugin/skills/code-auditor)
 const SKILL_SOURCE = join(__dirname, '..', 'plugin', 'skills', 'code-auditor');
@@ -132,6 +136,12 @@ export async function runInstall(options: InstallOptions): Promise<void> {
     results.push(result);
   }
 
+  // Warm the npx cache for this exact version so the hook's last-resort
+  // `npx -y -p code-auditor-mcp@<version> code-audit` path is not a multi-second
+  // download on the first edit. Non-fatal: a failed warm just means the hook pays
+  // the cold-start cost once on first use.
+  await warmNpxCache(PACKAGE_VERSION);
+
   // Print summary
   console.log(chalk.blue('\n── Install summary ──'));
   for (const r of results) {
@@ -144,6 +154,47 @@ export async function runInstall(options: InstallOptions): Promise<void> {
     }
   }
   console.log('');
+}
+
+/**
+ * Warm the npx cache for this exact version.
+ *
+ * The marketplace hook's last-resort path is `npx -y -p code-auditor-mcp@<version>
+ * code-audit`. On a cold cache that is a multi-second download (the package bundles
+ * every platform's native binaries), so the FIRST Write/Edit after a plugin install
+ * would block on a network fetch — the kind of apparent hang people disable hooks
+ * over. Pre-fetch it here so the first edit is warm.
+ *
+ * Non-fatal by design: a failed warm (offline, registry error) leaves the hook to
+ * pay the cold-start cost on first use, which is strictly better than failing the
+ * install over a warm-the-cache nicety.
+ */
+export function warmNpxCache(packageVersion: string): Promise<void> {
+  const spec = `code-auditor-mcp@${packageVersion}`;
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    const child = spawn('npx', ['-y', '-p', spec, 'code-audit', '--version'], {
+      stdio: 'ignore',
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      done();
+    }, NPM_CACHE_WARM_TIMEOUT_MS);
+    child.once('error', () => {
+      clearTimeout(timer);
+      done();
+    });
+    child.once('exit', () => {
+      clearTimeout(timer);
+      done();
+    });
+  });
 }
 
 /**

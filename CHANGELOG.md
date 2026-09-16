@@ -2,6 +2,27 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [Unreleased]
+
+### The npx fallback pins to the plugin's exact version and warms the cache
+
+The marketplace hook's last-resort path was `npx -y -p code-auditor-mcp@^3.0.0
+code-audit`. A `^` range can resolve a cached older CLI and silently drive the
+plugin with the wrong analyzer code, and on a cold cache that same npx fetch is a
+~5.7s download (the package bundles every platform's native binaries) that made the
+first Write/Edit after install block on a network fetch — the kind of apparent hang
+people disable hooks over.
+
+- `resolve_code_audit` now pins the npx fallback to the plugin's **exact** manifest
+  version (`npx -y -p code-auditor-mcp@<version> code-audit`), never a range. The
+  bundled-sibling path stays first — it is still the zero-cost path for npm installs
+  and costs nothing to keep.
+- `verify:dist` gained a guard that proves, in the environment the hook actually
+  reaches the fallback in (no other `code-audit` on PATH), the pinned npx command
+  resolves to a running CLI reporting that exact version — not assumed, demonstrated.
+- `code-audit install` now warms the npx cache for its own version, so the first
+  edit after setup is warm rather than a multi-second download. Non-fatal by design.
+
 ## [3.9.11] — 2026-09-15
 
 ### SQL assembled in a variable is no longer read as table-free
