@@ -2,7 +2,7 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [Unreleased] — Spec 58
+## [3.9.11] — 2026-09-15
 
 ### SQL assembled in a variable is no longer read as table-free
 
