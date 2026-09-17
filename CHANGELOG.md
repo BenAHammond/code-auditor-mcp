@@ -2,7 +2,7 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [Unreleased]
+## [3.10.0] — 2026-09-17
 
 ### The npx fallback pins to the plugin's exact version and warms the cache
 
