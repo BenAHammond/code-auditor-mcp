@@ -208,7 +208,7 @@ export function resolveDependency(
   return results;
 }
 
-function normalizePath(p: string): string {
+export function normalizePath(p: string): string {
   // Preserve a leading slash so absolute paths survive normalization. Dropping
   // the empty first segment (the root) here was silently turning
   // `/abs/src/db` into `abs/src/db`, which then never matched the absolute

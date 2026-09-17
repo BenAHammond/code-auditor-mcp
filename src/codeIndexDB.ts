@@ -303,7 +303,7 @@ export class CodeIndexDB {
   private stmts: Map<string, SqliteStatement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 12;
+  private static readonly SCHEMA_VERSION = 13;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -828,6 +828,28 @@ export class CodeIndexDB {
         }
       });
       backfill();
+    }
+
+    // Migration 12 → 13: import_specifiers (Spec 60 — import classification at
+    // emission). One row per static import specifier occurrence, classified
+    // package / unresolved-alias / internal-resolved / internal-broken /
+    // unresolved-virtual (Spec 60.1 widened the three-class scheme to five;
+    // `classification` is free TEXT, no constraint, so no further migration).
+    // Nothing consumes it yet (Spec 61 persists edges; Spec 62 derives coverage).
+    // Flat — resolved_path inline, no lookup table, no join.
+    if (currentVersion < 13) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS import_specifiers (
+          file_path       TEXT NOT NULL,
+          specifier       TEXT NOT NULL,
+          classification  TEXT NOT NULL,
+          resolved_path   TEXT,
+          line            INTEGER,
+          PRIMARY KEY (file_path, specifier, line)
+        );
+        CREATE INDEX IF NOT EXISTS idx_import_specifiers_class ON import_specifiers(classification);
+        CREATE INDEX IF NOT EXISTS idx_import_specifiers_resolved ON import_specifiers(resolved_path);
+      `);
     }
 
   }

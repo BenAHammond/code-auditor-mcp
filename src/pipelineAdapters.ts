@@ -47,6 +47,7 @@ import {
   extractFunctionCalls,
 } from './utils/dependencyExtractor.js';
 import { resolveDependency, basenameNoExt } from './graph/importGraph.js';
+import { classifyImportSpecifier, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
 import {
   isReactComponent,
   detectComponentType,
@@ -282,6 +283,17 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
         table: 'functions',
         data: { _action: 'clear-by-file', file_path: filePath },
       });
+
+      // Spec 60 — import classification is TS/JS-only: the normalization probe
+      // list has no `.go` extension, so applying it to Go relative imports would
+      // manufacture false `internal-broken` rows. Clear + re-emit only for TS/JS.
+      const isTsJs = lang === 'typescript' || lang === 'javascript';
+      if (isTsJs) {
+        indexFacts.push({
+          table: 'import_specifiers',
+          data: { _action: 'clear-by-file', file_path: filePath },
+        });
+      }
 
       // Build import map once per file for resolving call targets
       const importMap = buildImportMap(root);
@@ -520,6 +532,52 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
         isRequire: false,
         line: imp.location.start.line,
       }));
+
+      // Spec 60.1 — classify each static import specifier and emit one row per
+      // occurrence to `import_specifiers`. The corpus file set is the stage-1
+      // discovery list, threaded here as `_infra.files` (merged into
+      // `context.config` by pipeline.ts). Existence is checked against that
+      // in-memory set, never `fs.existsSync`. Virtual-module list + tsconfig
+      // `paths` patterns are threaded via `_infra` and passed to the classifier.
+      if (isTsJs) {
+        // Spec 60.1 Correction 1 — corpus set is the unfiltered discovery list
+        // (`_infra.corpusFiles`), not the narrowed `_infra.files`. The latter is
+        // the audit's analysis list (already pruned by includePaths/excludePaths),
+        // which drops `.json`/other non-analyzed extensions and would mis-classify
+        // a real `./invariant-rules.schema.json` as `internal-broken`.
+        const corpusFiles = new Set(
+          ((context.config as { corpusFiles?: string[] }).corpusFiles) ??
+            ((context.config as { files?: string[] }).files) ??
+            [],
+        );
+        const virtualModules = (context.config as { importVirtualModules?: string[] }).importVirtualModules
+          ?? DEFAULT_VIRTUAL_MODULES;
+        const tsconfigAliases = (context.config as {
+          tsconfigAliases?: { pathPatterns?: string[] };
+        }).tsconfigAliases;
+        for (const imp of staticImportInfos) {
+          const { classification, resolvedPath } = classifyImportSpecifier(
+            imp.source,
+            filePath,
+            corpusFiles,
+            {
+              virtualModules,
+              aliasPatterns: tsconfigAliases?.pathPatterns ?? [],
+            },
+          );
+          indexFacts.push({
+            table: 'import_specifiers',
+            data: {
+              file_path: filePath,
+              specifier: imp.source,
+              classification,
+              resolved_path: resolvedPath ?? null,
+              line: imp.location.start.line,
+            },
+            conflictKey: 'file_path, specifier, line',
+          });
+        }
+      }
 
       // Dynamic import() and require() — first attempt with pure NodePattern
       // Plan note: import keyword is an anonymous tree-sitter node, so

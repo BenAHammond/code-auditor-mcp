@@ -37,6 +37,7 @@ import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js'
 import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
 import { applyDismissals } from './dismissals.js';
 import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
+import { readTsconfigAliases, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
 
 // Import universal analyzers
 import { initializeLanguages } from './languages/index.js';
@@ -322,9 +323,29 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     }
 
     const root = path.resolve(mergedOptions.projectRoot || process.cwd());
+
+    // Spec 60.1 Correction 1 — the import classifier's corpus file set must be
+    // the UNFILTERED stage-1 discovery list, not the audit's `files` list.
+    // `files` is narrowed at two points before `_infra` is built:
+    //   1. Polyglot (Go) path — `LanguageOrchestrator.discoverAndGroupFiles`
+    //      drops files with no detectable language (`.json`, `.sql`), then
+    //      `TypeScriptAnalyzer.analyze` (RuntimeManager.ts) re-runs `runAudit`
+    //      with `includePaths: files` = the TS-only list.
+    //   2. `filterFiles` (fileDiscovery.ts, called from `findFiles`) applies
+    //      `includePaths` as a positive-selection glob filter — a `.json` file
+    //      that survives step 1 is dropped here (or by the default `includePaths`
+    //      from config/defaults.ts, which omits `.json`).
+    // Either way `_infra.files` no longer contains `.json`, so a real
+    // `./invariant-rules.schema.json` import classifies `internal-broken`.
+    // Classification answers "does this import resolve to a real file",
+    // independent of what the audit chooses to analyze, so it re-walks
+    // discovery with ALL_EXTENSIONS and no include/exclude narrowing.
+    const corpusFiles = await discoverFiles(root);
+
     logMcpInfo('discovery', 'file discovery finished', {
       projectRoot: path.resolve(root),
       totalFiles: files.length,
+      corpusFiles: corpusFiles.length,
       scope: scopeResultType,
       indexFunctions: !!mergedOptions.indexFunctions
     });
@@ -656,6 +677,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         projectRoot: root,
         _provenanceTiming: provenanceTiming,
         files,
+        // Spec 60.1 Correction 1 — unfiltered discovery list, used as the
+        // classifier's corpus set (see the computation above for why `files`
+        // is too narrow).
+        corpusFiles,
+        // Spec 60.1 — virtual-module list (config, default ['.blitz']) and the
+        // project's tsconfig `paths` patterns (alias classification only, no
+        // resolution). Threaded here so the function-index visitor reads them
+        // once per run rather than re-reading tsconfig per file.
+        importVirtualModules: mergedOptions.importVirtualModules ?? DEFAULT_VIRTUAL_MODULES,
+        tsconfigAliases: readTsconfigAliases(root),
       };
 
       const pipelineConfig: PipelineConfig = {

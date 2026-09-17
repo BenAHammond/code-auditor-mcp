@@ -4,6 +4,30 @@ All notable changes to the Code Auditor MCP project.
 
 ## [Unreleased]
 
+### Import specifiers are classified at emission (Spec 60.1)
+
+Every static import specifier the function-index visitor already emits is now
+classified into exactly one of five classes — `package` (not `.`/`/`-prefixed and
+no tsconfig `paths`/`@/` alias), `unresolved-alias` (matches a tsconfig `paths`
+pattern or begins with `@/`), `internal-resolved` (`.`/`/`-prefixed and
+normalization finds one existing file), `internal-broken` (`.`/`/`-prefixed and no
+existing file), or `unresolved-virtual` (matches a configured virtual module such as
+Blitz's `.blitz`) — and persisted to the `import_specifiers` table. Classification
+happens at emission in the stage-2 visitor. The classifier (`classifyImportSpecifier`)
+is a pure function that reuses `normalizePath` (now exported from `importGraph.ts`)
+and does not use `resolveDependency` — whose basename/path-segment fallback this
+spec replaces.
+
+Correction 1 fixes the corpus file set: classification answers "does this import
+resolve to a real file" independent of what the audit chooses to analyze, so it
+re-walks discovery with `ALL_EXTENSIONS` and no include/exclude narrowing rather
+than reusing the audit's narrowed `files` list — which had dropped `.json`/`.sql`
+and misclassified a real `./invariant-rules.schema.json` import as `internal-broken`.
+
+Known limits (reported, not fixed here): `export {x} from './y'` re-exports and bare
+`import './side-effect'` statements are not captured by `buildImportInfo`, so they
+produce no `import_specifiers` row.
+
 ### The pinned fallback installs and invokes by absolute path, not `npx`
 
 The last-resort fallback was `npx -p code-auditor-mcp@<version> code-audit`. That form

@@ -831,6 +831,11 @@ export interface AuditConfig {
   /** Spec 36 R5 — written justifications for each non-default threshold, keyed `"<analyzer>.<key>"`. */
   rationales?: Record<string, string>;
   /**
+   * Spec 60.1 — virtual-module specifiers (exact match) classified as
+   * `unresolved-virtual` instead of `internal-broken`. Defaults to `['.blitz']`.
+   */
+  importVirtualModules?: string[];
+  /**
    * Spec 50 — daemon behaviour. The daemon is never a dependency (R2); these
    * keys only tune when it is (optionally) started and how long it lingers.
    */
@@ -974,6 +979,8 @@ export interface AuditRunnerOptions extends AuditOptions {
   rationales?: Record<string, string>;
   /** Shareable presets to apply (Spec 38 R4) — resolved by id via `getPreset`. */
   presets?: string[];
+  /** Spec 60.1 — virtual-module specifiers (exact match), default `['.blitz']`. */
+  importVirtualModules?: string[];
   indexFunctions?: boolean; // Whether to index functions during audit
   analyzerConcurrency?: number; // Number of analyzers to run in parallel
   /** Cooperative cancel (MCP parent or worker soft budget). Checked between analyzers and on progress. */
