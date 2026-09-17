@@ -381,25 +381,28 @@ else
 fi
 cd "$SCRATCH"
 
-# --- Guard 10: pinned-npx fallback resolves to a running CLI -------------------
-# The hook's last-resort path is `npx -y -p code-auditor-mcp@<version> code-audit`.
-# A marketplace install copies only `plugin/` (no sibling `../dist/`), so on a
-# machine with no project-local or global code-audit this is the ONLY path to a
-# CLI. Prove two things: (a) resolve_code_audit pins npx to the plugin's exact
-# manifest version (never a `^` range), and (b) that pinned npx command — in the
+# --- Guard 10: pinned-install fallback resolves to a running CLI ---------------
+# The hook's last-resort path installs `code-auditor-mcp@<version>` to a
+# deterministic cache dir and invokes `node_modules/.bin/code-audit` by absolute
+# path — NOT `npx -p <pkg> <bin>`, which a same-named binary earlier in PATH (a
+# global shim, or a volta shim) shadows, routing the "fallback" back to the stale
+# binary it was meant to replace. A marketplace install copies only `plugin/` (no
+# sibling `../dist/`), so on a machine with no project-local or global code-audit
+# this is the ONLY path to a CLI. Prove two things: (a) resolve_code_audit — in the
 # environment the hook actually reaches it in, i.e. no other code-audit on PATH —
-# resolves to a running CLI reporting that exact version.
+# emits the pinned install's absolute bin path at the exact version (never a `^`
+# range), and (b) that path is a running CLI reporting that exact version.
 echo ""
-echo "Checking pinned-npx fallback..."
+echo "Checking pinned-install fallback..."
 
-# The static check (a) below must reach the npx rung, which only happens when no
-# compatible `code-audit` is on PATH (resolution is version-aware: bundled sibling,
-# then a version-matched project-local or global, then npx). Build a PATH that
-# drops only the directories that provide `code-audit` so `command -v code-audit`
-# fails, leaving node/npm/npx at their real locations. Symlinking is NOT safe
-# here: npm's bin wrappers resolve `npx-cli.js`/`npm-cli.js` relative to
-# `dirname "$0"`, so a symlinked copy looks for the script next to itself and dies
-# with "Cannot find module …/npx-cli.js".
+# The static check (a) below must reach the install rung, which only happens when
+# no compatible `code-audit` is on PATH (resolution is version-aware: bundled
+# sibling, then a version-matched project-local or global, then the pinned
+# install). Build a PATH that drops only the directories that provide `code-audit`
+# so `command -v code-audit` fails, leaving node/npm at their real locations
+# (e.g. `.nvm/.../bin`, `/usr/local/bin`). Symlinking is NOT safe here: npm's bin
+# wrappers resolve `npm-cli.js` relative to `dirname "$0"`, so a symlinked copy
+# looks for the script next to itself and dies with "Cannot find module …".
 CLEAN_PATH=""
 OLDIFS="$IFS"; IFS=:
 for _d in $PATH; do
@@ -410,50 +413,50 @@ done
 IFS="$OLDIFS"
 
 PLUGIN_SRC="node_modules/code-auditor-mcp/plugin"
-MANIFEST_VERSION="$(node -p "require('./${PLUGIN_SRC}/.claude-plugin/plugin.json').version" 2>/dev/null || true)"
-
-# (a) Static pin — resolve_code_audit in a marketplace layout emits an exact pin.
 FAKE_PLUGIN="$SCRATCH/marketplace-plugin"
 mkdir -p "$FAKE_PLUGIN/.claude-plugin" "$FAKE_PLUGIN/scripts"
-cp "$PLUGIN_SRC/.claude-plugin/plugin.json" "$FAKE_PLUGIN/.claude-plugin/plugin.json"
 cp "$PLUGIN_SRC/scripts/hook-common.sh" "$FAKE_PLUGIN/scripts/hook-common.sh"
-RESOLVED="$(CLAUDE_PLUGIN_ROOT="$FAKE_PLUGIN" PATH="$CLEAN_PATH" bash -c '
-  unset CLAUDE_PROJECT_DIR
-  . "$CLAUDE_PLUGIN_ROOT/scripts/hook-common.sh"
-  resolve_code_audit
-' 2>/dev/null || true)"
-EXPECTED_PIN="npx -y -p code-auditor-mcp@${MANIFEST_VERSION} code-audit"
-if [ -n "$MANIFEST_VERSION" ] && [ "$RESOLVED" = "$EXPECTED_PIN" ]; then
-  pass "resolve_code_audit pins npx to exact manifest version ${MANIFEST_VERSION}"
-else
-  fail "resolve_code_audit emitted '$RESOLVED' — expected exact pin '$EXPECTED_PIN' (a ^range can resolve a stale cached CLI and drive the plugin with the wrong analyzer code)"
-fi
 
-# (b) Runtime — the pinned npx command resolves to a running CLI at that version.
 # Pin to the latest PUBLISHED version (the to-be-released manifest version is not
-# on the registry yet at verify time); the mechanism is identical.
+# on the registry yet at verify time); the mechanism is identical, only the
+# version string differs. Write it into the fake manifest so plugin_version feeds
+# resolve_pinned_bin the exact spec.
 PUBLISHED_VERSION="$(npm view code-auditor-mcp version 2>/dev/null || true)"
 if [ -z "$PUBLISHED_VERSION" ]; then
-  warn "npm registry unreachable — skipping pinned-npx runtime check"
+  warn "npm registry unreachable — skipping pinned-install fallback check"
 else
-  # Run from a neutral directory, NOT $SCRATCH. $SCRATCH is the tarball we just
-  # packed, so its package.json name is `code-auditor-mcp` itself: npx treats the
-  # current package as already satisfying the `-p` spec, skips the `_npx` install,
-  # and `code-audit` falls back to whatever else is on PATH (a global, or nothing →
-  # "command not found"). The hook runs from the user's project (a different name),
-  # so reproduce that.
-  NPX_CHECK_DIR="$(mktemp -d -t ca-npx-check-XXXXX)"
-  cd "$NPX_CHECK_DIR"
-  # 2>&1 (not 2>/dev/null): a failure must name the cause, not vanish into an
-  # empty RUNTIME_OUT that the semver grep then turns into "semver none".
-  RUNTIME_OUT="$(PATH="$CLEAN_PATH" npx -y -p "code-auditor-mcp@${PUBLISHED_VERSION}" code-audit --version 2>&1 || true)"
+  echo "{\"version\": \"$PUBLISHED_VERSION\"}" > "$FAKE_PLUGIN/.claude-plugin/plugin.json"
+
+  # A controlled cache root so the install is assertable and does not pollute the
+  # user's real ~/.cache/code-auditor.
+  PIN_CACHE="$SCRATCH/pin-cache"
+
+  # (a) Static — resolve_code_audit installs the exact version and emits the
+  # absolute bin path. Run from a neutral dir (the hook runs from the user's
+  # project, not the packed tarball whose package.json is named code-auditor-mcp).
+  PIN_CHECK_DIR="$(mktemp -d -t ca-pin-check-XXXXX)"
+  RESOLVED="$(cd "$PIN_CHECK_DIR" && CLAUDE_PLUGIN_ROOT="$FAKE_PLUGIN" XDG_CACHE_HOME="$PIN_CACHE" PATH="$CLEAN_PATH" bash -c '
+    unset CLAUDE_PROJECT_DIR
+    . "$CLAUDE_PLUGIN_ROOT/scripts/hook-common.sh"
+    resolve_code_audit
+  ' 2>/dev/null || true)"
   cd "$SCRATCH"
-  rm -rf "$NPX_CHECK_DIR"
+  rm -rf "$PIN_CHECK_DIR"
+
+  EXPECTED_BIN="$PIN_CACHE/code-auditor/cli/$PUBLISHED_VERSION/node_modules/.bin/code-audit"
+  if [ "$RESOLVED" = "$EXPECTED_BIN" ]; then
+    pass "resolve_code_audit emits the pinned install's absolute bin path at $PUBLISHED_VERSION"
+  else
+    fail "resolve_code_audit emitted '$RESOLVED' — expected absolute bin '$EXPECTED_BIN' (an npx or ^range form resolves against a PATH the hook does not control)"
+  fi
+
+  # (b) Runtime — the emitted path is a running CLI at the exact version.
+  RUNTIME_OUT="$("$EXPECTED_BIN" --version 2>&1 || true)"
   RUNTIME_SEM="$(printf '%s' "$RUNTIME_OUT" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?' | head -n 1 || true)"
   if [ "$RUNTIME_SEM" = "$PUBLISHED_VERSION" ]; then
-    pass "npx -y -p code-auditor-mcp@${PUBLISHED_VERSION} code-audit --version → ${RUNTIME_SEM} (matches)"
+    pass "pinned install $EXPECTED_BIN --version → $RUNTIME_SEM (matches)"
   else
-    fail "npx -y -p code-auditor-mcp@${PUBLISHED_VERSION} reported '${RUNTIME_OUT}' (semver ${RUNTIME_SEM:-none}) — expected ${PUBLISHED_VERSION}"
+    fail "pinned install reported '$RUNTIME_OUT' (semver ${RUNTIME_SEM:-none}) — expected $PUBLISHED_VERSION"
   fi
 fi
 

@@ -4,6 +4,24 @@ All notable changes to the Code Auditor MCP project.
 
 ## [Unreleased]
 
+### The pinned fallback installs and invokes by absolute path, not `npx`
+
+The last-resort fallback was `npx -p code-auditor-mcp@<version> code-audit`. That form
+resolves the bin *name* against a PATH the hook does not control, so a same-named
+binary earlier in PATH — a global `code-audit`, or a volta shim — shadows the pin,
+and the "fallback" silently routes back to the stale global it was meant to replace.
+Loud (version-checked), but broken, and the user's only recourse was the manual
+update the pin existed to avoid. `resolve_code_audit` now skips `npx` for execution
+entirely: `resolve_pinned_bin` installs the exact version to a deterministic dir
+(`${XDG_CACHE_HOME:-~/.cache}/code-auditor/cli/<version>`) and emits the absolute
+`node_modules/.bin/code-audit` path, so PATH is never consulted for the bin name.
+`--ignore-scripts` is safe here (the CLI uses `node:sqlite` and ships prebuilt
+binaries) and faster. The `SessionStart` warm and `code-audit install`'s warm now
+install to the same dir, and both short-circuit when it is already populated, so a
+warm session pays no registry re-check. If the install fails (offline, registry
+error), the fallback emits a last-ditch `npx` command that `assert_compatible`
+rejects loudly — never an empty command, never a silent mis-pin.
+
 ### The bundled CLI is version-checked like every other candidate
 
 `resolve_code_audit` trusted the bundled sibling (`CLAUDE_PLUGIN_ROOT/../dist/cli.js`)
@@ -13,17 +31,17 @@ gitignored local build that can be stale. A stale bundled sibling is now warned 
 and skipped like any other candidate, and `assert_compatible` no longer short-circuits
 it — no path is trusted without a `--version` check.
 
-### A SessionStart hook warms the npx cache before the first edit
+### A SessionStart hook warms the pinned CLI install before the first edit
 
-A marketplace install has no lifecycle step, so `code-audit install`'s npx warm never
-ran on the `claude plugin install` path, and the first Write/Edit after a marketplace
-install still blocked on the pinned npx fallback's cold fetch. The plugin now registers
-a `SessionStart` hook (`startup|resume`) that background-warms the same pinned npx
-command, so the first edit is warm. It is deliberately non-blocking and silent: the
-fetch is `nohup`-backgrounded and returns immediately, and every failure (offline,
-missing `npx`, unreadable manifest) is a quiet no-op — a warm-the-cache nicety must
-never delay session start or complain. `--prefer-offline` makes a warm cache a pure
-cache hit (no registry re-check on every launch) while still fetching on a cold cache.
+A marketplace install has no lifecycle step, so `code-audit install`'s warm never ran
+on the `claude plugin install` path, and the first Write/Edit after a marketplace
+install still blocked on the pinned fallback's cold fetch. The plugin now registers a
+`SessionStart` hook (`startup|resume`) that background-warms the same pinned install,
+so the first edit is warm. It is deliberately non-blocking and silent: the install is
+`nohup`-backgrounded and returns immediately, and every failure (offline, missing
+`npm`, unreadable manifest) is a quiet no-op — a warm-the-cache nicety must never
+delay session start or complain. `--prefer-offline` makes a warm cache a pure cache
+hit (no registry re-check on every launch) while still fetching on a cold cache.
 
 ## [3.10.0] — 2026-09-17
 

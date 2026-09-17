@@ -198,19 +198,33 @@ describe('SessionStart warm hook (hook-warm.sh)', () => {
     expect(() => accessSync(resolve(PLUGIN_DIR, 'scripts', 'hook-warm.sh'), X_OK)).not.toThrow();
   });
 
-  it('backgrounds the npx fetch so it never blocks session start', () => {
-    // `nohup … &` detaches the fetch and the script exits 0 immediately; a warm
+  it('backgrounds the pinned install so it never blocks session start', () => {
+    // `nohup … &` detaches the install and the script exits 0 immediately; a warm
     // that blocked session start would be worse than the cold fetch it avoids.
-    expect(warmContent).toContain('nohup npx --prefer-offline');
+    expect(warmContent).toContain('nohup npm install --prefer-offline');
     expect(warmContent).toContain('>/dev/null 2>&1 </dev/null &');
     expect(warmContent).toContain('exit 0');
   });
 
+  it('installs to the same deterministic dir resolve_code_audit uses (pin_dir)', () => {
+    // The warm must target the exact dir resolve_pinned_bin installs into, so the
+    // first edit's resolver finds the CLI already there — no PATH resolution that
+    // a same-named global could shadow.
+    expect(warmContent).toContain('pin_dir');
+    expect(warmContent).toContain('node_modules/.bin/code-audit');
+  });
+
   it('pins the warm to the plugin version, never @latest', () => {
-    // plugin_version feeds the exact manifest version into the pinned npx spec,
+    // plugin_version feeds the exact manifest version into the pinned install,
     // matching resolve_code_audit's last-resort command.
     expect(warmContent).toContain('plugin_version');
     expect(warmContent).toContain('code-auditor-mcp@${pv}');
+  });
+
+  it('short-circuits when already installed (no re-check on a warm session)', () => {
+    // A warm session must not re-run npm install on every launch; it exits 0 as
+    // soon as the installed bin exists.
+    expect(warmContent).toContain('[ -x "${bin}" ] && exit 0');
   });
 
   it('is silent on failure — output to /dev/null, no stderr diagnostics', () => {
@@ -287,6 +301,22 @@ describe('Hook compatibility pin (hook-common.sh)', () => {
   it('names both versions on a mismatch', () => {
     expect(content).toContain('version mismatch: plugin');
     expect(content).toContain('vs CLI');
+  });
+
+  it('installs the pinned package to a deterministic dir and invokes it by absolute path (not npx)', () => {
+    // The shadowing fix: npx -p puts the package bin on PATH where a same-named
+    // global shim shadows it. resolve_pinned_bin must npm-install to pin_dir and
+    // echo node_modules/.bin/code-audit, so PATH is never consulted.
+    expect(content).toContain('resolve_pinned_bin');
+    expect(content).toContain('pin_dir');
+    expect(content).toContain('node_modules/.bin/code-audit');
+    expect(content).toContain('npm install --prefer-offline --prefix');
+    expect(content).toContain('--ignore-scripts');
+  });
+
+  it('pin_dir keys the install by version so a plugin update installs a fresh copy', () => {
+    expect(content).toContain('XDG_CACHE_HOME');
+    expect(content).toContain('/code-auditor/cli/');
   });
 });
 

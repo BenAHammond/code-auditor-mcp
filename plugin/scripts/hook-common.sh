@@ -14,8 +14,8 @@
 #
 # The plugin cache does NOT ship a bundled CLI (dist/ is gitignored, so a
 # marketplace install from `./plugin` has no `../dist/`), which means the
-# fallback paths (project-local, global/PATH, npx) are the common case — but a
-# checkout where a developer *did* build dist/ locally ships a `../dist/cli.js`
+# fallback paths (project-local, global/PATH, pinned install) are the common case —
+# but a checkout where a developer *did* build dist/ locally ships a `../dist/cli.js`
 # that is a local, possibly stale build, not the npm-paired dist/. The two files
 # differ in more than freshness: npm's bin-links chmod the packaged `dist/cli.js`
 # to `-rwxr-xr-x` at install, while local `tsc` output stays `-rw-r--r--`, so a
@@ -23,7 +23,7 @@
 # old presence-only check would have trusted and then failed to run. Resolution is
 # version-aware: EVERY candidate — the bundled sibling included — is used only
 # when its `--version` matches the manifest, otherwise it is warned about and
-# skipped, so a mismatched binary falls through to the pinned npx fetch instead
+# skipped, so a mismatched binary falls through to the pinned install instead
 # of hard-failing. `assert_compatible` remains the final loud backstop on whatever
 # resolve_code_audit returns. Together they stop the third quiet failure: a stale
 # binary silently driving a newer plugin.
@@ -35,9 +35,9 @@
 # Resolution is version-aware: EVERY candidate — bundled sibling, project-local,
 # global — is used only when its `--version` matches this plugin's manifest
 # version. A stale candidate is warned about and skipped, so a mismatched binary
-# no longer turns the hook into a hard failure; the pinned npx below resolves the
-# correct CLI on its own (and warn_stale tells the user to update so the fast path
-# comes back).
+# no longer turns the hook into a hard failure; the pinned install below resolves
+# the correct CLI on its own (and warn_stale tells the user to update so the fast
+# path comes back).
 #
 # 1. The plugin's bundled CLI (`${CLAUDE_PLUGIN_ROOT}/../dist/cli.js` ships in the
 #    same npm package, so it usually matches) — but a marketplace checkout has no
@@ -45,8 +45,10 @@
 #    version-checked like everything else.
 # 2. Project-local install (consumer project's own node_modules) — if compatible.
 # 3. Global install / PATH — if compatible.
-# 4. npx auto-install, pinned to the plugin's exact manifest version — never a
-#    range — the guaranteed-correct fallback when nothing compatible is installed.
+# 4. Pinned install, exact manifest version — never a range — the guaranteed-
+#    correct fallback when nothing compatible is installed. The package is
+#    installed to a deterministic dir and its bin invoked by absolute path; npx is
+#    deliberately NOT used for execution (see resolve_pinned_bin).
 resolve_code_audit() {
   local candidate
   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js" ]; then
@@ -75,15 +77,56 @@ resolve_code_audit() {
   fi
   # Pin to the plugin's exact version, not a range: `@^3.0.0` could resolve a
   # cached older CLI and silently drive this plugin with the wrong analyzer code.
-  local pv
+  local pv bin
   pv="$(plugin_version)"
   if [ -n "${pv}" ]; then
-    echo "npx -y -p code-auditor-mcp@${pv} code-audit"
+    if bin="$(resolve_pinned_bin)"; then
+      echo "${bin}"
+    else
+      # Install failed (offline, registry error, npm missing). Emit the npx form
+      # as a last-ditch command so the hook still has something to run;
+      # assert_compatible rejects it loudly if it cannot be verified — the same
+      # treatment as the unreadable-manifest case below.
+      echo "npx -y -p code-auditor-mcp@${pv} code-audit"
+    fi
   else
     # Manifest unreadable — assert_compatible will reject whatever this fetches,
     # so `@latest` is only a last-ditch command that never survives the pin.
     echo "npx -y -p code-auditor-mcp@latest code-audit"
   fi
+}
+
+# pin_dir — the deterministic directory the pinned CLI is installed into. The
+# version is part of the path so a plugin update installs a fresh copy instead of
+# reusing (and possibly mis-matching) the previous version's install.
+pin_dir() {
+  printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/code-auditor/cli/$(plugin_version)"
+}
+
+# resolve_pinned_bin — ensure the pinned package is installed to pin_dir and echo
+# the absolute path to its bin. Silent: prints only the path on success, nothing
+# on failure (return 1).
+#
+# Installing (not `npx -p <pkg>@<ver> <bin>`) is the whole point. npx's `-p` puts
+# the package's bin on PATH and runs the *name*, so a same-named binary earlier in
+# PATH — a global shim, or a volta shim — shadows the pin, and the "fallback"
+# silently routes back to the stale global it was meant to replace. Installing to
+# a known dir and invoking `node_modules/.bin/code-audit` by absolute path removes
+# PATH from the equation entirely.
+resolve_pinned_bin() {
+  local pv dir bin
+  pv="$(plugin_version)"
+  [ -n "$pv" ] || return 1
+  dir="$(pin_dir)"
+  bin="${dir}/node_modules/.bin/code-audit"
+  if [ ! -x "$bin" ]; then
+    mkdir -p "$dir" || return 1
+    # --ignore-scripts is safe here (the CLI uses node:sqlite, not better-sqlite3,
+    # and ships prebuilt binaries) and avoids any install-script work.
+    npm install --prefer-offline --prefix "$dir" "code-auditor-mcp@${pv}" \
+      --no-audit --no-fund --ignore-scripts --silent >/dev/null 2>&1 || return 1
+  fi
+  echo "$bin"
 }
 
 # plugin_version — the version this plugin declares in its manifest, or ''.
@@ -114,18 +157,18 @@ cli_is_compatible() {
 }
 
 # warn_stale <cmd> — one stderr line naming a stale installed CLI, so the user
-# knows why the hook is paying the npx fetch and how to restore the fast path.
+# knows why the hook is paying the pinned install and how to restore the fast path.
 warn_stale() {
   local cmd="$1" cv pv
   pv="$(semver_of "$(plugin_version)")"
   cv="$(semver_of "$($cmd --version 2>/dev/null || true)")"
-  echo "[code-auditor] warn: ${cmd} is ${cv:-unidentified} but this plugin needs ${pv:-its version} — using the pinned npx instead; update the install to restore the fast path" >&2
+  echo "[code-auditor] warn: ${cmd} is ${cv:-unidentified} but this plugin needs ${pv:-its version} — using the pinned install instead; update the install to restore the fast path" >&2
 }
 
 # assert_compatible <bin> — pin the plugin to a compatible CLI.
 #
 # Every candidate can drift — the bundled sibling in a marketplace checkout, a
-# stale global, a project-local pin, or a stale npx cache entry — and a 3.4.0
+# stale global, a project-local pin, or a stale pinned install — and a 3.4.0
 # plugin silently driving a 3.5.0 CLI is exactly the failure this guards. No
 # candidate is trusted on presence alone: `resolve_code_audit` version-checks up
 # front, and this is the loud backstop that re-checks whatever actually resolves.

@@ -1,18 +1,18 @@
 /**
- * Spec 59 — npx cache-warm fix contract for `warmNpxCache`.
+ * Spec 59 — pinned-CLI warm fix contract for `warmPinnedCli`.
  *
- *   - **positive** — `warmNpxCache(v)` spawns `npx -y -p code-auditor-mcp@<v>
- *     code-audit --version`, i.e. the exact command the hook's last-resort path
- *     runs, so the first edit after install hits a warm npx cache.
+ *   - **positive** — `warmPinnedCli(v)` spawns
+ *     `npm install --prefer-offline --prefix <cache>/code-auditor/cli/<v>
+ *     code-auditor-mcp@<v> --no-audit --no-fund --ignore-scripts --silent`, i.e.
+ *     the exact install the hook's last-resort path (`resolve_pinned_bin`) runs,
+ *     so the first edit after install hits a warm dir and is never shadowed by a
+ *     PATH binary.
  *   - **guard**     — a spawn that errors or exits non-zero still resolves the
  *     promise (never rejects, never leaves a dangling waiter): a failed warm must
  *     not fail the install over a warm-the-cache nicety.
- *   - **absence**   — (by construction) the warm is awaited before the install
- *     summary, so a blocking warm is one that actually finished, not a fire-and-
- *     forget race.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 
 const spawnMock = vi.fn();
@@ -20,7 +20,9 @@ vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => spawnMock(...args),
 }));
 
-import { warmNpxCache } from './installer.js';
+import { warmPinnedCli } from './installer.js';
+
+const CACHE = '/tmp/ca-warm-cache';
 
 function fakeChild(): EventEmitter & { kill: ReturnType<typeof vi.fn> } {
   const child = new EventEmitter() as EventEmitter & { kill: ReturnType<typeof vi.fn> };
@@ -28,20 +30,30 @@ function fakeChild(): EventEmitter & { kill: ReturnType<typeof vi.fn> } {
   return child;
 }
 
-describe('warmNpxCache — npx cache warm at install (Spec 59)', () => {
+describe('warmPinnedCli — pinned-CLI warm at install (Spec 59)', () => {
+  const origCache = process.env.XDG_CACHE_HOME;
   beforeEach(() => {
     spawnMock.mockReset();
+    process.env.XDG_CACHE_HOME = CACHE;
+  });
+  afterEach(() => {
+    if (origCache === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = origCache;
   });
 
-  it('positive: spawns the exact pinned command for the package version', async () => {
+  it('positive: spawns the exact pinned install to the deterministic dir', async () => {
     const child = fakeChild();
     spawnMock.mockReturnValue(child);
 
-    const p = warmNpxCache('3.9.11');
+    const p = warmPinnedCli('3.9.11');
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(spawnMock).toHaveBeenCalledWith(
-      'npx',
-      ['-y', '-p', 'code-auditor-mcp@3.9.11', 'code-audit', '--version'],
+      'npm',
+      [
+        'install', '--prefer-offline', '--prefix', '/tmp/ca-warm-cache/code-auditor/cli/3.9.11',
+        'code-auditor-mcp@3.9.11',
+        '--no-audit', '--no-fund', '--ignore-scripts', '--silent',
+      ],
       { stdio: 'ignore' },
     );
 
@@ -53,8 +65,8 @@ describe('warmNpxCache — npx cache warm at install (Spec 59)', () => {
     const child = fakeChild();
     spawnMock.mockReturnValue(child);
 
-    const p = warmNpxCache('3.9.11');
-    child.emit('error', new Error('npx not found'));
+    const p = warmPinnedCli('3.9.11');
+    child.emit('error', new Error('npm not found'));
     await p; // resolves despite the error
   });
 
@@ -62,7 +74,7 @@ describe('warmNpxCache — npx cache warm at install (Spec 59)', () => {
     const child = fakeChild();
     spawnMock.mockReturnValue(child);
 
-    const p = warmNpxCache('3.9.11');
+    const p = warmPinnedCli('3.9.11');
     child.emit('exit', 1);
     await p; // resolves despite exit 1
   });

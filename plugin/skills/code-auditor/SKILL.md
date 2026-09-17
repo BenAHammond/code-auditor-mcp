@@ -211,7 +211,7 @@ When an edit hook blocks your edit with a violation message:
 3. **Do NOT retry the same edit** — the hook will block it again
 4. The hook runs `code-audit changed`, and its gate blocks on every violation from any rule — `critical`, `severe`, and `high` all block; there is no non-blocking severity tier. A `high` reading blocks the edit exactly like a `critical` one; urgency only sets the order you fix things, never whether they gate.
 
-The hook auto-installs the package via npx on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the npx auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
+The hook auto-installs the package to a cache dir on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
 
 ## Host-specific notes
 

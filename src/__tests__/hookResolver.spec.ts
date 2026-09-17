@@ -1,10 +1,11 @@
 /**
- * Spec 59 — pinned-npx fallback fix contract for `resolve_code_audit`.
+ * Spec 59 — pinned-install fallback fix contract for `resolve_code_audit`.
  *
  *   - **positive** — in a marketplace layout (plugin/ only, no sibling `dist/`, no
- *     project-local or global `code-audit`), `resolve_code_audit` emits
- *     `npx -y -p code-auditor-mcp@<manifest-version> code-audit` — the exact
- *     manifest version, never a `^` range.
+ *     project-local or global `code-audit`), `resolve_code_audit` installs the
+ *     pinned package to a deterministic dir and emits its `node_modules/.bin/
+ *     code-audit` by absolute path — never an `npx … code-audit` command that a
+ *     same-named binary earlier in PATH would shadow.
  *   - **guard**     — a bundled sibling (`CLAUDE_PLUGIN_ROOT/../dist/cli.js`) that
  *     reports the manifest version is still preferred, so npm installs keep their
  *     fast path (nothing is trusted on presence alone).
@@ -12,7 +13,10 @@
  *     version is still used (the fast path is preserved when it is not stale).
  *   - **stale**    — a bundled sibling OR global `code-audit` whose `--version`
  *     does not match the manifest is skipped with a one-line warn, and resolution
- *     falls through to the pinned npx instead of hard-failing.
+ *     falls through to the pinned install instead of hard-failing.
+ *   - **install-failure** — when the pinned install cannot complete, resolution
+ *     emits a last-ditch `npx` command (that `assert_compatible` will reject) —
+ *     never an empty command.
  *   - **absence**   — an unreadable manifest still yields a well-formed command
  *     (`@latest`) that `assert_compatible` will reject, never an empty command or a
  *     `^` range.
@@ -40,18 +44,22 @@ afterEach(() => {
 interface Layout {
   /** base dir containing plugin/ and (optionally) dist/ */
   base: string;
-  /** a bin dir with `node` symlinked but (optionally) a fake `code-audit` */
+  /** a bin dir with `node` symlinked and a fake `npm` (plus optionally a fake `code-audit`) */
   bin: string;
+  /** a controlled cache root set as XDG_CACHE_HOME so pin_dir is assertable */
+  cache: string;
 }
 
 /** Build a plugin layout. `manifest` is written to plugin/.claude-plugin/plugin.json
  * (unless null). `siblingVersion` adds an executable base/dist/cli.js that reports
  * that version (the bundled sibling). `globalVersion` adds a fake `code-audit` to the
- * clean bin dir that reports that version. */
+ * clean bin dir that reports that version. `npmExitCode` controls the fake npm's exit
+ * (default 0), so a failed install can be simulated. */
 function setup(opts: {
   manifest: string | null;
   siblingVersion?: string;
   globalVersion?: string;
+  npmExitCode?: number;
 }): Layout {
   const base = mkdtempSync(join(tmpdir(), 'ca-hook-'));
   scratchDirs.push(base);
@@ -81,7 +89,22 @@ function setup(opts: {
     writeFileSync(join(bin, 'code-audit'), `#!/usr/bin/env bash\necho "${opts.globalVersion}"\n`);
     execFileSync('chmod', ['+x', join(bin, 'code-audit')]);
   }
-  return { base, bin };
+  // A fake `npm` so resolve_pinned_bin can "install" without a real registry.
+  // It exits with `npmExitCode` (0 by default); set it non-zero to simulate an
+  // offline/failed install and exercise the last-ditch npx fallback.
+  writeFileSync(join(bin, 'npm'), `#!/usr/bin/env bash\nexit ${opts.npmExitCode ?? 0}\n`);
+  execFileSync('chmod', ['+x', join(bin, 'npm')]);
+
+  // A controlled cache root so pin_dir computes a deterministic, assertable path.
+  const cache = mkdtempSync(join(tmpdir(), 'ca-hook-cache-'));
+  scratchDirs.push(cache);
+
+  return { base, bin, cache };
+}
+
+/** The absolute bin path the pinned install is expected to emit for `version`. */
+function pinnedBin(layout: Layout, version: string): string {
+  return join(layout.cache, 'code-auditor', 'cli', version, 'node_modules', '.bin', 'code-audit');
 }
 
 /** Run resolve_code_audit in a marketplace-like environment, returning stdout
@@ -94,6 +117,7 @@ function resolveDetail(layout: Layout): { stdout: string; stderr: string } {
     env: {
       ...process.env,
       CLAUDE_PLUGIN_ROOT: join(layout.base, 'plugin'),
+      XDG_CACHE_HOME: layout.cache,
       PATH: cleanPath,
     },
     encoding: 'utf8',
@@ -106,10 +130,12 @@ function resolve(layout: Layout): string {
   return resolveDetail(layout).stdout;
 }
 
-describe('resolve_code_audit — pinned-npx fallback (Spec 59)', () => {
-  it('positive: marketplace layout emits an exact-version npx pin, not a range', () => {
+describe('resolve_code_audit — pinned-install fallback (Spec 59)', () => {
+  it('positive: marketplace layout resolves to the pinned install\'s absolute bin path, not an npx command', () => {
     const layout = setup({ manifest: '9.9.9' });
-    expect(resolve(layout)).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
+    const out = resolve(layout);
+    expect(out).toBe(pinnedBin(layout, '9.9.9'));
+    expect(out).not.toContain('npx');
   });
 
   it('guard: a bundled sibling reporting the manifest version is still preferred (npm install)', () => {
@@ -121,7 +147,7 @@ describe('resolve_code_audit — pinned-npx fallback (Spec 59)', () => {
   it('stale sibling: a mismatched bundled dist/cli.js is skipped with a warn and falls through to the pin', () => {
     const layout = setup({ manifest: '9.9.9', siblingVersion: '9.9.8' });
     const { stdout, stderr } = resolveDetail(layout);
-    expect(stdout).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
+    expect(stdout).toBe(pinnedBin(layout, '9.9.9'));
     expect(stderr).toContain('warn');
     expect(stderr).toContain('9.9.8');
   });
@@ -134,12 +160,17 @@ describe('resolve_code_audit — pinned-npx fallback (Spec 59)', () => {
     expect(resolve(layout)).toBe('code-audit');
   });
 
-  it('stale: a mismatched global is skipped with a warn and falls through to the pinned npx', () => {
+  it('stale: a mismatched global is skipped with a warn and falls through to the pinned install', () => {
     const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.8' });
     const { stdout, stderr } = resolveDetail(layout);
-    expect(stdout).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
+    expect(stdout).toBe(pinnedBin(layout, '9.9.9'));
     expect(stderr).toContain('warn');
     expect(stderr).toContain('9.9.8');
+  });
+
+  it('install-failure: a failed install falls back to a last-ditch npx command, never empty', () => {
+    const layout = setup({ manifest: '9.9.9', npmExitCode: 1 });
+    expect(resolve(layout)).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
   });
 
   it('absence: an unreadable manifest yields a well-formed @latest command, never a range', () => {

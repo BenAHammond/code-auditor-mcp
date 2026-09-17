@@ -20,7 +20,7 @@ import { PACKAGE_VERSION } from './constants.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// How long to wait for the npx cache-warm before giving up (never fatal).
+// How long to wait for the pinned-CLI warm before giving up (never fatal).
 const NPM_CACHE_WARM_TIMEOUT_MS = 60_000;
 
 // Source: the repo's skill folder (shipped in the npm package at dist/../plugin/skills/code-auditor)
@@ -136,11 +136,11 @@ export async function runInstall(options: InstallOptions): Promise<void> {
     results.push(result);
   }
 
-  // Warm the npx cache for this exact version so the hook's last-resort
-  // `npx -y -p code-auditor-mcp@<version> code-audit` path is not a multi-second
-  // download on the first edit. Non-fatal: a failed warm just means the hook pays
-  // the cold-start cost once on first use.
-  await warmNpxCache(PACKAGE_VERSION);
+  // Warm the pinned-CLI install dir for this exact version so the hook's
+  // last-resort path (npm install to a deterministic dir + absolute-path invoke)
+  // is not a multi-second download on the first edit. Non-fatal: a failed warm
+  // just means the hook pays the cold-start cost once on first use.
+  await warmPinnedCli(PACKAGE_VERSION);
 
   // Print summary
   console.log(chalk.blue('\n── Install summary ──'));
@@ -157,20 +157,31 @@ export async function runInstall(options: InstallOptions): Promise<void> {
 }
 
 /**
- * Warm the npx cache for this exact version.
+ * Warm the pinned-CLI install dir for this exact version.
  *
- * The marketplace hook's last-resort path is `npx -y -p code-auditor-mcp@<version>
- * code-audit`. On a cold cache that is a multi-second download (the package bundles
- * every platform's native binaries), so the FIRST Write/Edit after a plugin install
- * would block on a network fetch — the kind of apparent hang people disable hooks
- * over. Pre-fetch it here so the first edit is warm.
+ * The marketplace hook's last-resort path installs `code-auditor-mcp@<version>` to
+ * a deterministic cache dir and invokes `node_modules/.bin/code-audit` by absolute
+ * path — NOT `npx -p <pkg>@<version> code-audit`, which a same-named binary earlier
+ * in PATH (a global shim, or a volta shim) shadows. On a cold cache that install is
+ * a multi-second download (the package bundles every platform's native binaries),
+ * so the FIRST Write/Edit after a plugin install would block on a network fetch —
+ * the kind of apparent hang people disable hooks over. Pre-install it here so the
+ * first edit is warm.
+ *
+ * The dir must match `pin_dir()` in plugin/scripts/hook-common.sh exactly, so the
+ * hook's resolver and this warm target the same location.
  *
  * Non-fatal by design: a failed warm (offline, registry error) leaves the hook to
  * pay the cold-start cost on first use, which is strictly better than failing the
  * install over a warm-the-cache nicety.
  */
-export function warmNpxCache(packageVersion: string): Promise<void> {
-  const spec = `code-auditor-mcp@${packageVersion}`;
+export function warmPinnedCli(packageVersion: string): Promise<void> {
+  const dir = join(
+    process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'),
+    'code-auditor',
+    'cli',
+    packageVersion,
+  );
   return new Promise<void>((resolve) => {
     let settled = false;
     const done = () => {
@@ -179,7 +190,11 @@ export function warmNpxCache(packageVersion: string): Promise<void> {
         resolve();
       }
     };
-    const child = spawn('npx', ['-y', '-p', spec, 'code-audit', '--version'], {
+    const child = spawn('npm', [
+      'install', '--prefer-offline', '--prefix', dir,
+      `code-auditor-mcp@${packageVersion}`,
+      '--no-audit', '--no-fund', '--ignore-scripts', '--silent',
+    ], {
       stdio: 'ignore',
     });
     const timer = setTimeout(() => {

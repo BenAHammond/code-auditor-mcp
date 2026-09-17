@@ -8,7 +8,7 @@ Plugin/marketplace manifest formats verified against the Claude Code plugin docu
 
 - `.claude-plugin/plugin.json` — manifest with name, description, version, author
 - `.claude-plugin/marketplace.json` — marketplace catalog at repo root
-- `hooks/hooks.json` — `PostToolUse` hook on `Write|Edit` + `SessionStart` npx-cache warm
+- `hooks/hooks.json` — `PostToolUse` hook on `Write|Edit` + `SessionStart` pinned-CLI warm
 - `skills/code-auditor/SKILL.md` — skill teaching the agent when to audit, search, and enforce invariants
 
 If the plugin format iterates in a future Claude Code release, update the manifests to match the live docs and bump the verified date above.
@@ -17,14 +17,14 @@ If the plugin format iterates in a future Claude Code release, update the manife
 
 | Component | Purpose |
 |-----------|---------|
-| `hooks/hooks.json` | `PostToolUse` on `Write\|Edit` → runs `code-audit changed --stdin --json`; `SessionStart` on `startup\|resume` → warms the npx cache |
+| `hooks/hooks.json` | `PostToolUse` on `Write\|Edit` → runs `code-audit changed --stdin --json`; `SessionStart` on `startup\|resume` → warms the pinned CLI install |
 | `skills/code-auditor/SKILL.md` | Teaches the agent when to use `search`, `definition`, `audit`, `next-file`, `config`, and how to interpret hook feedback |
 | `scripts/hook-audit.sh` | Hook script: extracts file path from event JSON, pipes to `code-audit changed`, fails loudly if the CLI itself breaks |
 | `scripts/hook-self-audit.sh` | Edit-time self-audit gate over `analyzers/` + `languages/` (the tool's own source) |
-| `scripts/hook-warm.sh` | `SessionStart` hook: background-warms the pinned npx fetch (non-blocking, silent) so the first edit after a marketplace install isn't a cold download |
+| `scripts/hook-warm.sh` | `SessionStart` hook: background-warms the pinned CLI install (non-blocking, silent) so the first edit after a marketplace install isn't a cold download |
 | `scripts/hook-common.sh` | Shared binary resolver + version-compatibility pinning for all hooks |
 
-**No bundled `.mcp.json`.** The hook prefers the plugin's own bundled CLI (`dist/cli.js`, shipped in the same npm package, so it is always the exact version the plugin was built against), then falls back to a project-local install, then `PATH`, then `npx`. We deliberately chose not to bundle an MCP server in the plugin manifest: the skill + CLI path is cheaper — no standing tool-schema token cost on every context window — and equivalent to the MCP surface wherever a shell exists. The standalone MCP server (`npx code-auditor-mcp`) remains available for shell-less hosts or users who prefer the MCP transport.
+**No bundled `.mcp.json`.** The hook prefers the plugin's own bundled CLI (`dist/cli.js`, shipped in the same npm package, so it is always the exact version the plugin was built against), then falls back to a project-local install, then `PATH`, then a pinned install invoked by absolute path. The last-resort deliberately skips `npx -p <pkg> <bin>` for execution: that form resolves the bin name against a PATH the hook does not control, so a same-named binary earlier in PATH (a global shim, or a volta shim) shadows the pin and the "fallback" silently routes back to the stale binary it was meant to replace. We deliberately chose not to bundle an MCP server in the plugin manifest: the skill + CLI path is cheaper — no standing tool-schema token cost on every context window — and equivalent to the MCP surface wherever a shell exists. The standalone MCP server (`npx code-auditor-mcp`) remains available for shell-less hosts or users who prefer the MCP transport.
 
 ## The hook
 
