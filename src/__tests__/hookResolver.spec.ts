@@ -7,8 +7,11 @@
  *     manifest version, never a `^` range.
  *   - **guard**     — the bundled sibling (`CLAUDE_PLUGIN_ROOT/../dist/cli.js`) is
  *     still preferred when present, so npm installs keep their zero-cost path.
- *   - **near-miss** — a global `code-audit` on PATH is still preferred over the
- *     npx fallback (the hook only reaches npx after `command -v code-audit` fails).
+ *   - **compatible** — a global `code-audit` on PATH that reports the manifest
+ *     version is still used (the fast path is preserved when it is not stale).
+ *   - **stale**    — a global `code-audit` whose `--version` does not match the
+ *     manifest is skipped with a one-line warn, and resolution falls through to the
+ *     pinned npx instead of hard-failing.
  *   - **absence**   — an unreadable manifest still yields a well-formed command
  *     (`@latest`) that `assert_compatible` will reject, never an empty command or a
  *     `^` range.
@@ -18,7 +21,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,12 +44,12 @@ interface Layout {
 }
 
 /** Build a plugin layout. `manifest` is written to plugin/.claude-plugin/plugin.json
- * (unless null). `withSiblingDist` adds base/dist/cli.js. `withGlobalCodeAudit` adds
- * a fake `code-audit` to the clean bin dir. */
+ * (unless null). `withSiblingDist` adds base/dist/cli.js. `globalVersion` adds a fake
+ * `code-audit` to the clean bin dir that reports that version. */
 function setup(opts: {
   manifest: string | null;
   withSiblingDist?: boolean;
-  withGlobalCodeAudit?: boolean;
+  globalVersion?: string;
 }): Layout {
   const base = mkdtempSync(join(tmpdir(), 'ca-hook-'));
   scratchDirs.push(base);
@@ -66,19 +69,22 @@ function setup(opts: {
   scratchDirs.push(bin);
   // `plugin_version` runs `node -e`, so `node` must be on the clean PATH.
   symlinkSync(process.execPath, join(bin, 'node'));
-  if (opts.withGlobalCodeAudit) {
-    // A fake global code-audit that `command -v code-audit` will find.
-    writeFileSync(join(bin, 'code-audit'), '#!/usr/bin/env bash\necho "9.9.9"\n');
+  if (opts.globalVersion) {
+    // A fake global code-audit that `command -v code-audit` will find. Its
+    // `--version` output is a fixed string, so a stale version can be simulated.
+    writeFileSync(join(bin, 'code-audit'), `#!/usr/bin/env bash\necho "${opts.globalVersion}"\n`);
     execFileSync('chmod', ['+x', join(bin, 'code-audit')]);
   }
   return { base, bin };
 }
 
-/** Run resolve_code_audit in a marketplace-like environment and return its output. */
-function resolve(layout: Layout): string {
+/** Run resolve_code_audit in a marketplace-like environment, returning stdout
+ * (the emitted command) and stderr (any warn emitted when a stale install is
+ * skipped). */
+function resolveDetail(layout: Layout): { stdout: string; stderr: string } {
   const cleanPath = `${layout.bin}:/usr/bin:/bin`;
   const script = 'unset CLAUDE_PROJECT_DIR\n. "$CLAUDE_PLUGIN_ROOT/scripts/hook-common.sh"\nresolve_code_audit\n';
-  const out = execFileSync('bash', ['-c', script], {
+  const r = spawnSync('bash', ['-c', script], {
     env: {
       ...process.env,
       CLAUDE_PLUGIN_ROOT: join(layout.base, 'plugin'),
@@ -86,7 +92,12 @@ function resolve(layout: Layout): string {
     },
     encoding: 'utf8',
   });
-  return out.trim();
+  return { stdout: r.stdout.trim(), stderr: r.stderr ?? '' };
+}
+
+/** Resolve and return only the emitted command. */
+function resolve(layout: Layout): string {
+  return resolveDetail(layout).stdout;
 }
 
 describe('resolve_code_audit — pinned-npx fallback (Spec 59)', () => {
@@ -101,9 +112,17 @@ describe('resolve_code_audit — pinned-npx fallback (Spec 59)', () => {
     expect(resolve(layout)).toBe(`${layout.base}/plugin/../dist/cli.js`);
   });
 
-  it('near-miss: a global code-audit on PATH is preferred over the npx fallback', () => {
-    const layout = setup({ manifest: '9.9.9', withGlobalCodeAudit: true });
+  it('compatible: a global code-audit reporting the manifest version is still used', () => {
+    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.9' });
     expect(resolve(layout)).toBe('code-audit');
+  });
+
+  it('stale: a mismatched global is skipped with a warn and falls through to the pinned npx', () => {
+    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.8' });
+    const { stdout, stderr } = resolveDetail(layout);
+    expect(stdout).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
+    expect(stderr).toContain('warn');
+    expect(stderr).toContain('9.9.8');
   });
 
   it('absence: an unreadable manifest yields a well-formed @latest command, never a range', () => {

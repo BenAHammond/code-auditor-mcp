@@ -23,6 +23,14 @@ people disable hooks over.
 - `code-audit install` now warms the npx cache for its own version, so the first
   edit after setup is warm rather than a multi-second download. Non-fatal by design.
 
+### Stale installed CLIs are skipped, not hard failures
+
+`resolve_code_audit` now checks the `--version` of a project-local or global
+`code-audit` candidate before using it. A stale install (a mismatched version) is
+skipped with a one-line warning and resolution falls through to the pinned npx
+fetch, so a mismatched global no longer turns the hook into a hard failure.
+`assert_compatible` remains the final loud backstop on whatever resolves.
+
 ## [3.9.11] — 2026-09-15
 
 ### SQL assembled in a variable is no longer read as table-free

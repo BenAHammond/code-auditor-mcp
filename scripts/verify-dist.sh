@@ -392,13 +392,14 @@ cd "$SCRATCH"
 echo ""
 echo "Checking pinned-npx fallback..."
 
-# npx prefers an already-installed `code-audit` on PATH over the `-p` package, so
-# a global would make this guard test a scenario the hook never sees (the hook only
-# reaches npx after `command -v code-audit` has already failed). Build a PATH that
-# drops only the directories that provide `code-audit`, leaving node/npm/npx at
-# their real locations. Symlinking is NOT safe here: npm's bin wrappers resolve
-# `npx-cli.js`/`npm-cli.js` relative to `dirname "$0"`, so a symlinked copy looks
-# for the script next to itself and dies with "Cannot find module …/npx-cli.js".
+# The static check (a) below must reach the npx rung, which only happens when no
+# compatible `code-audit` is on PATH (resolution is version-aware: bundled sibling,
+# then a version-matched project-local or global, then npx). Build a PATH that
+# drops only the directories that provide `code-audit` so `command -v code-audit`
+# fails, leaving node/npm/npx at their real locations. Symlinking is NOT safe
+# here: npm's bin wrappers resolve `npx-cli.js`/`npm-cli.js` relative to
+# `dirname "$0"`, so a symlinked copy looks for the script next to itself and dies
+# with "Cannot find module …/npx-cli.js".
 CLEAN_PATH=""
 OLDIFS="$IFS"; IFS=:
 for _d in $PATH; do
@@ -435,11 +436,12 @@ PUBLISHED_VERSION="$(npm view code-auditor-mcp version 2>/dev/null || true)"
 if [ -z "$PUBLISHED_VERSION" ]; then
   warn "npm registry unreachable — skipping pinned-npx runtime check"
 else
-  # Run from a neutral directory, NOT $SCRATCH. npx resolves a `code-auditor-mcp`
-  # already present on the local node_modules (the tarball we just installed into
-  # $SCRATCH — or a dev running this from inside the package itself) as "already
-  # available" and skips the `_npx` install, leaving `code-audit` unresolvable.
-  # The hook runs from the user's project (no such package), so reproduce that.
+  # Run from a neutral directory, NOT $SCRATCH. $SCRATCH is the tarball we just
+  # packed, so its package.json name is `code-auditor-mcp` itself: npx treats the
+  # current package as already satisfying the `-p` spec, skips the `_npx` install,
+  # and `code-audit` falls back to whatever else is on PATH (a global, or nothing →
+  # "command not found"). The hook runs from the user's project (a different name),
+  # so reproduce that.
   NPX_CHECK_DIR="$(mktemp -d -t ca-npx-check-XXXXX)"
   cd "$NPX_CHECK_DIR"
   # 2>&1 (not 2>/dev/null): a failure must name the cause, not vanish into an

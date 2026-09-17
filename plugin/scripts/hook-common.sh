@@ -14,35 +14,51 @@
 #
 # The plugin cache does NOT ship a bundled CLI (dist/ is gitignored, so a
 # marketplace install from `./plugin` has no `../dist/`), which means the
-# fallback paths (project-local, global/PATH, npx) are the common case. For those,
-# `assert_compatible` pins the resolved binary's REAL version against the plugin
-# manifest and fails loudly on mismatch — see below. This pin is what stopped the
-# third quiet failure: a 3.9.6 global silently driving a 3.9.9 plugin.
+# fallback paths (project-local, global/PATH, npx) are the common case.
+# Resolution is version-aware: a stale installed candidate is skipped (with a
+# one-line warning) rather than trusted, so a mismatched global falls through to
+# the pinned npx fetch instead of hard-failing. `assert_compatible` remains the
+# final loud backstop on whatever resolve_code_audit returns. Together they stop
+# the third quiet failure: a 3.9.6 global silently driving a 3.9.9 plugin.
 #
 # The sourcing hook runs with `set -euo pipefail`.
 
 # resolve_code_audit — emit the CLI invocation to use.
 #
+# Resolution is version-aware: an installed candidate (project-local or global) is
+# used only when its `--version` matches this plugin's manifest version. A stale
+# install is warned about and skipped, so a mismatched global no longer turns the
+# hook into a hard failure — the pinned npx below resolves the correct CLI on its
+# own (and warn_stale tells the user to update so the fast path comes back).
+#
 # 1. The plugin's bundled CLI (dist/cli.js ships in the same npm package, so it
 #    is always the exact version this plugin was built against) — present only
 #    when installed from npm, not from the marketplace.
-# 2. Project-local install (consumer project's own node_modules).
-# 3. Global install / PATH.
-# 4. npx auto-install (only if nothing else resolves), pinned to the plugin's
-#    exact manifest version — never a range — so this last-resort path cannot
-#    pull a different CLI than the plugin was built against.
+# 2. Project-local install (consumer project's own node_modules) — if compatible.
+# 3. Global install / PATH — if compatible.
+# 4. npx auto-install, pinned to the plugin's exact manifest version — never a
+#    range — the guaranteed-correct fallback when nothing compatible is installed.
 resolve_code_audit() {
+  local candidate
   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js" ]; then
     echo "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js"
     return
   fi
   if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -x "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit" ]; then
-    echo "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit"
-    return
+    candidate="${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit"
+    if cli_is_compatible "${candidate}"; then
+      echo "${candidate}"
+      return
+    fi
+    warn_stale "${candidate}"
   fi
   if command -v code-audit &>/dev/null; then
-    echo "code-audit"
-    return
+    candidate="code-audit"
+    if cli_is_compatible "${candidate}"; then
+      echo "${candidate}"
+      return
+    fi
+    warn_stale "${candidate}"
   fi
   # Pin to the plugin's exact version, not a range: `@^3.0.0` could resolve a
   # cached older CLI and silently drive this plugin with the wrong analyzer code.
@@ -70,6 +86,27 @@ plugin_version() {
 # "(sqlite: …)" suffix, so the pin compares only the semver, not the whole line.
 semver_of() {
   printf '%s' "$1" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?' | head -n 1 || true
+}
+
+# cli_is_compatible <cmd> — silent; 0 when `<cmd> --version` reports this plugin's
+# exact version, non-zero otherwise (mismatch or undetermined). Resolution uses
+# this to decide fall-through; assert_compatible remains the loud backstop.
+cli_is_compatible() {
+  local cmd="$1" pv cv pv_sem cv_sem
+  pv="$(plugin_version)"
+  cv="$($cmd --version 2>/dev/null || true)"
+  pv_sem="$(semver_of "${pv}")"
+  cv_sem="$(semver_of "${cv}")"
+  [ -n "${pv_sem}" ] && [ -n "${cv_sem}" ] && [ "${pv_sem}" = "${cv_sem}" ]
+}
+
+# warn_stale <cmd> — one stderr line naming a stale installed CLI, so the user
+# knows why the hook is paying the npx fetch and how to restore the fast path.
+warn_stale() {
+  local cmd="$1" cv pv
+  pv="$(semver_of "$(plugin_version)")"
+  cv="$(semver_of "$($cmd --version 2>/dev/null || true)")"
+  echo "[code-auditor] warn: ${cmd} is ${cv:-unidentified} but this plugin needs ${pv:-its version} — using the pinned npx instead; update the install to restore the fast path" >&2
 }
 
 # assert_compatible <bin> — pin the plugin to a compatible CLI.
