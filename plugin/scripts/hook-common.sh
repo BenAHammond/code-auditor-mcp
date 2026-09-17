@@ -7,33 +7,42 @@
 #
 # Two rules enforced here are the fix for "the hook died quietly" (three times:
 # unset CLAUDE_PLUGIN_ROOT, a stale global binary, a removed CLI flag):
-#   1. prefer the plugin's bundled CLI when it is shipped (npm installs) so a
-#      stale global/project binary can never drive the hook, and
+#   1. prefer a bundled CLI when it is shipped (npm installs) AND its version
+#      matches the manifest — nothing is trusted on presence alone, and
 #   2. a non-zero CLI exit that is NOT a finding (2) is a broken hook and must
 #      fail loudly, never degrade to a silent no-op.
 #
 # The plugin cache does NOT ship a bundled CLI (dist/ is gitignored, so a
 # marketplace install from `./plugin` has no `../dist/`), which means the
-# fallback paths (project-local, global/PATH, npx) are the common case.
-# Resolution is version-aware: a stale installed candidate is skipped (with a
-# one-line warning) rather than trusted, so a mismatched global falls through to
-# the pinned npx fetch instead of hard-failing. `assert_compatible` remains the
-# final loud backstop on whatever resolve_code_audit returns. Together they stop
-# the third quiet failure: a 3.9.6 global silently driving a 3.9.9 plugin.
+# fallback paths (project-local, global/PATH, npx) are the common case — but a
+# checkout where a developer *did* build dist/ locally ships a `../dist/cli.js`
+# that is a local, possibly stale build, not the npm-paired dist/. The two files
+# differ in more than freshness: npm's bin-links chmod the packaged `dist/cli.js`
+# to `-rwxr-xr-x` at install, while local `tsc` output stays `-rw-r--r--`, so a
+# marketplace checkout's sibling can be both stale AND non-executable — a file the
+# old presence-only check would have trusted and then failed to run. Resolution is
+# version-aware: EVERY candidate — the bundled sibling included — is used only
+# when its `--version` matches the manifest, otherwise it is warned about and
+# skipped, so a mismatched binary falls through to the pinned npx fetch instead
+# of hard-failing. `assert_compatible` remains the final loud backstop on whatever
+# resolve_code_audit returns. Together they stop the third quiet failure: a stale
+# binary silently driving a newer plugin.
 #
 # The sourcing hook runs with `set -euo pipefail`.
 
 # resolve_code_audit — emit the CLI invocation to use.
 #
-# Resolution is version-aware: an installed candidate (project-local or global) is
-# used only when its `--version` matches this plugin's manifest version. A stale
-# install is warned about and skipped, so a mismatched global no longer turns the
-# hook into a hard failure — the pinned npx below resolves the correct CLI on its
-# own (and warn_stale tells the user to update so the fast path comes back).
+# Resolution is version-aware: EVERY candidate — bundled sibling, project-local,
+# global — is used only when its `--version` matches this plugin's manifest
+# version. A stale candidate is warned about and skipped, so a mismatched binary
+# no longer turns the hook into a hard failure; the pinned npx below resolves the
+# correct CLI on its own (and warn_stale tells the user to update so the fast path
+# comes back).
 #
-# 1. The plugin's bundled CLI (dist/cli.js ships in the same npm package, so it
-#    is always the exact version this plugin was built against) — present only
-#    when installed from npm, not from the marketplace.
+# 1. The plugin's bundled CLI (`${CLAUDE_PLUGIN_ROOT}/../dist/cli.js` ships in the
+#    same npm package, so it usually matches) — but a marketplace checkout has no
+#    npm-paired dist/, and a locally built one can be stale, so it is
+#    version-checked like everything else.
 # 2. Project-local install (consumer project's own node_modules) — if compatible.
 # 3. Global install / PATH — if compatible.
 # 4. npx auto-install, pinned to the plugin's exact manifest version — never a
@@ -41,8 +50,12 @@
 resolve_code_audit() {
   local candidate
   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js" ]; then
-    echo "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js"
-    return
+    candidate="${CLAUDE_PLUGIN_ROOT}/../dist/cli.js"
+    if cli_is_compatible "${candidate}"; then
+      echo "${candidate}"
+      return
+    fi
+    warn_stale "${candidate}"
   fi
   if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -x "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit" ]; then
     candidate="${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit"
@@ -111,19 +124,17 @@ warn_stale() {
 
 # assert_compatible <bin> — pin the plugin to a compatible CLI.
 #
-# The bundled CLI always matches (same package), so it needs no check. Any
-# fallback path can drift — a stale global, a project-local pin, or a stale npx
-# cache entry — and a 3.4.0 plugin silently driving a 3.5.0 CLI is exactly the
-# failure this guards.
+# Every candidate can drift — the bundled sibling in a marketplace checkout, a
+# stale global, a project-local pin, or a stale npx cache entry — and a 3.4.0
+# plugin silently driving a 3.5.0 CLI is exactly the failure this guards. No
+# candidate is trusted on presence alone: `resolve_code_audit` version-checks up
+# front, and this is the loud backstop that re-checks whatever actually resolves.
 #
 # The comparison is semver-vs-semver (the CLI's real `--version`, not its full
 # banner), and it fails loudly on a mismatch OR when either version cannot be
 # determined — an unidentified binary is never trusted.
 assert_compatible() {
   local bin="$1" pv cv pv_sem cv_sem
-  case "${bin}" in
-    "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js") return 0 ;;   # pinned by construction
-  esac
   pv="$(plugin_version)"
   cv="$($bin --version 2>/dev/null || true)"
   pv_sem="$(semver_of "${pv}")"

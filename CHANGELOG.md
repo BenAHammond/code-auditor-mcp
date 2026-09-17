@@ -2,6 +2,29 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [Unreleased]
+
+### The bundled CLI is version-checked like every other candidate
+
+`resolve_code_audit` trusted the bundled sibling (`CLAUDE_PLUGIN_ROOT/../dist/cli.js`)
+on presence alone, on the assumption that `dist/` and `plugin/` always ship together.
+That holds for npm installs and not for a marketplace checkout, where `dist/` is a
+gitignored local build that can be stale. A stale bundled sibling is now warned about
+and skipped like any other candidate, and `assert_compatible` no longer short-circuits
+it — no path is trusted without a `--version` check.
+
+### A SessionStart hook warms the npx cache before the first edit
+
+A marketplace install has no lifecycle step, so `code-audit install`'s npx warm never
+ran on the `claude plugin install` path, and the first Write/Edit after a marketplace
+install still blocked on the pinned npx fallback's cold fetch. The plugin now registers
+a `SessionStart` hook (`startup|resume`) that background-warms the same pinned npx
+command, so the first edit is warm. It is deliberately non-blocking and silent: the
+fetch is `nohup`-backgrounded and returns immediately, and every failure (offline,
+missing `npx`, unreadable manifest) is a quiet no-op — a warm-the-cache nicety must
+never delay session start or complain. `--prefer-offline` makes a warm cache a pure
+cache hit (no registry re-check on every launch) while still fetching on a cold cache.
+
 ## [3.10.0] — 2026-09-17
 
 ### The npx fallback pins to the plugin's exact version and warms the cache

@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then exit 0; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-warm.sh"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",

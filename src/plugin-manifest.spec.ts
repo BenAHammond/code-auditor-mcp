@@ -168,6 +168,61 @@ describe('Hooks manifest (hooks.json)', () => {
   });
 });
 
+describe('SessionStart warm hook (hook-warm.sh)', () => {
+  const hooks = loadJson(resolve(PLUGIN_DIR, 'hooks', 'hooks.json'));
+  const warmContent = readFileSync(
+    resolve(PLUGIN_DIR, 'scripts', 'hook-warm.sh'),
+    'utf-8',
+  );
+
+  it('registers a SessionStart command hook that warms on startup and resume', () => {
+    expect(hooks.hooks).toHaveProperty('SessionStart');
+    expect(Array.isArray(hooks.hooks.SessionStart)).toBe(true);
+    const entry = hooks.hooks.SessionStart[0];
+    expect(entry.matcher).toBe('startup|resume');
+    expect(entry.hooks[0].type).toBe('command');
+    expect(entry.hooks[0].command).toContain('hook-warm.sh');
+  });
+
+  it('is silent on an unset CLAUDE_PLUGIN_ROOT (exit 0, not the loud exit 1)', () => {
+    // A warm-the-cache nicety must never fail the session: unlike the PostToolUse
+    // guards, an unset plugin root here exits 0, and that guard must precede the
+    // script invocation.
+    const command = hooks.hooks.SessionStart[0].hooks[0].command;
+    expect(command).toContain('exit 0');
+    expect(command.indexOf('exit 0')).toBeLessThan(command.indexOf('hook-warm.sh'));
+  });
+
+  it('exists and is executable', () => {
+    const { accessSync, X_OK } = require('fs');
+    expect(() => accessSync(resolve(PLUGIN_DIR, 'scripts', 'hook-warm.sh'), X_OK)).not.toThrow();
+  });
+
+  it('backgrounds the npx fetch so it never blocks session start', () => {
+    // `nohup … &` detaches the fetch and the script exits 0 immediately; a warm
+    // that blocked session start would be worse than the cold fetch it avoids.
+    expect(warmContent).toContain('nohup npx --prefer-offline');
+    expect(warmContent).toContain('>/dev/null 2>&1 </dev/null &');
+    expect(warmContent).toContain('exit 0');
+  });
+
+  it('pins the warm to the plugin version, never @latest', () => {
+    // plugin_version feeds the exact manifest version into the pinned npx spec,
+    // matching resolve_code_audit's last-resort command.
+    expect(warmContent).toContain('plugin_version');
+    expect(warmContent).toContain('code-auditor-mcp@${pv}');
+  });
+
+  it('is silent on failure — output to /dev/null, no stderr diagnostics', () => {
+    expect(warmContent).toContain('>/dev/null 2>&1');
+    expect(warmContent).not.toContain('>&2');
+  });
+
+  it('uses --prefer-offline so a warm cache is a cache hit, not a re-check', () => {
+    expect(warmContent).toContain('--prefer-offline');
+  });
+});
+
 describe('MCP server config — deliberately no .mcp.json', () => {
   it('does NOT bundle an .mcp.json (skill + CLI path; standalone server for shell-less hosts)', () => {
     const { existsSync } = require('fs');

@@ -5,13 +5,14 @@
  *     project-local or global `code-audit`), `resolve_code_audit` emits
  *     `npx -y -p code-auditor-mcp@<manifest-version> code-audit` — the exact
  *     manifest version, never a `^` range.
- *   - **guard**     — the bundled sibling (`CLAUDE_PLUGIN_ROOT/../dist/cli.js`) is
- *     still preferred when present, so npm installs keep their zero-cost path.
+ *   - **guard**     — a bundled sibling (`CLAUDE_PLUGIN_ROOT/../dist/cli.js`) that
+ *     reports the manifest version is still preferred, so npm installs keep their
+ *     fast path (nothing is trusted on presence alone).
  *   - **compatible** — a global `code-audit` on PATH that reports the manifest
  *     version is still used (the fast path is preserved when it is not stale).
- *   - **stale**    — a global `code-audit` whose `--version` does not match the
- *     manifest is skipped with a one-line warn, and resolution falls through to the
- *     pinned npx instead of hard-failing.
+ *   - **stale**    — a bundled sibling OR global `code-audit` whose `--version`
+ *     does not match the manifest is skipped with a one-line warn, and resolution
+ *     falls through to the pinned npx instead of hard-failing.
  *   - **absence**   — an unreadable manifest still yields a well-formed command
  *     (`@latest`) that `assert_compatible` will reject, never an empty command or a
  *     `^` range.
@@ -44,11 +45,12 @@ interface Layout {
 }
 
 /** Build a plugin layout. `manifest` is written to plugin/.claude-plugin/plugin.json
- * (unless null). `withSiblingDist` adds base/dist/cli.js. `globalVersion` adds a fake
- * `code-audit` to the clean bin dir that reports that version. */
+ * (unless null). `siblingVersion` adds an executable base/dist/cli.js that reports
+ * that version (the bundled sibling). `globalVersion` adds a fake `code-audit` to the
+ * clean bin dir that reports that version. */
 function setup(opts: {
   manifest: string | null;
-  withSiblingDist?: boolean;
+  siblingVersion?: string;
   globalVersion?: string;
 }): Layout {
   const base = mkdtempSync(join(tmpdir(), 'ca-hook-'));
@@ -60,9 +62,13 @@ function setup(opts: {
   if (opts.manifest !== null) {
     writeFileSync(join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: opts.manifest }));
   }
-  if (opts.withSiblingDist) {
+  if (opts.siblingVersion) {
+    // A fake bundled CLI that `cli_is_compatible` version-checks like any other
+    // candidate. Its `--version` output is a fixed string, so a stale build (a
+    // locally built dist/ in a marketplace checkout) can be simulated.
     mkdirSync(join(base, 'dist'), { recursive: true });
-    writeFileSync(join(base, 'dist', 'cli.js'), '');
+    writeFileSync(join(base, 'dist', 'cli.js'), `#!/usr/bin/env bash\necho "${opts.siblingVersion}"\n`);
+    execFileSync('chmod', ['+x', join(base, 'dist', 'cli.js')]);
   }
 
   const bin = mkdtempSync(join(tmpdir(), 'ca-hook-bin-'));
@@ -106,14 +112,25 @@ describe('resolve_code_audit — pinned-npx fallback (Spec 59)', () => {
     expect(resolve(layout)).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
   });
 
-  it('guard: bundled sibling is still preferred when present (npm install)', () => {
-    const layout = setup({ manifest: '9.9.9', withSiblingDist: true });
+  it('guard: a bundled sibling reporting the manifest version is still preferred (npm install)', () => {
+    const layout = setup({ manifest: '9.9.9', siblingVersion: '9.9.9' });
     // The hook echoes `${CLAUDE_PLUGIN_ROOT}/../dist/cli.js` verbatim.
     expect(resolve(layout)).toBe(`${layout.base}/plugin/../dist/cli.js`);
   });
 
-  it('compatible: a global code-audit reporting the manifest version is still used', () => {
-    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.9' });
+  it('stale sibling: a mismatched bundled dist/cli.js is skipped with a warn and falls through to the pin', () => {
+    const layout = setup({ manifest: '9.9.9', siblingVersion: '9.9.8' });
+    const { stdout, stderr } = resolveDetail(layout);
+    expect(stdout).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
+    expect(stderr).toContain('warn');
+    expect(stderr).toContain('9.9.8');
+  });
+
+  it('compatible: a global code-audit reporting the manifest version (with a banner suffix) is still used', () => {
+    // The "(sqlite: …)" suffix is what the real CLI prints; semver_of must strip
+    // it before comparing — the thing that let assert_compatible go quiet for
+    // three releases. A bare "9.9.9" would never exercise that strip.
+    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.9 (sqlite: node-sqlite)' });
     expect(resolve(layout)).toBe('code-audit');
   });
 
