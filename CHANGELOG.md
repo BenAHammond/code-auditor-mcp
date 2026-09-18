@@ -44,6 +44,12 @@ the run reports a named diagnostic — `go-analyzer-wrong-arch` for a foreign bi
 `go-toolchain-missing` for an absent one, `go-analyzer-build-failed` for a build error —
 instead of an empty result.
 
+**Behavior change for non-darwin/amd64 consumers:** the first run now rebuilds the Go
+analyzer from the shipped source, which requires `go` on `PATH`. Before, those platforms
+got a silent empty result; now they get a working analyzer, or — if no Go toolchain is
+installed — a named diagnostic saying exactly what's missing. This is a new runtime
+prerequisite on that first run, not a silent change.
+
 ### `next-file` cache can no longer silently drop findings
 
 Two bugs in the same class as the `end_line` NULL/one-path split-brain:
