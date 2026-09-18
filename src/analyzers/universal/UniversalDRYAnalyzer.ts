@@ -1083,7 +1083,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     const fullHashmap = new Map<string, { file: string; name: string; line: number }>();
 
     for (const func of config.fullFunctionIndex || []) {
-      const body = (func as any).body ?? (func as any).metadata?.body;
+      const body = (func as any).body;
       if (!body) continue;
 
       try {

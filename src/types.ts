@@ -1012,6 +1012,7 @@ export interface FunctionMetadata {
   dependencies: string[];
   purpose: string;
   context: string;
+  body?: string;
   metadata?: Record<string, any>;
 }
 

@@ -469,7 +469,6 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
           isExported: fn.isExported,
           complexity: fn.complexity,
           functionCalls: fn.functionCalls,
-          body: fn.body,
         };
 
         const contentHash = computeContentHash(fn.body, '');

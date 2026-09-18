@@ -224,6 +224,7 @@ export function extractFunctionsFromSource(
       dependencies,
       purpose: `Function ${getNodeText(nameNode, content)} implementation`,
       context: `Located in ${path.basename(filePath)}`,
+      body: body ? getNodeText(body, content) : undefined,
       metadata: {
         kind: 'function',
         isAsync: hasModifier(func, 'async'),
@@ -233,7 +234,6 @@ export function extractFunctionsFromSource(
         usedImports,
         unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
         complexity: calculateComplexity(func),
-        body: body ? getNodeText(body, content) : undefined,
         dependencies
       }
     });
@@ -291,6 +291,7 @@ export function extractFunctionsFromSource(
         dependencies,
         purpose: `Arrow function ${getNodeText(nameNode, content)}`,
         context: `Defined in ${path.basename(filePath)}`,
+        body: body ? getNodeText(body, content) : undefined,
         metadata: {
           kind: 'arrow',
           isAsync: hasModifier(arrowFunc, 'async'),
@@ -300,7 +301,6 @@ export function extractFunctionsFromSource(
           usedImports,
           unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
           complexity: calculateComplexity(arrowFunc),
-          body: body ? getNodeText(body, content) : undefined,
           dependencies
         }
       });
@@ -358,6 +358,7 @@ export function extractFunctionsFromSource(
         dependencies,
         purpose: `Method ${getNodeText(methodNameNode, content)} of class ${className}`,
         context: `Class method in ${path.basename(filePath)}`,
+        body: body ? getNodeText(body, content) : undefined,
         metadata: {
           kind: 'method',
           className,
@@ -369,7 +370,6 @@ export function extractFunctionsFromSource(
           usedImports,
           unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
           complexity: calculateComplexity(method),
-          body: body ? getNodeText(body, content) : undefined,
           dependencies
         }
       });
@@ -423,6 +423,7 @@ export function extractFunctionsFromSource(
         // Update the existing function with component metadata
         existingFunc.purpose = `React ${componentType} component`;
 
+        existingFunc.body = getComponentBody(node, content);
         existingFunc.metadata = {
           ...existingFunc.metadata,
           entityType: 'component',
@@ -432,7 +433,6 @@ export function extractFunctionsFromSource(
           jsxElements: extractJSXElements(node, content),
           isExported: isComponentExported(node),
           complexity: calculateComplexity(node),
-          body: getComponentBody(node, content)
         };
       } else {
         // Add new component
@@ -446,6 +446,7 @@ export function extractFunctionsFromSource(
           dependencies,
           purpose: `React ${componentType} component`,
           context: `Located in ${path.basename(filePath)}`,
+          body: getComponentBody(node, content),
           metadata: {
             entityType: 'component',
             componentType,
@@ -454,7 +455,6 @@ export function extractFunctionsFromSource(
             jsxElements: extractJSXElements(node, content),
             isExported: isComponentExported(node),
             complexity: calculateComplexity(node),
-            body: getComponentBody(node, content),
             usedImports,
             unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
             calledBy: [],

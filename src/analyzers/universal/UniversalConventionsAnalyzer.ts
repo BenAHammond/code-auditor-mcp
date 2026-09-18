@@ -69,7 +69,7 @@ interface FunctionRow {
   file_path: string;
   line_number: number;
   is_exported: number;
-  metadata_json: string | null;
+  body: string | null;
 }
 
 interface FunctionCallRow {
@@ -334,9 +334,9 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
 
     const fileScope = scope.apply('file_path');
     const rows = indexHandle.query(
-        `SELECT id, name, file_path, line_number, metadata_json
+        `SELECT id, name, file_path, line_number, body
          FROM functions
-         WHERE metadata_json IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+         WHERE body IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
         fileScope?.params,
       ) as FunctionRow[];
 
@@ -688,14 +688,7 @@ function detectErrorHandlingForRow(
   const conv = dirShapes.get(directory);
   if (!conv) return null;
 
-  let metadata: any;
-  try {
-    metadata = JSON.parse(row.metadata_json!);
-  } catch {
-    return null;
-  }
-
-  const body: string | undefined = metadata.body;
+  const body: string | undefined = row.body ?? undefined;
   const shape = detectErrorHandlingShape(body);
   if (!shape) return null; // no error handling → skip
   if (shape === conv.shape) return null; // matches convention

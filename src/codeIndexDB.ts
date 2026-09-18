@@ -1603,10 +1603,13 @@ export class CodeIndexDB {
       dependency_depth: (func.metadata as any)?.dependencyDepth ?? 0,
       purpose: func.purpose ?? '',
       context: func.context ?? '',
-      body: (func as any).body ?? (func.metadata as any)?.body ?? null,
-      content_hash: enhanced.content_hash ?? computeContentHash((func as any).body ?? (func.metadata as any)?.body, enhanced.signature),
+      body: (func as any).body ?? null,
+      content_hash: enhanced.content_hash ?? computeContentHash((func as any).body, enhanced.signature),
       last_modified: lastModified ?? new Date().toISOString(),
-      metadata_json: func.metadata ? JSON.stringify(func.metadata) : '{}',
+      // body lives only in the dedicated `body` column, never in metadata_json
+      // (previously triple-stored). JSON.stringify omits the undefined value, so
+      // this strips any stray `body` key at the write boundary.
+      metadata_json: func.metadata ? JSON.stringify({ ...func.metadata, body: undefined }) : '{}',
     };
   }
 
@@ -2476,7 +2479,7 @@ export class CodeIndexDB {
             ...func,
             complexity: (func as any).complexity,
             content_hash: computeContentHash(
-              (func as any).body ?? (func as any).metadata?.body,
+              (func as any).body,
               (func as any).signature
             ),
           } as EnhancedFunctionMetadata;

@@ -722,16 +722,16 @@ function mineErrorHandling(
 
   const rows = db
     .prepare(
-      `SELECT id, name, file_path, line_number, metadata_json
+      `SELECT id, name, file_path, line_number, body
        FROM functions
-       WHERE metadata_json IS NOT NULL`,
+       WHERE body IS NOT NULL`,
     )
     .all() as Array<{
     id: number;
     name: string;
     file_path: string;
     line_number: number;
-    metadata_json: string;
+    body: string | null;
   }>;
 
   // directory -> Map<shape, count>
@@ -740,14 +740,7 @@ function mineErrorHandling(
   const dirExemplars = new Map<string, { file: string; line: number; shape: string }>();
 
   for (const row of rows) {
-    let metadata: any;
-    try {
-      metadata = JSON.parse(row.metadata_json);
-    } catch {
-      continue;
-    }
-
-    const body: string | undefined = metadata.body;
+    const body: string | undefined = row.body ?? undefined;
     const shape = detectErrorHandlingShape(body);
     if (!shape) continue; // no error handling → skip
 
