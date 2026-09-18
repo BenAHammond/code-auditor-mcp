@@ -520,6 +520,13 @@ export class DaemonCore extends EventEmitter {
     });
     const durationMs = Date.now() - start;
 
+    // Reconcile deletions in the functions index. The full audit above refreshes
+    // every file still on disk, but a file deleted since the last run is simply
+    // absent from discovery — its rows would otherwise persist indefinitely as a
+    // stale "function that no longer exists". `bulkCleanup` removes rows for any
+    // indexed path that no longer exists on disk.
+    if (this.db) await this.db.bulkCleanup();
+
     // Finalize phase: split + hash + persist are the last work before `ready`.
     this.setPhase('finalize', 0, discovered.files.length);
     this.emitState();
@@ -646,6 +653,16 @@ export class DaemonCore extends EventEmitter {
 
       if (changed.length === 0 && added.length === 0 && deleted.length === 0) {
         return;
+      }
+
+      // Reconcile deletions in the functions index. The scoped re-audit below
+      // covers only `changed` + `added` files; a deleted file is absent from
+      // that scope, so without this its rows would persist across runs.
+      // `detectChangedFunctions` removes rows for paths that no longer exist.
+      if (deleted.length > 0 && this.db) {
+        await this.db.detectChangedFunctions(
+          deleted.map((r) => path.join(this.projectRoot, r))
+        );
       }
 
       const scopeFiles = [...changed, ...added].map((r) => path.join(this.projectRoot, r));
