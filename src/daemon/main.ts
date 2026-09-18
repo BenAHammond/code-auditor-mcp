@@ -20,6 +20,7 @@
 import '../native-bootstrap.js';
 
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DaemonCore } from './core.js';
 import { SocketFace } from './socketServer.js';
 import { LspFace } from './lspServer.js';
@@ -142,7 +143,18 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
-  console.error('[code-auditor-daemon] fatal:', err);
-  process.exit(1);
-});
+// Run `main` only when this module is the actual entrypoint, never on import.
+// The CLI's `daemon start --foreground` does `await import('./daemon/main.js')`
+// to reach `runDaemonForeground`; without this guard the import's top-level
+// `main()` would re-run `runDaemonForeground` on the CLI's own argv — a second
+// daemon in the same process, a second lease, and a second seed.
+const isEntrypoint =
+  !!process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (isEntrypoint) {
+  main().catch((err) => {
+    console.error('[code-auditor-daemon] fatal:', err);
+    process.exit(1);
+  });
+}
