@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, writeFile } from 'fs/promises';
+import { mkdtemp, writeFile, mkdir } from 'fs/promises';
 import { rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -292,6 +292,72 @@ describe('CodeIndexDB SQLite — CRUD', () => {
     const hash2 = (db as any).db.prepare('SELECT content_hash FROM functions WHERE name = ?').get('hashChange') as any;
 
     expect(hash1.content_hash).not.toBe(hash2.content_hash);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spec 58 — reconciliation against the discovery set
+// ---------------------------------------------------------------------------
+
+describe('CodeIndexDB SQLite — bulkCleanup discovery reconciliation', () => {
+  let dir: string;
+  let root: string;
+  let db: CodeIndexDB;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'code-auditor-cleanup-'));
+    root = join(dir, 'project');
+    await mkdir(join(root, 'src'), { recursive: true });
+    await mkdir(join(root, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(join(root, 'src', 'kept.ts'), 'export const kept = 1;\n');
+    // Present on disk, but excluded from discovery (node_modules — the same
+    // "still exists, no longer source" class as a gitignored file).
+    await writeFile(join(root, 'node_modules', 'pkg', 'index.ts'), 'export const orphan = 2;\n');
+    db = new CodeIndexDB(join(dir, 'index.db'));
+    await db.initialize();
+  });
+
+  afterEach(async () => {
+    await db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('removes functions for files present on disk but not discoverable', async () => {
+    const keptPath = join(root, 'src', 'kept.ts');
+    const orphanPath = join(root, 'node_modules', 'pkg', 'index.ts');
+    await db.registerFunction(makeFunc({ name: 'keptFn', filePath: keptPath }));
+    await db.registerFunction(makeFunc({ name: 'orphanFn', filePath: orphanPath }));
+
+    const result = await db.bulkCleanup(root);
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedFiles).toEqual([orphanPath]);
+    const kept = (db as any).db.prepare('SELECT COUNT(*) AS c FROM functions WHERE file_path = ?').get(keptPath) as any;
+    const orphan = (db as any).db.prepare('SELECT COUNT(*) AS c FROM functions WHERE file_path = ?').get(orphanPath) as any;
+    expect(kept.c).toBe(1);
+    expect(orphan.c).toBe(0);
+  });
+
+  it('leaves functions for paths outside the project root untouched', async () => {
+    const outsidePath = join(dir, 'sibling', 'other.ts');
+    await db.registerFunction(makeFunc({ name: 'siblingFn', filePath: outsidePath }));
+
+    const result = await db.bulkCleanup(root);
+
+    expect(result.removedCount).toBe(0);
+    const row = (db as any).db.prepare('SELECT COUNT(*) AS c FROM functions WHERE file_path = ?').get(outsidePath) as any;
+    expect(row.c).toBe(1);
+  });
+
+  it('falls back to on-disk existence when no project root is given', async () => {
+    // Root-less cleanup must still drop rows for genuinely deleted files.
+    const missingPath = join(root, 'src', 'deleted.ts');
+    await db.registerFunction(makeFunc({ name: 'goneFn', filePath: missingPath }));
+
+    const result = await db.bulkCleanup();
+
+    expect(result.removedCount).toBe(1);
+    expect(result.removedFiles).toEqual([missingPath]);
   });
 });
 

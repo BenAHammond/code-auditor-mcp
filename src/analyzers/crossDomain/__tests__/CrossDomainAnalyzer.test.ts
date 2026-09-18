@@ -149,7 +149,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       expect(violations[0].message).toContain('logs');
       expect(violations[0].message).toContain('written');
       expect(violations[0].message).toContain('never read');
-      expect(violations[0].severity).toBe('high');
+      expect(violations[0].severity).toBe('severe');
     });
 
     it('does NOT flag a table that is both inserted and selected', async () => {
@@ -411,7 +411,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       expect(violations).toHaveLength(1);
       expect(violations[0].functionName).toBe('migrateAll');
       expect(violations[0].message).toContain('4 distinct tables');
-      expect(violations[0].severity).toBe('high');
+      expect(violations[0].severity).toBe('severe');
     });
 
     it('does NOT flag function writing to fewer than threshold tables', async () => {

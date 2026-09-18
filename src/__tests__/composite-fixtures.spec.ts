@@ -180,6 +180,33 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
   });
 
   // ─────────────────────────────────────────────────────────────────────
+  // 5b. Schema — create-then-drop vs never-created.
+  //
+  // Three table-reference cases against a two-migration catalog:
+  //   • `users` — created in 001, never dropped → known, no schema finding.
+  //   • `legacy_orders` — created in 001, dropped in 002 → stale-table-reference
+  //     (not unknown-table); the message names 002 and the `orders` table it
+  //     introduces in its place.
+  //   • `ghost_table` — never created anywhere → unknown-table.
+  //
+  // All three SELECTs also surface accurate `read-never-written` lifecycle facts
+  // (reads, no writes) — declared, not adjusted, exactly like the schema fixture
+  // above. This is the regression guard that a dropped table is a *stale
+  // reference*, not a typo.
+  // ─────────────────────────────────────────────────────────────────────
+  describe('schema-stale', () => {
+    it('flags the dropped table as stale (not unknown) and the never-created table as unknown', async () => {
+      await expectCompleteSet('schema-stale', [
+        'cross-domain::cross-domain/read-never-written@src/queries.ts:8',
+        'cross-domain::cross-domain/read-never-written@src/queries.ts:13',
+        'cross-domain::cross-domain/read-never-written@src/queries.ts:18',
+        'schema::stale-table-reference@src/queries.ts:13',
+        'schema::unknown-table@src/queries.ts:18',
+      ]);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
   // 6. Wrapping matrix — a matrix of concern combinations in one file.
   //
   // Target rule: `single-responsibility`, fired when a function spans two

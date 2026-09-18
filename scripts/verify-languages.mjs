@@ -19,7 +19,7 @@
  *   Phase A — the AUDIT path. A fixture with one `.go` and one `.ts` file must
  *   route them to *different* analyzers: the `.ts` file to the TypeScript
  *   pipeline (`documentation::function-documentation`), the `.go` file to the
- *   Go subprocess (`analyzer` in solid/imports/errors/…, and *no* `rule` field,
+ *   Go subprocess (`analyzer` in solid/go, and *no* `rule` field,
  *   which only the Go subprocess's `Violation` shape omits). Catches the Go file
  *   being silently fed to the TypeScript-tuned analyzers (the 762-finding gin
  *   result) instead of the Go subprocess.
@@ -61,7 +61,7 @@ if (!existsSync(CLI)) {
 //     comment triggers `documentation::function-documentation`.
 //
 //   - main.go   → the Go subprocess. A dot import (`import . "fmt"`) triggers
-//     the Go `imports` analyzer (`analyzer: "imports"`, category
+//     the Go `go` analyzer (`analyzer: "go"`, category
 //     `import-style`), a finding only the Go subprocess can emit. The same file
 //     still declares an exported `ProcessOrder` so Phase B has a function to
 //     index.
@@ -70,7 +70,7 @@ if (!existsSync(CLI)) {
 // asserted they shared an `analyzer::rule` — that asserted the very defect this
 // restore removes (Go fed to the TypeScript-tuned documentation analyzer). The
 // correct invariant is divergence: `.go` findings come from the Go subprocess
-// analyzers (`solid`/`imports`/`errors`/…), never from `documentation`.
+// analyzers (`solid`/`go`), never from `documentation`.
 const GO_SOURCE = `package sample
 
 import . "fmt"
@@ -155,7 +155,7 @@ function findingsForFile(file) {
 // The analyzers only the Go subprocess emits. `documentation` is deliberately
 // NOT in this set — a `.go` finding labeled `documentation` means the file was
 // fed to the TypeScript-tuned documentation analyzer, i.e. the routing regressed.
-const GO_ANALYZERS = new Set(['solid', 'imports', 'errors', 'goroutines', 'channels']);
+const GO_ANALYZERS = new Set(['solid', 'go']);
 
 const goFindings = findingsForFile('main.go');
 const tsFindings = findingsForFile('index.ts');

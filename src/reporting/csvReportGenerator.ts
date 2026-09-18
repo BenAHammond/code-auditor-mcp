@@ -73,7 +73,7 @@ export function generateSummaryCSVReport(
   lines.push(`Dismissed${delimiter}${result.summary.dismissed ?? 0}`);
   lines.push(`Critical Issues${delimiter}${result.summary.criticalIssues}`);
   lines.push(`Severe${delimiter}${result.summary.severe}`);
-  lines.push(`High${delimiter}${result.summary.high}`);
+  lines.push(`Advisory${delimiter}${result.summary.advisory}`);
   lines.push('');
   
   // Violations by category
@@ -116,7 +116,7 @@ function collectAllViolations(result: AuditResult): Array<Violation & { analyzer
   
   // Sort by severity and file
   return violations.sort((a, b) => {
-    const severityOrder = { critical: 3, severe: 2, high: 1 };
+    const severityOrder = { critical: 3, severe: 2, advisory: 1 };
     const severityDiff = severityOrder[b.severity] - severityOrder[a.severity];
     if (severityDiff !== 0) return severityDiff;
     return a.file.localeCompare(b.file);
@@ -211,18 +211,18 @@ export function generatePivotCSVReport(result: AuditResult): string {
   for (const [, analyzerResult] of Object.entries(result.analyzerResults)) {
     for (const violation of analyzerResult.violations) {
       if (!pivot[violation.file]) {
-        pivot[violation.file] = { critical: 0, severe: 0, high: 0 };
+        pivot[violation.file] = { critical: 0, severe: 0, advisory: 0 };
       }
       pivot[violation.file][violation.severity]++;
     }
   }
   
   // Generate CSV
-  const lines: string[] = ['File,Critical,Severe,High,Total'];
+  const lines: string[] = ['File,Critical,Severe,Advisory,Total'];
 
   for (const [file, severities] of Object.entries(pivot)) {
-    const total = severities.critical + severities.severe + severities.high;
-    lines.push(`${escapeCSVValue(file, ',')},${severities.critical},${severities.severe},${severities.high},${total}`);
+    const total = severities.critical + severities.severe + severities.advisory;
+    lines.push(`${escapeCSVValue(file, ',')},${severities.critical},${severities.severe},${severities.advisory},${total}`);
   }
   
   return lines.join('\n');

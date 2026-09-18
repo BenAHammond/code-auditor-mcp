@@ -102,3 +102,69 @@ describe('react performance — inline function props', () => {
     expect(perf.filter((v) => v.message?.includes('inline function')).length).toBe(0);
   });
 });
+
+describe('react — comment-as-markup (JSX in comments never fires)', () => {
+  it('does NOT flag a line-commented <img> without alt', async () => {
+    const violations = await analyze(
+      `export function Photo() {\n  // <img src="x.png" />\n  return <span>ok</span>;\n}\n`,
+    );
+    const a11y = byRule(violations, 'accessibility');
+    expect(a11y.filter((v) => v.message?.includes('alt')).length).toBe(0);
+  });
+
+  it('does NOT flag a block-commented <div onClick={...}>', async () => {
+    const violations = await analyze(
+      `export function Card() {\n  /* <div onClick={() => go()}>x</div> */\n  return <span>ok</span>;\n}\n`,
+    );
+    const a11y = byRule(violations, 'accessibility');
+    expect(a11y.filter((v) => v.message?.includes('non-interactive')).length).toBe(0);
+  });
+
+  it('does NOT flag an <img> inside a JSX comment {/* ... */}', async () => {
+    const violations = await analyze(
+      `export function Photo() {\n  return <div>{/* <img src="x.png" /> */}<span>ok</span></div>;\n}\n`,
+    );
+    const a11y = byRule(violations, 'accessibility');
+    expect(a11y.filter((v) => v.message?.includes('alt')).length).toBe(0);
+  });
+
+  it('does NOT flag a commented-out inline onClick handler', async () => {
+    const violations = await analyze(
+      `export function Card() {\n  // <Button onClick={() => go()} />\n  return <span>ok</span>;\n}\n`,
+    );
+    const perf = byRule(violations, 'performance');
+    expect(perf.filter((v) => v.message?.includes('inline function')).length).toBe(0);
+  });
+});
+
+describe('react — per-element line anchoring', () => {
+  it('anchors the <img> alt finding to the element line, not the declaration', async () => {
+    const violations = await analyze(
+      `export function Gallery() {\n  return (\n    <div>\n      <img src="x.png" />\n    </div>\n  );\n}\n`,
+    );
+    const a11y = byRule(violations, 'accessibility');
+    const imgFinding = a11y.find((v) => v.message?.includes('alt'));
+    expect(imgFinding).toBeTruthy();
+    expect(imgFinding!.line).toBe(4);
+  });
+
+  it('anchors the onClick-on-div finding to the element line', async () => {
+    const violations = await analyze(
+      `export function Card() {\n  return (\n    <div onClick={() => go()}>x</div>\n  );\n}\n`,
+    );
+    const a11y = byRule(violations, 'accessibility');
+    const divFinding = a11y.find((v) => v.message?.includes('non-interactive'));
+    expect(divFinding).toBeTruthy();
+    expect(divFinding!.line).toBe(3);
+  });
+
+  it('anchors the inline-function-prop finding to the onClick attribute line', async () => {
+    const violations = await analyze(
+      `export function Card() {\n  return (\n    <Button\n      onClick={() => go()}\n    />\n  );\n}\n`,
+    );
+    const perf = byRule(violations, 'performance');
+    const inlineFinding = perf.find((v) => v.message?.includes('inline function'));
+    expect(inlineFinding).toBeTruthy();
+    expect(inlineFinding!.line).toBe(4);
+  });
+});

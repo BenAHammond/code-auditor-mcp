@@ -13,7 +13,7 @@ import type { Violation } from '../../../types.js';
  * call rather than a 6-arg one.
  */
 export interface SchemaViolationClassification {
-  severity: 'critical' | 'severe' | 'high';
+  severity: 'critical' | 'severe' | 'advisory';
   rule: string;
   symbol?: string;
 }

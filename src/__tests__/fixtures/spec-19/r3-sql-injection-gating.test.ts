@@ -138,7 +138,7 @@ type TestCase = {
   /** Expected number of sql-injection-risk violations */
   expectedCount: number;
   /** Expected severity of the first sql-injection-risk violation (if any) */
-  expectedSeverity?: 'critical' | 'severe' | 'high';
+  expectedSeverity?: 'critical' | 'severe' | 'advisory';
 };
 
 const TEST_CASES: TestCase[] = [

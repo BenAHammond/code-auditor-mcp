@@ -13,7 +13,7 @@
 import { join } from 'node:path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
-import type { AnalyzerResult, IndexHandle, Violation, Resolution } from '../../types.js';
+import type { AnalyzerResult, IndexHandle, Violation, Resolution, CoverageDiagnostic } from '../../types.js';
 import type { AST, LanguageAdapter } from '../../languages/types.js';
 import { makeVisitorStatus } from '../../pipeline.js';
 import type {
@@ -211,7 +211,7 @@ function declValueKey(d: StyleDeclRow): string {
  * than a 6-arg one (Spec 34 param-count bundling).
  */
 interface StyleViolationClassification {
-  severity: 'critical' | 'severe' | 'high';
+  severity: 'critical' | 'severe' | 'advisory';
   rule: string;
   symbol?: string;
   /** Spec 37 R1 — structured next action carried on gating findings. */
@@ -523,7 +523,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
           `(${list.length} of ${total} usages, ${(share * 100).toFixed(1)}%). ` +
           `The dominant value "${modeList[0].raw_value}" is used ${modeList.length} times. ` +
           `Consider using a consistent value or design token.`,
-          { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(sample) },
+          { severity: 'advisory', rule: 'styles/value-drift', symbol: declValueKey(sample) },
         ));
       }
     }
@@ -587,7 +587,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
             `Off-scale "${property}" value: "${decl.raw_value}" (${px}px) ` +
             `is not on the project's declared ${label}. ` +
             `Nearest scale values: ${lower}px or ${upper}px.`,
-            { severity: 'high', rule: 'styles/off-scale', symbol: declValueKey(decl) },
+            { severity: 'advisory', rule: 'styles/off-scale', symbol: declValueKey(decl) },
           ));
         }
       }
@@ -676,6 +676,7 @@ interface StyleDetectorInputs {
 
 interface StylesResultSpec {
   violations: Violation[];
+  diagnostics?: CoverageDiagnostic[];
   errors?: Array<{ file: string; error: string }>;
   fileCount: number;
   startTime: number;
@@ -723,7 +724,7 @@ function flagColorDriftStragglers(
         `(used ${cluster.length} time${cluster.length === 1 ? '' : 's'}, ` +
         `${(share * 100).toFixed(1)}% of ${total} usages). ` +
         `Dominant cluster has ${dominantSize} values. Consider using a design token.`,
-        { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(item.decl) },
+        { severity: 'advisory', rule: 'styles/value-drift', symbol: declValueKey(item.decl) },
       ));
     }
   }
@@ -865,8 +866,7 @@ function createDefinedClassSuggester(indexHandle: IndexHandle): DefinedClassSugg
 async function initTailwindProbe(
   expander: TailwindUtilityExpander,
   cfg: (StylesAnalyzerConfig & { projectRoot?: string }) | undefined,
-  report: StylesViolationReporter,
-): Promise<Violation[] | null> {
+): Promise<CoverageDiagnostic | null> {
   await expander.init({
     projectRoot: cfg?.projectRoot,
     useProjectConfig: true,
@@ -876,21 +876,25 @@ async function initTailwindProbe(
   // Fail-open rule (Spec 22 R1.3): if the probe fails and Tailwind IS
   // present, disable the undefined-class detector.
   if (expander.configFailed && expander.hasTailwindConfig) {
-    // Anchor the notice to a real file+line (the Tailwind config, or the
-    // project root's package.json as a last resort) so the hook-contract
-    // guard does not strip it. A file-less violation would still register
-    // as `fired` in coverage while the finding itself is dropped — the
-    // coverage-vs-violations drift Spec 39 surfaced.
+    // A probe failure is a tool-side "couldn't do its job", not a defect in
+    // the audited code — report it on the diagnostic channel (outside the
+    // severity ladder, never counted in finding totals). Anchor it to a real
+    // file (the Tailwind config, or the project root's package.json as a last
+    // resort) so it still carries a file + line.
     const anchor = expander.tailwindConfigPath
       ?? (cfg?.projectRoot ? join(cfg.projectRoot, 'package.json') : '');
-    return [report(
-      anchor, 1,
-      `Tailwind probe unavailable (${expander.configFailureReason ?? 'unknown error'}) — ` +
-      `undefined-class detection skipped. Classes defined only in Tailwind ` +
-      `config will not be checked. Install tailwindcss in the project ` +
-      `for full class validation.`,
-      { severity: 'high', rule: 'styles/undefined-class-disabled' },
-    )];
+    return {
+      analyzerName: 'styles',
+      kind: 'undefined-class-disabled',
+      message:
+        `Tailwind probe unavailable (${expander.configFailureReason ?? 'unknown error'}) — ` +
+        `undefined-class detection skipped. Classes defined only in Tailwind ` +
+        `config will not be checked. Install tailwindcss in the project ` +
+        `for full class validation.`,
+      file: anchor,
+      line: 1,
+      details: { configFailureReason: expander.configFailureReason ?? 'unknown error' },
+    };
   }
 
   return null;
@@ -916,7 +920,7 @@ function flagUnresolvedClasses(
         `Undefined CSS class: "${u.class_name}" has no matching definition ` +
         `in any stylesheet, Tailwind utility set, or project config.`,
         {
-          severity: 'high',
+          severity: 'severe',
           rule: 'styles/undefined-class',
           symbol: u.class_name,
           resolution: {
@@ -1010,7 +1014,7 @@ function flagPropertyValueFragmentation(
       `Mechanism fragmentation: "${prop}: ${sample.raw_value}" is applied via ` +
       `${mechs.size} different mechanisms (${[...mechs].sort().join(', ')}). ` +
       `Consolidate to a single mechanism or design token.`,
-      { severity: 'high', rule: 'styles/mechanism-fragmentation', symbol: declValueKey(sample) },
+      { severity: 'advisory', rule: 'styles/mechanism-fragmentation', symbol: declValueKey(sample) },
     ));
   }
 
@@ -1038,7 +1042,7 @@ function flagFileMechanismMixing(
       `Mechanism mixing: ${file} uses ${mechs.size} different style ` +
       `mechanisms (${[...mechs].sort().join(', ')}). ` +
       `Consolidate to fewer mechanisms for maintainability.`,
-      { severity: 'high', rule: 'styles/mechanism-mixing' },
+      { severity: 'advisory', rule: 'styles/mechanism-mixing' },
     ));
   }
 
@@ -1197,7 +1201,7 @@ function verifyCandidates(
         `in ${b.filePath} share ${intersection.size} of ${union.size} ` +
         `declarations (${(similarity * 100).toFixed(0)}%). ` +
         `Consider consolidating these rules or extracting a shared mixin.`,
-        { severity: 'high', rule: 'styles/declaration-set-similarity', symbol: `${a.context} & ${b.context}` },
+        { severity: 'advisory', rule: 'styles/declaration-set-similarity', symbol: `${a.context} & ${b.context}` },
       ));
     }
   }
@@ -1240,6 +1244,7 @@ function groupDeclarationsByProperty(declarations: StyleDeclRow[]): Map<string, 
 function buildStylesResult(spec: StylesResultSpec): AnalyzerResult {
   return {
     violations: spec.violations,
+    ...(spec.diagnostics && spec.diagnostics.length > 0 && { diagnostics: spec.diagnostics }),
     errors: spec.errors ?? [],
     status: makeVisitorStatus(spec.fileCount),
     executionTime: Date.now() - spec.startTime,
@@ -1273,15 +1278,15 @@ class StylesStructureDetectors {
     classUsage: StyleClassUsageRow[],
     cfg?: StylesAnalyzerConfig & { projectRoot?: string },
     definedClassIndex?: DefinedClassIndex,
-  ): Promise<Violation[]> {
+  ): Promise<{ violations: Violation[]; diagnostics: CoverageDiagnostic[] }> {
     const violations: Violation[] = [];
 
     const expander = getTailwindExpander();
 
     // Fail-open rule (Spec 22 R1.3): if the probe fails and Tailwind IS
-    // present, disable the undefined-class detector.
-    const failOpen = await initTailwindProbe(expander, cfg, this.makeViolation.bind(this));
-    if (failOpen) return failOpen;
+    // present, disable the undefined-class detector and surface a diagnostic.
+    const failOpen = await initTailwindProbe(expander, cfg);
+    if (failOpen) return { violations: [], diagnostics: [failOpen] };
 
     // 1. Static-filter usage rows into candidate class names (the defined-check
     //    is deferred to the DB lookup below).
@@ -1304,7 +1309,7 @@ class StylesStructureDetectors {
       this.makeViolation.bind(this),
       definedClassIndex?.suggest ?? (() => null),
     ));
-    return violations;
+    return { violations, diagnostics: [] };
   }
 
   // -----------------------------------------------------------------------
@@ -1347,7 +1352,7 @@ class StylesStructureDetectors {
         `Token bypass: "${d.raw_value}" for "${d.property}" matches design ` +
         `token "${tokenInfo.name}" but was used as a raw value. ` +
         `Use the token reference instead to keep styles consistent.`,
-        { severity: 'high', rule: 'styles/token-bypass', symbol: declValueKey(d) },
+        { severity: 'advisory', rule: 'styles/token-bypass', symbol: declValueKey(d) },
       ));
     }
 
@@ -1431,7 +1436,7 @@ class StylesStructureDetectors {
         `Z-index sprawl: ${values.size} distinct z-index values ` +
         `(${sortedVals.join(', ')}). Consider defining a z-index scale ` +
         `(e.g., $z-layers: (dropdown: 100, modal: 200, toast: 300)).`,
-        { severity: 'high', rule: 'styles/z-index-sprawl', symbol: declValueKey(sample) },
+        { severity: 'advisory', rule: 'styles/z-index-sprawl', symbol: declValueKey(sample) },
       ));
     }
 
@@ -1444,7 +1449,7 @@ class StylesStructureDetectors {
           d.line,
           `Singleton z-index: z-index: ${val} is used only once. ` +
           `Consider whether this value belongs in a shared z-index scale.`,
-          { severity: 'high', rule: 'styles/z-index-singleton', symbol: declValueKey(d) },
+          { severity: 'advisory', rule: 'styles/z-index-singleton', symbol: declValueKey(d) },
         ));
       }
     }
@@ -1512,10 +1517,11 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
       });
     }
 
-    const violations = await this.runAllDetectors(indexHandle, cfg, declarations);
+    const { violations, diagnostics } = await this.runAllDetectors(indexHandle, cfg, declarations);
 
     return buildStylesResult({
       violations,
+      diagnostics,
       fileCount: new Set(declarations.map(d => d.file_path)).size,
       startTime,
       name: this.name,
@@ -1527,7 +1533,7 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
     indexHandle: IndexHandle,
     cfg: StylesAnalyzerConfig,
     declarations: StyleDeclRow[],
-  ): Promise<Violation[]> {
+  ): Promise<{ violations: Violation[]; diagnostics: CoverageDiagnostic[] }> {
     const tokens = this.queryTokens(indexHandle);
     return this.runDetectors({
       byProperty: groupDeclarationsByProperty(declarations),
@@ -1543,18 +1549,21 @@ export class UniversalStylesAnalyzer extends UniversalStylesAnalyzerDetectors {
     });
   }
 
-  /** Run all detectors and return their combined violations. */
-  private async runDetectors(inputs: StyleDetectorInputs): Promise<Violation[]> {
+  /** Run all detectors and return their combined violations + diagnostics. */
+  private async runDetectors(inputs: StyleDetectorInputs): Promise<{ violations: Violation[]; diagnostics: CoverageDiagnostic[] }> {
     const { byProperty, cfg, declarations, classUsage, tokenValueMap, declaredScale, definedClassIndex } = inputs;
     const violations: Violation[] = [];
+    const diagnostics: CoverageDiagnostic[] = [];
     violations.push(...this.detectValueDrift(byProperty, cfg, declarations));
     violations.push(...this.detectOffScaleValues(byProperty, cfg, declaredScale));
-    violations.push(...await this.structure.detectUndefinedClasses(classUsage, cfg, definedClassIndex));
+    const undefinedResult = await this.structure.detectUndefinedClasses(classUsage, cfg, definedClassIndex);
+    violations.push(...undefinedResult.violations);
+    diagnostics.push(...undefinedResult.diagnostics);
     violations.push(...this.structure.detectTokenBypass(declarations, tokenValueMap, cfg));
     violations.push(...this.structure.detectMechanismFragmentation(declarations, cfg));
     violations.push(...this.structure.detectDeclarationSetSimilarity(declarations, cfg));
     violations.push(...this.structure.detectZIndexInventory(byProperty, cfg));
-    return violations;
+    return { violations, diagnostics };
   }
 
   /** Not used — we override analyze() directly. */

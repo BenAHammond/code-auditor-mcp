@@ -38,6 +38,7 @@ import {
   diffFiles,
   splitFindings,
   mergeFindings,
+  SNAPSHOT_VERSION,
   type FileRecord,
   type NextFileSnapshot,
 } from '../nextFileIncremental.js';
@@ -520,11 +521,13 @@ export class DaemonCore extends EventEmitter {
     const durationMs = Date.now() - start;
 
     // Reconcile deletions in the functions index. The full audit above refreshes
-    // every file still on disk, but a file deleted since the last run is simply
-    // absent from discovery — its rows would otherwise persist indefinitely as a
-    // stale "function that no longer exists". `bulkCleanup` removes rows for any
-    // indexed path that no longer exists on disk.
-    if (this.db) await this.db.bulkCleanup();
+    // every file still in discovery, but a file that is deleted OR gitignored
+    // since the last run is simply absent from discovery — its rows would
+    // otherwise persist indefinitely as a stale "function that no longer exists".
+    // `bulkCleanup` drops rows for any indexed path under projectRoot that is no
+    // longer discoverable (not merely missing from disk — gitignored files still
+    // exist but are no longer source).
+    if (this.db) await this.db.bulkCleanup(this.projectRoot);
 
     // Finalize phase: split + hash + persist are the last work before `ready`.
     this.setPhase('finalize', 0, discovered.files.length);
@@ -537,7 +540,7 @@ export class DaemonCore extends EventEmitter {
     });
 
     this.snapshot = {
-      version: 1,
+      version: SNAPSHOT_VERSION,
       projectRoot: this.projectRoot,
       files,
       visitorFindings: split.visitorFindings,

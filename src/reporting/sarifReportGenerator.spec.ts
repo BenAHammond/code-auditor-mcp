@@ -39,7 +39,7 @@ function makeAuditResult(analyzerResults: Record<string, any> = {}): AuditResult
       totalViolations: 1,
       criticalIssues: 0,
       severe: 1,
-      high: 0,
+      advisory: 0,
       violationsByCategory: { solid: 1 },
       topIssues: [{ type: 'single-responsibility', count: 1 }],
     },
@@ -259,12 +259,12 @@ describe('SARIF Report Generator', () => {
       expect(parsed.runs[0].results[0].level).toBe('error');
     });
 
-    it('maps high to error', () => {
+    it('maps advisory to note', () => {
       const result = makeAuditResult({
         'documentation-analyzer': {
           violations: [
             makeViolation({
-              severity: 'high',
+              severity: 'advisory',
               message: 'Function lacks documentation',
               functionName: 'foo',
             }),
@@ -277,7 +277,7 @@ describe('SARIF Report Generator', () => {
       const sarif = generateSARIFReport(result);
       const parsed = JSON.parse(sarif);
 
-      expect(parsed.runs[0].results[0].level).toBe('error');
+      expect(parsed.runs[0].results[0].level).toBe('note');
     });
   });
 
@@ -511,7 +511,7 @@ describe('SARIF Report Generator', () => {
         'documentation-analyzer': {
           violations: [
             makeViolation({
-              severity: 'high',
+              severity: 'advisory',
               message: 'Function lacks documentation',
               suggestion: 'Add JSDoc comment describing the function purpose and parameters',
               functionName: 'doWork',

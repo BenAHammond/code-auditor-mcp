@@ -71,7 +71,7 @@ describe('buildTelemetryPayload', () => {
   it('guard — the schema version is pinned (a shape change is a cross-repo contract break)', () => {
     expect(TELEMETRY_SCHEMA_VERSION).toBe(2);
     const payload = buildTelemetryPayload({
-      install_id: INSTALL_ID, toolVersion: '1.2.3', rule: 'r', level: 'high', reason: 'x', signature: 's', lang: 'go',
+      install_id: INSTALL_ID, toolVersion: '1.2.3', rule: 'r', level: 'advisory', reason: 'x', signature: 's', lang: 'go',
     });
     expect(payload.schema).toBe(TELEMETRY_SCHEMA_VERSION);
     expect(payload.schema).toBe(2);
@@ -111,7 +111,7 @@ describe('buildTelemetryPayload', () => {
 describe('formatTelemetryPreview', () => {
   it('positive — previews the payload before sending', () => {
     const payload = buildTelemetryPayload({
-      install_id: INSTALL_ID, toolVersion: '1.2.3', rule: 'loop-query', level: 'high', reason: 'generated', signature: 'for_statement', lang: 'go',
+      install_id: INSTALL_ID, toolVersion: '1.2.3', rule: 'loop-query', level: 'advisory', reason: 'generated', signature: 'for_statement', lang: 'go',
     });
     const preview = formatTelemetryPreview(payload);
     expect(preview).toContain('Telemetry payload');
@@ -151,7 +151,7 @@ describe('resolveTelemetryConfig', () => {
 describe('sendTelemetry', () => {
   it('guard — a missing endpoint is an immediate no-op, never an error', async () => {
     const payload = buildTelemetryPayload({
-      install_id: INSTALL_ID, toolVersion: '1.2.3', rule: 'r', level: 'high', reason: 'x', signature: 's', lang: 'go',
+      install_id: INSTALL_ID, toolVersion: '1.2.3', rule: 'r', level: 'advisory', reason: 'x', signature: 's', lang: 'go',
     });
     const result = await sendTelemetry(payload, '');
     expect(result.sent).toBe(false);
@@ -159,7 +159,7 @@ describe('sendTelemetry', () => {
 
   it('guard — an unreachable endpoint resolves sent:false and never throws', async () => {
     const payload = buildTelemetryPayload({
-      install_id: INSTALL_ID, toolVersion: '1.2.3', rule: 'r', level: 'high', reason: 'x', signature: 's', lang: 'go',
+      install_id: INSTALL_ID, toolVersion: '1.2.3', rule: 'r', level: 'advisory', reason: 'x', signature: 's', lang: 'go',
     });
     const result = await sendTelemetry(payload, 'http://127.0.0.1:1/', { timeoutMs: 500 });
     expect(result.sent).toBe(false);

@@ -605,14 +605,14 @@ function getAllViolations(result: { analyzerResults?: Record<string, { violation
 
 function calculateHealthScore(result: {
   metadata?: { filesAnalyzed?: number };
-  summary?: { criticalIssues?: number; severe?: number; high?: number };
+  summary?: { criticalIssues?: number; severe?: number; advisory?: number };
 }): number {
   const filesAnalyzed = result.metadata?.filesAnalyzed || 1;
   const critical = result.summary?.criticalIssues || 0;
   const severe = result.summary?.severe || 0;
-  const high = result.summary?.high || 0;
+  const advisory = result.summary?.advisory || 0;
 
-  const weightedViolations = critical * 10 + severe * 3 + high * 0.5;
+  const weightedViolations = critical * 10 + severe * 3 + advisory * 0.5;
   let score = 100 - (weightedViolations / filesAnalyzed) * 2;
   return Math.max(0, Math.round(Math.min(100, score)));
 }
@@ -621,7 +621,7 @@ function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult
   let totalViolations = 0;
   let criticalIssues = 0;
   let severe = 0;
-  let high = 0;
+  let advisory = 0;
   const violationsByCategory: Record<string, number> = {};
 
   for (const [analyzer, result] of Object.entries(analyzerResults)) {
@@ -629,7 +629,7 @@ function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult
       totalViolations++;
       if (violation.severity === 'critical') criticalIssues++;
       else if (violation.severity === 'severe') severe++;
-      else high++;
+      else advisory++;
       const category = violation.rule;
       violationsByCategory[category] = (violationsByCategory[category] || 0) + 1;
     }
@@ -646,7 +646,7 @@ function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult
     totalViolations,
     criticalIssues,
     severe,
-    high,
+    advisory,
     violationsByCategory,
     topIssues,
   };
@@ -1336,7 +1336,7 @@ export async function getAuditResultsAsSarif(args: any): Promise<string> {
       totalViolations: stored.summary?.totalViolations ?? 0,
       criticalIssues: stored.summary?.criticalIssues ?? 0,
       severe: stored.summary?.severe ?? 0,
-      high: stored.summary?.high ?? 0,
+      advisory: stored.summary?.advisory ?? 0,
       violationsByCategory: stored.summary?.violationsByCategory ?? {},
       topIssues: stored.summary?.topIssues ?? [],
     },
@@ -1385,7 +1385,7 @@ export async function getAuditResultsPage(args: any): Promise<Record<string, unk
       totalViolations: auditResult.summary?.totalViolations ?? allViolations.length,
       criticalIssues: auditResult.summary?.criticalIssues ?? 0,
       severe: auditResult.summary?.severe ?? 0,
-      high: auditResult.summary?.high ?? 0,
+      advisory: auditResult.summary?.advisory ?? 0,
       filesAnalyzed: auditResult.metadata?.filesAnalyzed ?? 0,
       executionTime: auditResult.metadata?.auditDuration ?? 0,
       healthScore: auditResult.summary?.healthScore ?? calculateHealthScore(auditResult),

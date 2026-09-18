@@ -67,7 +67,7 @@ import {
   passesFileGate,
   extractTablesFromRegistry,
 } from './analyzers/universal/schema/discovery.js';
-import { applyMigrationOps } from './analyzers/universal/schema/migrations.js';
+import { applyMigrationOps, stripIdentifier } from './analyzers/universal/schema/migrations.js';
 import type { CrossLanguageEntity, CrossReference } from './types/crossLanguage.js';
 
 // ── Rule ID helpers ──────────────────────────────────────────────────────────
@@ -76,6 +76,13 @@ function getRuleIdsFor(name: string): string[] {
   return Object.entries(RULE_REGISTRY)
     .filter(([, entry]) => entry.analyzer === name)
     .map(([id]) => id);
+}
+
+/** Join a list of names as prose: "a", "a and b", "a, b and c". */
+function joinEnglish(names: string[]): string {
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0]!;
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 // ── Lazy import singleton ────────────────────────────────────────────────────
@@ -2167,15 +2174,15 @@ export function createDependencyGraphReducer(): Stage4Reducer {
 
         const HEALTH_SEVERITY: Record<string, Violation['severity']> = {
           'break-cycles': 'severe',
-          'reduce-coupling': 'high',
-          'split-responsibilities': 'high',
+          'reduce-coupling': 'advisory',
+          'split-responsibilities': 'advisory',
           'review-orphans': 'severe',
         };
         for (const s of health.suggestions) {
           violations.push({
             file: '(multiple)',
             line: 0,
-            severity: HEALTH_SEVERITY[s.type] ?? 'high',
+            severity: HEALTH_SEVERITY[s.type] ?? 'advisory',
             message: s.description,
             rule: s.type,
             type: s.type,
@@ -2644,6 +2651,12 @@ export function createSchemaReducer(): Stage3Reducer {
         if (na !== nb) return na - nb;
         return a.filePath.localeCompare(b.filePath);
       });
+      // Drop provenance — the last migration that removed a table, and the tables
+      // that same migration introduced. Lets unknown-table detection distinguish
+      // "never existed" from "existed and was dropped": the latter is a stale code
+      // reference, not a typo. `dropProvenance` ends up holding exactly the tables
+      // dropped and not subsequently recreated (CREATE clears the entry).
+      const dropProvenance = new Map<string, { migrationFile: string; createdInSameMigration: string[] }>();
       for (const sqlFile of sqlFiles) {
         const before = new Set(knownTables);
         applyMigrationOps(sqlFile.ops, knownTables);
@@ -2653,6 +2666,23 @@ export function createSchemaReducer(): Stage3Reducer {
             const sources = tableProvenances.get(table) ?? [];
             sources.push({ table, tier: 'sql-migration', sourceFile: sqlFile.filePath, description: 'SQL migration' });
             tableProvenances.set(table, sources);
+          }
+        }
+        // Genuinely-new tables introduced by this migration (excludes rename/rebuild
+        // churn like `ALTER … RENAME TO x_old` + re-CREATE of the same name).
+        const createdHere: string[] = [];
+        for (const op of sqlFile.ops) {
+          if (op.op === 'CREATE') {
+            const t = stripIdentifier(op.table);
+            if (!before.has(t)) createdHere.push(t);
+          }
+        }
+        for (const op of sqlFile.ops) {
+          const t = stripIdentifier(op.table);
+          if (op.op === 'DROP') {
+            dropProvenance.set(t, { migrationFile: sqlFile.filePath, createdInSameMigration: createdHere });
+          } else if (op.op === 'CREATE') {
+            dropProvenance.delete(t);
           }
         }
       }
@@ -2747,6 +2777,37 @@ export function createSchemaReducer(): Stage3Reducer {
         const unknownRefs = allTableRefs.filter(ref => !knownTables.has(ref.table));
         if (unknownRefs.length / Math.max(knownTables.size, 1) <= 10) {
           for (const ref of unknownRefs) {
+            // The table existed and was dropped in a migration — a stale code
+            // reference, not a typo. Name the dropping migration and the tables
+            // that migration introduced (evidence, not proof of a successor).
+            const drop = dropProvenance.get(ref.table);
+            if (drop) {
+              const migrationName = drop.migrationFile.split('/').pop() ?? drop.migrationFile;
+              const created = drop.createdInSameMigration;
+              const msg = created.length > 0
+                ? `${ref.table} was dropped in ${migrationName}; that migration creates ${joinEnglish(created)}.`
+                : `${ref.table} was dropped in ${migrationName} and was not recreated.`;
+              violations.push({
+                file: ref.file,
+                line: ref.line,
+                column: ref.column,
+                severity: 'critical' as const,
+                message: msg,
+                rule: 'stale-table-reference',
+                analyzer: 'schema',
+                symbol: ref.table,
+                resolution: {
+                  action: 'update-stale-reference',
+                  summary: created.length > 0
+                    ? `The table '${ref.table}' was dropped in ${migrationName}. That migration creates ${joinEnglish(created)} — update this reference to a table that still exists.`
+                    : `The table '${ref.table}' was dropped in ${migrationName} and not recreated — update or remove this reference.`,
+                  symbols: created.length > 0 ? created : [ref.table],
+                  files: [ref.file],
+                  lines: [ref.line],
+                },
+              } as Violation);
+              continue;
+            }
             const suggestions = getNearestTableSuggestions(ref.table, knownTables, 2);
             const msg = suggestions.length > 0
               ? `Reference to unknown table '${ref.table}' (${ref.type}). Did you mean: ${suggestions.join(', ')}?`

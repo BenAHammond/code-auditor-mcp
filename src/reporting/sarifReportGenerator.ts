@@ -25,7 +25,7 @@ const INFORMATION_URI = 'https://github.com/BenAHammond/code-auditor-mcp';
 const SEVERITY_TO_LEVEL: Record<string, string> = {
   critical: 'error',
   severe: 'error',
-  high: 'error',
+  advisory: 'note',
 };
 
 // ── Rule ID resolution ──────────────────────────────────────────────────────

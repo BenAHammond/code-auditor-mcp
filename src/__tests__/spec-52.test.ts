@@ -64,7 +64,9 @@ describe('Spec-52 R1 — loop-query prepare/bind false positives', () => {
   });
 
   it('item 3: db.exec() in loop → loop-query fires (eager member method, genuine N+1)', async () => {
-    expect(await loopQueryCount('item-03-exec-in-loop.ts')).toBeGreaterThan(0);
+    // Template-literal query argument — pins the dedup: the call and its SQL
+    // template literal are one query site, not two findings.
+    expect(await loopQueryCount('item-03-exec-in-loop.ts')).toBe(1);
   });
 
   it('item 4: storage.sql.exec() in loop → loop-query fires (Leaderboard.ts:113 positive)', async () => {
@@ -72,7 +74,8 @@ describe('Spec-52 R1 — loop-query prepare/bind false positives', () => {
   });
 
   it('item 6: chained db.prepare().bind().run() in loop → loop-query fires (genuine N+1, eager .run() in loop)', async () => {
-    expect(await loopQueryCount('item-06-chained-prepare-run-in-loop.ts')).toBeGreaterThan(0);
+    // Template-literal SQL — one query site, one finding (not call + literal).
+    expect(await loopQueryCount('item-06-chained-prepare-run-in-loop.ts')).toBe(1);
   });
 
   it('item 7: chained db.prepare().bind().first<Row>() in loop → loop-query fires (typed-read N+1, generics must not hide the eager method)', async () => {
@@ -318,13 +321,14 @@ describe('Spec-52 R3 — whole-program rule suppression under scoped runs', () =
       'cross-domain/no-validator-reachable',
       'cross-domain/read-never-written',
       'cross-domain/written-never-read',
+      'stale-table-reference',
       'unknown-table',
     ]);
   });
 
   it('suppresses whole-program rules on a scoped run with a scope-naming reason', () => {
     const app = scopedWholeProgramApplicability(true, 7);
-    expect(app.size).toBe(4);
+    expect(app.size).toBe(5);
     for (const ruleId of WHOLE_PROGRAM_RULES) {
       const verdict = app.get(ruleId)!;
       expect(verdict.applicable).toBe(false);

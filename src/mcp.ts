@@ -170,9 +170,9 @@ function calculateHealthScore(result: AuditResult): number {
   const filesAnalyzed = result.metadata?.filesAnalyzed || 1;
   const critical = result.summary.criticalIssues || 0;
   const severe = result.summary.severe || 0;
-  const high = result.summary.high || 0;
-  const weights = { critical: 10, severe: 3, high: 0.5 };
-  const weightedViolations = critical * weights.critical + severe * weights.severe + high * weights.high;
+  const advisory = result.summary.advisory || 0;
+  const weights = { critical: 10, severe: 3, advisory: 0.5 };
+  const weightedViolations = critical * weights.critical + severe * weights.severe + advisory * weights.advisory;
   const violationsPerFile = weightedViolations / filesAnalyzed;
   const score = 100 - violationsPerFile * 2;
   return Math.max(0, Math.round(Math.min(100, score)));
@@ -249,9 +249,9 @@ function registerAllTools(registry: ToolRegistry): void {
           name: 'minSeverity',
           type: 'string',
           required: false,
-          description: 'Minimum severity level to report (high included by default).',
-          default: 'high',
-          enum: ['high', 'severe', 'critical'],
+          description: 'Minimum severity level to report (advisory included by default).',
+          default: 'advisory',
+          enum: ['advisory', 'severe', 'critical'],
         },
         {
           name: 'indexFunctions',
@@ -279,7 +279,7 @@ function registerAllTools(registry: ToolRegistry): void {
           const auditPath = path.resolve((args.path as string) || process.cwd());
           await assertAuditPathExists(auditPath);
           const analyzers = (args.analyzers as string[]) ?? DEFAULT_ANALYZERS;
-          const minSeverity = ((args.minSeverity as string) || 'high') as Severity;
+          const minSeverity = ((args.minSeverity as string) || 'advisory') as Severity;
           const indexFunctions = (args.indexFunctions as boolean) !== false;
 
           const db = CodeIndexDB.getInstance();
@@ -321,7 +321,7 @@ function registerAllTools(registry: ToolRegistry): void {
             violations: auditResult.analyzerResults,
             metadata: auditResult.metadata,
             guidance:
-              'The audit takes readings, not verdicts. Severity is urgency — how fast a defect bites, never whether you may ignore it; there is no "noise" tier. Work criticals first, then severe, then high. The coverage panel tells you what was actually measured. Documentation readings (missing JSDoc) are maintainability gaps. If you decline a reading, record why instead of silently dismissing it.',
+              'The audit takes readings, not verdicts. Severity is urgency — how fast a defect bites, never whether you may ignore it; there is no "noise" tier. Work criticals first, then severe, then advisory. The coverage panel tells you what was actually measured. Documentation readings (missing JSDoc) are maintainability gaps. If you decline a reading, record why instead of silently dismissing it.',
           };
         });
       },
@@ -349,9 +349,9 @@ function registerAllTools(registry: ToolRegistry): void {
           name: 'minSeverity',
           type: 'string',
           required: false,
-          description: 'Minimum severity level to report (high included by default).',
-          default: 'high',
-          enum: ['high', 'severe', 'critical'],
+          description: 'Minimum severity level to report (advisory included by default).',
+          default: 'advisory',
+          enum: ['advisory', 'severe', 'critical'],
         },
         {
           name: 'indexFunctions',
@@ -459,7 +459,7 @@ function registerAllTools(registry: ToolRegistry): void {
         return withAbortSignal(signal, 'audit.start', () =>
           startAuditJob(args, {
             defaultAnalyzers: DEFAULT_ANALYZERS,
-            defaultMinSeverity: 'high',
+            defaultMinSeverity: 'advisory',
             defaultGenerateCodeMap: false,
           }),
         );
@@ -584,7 +584,7 @@ function registerAllTools(registry: ToolRegistry): void {
         const runner = createAuditRunner({
           projectRoot: auditPath,
           enabledAnalyzers: DEFAULT_ANALYZERS,
-          minSeverity: 'high' as Severity,
+          minSeverity: 'advisory' as Severity,
           verbose: false,
           indexFunctions,
           ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
@@ -687,7 +687,7 @@ function registerAllTools(registry: ToolRegistry): void {
             totalViolations: auditResult.summary.totalViolations,
             criticalViolations: auditResult.summary.criticalIssues,
             severeViolations: auditResult.summary.severe,
-            highViolations: auditResult.summary.high,
+            advisoryViolations: auditResult.summary.advisory,
           },
           recommendation: getHealthRecommendation(healthScore, auditResult),
           ...(indexingResult && { functionIndexing: indexingResult }),

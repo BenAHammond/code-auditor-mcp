@@ -1,9 +1,9 @@
 /**
  * Spec 45 R1/R4 + Spec 54 R3 — the blocking gate as a pure, testable function.
  *
- * Spec 54 R3: the blocking set is the fixed all-three {critical, severe, high}.
+ * Spec 54 R3: the blocking set is the fixed all-three {critical, severe, advisory}.
  * Every finding is a defect and every finding blocks; there is no configurable
- * gate and nothing below `high`. Every registered rule participates (Spec 45
+ * gate and nothing below `advisory`. Every registered rule participates (Spec 45
  * R1) — there is no per-rule opt-in. Enforcement is not diff-scoped (Spec 45
  * R4): a pre-existing finding in the audited file blocks exactly like a new
  * one. The edit-time hook still runs on the changed file as a performance

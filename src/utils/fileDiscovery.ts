@@ -7,6 +7,7 @@
  */
 
 import { promises as fs } from 'fs';
+import { execFileSync } from 'node:child_process';
 import path from 'path';
 import type { FileAccounting } from '../services/fileAccounting.js';
 
@@ -272,6 +273,84 @@ async function enumerateAllFiles(dir: string): Promise<string[]> {
 }
 
 /**
+ * Spec 58 — .gitignore-aware discovery.
+ *
+ * A git repository has *disowned* some files via `.gitignore`; the analyzer must
+ * not treat those as source. `corpus-expansion/` (~28k files) is the canonical
+ * case: gitignored by the repo, but the raw walk below descended into it and the
+ * diff-scoped `changed` gate paid a full-tree walk (and read all 28k files) on
+ * every invocation.
+ *
+ * The index is the set of paths `git ls-files` reports as ignored. Delegating to
+ * git (rather than re-parsing `.gitignore` by hand) inherits every gitignore
+ * feature for free — nested `.gitignore`, `!` negation, `core.excludesFile`,
+ * `.git/info/exclude` — and `--directory` collapses a wholly-ignored tree into a
+ * single `corpus-expansion/` entry, which is what lets the walk prune *before*
+ * descending into it. Returns null when git is unavailable or `scanRoot` is not
+ * inside a work tree, signalling the walk to fall back to its raw behavior.
+ */
+interface GitIgnoreIndex {
+  /** Normalized (POSIX) relative directory prefixes that are wholly ignored. */
+  dirs: string[];
+  /** Normalized (POSIX) relative paths of individually-ignored files. */
+  files: Set<string>;
+}
+
+function loadGitIgnoreIndex(scanRoot: string): GitIgnoreIndex | null {
+  try {
+    const stdout = execFileSync(
+      'git',
+      ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
+      { cwd: scanRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const dirs: string[] = [];
+    const files = new Set<string>();
+    // `-z` NUL-separates; `--directory` emits a wholly-ignored dir with a
+    // trailing slash. git always uses `/` separators regardless of platform.
+    for (const entry of stdout.split('\0')) {
+      const rel = entry.trim();
+      if (!rel) continue;
+      if (rel.endsWith('/')) {
+        dirs.push(rel.slice(0, -1));
+      } else {
+        files.add(rel);
+      }
+    }
+    return { dirs, files };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Process-level cache of the ignored-path index, keyed by resolved scan root.
+ * The `changed` gate invokes discovery several times in one short-lived process;
+ * without this each call would re-spawn `git ls-files`. A long-lived server
+ * reuses the cached index for the lifetime of the process — acceptable, because
+ * a `.gitignore` edit mid-process is rare and the worst case is a stale prune on
+ * the next discovery, not a corrupt result.
+ */
+const gitIgnoreCache = new Map<string, GitIgnoreIndex | null>();
+
+function gitIgnoreIndexFor(scanRoot: string): GitIgnoreIndex | null {
+  const key = path.resolve(scanRoot);
+  if (!gitIgnoreCache.has(key)) {
+    gitIgnoreCache.set(key, loadGitIgnoreIndex(key));
+  }
+  return gitIgnoreCache.get(key)!;
+}
+
+/** True when a relative path (or one of its ancestor dirs) is git-ignored. */
+function isIgnoredByGit(relPath: string, index: GitIgnoreIndex): boolean {
+  const normalized = relPath.split(path.sep).join('/');
+  if (index.files.has(normalized)) return true;
+  for (const dir of index.dirs) {
+    if (normalized === dir || normalized.startsWith(dir + '/')) return true;
+  }
+  return false;
+}
+
+/**
  * Recursively find files matching criteria
  */
 async function findFilesRecursive(
@@ -283,6 +362,7 @@ async function findFilesRecursive(
     scanRoot: string;
     onSkippedExtension?: (ext: string, filePath: string) => void;
     fileAccounting?: FileAccounting;
+    gitIgnore?: GitIgnoreIndex | null;
   }
 ): Promise<string[]> {
   const results: string[] = [];
@@ -292,6 +372,18 @@ async function findFilesRecursive(
 
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
+
+      // Spec 58 — prune gitignored paths before the excludeDirs classification,
+      // silently (like an infra dir): a disowned file is never source, and a
+      // gitignored directory is pruned without descending into (or accounting
+      // per-file) its contents. `null` (not a git repo) falls through to the
+      // raw walk below.
+      if (options.gitIgnore) {
+        const rel = path.relative(options.scanRoot, fullPath);
+        if (!rel.startsWith('..') && isIgnoredByGit(rel, options.gitIgnore)) {
+          continue;
+        }
+      }
 
       const excl = classifyExcludedDir(fullPath, options.excludeDirs, options.scanRoot);
       if (excl) {
@@ -354,11 +446,12 @@ export async function findFiles(
 ): Promise<string[]> {
   const extensions = options.extensions || ALL_EXTENSIONS;
   const excludeDirs = options.excludeDirs || DEFAULT_EXCLUDED_DIRS;
-  
+
   const files = await findFilesRecursive(rootDir, {
     extensions,
     excludeDirs,
     scanRoot: rootDir,
+    gitIgnore: gitIgnoreIndexFor(rootDir),
     ...(options.onSkippedExtension ? { onSkippedExtension: options.onSkippedExtension } : {}),
     ...(options.fileAccounting ? { fileAccounting: options.fileAccounting } : {})
   });
@@ -442,6 +535,7 @@ export async function findFilesByPattern(
     excludeDirs,
     pattern: regex,
     scanRoot: rootDir,
+    gitIgnore: gitIgnoreIndexFor(rootDir),
     ...(options.onSkippedExtension ? { onSkippedExtension: options.onSkippedExtension } : {}),
     ...(options.fileAccounting ? { fileAccounting: options.fileAccounting } : {})
   });

@@ -115,6 +115,16 @@ async function runAnalyzer(
   return result.violations;
 }
 
+/** Shortcut to run the analyzer and return the full result (violations + diagnostics). */
+async function runAnalyzerFull(
+  config: Record<string, unknown> = {},
+  files: string[] = [],
+): Promise<any> {
+  const analyzer = new UniversalStylesAnalyzer();
+  const merged = { indexHandle: db, ...config };
+  return analyzer.analyze(files, merged);
+}
+
 /** Find a violation matching the given rule and optional file suffix. */
 function findViolations(violations: any[], rule: string, fileSuffix?: string): any[] {
   return violations.filter(v => {
@@ -710,13 +720,14 @@ describe('Detector 3 — Undefined Classes', () => {
     insertClassUsage('btn-primary', 'src/component.tsx', 7, 'className');
     insertClassUsage('undefined-class-name', 'src/component.tsx', 8, 'className');
 
-    const violations = await runAnalyzer({
+    const result = await runAnalyzerFull({
       projectRoot: '/tmp/no-tailwind-project',
       // No tailwindClasses — simulate a project without custom Tailwind classes
     });
+    const violations = result.violations;
 
     // No disabled diagnostic — CSS-only fallback is the correct path
-    const disabled = findViolations(violations, 'styles/undefined-class-disabled');
+    const disabled = (result.diagnostics ?? []).filter((d: any) => d.kind === 'undefined-class-disabled');
     expect(disabled.length).toBe(0);
 
     // CSS-only detection: btn-primary IS defined in the beforeEach CSS
@@ -746,23 +757,23 @@ describe('Detector 3 — Undefined Classes', () => {
       insertClassUsage('flex', 'src/component.tsx', 6, 'className');
       insertClassUsage('undefined-class-name', 'src/component.tsx', 7, 'className');
 
-      const violations = await runAnalyzer({
+      const result = await runAnalyzerFull({
         projectRoot: dir,
         // No tailwindClasses — simulates a v4 project with no custom Tailwind classes
       });
 
-      const disabled = findViolations(violations, 'styles/undefined-class-disabled');
+      // The fail-open notice now lives on the diagnostic channel (kind
+      // `undefined-class-disabled`), anchored to the @theme CSS file so the
+      // hook-contract guard does not strip it — otherwise coverage counts it
+      // `fired` while the finding is dropped (Spec 39 R2/R3).
+      const disabled = (result.diagnostics ?? []).filter((d: any) => d.kind === 'undefined-class-disabled');
       expect(disabled.length).toBe(1);
       expect(disabled[0].message).toContain('skipped');
-      // The fail-open notice must be anchored to a real file+line (the @theme
-      // CSS file) so the hook-contract guard does not strip it — otherwise
-      // coverage counts it `fired` while the finding is dropped, producing the
-      // impossible `fired` count=0 drift (Spec 39 R2/R3).
       expect(disabled[0].file).toBeTruthy();
       expect(disabled[0].file).toContain('global.css');
       expect(disabled[0].line).toBeGreaterThanOrEqual(1);
 
-      const undef = findViolations(violations, 'styles/undefined-class');
+      const undef = findViolations(result.violations, 'styles/undefined-class');
       expect(undef.length).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1126,7 +1137,7 @@ describe('Detector 5 — Mechanism Fragmentation', () => {
     expect(mixing.length).toBe(1);
     expect(mixing[0].message).toContain('mixed.tsx');
     expect(mixing[0].message).toContain('3 different style mechanisms');
-    expect(mixing[0].severity).toBe('high');
+    expect(mixing[0].severity).toBe('advisory');
   });
 
   it('does NOT fire when only 2 mechanisms are involved', async () => {
@@ -1287,7 +1298,7 @@ describe('Detector 7 — Z-Index Inventory', () => {
     expect(singles.length).toBe(1);
     expect(singles[0].message).toContain('99');
     expect(singles[0].message).toContain('only once');
-    expect(singles[0].severity).toBe('high');
+    expect(singles[0].severity).toBe('advisory');
   });
 
   it('does NOT fire sprawl when distinct values ≤ max', async () => {
@@ -1324,7 +1335,7 @@ describe('Edge cases', () => {
     expect(violations.length).toBe(0);
   });
 
-  it('reports undefined-class at its fixed high severity', async () => {
+  it('reports undefined-class at its fixed severe severity', async () => {
     // Must have at least one declaration for the analyzer to run detectors
     // (analyze() early-returns when declarations.length === 0).
     insertDecl({ property: 'z-index', raw_value: '1', mechanism: 'css', file_path: 'src/base.css', line: 1 });
@@ -1335,7 +1346,7 @@ describe('Edge cases', () => {
 
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(1);
-    expect(undef[0].severity).toBe('high');
+    expect(undef[0].severity).toBe('severe');
   });
 
   it('handles files parameter correctly', async () => {

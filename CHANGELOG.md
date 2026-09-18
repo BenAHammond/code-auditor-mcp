@@ -2,6 +2,92 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [4.0.0] — 2026-09-18
+
+### Severity model recalibrated: `high` → `advisory` (Spec 54)
+
+The severity scale is three tiers — `critical`, `severe`, `advisory` — where
+`advisory` replaces `high`. `advisory` is not the bottom of a defect ladder but a
+separate class: the code is correct but does not match a convention (off-scale
+spacing, missing JSDoc, dot-import style). Rules were re-tiered across the TypeScript
+and Go analyzers so the tier now means something: `critical` is already-wrong-in-
+production (SQL injection, a tenant-isolation breach, a dropped table), `severe` is a
+real defect that has not bitten yet (an N+1 query, dead code, missing alt text),
+`advisory` is convention.
+
+**Breaking:** a consumer reading `severity: "high"` must now read `"advisory"`, and
+`--fail-on high` errors with a message naming `advisory` rather than being silently
+accepted.
+
+### Go analyzers unified under a single `go` namespace
+
+The Go subprocess reported four analyzer names (`imports`, `errors`, `goroutines`,
+`channels`) that exposed its internal structure. It now reports one `go` analyzer,
+matching how the TypeScript side keeps `solid` as a single name. The five Go rules —
+`channel-deadlock` (critical), `error-handling` and `concurrency` (severe),
+`import-organization` and `import-style` (advisory) — are registered in the rule
+registry with their re-tiered severities.
+
+**Breaking:** consumers grouping Go findings by `analyzer` must now group by `go`.
+
+### `next-file` cache can no longer silently drop findings
+
+Two bugs in the same class as the `end_line` NULL/one-path split-brain:
+
+- **Stale snapshot after the severity rename.** A `next-file` snapshot seeded before
+  the rename cached `high` severities that the live rank no longer recognized, so they
+  sorted to `undefined` and vanished from the advisory bucket. The snapshot is now
+  versioned (`SNAPSHOT_VERSION = 2`); a v1 snapshot is discarded and re-seeded rather
+  than reused.
+- **Unknown severity fails loudly.** `SEVERITY_RANK[v.severity]` returning `undefined`
+  was silent. Ranking now goes through `severityRank()`, which throws on an unknown
+  severity rather than dropping the finding — a finding that cannot be ranked is a bug,
+  not something to drop.
+
+### `loop-query` no longer double-fires on template-literal SQL
+
+A query site whose SQL argument was a template literal (`db.prepare(\`…\`)`) emitted
+two `loop-query` findings — one for the call node and one for the literal. The literal
+is now collapsed into the call, so one query site is one finding. A loop of seven
+`db.prepare(\`…\`)` calls reports seven findings, not fourteen.
+
+### React findings anchor to the correct line; comment-as-markup is honored
+
+React analyzer findings anchor to the component's own line rather than line 1, and JSX
+comment nodes are no longer misread as markup.
+
+### Stale-schema `unknown-table` no longer emits false criticals
+
+`unknown-table` findings from a stale schema catalog were flagged `critical`; they are
+reworded/re-tiered so a schema that has not been re-synced is not reported as a
+production-breaking defect.
+
+### Discovery respects `.gitignore` (Spec 58)
+
+`discoverFiles` now consults `git ls-files --others --ignored --exclude-standard` and
+prunes any path the repo has disowned. Previously a gitignored build cache or corpus
+directory (e.g. `corpus-expansion/`) was walked like source — 28,050 files in one case —
+inflating discovery time and analyzing files the repo explicitly disowned. Whole-ignored
+directories collapse to a single entry, so the check adds a fixed ~46 ms rather than a
+per-file cost.
+
+### Index reconciliation compares against discovery, not the filesystem
+
+The functions index previously dropped rows only when a file vanished from disk
+(`fs.access`). A file that is gitignored — still present, but no longer source — survived
+reconciliation and left stale DRY matches and a bloated scoped-run index. `bulkCleanup`
+and `deepSync` now reconcile against the discovery set, so a gitignored file is an orphan
+too, and the daemon seed passes its project root so a seeded store self-heals on the next
+full run. For an existing cache this is a one-time upgrade artifact: the first seed after
+upgrading drops the stale rows.
+
+### Style-index sync no longer shells out to `git ls-files` when there is no style work
+
+The Tailwind config loader runs `git ls-files` to find `@theme` CSS files. It ran on every
+audit — including a diff-scoped `.ts` change where the styles sync does `changed:0` and never
+consumes the tokens. It now loads lazily, only when a file actually reaches token extraction,
+so a scoped source-file change no longer pays that subprocess.
+
 ## [3.11.0] — 2026-09-18
 
 ### Import specifiers are classified at emission (Spec 60.1)

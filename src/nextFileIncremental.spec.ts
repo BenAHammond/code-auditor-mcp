@@ -90,7 +90,7 @@ describe('mergeFindings', () => {
       freshVisitor: { 'fix.ts': [] }, // fixed → must become empty, not fall back
       cachedCorpus: [],
       freshCorpus: [v({ file: 'any.ts', severity: 'severe', analyzer: 'styles' })],
-      freshSchema: [v({ file: 'q.ts', severity: 'high', analyzer: 'schema' })],
+      freshSchema: [v({ file: 'q.ts', severity: 'advisory', analyzer: 'schema' })],
       changed: ['fix.ts'],
       added: [],
       deleted: ['del.ts'],
@@ -124,7 +124,7 @@ describe('mergeFindings', () => {
     // unreferenced-module / circular-dependency / api-contract violations.
     const cachedDependencyGraph = v({ file: 'a.ts', severity: 'severe', analyzer: 'dependency-graph' });
     const cachedApiContract = v({ file: 'x.ts', severity: 'severe', analyzer: 'api-contract' });
-    const cachedCrossDomain = v({ file: 'c.ts', severity: 'high', analyzer: 'cross-domain' });
+    const cachedCrossDomain = v({ file: 'c.ts', severity: 'advisory', analyzer: 'cross-domain' });
     const merged = mergeFindings({
       cachedVisitor: {},
       freshVisitor: {},
@@ -155,7 +155,7 @@ describe('splitFindings', () => {
         solid: { violations: [v({ file: '/r/a.ts', severity: 'severe', analyzer: 'solid' })] },
         invariants: { violations: [v({ file: '/r/b.ts', severity: 'critical', analyzer: 'invariants' })] },
         styles: { violations: [v({ file: '/r/c.ts', severity: 'severe', analyzer: 'styles' })] },
-        schema: { violations: [v({ file: '/r/q.ts', severity: 'high', analyzer: 'schema' })] },
+        schema: { violations: [v({ file: '/r/q.ts', severity: 'advisory', analyzer: 'schema' })] },
       },
       '/r',
     );
@@ -180,12 +180,12 @@ describe('summarizeViolations', () => {
     const s = summarizeViolations([
       v({ file: 'a.ts', severity: 'critical', analyzer: 'solid' }),
       v({ file: 'b.ts', severity: 'severe', analyzer: 'solid' }),
-      v({ file: 'c.ts', severity: 'high', analyzer: 'docs' }),
+      v({ file: 'c.ts', severity: 'advisory', analyzer: 'docs' }),
     ]);
     expect(s.totalViolations).toBe(3);
     expect(s.criticalIssues).toBe(1);
     expect(s.severe).toBe(1);
-    expect(s.high).toBe(1);
+    expect(s.advisory).toBe(1);
     expect(s.violationsByCategory['solid']).toBe(2);
     expect(s.topIssues[0]).toEqual({ type: 'solid', count: 2 });
   });

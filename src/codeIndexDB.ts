@@ -76,6 +76,14 @@ function computeContentHash(body: string | undefined, signature: string | undefi
   return createHash('sha256').update(normalized).digest('hex');
 }
 
+// ── Path containment ─────────────────────────────────────────────────────
+
+/** True when `filePath` is `root` itself or a descendant of `root` (not outside it). */
+function isPathUnderRoot(root: string, filePath: string): boolean {
+  const rel = path.relative(root, filePath);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 // ── SqliteCollectionAdapter ─────────────────────────────────────────────
 // Presents a LokiJS Collection-like interface backed by a SQLite table,
 // so ProjectTaskRepository works without modification.
@@ -2291,7 +2299,7 @@ export class CodeIndexDB {
     }
   }
 
-  async bulkCleanup(): Promise<{
+  async bulkCleanup(projectRoot?: string): Promise<{
     scannedCount: number;
     removedCount: number;
     removedFiles: string[];
@@ -2305,11 +2313,39 @@ export class CodeIndexDB {
     let removedCount = 0;
     let scannedCount = 0;
 
+    // Reconcile against the DISCOVERY set when a project root is given. A
+    // gitignored file (corpus-expansion/, .wrangler/dist, …) is no longer source
+    // even though it still exists on disk, so `fs.access` alone would keep its
+    // stale DRY rows forever. The root is passed explicitly (never inferred from
+    // the singleton, which a long-lived MCP process could have left stale); the
+    // root-less `index cleanup` CLI / MCP cleanup tools fall back to an on-disk
+    // existence check so they still drop rows for genuinely deleted files.
+    let discovered: Set<string> | null = null;
+    if (projectRoot) {
+      try {
+        discovered = new Set(await discoverFiles(projectRoot));
+      } catch {
+        // Discovery failure → fall back to the existence check rather than
+        // deleting everything we can't enumerate.
+        discovered = null;
+      }
+    }
+
     for (const { file_path: fp } of files) {
       scannedCount++;
-      try {
-        await fs.access(fp);
-      } catch {
+      let stale = false;
+      if (discovered) {
+        // Only reconcile paths under this root: the store is project-scoped, but
+        // a shared store can hold sibling-root paths we must not delete here.
+        stale = isPathUnderRoot(projectRoot!, fp) && !discovered.has(fp);
+      } else {
+        try {
+          await fs.access(fp);
+        } catch {
+          stale = true;
+        }
+      }
+      if (stale) {
         const result = this.db.prepare('DELETE FROM functions WHERE file_path = ?').run(fp);
         removedCount += result.changes;
         removedFiles.push(fp);
@@ -2373,13 +2409,26 @@ export class CodeIndexDB {
       }
     }
 
-    // Clean up stale entries for files that no longer exist on disk
+    // Clean up stale entries: a file is stale when it is no longer in the
+    // discovery set (deleted OR gitignored since the last sync). Comparing
+    // against discovery — not `fs.access` — makes a gitignored-but-present file
+    // an orphan too, matching what discoverFiles prunes at scan time. Without a
+    // project root (files came from the index itself), fall back to the on-disk
+    // existence check.
+    const discoveredSet = projectRoot ? new Set(files) : null;
     const allIndexed = this.db.prepare('SELECT DISTINCT file_path FROM functions').all() as Array<{ file_path: string }>;
     for (const { file_path: fp } of allIndexed) {
-      try {
-        await fs.access(fp);
-      } catch {
-        // File deleted — remove its functions
+      let stale = false;
+      if (discoveredSet) {
+        stale = isPathUnderRoot(projectRoot!, fp) && !discoveredSet.has(fp);
+      } else {
+        try {
+          await fs.access(fp);
+        } catch {
+          stale = true;
+        }
+      }
+      if (stale) {
         const result = this.db.prepare('DELETE FROM functions WHERE file_path = ?').run(fp);
         if (result.changes > 0) {
           totalRemoved += result.changes;

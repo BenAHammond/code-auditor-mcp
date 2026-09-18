@@ -8,7 +8,7 @@
  * Selectable via `-a invariants`.
  */
 
-import type { AnalyzerFunction, AnalyzerResult, Violation, AuditOptions, IndexHandle } from '../types.js';
+import type { AnalyzerFunction, AnalyzerResult, Violation, AuditOptions, IndexHandle, CoverageDiagnostic } from '../types.js';
 import { checkRules, hasRules, type InvariantRule, type RuleViolation } from '../invariants/ruleEngine.js';
 import { validateRulesConfig } from '../invariants/ruleValidator.js';
 import { makeVisitorStatus } from '../pipeline.js';
@@ -68,31 +68,34 @@ interface InvariantCheckArgs {
   config: any;
 }
 
-/** Build config-validation-error violations (anchored to .codeauditor.json). */
-function configErrorViolations(errors: string[]): Violation[] {
+/**
+ * Build config-validation-error diagnostics (anchored to .codeauditor.json).
+ *
+ * A bad `.codeauditor.json` is a tool-side failure — the rules could not be
+ * loaded — not a defect in the audited code. These live on the diagnostic
+ * channel (outside the severity ladder, never counted in finding totals,
+ * always surfaced regardless of `--fail-on`).
+ */
+function configErrorDiagnostics(errors: string[]): CoverageDiagnostic[] {
   return errors.map(err => ({
+    analyzerName: 'invariants',
+    kind: 'config-error',
+    message: err,
     file: '.codeauditor.json',
     line: 1,
-    column: 1,
-    severity: 'critical' as const,
-    message: err,
-    rule: 'config-error',
-    analyzer: 'invariants',
-    details: 'config-validation',
+    details: { source: 'config-validation' },
   }));
 }
 
-/** Build rule-engine-error violations (anchored to .codeauditor.json). */
-function engineErrorViolations(errors: string[]): Violation[] {
+/** Build rule-engine-error diagnostics (anchored to .codeauditor.json). */
+function engineErrorDiagnostics(errors: string[]): CoverageDiagnostic[] {
   return errors.map(err => ({
+    analyzerName: 'invariants',
+    kind: 'engine-error',
+    message: err,
     file: '.codeauditor.json',
     line: 1,
-    column: 1,
-    severity: 'severe' as const,
-    message: err,
-    rule: 'engine-error',
-    analyzer: 'invariants',
-    details: 'check-error',
+    details: { source: 'check-error' },
   }));
 }
 
@@ -106,8 +109,8 @@ function emptyResult(startTime: number): AnalyzerResult {
   };
 }
 
-/** Run the rule engine and convert its output into standard violations. */
-function runRuleEngine(args: InvariantCheckArgs): Violation[] {
+/** Run the rule engine and split its output into violations + diagnostics. */
+function runRuleEngine(args: InvariantCheckArgs): { violations: Violation[]; diagnostics: CoverageDiagnostic[] } {
   const indexHandle = (args.options as any)?.indexHandle as IndexHandle | undefined;
   const result = checkRules({
     rules: args.rules,
@@ -120,10 +123,10 @@ function runRuleEngine(args: InvariantCheckArgs): Violation[] {
     isScoped: args.config.isScoped,
   });
 
-  return [
-    ...result.violations.map(toViolation),
-    ...engineErrorViolations(result.errors),
-  ];
+  return {
+    violations: result.violations.map(toViolation),
+    diagnostics: engineErrorDiagnostics(result.errors),
+  };
 }
 
 /**
@@ -144,22 +147,24 @@ export const analyzeInvariants: AnalyzerFunction = async (
   }
 
   const { rules, errors } = ruleData;
-  const errorViolations = configErrorViolations(errors);
+  const configDiagnostics = configErrorDiagnostics(errors);
 
   // If there are validation errors but no runnable rules, surface only them.
   if (rules.length === 0) {
     return {
-      violations: errorViolations,
+      violations: [],
+      diagnostics: configDiagnostics,
       status: makeVisitorStatus(0),
       executionTime: Date.now() - startTime,
       analyzerName: 'invariants',
     };
   }
 
-  const engineViolations = runRuleEngine({ rules, files, options, projectDir, config });
+  const { violations, diagnostics: engineDiagnostics } = runRuleEngine({ rules, files, options, projectDir, config });
 
   return {
-    violations: [...errorViolations, ...engineViolations],
+    violations,
+    diagnostics: [...configDiagnostics, ...engineDiagnostics],
     status: makeVisitorStatus(files.length),
     executionTime: Date.now() - startTime,
     analyzerName: 'invariants',

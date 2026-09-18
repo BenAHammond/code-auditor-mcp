@@ -9,7 +9,7 @@
  * TypeChecker-based prop extraction is a documented capability regression (plan Step 2.5).
  */
 
-import { ComponentMetadata, FunctionMetadata } from './types.js';
+import { ComponentMetadata, FunctionMetadata, JsxElementDetail, JsxAttributeDetail } from './types.js';
 import {
   isReactComponent,
   detectComponentType,
@@ -181,6 +181,7 @@ export async function scanFile(
 
       // Extract JSX elements used
       component.jsxElements = extractJSXElements(node, content);
+      component.jsxElementDetails = extractJSXElementDetails(node, content);
 
       // Calculate complexity if requested
       if (options.detectComplexity) {
@@ -319,6 +320,76 @@ function extractJSXElements(node: ASTNode, content: string): string[] {
   });
 
   return Array.from(elements);
+}
+
+/**
+ * Extract structured JSX element details — tag name, opening-tag line, and
+ * attributes — from a component's AST. Because this reads tree-sitter
+ * `jsx_element` / `jsx_self_closing_element` nodes (never `comment` nodes),
+ * JSX text inside a comment or string literal is not present, and every entry
+ * carries its own 1-based source line for per-element anchoring.
+ */
+function extractJSXElementDetails(node: ASTNode, content: string): JsxElementDetail[] {
+  const details: JsxElementDetail[] = [];
+
+  walkAST(node, (child) => {
+    if (child.type !== 'jsx_element' && child.type !== 'jsx_self_closing_element') return;
+
+    // For a paired element the tag + attributes live on the opening element;
+    // a self-closing element carries them directly.
+    const opening = child.type === 'jsx_element'
+      ? findChildOfType(child, 'jsx_opening_element')
+      : child;
+    if (!opening) return;
+
+    const tagNameNode = opening.children?.find(c =>
+      c.type === 'identifier' || c.type === 'member_expression');
+    if (!tagNameNode) return;
+
+    const attributes = (opening.children ?? [])
+      .filter(c => c.type === 'jsx_attribute')
+      .map(attr => extractJsxAttributeDetail(attr, content));
+
+    details.push({
+      tagName: getNodeText(tagNameNode, content),
+      line: opening.location.start.line,
+      attributes,
+    });
+  });
+
+  return details;
+}
+
+/** Extract a single `jsx_attribute` into name + line + value shape. */
+function extractJsxAttributeDetail(attr: ASTNode, content: string): JsxAttributeDetail {
+  const nameNode = attr.children?.find(c =>
+    c.type === 'property_identifier' || c.type === 'identifier');
+  const name = nameNode ? getNodeText(nameNode, content) : '';
+
+  const valueNode = attr.children?.find(c =>
+    c.type === 'string' || c.type === 'jsx_expression');
+
+  let valueKind: JsxAttributeDetail['valueKind'] = 'none';
+  if (valueNode?.type === 'string') {
+    valueKind = 'string';
+  } else if (valueNode?.type === 'jsx_expression') {
+    // Skip the surrounding `{` / `}` tokens if the grammar exposes them, then
+    // classify by the expression's root node type.
+    const expr = valueNode.children?.find(c => c.type !== '{' && c.type !== '}');
+    if (!expr) {
+      valueKind = 'other';
+    } else if (expr.type === 'arrow_function') {
+      valueKind = 'arrow';
+    } else if (expr.type === 'function_expression') {
+      valueKind = 'function';
+    } else if (expr.type === 'identifier') {
+      valueKind = 'identifier';
+    } else {
+      valueKind = 'other';
+    }
+  }
+
+  return { name, line: attr.location.start.line, valueKind };
 }
 
 /**

@@ -104,7 +104,7 @@ function checkComponentComplexity(
   return [{
     file: component.filePath,
     line: component.lineNumber,
-    severity: 'high',
+    severity: 'severe',
     message: `Component '${component.name}' has high complexity (${component.complexity})`,
     componentName: component.name,
     rule: 'complexity',
@@ -128,7 +128,7 @@ function checkPropsValidation(
   return [{
     file: component.filePath,
     line: component.lineNumber,
-    severity: 'high',
+    severity: 'advisory',
     message: `Component '${component.name}' is missing prop type definitions`,
     componentName: component.name,
     rule: 'missing-props',
@@ -161,7 +161,7 @@ function checkHooksRules(component: ComponentMetadata): ReactViolation[] {
     violations.push({
       file: component.filePath,
       line: hook.line,
-      severity: 'high',
+      severity: 'advisory',
       message: `Custom hook '${hook.name}' should start with 'use'`,
       componentName: component.name,
       rule: 'hooks-naming',
@@ -205,7 +205,7 @@ function checkPerformanceIssues(
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
-      severity: 'high',
+      severity: 'severe',
       message: `Consider memoizing component '${component.name}' for better performance`,
       componentName: component.name,
       rule: 'performance',
@@ -221,15 +221,19 @@ function checkPerformanceIssues(
   // Check for inline function props (causes re-renders).
   // Honest, per-element signal: an `onClick` attribute whose value is an inline
   // arrow/function expression (`onClick={() => …}` / `onClick={function …}`),
-  // not a bare identifier reference (`onClick={handleClick}`). The old check
-  // (a `=>` anywhere in a truncated context window + `onClick={`) fired on
-  // unrelated arrows and identifier handlers alike.
-  const source = componentSource(component);
-  if (source && hasInlineFunctionProp(source, 'onClick')) {
+  // not a bare identifier reference (`onClick={handleClick}`). Read from the
+  // AST-derived element details, so commented-out JSX never counts and the
+  // finding anchors to the `onClick` attribute's own line.
+  const onClickInline = (component.jsxElementDetails ?? []).find(el =>
+    el.attributes.some(a =>
+      a.name === 'onClick' && (a.valueKind === 'arrow' || a.valueKind === 'function')));
+  if (onClickInline) {
+    const attr = onClickInline.attributes.find(a =>
+      a.name === 'onClick' && (a.valueKind === 'arrow' || a.valueKind === 'function'))!;
     violations.push({
       file: component.filePath,
-      line: component.lineNumber,
-      severity: 'high',
+      line: attr.line,
+      severity: 'severe',
       message: `Component '${component.name}' passes an inline function prop (onClick) causing unnecessary re-renders`,
       componentName: component.name,
       rule: 'performance',
@@ -247,18 +251,20 @@ function checkPerformanceIssues(
 function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
   const violations: ReactViolation[] = [];
 
-  const source = componentSource(component);
-  if (!source) return violations;
+  // Structured, AST-derived elements: JSX inside comments/strings is absent
+  // (it is never a `jsx_element` node), and each element carries its own line.
+  const elements = component.jsxElementDetails ?? [];
+  if (elements.length === 0) return violations;
 
   // Per-element <img> alt check: flag only when a specific <img> opening tag
-  // lacks an alt attribute. The old check (`jsxElements.includes('img')` &&
-  // `!context.includes('alt=')`) suppressed a finding whenever ANY `alt=` text
-  // appeared anywhere in a truncated context window — one <img> with alt hid a
-  // second <img> without it.
-  if (hasImgWithoutAlt(source)) {
+  // lacks an alt attribute. Anchored to the offending <img> element's line, not
+  // the component declaration.
+  const imgWithoutAlt = elements.find(el =>
+    el.tagName === 'img' && !el.attributes.some(a => a.name === 'alt'));
+  if (imgWithoutAlt) {
     violations.push({
       file: component.filePath,
-      line: component.lineNumber,
+      line: imgWithoutAlt.line,
       severity: 'severe',
       message: `Component '${component.name}' has an <img> element without an alt attribute`,
       componentName: component.name,
@@ -269,14 +275,15 @@ function checkAccessibility(component: ComponentMetadata): ReactViolation[] {
   }
 
   // Per-element click-handler check on non-interactive elements: the element's
-  // own opening tag carries `onClick`. The old check matched `onClick` anywhere
-  // in the component, not on the specific element.
+  // own opening tag carries `onClick`. Anchored to that element's line.
   const nonInteractiveElements = ['div', 'span', 'section'];
   for (const element of nonInteractiveElements) {
-    if (hasOnClickOnElement(source, element)) {
+    const offending = elements.find(el =>
+      el.tagName === element && el.attributes.some(a => a.name === 'onClick'));
+    if (offending) {
       violations.push({
         file: component.filePath,
-        line: component.lineNumber,
+        line: offending.line,
         severity: 'severe',
         message: `Component '${component.name}' has onClick on a non-interactive <${element}> element`,
         componentName: component.name,
@@ -306,7 +313,7 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
-      severity: 'high',
+      severity: 'severe',
       message: `Component '${component.name}' may be rendering lists without keys`,
       componentName: component.name,
       rule: 'performance',
@@ -318,84 +325,9 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
   return violations;
 }
 
-/** Full component source for per-element JSX checks, falling back to context. */
+/** Full component source for the component-level list-key heuristic. */
 function componentSource(component: ComponentMetadata): string {
   return component.body ?? component.context ?? '';
-}
-
-/**
- * True when any `<img ...>` opening tag in the source lacks an `alt` attribute.
- * Each tag is scanned in isolation, so a component with two images — one with
- * alt and one without — is correctly flagged.
- */
-function hasImgWithoutAlt(source: string): boolean {
-  const imgRe = /<img\b/ig;
-  let match: RegExpExecArray | null;
-  while ((match = imgRe.exec(source)) !== null) {
-    const tag = source.slice(match.index, findJsxTagEnd(source, match.index));
-    if (!/\balt\b\s*=/.test(tag)) return true;
-  }
-  return false;
-}
-
-/**
- * True when an opening tag `<element … onClick …>` carries an onClick handler.
- * Scans each `<element` opening tag's own attribute span (skipping nested
- * braces/strings/arrow `=>`) so an onClick on a *different* element never
- * counts.
- */
-function hasOnClickOnElement(source: string, element: string): boolean {
-  const openRe = new RegExp(`<${element}\\b`, 'ig');
-  let match: RegExpExecArray | null;
-  while ((match = openRe.exec(source)) !== null) {
-    const tag = source.slice(match.index, findJsxTagEnd(source, match.index));
-    if (/\bonClick\b/.test(tag)) return true;
-  }
-  return false;
-}
-
-/**
- * True when an event handler attribute (`onClick={…}`) is assigned an inline
- * function — an arrow or `function` expression — rather than an identifier
- * reference. Identifiers (`onClick={handleClick}`) are not inline props.
- */
-function hasInlineFunctionProp(source: string, prop: string): boolean {
-  const attrRe = new RegExp(`\\b${prop}\\s*=\\s*\\{`, 'g');
-  let match: RegExpExecArray | null;
-  while ((match = attrRe.exec(source)) !== null) {
-    const rest = source.slice(match.index + match[0].length);
-    // Inline arrow `() =>` / `(...) =>` / `x =>` or `function` expression.
-    if (/^\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/.test(rest) || /^\s*function\b/.test(rest)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Find the index just past the `>` that closes a JSX opening tag starting at
- * `start`, skipping over string literals, `{…}` expression braces, and the `>`
- * of an arrow function (`=>`) nested inside an expression. Returns the source
- * length when no unbraced `>` is found (a malformed tag).
- */
-function findJsxTagEnd(source: string, start: number): number {
-  let i = start;
-  let inString: '"' | "'" | '`' | null = null;
-  let braceDepth = 0;
-  while (i < source.length) {
-    const ch = source[i];
-    if (inString) {
-      if (ch === inString) inString = null;
-      i++;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') { inString = ch; i++; continue; }
-    if (ch === '{') { braceDepth++; i++; continue; }
-    if (ch === '}') { braceDepth = Math.max(0, braceDepth - 1); i++; continue; }
-    if (ch === '>' && braceDepth === 0) return i + 1;
-    i++;
-  }
-  return source.length;
 }
 
 /** Mutable traversal state threaded through the cycle-detection recursion. */
@@ -457,7 +389,7 @@ export function checkCircularDependencies(
     if (cycle) {
       violations.push({
         file: 'component-dependencies',
-        severity: 'high',
+        severity: 'severe',
         message: `Circular dependency detected: ${cycle.join(' → ')}`,
         rule: 'complexity',
         violationType: 'complexity',
@@ -661,11 +593,14 @@ function collectRawElementUsages(
         }
 
         rawUsageCounts.set(jsxEl, (rawUsageCounts.get(jsxEl) || 0) + 1);
+        // Anchor to the raw element's own line (first occurrence in the
+        // component), not the component declaration.
+        const detail = component.jsxElementDetails?.find(d => d.tagName === jsxEl);
         rawUsageLocations.push({
           element: jsxEl,
           componentName: component.name,
           filePath: component.filePath,
-          line: component.lineNumber ?? 0,
+          line: detail?.line ?? component.lineNumber ?? 0,
           wrapperName: wrapper.wrapperName,
           wrapperFile: wrapper.wrapperFile,
         });
@@ -682,7 +617,7 @@ function collectRawElementUsages(
  * Auto-detects wrapper components (exported components whose rendered root is a single
  * intrinsic element from the watch list) and flags raw usages of that element outside
  * the wrapper's definition. A {@link ReactAnalyzerConfig.componentMap} overrides
- * auto-detection, making every raw usage a high-severity finding.
+ * auto-detection, making every raw usage a finding.
  * @param config
  * @param scanResults
  * @returns
@@ -707,7 +642,7 @@ export function checkRawElements(
 
     // ── Phase 3: Emit violations ──────────────────────────────────────────
     const minUsages = config.wrapperMinUsages ?? 5;
-    const severity: 'high' = 'high';
+    const severity: 'advisory' = 'advisory';
 
     for (const loc of rawUsageLocations) {
       const count = rawUsageCounts.get(loc.element) || 0;

@@ -194,7 +194,7 @@ export function validateConfig(config: AuditConfig): string[] {
   const errors: string[] = [];
   
   // Validate severity
-  if (config.minSeverity && !['critical', 'severe', 'high'].includes(config.minSeverity)) {
+  if (config.minSeverity && !['critical', 'severe', 'advisory'].includes(config.minSeverity)) {
     errors.push(`Invalid severity: ${config.minSeverity}`);
   }
 

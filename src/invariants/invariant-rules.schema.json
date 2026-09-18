@@ -27,7 +27,7 @@
           },
           "severity": {
             "type": "string",
-            "enum": ["critical", "severe", "high"],
+            "enum": ["critical", "severe", "advisory"],
             "description": "Violation severity."
           },
           "message": {

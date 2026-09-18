@@ -67,7 +67,7 @@ func (s *SOLIDAnalyzer) analyzeFunctionSize() []Violation {
 			violations = append(violations, Violation{
 				File:     function.File,
 				Line:     function.StartLine,
-				Severity: "high",
+				Severity: "severe",
 				Message:  "Function has many parameters, multiple returns, and high complexity",
 				Details: map[string]interface{}{
 					"function":   function.Name,
@@ -102,7 +102,7 @@ func (s *SOLIDAnalyzer) analyzeStructSize() []Violation {
 			violations = append(violations, Violation{
 				File:     structInfo.File,
 				Line:     structInfo.StartLine,
-				Severity: "high",
+				Severity: "severe",
 				Message:  "Struct has many fields",
 				Details: map[string]interface{}{
 					"struct":     structInfo.Name,
@@ -142,7 +142,7 @@ func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 					violations = append(violations, Violation{
 						File:     filePath,
 						Line:     pos.Line,
-						Severity: "high",
+						Severity: "severe",
 						Message:  "Switch statement has many case clauses",
 						Details: map[string]interface{}{
 							"caseCount": caseCount,
@@ -160,7 +160,7 @@ func (s *SOLIDAnalyzer) analyzeSwitchSize() []Violation {
 					violations = append(violations, Violation{
 						File:     filePath,
 						Line:     pos.Line,
-						Severity: "high",
+						Severity: "severe",
 						Message:  "Type switch has many case clauses",
 						Details: map[string]interface{}{
 							"caseCount": caseCount,
@@ -245,7 +245,7 @@ func (s *SOLIDAnalyzer) analyzeISP() []Violation {
 			violations = append(violations, Violation{
 				File:     interfaceInfo.File,
 				Line:     interfaceInfo.StartLine,
-				Severity: "high",
+				Severity: "severe",
 				Message:  "Interface has many methods",
 				Details: map[string]interface{}{
 					"interface":   interfaceInfo.Name,

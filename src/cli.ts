@@ -36,6 +36,11 @@ import { describeSqliteBackend } from './sqlite/driver.js';
 
 const program = new Command();
 
+// Legacy severity names that were renamed in Spec-54 (severity as urgency).
+// `--fail-on high` must fail loudly and name the new tier, not emit a generic
+// "must be one of" list that leaves the user guessing what `high` became.
+const LEGACY_SEVERITY_NAMES: Record<string, string> = { high: 'advisory' };
+
 // Spec 44 R4 — file accounting summary line + `--explain-skipped` breakdown.
 // The full per-reason file lists live in the JSON report (`metadata.fileAccounting`);
 // the CLI preview is bounded to the first ~20 files per reason.
@@ -133,11 +138,14 @@ program
       await initParsers();
 
       // Validate --fail-on severity
-      const validSeverities: Severity[] = ['critical', 'severe', 'high'];
+      const validSeverities: Severity[] = ['critical', 'severe', 'advisory'];
       const failOnSeverity = options.failOn as Severity | undefined;
       if (failOnSeverity && !validSeverities.includes(failOnSeverity as Severity)) {
+        const renamed = LEGACY_SEVERITY_NAMES[failOnSeverity as string];
         console.error(
-          chalk.red(`Invalid --fail-on severity: "${failOnSeverity}". Must be one of: ${validSeverities.join(', ')}`)
+          chalk.red(
+            `Invalid --fail-on severity: "${failOnSeverity}".${renamed ? ` "${failOnSeverity}" was renamed to "${renamed}".` : ''} Must be one of: ${validSeverities.join(', ')}`
+          )
         );
         process.exit(1);
       }
@@ -282,7 +290,7 @@ program
         console.log(`\nFound ${result.summary.totalViolations} findings${dismissedSuffix}`);
         console.log(`Critical: ${result.summary.criticalIssues}`);
         console.log(`Severe: ${result.summary.severe}`);
-        console.log(`High: ${result.summary.high}`);
+        console.log(`Advisory: ${result.summary.advisory}`);
 
         console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
@@ -291,7 +299,7 @@ program
         console.log(`\nFound ${result.summary.totalViolations} findings${dismissedSuffix}`);
         console.log(`Critical: ${result.summary.criticalIssues}`);
         console.log(`Severe: ${result.summary.severe}`);
-        console.log(`High: ${result.summary.high}`);
+        console.log(`Advisory: ${result.summary.advisory}`);
 
         console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
       }
@@ -459,7 +467,7 @@ program
         const evaluableViolations = (baseline && !options.includeBaseline)
           ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
           : violations;
-        const severityOrder: Severity[] = ['critical', 'severe', 'high'];
+        const severityOrder: Severity[] = ['critical', 'severe', 'advisory'];
         const failIndex = severityOrder.indexOf(failOnSeverity);
         const hasAtOrAbove = evaluableViolations.some((v: any) => {
           // Spec 57 — a dismissed finding never blocks the gate.
@@ -569,7 +577,7 @@ program
       // agent-facing before/after count (Spec 45 A2) and the exit code agree on
       // the same number. Every registered rule participates (R1); enforcement is
       // not diff-scoped (R4). Spec 54: the blocking set is the fixed all-three
-      // {critical, severe, high} — every finding is a defect and every finding
+      // {critical, severe, advisory} — every finding is a defect and every finding
       // blocks; there is no configurable gate.
       const { blocking, resolutionGaps } = computeGatingDecision(violations as any, BLOCKING_SEVERITIES);
 
@@ -777,7 +785,7 @@ async function buildChangedResultFromDiagnostics(violations: any[], projectRoot:
 
 // Self-audit gate (Spec 33 Item 15 + Spec 44 remediation). Runs the full
 // analyzer pipeline over the tool's own production source and asserts zero
-// *blocking* (critical/severe/high) findings in the self-audit scope — the same
+// *blocking* (critical/severe/advisory) findings in the self-audit scope — the same
 // scope + severity contract as scripts/verify-self.mjs, but callable from the
 // shipped CLI so the edit-time plugin hook can enforce it. `verify:self` (the
 // release gate) stays authoritative; this command is its per-edit sibling.
@@ -807,16 +815,19 @@ program
   .option('--json', 'Output violations as machine-readable JSON to stdout')
   .option('--stdin', 'Read file paths from stdin (one per line)')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
-  .option('--fail-on <severity>', 'Blocking severity floor: critical, severe, or high', 'high')
+  .option('--fail-on <severity>', 'Blocking severity floor: critical, severe, or advisory', 'advisory')
   .action(async (paths: string[], options: Record<string, any>) => {
     try {
       await initParsers();
 
-      const validSeverities: Severity[] = ['critical', 'severe', 'high'];
+      const validSeverities: Severity[] = ['critical', 'severe', 'advisory'];
       const failOnSeverity = options.failOn as Severity;
       if (!validSeverities.includes(failOnSeverity)) {
+        const renamed = LEGACY_SEVERITY_NAMES[failOnSeverity as string];
         console.error(
-          chalk.red(`Invalid --fail-on severity: "${failOnSeverity}". Must be one of: ${validSeverities.join(', ')}`)
+          chalk.red(
+            `Invalid --fail-on severity: "${failOnSeverity}".${renamed ? ` "${failOnSeverity}" was renamed to "${renamed}".` : ''} Must be one of: ${validSeverities.join(', ')}`
+          )
         );
         process.exit(1);
       }
@@ -861,7 +872,7 @@ program
         (r: any) => r.violations || []
       );
 
-      const severityOrder: Severity[] = ['critical', 'severe', 'high'];
+      const severityOrder: Severity[] = ['critical', 'severe', 'advisory'];
       const failIndex = severityOrder.indexOf(failOnSeverity);
       const blocking = violations.filter((v: any) => {
         if (!isSelfAuditInScope(v.file ?? '')) return false;
@@ -986,7 +997,7 @@ function printNextFile(
   }
 
   const top = ranked[0];
-  // Every issue on the file, ordered critical → severe → high.
+  // Every issue on the file, ordered critical → severe → advisory.
   const ordered = orderFindingsWithinFile(top.violations);
 
   const relativize = (filePath: string): string => {
@@ -2076,7 +2087,7 @@ tasksCmd
   .command('from-audit')
   .description('Populate tasks from audit violations')
   .option('--auditJobId <id>', 'Specific audit result ID')
-  .option('--severities <severities>', 'Comma-separated severities (critical,severe,high)', 'critical,severe,high')
+  .option('--severities <severities>', 'Comma-separated severities (critical,severe,advisory)', 'critical,severe,advisory')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
@@ -2537,7 +2548,7 @@ async function runDetachedAudit(options: {
   });
   const defaultsJson = JSON.stringify({
     defaultAnalyzers: DETACHED_DEFAULT_ANALYZERS,
-    defaultMinSeverity: 'high',
+    defaultMinSeverity: 'advisory',
     defaultGenerateCodeMap: false,
   });
 
@@ -2619,7 +2630,7 @@ program
   .option('--rule <rule>', 'Filter by rule id')
   .option('--analyzer <analyzer>', 'Filter by analyzer')
   .option('--file <file>', 'Filter by file path (substring match)')
-  .option('--severity <severity>', 'Filter by severity (critical|severe|high)')
+  .option('--severity <severity>', 'Filter by severity (critical|severe|advisory)')
   .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|cannot-fire|unassessed); omit value for all')
   .option('--count', 'Group findings by analyzer/rule with counts')
   .option('--limit <n>', 'Max findings to return (0 = unbounded)', '50')
@@ -3854,9 +3865,9 @@ async function buildRulesInteractively(): Promise<Record<string, unknown>> {
         choices: [
           { name: chalk.red('Critical — exploitable or broken now'), value: 'critical' },
           { name: chalk.yellow('Severe — wrong, and it will surface'), value: 'severe' },
-          { name: chalk.blue('High — wrong, and it has not bitten yet'), value: 'high' },
+          { name: chalk.blue('Advisory — correct but off-convention'), value: 'advisory' },
         ],
-        default: 'high',
+        default: 'advisory',
       },
       message: {
         type: 'input',

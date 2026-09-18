@@ -36,7 +36,7 @@ describe('rankFilesByPriority', () => {
 
   it('reports the max severity and keeps every violation grouped per file', () => {
     const ranked = rankFilesByPriority([
-      v({ file: 'mixed.ts', severity: 'high', line: 1 }),
+      v({ file: 'mixed.ts', severity: 'advisory', line: 1 }),
       v({ file: 'mixed.ts', severity: 'critical', line: 2 }),
     ]);
     expect(ranked).toHaveLength(1);
@@ -48,26 +48,35 @@ describe('rankFilesByPriority', () => {
   it('returns an empty list for an empty violation set', () => {
     expect(rankFilesByPriority([])).toEqual([]);
   });
+
+  it('throws on an unknown severity rather than silently mis-ranking it', () => {
+    // A stale `high` (pre-`advisory` rename) must not sort to `undefined` and
+    // vanish — the rank lookup is the last line of defense after the snapshot
+    // version gate (SNAPSHOT_VERSION) catches known renames.
+    expect(() =>
+      rankFilesByPriority([v({ file: 'f.ts', severity: 'high' as Violation['severity'], line: 1 })]),
+    ).toThrow(/Unknown severity "high"/);
+  });
 });
 
 describe('orderFindingsWithinFile', () => {
-  it('orders critical → severe → high and preserves input order for ties', () => {
+  it('orders critical → severe → advisory and preserves input order for ties', () => {
     const ordered = orderFindingsWithinFile([
-      v({ file: 'f.ts', severity: 'high', line: 1 }),
+      v({ file: 'f.ts', severity: 'advisory', line: 1 }),
       v({ file: 'f.ts', severity: 'critical', line: 2 }),
       v({ file: 'f.ts', severity: 'severe', line: 3 }),
       v({ file: 'f.ts', severity: 'critical', line: 4 }),
     ]);
-    expect(ordered.map((x) => x.severity)).toEqual(['critical', 'critical', 'severe', 'high']);
+    expect(ordered.map((x) => x.severity)).toEqual(['critical', 'critical', 'severe', 'advisory']);
   });
 
   it('does not mutate its input', () => {
     const input = [
-      v({ file: 'f.ts', severity: 'high', line: 1 }),
+      v({ file: 'f.ts', severity: 'advisory', line: 1 }),
       v({ file: 'f.ts', severity: 'critical', line: 2 }),
     ];
     orderFindingsWithinFile(input);
-    expect(input[0].severity).toBe('high');
+    expect(input[0].severity).toBe('advisory');
     expect(input[1].severity).toBe('critical');
   });
 });

@@ -365,7 +365,7 @@ describe('Skill file (SKILL.md)', () => {
  * opt-in, the binary (severity-free) gate, and diff-scoped enforcement. Spec 54
  * then removed the configurable gate (`gateSeverities`), per-path severity
  * capping (`severityOverrides`), and the `warning`/`suggestion` vocabulary —
- * every reading is now `critical`, `severe`, or `high`, and every one of them
+ * every reading is now `critical`, `severe`, or `advisory`, and every one of them
  * blocks. The skill files are what a consuming agent reads to learn how the gate
  * behaves, so drift here is the highest-leverage place a reverted model could
  * survive. This test fails if any of the three skill files re-mentions either
@@ -401,7 +401,7 @@ describe('Skill gate-model drift guard (Spec 46 R1)', () => {
           `${file} re-mentions the reverted gate model: "${phrase}". ` +
             'Spec 45 reverted the per-rule gate and Spec 54 removed the ' +
             'configurable gate and the warning/suggestion vocabulary — every ' +
-            'reading is critical, severe, or high, every severity blocks, and ' +
+            'reading is critical, severe, or advisory, every severity blocks, and ' +
             'enforcement is not diff-scoped.',
         ).toBe(false);
       }
@@ -413,10 +413,10 @@ describe('Skill gate-model drift guard (Spec 46 R1)', () => {
     // Every severity is gating, not per-rule, and explicitly not diff-scoped.
     expect(content).toContain('not diff-scoped');
     expect(content).toContain('no non-blocking severity tier');
-    // All three severities name themselves as gating defects.
+    // All three severities name themselves as gating readings.
     expect(content).toContain('critical');
     expect(content).toContain('severe');
-    expect(content).toContain('high');
+    expect(content).toContain('advisory');
   });
 });
 

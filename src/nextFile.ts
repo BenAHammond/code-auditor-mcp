@@ -11,12 +11,29 @@ import type { Severity, Violation } from './types.js';
 const SEVERITY_RANK: Record<Severity, number> = {
   critical: 0,
   severe: 1,
-  high: 2,
+  advisory: 2,
 };
+
+/**
+ * Rank a severity, throwing on an unknown value. A finding whose severity is not
+ * a key here would sort to `undefined` and silently vanish (or mis-rank) — that is
+ * a bug in the producer, not a value to drop. The snapshot version gate
+ * (`SNAPSHOT_VERSION`) catches known renames; this closes the class for any
+ * severity the model does not recognize.
+ */
+function severityRank(severity: Severity): number {
+  const rank = SEVERITY_RANK[severity];
+  if (rank === undefined) {
+    throw new Error(
+      `Unknown severity "${severity}" — a finding that cannot be ranked is a bug, not something to drop.`,
+    );
+  }
+  return rank;
+}
 
 export interface RankedFile {
   file: string;
-  /** Highest severity present on the file (critical < severe < high). */
+  /** Highest severity present on the file (critical < severe < advisory). */
   maxSeverity: Severity;
   /** Total findings on the file across all analyzers. */
   count: number;
@@ -40,14 +57,14 @@ export function rankFilesByPriority(violations: Violation[]): RankedFile[] {
     .map(([file, vs]) => ({
       file,
       maxSeverity: vs.reduce<Severity>(
-        (max, v) => (SEVERITY_RANK[v.severity] < SEVERITY_RANK[max] ? v.severity : max),
-        'high'
+        (max, v) => (severityRank(v.severity) < severityRank(max) ? v.severity : max),
+        'advisory'
       ),
       count: vs.length,
       violations: vs,
     }))
     .sort((a, b) => {
-      const s = SEVERITY_RANK[a.maxSeverity] - SEVERITY_RANK[b.maxSeverity];
+      const s = severityRank(a.maxSeverity) - severityRank(b.maxSeverity);
       if (s !== 0) return s;
       const c = b.count - a.count;
       if (c !== 0) return c;
@@ -56,11 +73,11 @@ export function rankFilesByPriority(violations: Violation[]): RankedFile[] {
 }
 
 /**
- * Order one file's findings critical → severe → high so the consumer
+ * Order one file's findings critical → severe → advisory so the consumer
  * sees the most urgent defect first. Stable for equal severities.
  */
 export function orderFindingsWithinFile(violations: Violation[]): Violation[] {
   return [...violations].sort(
-    (a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]
+    (a, b) => severityRank(a.severity) - severityRank(b.severity)
   );
 }

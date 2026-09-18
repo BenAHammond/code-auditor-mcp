@@ -16,7 +16,7 @@ export interface PolyglotAnalysisOptions {
   
   // Analysis options
   analyzers?: string[];
-  minSeverity?: 'high' | 'severe' | 'critical';
+  minSeverity?: 'advisory' | 'severe' | 'critical';
   
   // Cross-language features
   enableCrossLanguageAnalysis?: boolean;
@@ -89,7 +89,7 @@ export interface DependencyEdge {
 
 export interface DependencyCycle {
   nodes: string[];
-  severity: 'critical' | 'severe' | 'high';
+  severity: 'critical' | 'severe' | 'advisory';
   suggestion?: string;
 }
 

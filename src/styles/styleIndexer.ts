@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { SqliteDatabase } from '../sqlite/types.js';
 import { extractDeclarations } from './styleExtractor.js';
-import { loadTailwindConfig, tokensToStyleTokens } from './tailwindConfigLoader.js';
+import { loadTailwindConfig, tokensToStyleTokens, type TailwindConfigResult } from './tailwindConfigLoader.js';
 import {
   findFiles,
   UNREAD_STYLE_EXTENSIONS,
@@ -96,9 +96,20 @@ export async function syncStyleIndex(
   // rather than asserting a class is undefined against the whole project.
   const unreadSources: UnreadStyleSource[] = [];
 
-  // Load Tailwind config once for the project
-  const tailwindResult = loadTailwindConfig(projectRoot);
-  const tailwindTokens = tailwindResult.tokens;
+  // Load Tailwind config only when a file will actually consume tokens. The load
+  // shells out to `git ls-files` (~50 ms), so on a run where every file is skipped
+  // by the two guards below (e.g. a diff-scoped `.ts` change — `changed:0`) it would
+  // be pure overhead on the `changed` gate. The load is memoized per process, so
+  // calling it lazily here costs nothing on full runs that do reach extraction.
+  const hasExtractableFile = files.some((filePath) => {
+    if (filePath.endsWith('.css') || filePath.endsWith('.scss')) return false;
+    const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
+    return !PIPELINE_SOURCE_EXTENSIONS.has(ext);
+  });
+  let tailwindResult: TailwindConfigResult | null = null;
+  if (hasExtractableFile) {
+    tailwindResult = loadTailwindConfig(projectRoot);
+  }
 
   // Process each file
   for (const filePath of files) {
@@ -142,8 +153,9 @@ export async function syncStyleIndex(
       // Delete old entries for this file (both scoped and full)
       deleteFileEntries(rawDb, filePath);
 
-      // Extract declarations
-      const declarations = extractForFile(filePath, content, tailwindTokens, unreadSources);
+      // Extract declarations. Only reachable for an extractable file, so
+      // `tailwindResult` is non-null here (loaded above when hasExtractableFile).
+      const declarations = extractForFile(filePath, content, tailwindResult!.tokens, unreadSources);
 
       // Whether this file contributed any style data (declaration, token, or
       // class usage). Feeds `contributingFiles`, the scoped short-circuit signal
@@ -190,7 +202,7 @@ export async function syncStyleIndex(
   }
 
   // Insert Tailwind theme tokens as style tokens
-  if (tailwindResult.source !== 'none' && result.changed > 0) {
+  if (tailwindResult && tailwindResult.source !== 'none' && result.changed > 0) {
     const twTokens = tokensToStyleTokens(tailwindResult, projectRoot);
     if (twTokens.length > 0) {
       // Upsert each token individually (name is the unique key)

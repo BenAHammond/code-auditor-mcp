@@ -34,7 +34,7 @@ function makeViolation(overrides: Partial<HookViolation> = {}): HookViolation {
 function makeAuditOutput(overrides: Partial<HookAuditOutput> = {}): HookAuditOutput {
   return {
     violations: [makeViolation()],
-    summary: { total: 1, critical: 1, severe: 0, high: 0 },
+    summary: { total: 1, critical: 1, severe: 0, advisory: 0 },
     filesAnalyzed: 1,
     ...overrides,
   };
@@ -116,7 +116,7 @@ describe('formatViolationContext', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'SQL injection risk', file: 'src/db.ts', line: 42 }),
       ],
-      summary: { total: 1, critical: 1, severe: 0, high: 0 },
+      summary: { total: 1, critical: 1, severe: 0, advisory: 0 },
     });
     const result = formatViolationContext(output);
     expect(result.isBlocking).toBe(true);
@@ -131,7 +131,7 @@ describe('formatViolationContext', () => {
       violations: [
         makeViolation({ severity: 'severe', message: 'Function too long', file: 'src/foo.ts', line: 10 }),
       ],
-      summary: { total: 1, critical: 0, severe: 1, high: 0 },
+      summary: { total: 1, critical: 0, severe: 1, advisory: 0 },
     });
     const result = formatViolationContext(output);
     expect(result.isBlocking).toBe(true);
@@ -142,7 +142,7 @@ describe('formatViolationContext', () => {
   it('returns empty context for no violations', () => {
     const output = makeAuditOutput({
       violations: [],
-      summary: { total: 0, critical: 0, severe: 0, high: 0 },
+      summary: { total: 0, critical: 0, severe: 0, advisory: 0 },
     });
     const result = formatViolationContext(output);
     expect(result.context).toBe('');
@@ -154,15 +154,15 @@ describe('formatViolationContext', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'XSS risk', file: 'src/view.ts' }),
         makeViolation({ severity: 'severe', message: 'Missing doc', file: 'src/other.ts' }),
-        makeViolation({ severity: 'high', message: 'Use const', file: 'src/other.ts' }),
+        makeViolation({ severity: 'advisory', message: 'Use const', file: 'src/other.ts' }),
       ],
-      summary: { total: 3, critical: 1, severe: 1, high: 1 },
+      summary: { total: 3, critical: 1, severe: 1, advisory: 1 },
     });
     const result = formatViolationContext(output);
     expect(result.isBlocking).toBe(true);
-    // Worst-first: critical, then severe, then high.
+    // Worst-first: critical, then severe, then advisory.
     expect(result.context.indexOf('[critical]')).toBeLessThan(result.context.indexOf('[severe]'));
-    expect(result.context.indexOf('[severe]')).toBeLessThan(result.context.indexOf('[high]'));
+    expect(result.context.indexOf('[severe]')).toBeLessThan(result.context.indexOf('[advisory]'));
   });
 });
 
@@ -203,7 +203,7 @@ describe('processCursorEvent', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'Broken invariant', file: 'src/bad.ts', line: 5 }),
       ],
-      summary: { total: 1, critical: 1, severe: 0, high: 0 },
+      summary: { total: 1, critical: 1, severe: 0, advisory: 0 },
     });
     const event = JSON.stringify({
       tool_name: 'Write',
@@ -226,7 +226,7 @@ describe('processCursorEvent', () => {
       violations: [
         makeViolation({ severity: 'critical', message: 'Security risk', file: 'src/auth.ts' }),
       ],
-      summary: { total: 1, critical: 1, severe: 0, high: 0 },
+      summary: { total: 1, critical: 1, severe: 0, advisory: 0 },
     });
     const event = JSON.stringify({
       toolName: 'Edit',
@@ -243,7 +243,7 @@ describe('processCursorEvent', () => {
       violations: [
         makeViolation({ severity: 'severe', message: 'Missing JSDoc', file: 'src/utils.ts' }),
       ],
-      summary: { total: 1, critical: 0, severe: 1, high: 0 },
+      summary: { total: 1, critical: 0, severe: 1, advisory: 0 },
     });
     const event = JSON.stringify({
       tool_name: 'Write',
@@ -259,7 +259,7 @@ describe('processCursorEvent', () => {
   it('returns exitCode 0 with no stdout for clean audit', async () => {
     const output = makeAuditOutput({
       violations: [],
-      summary: { total: 0, critical: 0, severe: 0, high: 0 },
+      summary: { total: 0, critical: 0, severe: 0, advisory: 0 },
     });
     const event = JSON.stringify({
       tool_name: 'Write',

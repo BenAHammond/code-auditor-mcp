@@ -96,7 +96,7 @@ export function formatCodexFeedback(output: HookAuditOutput): {
 export async function processCodexEvent(
   rawStdin: string,
   auditFn: (filePaths: string[], projectRoot: string) => Promise<HookAuditOutput> = async (filePaths, projectRoot) =>
-    runHookAudit({ filePaths, projectRoot, failOn: 'high' }),
+    runHookAudit({ filePaths, projectRoot, failOn: 'advisory' }),
   resolveRoot: (event: CodexPostToolUse) => string = (event) =>
     event.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(),
 ): Promise<CodexHookResult> {

@@ -227,7 +227,7 @@ interface QueryAnalysis {
  * call rather than a 6-arg one (Spec 34 param-count bundling).
  */
 interface DataAccessViolationClassification {
-  severity: 'critical' | 'severe' | 'high';
+  severity: 'critical' | 'severe' | 'advisory';
   rule: string;
   symbol?: string;
   /** Spec 37 R1 — structured next action carried on gating findings. */
@@ -555,15 +555,17 @@ function checkViolations(
     });
   }
 
-  // Security: Missing Organization Filter
+  // Security: Missing Organization Filter — a query on a tenant-scoped table with
+  // no org/tenant filter is a live data-isolation breach: one tenant reads
+  // another's rows. `critical` (already wrong in production), not `severe`.
   if (config.checkOrgFilters && !call.hasOrganizationFilter && call.tables.length > 0 && requiresOrgFilter(call.tables, config)) {
-    push(`Query on ${call.tables.join(', ')} missing organization/tenant filter`, { severity: 'severe', rule: 'missing-org-filter' });
+    push(`Query on ${call.tables.join(', ')} missing organization/tenant filter`, { severity: 'critical', rule: 'missing-org-filter' });
   }
 
   // Performance: Complex Query — a join-heavy query (many tables).  Spec 55 R5:
   // a subquery alone is no longer "complex" — it is an ordinary SQLite/D1 idiom.
   if (analysis.performanceRisk === 'high') {
-    push(`Query references ${call.tables.length} tables`, { severity: 'high', rule: 'complex-query' });
+    push(`Query references ${call.tables.length} tables`, { severity: 'severe', rule: 'complex-query' });
   }
 
   // Performance: Unfiltered Query — an unfiltered write (DELETE/UPDATE with no
@@ -571,7 +573,7 @@ function checkViolations(
   // a query-shape rule excluded from test files; R5: it is about writes now, not
   // reads (an unfiltered SELECT is often an intentional full-set load).
   if (!skipTestRules && analysis.performanceRisk === 'medium') {
-    push(`Unfiltered write on ${call.tables.join(', ')} has no WHERE/HAVING/LIMIT`, { severity: 'high', rule: 'unfiltered-query' });
+    push(`Unfiltered write on ${call.tables.join(', ')} has no WHERE/HAVING/LIMIT`, { severity: 'severe', rule: 'unfiltered-query' });
   }
 
   return violations;
@@ -1663,6 +1665,14 @@ function checkLoopQueries(
   const loopOrdinals = new Map<string, number>();
 
   for (const node of dbNodes) {
+    // A DB call and its template-literal SQL argument both satisfy isDbCallNode —
+    // the call via provenance, the literal via the template-literal branch — so one
+    // query site (`db.prepare(`…`)`) would otherwise emit two findings, one at the
+    // call line and one at the SQL line. Collapse to the call node: it is always
+    // present when its literal is (isDbCallNode only admits a literal whose
+    // enclosing call is itself provenanced), so skipping the literal loses nothing.
+    if (isTemplateLiteral(node, adapter)) continue;
+
     const nodeText = adapter.getNodeText(node, sourceCode);
     if (!nodeText || nodeText.trim().length < 10) continue;
 

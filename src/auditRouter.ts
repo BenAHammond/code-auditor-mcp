@@ -66,7 +66,7 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
   const violations = polyglotResult.violations || [];
   const criticalIssues = violations.filter((v: any) => v.severity === 'critical').length;
   const severe = violations.filter((v: any) => v.severity === 'severe').length;
-  const high = violations.filter((v: any) => v.severity === 'high').length;
+  const advisory = violations.filter((v: any) => v.severity === 'advisory').length;
   const totalFiles = polyglotResult.metrics?.totalFiles || 0;
   const executionTime = polyglotResult.metrics?.executionTime || 0;
 
@@ -84,10 +84,10 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
     .map(([type, count]) => ({ type, count }));
 
   // Build analyzerResults dynamically from the actual analyzer labels on the
-  // violations. The Go subprocess labels findings with the analyzer that
-  // produced them (`solid`, and potentially `imports`/`errors`/`goroutines`/
-  // `channels`) — never `go`. A hardcoded `go` bucket filtering
-  // `v.analyzer === 'go'` was therefore structurally always zero.
+  // violations. The Go subprocess labels findings `solid` (its SOLID rules) or
+  // `go` (import/error/goroutine/channel rules) — the single Go namespace that
+  // matches the RULE_REGISTRY `go` entries, so its findings bucket under `go`
+  // rather than surfacing the subprocess's internal sub-analyzer names.
   const analyzerResults: Record<string, any> = {};
   for (const v of violations) {
     const key = v.analyzer || 'unknown';
@@ -123,7 +123,7 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
       totalViolations: violations.length,
       criticalIssues,
       severe,
-      high,
+      advisory,
       totalFiles,
       violationsByCategory,
       topIssues,

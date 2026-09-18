@@ -20,7 +20,8 @@ import type { Resolution } from '../types.js';
  * They are listed here for collision detection nonetheless.
  *
  * NOTE: invariants analyzer rule IDs are user-defined and variable —
- * `config-error` and `engine-error` are the only fixed, internal ones.
+ * `config-error` and `engine-error` are diagnostics (not violations), see
+ * `CoverageDiagnostic.kind`; they no longer have registry entries.
  *
  * Spec 37 R2: every entry carries `resolvable`, `message`, `docs`, and
  * `thresholds`. Missing any field is a build failure (the interface makes
@@ -133,8 +134,9 @@ export interface RuleSamples {
  * Every known rule/violation-type ID → analyzer.
  *
  * Invariant IDs (user-defined from .codeauditor.json rules) are NOT
- * listed — they vary per project. The two fixed invariant IDs
- * (`config-error`, `engine-error`) are listed.
+ * listed — they vary per project. The fixed invariant IDs (`config-error`,
+ * `engine-error`) are diagnostics (see `CoverageDiagnostic.kind`), not
+ * violation rules, so they have no registry entry.
  */
 export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // ── solid (UniversalSOLIDAnalyzer) ──────────────────────────────────────
@@ -365,6 +367,117 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
+  // ── Go non-SOLID rules (Spec-54 severity) ──────────────────────────────
+  // The Go subprocess emits these under a single `go` analyzer namespace: the
+  // subprocess's internal `imports`/`errors`/`goroutines`/`channels` dispatch is
+  // collapsed to `go` at emit time so its structure does not surface as four
+  // analyzer names a user has to learn. Registered here so coverage and
+  // describeRuleId see them, and so their severities carry a registry entry.
+  'channel-deadlock': {
+    analyzer: 'go',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Guaranteed deadlock: an unbuffered channel is both sent to and received from in the same goroutine.',
+    docs: 'channel-deadlock',
+    thresholds: [],
+    thresholdRationale: 'Go analyzer: deadlock is a structural property (unbuffered send + receive in one goroutine with no `go`), not a size. Hardcoded in the Go analyzer (not a TS config key).',
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\nfunc buffered() {\n\tch := make(chan int, 1)\n\tch <- 1\n\t<-ch\n}',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\nfunc deadlock() {\n\tch := make(chan int)\n\tch <- 1\n\t<-ch\n}' },
+      ],
+    },
+  },
+  'error-handling': {
+    analyzer: 'go',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Function assigns an error that is never checked, returned, or propagated.',
+    docs: 'error-handling',
+    thresholds: [],
+    thresholdRationale: 'Go analyzer: dropped-error detection is structural (an assigned error never compared/returned/passed/ignored), not a count. Hardcoded in the Go analyzer (not a TS config key).',
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\nimport "os"\n\nfunc checked() {\n\tf, err := os.Open("x")\n\tif err != nil {\n\t\treturn\n\t}\n\tf.Close()\n}',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\nimport "os"\n\nfunc dropped() {\n\tf, err := os.Open("x")\n\tf.Close()\n}' },
+      ],
+    },
+  },
+  'concurrency': {
+    analyzer: 'go',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Function launches a goroutine without synchronization.',
+    docs: 'concurrency',
+    thresholds: [],
+    thresholdRationale: 'Go analyzer: unsynchronized-goroutine detection is structural (a `go` statement with no sync primitive/channel in the function), not a count. Hardcoded in the Go analyzer (not a TS config key).',
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\nimport "sync"\n\nfunc safe() {\n\tvar wg sync.WaitGroup\n\twg.Add(1)\n\tgo func() {\n\t\tdefer wg.Done()\n\t}()\n\twg.Wait()\n}',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\nfunc fire() {\n\tgo background()\n}\n\nfunc background() {}' },
+      ],
+    },
+  },
+  'import-organization': {
+    analyzer: 'go',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Import block mixes standard library and third-party imports without grouping.',
+    docs: 'import-organization',
+    thresholds: [],
+    thresholdRationale: 'Go analyzer: grouping is a structural check (stdlib vs third-party block separation), not a count. Hardcoded in the Go analyzer (not a TS config key).',
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\nimport (\n\t"os"\n\n\t"github.com/gin-gonic/gin"\n)',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\nimport (\n\t"os"\n\t"github.com/gin-gonic/gin"\n)' },
+      ],
+    },
+  },
+  'import-style': {
+    analyzer: 'go',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Dot import detected — can lead to namespace pollution.',
+    docs: 'import-style',
+    thresholds: [],
+    thresholdRationale: 'Go analyzer: dot-import detection is structural (an import whose local name is "."), not a count. Hardcoded in the Go analyzer (not a TS config key).',
+    samples: {
+      valid: [
+        {
+          code: 'package main\n\nimport f "fmt"',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        { code: 'package main\n\nimport . "fmt"' },
+      ],
+    },
+  },
   'solid/liskov-substitution': {
     analyzer: 'solid',
     field: 'rule',
@@ -472,6 +585,29 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
             symbols: ['info.resultSummary'],
           },
         },
+      ],
+    },
+  },
+  // Spec 13 R5 — a previously-identical clone pair whose similarity has fallen
+  // across consecutive runs (copy-paste then edit one side). Cross-run: emitted
+  // by the divergence-tracking pass in auditRunner, not the per-file DRY visitor.
+  'dry/diverging-clone': {
+    analyzer: 'dry',
+    field: 'rule',
+    input: ['files'],
+    resolvable: false,
+    message: 'Clone pair has diverged: similarity dropped {drop} (from {previous} to {current}) across {runs} consecutive runs. Review {file1}:{line1} and {file2}:{line2} for diverged logic.',
+    docs: 'dry/diverging-clone',
+    // No thresholds: the divergence knobs (divergenceThreshold, divergenceRuns,
+    // minPairSimilarity) live in DivergenceConfig (types.ts), read by auditRunner's
+    // cross-run pass — not keys the dry analyzer's own DEFAULT_DRY_CONFIG reads.
+    thresholds: [],
+    samples: {
+      valid: [
+        { code: '// pair similarity 0.82 → 0.81 → 0.80 (below the 0.05 drop over 2 runs)', nearMiss: true },
+      ],
+      invalid: [
+        { code: '// pair similarity 0.82 → 0.70 → 0.58: a ≥0.05 drop for 2 consecutive runs' },
       ],
     },
   },
@@ -1129,6 +1265,53 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
+  // Cross-file stale-table-reference detection → emitted by the schema Stage 3
+  // reducer. Distinguishes "never existed" (unknown-table) from "existed and was
+  // dropped in a migration" (stale-table-reference): the latter is a stale code
+  // reference, not a typo, so the message names the dropping migration and the
+  // tables it created in its place.
+  'stale-table-reference': {
+    analyzer: 'schema',
+    field: 'rule',
+    input: ['schema-code'],
+    resolvable: true,
+    message: 'Reference to dropped table "{table}" — dropped in {migration}.',
+    docs: 'stale-table-reference',
+    thresholds: [],
+    samples: {
+      valid: [
+        { code: 'db.query("SELECT * FROM users")', nearMiss: true },
+      ],
+      invalid: [
+        {
+          code: 'db.query("SELECT * FROM legacy_orders")',
+          resolution: { action: 'update-stale-reference', summary: 'The table "legacy_orders" was dropped in 002_drop_legacy.sql. That migration creates "orders" — update this reference to a table that still exists.', symbols: ['orders'] },
+        },
+      ],
+    },
+  },
+  // Per-function query-count ceiling → emitted by the schema-code visitor.
+  // Tunable via maxQueriesPerFunction (default 5); listed under `schema`, which
+  // (like the other schema rules) has no config shape in the threshold-validation
+  // test, so the knob is documented here rather than declared in `thresholds`.
+  'too-many-queries': {
+    analyzer: 'schema',
+    field: 'rule',
+    configGate: 'validateQueryPatterns',
+    input: ['schema-code'],
+    resolvable: false,
+    message: 'Function "{name}" has {count} queries, exceeding the maximum of {max}.',
+    docs: 'too-many-queries',
+    thresholds: [],
+    samples: {
+      valid: [
+        { code: 'function getUser(id) {\n  return db.query("SELECT * FROM users WHERE id = ?", [id]);\n}', nearMiss: true },
+      ],
+      invalid: [
+        { code: 'function loadDashboard() {\n  db.query("SELECT * FROM users");\n  db.query("SELECT * FROM orders");\n  db.query("SELECT * FROM products");\n  db.query("SELECT * FROM reviews");\n  db.query("SELECT * FROM events");\n  db.query("SELECT * FROM alerts");\n}' },
+      ],
+    },
+  },
   // Spec 58 R1 — DB-call SQL held in an unresolvable identifier (imported
   // constant, computed/concatenated expression, call result) is no longer a
   // violation rule. It moved to the coverage-diagnostics channel
@@ -1265,41 +1448,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
 
-  // ── invariants (invariantsAnalyzer) — fixed internal IDs only ──────────
-  'config-error': {
-    analyzer: 'invariants',
-    field: 'rule',
-    input: ['files'],
-    resolvable: false,
-    message: 'Invalid invariant config: {error}.',
-    docs: 'config-error',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'export default { rules: [] };', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'export default { rules: [{ kind: "not-a-kind" }] };' },
-      ],
-    },
-  },
-  'engine-error': {
-    analyzer: 'invariants',
-    field: 'rule',
-    input: ['files'],
-    resolvable: false,
-    message: 'Invariant rule engine error: {error}.',
-    docs: 'engine-error',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'runRules([], { rules: [] });', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'runRules(null, { rules: [] });' },
-      ],
-    },
-  },
+  // ── invariants (invariantsAnalyzer) — no fixed violation IDs ────────────
+  // Spec 59 — `config-error` / `engine-error` moved off the severity ladder to
+  // the coverage-diagnostics channel (`CoverageDiagnostic`, kinds `config-error`
+  // / `engine-error`). A bad `.codeauditor.json` or a rule-engine failure is a
+  // tool-side "couldn't do its job", not a defect in the audited code. The
+  // registry entries are removed so `buildCoverageReport` doesn't classify them
+  // `clean` (which would assert the tool checked something it no longer checks
+  // as a finding).
 
   // ── schema-validator (SchemaValidator) ──────────────────────────────────
   'field-mismatch': {
@@ -1725,23 +1881,12 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'styles/undefined-class-disabled': {
-    analyzer: 'styles',
-    field: 'rule',
-    input: ['styles-css'],
-    resolvable: false,
-    message: 'Undefined-class detection skipped: {reason}.',
-    docs: 'styles/undefined-class-disabled',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: '// detection enabled, corpus present', nearMiss: true },
-      ],
-      invalid: [
-        { code: '// no stylesheet corpus available' },
-      ],
-    },
-  },
+  // Spec 59 — `styles/undefined-class-disabled` moved off the severity ladder
+  // to the coverage-diagnostics channel (`CoverageDiagnostic`, kind
+  // `undefined-class-disabled`). A Tailwind probe failure (with a Tailwind
+  // config present) disables undefined-class detection — a tool-side "couldn't
+  // do its job", not a defect. The registry entry is removed so coverage never
+  // asserts the tool checked something it no longer checks as a finding.
   'styles/token-bypass': {
     analyzer: 'styles',
     field: 'rule',

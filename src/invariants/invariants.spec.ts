@@ -317,7 +317,7 @@ describe('ruleValidator', async () => {
           { id: 'r1', kind: 'import-ban', severity: 'critical', module: 'lodash' },
           { id: 'r2', kind: 'call-constraint', severity: 'severe', callee: 'f', allowFrom: ['src/**'] },
           { id: 'r3', kind: 'module-boundary', severity: 'critical', from: 'src/a/**', to: 'src/b/**' },
-          { id: 'r4', kind: 'naming', severity: 'high', path: 'src/**', exports: '^I[A-Z]' },
+          { id: 'r4', kind: 'naming', severity: 'advisory', path: 'src/**', exports: '^I[A-Z]' },
           { id: 'r5', kind: 'ast-pattern', severity: 'critical', pattern: 'new Function($$$)' },
           { id: 'r6', kind: 'style-mechanism', severity: 'severe', allow: ['tailwind'] },
           { id: 'r7', kind: 'no-raw-values', severity: 'severe', properties: ['color'] },
@@ -543,7 +543,7 @@ describe('import-ban', async () => {
         makeRule({
           id: 'custom-msg',
           kind: 'import-ban',
-          severity: 'high',
+          severity: 'advisory',
           module: 'banned',
           message: 'Do not use banned; prefer our internal wrapper.',
         }),
@@ -1275,7 +1275,7 @@ export function doThing() {}
       rules: [
         makeRule({ id: 'no-banned', kind: 'import-ban', severity: 'critical', module: 'banned-lib' }),
         makeRule({ id: 'no-new-fn', kind: 'ast-pattern', severity: 'severe', pattern: 'new Function($$$)' }),
-        makeRule({ id: 'pascal', kind: 'naming', severity: 'high', path: 'src/**', exports: '^[A-Z]' }),
+        makeRule({ id: 'pascal', kind: 'naming', severity: 'advisory', path: 'src/**', exports: '^[A-Z]' }),
       ],
       files: ['src/bad.ts'],
       projectDir: testDir,

@@ -49,11 +49,11 @@ const GO_REGISTRY_IDS = new Set([
   'solid/switch-size',
   'solid/liskov-substitution',
   'solid/interface-size',
-  'imports/import-style',
-  'imports/import-organization',
-  'errors/error-handling',
-  'goroutines/concurrency',
-  'channels/channel-deadlock',
+  'go/import-style',
+  'go/import-organization',
+  'go/error-handling',
+  'go/concurrency',
+  'go/channel-deadlock',
 ]);
 
 // A Gin-style file that touches every Go analyzer: dot + mis-grouped imports,

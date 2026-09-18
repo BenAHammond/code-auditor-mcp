@@ -97,7 +97,7 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
   }
 
   // Validate severity
-  const validSeverities = ['critical', 'severe', 'high'];
+  const validSeverities = ['critical', 'severe', 'advisory'];
   if (!validSeverities.includes(rule.severity)) {
     errors.push({
       ruleId: rule.id,

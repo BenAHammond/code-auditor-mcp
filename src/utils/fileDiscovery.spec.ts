@@ -8,9 +8,19 @@ import {
   ALL_EXTENSIONS,
 } from './fileDiscovery.js';
 import { FileAccounting } from '../services/fileAccounting.js';
+import { execFileSync } from 'node:child_process';
 import path from 'path';
 import { promises as fs } from 'fs';
 import os from 'os';
+
+function gitAvailable(): boolean {
+  try {
+    execFileSync('git', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe('fileDiscovery', () => {
   describe('should not exclude filesystem roots', () => {
@@ -254,6 +264,47 @@ describe('fileDiscovery', () => {
           directories: 1,
         });
         expect(summary.dropped).toBe(1);
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Spec 58 — .gitignore-aware discovery', () => {
+    it.skipIf(!gitAvailable())('does not discover files inside a gitignored directory', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-gitignore-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        execFileSync('git', ['init', '-q'], { cwd: baseDir, stdio: 'ignore' });
+        // A gitignored directory and a gitignored file — both are disowned and
+        // must be absent from discovery; `kept.ts` is the only source.
+        await fs.writeFile(path.join(baseDir, '.gitignore'), 'corpus/\nignored.ts\n');
+        await fs.mkdir(path.join(baseDir, 'corpus'), { recursive: true });
+        await fs.writeFile(path.join(baseDir, 'corpus', 'expanded.ts'), 'export const a = 1;');
+        await fs.writeFile(path.join(baseDir, 'ignored.ts'), 'export const b = 2;');
+        await fs.writeFile(path.join(baseDir, 'kept.ts'), 'export const c = 3;');
+
+        const files = await findFiles(baseDir, { extensions: ['.ts'] });
+
+        expect(files.map((f) => path.basename(f))).toEqual(['kept.ts']);
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it.skipIf(!gitAvailable())('still discovers untracked-but-not-ignored source', async () => {
+      const baseDir = path.join(os.tmpdir(), `ca-fd-gitignore-untracked-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        execFileSync('git', ['init', '-q'], { cwd: baseDir, stdio: 'ignore' });
+        await fs.writeFile(path.join(baseDir, '.gitignore'), 'corpus/\n');
+        // Untracked and not ignored — must be discovered (a new source file that
+        // hasn't been committed yet is still source).
+        await fs.writeFile(path.join(baseDir, 'new-file.ts'), 'export const x = 1;');
+
+        const files = await findFiles(baseDir, { extensions: ['.ts'] });
+
+        expect(files.map((f) => path.basename(f))).toEqual(['new-file.ts']);
       } finally {
         await fs.rm(baseDir, { recursive: true, force: true });
       }

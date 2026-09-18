@@ -173,7 +173,7 @@ app.get('/dashboard/:sessionKey', (req, res) => {
             .stat-label { color: #718096; font-size: 0.9rem; }
             .severity-critical { border-left-color: #e53e3e; }
             .severity-severe { border-left-color: #dd6b20; }
-            .severity-high { border-left-color: #3182ce; }
+            .severity-advisory { border-left-color: #3182ce; }
             .violations-section { 
                 background: white; border-radius: 12px; 
                 box-shadow: 0 4px 15px rgba(0,0,0,0.08); overflow: hidden; 
@@ -212,7 +212,7 @@ app.get('/dashboard/:sessionKey', (req, res) => {
             }
             .severity-critical { background: #fed7d7; color: #c53030; }
             .severity-severe { background: #feebc8; color: #c05621; }
-            .severity-high { background: #bee3f8; color: #2c5aa0; }
+            .severity-advisory { background: #bee3f8; color: #2c5aa0; }
             .recommendation { 
                 background: #f0fff4; border: 1px solid #9ae6b4; border-radius: 6px; 
                 padding: 12px; margin-top: 10px; 
@@ -257,10 +257,10 @@ app.get('/dashboard/:sessionKey', (req, res) => {
                     <div class="stat-label">Will surface — address before declaring clean</div>
                 </div>
 
-                <div class="stat-card severity-high">
-                    <h3>💡 High</h3>
-                    <div class="stat-value">${auditResult.summary?.high || 0}</div>
-                    <div class="stat-label">Defects that have not bitten yet</div>
+                <div class="stat-card severity-advisory">
+                    <h3>💡 Advisory</h3>
+                    <div class="stat-value">${auditResult.summary?.advisory || 0}</div>
+                    <div class="stat-label">Correct but off-convention</div>
                 </div>
             </div>
             
@@ -271,7 +271,7 @@ app.get('/dashboard/:sessionKey', (req, res) => {
                         <button class="filter-btn active" onclick="filterViolations('all')">All</button>
                         <button class="filter-btn" onclick="filterViolations('critical')">Critical</button>
                         <button class="filter-btn" onclick="filterViolations('severe')">Severe</button>
-                        <button class="filter-btn" onclick="filterViolations('high')">High</button>
+                        <button class="filter-btn" onclick="filterViolations('advisory')">Advisory</button>
                     </div>
                 </div>
                 

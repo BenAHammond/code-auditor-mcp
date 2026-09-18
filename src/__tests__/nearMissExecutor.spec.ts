@@ -169,7 +169,7 @@ const runReactComponent: Runner = async (code) => {
 
 /** React `accessibility` — the near-miss is a bare JSX element (`<img alt=…>`);
  *  wrap it in a functional component so `scanFile` detects it and
- *  `checkAccessibility` runs `hasImgWithoutAlt` against real source. */
+ *  `checkAccessibility` reads its AST-derived `jsxElementDetails`. */
 const runReactAccessibility: Runner = async (code) => {
   const wrapped = `function Img() {\n  return ${code};\n}`;
   const p = await writeTemp(wrapped, 'tsx');
@@ -195,6 +195,7 @@ const RUNNERS: Record<string, Runner> = {
   'solid/liskov-substitution': runSolid,
   'solid/dependency-inversion': runSolid,
   // dry
+  // dry/diverging-clone is cross-run (dry_pair_history) — classified in SKIP_RULES below.
   'dry/duplicate': runDry,
   'dry/structural-similarity': runDry,
   'dry/similar-expression': runDry,
@@ -220,6 +221,7 @@ const RUNNERS: Record<string, Runner> = {
   'dynamic-sql-construction': runSchemaCode,
   'table-naming-convention': runSchemaCode,
   'unknown-table': runSchemaCode,
+  'too-many-queries': runSchemaCode,
   // react — the per-component near-misses that are a complete component, plus
   // `accessibility` whose bare-JSX near-miss is wrapped into one.
   complexity: runReactComponent,
@@ -232,6 +234,10 @@ const RUNNERS: Record<string, Runner> = {
  * than faked; wiring any of them is a follow-up that builds the missing harness.
  */
 const SKIP_RULES: Record<string, string> = {
+  // dry — diverging-clone is emitted by auditRunner's cross-run pass over the
+  // dry_pair_history table (≥2 runs of declining similarity), not the per-file
+  // AST visitor; a single source string can't seed that history.
+  'dry/diverging-clone': 'dry — needs a seeded dry_pair_history across ≥2 consecutive runs; cross-run pass, not single-file AST',
   // schema JSON path — the samples are data *instances* (or bare schema
   // fragments) validated against a separate schema file; the analyzer pairs
   // them via schemaDataPairs / filename matching (`*.schema.json` ↔ `*.data.json`).
@@ -253,6 +259,10 @@ const SKIP_RULES: Record<string, string> = {
   'missing-required-field': 'schema JSON — needs an object schema with required fields',
   'unexpected-property': 'schema JSON — needs an object schema with additionalProperties:false',
   'enum-mismatch': 'schema JSON — needs an enum schema',
+  // schema reducer — a dropped-table finding needs a migration that drops the
+  // table plus a code file referencing it; the catalog is built cross-file in
+  // the Stage 3 reducer, not from a single snippet.
+  'stale-table-reference': 'schema — needs a migration (CREATE then DROP) plus a code reference to the dropped table',
   // react — fragment/non-component near-misses that scanFile won't surface as a
   // standalone component; each names the specific shape it needs.
   'hooks-naming': 'react — sample is a hook *definition* (`useFetch`), not a hook called inside a scannable component',
@@ -265,6 +275,11 @@ const SKIP_RULES: Record<string, string> = {
   'function-size': 'Go — near-miss exercised in goSingleResponsibilitySplit.spec.ts via the Go analyzer binary',
   'struct-size': 'Go — near-miss exercised in goSingleResponsibilitySplit.spec.ts via the Go analyzer binary',
   'liskov-substitution': 'Go — near-miss exercised in goDishonestRules.spec.ts via the Go analyzer binary',
+  'channel-deadlock': 'Go — near-miss exercised in goChannelDeadlock.spec.ts via the Go analyzer binary',
+  'error-handling': 'Go — near-miss exercised in goDishonestRules.spec.ts via the Go analyzer binary',
+  'concurrency': 'Go — near-miss exercised in goDishonestRules.spec.ts via the Go analyzer binary',
+  'import-organization': 'Go — near-miss exercised in goImportOrganization.spec.ts via the Go analyzer binary',
+  'import-style': 'Go — near-miss exercised in goImportOrganization.spec.ts via the Go analyzer binary',
   performance: 'react — sample is a `memo(...)` statement needing requireMemoization config + a detected memo component',
   'raw-element': 'react — sample is a `return <Button …>` fragment needing a wrapper-component scan to classify `Button` as non-raw',
 };

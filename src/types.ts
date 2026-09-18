@@ -6,25 +6,29 @@
 import type { FileAccounting } from './services/fileAccounting.js';
 
 /**
- * Severity is urgency, not permission (Spec 54). Three defect levels, nothing
- * below `high` — every level is a defect; the axis is how fast it bites.
- *   - `critical` — exploitable or broken now.
- *   - `severe`   — wrong, and it will surface.
- *   - `high`     — wrong, and it has not bitten yet.
+ * Severity is consequence, not urgency (Spec 54, recalibrated). Three levels:
+ *   - `critical` — already wrong in production, or will fail when the code runs
+ *     (dropped table, unescaped SQL injection, a live tenant-isolation breach).
+ *   - `severe`   — a real defect that has not bitten yet (dead code, unfiltered
+ *     writes, missing alt text, an N+1 query, a 250-line function).
+ *   - `advisory` — the code is correct but does not match a convention (off-scale
+ *     spacing, token bypass, missing JSDoc). Not the bottom of a defect ladder —
+ *     a separate class.
  */
-export type Severity = 'critical' | 'severe' | 'high';
+export type Severity = 'critical' | 'severe' | 'advisory';
 
 /** Rank order, high → low. Used for ordering, `minSeverity` filters, and `--fail-on`. */
-export const SEVERITY_RANK: Record<Severity, number> = { critical: 3, severe: 2, high: 1 };
+export const SEVERITY_RANK: Record<Severity, number> = { critical: 3, severe: 2, advisory: 1 };
 
 /** Every severity, in urgency order (highest first). */
-export const SEVERITIES: Severity[] = ['critical', 'severe', 'high'];
+export const SEVERITIES: Severity[] = ['critical', 'severe', 'advisory'];
 
 /**
  * Spec 54 R3 — the blocking gate is a fixed all-three set. There is no
- * configurable gate and nothing below `high`: every level is a defect, so every
- * finding blocks. `excludeFromGate` still scopes files *out* of the gate; that
- * is a scope decision, not a severity re-label.
+ * configurable gate and nothing below `advisory`: every level still blocks (the
+ * recalibration re-labels the bottom tier, it does not stop it from gating).
+ * `excludeFromGate` scopes files *out* of the gate; that is a scope decision, not
+ * a severity re-label.
  */
 export const BLOCKING_SEVERITIES: ReadonlySet<Severity> = new Set(SEVERITIES);
 
@@ -180,8 +184,10 @@ export interface Violation {
 export interface CoverageDiagnostic {
   /** Owning analyzer (e.g. `schema`, `dependency-graph`). */
   analyzerName: string;
-  /** The diagnostic kind — currently `unresolved-query` or `unresolved-dynamic-import`. */
-  kind: 'unresolved-query' | 'unresolved-dynamic-import';
+  /** The diagnostic kind — `unresolved-query` / `unresolved-dynamic-import`
+   *  (the analyzer couldn't see a region) or `config-error` / `engine-error` /
+   *  `undefined-class-disabled` (the tool failed or skipped a check). */
+  kind: 'unresolved-query' | 'unresolved-dynamic-import' | 'config-error' | 'engine-error' | 'undefined-class-disabled';
   /** Human-readable explanation of what could not be resolved. */
   message: string;
   /** File the unresolved construct is in. */
@@ -619,7 +625,7 @@ export interface AuditSummary {
   totalViolations: number;
   criticalIssues: number;
   severe: number;
-  high: number;
+  advisory: number;
   violationsByCategory: Record<string, number>;
   topIssues: Array<{ type: string; count: number }>;
   /**
@@ -1229,6 +1235,10 @@ export interface ComponentMetadata extends FunctionMetadata {
   props?: PropDefinition[];
   hooks?: HookUsage[];
   jsxElements?: string[];  // Direct child elements used
+  /** Structured JSX elements with tag name + line + attributes, for per-element
+   *  accessibility/performance checks that anchor to the element's own line and
+   *  never read markup out of comments/strings. See {@link JsxElementDetail}. */
+  jsxElementDetails?: JsxElementDetail[];
   imports?: ComponentImport[];  // Component dependencies
   hasErrorBoundary?: boolean;
   complexity?: number;
@@ -1256,6 +1266,34 @@ export interface ComponentImport {
   name: string;
   path: string;
   isDefault: boolean;
+}
+
+/** A single JSX attribute on an element, with its 1-based source line. */
+export interface JsxAttributeDetail {
+  name: string;
+  line: number;
+  /**
+   * The attribute's value shape:
+   *   - 'string'     — `alt="…"` / `title='…'`
+   *   - 'arrow'      — `onClick={() => …}` (inline arrow function)
+   *   - 'function'   — `onClick={function () { … }}` (inline function expression)
+   *   - 'identifier' — `onClick={handleClick}` (bare reference, not inline)
+   *   - 'other'      — any other `{…}` expression (ternary, call, member, …)
+   *   - 'none'       — boolean attribute (`disabled`)
+   */
+  valueKind: 'string' | 'arrow' | 'function' | 'identifier' | 'other' | 'none';
+}
+
+/**
+ * A JSX element (or self-closing element) with its tag name, opening-tag line,
+ * and attributes. Extracted from the tree-sitter AST, so JSX text inside
+ * comments or strings is never present — a commented-out `<img>` is a `comment`
+ * node, not a `jsx_element`.
+ */
+export interface JsxElementDetail {
+  tagName: string;
+  line: number;
+  attributes: JsxAttributeDetail[];
 }
 
 // Component Responsibility Types for SRP Detection

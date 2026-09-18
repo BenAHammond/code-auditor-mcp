@@ -855,7 +855,7 @@ class TypeScriptAnalyzer implements LanguageAnalyzer {
         projectRoot: options?.projectRoot,
         includePaths: files,
         enabledAnalyzers: options?.analyzers || ['solid', 'dry', 'documentation', 'data-access'],
-        minSeverity: options?.minSeverity || 'high',
+        minSeverity: options?.minSeverity || 'advisory',
         verbose: false
       });
 
@@ -976,7 +976,7 @@ class GoAnalyzer implements LanguageAnalyzer {
       // Prepare analysis options
       const analysisOptions = {
         analyzers: options?.analyzers || ['solid', 'imports', 'errors'],
-        minSeverity: options?.minSeverity || 'high',
+        minSeverity: options?.minSeverity || 'advisory',
         timeout: options?.timeout || 30000,
         language: options?.language || 'go',
         verbose: options?.verbose || false

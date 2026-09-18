@@ -158,14 +158,14 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 			violations = append(violations, Violation{
 				File:     filePath,
 				Line:     line,
-				Severity: "high",
+				Severity: "advisory",
 				Message:  "Import block mixes standard library and third-party imports without grouping",
 				Details: map[string]interface{}{
 					"importCount":        len(file.Imports),
 					"groupingViolations": grouped,
 				},
 				Suggestion: "Group standard library imports first, then third-party imports, each block separated by a blank line",
-				Analyzer:   "imports",
+				Analyzer:   "go",
 				Rule:       "import-organization",
 			})
 		}
@@ -177,13 +177,13 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 				violations = append(violations, Violation{
 					File:     filePath,
 					Line:     pos.Line,
-					Severity: "high",
+					Severity: "advisory",
 					Message:  "Dot import detected - can lead to namespace pollution",
 					Details: map[string]interface{}{
 						"import": importSpec.Path.Value,
 					},
 					Suggestion: "Use explicit import names instead of dot imports",
-					Analyzer:   "imports",
+					Analyzer:   "go",
 					Rule:       "import-style",
 				})
 			}
@@ -223,7 +223,7 @@ func (a *Analyzer) runErrorAnalysis() []Violation {
 					"function": funcDecl.Name.Name,
 				},
 				Suggestion: "Check the error, return it, or explicitly ignore it with '_ = err'",
-				Analyzer:   "errors",
+				Analyzer:   "go",
 				Rule:       "error-handling",
 			})
 			return true
@@ -264,7 +264,7 @@ func (a *Analyzer) runGoroutineAnalysis() []Violation {
 					"function": funcDecl.Name.Name,
 				},
 				Suggestion: "Use sync.WaitGroup or a channel to synchronize the goroutine",
-				Analyzer:   "goroutines",
+				Analyzer:   "go",
 				Rule:       "concurrency",
 			})
 			return true
@@ -312,7 +312,7 @@ func (a *Analyzer) runChannelAnalysis() []Violation {
 					"channel":  channel,
 				},
 				Suggestion: "Buffer the channel, or run one side (send or receive) in its own goroutine",
-				Analyzer:   "channels",
+				Analyzer:   "go",
 				Rule:       "channel-deadlock",
 			})
 			return true
@@ -329,7 +329,7 @@ func (a *Analyzer) filterViolationsBySeverity(violations []Violation) []Violatio
 	}
 
 	severityOrder := map[string]int{
-		"high":     1,
+		"advisory": 1,
 		"severe":   2,
 		"critical": 3,
 	}

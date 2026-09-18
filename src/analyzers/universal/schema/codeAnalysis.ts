@@ -526,7 +526,7 @@ export function checkNamingConventions(
         filePath,
         ref.location,
         `Table name '${ref.table}' should use snake_case convention`,
-        { severity: 'high', rule: 'table-naming-convention', symbol: ref.table }
+        { severity: 'advisory', rule: 'table-naming-convention', symbol: ref.table }
       ));
     }
 
@@ -585,7 +585,7 @@ export function checkQueryPatterns(
         ast.filePath,
         func.location.start,
         `Function '${func.name}' has ${queryCount} queries, exceeding the maximum of ${maxQueries}`,
-        { severity: 'high', rule: 'too-many-queries', symbol: func.name }
+        { severity: 'advisory', rule: 'too-many-queries', symbol: func.name }
       ));
     }
   }

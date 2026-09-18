@@ -366,7 +366,7 @@ class DependencyGraphBuilderCore {
         case 'severe':
           score -= 10;
           break;
-        case 'high':
+        case 'advisory':
           score -= 5;
           break;
       }
@@ -710,7 +710,7 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     const label = (ids: string[]): string[] => ids.map(id => idToName.get(id) ?? id);
     const clusters = this.findTightlyCoupledClusters(graph);
     this.recordCheck(sink, clusters.length, clusters.flatMap(c => c.nodes), {
-      issueType: 'tight-coupling', severity: 'high', impact: 'medium',
+      issueType: 'tight-coupling', severity: 'severe', impact: 'medium',
       issueDesc: () =>
         clusters.map(c => `${label(c.nodes).join(', ')} (${(c.coupling * 100).toFixed(0)}%)`).join('; '),
       suggestionType: 'reduce-coupling', priority: 'medium',
@@ -726,7 +726,7 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
   private recordHubCheck(sink: CheckSink, graph: DependencyGraph): void {
     const hubNodes = this.findHubNodes(graph);
     this.recordCheck(sink, hubNodes.length, hubNodes.map(h => h.node.id), {
-      issueType: 'hub-nodes', severity: 'high', impact: 'medium',
+      issueType: 'hub-nodes', severity: 'severe', impact: 'medium',
       issueDesc: () => hubNodes.map(h => `${h.node.name} (${h.outDegree})`).join(', '),
       suggestionType: 'split-responsibilities', priority: 'medium',
       suggestionDesc: 'Split large modules to reduce their dependency burden',
@@ -842,7 +842,7 @@ interface ReferenceIndex {
 
 export interface DependencyIssue {
   type: 'circular-dependency' | 'tight-coupling' | 'hub-nodes' | 'orphaned-nodes';
-  severity: 'critical' | 'severe' | 'high';
+  severity: 'critical' | 'severe' | 'advisory';
   description: string;
   affectedNodes: string[];
   impact: 'high' | 'medium' | 'low';

@@ -63,6 +63,7 @@ export const WHOLE_PROGRAM_RULES: ReadonlyArray<string> = [
   'cross-domain/read-never-written',
   'cross-domain/no-validator-reachable',
   'unknown-table',
+  'stale-table-reference',
 ];
 
 /**

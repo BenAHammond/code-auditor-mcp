@@ -49,6 +49,16 @@ import type { Violation } from './types.js';
 
 const SNAPSHOT_KEY = 'next-file:snapshot';
 
+// Bump when a snapshot's cached fields change meaning and a stale cache can no
+// longer be trusted. Spec-54 renamed the severity tier `high` → `advisory`: a v1
+// snapshot cached `high` severity values that the current SEVERITY_RANK no longer
+// recognizes (they sort to `undefined` and are invisible to the advisory bucket),
+// so a v1 snapshot must be re-seeded rather than reused. Any future change that
+// re-tiers a rule, renames a severity, or alters a cached field's semantics
+// bumps this — a stale cache reused silently is exactly the split-brain this
+// guard closes.
+export const SNAPSHOT_VERSION = 2;
+
 /** Extensions that carry table/DDL definitions — a deleted one can shift the catalog. */
 const SCHEMA_DEFINITION_EXTENSIONS = new Set(['.sql', '.prisma']);
 
@@ -99,7 +109,7 @@ export interface FileRecord {
 }
 
 export interface NextFileSnapshot {
-  version: 1;
+  version: number;
   projectRoot: string;
   files: Record<string, FileRecord>;
   visitorFindings: Record<string, Violation[]>;
@@ -312,7 +322,7 @@ export interface NextFileSummary {
   totalViolations: number;
   criticalIssues: number;
   severe: number;
-  high: number;
+  advisory: number;
   violationsByCategory: Record<string, number>;
   topIssues: Array<{ type: string; count: number }>;
 }
@@ -321,12 +331,12 @@ export interface NextFileSummary {
 export function summarizeViolations(violations: Violation[]): NextFileSummary {
   let criticalIssues = 0;
   let severe = 0;
-  let high = 0;
+  let advisory = 0;
   const violationsByCategory: Record<string, number> = {};
   for (const v of violations) {
     if (v.severity === 'critical') criticalIssues++;
     else if (v.severity === 'severe') severe++;
-    else if (v.severity === 'high') high++;
+    else if (v.severity === 'advisory') advisory++;
     const cat = v.analyzer || 'other';
     violationsByCategory[cat] = (violationsByCategory[cat] || 0) + 1;
   }
@@ -334,7 +344,7 @@ export function summarizeViolations(violations: Violation[]): NextFileSummary {
     .sort(([, a], [, b]) => b - a)
     .slice(0, 5)
     .map(([type, count]) => ({ type, count }));
-  return { totalViolations: violations.length, criticalIssues, severe, high, violationsByCategory, topIssues };
+  return { totalViolations: violations.length, criticalIssues, severe, advisory, violationsByCategory, topIssues };
 }
 
 /** The three-violation arrays flattened into one, in a stable order. */
@@ -345,7 +355,7 @@ function flatten(s: NextFileSnapshot): Violation[] {
 /** Build a snapshot from a full-audit result split. */
 function seedSnapshot(root: string, files: Record<string, FileRecord>, split: SplitResult): NextFileSnapshot {
   return {
-    version: 1,
+    version: SNAPSHOT_VERSION,
     projectRoot: root,
     files,
     visitorFindings: split.visitorFindings,
@@ -392,7 +402,11 @@ export async function runNextFile(options: {
     return { snapshot: seeded, violations: flatten(seeded), cold: true, summary: summarizeViolations(flatten(seeded)) };
   };
 
-  if (!snapshot) {
+  if (!snapshot || snapshot.version !== SNAPSHOT_VERSION) {
+    // Missing, or seeded under an older model (e.g. a v1 snapshot that cached
+    // `high` severity before the Spec-54 `advisory` rename). Re-seed so cached
+    // severity values are re-emitted at the current tiers rather than silently
+    // reused — a stale tier would sort to `undefined` and read as no advisory.
     return fullSeed();
   }
 
@@ -448,7 +462,7 @@ export async function runNextFile(options: {
   });
 
   const refreshed: NextFileSnapshot = {
-    version: 1,
+    version: SNAPSHOT_VERSION,
     projectRoot: root,
     files: current,
     visitorFindings: merged.visitorFindings,
