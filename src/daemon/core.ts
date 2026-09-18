@@ -27,7 +27,6 @@ import {
   createLedgerRun,
   writeAuditToLedger,
   patchLedgerRun,
-  hashFileSet,
   reclaimStaleRunning,
   detectRunInput,
 } from '../ledger.js';
@@ -551,6 +550,14 @@ export class DaemonCore extends EventEmitter {
   /** Persist the current findings to the ledger (durable snapshot for the CLI). */
   private persistCurrent(violations: Violation[], durationMs: number, coverage?: RuleCoverage[]): void {
     if (!this.db) return;
+    // Deliberately do NOT stamp content_hash / files_count / file_manifest_json
+    // here. That per-run manifest is written for *audit jobs* (mcpAuditJobs),
+    // where `computeStaleness` reads it back to answer "is this past run stale?".
+    // The daemon serves staleness live over the socket (DaemonCore.checkStaleness)
+    // from its in-memory snapshot, so a DB-level manifest on the daemon-audit /
+    // lease rows has no reader — and on a large corpus it cost a full-corpus
+    // re-hash plus ~200 KB of JSON per persist (39.5 MB across 204 runs on
+    // recall). Drop it.
     const runInput = detectRunInput(
       'daemon-audit',
       'daemon',
@@ -558,25 +565,7 @@ export class DaemonCore extends EventEmitter {
       this.projectRoot,
       PACKAGE_VERSION,
     );
-    const runId = writeAuditToLedger(this.db.rawDb, runInput, violations, durationMs, 0, { coverage });
-    if (this.snapshot) {
-      const fsh = hashFileSet(
-        Object.keys(this.snapshot.files).map((r) => path.join(this.projectRoot, r)),
-        this.projectRoot,
-      );
-      patchLedgerRun(this.db.rawDb, runId, {
-        contentHash: fsh.contentHash,
-        filesCount: fsh.filesCount,
-        fileManifestJson: JSON.stringify(fsh.manifest),
-      });
-      if (this.leaseRunId) {
-        patchLedgerRun(this.db.rawDb, this.leaseRunId, {
-          contentHash: fsh.contentHash,
-          filesCount: fsh.filesCount,
-          fileManifestJson: JSON.stringify(fsh.manifest),
-        });
-      }
-    }
+    writeAuditToLedger(this.db.rawDb, runInput, violations, durationMs, 0, { coverage });
   }
 
   private startWatcher(): void {
