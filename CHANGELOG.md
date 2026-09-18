@@ -2,7 +2,7 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [Unreleased]
+## [3.11.0] — 2026-09-18
 
 ### Import specifiers are classified at emission (Spec 60.1)
 
