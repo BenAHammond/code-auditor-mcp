@@ -303,7 +303,7 @@ export class CodeIndexDB {
   private stmts: Map<string, SqliteStatement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 13;
+  private static readonly SCHEMA_VERSION = 14;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -852,6 +852,46 @@ export class CodeIndexDB {
       `);
     }
 
+    // Migration 13 → 14: schema_usage identity becomes a coordinate (Spec 61
+    // Amendment A). function_name stops holding source text and becomes the
+    // nullable display name (null for anonymous handlers); identity is the
+    // inline (file_path, function_start_line, function_start_column) coordinate.
+    // function_name drops its NOT NULL so anonymous handlers store NULL, distinct
+    // from 'top-level' (function_start_line IS NULL). Old rows keep their
+    // (now-legacy) names but are regenerated on the next per-file sync.
+    if (currentVersion < 14) {
+      const suCols = this.db
+        .prepare(`PRAGMA table_info('schema_usage')`)
+        .all() as Array<{ name: string }>;
+      if (!suCols.some((c) => c.name === 'function_start_line')) {
+        this.db.exec(`
+          ALTER TABLE schema_usage RENAME TO schema_usage_old;
+          CREATE TABLE schema_usage (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            schema_id     TEXT,
+            table_name    TEXT NOT NULL,
+            file_path     TEXT NOT NULL,
+            function_name TEXT,
+            function_start_line   INTEGER,
+            function_start_column INTEGER,
+            usage_type    TEXT NOT NULL,
+            line          INTEGER,
+            "column"      INTEGER,
+            raw_query     TEXT,
+            parameters    TEXT,
+            recorded_at   TEXT DEFAULT (datetime('now'))
+          );
+          INSERT INTO schema_usage (id, schema_id, table_name, file_path, function_name, usage_type, line, "column", raw_query, parameters, recorded_at)
+            SELECT id, schema_id, table_name, file_path, function_name, usage_type, line, "column", raw_query, parameters, recorded_at FROM schema_usage_old;
+          DROP TABLE schema_usage_old;
+          CREATE INDEX IF NOT EXISTS idx_schema_usage_table ON schema_usage(table_name);
+          CREATE INDEX IF NOT EXISTS idx_schema_usage_file ON schema_usage(file_path);
+          CREATE INDEX IF NOT EXISTS idx_schema_usage_function ON schema_usage(function_name);
+          CREATE INDEX IF NOT EXISTS idx_schema_usage_usage_type ON schema_usage(usage_type);
+        `);
+      }
+    }
+
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -1013,7 +1053,9 @@ export class CodeIndexDB {
         schema_id     TEXT,
         table_name    TEXT NOT NULL,
         file_path     TEXT NOT NULL,
-        function_name TEXT NOT NULL,
+        function_name TEXT,
+        function_start_line   INTEGER,
+        function_start_column INTEGER,
         usage_type    TEXT NOT NULL,
         line          INTEGER,
         "column"      INTEGER,
@@ -3073,19 +3115,20 @@ export class CodeIndexDB {
   async recordSchemaUsage(usage: SchemaUsage, schemaId?: string): Promise<void> {
     this.ensureInitialized();
     const existing = this.db.prepare(
-      'SELECT id FROM schema_usage WHERE table_name = ? AND file_path = ? AND function_name = ? AND line = ?'
-    ).get(usage.tableName, usage.filePath, usage.functionName, usage.line);
+      'SELECT id FROM schema_usage WHERE table_name = ? AND file_path = ? AND function_start_line IS ? AND function_start_column IS ? AND line = ?'
+    ).get(usage.tableName, usage.filePath, usage.functionStartLine ?? null, usage.functionStartColumn ?? null, usage.line);
 
     if (existing) {
       this.db.prepare(
-        'UPDATE schema_usage SET schema_id = ?, usage_type = ?, "column" = ?, raw_query = ?, parameters = ?, recorded_at = ? WHERE id = ?'
-      ).run(schemaId ?? 'default', usage.usageType, usage.column ?? null,
+        'UPDATE schema_usage SET schema_id = ?, function_name = ?, usage_type = ?, "column" = ?, raw_query = ?, parameters = ?, recorded_at = ? WHERE id = ?'
+      ).run(schemaId ?? 'default', usage.functionName ?? null, usage.usageType, usage.column ?? null,
         usage.rawQuery ?? null, JSON.stringify(usage.parameters ?? []),
         new Date().toISOString(), (existing as any).id);
     } else {
       this.db.prepare(
-        'INSERT INTO schema_usage (schema_id, table_name, file_path, function_name, usage_type, line, "column", raw_query, parameters, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(schemaId ?? 'default', usage.tableName, usage.filePath, usage.functionName,
+        'INSERT INTO schema_usage (schema_id, table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, "column", raw_query, parameters, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(schemaId ?? 'default', usage.tableName, usage.filePath, usage.functionName ?? null,
+        usage.functionStartLine ?? null, usage.functionStartColumn ?? null,
         usage.usageType, usage.line ?? null, usage.column ?? null,
         usage.rawQuery ?? null, JSON.stringify(usage.parameters ?? []), new Date().toISOString());
     }
@@ -3119,6 +3162,8 @@ export class CodeIndexDB {
       tableName: r.table_name,
       filePath: r.file_path,
       functionName: r.function_name,
+      functionStartLine: r.function_start_line,
+      functionStartColumn: r.function_start_column,
       usageType: r.usage_type,
       line: r.line,
       column: r.column,

@@ -8,22 +8,16 @@
  */
 
 import type { ASTNode } from '../languages/types.js';
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { walkAST, getLineAndColumn } from '../languages/adapterBridge.js';
+import { walkAST, getLineAndColumn, getNodeText } from '../languages/adapterBridge.js';
 import { FunctionCall, ImportMapping, DependencyInfo, UsageInfo } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
-function rawText(node: ASTNode): string {
-  return (node.raw as TreeSitterNode)?.text ?? '';
-}
-
 /** Strip quotes from a string literal node. */
-function getStringValue(node: ASTNode): string {
-  const text = rawText(node);
+function getStringValue(node: ASTNode, sourceCode: string): string {
+  const text = getNodeText(node, sourceCode);
   return text.replace(/^["']|["']$/g, '');
 }
 
@@ -48,7 +42,7 @@ export function extractFunctionCalls(
 
   walkAST(node, (n) => {
     if (n.type === 'call_expression') {
-      const callInfo = resolveCallExpression(n, importMap);
+      const callInfo = resolveCallExpression(n, importMap, sourceCode);
       if (callInfo) {
         calls.push(callInfo);
       }
@@ -61,7 +55,7 @@ export function extractFunctionCalls(
 /**
  * Build a map of imports from import statements
  */
-export function buildImportMap(root: ASTNode): Map<string, ImportMapping> {
+export function buildImportMap(root: ASTNode, sourceCode: string): Map<string, ImportMapping> {
   const importMap = new Map<string, ImportMapping>();
 
   walkAST(root, (node) => {
@@ -70,14 +64,14 @@ export function buildImportMap(root: ASTNode): Map<string, ImportMapping> {
       const stringNode = findChildOfType(node, 'string');
       if (!stringNode) return;
 
-      const moduleSpecifier = getStringValue(stringNode);
+      const moduleSpecifier = getStringValue(stringNode, sourceCode);
       const importClause = findChildOfType(node, 'import_clause');
       if (!importClause) return;
 
       // Find default import (first identifier child of import_clause before named_imports/namespace_import)
       for (const child of importClause.children ?? []) {
         if (child.type === 'identifier') {
-          const localName = rawText(child);
+          const localName = getNodeText(child, sourceCode);
           importMap.set(localName, {
             localName,
             importedName: 'default',
@@ -94,8 +88,8 @@ export function buildImportMap(root: ASTNode): Map<string, ImportMapping> {
             // import_specifier: [identifier (imported)] or [identifier (imported), 'as', identifier (local)]
             const identifiers = spec.children?.filter(c => c.type === 'identifier') ?? [];
             if (identifiers.length === 0) continue;
-            const importedName = rawText(identifiers[0]);
-            const localName = identifiers.length >= 2 ? rawText(identifiers[1]) : importedName;
+            const importedName = getNodeText(identifiers[0], sourceCode);
+            const localName = identifiers.length >= 2 ? getNodeText(identifiers[1], sourceCode) : importedName;
             importMap.set(localName, {
               localName,
               importedName,
@@ -111,7 +105,7 @@ export function buildImportMap(root: ASTNode): Map<string, ImportMapping> {
           // namespace_import: [*, 'as', identifier]
           const ident = child.children?.find(c => c.type === 'identifier');
           if (ident) {
-            const localName = rawText(ident);
+            const localName = getNodeText(ident, sourceCode);
             importMap.set(localName, {
               localName,
               importedName: '*',
@@ -135,14 +129,14 @@ export function buildImportMap(root: ASTNode): Map<string, ImportMapping> {
       if (!nameNode || !init) return;
 
       const callee = init.children?.[0];
-      if (!callee || callee.type !== 'identifier' || rawText(callee) !== 'require') return;
+      if (!callee || callee.type !== 'identifier' || getNodeText(callee, sourceCode) !== 'require') return;
 
       const args = findChildOfType(init, 'arguments');
       const firstArg = args?.children?.find(c => c.type === 'string');
       if (!firstArg) return;
 
-      const modulePath = getStringValue(firstArg);
-      const localName = rawText(nameNode);
+      const modulePath = getStringValue(firstArg, sourceCode);
+      const localName = getNodeText(nameNode, sourceCode);
       importMap.set(localName, {
         localName,
         importedName: 'default',
@@ -161,7 +155,8 @@ export function buildImportMap(root: ASTNode): Map<string, ImportMapping> {
  */
 export function resolveCallExpression(
   callExpr: ASTNode,
-  importMap: Map<string, ImportMapping>
+  importMap: Map<string, ImportMapping>,
+  sourceCode: string
 ): FunctionCall | undefined {
   const expr = callExpr.children?.[0]; // expression being called
   if (!expr) return undefined;
@@ -173,11 +168,11 @@ export function resolveCallExpression(
 
   if (expr.type === 'identifier') {
     // Direct function call: functionName()
-    callee = rawText(expr);
+    callee = getNodeText(expr, sourceCode);
     callType = 'direct';
   } else if (expr.type === 'member_expression') {
     // Method call: object.method()
-    callee = resolvePropertyAccess(expr, importMap);
+    callee = resolvePropertyAccess(expr, importMap, sourceCode);
     callType = 'method';
   } else if (expr.type === 'subscript_expression') {
     // Dynamic call: object[property]()
@@ -208,24 +203,25 @@ export function resolveCallExpression(
  */
 function resolvePropertyAccess(
   expr: ASTNode,
-  importMap: Map<string, ImportMapping>
+  importMap: Map<string, ImportMapping>,
+  sourceCode: string
 ): string {
   // member_expression: [object, '.', property_identifier]
   const children = expr.children ?? [];
   const propNode = children[children.length - 1]; // property_identifier is last child
   const objNode = children[0];                    // object is first child
 
-  const parts: string[] = [propNode ? rawText(propNode) : ''];
+  const parts: string[] = [propNode ? getNodeText(propNode, sourceCode) : ''];
 
   let current = objNode;
   while (current?.type === 'member_expression') {
     const cc = current.children ?? [];
-    parts.unshift(rawText(cc[cc.length - 1]));
+    parts.unshift(getNodeText(cc[cc.length - 1], sourceCode));
     current = cc[0];
   }
 
   if (current?.type === 'identifier') {
-    const baseName = rawText(current);
+    const baseName = getNodeText(current, sourceCode);
     const importInfo = importMap.get(baseName);
 
     if (importInfo) {
@@ -262,7 +258,7 @@ export function extractIdentifierUsage(
     }
     if (parent?.type === 'pair' && parent.children?.indexOf(n) === 0) return;
 
-    const name = rawText(n);
+    const name = getNodeText(n, sourceCode);
 
     if (!importNames.has(name)) return;
 
@@ -302,7 +298,7 @@ export function extractIdentifierUsage(
 /**
  * Get all local function names defined in the file
  */
-export function getLocalFunctionNames(root: ASTNode): Set<string> {
+export function getLocalFunctionNames(root: ASTNode, sourceCode: string): Set<string> {
   const functionNames = new Set<string>();
 
   walkAST(root, (node) => {
@@ -310,7 +306,7 @@ export function getLocalFunctionNames(root: ASTNode): Set<string> {
     if (node.type === 'function_declaration') {
       const nameNode = findChildOfType(node, 'identifier');
       if (nameNode) {
-        functionNames.add(rawText(nameNode));
+        functionNames.add(getNodeText(nameNode, sourceCode));
       }
       return;
     }
@@ -323,7 +319,7 @@ export function getLocalFunctionNames(root: ASTNode): Set<string> {
         const init = child.children?.find(c =>
           c.type === 'arrow_function' || c.type === 'function_expression');
         if (nameNode && init) {
-          functionNames.add(rawText(nameNode));
+          functionNames.add(getNodeText(nameNode, sourceCode));
         }
       }
       return;
@@ -333,7 +329,7 @@ export function getLocalFunctionNames(root: ASTNode): Set<string> {
     if (node.type === 'class_declaration') {
       const nameNode = findChildOfType(node, 'identifier');
       if (nameNode) {
-        const className = rawText(nameNode);
+        const className = getNodeText(nameNode, sourceCode);
         functionNames.add(className);
 
         // Add class methods
@@ -343,7 +339,7 @@ export function getLocalFunctionNames(root: ASTNode): Set<string> {
             if (member.type !== 'method_definition') continue;
             const mNameNode = findChildOfType(member, 'identifier');
             if (mNameNode) {
-              functionNames.add(`${className}.${rawText(mNameNode)}`);
+              functionNames.add(`${className}.${getNodeText(mNameNode, sourceCode)}`);
             }
           }
         }

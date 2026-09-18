@@ -36,18 +36,25 @@ async function freshDb(): Promise<CodeIndexDB> {
 interface SeedUsage {
   table_name: string;
   file_path: string;
-  function_name: string;
+  function_name: string | null;
   usage_type: string;
   line: number;
+  function_start_line?: number | null;
+  function_start_column?: number | null;
 }
 
 /** Directly insert schema_usage rows via raw SQL. */
 function seedSchemaUsage(db: CodeIndexDB, rows: SeedUsage[]): void {
   for (const r of rows) {
+    // Named rows default to a synthetic non-null coordinate (start line 1) so
+    // the identity label resolves to the name; anonymous rows (null name) must
+    // pass an explicit coordinate to stay distinct.
+    const startLine = r.function_start_line ?? (r.function_name ? 1 : null);
+    const startColumn = r.function_start_column ?? 0;
     db.run(
-      `INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
-       VALUES (?, ?, ?, ?, ?)`,
-      [r.table_name, r.file_path, r.function_name, r.usage_type, r.line],
+      `INSERT INTO schema_usage (table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [r.table_name, r.file_path, r.function_name, startLine, startColumn, r.usage_type, r.line],
     );
   }
 }

@@ -23,8 +23,6 @@ export interface ASTNode {
   location: SourceLocation;
   children?: ASTNode[];
   parent?: ASTNode;
-  // Language-specific data preserved here
-  raw: any;
 }
 
 /**
@@ -189,7 +187,6 @@ export interface AstNavigation {
   findNodes(ast: AST, pattern: NodePattern): ASTNode[];
   getParent(node: ASTNode): ASTNode | null;
   getChildren(node: ASTNode): ASTNode[];
-  getSiblings(node: ASTNode): ASTNode[];
 }
 
 /**
@@ -199,7 +196,6 @@ export interface NodeIntrospection {
   getNodeType(node: ASTNode): string;
   getNodeText(node: ASTNode, sourceCode: string): string;
   getNodeName(node: ASTNode): string | null;
-  getNodeLocation(node: ASTNode): SourceLocation;
 }
 
 /**
@@ -219,11 +215,7 @@ export interface NodePredicates {
   isClass(node: ASTNode): boolean;
   isFunction(node: ASTNode): boolean;
   isMethod(node: ASTNode): boolean;
-  isInterface(node: ASTNode): boolean;
-  isImport(node: ASTNode): boolean;
-  isExport(node: ASTNode): boolean;
   isLoop(node: ASTNode): boolean;
-  isConditional(node: ASTNode): boolean;
   isVariableDeclaration(node: ASTNode): boolean;
 }
 
@@ -231,7 +223,6 @@ export interface NodePredicates {
  * Advanced analysis role: type info, documentation, and complexity.
  */
 export interface AdvancedAnalysis {
-  getTypeInfo(node: ASTNode): string | null;
   getDocumentation(node: ASTNode): string | null;
   getComplexity(node: ASTNode): number;
 }
@@ -249,18 +240,6 @@ export interface AdvancedAnalysis {
 export interface OptionalCapabilities {
   /** Extract interfaces (for languages that support them). */
   extractInterfaces?(ast: AST): InterfaceInfo[];
-
-  /** Extract raw import info including dynamic/require forms. */
-  extractRawImports?(filePath: string, content: string): Array<{
-    moduleSpecifier: string;
-    isStatic: boolean;
-    isDynamic: boolean;
-    isRequire: boolean;
-    line: number;
-  }>;
-
-  /** Extract exported symbol names from an AST. */
-  extractExportedSymbols?(ast: AST): Array<{ name: string; line: number }>;
 
   /**
    * Returns true if the node is a dynamically-constructed string —

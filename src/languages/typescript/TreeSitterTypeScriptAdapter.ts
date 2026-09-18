@@ -15,8 +15,9 @@
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { getParser, parseWithRecovery } from '../tree-sitter/parser.js';
+import { parseWithRecovery } from '../tree-sitter/parser.js';
 import { toASTNode, toSourceLocation } from '../tree-sitter/converter.js';
+import { getRawNode } from '../tree-sitter/rawNode.js';
 import type {
   AST,
   ASTNode,
@@ -35,15 +36,6 @@ import type {
   ResolvedConstant,
   SourceLocation,
 } from '../types.js';
-
-/** A raw import/require record extracted directly from a syntax tree. */
-interface RawImport {
-  moduleSpecifier: string;
-  isStatic: boolean;
-  isDynamic: boolean;
-  isRequire: boolean;
-  line: number;
-}
 
 // ---------------------------------------------------------------------------
 // Source code storage
@@ -66,12 +58,6 @@ const SAFE_STRING_NODE: ASTNode = {
   type: 'string',
   range: [-1, -1],
   location: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } },
-  raw: {
-    type: 'string',
-    text: "''",
-    startIndex: -1,
-    endIndex: -1,
-  } as unknown as TreeSitterNode,
 };
 
 // ---------------------------------------------------------------------------
@@ -109,17 +95,6 @@ class TsTraversalHelpers {
     for (const child of node.children) {
       this.collectErrors(child, errors);
     }
-  }
-
-  /** Find first child of node matching one of the given types. */
-  protected getChildByType(
-    node: TreeSitterNode,
-    type: string
-  ): TreeSitterNode | null {
-    for (const child of node.children) {
-      if (child.type === type) return child;
-    }
-    return null;
   }
 
   /** Find the first named child matching one of the given types. */
@@ -228,7 +203,7 @@ class TsTraversalHelpers {
 
   /** Extract ordered parameter names from a function node. */
   protected getParamNames(fnNode: ASTNode): string[] {
-    const raw = fnNode.raw as TreeSitterNode;
+    const raw = getRawNode(fnNode);
     const paramsNode = (raw as any).childForFieldName?.('parameters') as TreeSitterNode | null;
     if (!paramsNode) return [];
     const names: string[] = [];
@@ -257,7 +232,7 @@ class TsTraversalHelpers {
 
   /** Return the ASTNodes for a call expression's arguments. */
   protected getCallArgASTNodes(callNode: ASTNode): ASTNode[] {
-    const raw = callNode.raw as TreeSitterNode;
+    const raw = getRawNode(callNode);
     const argsNode = (raw as any).childForFieldName?.('arguments') as TreeSitterNode | null;
     if (!argsNode) return [];
     return argsNode.namedChildren.map((c) => this.wrapRaw(c) as ASTNode);
@@ -496,7 +471,7 @@ class TsNameDocumentation extends TsTraversalHelpers {
 
   /** Match an ASTNode against a NodePattern. */
   protected matchesPattern(node: ASTNode, pattern: NodePattern): boolean {
-    const syntaxNode = node.raw as TreeSitterNode;
+    const syntaxNode = getRawNode(node);
 
     // type matching
     if (pattern.type !== undefined) {
@@ -871,92 +846,6 @@ class TsExtraction extends TsNameDocumentation {
     }
     return undefined;
   }
-
-  /** Collect static imports, dynamic `import()`, and `require()` calls. */
-  protected collectRawImport(node: TreeSitterNode, results: RawImport[]): void {
-    if (node.type === 'import_statement') {
-      const source = this.getChildByType(node, 'string');
-      if (source) {
-        results.push({
-          moduleSpecifier: source.text.slice(1, -1), // strip quotes
-          isStatic: true,
-          isDynamic: false,
-          isRequire: false,
-          line: source.startPosition.row,
-        });
-      }
-    }
-
-    if (node.type === 'call_expression') {
-      const fn = node.firstChild;
-      if (fn?.type === 'import') {
-        this.pushCallImport(node, results, /* isRequire */ false);
-      } else if (fn?.type === 'identifier' && fn.text === 'require') {
-        this.pushCallImport(node, results, /* isRequire */ true);
-      }
-    }
-  }
-
-  /** Push a `import('...')` or `require('...')` record for a call expression. */
-  protected pushCallImport(
-    node: TreeSitterNode,
-    results: RawImport[],
-    isRequire: boolean
-  ): void {
-    const args = this.getChildByType(node, 'arguments');
-    const strNode = args ? this.findFirstNamedChild(args, 'string') : null;
-    if (!strNode) return;
-    results.push({
-      moduleSpecifier: strNode.text.slice(1, -1),
-      isStatic: false,
-      isDynamic: !isRequire,
-      isRequire,
-      line: strNode.startPosition.row,
-    });
-  }
-
-  /** Collect the exported symbol(s) declared by a single `export_statement`. */
-  protected collectExportedSymbol(
-    node: TreeSitterNode,
-    symbols: Array<{ name: string; line: number }>
-  ): void {
-    // export function foo / export class Foo / export const x
-    const declaration = this.findFirstNamedChild(node, [
-      'function_declaration',
-      'class_declaration',
-      'abstract_class_declaration',
-      'lexical_declaration',
-      'variable_declaration',
-      'interface_declaration',
-      'type_alias_declaration',
-      'enum_declaration',
-    ]);
-    if (declaration) {
-      const name = this.extractName(declaration);
-      if (name) {
-        symbols.push({ name, line: declaration.startPosition.row });
-        return;
-      }
-    }
-
-    // export { foo, bar } or export { default }
-    const clause = this.getChildByType(node, 'export_clause');
-    if (clause) {
-      for (const child of clause.namedChildren) {
-        if (child.type === 'export_specifier') {
-          const nameNode = this.getChildByType(child, 'identifier');
-          if (nameNode) {
-            symbols.push({ name: nameNode.text, line: nameNode.startPosition.row });
-          }
-        }
-      }
-    }
-
-    // export default <expression>
-    if (node.childForFieldName?.('value')) {
-      symbols.push({ name: 'default', line: node.startPosition.row });
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,11 +904,6 @@ class TsPublicApi extends TsExtraction {
     return node.children ?? [];
   }
 
-  getSiblings(node: ASTNode): ASTNode[] {
-    if (!node.parent?.children) return [];
-    return node.parent.children.filter((c) => c !== node);
-  }
-
   getNodeType(node: ASTNode): string {
     return node.type;
   }
@@ -1029,12 +913,8 @@ class TsPublicApi extends TsExtraction {
   }
 
   getNodeName(node: ASTNode): string | null {
-    const syntaxNode = node.raw as TreeSitterNode;
+    const syntaxNode = getRawNode(node);
     return this.extractName(syntaxNode);
-  }
-
-  getNodeLocation(node: ASTNode): SourceLocation {
-    return node.location;
   }
 
   extractFunctions(ast: AST): FunctionInfo[] {
@@ -1042,7 +922,7 @@ class TsPublicApi extends TsExtraction {
     const functions: FunctionInfo[] = [];
 
     this.walk(ast.root, (node) => {
-      const syntaxNode = node.raw as TreeSitterNode;
+      const syntaxNode = getRawNode(node);
       const type = syntaxNode.type;
 
       if (
@@ -1065,7 +945,7 @@ class TsPublicApi extends TsExtraction {
     const classes: ClassInfo[] = [];
 
     this.walk(ast.root, (node) => {
-      const syntaxNode = node.raw as TreeSitterNode;
+      const syntaxNode = getRawNode(node);
       if (syntaxNode.type === 'class_declaration' || syntaxNode.type === 'abstract_class_declaration') {
         const cls = this.buildClassInfo(syntaxNode, sourceCode);
         if (cls) classes.push(cls);
@@ -1080,7 +960,7 @@ class TsPublicApi extends TsExtraction {
     const imports: ImportInfo[] = [];
 
     this.walk(ast.root, (node) => {
-      const syntaxNode = node.raw as TreeSitterNode;
+      const syntaxNode = getRawNode(node);
       if (syntaxNode.type === 'import_statement') {
         const imp = this.buildImportInfo(syntaxNode, sourceCode);
         if (imp) imports.push(imp);
@@ -1095,7 +975,7 @@ class TsPublicApi extends TsExtraction {
     const exports: ExportInfo[] = [];
 
     this.walk(ast.root, (node) => {
-      const syntaxNode = node.raw as TreeSitterNode;
+      const syntaxNode = getRawNode(node);
       if (syntaxNode.type === 'export_statement') {
         const ex = this.buildExportInfo(syntaxNode, sourceCode);
         if (ex) exports.push(ex);
@@ -1112,12 +992,12 @@ class TsPublicApi extends TsExtraction {
 
 class TsPredicatesOptional extends TsPublicApi {
   isClass(node: ASTNode): boolean {
-    const type = (node.raw as TreeSitterNode).type;
+    const type = (getRawNode(node)).type;
     return type === 'class_declaration' || type === 'abstract_class_declaration' || type === 'class_expression';
   }
 
   isFunction(node: ASTNode): boolean {
-    const type = (node.raw as TreeSitterNode).type;
+    const type = (getRawNode(node)).type;
     return (
       type === 'function_declaration' ||
       type === 'function_expression' ||
@@ -1128,23 +1008,11 @@ class TsPredicatesOptional extends TsPublicApi {
   }
 
   isMethod(node: ASTNode): boolean {
-    return (node.raw as TreeSitterNode).type === 'method_definition';
-  }
-
-  isInterface(node: ASTNode): boolean {
-    return (node.raw as TreeSitterNode).type === 'interface_declaration';
-  }
-
-  isImport(node: ASTNode): boolean {
-    return (node.raw as TreeSitterNode).type === 'import_statement';
-  }
-
-  isExport(node: ASTNode): boolean {
-    return (node.raw as TreeSitterNode).type === 'export_statement';
+    return (getRawNode(node)).type === 'method_definition';
   }
 
   isLoop(node: ASTNode): boolean {
-    const type = (node.raw as TreeSitterNode).type;
+    const type = (getRawNode(node)).type;
     return (
       type === 'for_statement' ||
       type === 'for_in_statement' ||
@@ -1153,18 +1021,8 @@ class TsPredicatesOptional extends TsPublicApi {
     );
   }
 
-  isConditional(node: ASTNode): boolean {
-    const type = (node.raw as TreeSitterNode).type;
-    return (
-      type === 'if_statement' ||
-      type === 'switch_statement' ||
-      type === 'ternary_expression' ||
-      type === 'switch_case'
-    );
-  }
-
   isVariableDeclaration(node: ASTNode): boolean {
-    const type = (node.raw as TreeSitterNode).type;
+    const type = (getRawNode(node)).type;
     return (
       type === 'variable_declaration' ||
       type === 'lexical_declaration' ||
@@ -1172,18 +1030,13 @@ class TsPredicatesOptional extends TsPublicApi {
     );
   }
 
-  getTypeInfo(node: ASTNode): string | null {
-    const syntaxNode = node.raw as TreeSitterNode;
-    return this.extractTypeAnnotation(syntaxNode);
-  }
-
   getDocumentation(node: ASTNode): string | null {
-    const syntaxNode = node.raw as TreeSitterNode;
+    const syntaxNode = getRawNode(node);
     return this.extractDocumentation(syntaxNode);
   }
 
   getComplexity(node: ASTNode): number {
-    const syntaxNode = node.raw as TreeSitterNode;
+    const syntaxNode = getRawNode(node);
     return this.calculateCyclomaticComplexity(syntaxNode);
   }
 
@@ -1192,7 +1045,7 @@ class TsPredicatesOptional extends TsPublicApi {
     const interfaces: InterfaceInfo[] = [];
 
     this.walk(ast.root, (node) => {
-      const syntaxNode = node.raw as TreeSitterNode;
+      const syntaxNode = getRawNode(node);
       if (syntaxNode.type === 'interface_declaration') {
         const iface = this.buildInterfaceInfo(syntaxNode, sourceCode);
         if (iface) interfaces.push(iface);
@@ -1200,27 +1053,6 @@ class TsPredicatesOptional extends TsPublicApi {
     });
 
     return interfaces;
-  }
-
-  extractRawImports(_filePath: string, content: string): RawImport[] {
-    const results: RawImport[] = [];
-
-    const parser = getParser('typescript');
-    const tree = parser.parse(content);
-    if (!tree) return results;
-
-    this.walkRaw(tree.rootNode, (node) => this.collectRawImport(node, results));
-
-    return results;
-  }
-
-  extractExportedSymbols(ast: AST): Array<{ name: string; line: number }> {
-    const symbols: Array<{ name: string; line: number }> = [];
-    this.walk(ast.root, (astNode) => {
-      const node = astNode.raw as TreeSitterNode;
-      if (node.type === 'export_statement') this.collectExportedSymbol(node, symbols);
-    });
-    return symbols;
   }
 }
 
@@ -1283,7 +1115,7 @@ class TsScopeStatic extends TsPredicatesOptional {
   protected findEnclosingScope(node: ASTNode, ast: AST): ASTNode | null {
     let current: ASTNode | null = node;
     while (current) {
-      const type = (current.raw as TreeSitterNode).type;
+      const type = (getRawNode(current)).type;
       if (
         type === 'function_declaration' ||
         type === 'arrow_function' ||
@@ -1305,13 +1137,13 @@ class TsScopeStatic extends TsPredicatesOptional {
   protected findEnclosingForStatement(declNode: ASTNode): ASTNode | null {
     const parent = declNode.parent;
     if (!parent) return null;
-    const pType = (parent.raw as TreeSitterNode).type;
+    const pType = (getRawNode(parent)).type;
     // The declarator's parent is lexical_declaration; the for-statement
     // is the parent of that.
     if (pType === 'lexical_declaration' || pType === 'variable_declaration') {
       const grandparent = parent.parent;
       if (!grandparent) return null;
-      const gpType = (grandparent.raw as TreeSitterNode).type;
+      const gpType = (getRawNode(grandparent)).type;
       if (gpType === 'for_of_statement' || gpType === 'for_in_statement') {
         return grandparent;
       }
@@ -1323,14 +1155,14 @@ class TsScopeStatic extends TsPredicatesOptional {
   protected findDeclarationInScope(scopeRoot: ASTNode, targetName: string): ASTNode | null {
     const results: ASTNode[] = [];
     this.walk(scopeRoot, (astNode) => {
-      const t = (astNode.raw as TreeSitterNode).type;
+      const t = (getRawNode(astNode)).type;
       if (t === 'variable_declarator') {
-        const raw = astNode.raw as TreeSitterNode;
+        const raw = getRawNode(astNode);
         const nameNode = (raw as any).childForFieldName?.('name') ?? null;
         const name = nameNode ? nameNode.text : '?';
         const parent = astNode.parent;
         if (parent) {
-          const pType = (parent.raw as TreeSitterNode).type;
+          const pType = (getRawNode(parent)).type;
           if (pType === 'lexical_declaration' || pType === 'variable_declaration') {
             if (name === targetName) {
               results.push(astNode);
@@ -1353,7 +1185,7 @@ class TsScopeStatic extends TsPredicatesOptional {
       // Early exit — first match wins.
       if (results.length > 0) return;
 
-      const raw = astNode.raw as TreeSitterNode;
+      const raw = getRawNode(astNode);
       const type = raw.type;
 
       if (type === 'import_specifier') {
@@ -1364,7 +1196,7 @@ class TsScopeStatic extends TsPredicatesOptional {
         if (resolvedName === name) {
           results.push({ isStatic: true, declLine: astNode.location.start.line });
         }
-      } else if (type === 'import' && (astNode.parent?.raw as TreeSitterNode)?.type === 'import_clause') {
+      } else if (type === 'import' && astNode.parent?.type === 'import_clause') {
         // default import: import X from … — the 'import' node is a child of
         // 'import_clause', and its text is the local binding name.
         if (raw.text === name) {
@@ -1392,10 +1224,10 @@ class TsScopeStatic extends TsPredicatesOptional {
     let found = false;
     this.walk(scopeRoot, (astNode) => {
       if (found) return;
-      const t = (astNode.raw as TreeSitterNode).type;
+      const t = (getRawNode(astNode)).type;
       if (t === 'assignment_expression' || t === 'augmented_assignment_expression') {
         if (astNode.location.start.line < declLine) return;
-        const raw = astNode.raw as TreeSitterNode;
+        const raw = getRawNode(astNode);
         const left = (raw as any).childForFieldName?.('left') as TreeSitterNode | null;
         if (left && left.type === 'identifier' && left.text === targetName) {
           found = true;
@@ -1410,7 +1242,7 @@ class TsScopeStatic extends TsPredicatesOptional {
     let result: ASTNode | null = null;
     this.walk(ast.root, (node) => {
       if (result) return;
-      const raw = node.raw as TreeSitterNode;
+      const raw = getRawNode(node);
       const t = raw.type;
       if (t === 'function_declaration' || t === 'generator_function_declaration') {
         const nameNode = (raw as any).childForFieldName?.('name') as TreeSitterNode | null;
@@ -1429,7 +1261,7 @@ class TsScopeStatic extends TsPredicatesOptional {
 
   /** Extract a function's name (named functions and arrow-function assignments). */
   protected getFunctionName(node: ASTNode): string | null {
-    const raw = node.raw as TreeSitterNode;
+    const raw = getRawNode(node);
     const t = raw.type;
     if (t === 'function_declaration' || t === 'generator_function_declaration'
         || t === 'function_expression' || t === 'method_definition') {
@@ -1439,7 +1271,7 @@ class TsScopeStatic extends TsPredicatesOptional {
     if (t === 'arrow_function') {
       const parent = node.parent;
       if (parent) {
-        const pRaw = parent.raw as TreeSitterNode;
+        const pRaw = getRawNode(parent);
         if (pRaw.type === 'variable_declarator') {
           const nameNode = (pRaw as any).childForFieldName?.('name') as TreeSitterNode | null;
           if (nameNode && nameNode.type === 'identifier') return nameNode.text;
@@ -1453,7 +1285,7 @@ class TsScopeStatic extends TsPredicatesOptional {
   protected findCallSites(fnName: string, ast: AST): ASTNode[] {
     const sites: ASTNode[] = [];
     this.walk(ast.root, (node) => {
-      const raw = node.raw as TreeSitterNode;
+      const raw = getRawNode(node);
       if (raw.type !== 'call_expression') return;
       const fn = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
       if (fn && fn.type === 'identifier' && fn.text === fnName) sites.push(node);
@@ -1475,12 +1307,12 @@ class TsDynamicStringConstruction extends TsScopeStatic {
    *   String-like identifiers and plain string literals are never dynamic.
    */
   isDynamicStringConstruction(node: ASTNode): boolean {
-    const type = (node.raw as TreeSitterNode).type;
+    const type = (getRawNode(node)).type;
 
     if (type === 'template_string') {
       // template_string is dynamic only if it has template_substitution children
       for (const child of node.children ?? []) {
-        if ((child.raw as TreeSitterNode).type === 'template_substitution') {
+        if ((getRawNode(child)).type === 'template_substitution') {
           return true;
         }
       }
@@ -1491,22 +1323,22 @@ class TsDynamicStringConstruction extends TsScopeStatic {
       // Check for string concatenation: operands include a string literal
       const children = node.children ?? [];
       const hasStringLiteral = children.some(
-        c => (c.raw as TreeSitterNode).type === 'string'
+        c => (getRawNode(c)).type === 'string'
       );
       return hasStringLiteral;
     }
 
     if (type === 'call_expression') {
       // Check for .concat() calls
-      const text = (node.raw as TreeSitterNode).text;
+      const text = (getRawNode(node)).text;
       if (text.includes('.concat(') || text.includes('?.concat(')) return true;
 
       // Recurse into arguments: query(binaryExpression) where the argument
       // itself is a dynamic string construction.
       for (const child of node.children ?? []) {
-        if ((child.raw as TreeSitterNode).type === 'arguments') {
+        if ((getRawNode(child)).type === 'arguments') {
           for (const arg of child.children ?? []) {
-            const argType = (arg.raw as TreeSitterNode).type;
+            const argType = (getRawNode(arg)).type;
             if (argType === '(' || argType === ')' || argType === ',') continue;
             if (this.isDynamicStringConstruction(arg)) return true;
           }
@@ -1525,7 +1357,7 @@ class TsDynamicStringConstruction extends TsScopeStatic {
    * and non-literal arguments for concat calls.
    */
   getDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
-    const type = (node.raw as TreeSitterNode).type;
+    const type = (getRawNode(node)).type;
     if (type === 'call_expression') {
       const nested = this.getNestedDynamicCallParts(node, sourceCode);
       if (nested) return nested;
@@ -1539,12 +1371,12 @@ class TsDynamicStringConstruction extends TsScopeStatic {
   /** For a non-`.concat()` call, recurse into the first argument that is itself
    *  a dynamic string construction; null when there is none (or it's .concat). */
   private getNestedDynamicCallParts(node: ASTNode, sourceCode: string): DynamicPart[] | null {
-    const text = (node.raw as TreeSitterNode).text;
+    const text = (getRawNode(node)).text;
     if (text.includes('.concat(') || text.includes('?.concat(')) return null;
     for (const child of node.children ?? []) {
-      if ((child.raw as TreeSitterNode).type !== 'arguments') continue;
+      if ((getRawNode(child)).type !== 'arguments') continue;
       for (const arg of child.children ?? []) {
-        const argType = (arg.raw as TreeSitterNode).type;
+        const argType = (getRawNode(arg)).type;
         if (argType === '(' || argType === ')' || argType === ',') continue;
         if (this.isDynamicStringConstruction(arg)) {
           return this.getDynamicParts(arg, sourceCode);
@@ -1558,11 +1390,11 @@ class TsDynamicStringConstruction extends TsScopeStatic {
   private getCallArgParts(node: ASTNode): DynamicPart[] {
     const parts: DynamicPart[] = [];
     for (const child of node.children ?? []) {
-      if ((child.raw as TreeSitterNode).type !== 'arguments') continue;
+      if ((getRawNode(child)).type !== 'arguments') continue;
       for (const arg of child.children ?? []) {
-        const argType = (arg.raw as TreeSitterNode).type;
+        const argType = (getRawNode(arg)).type;
         if (argType === '(' || argType === ')' || argType === ',') continue;
-        const text = (arg.raw as TreeSitterNode).text.trim();
+        const text = (getRawNode(arg)).text.trim();
         const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(text);
         parts.push({ text, isIdentifier: isId, node: arg });
       }
@@ -1574,7 +1406,7 @@ class TsDynamicStringConstruction extends TsScopeStatic {
   private getTemplateStringParts(node: ASTNode, sourceCode: string): DynamicPart[] {
     const parts: DynamicPart[] = [];
     for (const child of node.children ?? []) {
-      if ((child.raw as TreeSitterNode).type !== 'template_substitution') continue;
+      if ((getRawNode(child)).type !== 'template_substitution') continue;
       const text = sourceCode.slice(child.range[0], child.range[1]);
       // Strip the ${ } wrapper to get the inner identifier/expression.
       const inner = text.startsWith('${') ? text.slice(2, -1).trim() : text;
@@ -1583,7 +1415,7 @@ class TsDynamicStringConstruction extends TsScopeStatic {
       // isSafeInterpolation() cross-function safety checks.
       let exprNode: ASTNode | undefined;
       for (const subChild of child.children ?? []) {
-        if ((subChild.raw as TreeSitterNode).type !== 'template_substitution') {
+        if ((getRawNode(subChild)).type !== 'template_substitution') {
           exprNode = subChild;
           break;
         }
@@ -1597,7 +1429,7 @@ class TsDynamicStringConstruction extends TsScopeStatic {
   private getBinaryExpressionParts(node: ASTNode, sourceCode: string): DynamicPart[] {
     const parts: DynamicPart[] = [];
     for (const child of node.children ?? []) {
-      const childType = (child.raw as TreeSitterNode).type;
+      const childType = (getRawNode(child)).type;
       if (childType === 'string' || childType === '+' || childType === 'template_string') continue;
       const text = sourceCode.slice(child.range[0], child.range[1]);
       const isId = /^[$\p{L}_][\p{L}\p{N}_$]*$/u.test(text.trim());
@@ -1648,7 +1480,7 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     scope: ScopeContext,
   ): ResolvedConstant {
     const { scopeRoot, enclosing, ast } = scope;
-    const raw = declNode.raw as TreeSitterNode;
+    const raw = getRawNode(declNode);
     const valueNode = (raw as any).childForFieldName?.('value') as TreeSitterNode | null;
     const declLine = declNode.location.start.line;
     const reassigned = this.hasReassignment(scopeRoot, idName, declLine);
@@ -1737,7 +1569,7 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     scope: ScopeContext,
   ): ResolvedConstant | null {
     const { scopeRoot, enclosing, ast } = scope;
-    const idRaw = identifierNode.raw as TreeSitterNode;
+    const idRaw = getRawNode(identifierNode);
     let tsCurrent: TreeSitterNode | null = idRaw.parent;
     while (tsCurrent) {
       if (tsCurrent.type === 'for_in_statement') {
@@ -1748,7 +1580,7 @@ class TsConstantResolution extends TsDynamicStringConstruction {
             const iterName = right.text;
             let iterDecl = this.resolveDeclaration(scopeRoot, enclosing, ast, iterName);
             if (iterDecl) {
-              const iterRaw = iterDecl.raw as TreeSitterNode;
+              const iterRaw = getRawNode(iterDecl);
               const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
               const iterLine = iterDecl.location.start.line;
               const iterReassigned = this.hasReassignment(scopeRoot, iterName, iterLine)
@@ -1778,13 +1610,13 @@ class TsConstantResolution extends TsDynamicStringConstruction {
   ): boolean {
     const forParent = this.findEnclosingForStatement(declNode);
     if (!forParent) return false;
-    const forRaw = forParent.raw as TreeSitterNode;
+    const forRaw = getRawNode(forParent);
     const iterable = (forRaw as any).childForFieldName?.('right') as TreeSitterNode | null;
     if (!iterable || iterable.type !== 'identifier') return false;
     const iterName = iterable.text;
     let iterDecl = this.resolveDeclaration(scopeRoot, enclosing, ast, iterName);
     if (!iterDecl) return false;
-    const iterRaw = iterDecl.raw as TreeSitterNode;
+    const iterRaw = getRawNode(iterDecl);
     const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
     const iterLine = iterDecl.location.start.line;
     const iterReassigned = this.hasReassignment(scopeRoot, iterName, iterLine)
@@ -1808,7 +1640,7 @@ class TsConstantResolution extends TsDynamicStringConstruction {
       linkedDecl = this.findDeclarationInScope(ast.root, linkedName);
     }
     if (!linkedDecl) return false;
-    const linkedRaw = linkedDecl.raw as TreeSitterNode;
+    const linkedRaw = getRawNode(linkedDecl);
     const linkedValue = (linkedRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
     const linkedLine = linkedDecl.location.start.line;
     const linkedReassigned = this.hasReassignment(scopeRoot, linkedName, linkedLine)
@@ -1841,7 +1673,7 @@ class TsConstantResolution extends TsDynamicStringConstruction {
    *  before its use.  Guards throw on invalid input, so a parameter that has
    *  passed one cannot carry unvalidated attacker data past the check. */
   protected isGuardValidatedParameter(identifierNode: ASTNode, ast: AST): boolean {
-    const idRaw = identifierNode.raw as TreeSitterNode;
+    const idRaw = getRawNode(identifierNode);
     const paramName = idRaw.text;
     const enclosing = this.findEnclosingScope(identifierNode, ast);
     if (!enclosing || enclosing === ast.root) return false;
@@ -1850,7 +1682,7 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     let guarded = false;
     this.walk(enclosing, (node) => {
       if (guarded) return;
-      const raw = node.raw as TreeSitterNode;
+      const raw = getRawNode(node);
       if (raw.type !== 'call_expression') return;
       const fn = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
       if (!fn) return;
@@ -1931,7 +1763,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
     if (!node) return false;
     if (node === SAFE_STRING_NODE) return true;
 
-    const raw = node.raw as TreeSitterNode;
+    const raw = getRawNode(node);
 
     // `seen` is path-based (added on entry, removed on exit) and keyed by the
     // node's unique `id` — NOT `startIndex`, which collides between an
@@ -1991,7 +1823,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
     switch (raw.type) {
       case 'parenthesized_expression': {
         const inner = (node.children ?? []).find(
-          (c) => !['(', ')'].includes((c.raw as TreeSitterNode).type),
+          (c) => !['(', ')'].includes((getRawNode(c)).type),
         );
         return this.isSafeExpression(inner ?? null, ctx);
       }
@@ -2022,7 +1854,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
   /** Identifier safety: a bound parameter, compile-time constant, or validated
    *  parameter at all call sites. */
   private isSafeIdentifier(node: ASTNode, ctx: SafetyContext): boolean {
-    const name = (node.raw as TreeSitterNode).text;
+    const name = (getRawNode(node)).text;
     // A parameter bound at the current call site — recurse into its value.
     if (ctx.paramMap.has(name)) {
       return this.isSafeExpression(ctx.paramMap.get(name) ?? null, ctx);
@@ -2047,10 +1879,10 @@ class TsSafetyAnalysis extends TsConstantResolution {
   /** A template string is safe only if every `${…}` substitution is safe. */
   private isSafeTemplateString(node: ASTNode, ctx: SafetyContext): boolean {
     for (const child of node.children ?? []) {
-      const ct = (child.raw as TreeSitterNode).type;
+      const ct = (getRawNode(child)).type;
       if (ct !== 'template_substitution') continue;
       const inner = (child.children ?? []).find(
-        (c) => (c.raw as TreeSitterNode).type !== 'template_substitution',
+        (c) => (getRawNode(c)).type !== 'template_substitution',
       ) ?? child;
       if (!this.isSafeExpression(inner, ctx)) {
         return false;
@@ -2062,7 +1894,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
   /** An array literal is safe only if every element is safe. */
   private isSafeArray(node: ASTNode, ctx: SafetyContext): boolean {
     for (const child of node.children ?? []) {
-      const ct = (child.raw as TreeSitterNode).type;
+      const ct = (getRawNode(child)).type;
       if (ct === ',' || ct === '[' || ct === ']') continue;
       if (!this.isSafeExpression(child, ctx)) {
         return false;
@@ -2073,7 +1905,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
 
   /** Decide whether a call expression is provably safe to embed in SQL. */
   protected isSafeCallExpression(node: ASTNode, ctx: SafetyContext): boolean {
-    const raw = node.raw as TreeSitterNode;
+    const raw = getRawNode(node);
     const fnNode = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
     if (!fnNode) return false;
 
@@ -2094,7 +1926,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
   /** True when the node is `.join(...)` over `.map(...)` of a static array whose
    *  callback body is safe for every element. */
   protected isSafeMapJoin(node: ASTNode, ctx: SafetyContext): boolean {
-    const raw = node.raw as TreeSitterNode;
+    const raw = getRawNode(node);
     const fnNode = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
     if (!fnNode || fnNode.type !== 'member_expression') return false;
     const joinProp = (fnNode as any).childForFieldName?.('property') as TreeSitterNode | null;
@@ -2126,7 +1958,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
   /** True when the node is a call to a local (in-file) function whose body is
    *  safe under the values passed at this call site. */
   protected isLocalFunctionCallSafe(node: ASTNode, ctx: SafetyContext): boolean {
-    const raw = node.raw as TreeSitterNode;
+    const raw = getRawNode(node);
     const fnNode = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
     if (!fnNode || fnNode.type !== 'identifier') return false;
     const calleeName = fnNode.text;
@@ -2145,7 +1977,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
   /** Check a function's body returns only safe values, under the `paramMap`
    *  already bound in `ctx` to the values passed at the call site. */
   protected isBodySafeUnderParams(fnNode: ASTNode, ctx: SafetyContext): boolean {
-    const raw = fnNode.raw as TreeSitterNode;
+    const raw = getRawNode(fnNode);
     const body = (raw as any).childForFieldName?.('body') as TreeSitterNode | null;
     if (!body) return false;
 
@@ -2173,7 +2005,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
    *  in-file call site of that function passes a provably-safe value for that
    *  parameter position. */
   protected isParamSafeAtAllCallSites(identifierNode: ASTNode, ctx: SafetyContext): boolean {
-    const idRaw = identifierNode.raw as TreeSitterNode;
+    const idRaw = getRawNode(identifierNode);
     const paramName = idRaw.text;
     const enclosing = this.findEnclosingScope(identifierNode, ctx.ast);
     if (!enclosing || enclosing === ctx.ast.root) return false;
@@ -2195,7 +2027,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
   /** True when the identifier names a local variable whose initializer is a
    *  provably-safe expression and which is never reassigned. */
   protected isDeclarationValueSafe(identifierNode: ASTNode, ctx: SafetyContext): boolean {
-    const idRaw = identifierNode.raw as TreeSitterNode;
+    const idRaw = getRawNode(identifierNode);
     const name = idRaw.text;
     const enclosing = this.findEnclosingScope(identifierNode, ctx.ast);
     const scopeRoot = enclosing ?? ctx.ast.root;
@@ -2208,7 +2040,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
     const reassigned = this.hasReassignment(scopeRoot, name, declLine)
       || (enclosing && enclosing !== ctx.ast.root ? this.hasReassignment(ctx.ast.root, name, declLine) : false);
     if (reassigned) return false;
-    const declRaw = declNode.raw as TreeSitterNode;
+    const declRaw = getRawNode(declNode);
     const valueRaw = (declRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
     if (!valueRaw) return false;
     return this.isSafeExpression(this.wrapRaw(valueRaw), ctx);

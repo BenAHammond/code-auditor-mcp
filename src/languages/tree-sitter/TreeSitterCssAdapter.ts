@@ -18,6 +18,7 @@
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import { getParser, parseWithRecovery } from './parser.js';
 import { toASTNode, toSourceLocation } from './converter.js';
+import { getRawNode } from './rawNode.js';
 import type {
   AST,
   ASTNode,
@@ -118,11 +119,6 @@ class CssAstSupport extends CssParserCore {
     return node.children ?? [];
   }
 
-  getSiblings(node: ASTNode): ASTNode[] {
-    if (!node.parent?.children) return [];
-    return node.parent.children.filter((c) => c !== node);
-  }
-
   // -- Node Information -----------------------------------------------------
 
   getNodeType(node: ASTNode): string {
@@ -134,7 +130,7 @@ class CssAstSupport extends CssParserCore {
   }
 
   getNodeName(node: ASTNode): string | null {
-    const n = node.raw as TreeSitterNode;
+    const n = getRawNode(node);
 
     // CSS rule sets don't have named children in the tree-sitter sense,
     // but we can extract meaningful names for certain node types.
@@ -162,10 +158,6 @@ class CssAstSupport extends CssParserCore {
     }
   }
 
-  getNodeLocation(node: ASTNode): SourceLocation {
-    return node.location;
-  }
-
   private walk(node: ASTNode, visitor: (node: ASTNode) => void): void {
     visitor(node);
     if (node.children) {
@@ -176,7 +168,7 @@ class CssAstSupport extends CssParserCore {
   }
 
   private matchesPattern(node: ASTNode, pattern: NodePattern): boolean {
-    const syntaxNode = node.raw as TreeSitterNode;
+    const syntaxNode = getRawNode(node);
 
     if (pattern.type !== undefined) {
       const types = Array.isArray(pattern.type) ? pattern.type : [pattern.type];
@@ -252,23 +244,7 @@ class CssLanguageSupport extends CssAstSupport {
     return false;
   }
 
-  isInterface(_node: ASTNode): boolean {
-    return false;
-  }
-
-  isImport(_node: ASTNode): boolean {
-    return false;
-  }
-
-  isExport(_node: ASTNode): boolean {
-    return false;
-  }
-
   isLoop(_node: ASTNode): boolean {
-    return false;
-  }
-
-  isConditional(_node: ASTNode): boolean {
     return false;
   }
 
@@ -277,10 +253,6 @@ class CssLanguageSupport extends CssAstSupport {
   }
 
   // -- Advanced Features ----------------------------------------------------
-
-  getTypeInfo(_node: ASTNode): string | null {
-    return null;
-  }
 
   getDocumentation(_node: ASTNode): string | null {
     // CSS/SCSS uses comments, but they're not attached to any particular node
@@ -312,36 +284,6 @@ export class TreeSitterCssAdapter extends CssLanguageSupport implements Language
    * Extract interfaces.
    */
   extractInterfaces(_ast: AST): InterfaceInfo[] {
-    return [];
-  }
-
-  // -- Optional: Raw imports ------------------------------------------------
-
-  /**
-   * Extract raw imports.
-   * @param _content
-   * @param _filePath
-   * @returns
-   */
-  extractRawImports(
-    _filePath: string,
-    _content: string,
-  ): Array<{
-    moduleSpecifier: string;
-    isStatic: boolean;
-    isDynamic: boolean;
-    isRequire: boolean;
-    line: number;
-  }> {
-    return [];
-  }
-
-  // -- Optional: Exported symbols -------------------------------------------
-
-  /**
-   * Extract exported symbols.
-   */
-  extractExportedSymbols(_ast: AST): Array<{ name: string; line: number }> {
     return [];
   }
 }

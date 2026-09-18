@@ -43,7 +43,7 @@ async function extractDeclarations(css: string, fileName = 'test.css'): Promise<
 async function extractClasses(css: string, fileName = 'test.css'): Promise<StyleClassUsage[]> {
   const adapter = registry.getAdapterForFile(fileName);
   const ast = await adapter.parse(fileName, css);
-  return extractClassUsageFromCSSAst(ast, adapter, fileName);
+  return extractClassUsageFromCSSAst(ast, adapter, fileName, css);
 }
 
 /** Find a declaration by property name. */

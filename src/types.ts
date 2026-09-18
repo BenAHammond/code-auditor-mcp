@@ -915,13 +915,6 @@ export interface FileInfo {
   lastModified: Date;
 }
 
-export interface ImportInfo {
-  moduleSpecifier: string;
-  importedNames: string[];
-  isTypeOnly: boolean;
-  line: number;
-}
-
 export interface ExportInfo {
   name: string;
   isDefault: boolean;
@@ -1522,7 +1515,14 @@ export interface SchemaPattern {
 export interface SchemaUsage {
   tableName: string;
   filePath: string;
-  functionName: string;
+  // Amendment A — identity is a coordinate, not a name. functionName holds the
+  // declaration name when present, null for anonymous handlers; the coordinate
+  // columns disambiguate when the name is null. 'top-level' is still a real
+  // value for usages outside any function; those usages carry their own
+  // coordinate (not NULL) so same-file top-level usages stay distinct keys.
+  functionName: string | null;
+  functionStartLine?: number | null;
+  functionStartColumn?: number | null;
   usageType: 'select' | 'insert' | 'update' | 'delete' | 'create' | 'reference';
   line: number;
   column?: number;

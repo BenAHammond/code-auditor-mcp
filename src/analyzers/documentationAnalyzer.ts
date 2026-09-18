@@ -6,8 +6,7 @@
  */
 
 import type { ASTNode, AST, LanguageAdapter } from '../languages/types.js';
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { walkAST, getLineAndColumn, isExported as adapterIsExported } from '../languages/adapterBridge.js';
+import { walkAST, getLineAndColumn, getNodeText, isExported as adapterIsExported } from '../languages/adapterBridge.js';
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import {
   Violation,
@@ -31,9 +30,6 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Get raw text from a tree-sitter node stored on ASTNode.raw. */
-const rawText = (node: ASTNode): string => (node.raw as TreeSitterNode)?.text ?? '';
 
 /** Find the first child of a given type. */
 const findChild = (node: ASTNode, type: string): ASTNode | undefined =>
@@ -126,12 +122,12 @@ export interface DocumentationMetrics {
  * Looks for comment nodes at the top of the file containing
  * @fileoverview or @purpose.
  */
-function getFilePurpose(rootNode: ASTNode): string | null {
+function getFilePurpose(rootNode: ASTNode, sourceCode: string): string | null {
   if (!rootNode.children) return null;
 
   for (const child of rootNode.children) {
     if (child.type === 'comment') {
-      const text = rawText(child);
+      const text = getNodeText(child, sourceCode);
       if (text.includes('@fileoverview') || text.includes('@purpose')) {
         return text.replace(/\/\*\*|\*\/|\s*\*\s?/g, ' ').replace(/\s+/g, ' ').trim();
       }
@@ -212,6 +208,7 @@ interface DocScanContext {
   adapter: LanguageAdapter | null;
   config: DocumentationAnalyzerConfig;
   fileName: string;
+  sourceCode: string;
   violations: Violation[];
   counters: DocCounters;
 }
@@ -342,7 +339,7 @@ function checkComponentDocumentation(node: ASTNode, ctx: DocScanContext): void {
   if (hasGoodDoc) {
     counters.documentedComponents++;
   } else if (config.requireComponentDocs) {
-    const componentName = getComponentName(node) || 'Component';
+    const componentName = getComponentName(node, ctx.sourceCode) || 'Component';
     const position = getNodePosition(node);
 
     violations.push({
@@ -387,8 +384,9 @@ function checkFileDocumentation(
   filePath: string,
   config: DocumentationAnalyzerConfig,
   violations: Violation[],
+  sourceCode: string,
 ): boolean {
-  const hasFileDocs = !!getFilePurpose(ast);
+  const hasFileDocs = !!getFilePurpose(ast, sourceCode);
   if (config.requireFileDocs && !hasFileDocs) {
     violations.push({
       file: filePath,
@@ -418,15 +416,15 @@ function analyzeFileDocumentation(
   let totalFunctions = 0;
   let totalComponents = 0;
   const counters = createDocCounters();
-  const hasFileDocs = checkFileDocumentation(ast, filePath, config, violations);
+  const hasFileDocs = checkFileDocumentation(ast, filePath, config, violations, sourceCode);
 
-  const ctx: DocScanContext = { adapter, config, fileName: filePath, violations, counters };
+  const ctx: DocScanContext = { adapter, config, fileName: filePath, sourceCode, violations, counters };
   walkAST(ast, (node: ASTNode) => {
     if (isFunctionLikeNode(node)) {
       totalFunctions++;
       checkFunctionDocumentation(node, ctx);
     }
-    if (isReactComponent(node)) {
+    if (isReactComponent(node, sourceCode)) {
       totalComponents++;
       checkComponentDocumentation(node, ctx);
     }

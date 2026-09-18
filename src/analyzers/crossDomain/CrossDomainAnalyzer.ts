@@ -39,9 +39,34 @@ import { makeVisitorStatus } from '../../pipeline.js';
 interface SchemaUsageRow {
   table_name: string;
   file_path: string;
-  function_name: string;
+  function_name: string | null;
+  function_start_line: number | null;
+  function_start_column: number | null;
   line: number;
   usage_type: string;
+}
+
+/**
+ * Amendment A — schema_usage identity is a coordinate, not a name. The display
+ * label for a row is the declaration name when present, else a coordinate
+ * fallback (`fn:<line>:<column>`) for anonymous handlers, else `top-level`.
+ * Mirrors `functionIdentityLabel` in the schema analyzer; kept local here
+ * because the cross-domain analyzer is SQL-only and does not import the AST
+ * helper.
+ *
+ * A top-level row carries its own coordinate (`function_name = 'top-level'` and a
+ * non-null `function_start_line`/`function_start_column`), so the coordinate —
+ * not the `top-level` sentinel — is the label: two top-level usages in the same
+ * file stay distinct instead of collapsing into one absent-coordinate bucket.
+ */
+function usageIdentityLabel(
+  functionName: string | null,
+  startLine: number | null,
+  startColumn: number | null,
+): string {
+  if (startLine == null) return 'top-level';
+  if (functionName === 'top-level') return `fn:${startLine}:${startColumn}`;
+  return functionName ?? `fn:${startLine}:${startColumn}`;
 }
 
 /** Chunked IN-clause bound (SQLite max host params, conservative). */
@@ -399,7 +424,7 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
   const fp = scope.apply('file_path');
 
   const rows = indexHandle
-    .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
+    .query(`SELECT DISTINCT table_name, file_path, function_name, function_start_line, function_start_column, line, usage_type
        FROM schema_usage
        WHERE usage_type IN ('insert', 'update', 'delete', 'create')
          ${fp.clause}
@@ -423,7 +448,7 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
       message: `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
       rule: 'cross-domain/written-never-read',
       analyzer: ANALYZER_NAME,
-      functionName: row.function_name,
+      functionName: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
     });
   }
 
@@ -443,7 +468,7 @@ function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Vio
   const fp = scope.apply('file_path');
 
   const rows = indexHandle
-    .query(`SELECT DISTINCT table_name, file_path, function_name, line, usage_type
+    .query(`SELECT DISTINCT table_name, file_path, function_name, function_start_line, function_start_column, line, usage_type
        FROM schema_usage
        WHERE usage_type = 'select'
          ${fp.clause}
@@ -466,7 +491,7 @@ function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Vio
       message: `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
       rule: 'cross-domain/read-never-written',
       analyzer: ANALYZER_NAME,
-      functionName: row.function_name,
+      functionName: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
     });
   }
 
@@ -492,14 +517,19 @@ function detectTransactionBoundaryRisk(
 
   // Query schema_usage directly (no JOIN on functions) so this detector
   // works whether or not deepSync has populated the functions table.
+  // Amendment A — group by the coordinate identity, not the display name, so
+  // distinct anonymous handlers on the same line (or different lines) do not
+  // collapse into one pseudo-function.
   const writerRows = indexHandle
-    .query(`SELECT su.function_name, su.file_path, su.table_name, MIN(su.line) as line
+    .query(`SELECT su.function_name, su.function_start_line, su.function_start_column, su.file_path, su.table_name, MIN(su.line) as line
        FROM schema_usage su
        WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
        ${fp.clause}
-       GROUP BY su.function_name, su.file_path, su.table_name
-       ORDER BY su.function_name, su.file_path`, fp.params) as Array<{
-    function_name: string;
+       GROUP BY su.file_path, su.function_start_line, su.function_start_column, su.table_name
+       ORDER BY su.file_path, su.function_start_line, su.function_start_column`, fp.params) as Array<{
+    function_name: string | null;
+    function_start_line: number | null;
+    function_start_column: number | null;
     file_path: string;
     table_name: string;
     line: number;
@@ -512,13 +542,21 @@ function detectTransactionBoundaryRisk(
   return flagTransactionBoundaryWrites(funcWrites, indexHandle, graph, txnTableMax);
 }
 
-/** Group written tables by (file_path, function_name) key. */
+/** Group written tables by coordinate-identity key (display name is the label). */
 function groupWriterTables(
-  writerRows: Array<{ function_name: string; file_path: string; table_name: string; line: number }>,
+  writerRows: Array<{
+    function_name: string | null;
+    function_start_line: number | null;
+    function_start_column: number | null;
+    file_path: string;
+    table_name: string;
+    line: number;
+  }>,
 ): Map<string, FuncWriteEntry> {
   const funcWrites = new Map<string, FuncWriteEntry>();
   for (const row of writerRows) {
-    const key = `${row.file_path}::${row.function_name}`;
+    const label = usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column);
+    const key = `${row.file_path}::${label}`;
     const entry = funcWrites.get(key);
     if (entry) {
       entry.tables.add(row.table_name);

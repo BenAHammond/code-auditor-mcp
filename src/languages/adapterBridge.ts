@@ -14,6 +14,7 @@ import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import type { AST, ASTNode, SourceLocation } from './types.js';
 import { LanguageRegistry } from './LanguageRegistry.js';
 import { toASTNode, isFunctionType, isClassType, isLoopType, isConditionalType } from './tree-sitter/converter.js';
+import { getRawNode } from './tree-sitter/rawNode.js';
 import { getParser, isInitialized } from './tree-sitter/parser.js';
 
 // ---------------------------------------------------------------------------
@@ -284,7 +285,7 @@ const MODIFIER_KEYWORDS = new Set([
  * @returns
  */
 export function hasModifier(node: ASTNode, modifier: string): boolean {
-  const raw = node.raw as TreeSitterNode;
+  const raw = getRawNode(node);
   if (!raw?.children) return false;
 
   for (const child of raw.children) {
@@ -303,7 +304,7 @@ export function isExported(node: ASTNode): boolean {
   if (hasModifier(node, 'export')) return true;
 
   // Check if the parent is an export_statement
-  const raw = node.raw as TreeSitterNode;
+  const raw = getRawNode(node);
   if (raw?.parent?.type === 'export_statement') return true;
 
   // Walk up to check for export_statement ancestor
@@ -335,7 +336,7 @@ export function isAsync(node: ASTNode): boolean {
  * @returns
  */
 export function getNodeName(node: ASTNode): string | null {
-  const raw = node.raw as TreeSitterNode;
+  const raw = getRawNode(node);
   if (!raw) return null;
 
   // Check for a direct name child
@@ -354,6 +355,28 @@ export function getNodeName(node: ASTNode): string | null {
   return null;
 }
 
+/**
+ * Resolve a tree-sitter field name to its backing `ASTNode` child.
+ *
+ * Field children are always named nodes, so they already appear in
+ * `node.children`; the field→child mapping is resolved through the raw node
+ * (which never leaves this module), and the matching `ASTNode` is returned so
+ * callers can read it via `getNodeText`/`getNodeName` without holding a
+ * parser-specific node. Returns `undefined` when the field is absent.
+ */
+export function getFieldNode(node: ASTNode, field: string): ASTNode | undefined {
+  const raw = getRawNode(node);
+  const rawChild = typeof raw?.childForFieldName === 'function'
+    ? raw.childForFieldName(field)
+    : null;
+  if (!rawChild) return undefined;
+  // web-tree-sitter returns fresh JS wrappers per access, so match the field
+  // child against `node.children` by node id (stable within a tree) rather
+  // than object identity.
+  const rawChildId = rawChild.id;
+  return node.children?.find((c) => getRawNode(c).id === rawChildId);
+}
+
 // ---------------------------------------------------------------------------
 // Parameter count
 // ---------------------------------------------------------------------------
@@ -364,7 +387,7 @@ export function getNodeName(node: ASTNode): string | null {
  * @returns
  */
 export function getParameterCount(node: ASTNode): number {
-  const raw = node.raw as TreeSitterNode;
+  const raw = getRawNode(node);
   if (!raw?.namedChildren) return 0;
 
   for (const child of raw.namedChildren) {
@@ -391,7 +414,7 @@ export function calculateComplexity(node: ASTNode): number {
   let complexity = 1;
 
   // Walk the tree-sitter subtree
-  const raw = node.raw as TreeSitterNode;
+  const raw = getRawNode(node);
 
   function count(node: TreeSitterNode): void {
     if (LOOP_TYPES.has(node.type) || CONDITIONAL_TYPES.has(node.type)) {
@@ -428,7 +451,7 @@ export function calculateComplexity(node: ASTNode): number {
  * @returns
  */
 export function getFunctionBody(node: ASTNode, sourceCode: string): string | undefined {
-  const raw = node.raw as TreeSitterNode;
+  const raw = getRawNode(node);
   if (!raw) return undefined;
 
   const body = raw.namedChildren.find((c: TreeSitterNode) =>
@@ -472,7 +495,7 @@ export function extractImports(
   const importNodes = findNodes(ast.root, (n) => n.type === 'import_statement');
 
   for (const imp of importNodes) {
-    const raw = imp.raw as TreeSitterNode;
+    const raw = getRawNode(imp);
     const moduleSpecifier = extractModuleSpecifier(raw);
 
     // Get import clause

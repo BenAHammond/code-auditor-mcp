@@ -132,7 +132,7 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
 
     // File-level documentation header check — R1.5 (defaults OFF)
-    violations.push(...checkFileHeader(ast, adapter, finalConfig, fileHeaders));
+    violations.push(...checkFileHeader(ast, adapter, finalConfig, fileHeaders, sourceCode));
 
     // Per-file scan context for the section analyzers below (Spec 34 bundling).
     const scan: DocScanContext = { adapter, sourceCode, config: finalConfig, scope };
@@ -214,7 +214,8 @@ function checkFileHeader(
   ast: AST,
   adapter: LanguageAdapter,
   config: DocumentationAnalyzerConfig,
-  fileHeaders: boolean
+  fileHeaders: boolean,
+  sourceCode: string
 ): Violation[] {
   const violations: Violation[] = [];
   if (!fileHeaders) return violations;
@@ -222,7 +223,7 @@ function checkFileHeader(
   const skipGlobs = config.headerSkipGlobs ?? HEADER_SKIP_GLOBS_DEFAULT;
   if (matchesAnyGlob(ast.filePath, skipGlobs)) return violations;
 
-  const fileDoc = getFileDocumentation(ast, adapter);
+  const fileDoc = getFileDocumentation(ast, adapter, sourceCode);
   // Spec-49 — a file header is a leading comment that documents the file's
   // *purpose* (a @fileoverview/@file/@module/@overview/@purpose marker), not any
   // comment of ≥N characters. A license block is not a header.
@@ -726,14 +727,14 @@ function getFirstChildOfType(node: ASTNode, types: string[]): ASTNode | null {
 /**
  * Get file-level documentation (usually at the top).
  */
-function getFileDocumentation(ast: AST, adapter: LanguageAdapter): string | null {
+function getFileDocumentation(ast: AST, adapter: LanguageAdapter, sourceCode: string): string | null {
   const firstChild = ast.root.children?.[0];
   if (!firstChild) return null;
   // When the leading node is itself a comment, that comment IS the candidate
   // file header. `getDocumentation` looks for a comment *preceding* its
   // argument, so passing the comment node itself would wrongly return null.
   if (firstChild.type === 'comment') {
-    const text = (firstChild.raw as { text?: string } | undefined)?.text;
+    const text = adapter.getNodeText(firstChild, sourceCode);
     return text ? text.trim() : null;
   }
   return adapter.getDocumentation(firstChild);

@@ -13,17 +13,12 @@
  */
 
 import type { ASTNode } from '../languages/types.js';
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
+import { getNodeText } from '../languages/adapterBridge.js';
 import { EnhancedFunctionMetadata } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
-function rawText(node: ASTNode): string {
-  return (node.raw as TreeSitterNode)?.text ?? '';
-}
 
 /** Find the first child of a given type. */
 function findChildOfType(node: ASTNode, type: string): ASTNode | undefined {
@@ -224,7 +219,7 @@ function parseTag(tagName: string, content: string): ParsedTag {
  * @param node The AST node to extract JSDoc from
  * @returns Extracted JSDoc information
  */
-export function extractJSDoc(node: ASTNode): JSDocInfo {
+export function extractJSDoc(node: ASTNode, sourceCode: string): JSDocInfo {
   const jsDocInfo: JSDocInfo = {
     tags: {}
   };
@@ -235,7 +230,7 @@ export function extractJSDoc(node: ASTNode): JSDocInfo {
 
   // Process each comment's text
   for (const comment of comments) {
-    const commentText = rawText(comment);
+    const commentText = getNodeText(comment, sourceCode);
     if (!commentText) continue;
 
     // Only process JSDoc-style comments (/** ... */)
@@ -320,17 +315,18 @@ function applyParsedTag(tag: ParsedTag, jsDocInfo: JSDocInfo): void {
  * @returns JSDoc information formatted for EnhancedFunctionMetadata
  */
 export function extractFunctionJSDoc(
-  node: ASTNode
+  node: ASTNode,
+  sourceCode: string
 ): EnhancedFunctionMetadata['jsDoc'] {
   // Also check the parent for JSDoc that might be attached to a variable declarator
   // (e.g., const x = () => {} where JSDoc is above the variable statement)
-  let jsDocInfo = extractJSDoc(node);
+  let jsDocInfo = extractJSDoc(node, sourceCode);
 
   // If no JSDoc found directly, check parent (for variable declarations with JSDoc)
   if (!jsDocInfo.description && !jsDocInfo.params?.length && !jsDocInfo.returns &&
       node.parent && (node.parent.type === 'variable_declarator' ||
         node.parent.type === 'lexical_declaration' || node.parent.type === 'variable_declaration')) {
-    jsDocInfo = extractJSDoc(node.parent);
+    jsDocInfo = extractJSDoc(node.parent, sourceCode);
   }
 
   // Convert to EnhancedFunctionMetadata format
@@ -357,9 +353,10 @@ export function extractFunctionJSDoc(
  * @returns Array of parameter information
  */
 export function extractParameters(
-  node: ASTNode
+  node: ASTNode,
+  sourceCode: string
 ): EnhancedFunctionMetadata['parameters'] {
-  const jsDocInfo = extractJSDoc(node);
+  const jsDocInfo = extractJSDoc(node, sourceCode);
   const parameters: EnhancedFunctionMetadata['parameters'] = [];
 
   // Extract parameters from formal_parameters child
@@ -380,7 +377,7 @@ export function extractParameters(
     }
     if (!nameNode) continue;
 
-    const paramName = rawText(nameNode);
+    const paramName = getNodeText(nameNode, sourceCode);
 
     // Check for optional (has '?' token)
     let isOptional = param.type === 'optional_parameter';
@@ -391,7 +388,7 @@ export function extractParameters(
     if (eqIndex !== undefined && eqIndex >= 0) {
       const defaultNode = param.children![eqIndex + 1];
       if (defaultNode) {
-        defaultValue = rawText(defaultNode);
+        defaultValue = getNodeText(defaultNode, sourceCode);
         isOptional = true;
       }
     }
@@ -404,7 +401,7 @@ export function extractParameters(
     // Get type annotation
     const typeAnnot = findChildOfType(param, 'type_annotation');
     if (typeAnnot) {
-      paramInfo.type = rawText(typeAnnot).replace(/^:\s*/, '').trim();
+      paramInfo.type = getNodeText(typeAnnot, sourceCode).replace(/^:\s*/, '').trim();
     }
 
     if (defaultValue) {
@@ -452,15 +449,15 @@ export function extractParameters(
  * @param node Function-like declaration AST node
  * @returns Return type string or undefined
  */
-export function extractReturnType(node: ASTNode): string | undefined {
+export function extractReturnType(node: ASTNode, sourceCode: string): string | undefined {
   // First try to get the TypeScript return type annotation
   const typeAnnot = findChildOfType(node, 'type_annotation');
   if (typeAnnot) {
-    return rawText(typeAnnot).replace(/^:\s*/, '').trim();
+    return getNodeText(typeAnnot, sourceCode).replace(/^:\s*/, '').trim();
   }
 
   // Fall back to JSDoc return type
-  const jsDocInfo = extractJSDoc(node);
+  const jsDocInfo = extractJSDoc(node, sourceCode);
   if (jsDocInfo.returns?.type) {
     return jsDocInfo.returns.type;
   }
@@ -473,9 +470,9 @@ export function extractReturnType(node: ASTNode): string | undefined {
  * @param node The AST node
  * @returns True if the function has JSDoc
  */
-export function hasJSDoc(node: ASTNode): boolean {
+export function hasJSDoc(node: ASTNode, sourceCode: string): boolean {
   const comments = getPrecedingComments(node);
-  return comments.some(c => rawText(c).startsWith('/**'));
+  return comments.some(c => getNodeText(c, sourceCode).startsWith('/**'));
 }
 
 /**
@@ -483,8 +480,8 @@ export function hasJSDoc(node: ASTNode): boolean {
  * @param node The AST node
  * @returns Map of tag names to their values
  */
-export function extractAllJSDocTags(node: ASTNode): Record<string, string[]> {
-  const jsDocInfo = extractJSDoc(node);
+export function extractAllJSDocTags(node: ASTNode, sourceCode: string): Record<string, string[]> {
+  const jsDocInfo = extractJSDoc(node, sourceCode);
   const allTags: Record<string, string[]> = { ...jsDocInfo.tags };
 
   // Add structured tags to the result

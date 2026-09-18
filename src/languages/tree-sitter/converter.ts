@@ -7,6 +7,7 @@
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import type { ASTNode, SourceLocation } from '../types.js';
+import { registerRawNode } from './rawNode.js';
 
 // ---------------------------------------------------------------------------
 // Conversion
@@ -30,8 +31,8 @@ export function toASTNode(
     type: node.type,
     range: [node.startIndex, node.endIndex],
     location: toSourceLocation(node),
-    raw: node,
   };
+  registerRawNode(astNode, node);
 
   if (parent) {
     astNode.parent = parent;

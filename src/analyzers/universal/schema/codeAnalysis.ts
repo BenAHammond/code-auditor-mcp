@@ -644,7 +644,7 @@ function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray)
     return;
   }
 
-  const enclosingFn = node ? findEnclosingFunctionName(node, adapter) : 'top-level';
+  const enclosingFn = node ? functionIdentityLabel(findEnclosingFunctionIdentity(node, adapter, ast.filePath)) : 'top-level';
 
   const baseSymbol = `${enclosingFn}:dynamic-sql-construction`;
   const ordinal = (symbolOrdinals.get(baseSymbol) ?? 0) + 1;
@@ -1353,66 +1353,84 @@ export function findClosestNodeAt(
 }
 
 /**
- * Walk up the AST from a node to find the enclosing function or method name.
- * Matches the same scheme as UniversalDataAccessAnalyzer.findEnclosingFunctionName.
+ * Identity of the function enclosing a node: its 1-based start coordinate plus
+ * an optional declaration name. Function identity is a *coordinate*, not a name
+ * — the source position is what uniquely and stably distinguishes one anonymous
+ * arrow from another on the same line, where a name (or the full body text)
+ * cannot. Display name is a separate, nullable field.
  *
- * @param node The node to start the walk from.
- * @param adapter The language adapter for the file's syntax.
- * @returns The enclosing function/method name, or "top-level".
+ * The coordinate is never null: a top-level usage (outside any function) carries
+ * its own start coordinate rather than NULL, so two top-level usages in the same
+ * file are distinct keys instead of collapsing into one absent-coordinate bucket.
+ * `filePath` makes the coordinate self-contained across files.
  */
-export function findEnclosingFunctionName(node: ASTNode, adapter: LanguageAdapter): string {
+export interface FunctionIdentity {
+  /** Absolute path of the source file — makes the coordinate self-contained. */
+  filePath: string;
+  /** Enclosing function's 1-based start line; for a top-level usage, the usage's own line. */
+  startLine: number;
+  /** Enclosing function's 1-based start column; for a top-level usage, the usage's own column. */
+  startColumn: number;
+  /** Declaration name (e.g. `function foo`, `method bar`); null when anonymous or top level. */
+  name: string | null;
+  /** True when the node is outside any function (the coordinate is then the usage's own). */
+  topLevel: boolean;
+}
+
+const FUNCTION_NODE_TYPES = new Set([
+  'arrow_function',
+  'function_declaration',
+  'function_expression',
+  'generator_function_declaration',
+  'generator_function_expression',
+  'method_definition',
+]);
+
+/**
+ * Walk up the AST from `node` to the enclosing function or method and return its
+ * identity (start coordinate + nullable declaration name). A top-level identity
+ * means the node is outside any function; it carries the node's own coordinate
+ * (so top-level usages stay distinct) rather than NULL.
+ *
+ * This is the single definition — UniversalDataAccessAnalyzer imports it rather
+ * than carrying a divergent copy (the old copies differed only in whether the
+ * walk started at `node` or `parent(node)`, which is equivalent for every real
+ * call site, all of which hand in a leaf or call node, never a function node).
+ */
+export function findEnclosingFunctionIdentity(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  filePath: string,
+): FunctionIdentity {
   let current: ASTNode | null = node;
   while (current) {
     const type = adapter.getNodeType(current);
-    if (
-      type === 'arrow_function' ||
-      type === 'function_declaration' ||
-      type === 'function_expression' ||
-      type === 'generator_function_declaration' ||
-      type === 'generator_function_expression' ||
-      type === 'method_definition'
-    ) {
-      const name = getNodeName(current, adapter);
-      if (name) return name;
-    }
-    if (adapter.isMethod(current)) {
-      const name = getNodeName(current, adapter);
-      if (name) return name;
+    if (FUNCTION_NODE_TYPES.has(type) || adapter.isMethod(current)) {
+      return {
+        filePath,
+        startLine: current.location.start.line,
+        startColumn: current.location.start.column,
+        name: adapter.getNodeName(current),
+        topLevel: false,
+      };
     }
     current = adapter.getParent(current);
   }
-  return 'top-level';
+  return {
+    filePath,
+    startLine: node.location.start.line,
+    startColumn: node.location.start.column,
+    name: null,
+    topLevel: true,
+  };
 }
 
 /**
- * Extract a human-readable name from an AST node.
- * Matches the same scheme as UniversalDataAccessAnalyzer.getNodeName.
- *
- * @param node The AST node.
- * @param adapter The language adapter for the file's syntax.
- * @returns The node's name, or "" when none is found.
+ * Stable symbol component for an identity: the declaration name when present,
+ * else a coordinate fallback (`fn:<line>:<column>`), else "top-level". Used by
+ * analyzers that key symbols on the enclosing function; never source text.
  */
-export function getNodeName(node: ASTNode, adapter: LanguageAdapter): string {
-  // Try explicit name/text on the converted ASTNode (some adapters set it)
-  if ((node as any).name && typeof (node as any).name === 'string') {
-    return (node as any).name;
-  }
-  if ((node as any).text && typeof (node as any).text === 'string') {
-    return (node as any).text;
-  }
-  // Fall back to the raw tree-sitter node's text content (leaf identifiers etc.)
-  const rawText = (node.raw as any)?.text;
-  if (typeof rawText === 'string' && rawText.length > 0) {
-    return rawText;
-  }
-  if (node.children) {
-    for (const child of node.children) {
-      const childType = adapter.getNodeType(child);
-      if (childType === 'identifier' || childType === 'property_identifier') {
-        const name = getNodeName(child, adapter);
-        if (name) return name;
-      }
-    }
-  }
-  return '';
+export function functionIdentityLabel(id: FunctionIdentity): string {
+  if (id.topLevel) return 'top-level';
+  return id.name ?? `fn:${id.startLine}:${id.startColumn}`;
 }

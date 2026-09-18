@@ -10,11 +10,9 @@
  * ts.SourceFile/ts.Node.
  */
 
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import { promises as fs } from 'fs';
 import {
   parseFile,
-  extractImports,
   getNodeText,
   getLineAndColumn,
   hasModifier,
@@ -43,14 +41,6 @@ export interface ParseResult {
 // Import / Export information (legacy types from astParser.ts)
 // ---------------------------------------------------------------------------
 
-export interface ImportInfo {
-  moduleSpecifier: string;
-  importedNames: string[];
-  isDefaultImport: boolean;
-  isNamespaceImport: boolean;
-  line: number;
-}
-
 export interface ExportInfo {
   name: string;
   type: 'function' | 'class' | 'interface' | 'type' | 'const' | 'let' | 'var' | 'enum';
@@ -72,7 +62,7 @@ export async function parseTypeScriptFile(filePath: string): Promise<ParseResult
 
     if (!ast) {
       return {
-        ast: { root: { type: 'program', range: [0, 0], location: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }, raw: null }, language: 'typescript', filePath, errors: [] },
+        ast: { root: { type: 'program', range: [0, 0], location: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } } }, language: 'typescript', filePath, errors: [] },
         errors: [{ message: `Unsupported file type: ${filePath}` }],
       };
     }
@@ -88,36 +78,10 @@ export async function parseTypeScriptFile(filePath: string): Promise<ParseResult
     };
   } catch (error) {
     return {
-      ast: { root: { type: 'program', range: [0, 0], location: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } }, raw: null }, language: 'typescript', filePath, errors: [] },
+      ast: { root: { type: 'program', range: [0, 0], location: { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } } }, language: 'typescript', filePath, errors: [] },
       errors: [{ message: `Failed to read file: ${error}` }],
     };
   }
-}
-
-// ---------------------------------------------------------------------------
-// Extract imports
-// ---------------------------------------------------------------------------
-
-/**
- * Extract import statements from an AST.
- */
-export function getImports(ast: AST): ImportInfo[] {
-  const results: ImportInfo[] = [];
-  const content = getSourceContent(ast);
-
-  if (!content) return results;
-
-  const rawImports = extractImports(ast.filePath, content);
-  for (const imp of rawImports) {
-    results.push({
-      moduleSpecifier: imp.moduleSpecifier,
-      importedNames: imp.importedNames,
-      isDefaultImport: imp.isDefaultImport,
-      isNamespaceImport: imp.isNamespaceImport,
-      line: imp.line,
-    });
-  }
-  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,51 +91,48 @@ export function getImports(ast: AST): ImportInfo[] {
 /**
  * Extract export statements from an AST.
  */
-export function getExports(ast: AST): ExportInfo[] {
+export function getExports(ast: AST, sourceCode: string): ExportInfo[] {
   const exports: ExportInfo[] = [];
 
   // Walk the AST to find exported nodes
   function visit(node: ASTNode): void {
-    const raw = node.raw as TreeSitterNode;
-    if (!raw) return;
-
     // export_statement — covers "export { x }", "export default X", "export const X"
     if (node.type === 'export_statement') {
-      for (const child of raw.namedChildren) {
-        const line = child.startPosition.row + 1;
+      for (const child of node.children ?? []) {
+        const line = child.location?.start?.line ?? 1;
 
         // export default expr
         if (child.type === 'function_declaration') {
-          const name = child.namedChildren.find((c: TreeSitterNode) => c.type === 'identifier');
+          const name = child.children?.find((c) => c.type === 'identifier');
           exports.push({
-            name: name?.text ?? 'default',
+            name: name ? getNodeText(name, sourceCode) : 'default',
             type: 'function',
             isDefault: true,
             line,
           });
         } else if (child.type === 'class_declaration') {
-          const name = child.namedChildren.find((c: TreeSitterNode) => c.type === 'identifier');
+          const name = child.children?.find((c) => c.type === 'identifier' || c.type === 'type_identifier');
           exports.push({
-            name: name?.text ?? 'default',
+            name: name ? getNodeText(name, sourceCode) : 'default',
             type: 'class',
             isDefault: true,
             line,
           });
         } else if (child.type === 'lexical_declaration') {
-          for (const decl of child.namedChildren) {
+          for (const decl of child.children ?? []) {
             if (decl.type === 'variable_declarator') {
-              const name = decl.namedChildren.find((c: TreeSitterNode) => c.type === 'identifier');
+              const name = decl.children?.find((c) => c.type === 'identifier');
               if (name) {
-                exports.push({ name: name.text, type: 'const', isDefault: false, line });
+                exports.push({ name: getNodeText(name, sourceCode), type: 'const', isDefault: false, line });
               }
             }
           }
         } else if (child.type === 'export_clause') {
-          for (const spec of child.namedChildren) {
+          for (const spec of child.children ?? []) {
             if (spec.type === 'export_specifier') {
-              const name = spec.namedChildren.find((c: TreeSitterNode) => c.type === 'identifier');
+              const name = spec.children?.find((c) => c.type === 'identifier');
               if (name) {
-                exports.push({ name: name.text, type: 'const', isDefault: false, line: child.startPosition.row + 1 });
+                exports.push({ name: getNodeText(name, sourceCode), type: 'const', isDefault: false, line: child.location?.start?.line ?? 1 });
               }
             }
           }
@@ -179,9 +140,7 @@ export function getExports(ast: AST): ExportInfo[] {
       }
     }
 
-    if (node.children) {
-      for (const c of node.children) visit(c);
-    }
+    for (const c of node.children ?? []) visit(c);
   }
 
   visit(ast.root);
@@ -232,21 +191,3 @@ export function findNodesByKind(
 // ---------------------------------------------------------------------------
 export { isExported } from '../languages/adapterBridge.js';
 export { getNodeName };
-
-// ---------------------------------------------------------------------------
-// Source content cache
-// ---------------------------------------------------------------------------
-
-const sourceCache = new WeakMap<AST, string>();
-
-function getSourceContent(ast: AST): string | undefined {
-  return sourceCache.get(ast);
-}
-
-/**
- * Store source content for an AST so getNodeText() can work without passing
- * sourceCode each time.
- */
-export function setSourceContent(ast: AST, content: string): void {
-  sourceCache.set(ast, content);
-}

@@ -4,8 +4,7 @@
  */
 
 import type { ASTNode } from '../languages/types.js';
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { walkAST, getLineAndColumn } from '../languages/adapterBridge.js';
+import { walkAST, getLineAndColumn, getNodeText, hasModifier } from '../languages/adapterBridge.js';
 import {
   ComponentResponsibility,
   ResponsibilityType,
@@ -18,11 +17,6 @@ import { extractHooks } from './reactDetection.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
-function rawText(node: ASTNode): string {
-  return (node.raw as TreeSitterNode)?.text ?? '';
-}
-
 // ---------------------------------------------------------------------------
 // Main detection entry point
 // ---------------------------------------------------------------------------
@@ -32,16 +26,17 @@ function rawText(node: ASTNode): string {
  */
 export function detectComponentResponsibilities(
   component: ASTNode,
-  metadata?: ComponentMetadata
+  metadata: ComponentMetadata | undefined,
+  sourceCode: string
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
   const seenTypes = new Set<ResponsibilityType>();
 
   // Analyze different aspects of the component
-  const hookResponsibilities = analyzeHookUsage(component, metadata);
-  const eventResponsibilities = analyzeEventHandlers(component);
-  const effectResponsibilities = analyzeEffects(component);
-  const renderingResponsibilities = analyzeRenderingLogic(component);
+  const hookResponsibilities = analyzeHookUsage(component, metadata, sourceCode);
+  const eventResponsibilities = analyzeEventHandlers(component, sourceCode);
+  const effectResponsibilities = analyzeEffects(component, sourceCode);
+  const renderingResponsibilities = analyzeRenderingLogic(component, sourceCode);
 
   // Combine and deduplicate responsibilities
   [...hookResponsibilities, ...eventResponsibilities, ...effectResponsibilities, ...renderingResponsibilities]
@@ -73,7 +68,7 @@ export function detectComponentResponsibilities(
 /**
  * Identifies data fetching patterns in code
  */
-export function containsDataFetching(node: ASTNode): boolean {
+export function containsDataFetching(node: ASTNode, sourceCode: string): boolean {
   let hasDataFetching = false;
 
   walkAST(node, (n) => {
@@ -81,7 +76,7 @@ export function containsDataFetching(node: ASTNode): boolean {
     if (n.type === 'call_expression') {
       const exprNode = n.children?.[0]; // identifier or member_expression
       if (exprNode) {
-        const callText = rawText(exprNode);
+        const callText = getNodeText(exprNode, sourceCode);
         if (callText.includes('fetch') ||
             callText.includes('axios') ||
             callText.includes('api') ||
@@ -104,7 +99,7 @@ export function containsDataFetching(node: ASTNode): boolean {
 /**
  * Identifies form handling patterns
  */
-export function containsFormHandling(node: ASTNode): boolean {
+export function containsFormHandling(node: ASTNode, sourceCode: string): boolean {
   let hasFormHandling = false;
 
   walkAST(node, (n) => {
@@ -112,7 +107,7 @@ export function containsFormHandling(node: ASTNode): boolean {
     if (n.type === 'call_expression') {
       const exprNode = n.children?.[0];
       if (exprNode) {
-        const callText = rawText(exprNode);
+        const callText = getNodeText(exprNode, sourceCode);
         if (callText.includes('preventDefault') ||
             callText.includes('handleSubmit') ||
             callText.includes('validate') ||
@@ -124,7 +119,7 @@ export function containsFormHandling(node: ASTNode): boolean {
 
     // Check for form state patterns in identifiers
     if (n.type === 'identifier') {
-      const text = rawText(n);
+      const text = getNodeText(n, sourceCode);
       if (text.includes('form') || text.includes('Field') || text.includes('input')) {
         hasFormHandling = true;
       }
@@ -137,7 +132,7 @@ export function containsFormHandling(node: ASTNode): boolean {
 /**
  * Identifies business logic patterns
  */
-export function containsBusinessLogic(node: ASTNode): boolean {
+export function containsBusinessLogic(node: ASTNode, sourceCode: string): boolean {
   let hasBusinessLogic = false;
   let statementCount = 0;
   let hasComplexConditions = false;
@@ -150,7 +145,7 @@ export function containsBusinessLogic(node: ASTNode): boolean {
 
     // Check for complex conditions
     if (n.type === 'if_statement' || n.type === 'ternary_expression') {
-      const conditionText = rawText(n);
+      const conditionText = getNodeText(n, sourceCode);
       if (conditionText.includes('&&') && conditionText.includes('||')) {
         hasComplexConditions = true;
       }
@@ -159,9 +154,8 @@ export function containsBusinessLogic(node: ASTNode): boolean {
     // Check for calculations or transformations (binary expressions)
     if (n.type === 'binary_expression') {
       // Check operator token in raw tree-sitter children
-      const raw = n.raw as TreeSitterNode;
-      const opChild = raw?.children?.find(c => !c.isNamed);
-      if (opChild && (opChild.type === '*' || opChild.type === '/' || opChild.type === '%')) {
+      const opChild = n.children?.find(c => c.type === '*' || c.type === '/' || c.type === '%');
+      if (opChild) {
         hasBusinessLogic = true;
       }
     }
@@ -173,7 +167,7 @@ export function containsBusinessLogic(node: ASTNode): boolean {
         // Property of member expression is the last child
         const propNode = exprNode.children?.[exprNode.children.length - 1];
         if (propNode) {
-          const methodName = rawText(propNode);
+          const methodName = getNodeText(propNode, sourceCode);
           if (['map', 'filter', 'reduce', 'sort', 'groupBy'].includes(methodName)) {
             hasBusinessLogic = true;
           }
@@ -225,10 +219,11 @@ export function areResponsibilitiesRelated(
  */
 export function analyzeHookUsage(
   component: ASTNode,
-  metadata?: ComponentMetadata
+  metadata: ComponentMetadata | undefined,
+  sourceCode: string
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
-  const hooks = metadata?.hooks || extractHooks(component);
+  const hooks = metadata?.hooks || extractHooks(component, "");
 
   // Define hook groups that represent cohesive responsibilities
   const hookGroups = {
@@ -314,7 +309,8 @@ export function analyzeHookUsage(
  * Analyzes useEffect hooks for side effects and data fetching
  */
 export function analyzeEffects(
-  component: ASTNode
+  component: ASTNode,
+  sourceCode: string
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
 
@@ -324,18 +320,18 @@ export function analyzeEffects(
       if (node.type === 'call_expression') {
         const callee = node.children?.[0];
         if (callee && callee.type === 'identifier') {
-          const calleeText = rawText(callee);
+          const calleeText = getNodeText(callee, sourceCode);
           if (calleeText === 'useEffect' || calleeText === 'useLayoutEffect') {
             const argsNode = node.children?.find(c => c.type === 'arguments');
             const argList = argsNode?.children ?? [];
             // First argument is the effect callback
             const effectBody = argList.find(c => c.type !== '(' && c.type !== ')');
             if (effectBody) {
-              const effectText = rawText(effectBody);
+              const effectText = getNodeText(effectBody, sourceCode);
               const { line } = getLineAndColumn(node);
 
               // Check for data fetching
-              if (containsDataFetching(effectBody)) {
+              if (containsDataFetching(effectBody, sourceCode)) {
                 responsibilities.push({
                   type: ResponsibilityType.DataFetching,
                   indicators: ['fetch in useEffect', 'async data loading'],
@@ -379,7 +375,8 @@ export function analyzeEffects(
  * Analyzes event handlers in a component
  */
 export function analyzeEventHandlers(
-  component: ASTNode
+  component: ASTNode,
+  sourceCode: string
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
   const eventHandlers: { name: string; complexity: number; line: number }[] = [];
@@ -391,7 +388,7 @@ export function analyzeEventHandlers(
       if (node.type === 'jsx_attribute') {
         const nameNode = node.children?.find(c => c.type === 'property_identifier');
         if (nameNode) {
-          const attrName = rawText(nameNode);
+          const attrName = getNodeText(nameNode, sourceCode);
           if (attrName.startsWith('on')) {
             const { line } = getLineAndColumn(node);
 
@@ -402,7 +399,7 @@ export function analyzeEventHandlers(
               // The expression inside jsx_expression (skip `{` and `}`)
               const expr = initializer.children?.find(c => c.type !== '{' && c.type !== '}');
               if (expr && (expr.type === 'arrow_function' || expr.type === 'function_expression')) {
-                complexity = calculateHandlerComplexity(expr);
+                complexity = calculateHandlerComplexity(expr, sourceCode);
               }
             }
 
@@ -419,11 +416,11 @@ export function analyzeEventHandlers(
       if (node.type === 'method_definition' || node.type === 'public_field_definition') {
         const nameNode = node.children?.find(c => c.type === 'identifier' || c.type === 'property_identifier');
         if (nameNode) {
-          const name = rawText(nameNode);
+          const name = getNodeText(nameNode, sourceCode);
           if (name.match(/^(handle|on)[A-Z]/)) {
             const { line } = getLineAndColumn(node);
             const complexity = node.type === 'method_definition'
-              ? calculateHandlerComplexity(node)
+              ? calculateHandlerComplexity(node, sourceCode)
               : 0;
 
             eventHandlers.push({ name, complexity, line });
@@ -472,7 +469,7 @@ export function analyzeEventHandlers(
 /**
  * Calculates the complexity of an event handler
  */
-function calculateHandlerComplexity(node: ASTNode): number {
+function calculateHandlerComplexity(node: ASTNode, sourceCode: string): number {
   let lineCount = 0;
 
   // Use location for line span calculation
@@ -481,7 +478,7 @@ function calculateHandlerComplexity(node: ASTNode): number {
   }
 
   // Also check for complexity indicators
-  const hasBusinessLogic = containsBusinessLogic(node);
+  const hasBusinessLogic = containsBusinessLogic(node, sourceCode);
 
   return hasBusinessLogic ? lineCount * 1.5 : lineCount;
 }
@@ -490,7 +487,8 @@ function calculateHandlerComplexity(node: ASTNode): number {
  * Analyzes rendering logic and JSX complexity
  */
 export function analyzeRenderingLogic(
-  component: ASTNode
+  component: ASTNode,
+  sourceCode: string
 ): ComponentResponsibility[] {
   const responsibilities: ComponentResponsibility[] = [];
   let jsxElementCount = 0;
@@ -511,7 +509,7 @@ export function analyzeRenderingLogic(
           const tagNode = openTag.children?.find(c =>
             c.type === 'identifier' || c.type === 'member_expression');
           if (tagNode) {
-            const tagName = rawText(tagNode);
+            const tagName = getNodeText(tagNode, sourceCode);
             if (tagName.match(/Grid|Flex|Layout|Container|Row|Col/i)) {
               hasLayoutLogic = true;
             }
@@ -526,7 +524,7 @@ export function analyzeRenderingLogic(
         const tagNode = node.children?.find(c =>
           c.type === 'identifier' || c.type === 'member_expression');
         if (tagNode) {
-          const tagName = rawText(tagNode);
+          const tagName = getNodeText(tagNode, sourceCode);
           if (tagName.match(/Grid|Flex|Layout|Container|Row|Col/i)) {
             hasLayoutLogic = true;
           }
@@ -545,7 +543,7 @@ export function analyzeRenderingLogic(
       if (node.type === 'jsx_attribute') {
         const nameNode = node.children?.find(c => c.type === 'property_identifier');
         if (nameNode) {
-          const attrName = rawText(nameNode);
+          const attrName = getNodeText(nameNode, sourceCode);
 
           if (attrName === 'style') {
             const jsxExpr = node.children?.find(c => c.type === 'jsx_expression');

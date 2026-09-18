@@ -59,7 +59,7 @@ import {
   checkQueryPatterns,
   checkSQLInjection,
   findClosestNodeAt,
-  findEnclosingFunctionName,
+  findEnclosingFunctionIdentity,
 } from './schema/codeAnalysis.js';
 import type { UnresolvedQuery } from './schema/codeAnalysis.js';
 import {
@@ -183,7 +183,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
 
     // Spec 15 R1 — Record schema usage for cross-domain lifecycle analysis.
     if (finalConfig.enableTableUsageTracking) {
-      this.recordTableUsage(ast, adapter, ast.filePath, tableRefs);
+      this.recordTableUsage(ast, adapter, ast.filePath, tableRefs, sourceCode);
     }
 
     const diagnostics: CoverageDiagnostic[] = [];
@@ -221,6 +221,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     adapter: LanguageAdapter,
     filePath: string,
     references: TableReference[],
+    sourceCode: string,
   ): void {
     try {
       this._pendingSchemaRecords.clearFiles.push(filePath);
@@ -228,16 +229,28 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       for (const ref of references) {
         // Find enclosing function from the AST position
         const node = findClosestNodeAt(ast.root, ref.location, adapter);
-        const functionName = node
-          ? findEnclosingFunctionName(node, adapter)
-          : ast.filePath.endsWith('.sql') || ast.filePath.includes('/migrations/')
-            ? 'schema-file'
-            : 'top-level';
+        // Amendment A — identity is a coordinate + nullable display name.
+        // `functionName` is the declaration name (null for anonymous handlers),
+        // or a real sentinel ('top-level' / 'schema-file') when there is no
+        // enclosing function; the coordinate columns carry the usage's own
+        // position for a top-level usage (never NULL), keeping distinct top-level
+        // usages in the same file from collapsing.
+        const identity = node ? findEnclosingFunctionIdentity(node, adapter, ast.filePath) : null;
+        const functionName =
+          identity == null
+            ? ast.filePath.endsWith('.sql') || ast.filePath.includes('/migrations/')
+              ? 'schema-file'
+              : 'top-level'
+            : identity.topLevel
+              ? 'top-level'
+              : identity.name;
 
         this._pendingSchemaRecords.usages.push({
           tableName: ref.table,
           filePath,
           functionName,
+          functionStartLine: identity?.startLine ?? null,
+          functionStartColumn: identity?.startColumn ?? null,
           usageType: ref.type,
           line: ref.location.line,
           column: ref.location.column,

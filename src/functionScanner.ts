@@ -23,7 +23,6 @@ import {
 } from './utils/astUtils.js';
 import { parseFile, walkAST, hasModifier, isExported, calculateComplexity } from './languages/adapterBridge.js';
 import type { AST, ASTNode } from './languages/types.js';
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import {
   isReactComponent,
   detectComponentType,
@@ -43,11 +42,6 @@ import path from 'path';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
-function rawText(node: ASTNode): string {
-  return (node.raw as TreeSitterNode)?.text ?? '';
-}
 
 /** Find the first child of a given type. */
 function findChildOfType(node: ASTNode, type: string): ASTNode | undefined {
@@ -137,23 +131,23 @@ export function extractFunctionsFromSource(
   const root = ast.root;
 
   // Get file dependencies
-  const imports = getImports(root);
+  const imports = getImports(root, content);
   const dependencies = imports
-    .map(imp => imp.moduleSpecifier)
+    .map(imp => imp.source)
     .filter(spec => !spec.startsWith('.') && !spec.startsWith('/'))
     .filter((v, i, a) => a.indexOf(v) === i); // Unique only
 
   // Build import map for dependency tracking
-  const importMap = buildImportMap(root);
-  const detailedImports = getImportsDetailed(root);
-  const localFunctions = getLocalFunctionNames(root);
+  const importMap = buildImportMap(root, content);
+  const detailedImports = getImportsDetailed(root, content);
+  const localFunctions = getLocalFunctionNames(root, content);
 
   // Track import usage across the file
   const importNames = new Set(detailedImports.map(imp => imp.localName));
   const fileUsageMap = extractIdentifierUsage(root, content, importNames);
 
   // Track re-exports - these imports are used even if not referenced in code
-  const reExports = getReExports(root);
+  const reExports = getReExports(root, content);
   for (const reExport of reExports) {
     // Find imports that match re-exported names
     for (const imp of detailedImports) {
@@ -223,12 +217,12 @@ export function extractFunctionsFromSource(
     ).length ?? 0;
 
     functions.push({
-      name: rawText(nameNode),
+      name: getNodeText(nameNode, content),
       filePath,
       lineNumber: line,
       language: getLanguageFromPath(filePath),
       dependencies,
-      purpose: `Function ${rawText(nameNode)} implementation`,
+      purpose: `Function ${getNodeText(nameNode, content)} implementation`,
       context: `Located in ${path.basename(filePath)}`,
       metadata: {
         kind: 'function',
@@ -239,7 +233,7 @@ export function extractFunctionsFromSource(
         usedImports,
         unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
         complexity: calculateComplexity(func),
-        body: body ? rawText(body) : undefined,
+        body: body ? getNodeText(body, content) : undefined,
         dependencies
       }
     });
@@ -290,12 +284,12 @@ export function extractFunctionsFromSource(
       ).length ?? 0;
 
       functions.push({
-        name: rawText(nameNode),
+        name: getNodeText(nameNode, content),
         filePath,
         lineNumber: line,
         language: getLanguageFromPath(filePath),
         dependencies,
-        purpose: `Arrow function ${rawText(nameNode)}`,
+        purpose: `Arrow function ${getNodeText(nameNode, content)}`,
         context: `Defined in ${path.basename(filePath)}`,
         metadata: {
           kind: 'arrow',
@@ -306,7 +300,7 @@ export function extractFunctionsFromSource(
           usedImports,
           unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
           complexity: calculateComplexity(arrowFunc),
-          body: body ? rawText(body) : undefined,
+          body: body ? getNodeText(body, content) : undefined,
           dependencies
         }
       });
@@ -317,7 +311,7 @@ export function extractFunctionsFromSource(
   const classDeclarations = findNodesByKind(root, 'class_declaration');
   for (const classDecl of classDeclarations) {
     const classNameNode = findChildOfType(classDecl, 'identifier');
-    const className = classNameNode ? rawText(classNameNode) : 'AnonymousClass';
+    const className = classNameNode ? getNodeText(classNameNode, content) : 'AnonymousClass';
     const classBody = findChildOfType(classDecl, 'class_body');
     const methods = classBody?.children?.filter(m => m.type === 'method_definition') ?? [];
 
@@ -357,12 +351,12 @@ export function extractFunctionsFromSource(
       ).length ?? 0;
 
       functions.push({
-        name: `${className}.${rawText(methodNameNode)}`,
+        name: `${className}.${getNodeText(methodNameNode, content)}`,
         filePath,
         lineNumber: line,
         language: getLanguageFromPath(filePath),
         dependencies,
-        purpose: `Method ${rawText(methodNameNode)} of class ${className}`,
+        purpose: `Method ${getNodeText(methodNameNode, content)} of class ${className}`,
         context: `Class method in ${path.basename(filePath)}`,
         metadata: {
           kind: 'method',
@@ -375,7 +369,7 @@ export function extractFunctionsFromSource(
           usedImports,
           unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
           complexity: calculateComplexity(method),
-          body: body ? rawText(body) : undefined,
+          body: body ? getNodeText(body, content) : undefined,
           dependencies
         }
       });
@@ -388,12 +382,12 @@ export function extractFunctionsFromSource(
 
     // Walk all nodes for React components
     walkAST(root, (node) => {
-      if (!isReactComponent(node)) return;
+      if (!isReactComponent(node, content)) return;
 
-      const componentType = detectComponentType(node);
+      const componentType = detectComponentType(node, content);
       if (!componentType) return;
 
-      const componentName = getComponentName(node);
+      const componentName = getComponentName(node, content);
       const { line } = getLineAndColumn(node);
       const endLine = node.location?.end?.line ?? line;
 
@@ -433,12 +427,12 @@ export function extractFunctionsFromSource(
           ...existingFunc.metadata,
           entityType: 'component',
           componentType,
-          props: extractPropTypes(nodeForProps),
-          hooks: extractHooks(node),
-          jsxElements: extractJSXElements(node),
+          props: extractPropTypes(nodeForProps, content),
+          hooks: extractHooks(node, content),
+          jsxElements: extractJSXElements(node, content),
           isExported: isComponentExported(node),
           complexity: calculateComplexity(node),
-          body: getComponentBody(node)
+          body: getComponentBody(node, content)
         };
       } else {
         // Add new component
@@ -455,12 +449,12 @@ export function extractFunctionsFromSource(
           metadata: {
             entityType: 'component',
             componentType,
-            props: extractPropTypes(nodeForProps),
-            hooks: extractHooks(node),
-            jsxElements: extractJSXElements(node),
+            props: extractPropTypes(nodeForProps, content),
+            hooks: extractHooks(node, content),
+            jsxElements: extractJSXElements(node, content),
             isExported: isComponentExported(node),
             complexity: calculateComplexity(node),
-            body: getComponentBody(node),
+            body: getComponentBody(node, content),
             usedImports,
             unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
             calledBy: [],
@@ -523,7 +517,7 @@ export function extractFunctionsFromSource(
 // Helper functions for React component extraction
 // ---------------------------------------------------------------------------
 
-function extractJSXElements(node: ASTNode): string[] {
+function extractJSXElements(node: ASTNode, content: string): string[] {
   const elements = new Set<string>();
 
   walkAST(node, (child) => {
@@ -534,9 +528,9 @@ function extractJSXElements(node: ASTNode): string[] {
           c.type === 'identifier' || c.type === 'member_expression');
         if (tagNameNode) {
           if (tagNameNode.type === 'identifier') {
-            elements.add(rawText(tagNameNode));
+            elements.add(getNodeText(tagNameNode, content));
           } else if (tagNameNode.type === 'member_expression') {
-            elements.add(rawText(tagNameNode));
+            elements.add(getNodeText(tagNameNode, content));
           }
         }
       }
@@ -545,9 +539,9 @@ function extractJSXElements(node: ASTNode): string[] {
         c.type === 'identifier' || c.type === 'member_expression');
       if (tagNameNode) {
         if (tagNameNode.type === 'identifier') {
-          elements.add(rawText(tagNameNode));
+          elements.add(getNodeText(tagNameNode, content));
         } else if (tagNameNode.type === 'member_expression') {
-          elements.add(rawText(tagNameNode));
+          elements.add(getNodeText(tagNameNode, content));
         }
       }
     }
@@ -607,13 +601,13 @@ export class FunctionScanner {
 // Helper function to get component body
 // ---------------------------------------------------------------------------
 
-function getComponentBody(node: ASTNode): string | undefined {
+function getComponentBody(node: ASTNode, content: string): string | undefined {
   if (node.type === 'function_declaration' || node.type === 'function_expression') {
     const body = findChildOfType(node, 'statement_block');
-    return body ? rawText(body) : undefined;
+    return body ? getNodeText(body, content) : undefined;
   } else if (node.type === 'arrow_function') {
     const body = findChildOfType(node, 'statement_block');
-    return body ? rawText(body) : undefined;
+    return body ? getNodeText(body, content) : undefined;
   } else if (node.type === 'class_declaration') {
     // For class components, get the render method body
     const classBody = findChildOfType(node, 'class_body');
@@ -622,9 +616,9 @@ function getComponentBody(node: ASTNode): string | undefined {
     for (const member of classBody.children ?? []) {
       if (member.type !== 'method_definition') continue;
       const mNameNode = findChildOfType(member, 'identifier');
-      if (mNameNode && rawText(mNameNode) === 'render') {
+      if (mNameNode && getNodeText(mNameNode, content) === 'render') {
         const body = findChildOfType(member, 'statement_block');
-        return body ? rawText(body) : undefined;
+        return body ? getNodeText(body, content) : undefined;
       }
     }
   }

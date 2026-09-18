@@ -58,7 +58,6 @@ export {
   
   // File info types
   FileInfo,
-  ImportInfo,
   ExportInfo
 } from './types.js';
 

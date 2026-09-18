@@ -9,13 +9,12 @@
  * For source-code-dependent operations, `sourceCode: string` is passed separately.
  */
 
-import type { ASTNode, AST } from '../languages/types.js';
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { ImportInfo, ExportInfo, ImportMapping, UsageInfo } from '../types.js';
+import type { ASTNode, AST, ImportInfo, ImportSpecifier } from '../languages/types.js';
+import { ExportInfo, ImportMapping, UsageInfo } from '../types.js';
 import {
   walkAST,
   findNodes,
-  getNodeText as bridgeGetNodeText,
+  getNodeText,
   getLineAndColumn as bridgeGetLineAndColumn,
   isExported as bridgeIsExported,
   calculateComplexity as bridgeCalculateComplexity,
@@ -25,11 +24,6 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
-function rawText(node: ASTNode): string {
-  return (node.raw as TreeSitterNode)?.text ?? '';
-}
 
 /** Find the first child of a given type. */
 function findChildOfType(node: ASTNode, type: string): ASTNode | undefined {
@@ -59,7 +53,7 @@ export function findNodesByType(
  * Get the text content of a node.
  * Uses sourceCode if provided; falls back to raw tree-sitter text.
  */
-export { bridgeGetNodeText as getNodeText };
+export { getNodeText };
 
 // ---------------------------------------------------------------------------
 // Position helpers (re-exports from adapterBridge)
@@ -91,7 +85,7 @@ export { bridgeCalculateComplexity as calculateComplexity };
  * Uses tree-sitter import_statement structure:
  *   import_statement → import_clause? → (identifier | named_imports) → string
  */
-export function getImports(root: ASTNode): ImportInfo[] {
+export function getImports(root: ASTNode, sourceCode: string): ImportInfo[] {
   const imports: ImportInfo[] = [];
   const importNodes = findNodes(root, n => n.type === 'import_statement');
 
@@ -99,23 +93,22 @@ export function getImports(root: ASTNode): ImportInfo[] {
     // Module specifier (the string literal at the end)
     const moduleNode = findChildOfType(node, 'string');
     if (!moduleNode) continue;
-    const moduleSpecifier = rawText(moduleNode).replace(/^["']|["']$/g, '');
-    const importedNames: string[] = [];
+    const source = getNodeText(moduleNode, sourceCode).replace(/^["']|["']$/g, '');
 
+    const specifiers: ImportSpecifier[] = [];
     const importClause = findChildOfType(node, 'import_clause');
-    let isTypeOnly = false;
 
     if (importClause) {
-      // Check for `type` keyword in import clause
-      const raw = importClause.raw as TreeSitterNode;
-      isTypeOnly = raw?.children?.some(c => !c.isNamed && c.type === 'type') ?? false;
-
-      // Default import (identifier child of import_clause that's not 'type' modifier)
+      // Default import (identifier child of import_clause that's not the `type` keyword)
       const defaultId = importClause.children?.find(
         c => c.type === 'identifier'
       );
       if (defaultId) {
-        importedNames.push(rawText(defaultId));
+        specifiers.push({
+          name: getNodeText(defaultId, sourceCode),
+          isDefault: true,
+          isNamespace: false,
+        });
       }
 
       // Named imports
@@ -123,10 +116,17 @@ export function getImports(root: ASTNode): ImportInfo[] {
       if (namedImports) {
         for (const child of namedImports.children ?? []) {
           if (child.type !== 'import_specifier') continue;
-          // The identifier children — last one is the local name
+          // import { name } / { name as alias } / { default as name }
           const ids = child.children?.filter(c => c.type === 'identifier') ?? [];
           if (ids.length > 0) {
-            importedNames.push(rawText(ids[ids.length - 1]));
+            const imported = getNodeText(ids[0], sourceCode);
+            const local = getNodeText(ids[ids.length - 1], sourceCode);
+            specifiers.push({
+              name: local,
+              alias: imported !== local ? imported : undefined,
+              isDefault: imported === 'default',
+              isNamespace: false,
+            });
           }
         }
       }
@@ -136,13 +136,16 @@ export function getImports(root: ASTNode): ImportInfo[] {
       if (namespaceImport) {
         const nsId = findChildOfType(namespaceImport, 'identifier');
         if (nsId) {
-          importedNames.push(`* as ${rawText(nsId)}`);
+          specifiers.push({
+            name: getNodeText(nsId, sourceCode),
+            isDefault: false,
+            isNamespace: true,
+          });
         }
       }
     }
 
-    const { line } = bridgeGetLineAndColumn(node);
-    imports.push({ moduleSpecifier, importedNames, isTypeOnly, line });
+    imports.push({ source, specifiers, location: node.location });
   }
 
   return imports;
@@ -156,7 +159,7 @@ export function getImports(root: ASTNode): ImportInfo[] {
  * Extract export statements from an AST root node.
  * Uses tree-sitter export_statement structure.
  */
-export function getExports(root: ASTNode): ExportInfo[] {
+export function getExports(root: ASTNode, sourceCode: string): ExportInfo[] {
   const exports: ExportInfo[] = [];
 
   // export declarations: export { name1, name2 }
@@ -168,8 +171,7 @@ export function getExports(root: ASTNode): ExportInfo[] {
     const { line } = bridgeGetLineAndColumn(node);
 
     // Check for type-only exports
-    const raw = node.raw as TreeSitterNode;
-    const isTypeOnly = raw?.children?.some(c => !c.isNamed && c.type === 'type') ?? false;
+    const isTypeOnly = hasModifier(node, 'type');
 
     // export clause with named exports
     const exportClause = findChildOfType(node, 'export_clause');
@@ -181,7 +183,7 @@ export function getExports(root: ASTNode): ExportInfo[] {
           const ids = child.children?.filter(c => c.type === 'identifier') ?? [];
           if (ids.length > 0) {
             exports.push({
-              name: rawText(ids[ids.length - 1]),
+              name: getNodeText(ids[ids.length - 1], sourceCode),
               isDefault: false,
               isTypeOnly,
               line
@@ -192,7 +194,7 @@ export function getExports(root: ASTNode): ExportInfo[] {
     }
 
     // Check for `default` keyword — export default X
-    const isDefault = raw?.children?.some(c => !c.isNamed && c.type === 'default') ?? false;
+    const isDefault = hasModifier(node, 'default');
     if (isDefault) {
       const exported = node.children?.find(
         c => c.type === 'identifier' || c.type === 'function_declaration' ||
@@ -201,7 +203,7 @@ export function getExports(root: ASTNode): ExportInfo[] {
       if (exported) {
         const nameNode = findChildOfType(exported, 'identifier');
         exports.push({
-          name: nameNode ? rawText(nameNode) : 'default',
+          name: nameNode ? getNodeText(nameNode, sourceCode) : 'default',
           isDefault: true,
           isTypeOnly,
           line
@@ -242,11 +244,11 @@ export function findClasses(root: ASTNode): ASTNode[] {
 /**
  * Get AST node for inspection/debugging.
  */
-export function getASTNode(node: ASTNode): any {
+export function getASTNode(node: ASTNode, sourceCode: string): any {
   return {
     type: node.type,
-    text: rawText(node),
-    children: (node.children ?? []).map(child => getASTNode(child))
+    text: getNodeText(node, sourceCode),
+    children: (node.children ?? []).map(child => getASTNode(child, sourceCode))
   };
 }
 
@@ -258,20 +260,20 @@ export function getASTNode(node: ASTNode): any {
  * Check if a node has a specific decorator.
  * Tree-sitter parses decorators as `decorator` nodes.
  */
-export function hasDecorator(node: ASTNode, decoratorName: string): boolean {
+export function hasDecorator(node: ASTNode, decoratorName: string, sourceCode: string): boolean {
   const decorators = findNodes(node, n => n.type === 'decorator');
   return decorators.some(decorator => {
     // decorator → call_expression → identifier (e.g., @Component())
     const callExpr = findChildOfType(decorator, 'call_expression');
     if (callExpr) {
       const callee = callExpr.children?.[0];
-      if (callee?.type === 'identifier' && rawText(callee) === decoratorName) {
+      if (callee?.type === 'identifier' && getNodeText(callee, sourceCode) === decoratorName) {
         return true;
       }
     }
     // decorator → identifier (e.g., @deprecated)
     const id = findChildOfType(decorator, 'identifier');
-    if (id && rawText(id) === decoratorName) {
+    if (id && getNodeText(id, sourceCode) === decoratorName) {
       return true;
     }
     return false;
@@ -286,7 +288,7 @@ export function hasDecorator(node: ASTNode, decoratorName: string): boolean {
  * Get method names from a class declaration node.
  * Tree-sitter: class_declaration → class_body → method_definition / public_field_definition
  */
-export function getClassMethods(classNode: ASTNode): string[] {
+export function getClassMethods(classNode: ASTNode, sourceCode: string): string[] {
   const methods: string[] = [];
   const classBody = findChildOfType(classNode, 'class_body');
   if (!classBody) return methods;
@@ -297,7 +299,7 @@ export function getClassMethods(classNode: ASTNode): string[] {
         c => c.type === 'identifier' || c.type === 'property_identifier'
       );
       if (nameNode) {
-        methods.push(rawText(nameNode));
+        methods.push(getNodeText(nameNode, sourceCode));
       }
     }
   }
@@ -414,7 +416,7 @@ export async function parseTypeScriptFile(
   const ast = parseFile(filePath, content);
   if (!ast) {
     const failLocation = { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } };
-    const failAst: AST = { root: { type: 'source_file', range: [0, 0], location: failLocation, raw: null }, language: 'unknown', filePath, errors: [{ message: 'Failed to parse file', location: failLocation, severity: 'error' }] };
+    const failAst: AST = { root: { type: 'source_file', range: [0, 0], location: failLocation }, language: 'unknown', filePath, errors: [{ message: 'Failed to parse file', location: failLocation, severity: 'error' }] };
     return { ast: failAst, errors: [{ message: 'Failed to parse file', line: 0, column: 0 }] };
   }
   return { ast, errors: ast.errors ?? [] };
@@ -428,7 +430,7 @@ export async function parseTypeScriptFile(
  * Enhanced version of getImports that returns detailed ImportMapping[].
  * Uses tree-sitter import_statement traversal.
  */
-export function getImportsDetailed(root: ASTNode): ImportMapping[] {
+export function getImportsDetailed(root: ASTNode, sourceCode: string): ImportMapping[] {
   const imports: ImportMapping[] = [];
   const importNodes = findNodes(root, n => n.type === 'import_statement');
 
@@ -436,7 +438,7 @@ export function getImportsDetailed(root: ASTNode): ImportMapping[] {
     const moduleNode = findChildOfType(node, 'string');
     if (!moduleNode) continue;
 
-    const moduleSpecifier = rawText(moduleNode).replace(/^["']|["']$/g, '');
+    const moduleSpecifier = getNodeText(moduleNode, sourceCode).replace(/^["']|["']$/g, '');
 
     const importClause = findChildOfType(node, 'import_clause');
     if (!importClause) {
@@ -451,14 +453,13 @@ export function getImportsDetailed(root: ASTNode): ImportMapping[] {
       continue;
     }
 
-    const raw = importClause.raw as TreeSitterNode;
-    const isTypeOnly = raw?.children?.some(c => !c.isNamed && c.type === 'type') ?? false;
+    const isTypeOnly = hasModifier(importClause, 'type');
 
     // Default import
     const defaultId = importClause.children?.find(c => c.type === 'identifier');
     if (defaultId) {
       imports.push({
-        localName: rawText(defaultId),
+        localName: getNodeText(defaultId, sourceCode),
         importedName: 'default',
         modulePath: moduleSpecifier,
         importType: 'default',
@@ -474,8 +475,8 @@ export function getImportsDetailed(root: ASTNode): ImportMapping[] {
         const identifiers = child.children?.filter(c => c.type === 'identifier') ?? [];
         if (identifiers.length === 0) continue;
 
-        const localName = rawText(identifiers[identifiers.length - 1]);
-        const importedName = identifiers.length > 1 ? rawText(identifiers[0]) : localName;
+        const localName = getNodeText(identifiers[identifiers.length - 1], sourceCode);
+        const importedName = identifiers.length > 1 ? getNodeText(identifiers[0], sourceCode) : localName;
 
         imports.push({
           localName,
@@ -493,7 +494,7 @@ export function getImportsDetailed(root: ASTNode): ImportMapping[] {
       const nsId = findChildOfType(nsImport, 'identifier');
       if (nsId) {
         imports.push({
-          localName: rawText(nsId),
+          localName: getNodeText(nsId, sourceCode),
           importedName: '*',
           modulePath: moduleSpecifier,
           importType: 'namespace',
@@ -514,7 +515,7 @@ export function getImportsDetailed(root: ASTNode): ImportMapping[] {
  * Get re-exports from a source file.
  * Tree-sitter: export_statement → string (module specifier).
  */
-export function getReExports(root: ASTNode): Array<{ name: string; module: string }> {
+export function getReExports(root: ASTNode, sourceCode: string): Array<{ name: string; module: string }> {
   const reExports: Array<{ name: string; module: string }> = [];
   const exportNodes = findNodes(root, n =>
     n.type === 'export_statement' || n.type === 'export_declaration'
@@ -524,7 +525,7 @@ export function getReExports(root: ASTNode): Array<{ name: string; module: strin
     // Check if there's a module specifier (export { x } from './y')
     const moduleNode = findChildOfType(node, 'string');
     if (!moduleNode) continue;
-    const moduleSpecifier = rawText(moduleNode).replace(/^["']|["']$/g, '');
+    const moduleSpecifier = getNodeText(moduleNode, sourceCode).replace(/^["']|["']$/g, '');
 
     const exportClause = findChildOfType(node, 'export_clause');
     if (exportClause) {
@@ -535,8 +536,8 @@ export function getReExports(root: ASTNode): Array<{ name: string; module: strin
           const identifiers = child.children?.filter(c => c.type === 'identifier') ?? [];
           if (identifiers.length > 0) {
             const name = identifiers.length > 1
-              ? rawText(identifiers[0])
-              : rawText(identifiers[identifiers.length - 1]);
+              ? getNodeText(identifiers[0], sourceCode)
+              : getNodeText(identifiers[identifiers.length - 1], sourceCode);
             reExports.push({ name, module: moduleSpecifier });
           }
         }
@@ -705,8 +706,7 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
   if (parent.type === 'generic_type' && parent.children?.[0] === identifier) {
     const heritageClause = parent.parent;
     if (heritageClause?.type === 'heritage_clause') {
-      const raw = (heritageClause.raw as TreeSitterNode);
-      const isExtends = raw?.children?.some(c => !c.isNamed && c.type === 'extends');
+      const isExtends = hasModifier(heritageClause, 'extends');
       if (isExtends) {
         const interfaceNode = heritageClause.parent;
         if (interfaceNode?.type === 'interface_declaration') {
@@ -722,8 +722,7 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
     if (grandParent?.type === 'generic_type') {
       const heritageClause = grandParent.parent;
       if (heritageClause?.type === 'heritage_clause') {
-        const raw = (heritageClause.raw as TreeSitterNode);
-        const isExtends = raw?.children?.some(c => !c.isNamed && c.type === 'extends');
+        const isExtends = hasModifier(heritageClause, 'extends');
         if (isExtends) {
           const interfaceNode = heritageClause.parent;
           if (interfaceNode?.type === 'interface_declaration') {
@@ -746,8 +745,7 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
   if (parent.type === 'class_declaration') {
     for (const child of parent.children ?? []) {
       if (child.type !== 'heritage_clause') continue;
-      const raw = (child.raw as TreeSitterNode);
-      const isImplements = raw?.children?.some(c => !c.isNamed && c.type === 'implements');
+      const isImplements = hasModifier(child, 'implements');
       if (!isImplements) continue;
       for (const typeNode of child.children ?? []) {
         if (typeNode === identifier) return true;
@@ -907,7 +905,7 @@ export function extractIdentifierUsage(
   walkAST(root, (node) => {
     // --- identifiers ---
     if (node.type === 'identifier') {
-      const name = rawText(node);
+      const name = getNodeText(node, sourceCode);
 
       if (importNames.has(name)) {
         let shouldCount = true;
@@ -958,16 +956,16 @@ export function extractIdentifierUsage(
     // --- spread elements ---
     else if (SPREAD_TYPES.has(node.type)) {
       const expr = node.children?.find(c => c.type !== '...');
-      if (expr?.type === 'identifier' && importNames.has(rawText(expr))) {
+      if (expr?.type === 'identifier' && importNames.has(getNodeText(expr, sourceCode))) {
         const { line } = bridgeGetLineAndColumn(expr);
-        const existing = usageMap.get(rawText(expr)) || {
+        const existing = usageMap.get(getNodeText(expr, sourceCode)) || {
           usageType: 'direct' as const,
           usageCount: 0,
           lineNumbers: [] as number[],
         };
         existing.usageCount++;
         existing.lineNumbers.push(line);
-        usageMap.set(rawText(expr), existing);
+        usageMap.set(getNodeText(expr, sourceCode), existing);
       }
     }
 
@@ -987,28 +985,28 @@ export function extractIdentifierUsage(
       }
 
       if (tagNameNode) {
-        if (tagNameNode.type === 'identifier' && importNames.has(rawText(tagNameNode))) {
+        if (tagNameNode.type === 'identifier' && importNames.has(getNodeText(tagNameNode, sourceCode))) {
           const { line } = bridgeGetLineAndColumn(tagNameNode);
-          const existing = usageMap.get(rawText(tagNameNode)) || {
+          const existing = usageMap.get(getNodeText(tagNameNode, sourceCode)) || {
             usageType: 'direct' as const,
             usageCount: 0,
             lineNumbers: [] as number[],
           };
           existing.usageCount++;
           existing.lineNumbers.push(line);
-          usageMap.set(rawText(tagNameNode), existing);
+          usageMap.set(getNodeText(tagNameNode, sourceCode), existing);
         } else if (tagNameNode.type === 'member_expression') {
           const leftmost = tagNameNode.children?.[0];
-          if (leftmost?.type === 'identifier' && importNames.has(rawText(leftmost))) {
+          if (leftmost?.type === 'identifier' && importNames.has(getNodeText(leftmost, sourceCode))) {
             const { line } = bridgeGetLineAndColumn(leftmost);
-            const existing = usageMap.get(rawText(leftmost)) || {
+            const existing = usageMap.get(getNodeText(leftmost, sourceCode)) || {
               usageType: 'direct' as const,
               usageCount: 0,
               lineNumbers: [] as number[],
             };
             existing.usageCount++;
             existing.lineNumbers.push(line);
-            usageMap.set(rawText(leftmost), existing);
+            usageMap.set(getNodeText(leftmost, sourceCode), existing);
           }
         }
       }
@@ -1018,32 +1016,32 @@ export function extractIdentifierUsage(
     else if (node.type === 'decorator') {
       // decorator → identifier (e.g., @deprecated)
       const id = findChildOfType(node, 'identifier');
-      if (id && importNames.has(rawText(id))) {
+      if (id && importNames.has(getNodeText(id, sourceCode))) {
         const { line } = bridgeGetLineAndColumn(id);
-        const existing = usageMap.get(rawText(id)) || {
+        const existing = usageMap.get(getNodeText(id, sourceCode)) || {
           usageType: 'direct' as const,
           usageCount: 0,
           lineNumbers: [] as number[],
         };
         existing.usageCount++;
         existing.lineNumbers.push(line);
-        usageMap.set(rawText(id), existing);
+        usageMap.set(getNodeText(id, sourceCode), existing);
       }
 
       // decorator → call_expression → identifier (e.g., @Component())
       const callExpr = findChildOfType(node, 'call_expression');
       if (callExpr) {
         const callee = callExpr.children?.[0];
-        if (callee?.type === 'identifier' && importNames.has(rawText(callee))) {
+        if (callee?.type === 'identifier' && importNames.has(getNodeText(callee, sourceCode))) {
           const { line } = bridgeGetLineAndColumn(callee);
-          const existing = usageMap.get(rawText(callee)) || {
+          const existing = usageMap.get(getNodeText(callee, sourceCode)) || {
             usageType: 'direct' as const,
             usageCount: 0,
             lineNumbers: [] as number[],
           };
           existing.usageCount++;
           existing.lineNumbers.push(line);
-          usageMap.set(rawText(callee), existing);
+          usageMap.set(getNodeText(callee, sourceCode), existing);
         }
       }
     }
@@ -1052,16 +1050,16 @@ export function extractIdentifierUsage(
     else if (node.type === 'pair') {
       const key = node.children?.find(c => c.type === 'property_identifier');
       const value = node.children?.find(c => c.type === 'identifier' && c !== key);
-      if (value && importNames.has(rawText(value))) {
+      if (value && importNames.has(getNodeText(value, sourceCode))) {
         const { line } = bridgeGetLineAndColumn(value);
-        const existing = usageMap.get(rawText(value)) || {
+        const existing = usageMap.get(getNodeText(value, sourceCode)) || {
           usageType: 'direct' as const,
           usageCount: 0,
           lineNumbers: [] as number[],
         };
         existing.usageCount++;
         existing.lineNumbers.push(line);
-        usageMap.set(rawText(value), existing);
+        usageMap.set(getNodeText(value, sourceCode), existing);
       }
     }
 
@@ -1069,27 +1067,27 @@ export function extractIdentifierUsage(
     else if (node.type === 'shorthand_property_identifier') {
       // The value node is a reference to an imported name
       const ref = node.children?.find(c => c.type === 'identifier');
-      if (ref && importNames.has(rawText(ref))) {
+      if (ref && importNames.has(getNodeText(ref, sourceCode))) {
         const { line } = bridgeGetLineAndColumn(ref);
-        const existing = usageMap.get(rawText(ref)) || {
+        const existing = usageMap.get(getNodeText(ref, sourceCode)) || {
           usageType: 'direct' as const,
           usageCount: 0,
           lineNumbers: [] as number[],
         };
         existing.usageCount++;
         existing.lineNumbers.push(line);
-        usageMap.set(rawText(ref), existing);
-      } else if (ref && importNames.has(rawText(ref))) {
+        usageMap.set(getNodeText(ref, sourceCode), existing);
+      } else if (ref && importNames.has(getNodeText(ref, sourceCode))) {
         // shorthand_property_identifier might itself be just text
         const { line } = bridgeGetLineAndColumn(node);
-        const existing = usageMap.get(rawText(node)) || {
+        const existing = usageMap.get(getNodeText(node, sourceCode)) || {
           usageType: 'direct' as const,
           usageCount: 0,
           lineNumbers: [] as number[],
         };
         existing.usageCount++;
         existing.lineNumbers.push(line);
-        usageMap.set(rawText(node), existing);
+        usageMap.set(getNodeText(node, sourceCode), existing);
       }
     }
   });
@@ -1105,7 +1103,7 @@ export function extractIdentifierUsage(
  * Check if a function name is defined locally in the file.
  * Uses tree-sitter instead of TS API.
  */
-export function isLocalFunction(name: string, root: ASTNode): boolean {
+export function isLocalFunction(name: string, root: ASTNode, sourceCode: string): boolean {
   let found = false;
 
   walkAST(root, (node) => {
@@ -1114,7 +1112,7 @@ export function isLocalFunction(name: string, root: ASTNode): boolean {
     // function declarations
     if (node.type === 'function_declaration') {
       const nameNode = findChildOfType(node, 'identifier');
-      if (nameNode && rawText(nameNode) === name) {
+      if (nameNode && getNodeText(nameNode, sourceCode) === name) {
         found = true;
       }
     }
@@ -1125,7 +1123,7 @@ export function isLocalFunction(name: string, root: ASTNode): boolean {
       const initializer = node.children?.find(
         c => c.type === 'arrow_function' || c.type === 'function_expression'
       );
-      if (nameNode && initializer && rawText(nameNode) === name) {
+      if (nameNode && initializer && getNodeText(nameNode, sourceCode) === name) {
         found = true;
       }
     }
@@ -1133,7 +1131,7 @@ export function isLocalFunction(name: string, root: ASTNode): boolean {
     // class declarations
     if (node.type === 'class_declaration') {
       const nameNode = findChildOfType(node, 'identifier');
-      if (nameNode && rawText(nameNode) === name) {
+      if (nameNode && getNodeText(nameNode, sourceCode) === name) {
         found = true;
       }
     }

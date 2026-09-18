@@ -21,7 +21,7 @@ import {
   DB_BINDING_NAMES,
   DB_WRAPPER_NAMES,
 } from './UniversalSchemaAnalyzer.js';
-import { isSqlKeyword } from './schema/codeAnalysis.js';
+import { isSqlKeyword, findEnclosingFunctionIdentity, functionIdentityLabel } from './schema/codeAnalysis.js';
 import { isTestOrSpecPath } from '../../languages/testConventions.js';
 
 /**
@@ -418,7 +418,7 @@ function buildDatabaseCall(
     hasFilter,
     hasParameterizedQuery: security.parameterized,
     hasSqlInjectionRisk: security.injectionRisk,
-    enclosingFunction: findEnclosingFunctionName(node, adapter),
+    enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
   };
 }
 
@@ -611,7 +611,7 @@ function checkGeneralPatterns(
   for (const node of stringNodes) {
     const text = adapter.getNodeText(node, sourceCode);
     if (isConnectionString(text)) {
-      const fnName = findEnclosingFunctionName(node, adapter);
+      const fnName = enclosingIdentity(node, adapter, ast.filePath);
       const baseSym = `${fnName}:hardcoded-connection`;
       const count = (hardcodedOrdinals.get(baseSym) ?? 0) + 1;
       hardcodedOrdinals.set(baseSym, count);
@@ -1679,7 +1679,7 @@ function checkLoopQueries(
     if (reported.has(dedupKey)) continue;
     reported.add(dedupKey);
 
-    const sym = nextSymbol(findEnclosingFunctionName(node, adapter), 'loop-query', loopOrdinals);
+    const sym = nextSymbol(enclosingIdentity(node, adapter, ast.filePath), 'loop-query', loopOrdinals);
     // R4.2: Nested-loop attribution.
     const depthMsg = loopInfo.depth > 1 ? ` (nested ${loopInfo.depth} levels deep)` : '';
 
@@ -1851,67 +1851,12 @@ function getPropertyName(node: ASTNode, adapter: LanguageAdapter): string {
 }
 
 /**
- * Walk the parent chain to find the enclosing function/method/arrow name.
- * Returns 'top-level' if no enclosing function is found.
- *
- * Used for stable fingerprint symbols — the enclosing function name is
- * immune to line drift (Spec 18 Gap 2).
+ * The enclosing-function identity used for stable fingerprint symbols. The
+ * coordinate (start line + column) keeps anonymous handlers distinct; the single
+ * definition lives in codeAnalysis.ts (Spec 61 Amendment A).
  */
-function findEnclosingFunctionName(node: ASTNode, adapter: LanguageAdapter): string {
-  let current = adapter.getParent(node);
-  while (current) {
-    const type = adapter.getNodeType(current);
-
-    // Arrow functions, function declarations, function expressions
-    if (
-      type === 'arrow_function' ||
-      type === 'function_declaration' ||
-      type === 'function_expression' ||
-      type === 'generator_function_declaration' ||
-      type === 'generator_function_expression'
-    ) {
-      const name = getNodeName(current, adapter);
-      if (name) return name;
-    }
-
-    // Method definitions on classes/objects
-    if (type === 'method_definition' || adapter.isMethod(current)) {
-      const name = getNodeName(current, adapter);
-      if (name) return name;
-    }
-
-    current = adapter.getParent(current);
-  }
-  return 'top-level';
-}
-
-/**
- * Extract the name/identifier from a function or method AST node.
- */
-function getNodeName(node: ASTNode, adapter: LanguageAdapter): string {
-  // Try named children first
-  if ((node as any).name && typeof (node as any).name === 'string') return (node as any).name;
-  if ((node as any).text && typeof (node as any).text === 'string') return (node as any).text;
-  // Fall back to the raw tree-sitter node's text content (leaf identifiers etc.)
-  const rawText = (node.raw as any)?.text;
-  if (typeof rawText === 'string' && rawText.length > 0) return rawText;
-
-  // Walk children for identifier / property_identifier
-  if (node.children) {
-    for (const child of node.children) {
-      const childType = adapter.getNodeType(child);
-      if (
-        childType === 'identifier' ||
-        childType === 'property_identifier'
-      ) {
-        const name = getNodeName(child, adapter);
-        if (name) return name;
-      }
-    }
-  }
-
-  return '';
-}
+const enclosingIdentity = (node: ASTNode, adapter: LanguageAdapter, filePath: string): string =>
+  functionIdentityLabel(findEnclosingFunctionIdentity(node, adapter, filePath));
 
 /**
  * Universal data access analyzer.

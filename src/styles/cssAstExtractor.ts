@@ -15,7 +15,6 @@
  * filtered appropriately by each extraction function.
  */
 
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import type { AST, ASTNode, LanguageAdapter } from '../languages/types.js';
 import { normalizeValue, expandShorthand } from './normalizer.js';
 import type { NormalizedDeclaration, StyleToken, StyleClassUsage } from './types.js';
@@ -157,48 +156,31 @@ function extractApplyDirectives(
 }
 
 // ---------------------------------------------------------------------------
-// Tree-Sitter CSS Node Helpers
+// CSS Node Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * tree-sitter-css does NOT use field names (childForFieldName). Children are
- * discovered by type via namedChild iteration on the raw TreeSitterNode.
- * This grammar is distinct from the tree-sitter-typescript one.
- */
-
-/**
- * Find the first named child of a TreeSitterNode with the given type.
- */
-function findNamedChild(node: TreeSitterNode, type: string): TreeSitterNode | null {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === type) return child;
-  }
-  return null;
-}
-
-/**
- * Get property and raw value from a declaration's raw TreeSitterNode.
+ * Get property and raw value from a declaration node.
  * tree-sitter-css uses `property_name` for the property and various typed
  * children for the value (color_value, integer_value, plain_value,
  * call_expression, etc.). We extract the property from the property_name
  * child and the raw value from the full declaration text after the colon.
  */
-function getPropertyAndValue(declRaw: TreeSitterNode): { property: string; rawValue: string } | null {
-  const propNode = findNamedChild(declRaw, 'property_name');
+function getPropertyAndValue(decl: ASTNode, sourceCode: string): { property: string; rawValue: string } | null {
+  const propNode = decl.children?.find(c => c.type === 'property_name');
   if (!propNode) return null;
 
-  const property = propNode.text.trim();
+  const property = sourceCode.slice(propNode.range[0], propNode.range[1]).trim();
   if (!property) return null;
 
   // Extract raw value from the full declaration text after the property + colon
-  const fullText = declRaw.text;
+  const fullText = sourceCode.slice(decl.range[0], decl.range[1]);
   // Find the colon that separates property from value.
   // Use indexOf on the full text — the property_name child's text tells us
   // where the property ends, but the colon might be outside the child span
   // (tree-sitter may or may not include it in property_name).
   // Safe approach: scan from after the property_name child's end offset.
-  const propEndInDecl = propNode.endIndex - declRaw.startIndex;
+  const propEndInDecl = propNode.range[1] - decl.range[0];
   const afterProp = fullText.slice(propEndInDecl);
   const colonIdx = afterProp.indexOf(':');
   const rawValue = colonIdx !== -1 ? afterProp.slice(colonIdx + 1).replace(/;\s*$/, '').trim() : '';
@@ -216,29 +198,6 @@ function getPropertyAndValue(declRaw: TreeSitterNode): { property: string; rawVa
  */
 function subtreeAST(ast: AST, root: ASTNode): AST {
   return { root, language: ast.language, filePath: ast.filePath, errors: [] };
-}
-
-/**
- * Wrap a TreeSitterNode as an ASTNode for use with adapter methods that
- * expect ASTNode input.
- */
-function wrapAsASTNode(raw: TreeSitterNode): ASTNode {
-  return {
-    type: raw.type,
-    range: [raw.startIndex, raw.endIndex],
-    location: {
-      start: {
-        line: raw.startPosition.row + 1,
-        column: raw.startPosition.column + 1,
-      },
-      end: {
-        line: raw.endPosition.row + 1,
-        column: raw.endPosition.column + 1,
-      },
-    },
-    children: raw.namedChildren.map((c) => wrapAsASTNode(c)),
-    raw,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -261,33 +220,33 @@ export function resetUnresolvedNestingCount(): void {
  * (skipping past the rule_set that directly contains this class_selector),
  * then resolve its class name (handling nested & recursively).
  *
- * Uses raw TreeSitterNode.parent to walk up the parse tree, which works
- * for both adapter-discovered nodes and wrapAsASTNode-created synthetic nodes.
+ * Uses ASTNode.parent to walk up the parse tree.
  *
  * Returns null when the class_selector has no resolvable parent (e.g. it is at
  * the top level, or the parent is another &-pattern that itself cannot resolve).
  */
 function getParentClassName(
   classSelectorNode: ASTNode,
+  sourceCode: string,
 ): string | null {
-  let raw: TreeSitterNode | null = classSelectorNode.raw as TreeSitterNode;
+  let current: ASTNode | null = classSelectorNode;
 
   // Step 1: walk up to find the containing (inner) rule_set
-  while (raw && raw.type !== 'rule_set') {
-    raw = raw.parent;
+  while (current && current.type !== 'rule_set') {
+    current = current.parent ?? null;
   }
-  if (!raw || raw.type !== 'rule_set') return null;
+  if (!current || current.type !== 'rule_set') return null;
 
   // Step 2: walk up FROM the inner rule_set to find the OUTER rule_set
-  raw = raw.parent; // block of outer rule_set, or stylesheet
-  while (raw && raw.type !== 'rule_set') {
-    raw = raw.parent;
+  current = current.parent ?? null; // block of outer rule_set, or stylesheet
+  while (current && current.type !== 'rule_set') {
+    current = current.parent ?? null;
   }
-  if (!raw || raw.type !== 'rule_set') return null;
+  if (!current || current.type !== 'rule_set') return null;
 
   // Step 3: resolve the outer rule_set's concrete class name (unwinding any
   // nested `&` chains — see resolveRuleSetClassName).
-  return resolveRuleSetClassName(raw);
+  return resolveRuleSetClassName(current, sourceCode);
 }
 
 /**
@@ -302,35 +261,35 @@ function getParentClassName(
  *
  * Returns null when no concrete parent class exists at or above this rule_set.
  */
-function resolveRuleSetClassName(ruleSetRaw: TreeSitterNode): string | null {
-  const selectorsRaw = findNamedChild(ruleSetRaw, 'selectors');
-  if (!selectorsRaw) return null;
+function resolveRuleSetClassName(ruleSet: ASTNode, sourceCode: string): string | null {
+  const selectors = ruleSet.children?.find(c => c.type === 'selectors');
+  if (!selectors) return null;
 
   // Plain or BEM-nested class_selector.
-  const classSelector = findNamedChild(selectorsRaw, 'class_selector');
+  const classSelector = selectors.children?.find(c => c.type === 'class_selector');
   if (classSelector) {
-    const hasNesting = classSelector.namedChildren.some(
-      (c: any) => c.type === 'nesting_selector',
+    const hasNesting = (classSelector.children ?? []).some(
+      (c) => c.type === 'nesting_selector',
     );
     if (hasNesting) {
-      const resolved = resolveNestingSelector(wrapAsASTNode(classSelector));
+      const resolved = resolveNestingSelector(classSelector, sourceCode);
       if (resolved !== null && resolved.resolvable) return resolved.className;
       return null;
     }
-    const cn = findNamedChild(classSelector, 'class_name');
-    if (cn) return cn.text;
+    const cn = classSelector.children?.find(c => c.type === 'class_name');
+    if (cn) return sourceCode.slice(cn.range[0], cn.range[1]);
   }
 
   // Bare `&` in a pseudo_class_selector / attribute_selector — no class name at
   // this level; unwind one more rule_set.
-  const hasBareNesting = selectorsRaw.namedChildren.some(c =>
+  const hasBareNesting = (selectors.children ?? []).some(c =>
     (c.type === 'pseudo_class_selector' || c.type === 'attribute_selector')
-    && c.namedChildren.some((cc: any) => cc.type === 'nesting_selector'),
+    && (c.children ?? []).some((cc) => cc.type === 'nesting_selector'),
   );
   if (hasBareNesting) {
-    let outer: TreeSitterNode | null = ruleSetRaw.parent;
-    while (outer && outer.type !== 'rule_set') outer = outer.parent;
-    if (outer && outer.type === 'rule_set') return resolveRuleSetClassName(outer);
+    let outer: ASTNode | null = ruleSet.parent ?? null;
+    while (outer && outer.type !== 'rule_set') outer = outer.parent ?? null;
+    if (outer && outer.type === 'rule_set') return resolveRuleSetClassName(outer, sourceCode);
   }
 
   return null;
@@ -356,6 +315,7 @@ function resolveRuleSetClassName(ruleSetRaw: TreeSitterNode): string | null {
  */
 function resolveNestingSelector(
   classSelectorNode: ASTNode,
+  sourceCode: string,
 ): { className: string; resolvable: boolean } | null {
   const children = classSelectorNode.children ?? [];
   const hasNesting = children.some(c => c.type === 'nesting_selector');
@@ -367,11 +327,11 @@ function resolveNestingSelector(
 
   // Case 1: &-suffix or &__element or &--modifier or &.modifier
   for (const cn of classNames) {
-    const raw = (cn.raw as TreeSitterNode).text;
+    const raw = sourceCode.slice(cn.range[0], cn.range[1]);
 
     // BEM no-separator concatenation: &-suffix, &__element, &--modifier
     if (raw.startsWith('-') || raw.startsWith('_')) {
-      const parentName = getParentClassName(classSelectorNode);
+      const parentName = getParentClassName(classSelectorNode, sourceCode);
       if (parentName) {
         return { className: parentName + raw, resolvable: true };
       }
@@ -393,7 +353,7 @@ function resolveNestingSelector(
   for (const nestedCS of nestedClassSelectors) {
     const innerCN = nestedCS.children?.find(c => c.type === 'class_name');
     if (innerCN) {
-      const raw = (innerCN.raw as TreeSitterNode).text;
+      const raw = sourceCode.slice(innerCN.range[0], innerCN.range[1]);
       unresolvedNestingCount++;
       return { className: raw, resolvable: false };
     }
@@ -417,6 +377,7 @@ function resolveNestingSelector(
 function resolveSelectorContext(
   selectorsNode: ASTNode,
   rawText: string,
+  sourceCode: string,
 ): string {
   const children = selectorsNode.children ?? [];
   const classSelectors = children.filter(c => c.type === 'class_selector');
@@ -437,18 +398,18 @@ function resolveSelectorContext(
 
   let resolvedText = rawText;
   for (const cs of classSelectors) {
-    const resolved = resolveNestingSelector(cs);
+    const resolved = resolveNestingSelector(cs, sourceCode);
     if (resolved !== null && resolved.resolvable) {
-      const csRaw = (cs.raw as TreeSitterNode).text;
+      const csRaw = sourceCode.slice(cs.range[0], cs.range[1]);
       resolvedText = resolvedText.replace(csRaw, '.' + resolved.className);
     }
   }
 
   for (const bs of bareNestingSelectors) {
-    const parentName = getParentClassNameFromSelectors(selectorsNode);
+    const parentName = getParentClassNameFromSelectors(selectorsNode, sourceCode);
     const ns = (bs.children ?? []).find(cc => cc.type === 'nesting_selector');
     if (parentName && ns) {
-      const nsRaw = (ns.raw as TreeSitterNode).text; // '&'
+      const nsRaw = sourceCode.slice(ns.range[0], ns.range[1]); // '&'
       resolvedText = resolvedText.replace(nsRaw, '.' + parentName);
     } else {
       unresolvedNestingCount++;
@@ -462,16 +423,15 @@ function resolveSelectorContext(
  * Resolve the parent class name for a bare `&` nesting selector, starting from
  * the rule_set's `selectors` node (whose parent is the rule_set itself).
  */
-function getParentClassNameFromSelectors(selectorsNode: ASTNode): string | null {
-  const raw = selectorsNode.raw as TreeSitterNode;
-  const innerRuleSet = raw?.parent;
+function getParentClassNameFromSelectors(selectorsNode: ASTNode, sourceCode: string): string | null {
+  const innerRuleSet = selectorsNode.parent ?? null;
   if (!innerRuleSet || innerRuleSet.type !== 'rule_set') return null;
 
-  let outer: TreeSitterNode | null = innerRuleSet.parent;
-  while (outer && outer.type !== 'rule_set') outer = outer.parent;
+  let outer: ASTNode | null = innerRuleSet.parent ?? null;
+  while (outer && outer.type !== 'rule_set') outer = outer.parent ?? null;
   if (!outer || outer.type !== 'rule_set') return null;
 
-  return resolveRuleSetClassName(outer);
+  return resolveRuleSetClassName(outer, sourceCode);
 }
 
 // ---------------------------------------------------------------------------
@@ -502,18 +462,15 @@ export function extractDeclarationsFromCSSAst(
   const ruleSets = adapter.findNodes(ast, { type: 'rule_set' });
 
   for (const ruleSet of ruleSets) {
-    const rawNode = ruleSet.raw as TreeSitterNode;
-
     // tree-sitter-css: rule_set has named children 'selectors' and 'block'
-    const selectorsRaw = findNamedChild(rawNode, 'selectors');
-    if (!selectorsRaw) continue;
+    const selectorsAst = ruleSet.children?.find(c => c.type === 'selectors');
+    if (!selectorsAst) continue;
 
-    const selectorsAst = wrapAsASTNode(selectorsRaw);
     let selector = getSelectorText(selectorsAst, sourceCode);
     if (!selector) continue;
 
     // SCSS: resolve & nesting in selector context (Bug 2 fix)
-    selector = resolveSelectorContext(selectorsAst, selector);
+    selector = resolveSelectorContext(selectorsAst, selector, sourceCode);
 
     // Get variant context from at_rule ancestors
     const variantContext = getVariantContext(ruleSet, adapter, sourceCode);
@@ -530,10 +487,9 @@ export function extractDeclarationsFromCSSAst(
       while (declAncestor && declAncestor.type !== 'rule_set') {
         declAncestor = adapter.getParent(declAncestor);
       }
-      if (declAncestor && (declAncestor.raw as TreeSitterNode).id !== rawNode.id) continue;
+      if (declAncestor !== ruleSet) continue;
 
-      const raw = decl.raw as TreeSitterNode;
-      const pv = getPropertyAndValue(raw);
+      const pv = getPropertyAndValue(decl, sourceCode);
       if (!pv) continue;
 
       const { property, rawValue } = pv;
@@ -564,9 +520,8 @@ export function extractDeclarationsFromCSSAst(
     }
 
     // Handle @apply directives (Tailwind extension)
-    const blockRaw = findNamedChild(rawNode, 'block');
-    if (blockRaw) {
-      const blockAst = wrapAsASTNode(blockRaw);
+    const blockAst = ruleSet.children?.find(c => c.type === 'block');
+    if (blockAst) {
       extractApplyDirectives(blockAst, sourceCode, selector, variantContext, filePath, declarations);
     }
   }
@@ -575,8 +530,10 @@ export function extractDeclarationsFromCSSAst(
   // keyframe_block_list children, not rule_set.
   const keyframeStmts = adapter.findNodes(ast, { type: 'keyframes_statement' });
   for (const kf of keyframeStmts) {
-    const kfRaw = kf.raw as TreeSitterNode;
-    const kfName = findNamedChild(kfRaw, 'keyframes_name')?.text ?? 'unknown';
+    const kfNameNode = kf.children?.find(c => c.type === 'keyframes_name');
+    const kfName = kfNameNode
+      ? sourceCode.slice(kfNameNode.range[0], kfNameNode.range[1])
+      : 'unknown';
     const kfSubAST = subtreeAST(ast, kf);
     const kfDeclNodes = adapter.findNodes(kfSubAST, { type: 'declaration' });
 
@@ -586,18 +543,18 @@ export function extractDeclarationsFromCSSAst(
       let kfSelector = '(unknown)';
       while (parent && parent.type !== 'keyframes_statement') {
         if (parent.type === 'keyframe_block') {
-          const selChild = (parent.raw as TreeSitterNode).namedChildren.find(
-            (c: any) =>
-              c.type === 'from' || c.type === 'to' || c.type === 'integer_value',
+          const selChild = (parent.children ?? []).find(
+            (c) => c.type === 'from' || c.type === 'to' || c.type === 'integer_value',
           );
-          kfSelector = selChild?.text ?? '(unknown)';
+          kfSelector = selChild
+            ? sourceCode.slice(selChild.range[0], selChild.range[1])
+            : '(unknown)';
           break;
         }
         parent = adapter.getParent(parent);
       }
 
-      const raw = decl.raw as TreeSitterNode;
-      const pv = getPropertyAndValue(raw);
+      const pv = getPropertyAndValue(decl, sourceCode);
       if (!pv) continue;
       const { property, rawValue } = pv;
       if (!property || !rawValue) continue;
@@ -639,8 +596,7 @@ export function extractDeclarationsFromCSSAst(
     }
     if (parent?.type === 'rule_set' || parent?.type === 'block' || inKeyframe) continue;
 
-    const raw = decl.raw as TreeSitterNode;
-    const pv = getPropertyAndValue(raw);
+    const pv = getPropertyAndValue(decl, sourceCode);
     if (!pv) continue;
 
     const { property, rawValue } = pv;
@@ -681,13 +637,13 @@ export function extractTokensFromCSSAst(
   ast: AST,
   adapter: LanguageAdapter,
   filePath: string,
+  sourceCode: string,
 ): StyleToken[] {
   const tokens: StyleToken[] = [];
 
   const allDecls = adapter.findNodes(ast, { type: 'declaration' });
   for (const decl of allDecls) {
-    const raw = decl.raw as TreeSitterNode;
-    const pv = getPropertyAndValue(raw);
+    const pv = getPropertyAndValue(decl, sourceCode);
     if (!pv) continue;
 
     const { property, rawValue } = pv;
@@ -725,6 +681,7 @@ export function extractClassUsageFromCSSAst(
   ast: AST,
   adapter: LanguageAdapter,
   filePath: string,
+  sourceCode: string,
 ): StyleClassUsage[] {
   const usage: StyleClassUsage[] = [];
 
@@ -740,12 +697,11 @@ export function extractClassUsageFromCSSAst(
     const parent = adapter.getParent(node);
     if (!parent || parent.type !== 'class_selector') continue;
 
-    const raw = node.raw as TreeSitterNode;
-    const rawName = raw.text;
+    const rawName = sourceCode.slice(node.range[0], node.range[1]);
     if (!rawName) continue;
 
     // SCSS nesting resolution: check if parent class_selector has a nesting_selector
-    const resolved = resolveNestingSelector(parent);
+    const resolved = resolveNestingSelector(parent, sourceCode);
 
     if (resolved !== null) {
       // &-pattern: register the resolved or dropped class name

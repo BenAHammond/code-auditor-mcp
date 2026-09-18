@@ -14,18 +14,12 @@
  */
 
 import type { ASTNode } from '../languages/types.js';
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { walkAST, findNodes, getNodeText, getLineAndColumn, getNodeName } from '../languages/adapterBridge.js';
+import { walkAST, findNodes, getNodeText, getLineAndColumn, getNodeName, hasModifier } from '../languages/adapterBridge.js';
 import { ComponentMetadata, ComponentImport, HookUsage, PropDefinition } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
-function rawText(node: ASTNode): string {
-  return (node.raw as TreeSitterNode)?.text ?? '';
-}
 
 /** Check if a tree-sitter node type is a function-like declaration. */
 function isFunctionType(type: string): boolean {
@@ -78,8 +72,8 @@ function findChildrenOfType(node: ASTNode, type: string): ASTNode[] {
 /**
  * Check if a node is any type of React component
  */
-export function isReactComponent(node: ASTNode): boolean {
-  return isFunctionalComponent(node) || isClassComponent(node);
+export function isReactComponent(node: ASTNode, sourceCode: string): boolean {
+  return isFunctionalComponent(node) || isClassComponent(node, sourceCode);
 }
 
 /**
@@ -132,7 +126,7 @@ export function returnsJSX(node: ASTNode): boolean {
 /**
  * Check if a node is a class component extending React.Component
  */
-export function isClassComponent(node: ASTNode): boolean {
+export function isClassComponent(node: ASTNode, sourceCode: string): boolean {
   if (node.type !== 'class_declaration') return false;
 
   // Check heritage clauses for extends React.Component / PureComponent.
@@ -146,7 +140,7 @@ export function isClassComponent(node: ASTNode): boolean {
       if (clause.type !== 'extends_clause') continue;
 
       for (const typeNode of clause.children ?? []) {
-        if (isReactComponentBaseType(typeNode)) return true;
+        if (isReactComponentBaseType(typeNode, sourceCode)) return true;
       }
     }
   }
@@ -163,10 +157,10 @@ export function isClassComponent(node: ASTNode): boolean {
  * recognised as a class component, so error boundaries that extend
  * `Component<Props>` were dropped from `detectComponentType`.
  */
-function isReactComponentBaseType(typeNode: ASTNode): boolean {
+function isReactComponentBaseType(typeNode: ASTNode, sourceCode: string): boolean {
   // identifier: `Component` / `PureComponent`
   if (typeNode.type === 'identifier') {
-    const name = rawText(typeNode);
+    const name = getNodeText(typeNode, sourceCode);
     return name === 'Component' || name === 'PureComponent';
   }
 
@@ -175,16 +169,16 @@ function isReactComponentBaseType(typeNode: ASTNode): boolean {
     const parts = typeNode.children ?? [];
     const obj = parts[0];
     const prop = parts[parts.length - 1];
-    return obj?.type === 'identifier' && rawText(obj) === 'React' &&
+    return obj?.type === 'identifier' && getNodeText(obj, sourceCode) === 'React' &&
       prop?.type === 'property_identifier' &&
-      (rawText(prop) === 'Component' || rawText(prop) === 'PureComponent');
+      (getNodeText(prop, sourceCode) === 'Component' || getNodeText(prop, sourceCode) === 'PureComponent');
   }
 
   // generic_type: `Component<Props>` / `React.Component<Props>` — the base
   // type name is the first named child, before the `type_arguments`.
   if (typeNode.type === 'generic_type') {
     const name = typeNode.children?.[0];
-    return name ? isReactComponentBaseType(name) : false;
+    return name ? isReactComponentBaseType(name, sourceCode) : false;
   }
 
   return false;
@@ -203,7 +197,7 @@ function isReactComponentBaseType(typeNode: ASTNode): boolean {
  *                       These are captured so checkHooksRules can flag the
  *                       naming violation at the call site.
  */
-export function extractHooks(node: ASTNode, hookUsingFns?: Set<string>): HookUsage[] {
+export function extractHooks(node: ASTNode, sourceCode: string, hookUsingFns?: Set<string>): HookUsage[] {
   const hooks: HookUsage[] = [];
 
   // Find all call expressions in the component
@@ -215,7 +209,7 @@ export function extractHooks(node: ASTNode, hookUsingFns?: Set<string>): HookUsa
     if (!callee) continue;
 
     if (callee.type === 'identifier') {
-      const name = rawText(callee);
+      const name = getNodeText(callee, sourceCode);
       if (name.startsWith('use')) {
         const { line } = getLineAndColumn(callee);
         hooks.push({
@@ -239,8 +233,8 @@ export function extractHooks(node: ASTNode, hookUsingFns?: Set<string>): HookUsa
       const object = callee.children?.[0];
       const property = callee.children?.find(c => c.type === 'property_identifier');
       if (object && property &&
-          object.type === 'identifier' && rawText(object) === 'React') {
-        const name = rawText(property);
+          object.type === 'identifier' && getNodeText(object, sourceCode) === 'React') {
+        const name = getNodeText(property, sourceCode);
         if (name.startsWith('use')) {
           const { line } = getLineAndColumn(callee);
           hooks.push({
@@ -263,7 +257,7 @@ export function extractHooks(node: ASTNode, hookUsingFns?: Set<string>): HookUsa
 /**
  * Extract props from a TypeScript type literal / object_type node.
  */
-function extractPropsFromTypeLiteral(typeLiteral: ASTNode): PropDefinition[] {
+function extractPropsFromTypeLiteral(typeLiteral: ASTNode, sourceCode: string): PropDefinition[] {
   const props: PropDefinition[] = [];
 
   for (const member of typeLiteral.children ?? []) {
@@ -273,14 +267,13 @@ function extractPropsFromTypeLiteral(typeLiteral: ASTNode): PropDefinition[] {
     if (!nameNode) continue;
 
     const typeChild = member.children?.find(c => c.type === 'type_annotation');
-    const typeStr = typeChild ? getNodeText(typeChild, '') || rawText(typeChild) : 'any';
+    const typeStr = typeChild ? getNodeText(typeChild, sourceCode) : 'any';
 
     // Check for optional marker
-    const raw = member.raw as TreeSitterNode;
-    const hasQuestion = raw?.children?.some(c => !c.isNamed && c.type === '?') ?? false;
+    const hasQuestion = hasModifier(member, '?');
 
     props.push({
-      name: rawText(nameNode),
+      name: getNodeText(nameNode, sourceCode),
       type: typeStr,
       required: !hasQuestion,
       hasDefault: false
@@ -298,7 +291,7 @@ function extractPropsFromTypeLiteral(typeLiteral: ASTNode): PropDefinition[] {
  * but type references (e.g. `React.FC<Props>`) without inline definition
  * will fall through to parameter heuristics.
  */
-export function extractPropTypes(node: ASTNode): PropDefinition[] {
+export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinition[] {
   const props: PropDefinition[] = [];
 
   // Handle variable declarations with type annotations (e.g., const Button: React.FC<Props>)
@@ -329,12 +322,11 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
 
               if (!nameNode) continue;
 
-              const raw = element.raw as TreeSitterNode;
-              const hasRest = raw?.children?.some(c => !c.isNamed && c.type === '...') ?? false;
+              const hasRest = hasModifier(element, '...');
               const hasDefault = element.children?.some(c => c.type !== 'identifier' && c.type !== 'property_identifier') ?? false;
 
               props.push({
-                name: rawText(nameNode),
+                name: getNodeText(nameNode, sourceCode),
                 type: 'any',
                 required: !hasRest && !hasDefault,
                 hasDefault
@@ -367,12 +359,11 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
 
             if (!nameNode) continue;
 
-            const raw = element.raw as TreeSitterNode;
-            const hasRest = raw?.children?.some(c => !c.isNamed && c.type === '...') ?? false;
+            const hasRest = hasModifier(element, '...');
             const hasDefault = element.children?.some(c => c.type !== 'identifier' && c.type !== 'property_identifier') ?? false;
 
             props.push({
-              name: rawText(nameNode),
+              name: getNodeText(nameNode, sourceCode),
               type: 'any',
               required: !hasRest && !hasDefault,
               hasDefault
@@ -388,7 +379,7 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
           const typeNode = typeAnnot.children?.find(c =>
             c.type === 'object_type' || c.type === 'type_literal');
           if (typeNode) {
-            props.push(...extractPropsFromTypeLiteral(typeNode));
+            props.push(...extractPropsFromTypeLiteral(typeNode, sourceCode));
           }
           // NOTE: type_reference (interface references) can't be resolved
           // without TypeChecker — this is a known tree-sitter limitation.
@@ -414,7 +405,7 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
         if (typeArgs?.children) {
           const firstArg = typeArgs.children[0];
           if (firstArg?.type === 'object_type' || firstArg?.type === 'type_literal') {
-            props.push(...extractPropsFromTypeLiteral(firstArg));
+            props.push(...extractPropsFromTypeLiteral(firstArg, sourceCode));
           }
         }
       }
@@ -431,7 +422,7 @@ export function extractPropTypes(node: ASTNode): PropDefinition[] {
 /**
  * Extract component imports from an AST.
  */
-export function extractComponentImports(astRoot: ASTNode): ComponentImport[] {
+export function extractComponentImports(astRoot: ASTNode, sourceCode: string): ComponentImport[] {
   const imports: ComponentImport[] = [];
 
   const importNodes = findNodes(astRoot, n => n.type === 'import_statement');
@@ -441,7 +432,7 @@ export function extractComponentImports(astRoot: ASTNode): ComponentImport[] {
     const moduleNode = findChildOfType(imp, 'string');
     if (!moduleNode) continue;
 
-    const rawSpecifier = rawText(moduleNode);
+    const rawSpecifier = getNodeText(moduleNode, sourceCode);
     const importPath = rawSpecifier.replace(/^["']|["']$/g, '');
 
     // Only check local imports (not node_modules)
@@ -453,7 +444,7 @@ export function extractComponentImports(astRoot: ASTNode): ComponentImport[] {
     // Default import (identifier child of import_clause)
     for (const child of importClause.children ?? []) {
       if (child.type === 'identifier') {
-        const name = rawText(child);
+        const name = getNodeText(child, sourceCode);
         if (isComponentName(name)) {
           imports.push({ name, path: importPath, isDefault: true });
         }
@@ -467,7 +458,7 @@ export function extractComponentImports(astRoot: ASTNode): ComponentImport[] {
           const identifiers = spec.children?.filter(c => c.type === 'identifier') ?? [];
           const localName = identifiers[identifiers.length - 1];
           if (localName) {
-            const name = rawText(localName);
+            const name = getNodeText(localName, sourceCode);
             if (isComponentName(name)) {
               imports.push({ name, path: importPath, isDefault: false });
             }
@@ -487,13 +478,13 @@ export function extractComponentImports(astRoot: ASTNode): ComponentImport[] {
 /**
  * Detect the specific type of component (functional, class, memo, forwardRef)
  */
-export function detectComponentType(node: ASTNode): ComponentMetadata['componentType'] | null {
+export function detectComponentType(node: ASTNode, sourceCode: string): ComponentMetadata['componentType'] | null {
   // Check for call expression wrapping (memo, forwardRef)
   if (node.type === 'call_expression') {
     const callee = node.children?.[0];
     if (callee) {
       if (callee.type === 'identifier') {
-        const name = rawText(callee);
+        const name = getNodeText(callee, sourceCode);
         if (name === 'memo') return 'memo';
         if (name === 'forwardRef') return 'forwardRef';
       }
@@ -503,8 +494,8 @@ export function detectComponentType(node: ASTNode): ComponentMetadata['component
         if (parts.length >= 2) {
           const obj = parts[0];
           const prop = parts[parts.length - 1];
-          if (obj.type === 'identifier' && rawText(obj) === 'React') {
-            const propName = rawText(prop);
+          if (obj.type === 'identifier' && getNodeText(obj, sourceCode) === 'React') {
+            const propName = getNodeText(prop, sourceCode);
             if (propName === 'memo') return 'memo';
             if (propName === 'forwardRef') return 'forwardRef';
           }
@@ -513,7 +504,7 @@ export function detectComponentType(node: ASTNode): ComponentMetadata['component
     }
   }
 
-  if (isClassComponent(node)) return 'class';
+  if (isClassComponent(node, sourceCode)) return 'class';
   if (isFunctionalComponent(node)) return 'functional';
 
   return null;
@@ -526,18 +517,18 @@ export function detectComponentType(node: ASTNode): ComponentMetadata['component
 /**
  * Get component name from various declaration patterns
  */
-export function getComponentName(node: ASTNode): string {
+export function getComponentName(node: ASTNode, sourceCode: string): string {
   // Function declaration
   if (node.type === 'function_declaration') {
     const nameNode = findChildOfType(node, 'identifier');
-    if (nameNode) return rawText(nameNode);
+    if (nameNode) return getNodeText(nameNode, sourceCode);
   }
 
   // Class declaration — tree-sitter-typescript names classes with a
   // `type_identifier`, not a plain `identifier`.
   if (node.type === 'class_declaration') {
     const nameNode = findChildOfType(node, 'identifier') ?? findChildOfType(node, 'type_identifier');
-    if (nameNode) return rawText(nameNode);
+    if (nameNode) return getNodeText(nameNode, sourceCode);
   }
 
   // Variable declaration / lexical declaration
@@ -545,14 +536,14 @@ export function getComponentName(node: ASTNode): string {
     const declarator = findChildOfType(node, 'variable_declarator');
     if (declarator) {
       const nameNode = declarator.children?.find(c => c.type === 'identifier');
-      if (nameNode) return rawText(nameNode);
+      if (nameNode) return getNodeText(nameNode, sourceCode);
     }
   }
 
   // Variable declarator (direct)
   if (node.type === 'variable_declarator') {
     const nameNode = node.children?.find(c => c.type === 'identifier');
-    if (nameNode) return rawText(nameNode);
+    if (nameNode) return getNodeText(nameNode, sourceCode);
   }
 
   // For arrow functions: walk up through memo/forwardRef wrappers to find
@@ -574,7 +565,7 @@ export function getComponentName(node: ASTNode): string {
     // enclosing node.  If it's a declarator, grab its identifier.
     if (parent?.type === 'variable_declarator') {
       const nameNode = parent.children?.find((c) => c.type === 'identifier');
-      if (nameNode) return rawText(nameNode);
+      if (nameNode) return getNodeText(nameNode, sourceCode);
     }
 
     return 'AnonymousComponent';
@@ -587,7 +578,7 @@ export function getComponentName(node: ASTNode): string {
       const firstArg = args.children[0];
       if (firstArg?.type === 'function_expression') {
         const nameNode = findChildOfType(firstArg, 'identifier');
-        if (nameNode) return rawText(nameNode);
+        if (nameNode) return getNodeText(nameNode, sourceCode);
       }
       // Also handle arrow_function args: walk up from the call_expression
       // itself to find the enclosing variable declaration name.
@@ -595,7 +586,7 @@ export function getComponentName(node: ASTNode): string {
         let parent: ASTNode | undefined = node.parent;
         if (parent?.type === 'variable_declarator') {
           const nameNode = parent.children?.find((c) => c.type === 'identifier');
-          if (nameNode) return rawText(nameNode);
+          if (nameNode) return getNodeText(nameNode, sourceCode);
         }
       }
     }

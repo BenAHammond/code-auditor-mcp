@@ -270,7 +270,7 @@ describe('FP 6 — a class defined only in a CSS comment is not a class', () => 
     const css = '/* .comment-class { color: red; } */\n.actual-class { color: blue; }';
     const adapter = LanguageRegistry.getInstance().getAdapterForFile('test.css')!;
     const ast = await adapter.parse('test.css', css);
-    const classes = extractClassUsageFromCSSAst(ast, adapter, 'test.css');
+    const classes = extractClassUsageFromCSSAst(ast, adapter, 'test.css', css);
     const names = classes.map((c: { className: string }) => c.className);
     expect(names).toContain('actual-class');
     expect(names).not.toContain('comment-class');

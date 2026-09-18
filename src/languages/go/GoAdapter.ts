@@ -12,8 +12,9 @@
  */
 
 import type { Node as TreeSitterNode } from 'web-tree-sitter';
-import { getParser, parseWithRecovery } from '../tree-sitter/parser.js';
+import { parseWithRecovery } from '../tree-sitter/parser.js';
 import { toASTNode, toSourceLocation } from '../tree-sitter/converter.js';
+import { getRawNode } from '../tree-sitter/rawNode.js';
 import type {
   AST,
   ASTNode,
@@ -201,7 +202,7 @@ class GoTraversalHelpers {
 
 class GoAnalysis extends GoTraversalHelpers {
   protected matchesPattern(node: ASTNode, pattern: NodePattern): boolean {
-    const syntaxNode = node.raw as TreeSitterNode;
+    const syntaxNode = getRawNode(node);
 
     if (pattern.type !== undefined) {
       const types = Array.isArray(pattern.type) ? pattern.type : [pattern.type];
@@ -504,11 +505,6 @@ class GoParserCore extends GoAnalysis {
     return node.children ?? [];
   }
 
-  getSiblings(node: ASTNode): ASTNode[] {
-    if (!node.parent?.children) return [];
-    return node.parent.children.filter((c) => c !== node);
-  }
-
   // -- Node Information -----------------------------------------------------
 
   getNodeType(node: ASTNode): string {
@@ -520,11 +516,7 @@ class GoParserCore extends GoAnalysis {
   }
 
   getNodeName(node: ASTNode): string | null {
-    return this.extractName(node.raw as TreeSitterNode);
-  }
-
-  getNodeLocation(node: ASTNode): SourceLocation {
-    return node.location;
+    return this.extractName(getRawNode(node));
   }
 }
 
@@ -538,7 +530,7 @@ class GoExtraction extends GoParserCore {
     const functions: FunctionInfo[] = [];
 
     this.walk(ast.root, (astNode) => {
-      const node = astNode.raw as TreeSitterNode;
+      const node = getRawNode(astNode);
       if (node.type === 'function_declaration') {
         const fn = this.buildFunctionInfo(node, sourceCode);
         if (fn) functions.push(fn);
@@ -555,7 +547,7 @@ class GoExtraction extends GoParserCore {
     const allFunctions = this.extractFunctions(ast);
 
     this.walk(ast.root, (astNode) => {
-      const node = astNode.raw as TreeSitterNode;
+      const node = getRawNode(astNode);
       if (node.type === 'type_declaration') {
         const specs = this.findNamedChildren(node, 'type_spec');
         for (const spec of specs) {
@@ -583,7 +575,7 @@ class GoExtraction extends GoParserCore {
     const imports: ImportInfo[] = [];
 
     this.walk(ast.root, (astNode) => {
-      const node = astNode.raw as TreeSitterNode;
+      const node = getRawNode(astNode);
       if (node.type === 'import_declaration') {
         for (const spec of node.namedChildren) {
           if (spec.type === 'import_spec') {
@@ -601,7 +593,7 @@ class GoExtraction extends GoParserCore {
     const exports: ExportInfo[] = [];
 
     this.walk(ast.root, (astNode) => {
-      const node = astNode.raw as TreeSitterNode;
+      const node = getRawNode(astNode);
 
       if (node.type === 'function_declaration') {
         const name = this.extractName(node);
@@ -642,7 +634,7 @@ class GoExtraction extends GoParserCore {
 
 class GoPredicates extends GoExtraction {
   isClass(node: ASTNode): boolean {
-    const n = node.raw as TreeSitterNode;
+    const n = getRawNode(node);
     if (n.type === 'type_spec') {
       const typeNode = n.childForFieldName?.('type');
       return typeNode?.type === 'struct_type';
@@ -651,48 +643,21 @@ class GoPredicates extends GoExtraction {
   }
 
   isFunction(node: ASTNode): boolean {
-    return (node.raw as TreeSitterNode).type === 'function_declaration';
+    return (getRawNode(node)).type === 'function_declaration';
   }
 
   isMethod(node: ASTNode): boolean {
-    const n = node.raw as TreeSitterNode;
+    const n = getRawNode(node);
     if (n.type !== 'function_declaration') return false;
     return n.childForFieldName?.('receiver') != null;
   }
 
-  isInterface(node: ASTNode): boolean {
-    const n = node.raw as TreeSitterNode;
-    if (n.type === 'type_spec') {
-      const typeNode = n.childForFieldName?.('type');
-      return typeNode?.type === 'interface_type';
-    }
-    return n.type === 'interface_type';
-  }
-
-  isImport(node: ASTNode): boolean {
-    return (node.raw as TreeSitterNode).type === 'import_declaration';
-  }
-
-  isExport(node: ASTNode): boolean {
-    return false; // Go has no export keyword
-  }
-
   isLoop(node: ASTNode): boolean {
-    return (node.raw as TreeSitterNode).type === 'for_statement';
-  }
-
-  isConditional(node: ASTNode): boolean {
-    const t = (node.raw as TreeSitterNode).type;
-    return (
-      t === 'if_statement' ||
-      t === 'switch_statement' ||
-      t === 'expression_switch_statement' ||
-      t === 'type_switch_statement'
-    );
+    return (getRawNode(node)).type === 'for_statement';
   }
 
   isVariableDeclaration(node: ASTNode): boolean {
-    const t = (node.raw as TreeSitterNode).type;
+    const t = (getRawNode(node)).type;
     return (
       t === 'var_declaration' ||
       t === 'short_var_declaration' ||
@@ -703,33 +668,12 @@ class GoPredicates extends GoExtraction {
 
   // -- Advanced Features ----------------------------------------------------
 
-  getTypeInfo(node: ASTNode): string | null {
-    const n = node.raw as TreeSitterNode;
-
-    if (n.type === 'function_declaration') {
-      const result = n.childForFieldName?.('result');
-      if (result) return result.text.trim();
-    }
-
-    if (n.type === 'var_spec' || n.type === 'const_spec') {
-      const typeNode = n.childForFieldName?.('type');
-      if (typeNode) return typeNode.text.trim();
-    }
-
-    if (n.type === 'field_declaration') {
-      const typeNode = n.childForFieldName?.('type');
-      if (typeNode) return typeNode.text.trim();
-    }
-
-    return null;
-  }
-
   getDocumentation(node: ASTNode): string | null {
-    return this.extractDocumentation(node.raw as TreeSitterNode);
+    return this.extractDocumentation(getRawNode(node));
   }
 
   getComplexity(node: ASTNode): number {
-    return this.calculateComplexity(node.raw as TreeSitterNode);
+    return this.calculateComplexity(getRawNode(node));
   }
 }
 
@@ -742,7 +686,7 @@ class GoOptionalCapabilities extends GoPredicates {
     const interfaces: InterfaceInfo[] = [];
 
     this.walk(ast.root, (astNode) => {
-      const node = astNode.raw as TreeSitterNode;
+      const node = getRawNode(astNode);
       if (node.type === 'type_declaration') {
         const specs = this.findNamedChildren(node, 'type_spec');
         for (const spec of specs) {
@@ -758,65 +702,6 @@ class GoOptionalCapabilities extends GoPredicates {
     });
 
     return interfaces;
-  }
-
-  // -- Optional: Raw imports ------------------------------------------------
-
-  extractRawImports(
-    _filePath: string,
-    content: string
-  ): Array<{
-    moduleSpecifier: string;
-    isStatic: boolean;
-    isDynamic: boolean;
-    isRequire: boolean;
-    line: number;
-  }> {
-    const results: Array<{
-      moduleSpecifier: string;
-      isStatic: boolean;
-      isDynamic: boolean;
-      isRequire: boolean;
-      line: number;
-    }> = [];
-
-    const parser = getParser('go');
-    const tree = parser.parse(content);
-    if (!tree) return results;
-
-    this.walkRaw(tree.rootNode, (node) => {
-      if (node.type === 'import_declaration') {
-        for (const spec of node.namedChildren) {
-          if (spec.type === 'import_spec') {
-            for (const child of spec.namedChildren) {
-              if (
-                child.type === 'interpreted_string_literal' ||
-                child.type === 'raw_string_literal'
-              ) {
-                results.push({
-                  moduleSpecifier: child.text.slice(1, -1),
-                  isStatic: true,
-                  isDynamic: false,
-                  isRequire: false,
-                  line: child.startPosition.row,
-                });
-              }
-            }
-          }
-        }
-      }
-    });
-
-    return results;
-  }
-
-  // -- Optional: Exported symbols -------------------------------------------
-
-  extractExportedSymbols(ast: AST): Array<{ name: string; line: number }> {
-    return this.extractExports(ast).map((e) => ({
-      name: e.name,
-      line: e.location.start.line,
-    }));
   }
 }
 
@@ -840,7 +725,7 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
    * @returns
    */
   isDynamicStringConstruction(node: ASTNode): boolean {
-    const raw = node.raw as TreeSitterNode;
+    const raw = getRawNode(node);
     const type = raw.type;
 
     if (type === 'call_expression') {
@@ -857,9 +742,9 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
       // Recurse into arguments: query(fmt.Sprintf(...)) where the outer
       // call isn't itself a format function but passes a dynamic argument.
       for (const child of node.children ?? []) {
-        if ((child.raw as TreeSitterNode).type === 'argument_list') {
+        if ((getRawNode(child)).type === 'argument_list') {
           for (const arg of child.children ?? []) {
-            const argType = (arg.raw as TreeSitterNode).type;
+            const argType = (getRawNode(arg)).type;
             if (argType === '(' || argType === ')' || argType === ',') continue;
             if (this.isDynamicStringConstruction(arg)) return true;
           }
@@ -873,11 +758,11 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
       // String concatenation: has + operator with a string literal operand
       const children = node.children ?? [];
       const hasStringLiteral = children.some(
-        c => (c.raw as TreeSitterNode).type === 'interpreted_string_literal' ||
-             (c.raw as TreeSitterNode).type === 'raw_string_literal'
+        c => (getRawNode(c)).type === 'interpreted_string_literal' ||
+             (getRawNode(c)).type === 'raw_string_literal'
       );
       const hasOperator = children.some(
-        c => (c.raw as TreeSitterNode).type === '+'
+        c => (getRawNode(c)).type === '+'
       );
       return hasStringLiteral && hasOperator;
     }
@@ -895,7 +780,7 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
    * @returns
    */
   getDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
-    const raw = node.raw as TreeSitterNode;
+    const raw = getRawNode(node);
     const type = raw.type;
 
     // For call_expressions that aren't known fmt/strings functions,
@@ -923,9 +808,9 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
    */
   private findFirstDynamicArgument(node: ASTNode): ASTNode | null {
     for (const child of node.children ?? []) {
-      if ((child.raw as TreeSitterNode).type !== 'argument_list') continue;
+      if ((getRawNode(child)).type !== 'argument_list') continue;
       for (const arg of child.children ?? []) {
-        const argType = (arg.raw as TreeSitterNode).type;
+        const argType = (getRawNode(arg)).type;
         if (argType === '(' || argType === ')' || argType === ',') continue;
         if (this.isDynamicStringConstruction(arg)) return arg;
       }
@@ -996,7 +881,7 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
     // For short_var_declaration: the whole "name := value" is one node
     // For var_spec/const_spec: "name = value" or "name type = value"
     let initText = '';
-    const rawDecl = declNode.raw as TreeSitterNode;
+    const rawDecl = getRawNode(declNode);
 
     if (rawDecl.type === 'short_var_declaration') {
       // "name := value" — extract right side
@@ -1033,7 +918,7 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
   protected findEnclosingScopeGo(node: ASTNode): ASTNode | null {
     let current: ASTNode | null = node;
     while (current) {
-      const t = (current.raw as TreeSitterNode).type;
+      const t = (getRawNode(current)).type;
       if (t === 'function_declaration' || t === 'method_declaration' ||
           t === 'source_file') {
         return current;
@@ -1048,16 +933,16 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
     let result: ASTNode | null = null;
     this.walk(scopeRoot, (astNode) => {
       if (result) return;
-      const t = (astNode.raw as TreeSitterNode).type;
+      const t = (getRawNode(astNode)).type;
       if (t === 'short_var_declaration') {
         // Check left side for identifier match
-        const raw = astNode.raw as TreeSitterNode;
+        const raw = getRawNode(astNode);
         const left = (raw as any).childForFieldName?.('left') as TreeSitterNode;
         if (left && left.text === targetName) {
           result = astNode;
         }
       } else if (t === 'var_spec' || t === 'const_spec') {
-        const raw = astNode.raw as TreeSitterNode;
+        const raw = getRawNode(astNode);
         const name = (raw as any).childForFieldName?.('name') as TreeSitterNode;
         if (name && name.text === targetName) {
           result = astNode;
@@ -1072,10 +957,10 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
     let found = false;
     this.walk(scopeRoot, (astNode) => {
       if (found) return;
-      const t = (astNode.raw as TreeSitterNode).type;
+      const t = (getRawNode(astNode)).type;
       if (t === 'assignment_statement') {
         if (astNode.location.start.line < declLine) return;
-        const raw = astNode.raw as TreeSitterNode;
+        const raw = getRawNode(astNode);
         const left = (raw as any).childForFieldName?.('left');
         if (left && left.text === targetName) {
           found = true;
@@ -1118,7 +1003,7 @@ function isDynamicFormatFunction(funcText: string): boolean {
 function extractBinaryDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
   const parts: DynamicPart[] = [];
   for (const child of node.children ?? []) {
-    const childType = (child.raw as TreeSitterNode).type;
+    const childType = (getRawNode(child)).type;
     if (childType === 'interpreted_string_literal' ||
         childType === 'raw_string_literal' ||
         childType === '+') continue;

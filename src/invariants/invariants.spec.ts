@@ -18,6 +18,7 @@ import { checkRules, clearMatcherCache, type RuleEngineOptions, type RuleCheckRe
 import { initParsers } from '../languages/tree-sitter/parser.js';
 import { initializeLanguages } from '../languages/index.js';
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
+import { getNodeText } from '../languages/adapterBridge.js';
 import type {
   InvariantRule,
   ImportBanRule,
@@ -105,23 +106,20 @@ async function checkRulesWithSource(opts: CheckRulesInput): Promise<RuleCheckRes
         const dynamicCallNodes = adapter.findNodes(ast, {
           type: 'call_expression',
           custom: (node: any) => {
-            const raw = (node.raw as any);
-            if (!raw) return false;
-            const fn = raw.firstChild;
-            return (fn?.type === 'import') || (fn?.type === 'identifier' && fn.text === 'require');
+            const fn = node.children?.[0];
+            return (fn?.type === 'import') ||
+              (fn?.type === 'identifier' && getNodeText(fn, source) === 'require');
           },
         });
 
         for (const node of dynamicCallNodes) {
-          const raw = node.raw as any;
-          if (!raw) continue;
-          const fn = raw.firstChild;
+          const fn = node.children?.[0];
           const isImport = fn?.type === 'import';
-          const isRequire = !isImport && (fn?.type === 'identifier' && fn.text === 'require');
-          const argsNode = raw.children?.find((c: any) => c.type === 'arguments') as any;
-          const stringNode = argsNode?.children?.find((c: any) => c.type === 'string') as any;
+          const isRequire = !isImport && (fn?.type === 'identifier' && getNodeText(fn, source) === 'require');
+          const argsNode = node.children?.find((c: any) => c.type === 'arguments');
+          const stringNode = argsNode?.children?.find((c: any) => c.type === 'string');
           if (stringNode) {
-            const text = stringNode.text as string;
+            const text = getNodeText(stringNode, source);
             if (text.length >= 2) {
               imports.push({
                 moduleSpecifier: text.slice(1, -1),

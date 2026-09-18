@@ -30,7 +30,7 @@ import type {
   ReducerContext,
   CoverageDiagnostic,
 } from './types.js';
-import type { AST, LanguageAdapter } from './languages/types.js';
+import type { AST, ASTNode, LanguageAdapter } from './languages/types.js';
 import type { MigrationOp } from './analyzers/universal/UniversalSchemaAnalyzer.js';
 import { TYPESCRIPT_EXTENSIONS, JAVASCRIPT_EXTENSIONS, getLanguageFromPath } from './utils/fileDiscovery.js';
 import {
@@ -38,6 +38,8 @@ import {
   isExported,
   hasModifier,
   getNodeName,
+  getNodeText,
+  getFieldNode,
   getLineAndColumn,
   calculateComplexity,
   getFunctionBody,
@@ -257,9 +259,22 @@ function computeContentHash(body: string | undefined, signature: string | undefi
   return createHash('sha256').update(normalized).digest('hex');
 }
 
-/** Raw text from an ASTNode (tree-sitter node stored on `.raw`). */
-function rawText(node: { raw?: unknown }): string {
-  return (node.raw as { text?: string })?.text ?? '';
+/**
+ * A single function/method/component row destined for the `functions` index
+ * table. Built by `createFunctionIndexVisitor` from an ASTNode; the inline
+ * anonymous record this replaced is now a named type so it can be referenced
+ * without re-declaring the 9-field shape.
+ */
+export interface FunctionIndexEntry {
+  name: string;
+  line: number;
+  endLine: number;
+  entityType: string;
+  componentType: string | null;
+  isExported: boolean;
+  complexity: number;
+  body: string | undefined;
+  functionCalls: string[];
 }
 
 export function createFunctionIndexVisitor(): Stage2Visitor {
@@ -296,35 +311,24 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
       }
 
       // Build import map once per file for resolving call targets
-      const importMap = buildImportMap(root);
+      const importMap = buildImportMap(root, sourceCode);
 
       // Collect function-like nodes in two passes:
       //  1) function_declaration + method_definition nodes
       //  2) arrow functions assigned to variables (variable_declarator children)
 
-      const fnEntries: Array<{
-        name: string;
-        line: number;
-        endLine: number;
-        entityType: string;
-        componentType: string | null;
-        isExported: boolean;
-        complexity: number;
-        body: string | undefined;
-        functionCalls: string[];
-      }> = [];
+      const fnEntries: FunctionIndexEntry[] = [];
 
       // Pass 1 — named function declarations and methods
       walkAST(root, (node) => {
         if (node.type === 'function_declaration') {
           const nameNode = node.children?.find((c) => c.type === 'identifier');
           if (!nameNode) return;
-          const name = rawText(nameNode);
+          const name = getNodeText(nameNode, sourceCode);
           if (!name) return;
 
           const { line } = getLineAndColumn(node);
-          const raw = node.raw as { startPosition?: { row: number }; endPosition?: { row: number } } | undefined;
-          const endLine = line + (raw?.endPosition?.row ?? raw?.startPosition?.row ?? 0) - (raw?.startPosition?.row ?? line) + 1;
+          const endLine = node.location.end.line;
           const body = getFunctionBody(node, sourceCode);
           const calls = extractFunctionCalls(node, sourceCode, importMap);
           const callNames = [...new Set(calls.map((c) => c.callee))];
@@ -346,7 +350,7 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
         if (node.type === 'method_definition') {
           const nameNode = node.children?.find((c) => c.type === 'identifier');
           if (!nameNode) return;
-          const methodName = rawText(nameNode);
+          const methodName = getNodeText(nameNode, sourceCode);
           if (!methodName) return;
 
           // Walk up to find class name
@@ -355,15 +359,14 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
           while (parent) {
             if (parent.type === 'class_declaration') {
               const cn = parent.children?.find((c: any) => c.type === 'identifier');
-              if (cn) className = rawText(cn);
+              if (cn) className = getNodeText(cn, sourceCode);
               break;
             }
             parent = parent.parent;
           }
 
           const { line } = getLineAndColumn(node);
-          const raw = node.raw as { startPosition?: { row: number }; endPosition?: { row: number } } | undefined;
-          const endLine = line + (raw?.endPosition?.row ?? raw?.startPosition?.row ?? 0) - (raw?.startPosition?.row ?? line) + 1;
+          const endLine = node.location.end.line;
           const body = getFunctionBody(node, sourceCode);
           const calls = extractFunctionCalls(node, sourceCode, importMap);
           const callNames = [...new Set(calls.map((c) => c.callee))];
@@ -388,14 +391,13 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
         const nameNode = node.children?.find((c) => c.type === 'identifier');
         const arrowFunc = node.children?.find((c) => c.type === 'arrow_function');
         if (!nameNode || !arrowFunc) return;
-        const name = rawText(nameNode);
+        const name = getNodeText(nameNode, sourceCode);
         if (!name) return;
 
         // Don't duplicate if already covered as function_declaration
         // (shouldn't happen — function_declaration is a different node type)
         const { line } = getLineAndColumn(arrowFunc);
-        const raw = arrowFunc.raw as { startPosition?: { row: number }; endPosition?: { row: number } } | undefined;
-        const endLine = line + (raw?.endPosition?.row ?? raw?.startPosition?.row ?? 0) - (raw?.startPosition?.row ?? line) + 1;
+        const endLine = arrowFunc.location.end.line;
         const body = getFunctionBody(arrowFunc, sourceCode);
         const calls = extractFunctionCalls(arrowFunc, sourceCode, importMap);
         const callNames = [...new Set(calls.map((c) => c.callee))];
@@ -427,10 +429,10 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
         (filePath.endsWith('.js') && hasReactImport)
       ) {
         walkAST(root, (node) => {
-          if (!isReactComponent(node)) return;
-          const ct = detectComponentType(node);
+          if (!isReactComponent(node, sourceCode)) return;
+          const ct = detectComponentType(node, sourceCode);
           if (!ct) return;
-          const cName = getComponentName(node);
+          const cName = getComponentName(node, sourceCode);
           if (!cName || cName === 'AnonymousComponent') return;
 
           const existing = fnEntries.find((f) => f.name === cName);
@@ -442,18 +444,7 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
             // New entry — class component, function_expression, or memo/forwardRef
             // wrapper not already captured by passes 1 or 2.
             const { line } = getLineAndColumn(node);
-            const raw =
-              node.raw as
-                | {
-                    startPosition?: { row: number };
-                    endPosition?: { row: number };
-                  }
-                | undefined;
-            const endLine =
-              line +
-              (raw?.endPosition?.row ?? raw?.startPosition?.row ?? 0) -
-              (raw?.startPosition?.row ?? line) +
-              1;
+            const endLine = node.location.end.line;
             const body = getFunctionBody(node, sourceCode);
 
             fnEntries.push({
@@ -585,10 +576,9 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
       const dynamicCallNodes = langAdapter.findNodes(langAst, {
         type: 'call_expression',
         custom: (node) => {
-          const raw = (node.raw as any);
-          const fn = raw?.firstChild;
+          const fn = node.children?.[0];
           return (fn?.type === 'import') ||
-                 (fn?.type === 'identifier' && fn.text === 'require');
+                 (fn?.type === 'identifier' && getNodeText(fn, sourceCode) === 'require');
         },
       });
 
@@ -601,16 +591,15 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
       }> = [];
 
       for (const node of dynamicCallNodes) {
-        const raw = node.raw as any;
-        const fn = raw?.firstChild;
+        const fn = node.children?.[0];
         const isImport = fn?.type === 'import';
-        const isRequire = !isImport && (fn?.type === 'identifier' && fn.text === 'require');
+        const isRequire = !isImport && (fn?.type === 'identifier' && getNodeText(fn, sourceCode) === 'require');
 
-        // Walk the raw tree to find the string argument
-        const argsNode = raw?.children?.find((c: any) => c.type === 'arguments') as any;
-        const stringNode = argsNode?.children?.find((c: any) => c.type === 'string') as any;
+        // Walk the AST children to find the string argument
+        const argsNode = node.children?.find((c) => c.type === 'arguments');
+        const stringNode = argsNode?.children?.find((c) => c.type === 'string');
         if (stringNode) {
-          const text = stringNode.text as string;
+          const text = getNodeText(stringNode, sourceCode);
           if (text.length >= 2) {
             dynamicImports.push({
               moduleSpecifier: text.slice(1, -1), // strip quotes
@@ -772,8 +761,8 @@ export function createStylesCssVisitor(): Stage2Visitor {
         facts: {
           [filePath]: {
             declarations: extractDeclarationsFromCSSAst(cssAst, cssAdapter, filePath, sourceCode),
-            tokens: extractTokensFromCSSAst(cssAst, cssAdapter, filePath),
-            classUsage: extractClassUsageFromCSSAst(cssAst, cssAdapter, filePath),
+            tokens: extractTokensFromCSSAst(cssAst, cssAdapter, filePath, sourceCode),
+            classUsage: extractClassUsageFromCSSAst(cssAst, cssAdapter, filePath, sourceCode),
           },
         },
       };
@@ -1258,41 +1247,36 @@ export function createCrossDomainReducer(): Stage4Reducer {
 // the design, not retrofitted after the budget blows. This is the shape that made
 // the styles reducer 587ms; it must never run over a partial corpus.
 
-// ── Raw-node helpers (tree-sitter raw nodes are `any` here — strict is off) ──
-
-function clRawField(raw: any, field: string): any {
-  return typeof raw?.childForFieldName === 'function' ? raw.childForFieldName(field) : null;
-}
-
-function clRawNamedChild(raw: any, type: string): any {
-  return raw?.namedChildren?.find((c: any) => c.type === type) ?? null;
-}
+// ── Entity helpers (ASTNode-based; parser-specific nodes stay in languages/) ──
 
 /** A function body node — `statement_block` (TS/JS) or `block` (Go). */
-function clRawBody(raw: any): any {
-  return raw?.namedChildren?.find(
-    (c: any) => c.type === 'statement_block' || c.type === 'block',
-  ) ?? null;
+function clBody(node: ASTNode): ASTNode | undefined {
+  return node.children?.find(
+    (c) => c.type === 'statement_block' || c.type === 'block',
+  );
 }
 
-function clSignatureText(raw: any, sourceCode: string): string {
-  if (!raw) return '';
-  const body = clRawBody(raw);
-  const end = body ? body.startIndex : raw.endIndex;
-  return sourceCode.slice(raw.startIndex, end).trim();
+function clSignatureText(node: ASTNode, sourceCode: string): string {
+  const body = clBody(node);
+  const end = body ? body.range[0] : node.range[1];
+  return sourceCode.slice(node.range[0], end).trim();
 }
 
-function clBodyText(raw: any, sourceCode: string): string {
-  const body = clRawBody(raw);
-  return body ? sourceCode.slice(body.startIndex, body.endIndex) : '';
+function clBodyText(node: ASTNode, sourceCode: string): string {
+  const body = clBody(node);
+  return body ? sourceCode.slice(body.range[0], body.range[1]) : '';
 }
 
 /** Prefer the `name` field (works across TS + Go), fall back to identifier children. */
-function clNodeName(raw: any): string | undefined {
-  const field = clRawField(raw, 'name');
-  if (field?.text) return field.text;
-  const id = clRawNamedChild(raw, 'identifier') ?? clRawNamedChild(raw, 'property_identifier');
-  return id?.text;
+function clNodeName(node: ASTNode, sourceCode: string): string | undefined {
+  const field = getFieldNode(node, 'name');
+  if (field) {
+    const text = getNodeText(field, sourceCode);
+    if (text) return text;
+  }
+  const id = node.children?.find((c) => c.type === 'identifier')
+    ?? node.children?.find((c) => c.type === 'property_identifier');
+  return id ? getNodeText(id, sourceCode) : undefined;
 }
 
 function clEntityId(filePath: string, type: string, name: string, line: number): string {
@@ -1304,23 +1288,19 @@ function clIsExportedGo(name: string): boolean {
 }
 
 /** Collect callee names from a function's body (TS `call_expression` / Go `call_expression`). */
-function clCollectCallees(raw: any): string[] {
+function clCollectCallees(node: ASTNode, sourceCode: string): string[] {
   const names = new Set<string>();
-  const walk = (node: any): void => {
-    if (!node) return;
-    if (node.type === 'call_expression') {
-      const fn = typeof node.childForFieldName === 'function'
-        ? node.childForFieldName('function')
-        : null;
-      const callee = fn ?? node.namedChildren?.[0];
-      const text = callee?.text?.trim();
+  const walk = (n: ASTNode): void => {
+    if (n.type === 'call_expression') {
+      const fn = getFieldNode(n, 'function') ?? n.children?.[0];
+      const text = fn ? getNodeText(fn, sourceCode).trim() : '';
       if (text && /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(text)) {
         names.add(text);
       }
     }
-    for (const child of node.namedChildren ?? []) walk(child);
+    for (const child of n.children ?? []) walk(child);
   };
-  walk(raw);
+  walk(node);
   return [...names];
 }
 
@@ -1333,23 +1313,18 @@ function clCollectCallees(raw: any): string[] {
  * (`arr.map(singularize)`, `[missedClose, …]`) is invisible to it and leaves
  * the genuinely-referenced target looking orphaned.
  */
-function clCollectFileReferences(raw: any): string[] {
+function clCollectFileReferences(node: ASTNode, sourceCode: string): string[] {
   const names = new Set<string>();
   const isIdentPath = (t: string) => /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(t);
-  const walk = (node: any): void => {
-    if (!node) return;
-    const t = node.type;
+  const walk = (n: ASTNode): void => {
+    const t = n.type;
     if (t === 'call_expression') {
-      const fn = typeof node.childForFieldName === 'function'
-        ? node.childForFieldName('function')
-        : null;
-      const text = (fn ?? node.namedChildren?.[0])?.text?.trim();
+      const fn = getFieldNode(n, 'function') ?? n.children?.[0];
+      const text = fn ? getNodeText(fn, sourceCode).trim() : '';
       if (text && isIdentPath(text)) names.add(text);
     } else if (t === 'jsx_opening_element' || t === 'jsx_self_closing_element') {
-      const nameNode = typeof node.childForFieldName === 'function'
-        ? node.childForFieldName('name')
-        : null;
-      const text = (nameNode ?? node.namedChildren?.[0])?.text?.trim();
+      const nameNode = getFieldNode(n, 'name') ?? n.children?.[0];
+      const text = nameNode ? getNodeText(nameNode, sourceCode).trim() : '';
       if (text && isIdentPath(text)) names.add(text);
     } else if (t === 'identifier') {
       // A bare identifier used as a value — an argument to a call
@@ -1357,15 +1332,15 @@ function clCollectFileReferences(raw: any): string[] {
       // function reference. Declaration names (`name` fields) and member
       // accesses (`property_identifier`) are separate node types and are not
       // captured here.
-      const parent = node.parent;
+      const parent = n.parent;
       if (parent && (parent.type === 'arguments' || parent.type === 'array')) {
-        const text = node.text?.trim();
+        const text = getNodeText(n, sourceCode).trim();
         if (text && /^[A-Za-z_$][\w$]*$/.test(text)) names.add(text);
       }
     }
-    for (const child of node.namedChildren ?? []) walk(child);
+    for (const child of n.children ?? []) walk(child);
   };
-  walk(raw);
+  walk(node);
   return [...names];
 }
 
@@ -1418,17 +1393,20 @@ interface ClFileInfo {
  * (`import(someVariable)` — unresolvable, reported rather than silenced), or
  * `null` when the call is not a dynamic import/require.
  */
-function clDynamicImport(raw: any): { specifier: string } | { computed: boolean; expression: string } | null {
-  if (raw?.type !== 'call_expression') return null;
-  const fn = raw.firstChild;
+function clDynamicImport(node: ASTNode, sourceCode: string): { specifier: string } | { computed: boolean; expression: string } | null {
+  if (node.type !== 'call_expression') return null;
+  const fn = node.children?.[0];
   const isImport = fn?.type === 'import';
-  const isRequire = fn?.type === 'identifier' && fn?.text === 'require';
+  const isRequire = fn?.type === 'identifier' && getNodeText(fn, sourceCode) === 'require';
   if (!isImport && !isRequire) return null;
 
-  const args = raw.children?.find((c: any) => c.type === 'arguments');
-  const stringNode = args?.children?.find((c: any) => c.type === 'string');
-  if (stringNode && stringNode.text.length >= 2) {
-    return { specifier: stringNode.text.slice(1, -1) };
+  const args = node.children?.find((c) => c.type === 'arguments');
+  const stringNode = args?.children?.find((c) => c.type === 'string');
+  if (stringNode) {
+    const text = getNodeText(stringNode, sourceCode);
+    if (text.length >= 2) {
+      return { specifier: text.slice(1, -1) };
+    }
   }
 
   // A template literal with no `${…}` substitution is a compile-time constant,
@@ -1436,14 +1414,14 @@ function clDynamicImport(raw: any): { specifier: string } | { computed: boolean;
   // to an edge just like `import('@babel/plugin-syntax-jsx')`. Only an
   // interpolated template (`` import(`./${name}.js`) ``) is genuinely computed.
   const templateNode = args?.children?.find(
-    (c: any) => c.type === 'template_string' || c.type === 'template_literal',
+    (c) => c.type === 'template_string' || c.type === 'template_literal',
   );
   if (templateNode) {
     const hasSubstitution = (templateNode.children ?? []).some(
-      (c: any) => c.type === 'template_substitution',
+      (c) => c.type === 'template_substitution',
     );
     if (!hasSubstitution) {
-      const t = templateNode.text;
+      const t = getNodeText(templateNode, sourceCode);
       if (t.length >= 2 && t.startsWith('`') && t.endsWith('`')) {
         return { specifier: t.slice(1, -1) };
       }
@@ -1451,8 +1429,10 @@ function clDynamicImport(raw: any): { specifier: string } | { computed: boolean;
   }
 
   // Computed specifier — the target module cannot be resolved statically.
-  const named = args?.namedChildren?.[0];
-  const expression = named?.text ?? (args?.text ?? '').replace(/^\(|\)$/g, '').trim();
+  const named = args?.children?.[0];
+  const expression = named
+    ? getNodeText(named, sourceCode)
+    : getNodeText(args!, sourceCode).replace(/^\(|\)$/g, '').trim();
   return { computed: true, expression };
 }
 
@@ -1466,20 +1446,25 @@ function clDynamicImport(raw: any): { specifier: string } | { computed: boolean;
  * names), since Go has no `export` keyword. Dynamic `import()`/`require()`
  * with a static string argument also record an import edge (Spec 58 R2).
  */
-function clCollectFileInfo(root: any, lang: string): ClFileInfo {
+function clCollectFileInfo(root: ASTNode, lang: string, sourceCode: string): ClFileInfo {
   const imports = new Set<string>();
   const unresolvedDynamicImports: Array<{ line: number; expression: string }> = [];
   let hasExports = false;
   walkAST(root, (node) => {
-    const raw = (node as any).raw as any;
     if (node.type === 'import_statement') {
-      const source = clRawField(raw, 'source');
-      if (source?.text) imports.add(source.text.replace(/^['"]|['"]$/g, ''));
+      const source = getFieldNode(node, 'source');
+      if (source) {
+        const text = getNodeText(source, sourceCode);
+        imports.add(text.replace(/^['"]|['"]$/g, ''));
+      }
     } else if (node.type === 'import_declaration') {
-      for (const spec of raw?.namedChildren ?? []) {
+      for (const spec of node.children ?? []) {
         if (spec.type === 'import_spec') {
-          const p = clRawField(spec, 'path');
-          if (p?.text) imports.add(p.text.replace(/^['"]|['"]$/g, ''));
+          const p = getFieldNode(spec, 'path');
+          if (p) {
+            const text = getNodeText(p, sourceCode);
+            imports.add(text.replace(/^['"]|['"]$/g, ''));
+          }
         }
       }
     } else if (node.type === 'export_statement') {
@@ -1487,14 +1472,17 @@ function clCollectFileInfo(root: any, lang: string): ClFileInfo {
       // Re-exports (`export { x } from './y'`, `export * from './y'`) are import
       // edges for reachability: a barrel re-exporting a module marks it live,
       // not dead. The `source` field is present only on the `from` form.
-      const source = clRawField(raw, 'source');
-      if (source?.text) imports.add(source.text.replace(/^['"]|['"]$/g, ''));
+      const source = getFieldNode(node, 'source');
+      if (source) {
+        const text = getNodeText(source, sourceCode);
+        imports.add(text.replace(/^['"]|['"]$/g, ''));
+      }
     } else if (node.type === 'call_expression') {
-      const dyn = clDynamicImport(raw);
+      const dyn = clDynamicImport(node, sourceCode);
       if (dyn && 'specifier' in dyn) {
         imports.add(dyn.specifier);
       } else if (dyn) {
-        unresolvedDynamicImports.push({ line: (raw?.startPosition?.row ?? 0) + 1, expression: dyn.expression });
+        unresolvedDynamicImports.push({ line: node.location.start.line, expression: dyn.expression });
       }
     }
   });
@@ -1503,69 +1491,70 @@ function clCollectFileInfo(root: any, lang: string): ClFileInfo {
 
 // ── TS/JS extraction ─────────────────────────────────────────────────────────
 
-function clExtractTSParams(raw: any): any[] {
+function clExtractTSParams(node: ASTNode, sourceCode: string): any[] {
   const params: any[] = [];
-  const formal = clRawNamedChild(raw, 'formal_parameters');
-  for (const p of formal?.namedChildren ?? []) {
+  const formal = node.children?.find((c) => c.type === 'formal_parameters');
+  for (const p of formal?.children ?? []) {
     if (p.type !== 'required_parameter' && p.type !== 'optional_parameter') continue;
-    const name = clRawField(p, 'name')?.text ?? clRawNamedChild(p, 'identifier')?.text;
+    const nameNode = getFieldNode(p, 'name') ?? p.children?.find((c) => c.type === 'identifier');
+    const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
     if (!name) continue;
-    const type = clRawField(p, 'type')?.text?.trim();
+    const typeNode = getFieldNode(p, 'type');
+    const type = typeNode ? getNodeText(typeNode, sourceCode).trim() : undefined;
     params.push({ name, type, optional: p.type === 'optional_parameter', language: 'typescript' });
   }
   return params;
 }
 
-function clExtractTSInterfaceParams(raw: any): any[] {
+function clExtractTSInterfaceParams(node: ASTNode, sourceCode: string): any[] {
   const params: any[] = [];
-  const walk = (node: any): void => {
-    if (!node) return;
-    if (node.type === 'property_signature') {
-      const name = clRawField(node, 'name')?.text ?? clRawNamedChild(node, 'property_identifier')?.text;
+  const walk = (n: ASTNode): void => {
+    if (n.type === 'property_signature') {
+      const nameNode = getFieldNode(n, 'name') ?? n.children?.find((c) => c.type === 'property_identifier');
+      const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
       if (!name) return;
-      const type = clRawField(node, 'type')?.text?.trim();
-      const optional = node.children?.some((c: any) => c.type === '?') ?? false;
+      const typeNode = getFieldNode(n, 'type');
+      const type = typeNode ? getNodeText(typeNode, sourceCode).trim() : undefined;
+      const optional = n.children?.some((c) => c.type === '?') ?? false;
       params.push({ name, type, optional, language: 'typescript' });
     }
-    for (const child of node.namedChildren ?? []) walk(child);
+    for (const child of n.children ?? []) walk(child);
   };
-  walk(raw);
+  walk(node);
   return params;
 }
 
 function clExtractTSEntities(
-  root: any,
+  root: ASTNode,
   filePath: string,
   sourceCode: string,
   lang: string,
   out: CrossLanguageEntity[],
 ): void {
-  const fileReferences = clCollectFileReferences(root.raw);
+  const fileReferences = clCollectFileReferences(root, sourceCode);
   walkAST(root, (node) => {
-    const raw = (node as any).raw as any;
-
     if (node.type === 'function_declaration' || node.type === 'method_definition') {
-      const name = clNodeName(raw);
+      const name = clNodeName(node, sourceCode);
       if (!name) return;
       let displayName = name;
       if (node.type === 'method_definition') {
-        let p = raw?.parent;
+        let p: ASTNode | null = node.parent ?? null;
         while (p) {
           if (p.type === 'class_declaration') {
-            const cn = clNodeName(p);
+            const cn = clNodeName(p, sourceCode);
             if (cn) displayName = `${cn}.${name}`;
             break;
           }
-          p = p.parent;
+          p = p.parent ?? null;
         }
       }
-      const line = (raw?.startPosition?.row ?? 0) + 1;
+      const line = node.location.start.line;
       const entity = clMakeFunction(
         filePath, lang, displayName, line,
-        clSignatureText(raw, sourceCode) || raw?.text || '',
-        clBodyText(raw, sourceCode),
-        clExtractTSParams(raw),
-        clCollectCallees(raw),
+        clSignatureText(node, sourceCode) || getNodeText(node, sourceCode),
+        clBodyText(node, sourceCode),
+        clExtractTSParams(node, sourceCode),
+        clCollectCallees(node, sourceCode),
         isExported(node),
         calculateComplexity(node),
         node.type === 'method_definition',
@@ -1576,17 +1565,18 @@ function clExtractTSEntities(
     }
 
     if (node.type === 'variable_declarator') {
-      const arrow = clRawNamedChild(raw, 'arrow_function');
+      const arrow = node.children?.find((c) => c.type === 'arrow_function');
       if (!arrow) return;
-      const name = clRawNamedChild(raw, 'identifier')?.text;
+      const nameNode = node.children?.find((c) => c.type === 'identifier');
+      const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
       if (!name) return;
-      const line = (raw?.startPosition?.row ?? 0) + 1;
+      const line = node.location.start.line;
       const entity = clMakeFunction(
         filePath, lang, name, line,
-        clSignatureText(arrow, sourceCode) || arrow?.text || '',
+        clSignatureText(arrow, sourceCode) || getNodeText(arrow, sourceCode),
         clBodyText(arrow, sourceCode),
         [],
-        clCollectCallees(arrow),
+        clCollectCallees(arrow, sourceCode),
         isExported(node),
         calculateComplexity(node),
       );
@@ -1596,17 +1586,17 @@ function clExtractTSEntities(
     }
 
     if (node.type === 'interface_declaration') {
-      const name = clNodeName(raw);
+      const name = clNodeName(node, sourceCode);
       if (!name) return;
-      const line = (raw?.startPosition?.row ?? 0) + 1;
+      const line = node.location.start.line;
       out.push({
         id: clEntityId(filePath, 'interface', name, line),
         name,
         language: lang,
         file: filePath,
         type: 'interface',
-        signature: raw?.text ?? '',
-        parameters: clExtractTSInterfaceParams(raw),
+        signature: getNodeText(node, sourceCode),
+        parameters: clExtractTSInterfaceParams(node, sourceCode),
         startLine: line,
         visibility: isExported(node) ? 'public' : 'private',
         calls: [],
@@ -1623,65 +1613,68 @@ function clExtractTSEntities(
 
 // ── Go extraction ────────────────────────────────────────────────────────────
 
-function clGoReceiverType(receiver: any): string | undefined {
-  for (const child of receiver?.namedChildren ?? []) {
+function clGoReceiverType(receiver: ASTNode, sourceCode: string): string | undefined {
+  for (const child of receiver.children ?? []) {
     if (child.type === 'parameter_declaration') {
-      const typeNode = clRawField(child, 'type');
-      if (typeNode) return typeNode.text.replace(/^\*/, '');
+      const typeNode = getFieldNode(child, 'type');
+      if (typeNode) return getNodeText(typeNode, sourceCode).replace(/^\*/, '');
     }
   }
   return undefined;
 }
 
-function clExtractGoParams(raw: any): any[] {
+function clExtractGoParams(node: ASTNode, sourceCode: string): any[] {
   const params: any[] = [];
-  const paramList = clRawField(raw, 'parameters');
-  for (const p of paramList?.namedChildren ?? []) {
+  const paramList = getFieldNode(node, 'parameters');
+  for (const p of paramList?.children ?? []) {
     if (p.type !== 'parameter_declaration') continue;
-    const name = clRawField(p, 'name')?.text ?? clRawField(p, 'type')?.text;
-    const type = clRawField(p, 'type')?.text?.trim();
+    const nameNode = getFieldNode(p, 'name') ?? getFieldNode(p, 'type');
+    const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
+    const typeNode = getFieldNode(p, 'type');
+    const type = typeNode ? getNodeText(typeNode, sourceCode).trim() : undefined;
     if (!name && !type) continue;
     params.push({ name: name ?? type ?? '<unknown>', type, optional: false, language: 'go' });
   }
   return params;
 }
 
-function clExtractGoStructFields(structNode: any): any[] {
+function clExtractGoStructFields(structNode: ASTNode, sourceCode: string): any[] {
   const fields: any[] = [];
-  for (const f of structNode?.namedChildren ?? []) {
+  for (const f of structNode.children ?? []) {
     if (f.type !== 'field_declaration') continue;
-    const name = clRawField(f, 'name')?.text;
+    const nameNode = getFieldNode(f, 'name');
+    const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
     if (!name) continue;
-    const type = clRawField(f, 'type')?.text?.trim();
-    const tag = clRawField(f, 'tag')?.text;
+    const typeNode = getFieldNode(f, 'type');
+    const type = typeNode ? getNodeText(typeNode, sourceCode).trim() : undefined;
+    const tagNode = getFieldNode(f, 'tag');
+    const tag = tagNode ? getNodeText(tagNode, sourceCode) : undefined;
     fields.push({ name, type, isExported: clIsExportedGo(name), tag });
   }
   return fields;
 }
 
 function clExtractGoEntities(
-  root: any,
+  root: ASTNode,
   filePath: string,
   sourceCode: string,
   out: CrossLanguageEntity[],
 ): void {
-  const fileReferences = clCollectFileReferences(root.raw);
+  const fileReferences = clCollectFileReferences(root, sourceCode);
   walkAST(root, (node) => {
-    const raw = (node as any).raw as any;
-
     if (node.type === 'function_declaration') {
-      const name = clNodeName(raw);
+      const name = clNodeName(node, sourceCode);
       if (!name) return;
-      const receiver = clRawField(raw, 'receiver');
-      const receiverType = receiver ? clGoReceiverType(receiver) : undefined;
+      const receiver = getFieldNode(node, 'receiver');
+      const receiverType = receiver ? clGoReceiverType(receiver, sourceCode) : undefined;
       const displayName = receiverType ? `${receiverType}.${name}` : name;
-      const line = (raw?.startPosition?.row ?? 0) + 1;
+      const line = node.location.start.line;
       const entity = clMakeFunction(
         filePath, 'go', displayName, line,
-        clSignatureText(raw, sourceCode) || raw?.text || '',
-        clBodyText(raw, sourceCode),
-        clExtractGoParams(raw),
-        clCollectCallees(raw),
+        clSignatureText(node, sourceCode) || getNodeText(node, sourceCode),
+        clBodyText(node, sourceCode),
+        clExtractGoParams(node, sourceCode),
+        clCollectCallees(node, sourceCode),
         clIsExportedGo(name),
         calculateComplexity(node),
       );
@@ -1691,12 +1684,13 @@ function clExtractGoEntities(
     }
 
     if (node.type === 'type_declaration') {
-      for (const spec of raw?.namedChildren ?? []) {
+      for (const spec of node.children ?? []) {
         if (spec.type !== 'type_spec') continue;
-        const name = clRawField(spec, 'name')?.text;
+        const nameNode = getFieldNode(spec, 'name');
+        const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
         if (!name) continue;
-        const typeNode = clRawField(spec, 'type');
-        const line = (spec?.startPosition?.row ?? 0) + 1;
+        const typeNode = getFieldNode(spec, 'type');
+        const line = spec.location.start.line;
         if (typeNode?.type === 'struct_type') {
           out.push({
             id: clEntityId(filePath, 'struct', name, line),
@@ -1704,7 +1698,7 @@ function clExtractGoEntities(
             language: 'go',
             file: filePath,
             type: 'struct',
-            signature: spec?.text ?? '',
+            signature: getNodeText(spec, sourceCode),
             parameters: [],
             startLine: line,
             visibility: clIsExportedGo(name) ? 'public' : 'private',
@@ -1713,7 +1707,7 @@ function clExtractGoEntities(
             purpose: '',
             context: '',
             searchTokens: [name.toLowerCase()],
-            metadata: { fields: clExtractGoStructFields(typeNode) },
+            metadata: { fields: clExtractGoStructFields(typeNode, sourceCode) },
           });
         } else if (typeNode?.type === 'interface_type') {
           out.push({
@@ -1722,7 +1716,7 @@ function clExtractGoEntities(
             language: 'go',
             file: filePath,
             type: 'interface',
-            signature: spec?.text ?? '',
+            signature: getNodeText(spec, sourceCode),
             parameters: [],
             startLine: line,
             visibility: clIsExportedGo(name) ? 'public' : 'private',
@@ -1762,7 +1756,7 @@ export function createCrossLanguageEntityVisitor(): Stage2Visitor {
         clExtractTSEntities(root, filePath, sourceCode, lang, entities);
       }
 
-      const fileInfo = clCollectFileInfo(root, lang);
+      const fileInfo = clCollectFileInfo(root, lang, sourceCode);
       // Go has no `export` keyword — an exported symbol is a capitalized
       // top-level name, which the entity extractor already records as public.
       const hasExports = lang === 'go'
@@ -2447,7 +2441,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       const { references: tableRefs, unresolved } = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, { config: schemaConfig, provenanceContext, allTables });
 
       // Record schema usage → emit as indexFacts via the shared instance
-      a.recordTableUsage(ast as AST, adapter as LanguageAdapter, context.filePath, tableRefs);
+      a.recordTableUsage(ast as AST, adapter as LanguageAdapter, context.filePath, tableRefs, sourceCode);
       const pending = a.getPendingSchemaRecords();
 
       // Emit clear-by-file + per-usage index facts
@@ -2463,6 +2457,8 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
             file_path: usage.filePath,
             table_name: usage.tableName,
             function_name: usage.functionName,
+            function_start_line: usage.functionStartLine,
+            function_start_column: usage.functionStartColumn,
             usage_type: usage.usageType,
             line: usage.line,
             column: usage.column,

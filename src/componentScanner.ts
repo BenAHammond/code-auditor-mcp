@@ -21,19 +21,13 @@ import {
   isClassComponent,
   isBuiltInHook
 } from './utils/reactDetection.js';
-import { parseFile, walkAST, isExported, getLineAndColumn, hasModifier } from './languages/adapterBridge.js';
+import { parseFile, walkAST, isExported, getLineAndColumn, hasModifier, getNodeText } from './languages/adapterBridge.js';
 import type { ASTNode } from './languages/types.js';
-import type { Node as TreeSitterNode } from 'web-tree-sitter';
 import { readFile } from 'fs/promises';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Get raw text from a tree-sitter node (stored on ASTNode.raw). */
-function rawText(node: ASTNode): string {
-  return (node.raw as TreeSitterNode)?.text ?? '';
-}
 
 /** Find the first child of a given type. */
 function findChildOfType(node: ASTNode, type: string): ASTNode | undefined {
@@ -130,23 +124,23 @@ export async function scanFile(
 
     // Extract component imports if requested
     if (options.extractImports) {
-      state.imports = extractComponentImports(root);
+      state.imports = extractComponentImports(root, content);
     }
 
     // Pre-scan: find function declarations that use built-in hooks
     // without starting with 'use' — these are hooks-naming violations
     // when called inside components.
-    const hookUsingFunctions = options.extractHooks ? findHookUsingFunctions(root) : new Set<string>();
+    const hookUsingFunctions = options.extractHooks ? findHookUsingFunctions(root, content) : new Set<string>();
 
     // Walk the AST and scan for React components
     // walkAST visits every node recursively — no manual recursion needed
     walkAST(root, (node) => {
-      if (!isReactComponent(node)) return;
+      if (!isReactComponent(node, content)) return;
 
-      const componentType = detectComponentType(node);
+      const componentType = detectComponentType(node, content);
       if (!componentType) return;
 
-      const componentName = getComponentName(node);
+      const componentName = getComponentName(node, content);
 
       // Skip test/story components if configured
       if (!options.includeTests && componentName.includes('Test')) return;
@@ -172,30 +166,30 @@ export async function scanFile(
         purpose: `React ${componentType} component`,
         context: extractComponentContext(node, content),
         isExported: isComponentExported(node),
-        body: rawText(node)
+        body: getNodeText(node, content)
       };
 
       // Extract hooks if functional component
       if (options.extractHooks && (componentType === 'functional' || componentType === 'memo' || componentType === 'forwardRef')) {
-        component.hooks = extractHooks(node, hookUsingFunctions.size > 0 ? hookUsingFunctions : undefined);
+        component.hooks = extractHooks(node, content, hookUsingFunctions.size > 0 ? hookUsingFunctions : undefined);
       }
 
       // Extract props (tree-sitter: no TypeChecker — capability regression per plan Step 2.5)
       if (options.extractProps) {
-        component.props = extractPropTypes(node);
+        component.props = extractPropTypes(node, content);
       }
 
       // Extract JSX elements used
-      component.jsxElements = extractJSXElements(node);
+      component.jsxElements = extractJSXElements(node, content);
 
       // Calculate complexity if requested
       if (options.detectComplexity) {
-        component.complexity = calculateComponentComplexity(node);
+        component.complexity = calculateComponentComplexity(node, content);
       }
 
       // Check for error boundary (class components)
       if (componentType === 'class') {
-        component.hasErrorBoundary = hasErrorBoundaryMethods(node);
+        component.hasErrorBoundary = hasErrorBoundaryMethods(node, content);
       }
 
       state.components.push(component);
@@ -302,7 +296,7 @@ function isComponentExported(node: ASTNode): boolean {
 /**
  * Extract JSX elements used within a component
  */
-function extractJSXElements(node: ASTNode): string[] {
+function extractJSXElements(node: ASTNode, content: string): string[] {
   const elements = new Set<string>();
 
   walkAST(node, (child) => {
@@ -312,14 +306,14 @@ function extractJSXElements(node: ASTNode): string[] {
         const tagNameNode = openTag.children?.find(c =>
           c.type === 'identifier' || c.type === 'member_expression');
         if (tagNameNode) {
-          elements.add(rawText(tagNameNode));
+          elements.add(getNodeText(tagNameNode, content));
         }
       }
     } else if (child.type === 'jsx_self_closing_element') {
       const tagNameNode = child.children?.find(c =>
         c.type === 'identifier' || c.type === 'member_expression');
       if (tagNameNode) {
-        elements.add(rawText(tagNameNode));
+        elements.add(getNodeText(tagNameNode, content));
       }
     }
   });
@@ -333,14 +327,14 @@ function extractJSXElements(node: ASTNode): string[] {
  * Returns their names so checkHooksRules can flag calls to them as
  * hooks-naming violations.
  */
-function findHookUsingFunctions(root: ASTNode): Set<string> {
+function findHookUsingFunctions(root: ASTNode, content: string): Set<string> {
   const hookUsingFns = new Set<string>();
 
   walkAST(root, (node) => {
     if (node.type !== 'function_declaration') return;
     const nameNode = findChildOfType(node, 'identifier');
     if (!nameNode) return;
-    const name = rawText(nameNode);
+    const name = getNodeText(nameNode, content);
     // Already properly named — skip
     if (name.startsWith('use')) return;
 
@@ -353,7 +347,7 @@ function findHookUsingFunctions(root: ASTNode): Set<string> {
       if (!callee) return;
 
       // Direct import: useState(), useEffect(), etc.
-      if (callee.type === 'identifier' && isBuiltInHook(rawText(callee))) {
+      if (callee.type === 'identifier' && isBuiltInHook(getNodeText(callee, content))) {
         callsHook = true;
       }
       // React.useState, React.useEffect, etc.
@@ -362,8 +356,8 @@ function findHookUsingFunctions(root: ASTNode): Set<string> {
         const object = callee.children?.[0];
         const property = callee.children?.find(c => c.type === 'property_identifier');
         if (object && property &&
-            object.type === 'identifier' && rawText(object) === 'React' &&
-            isBuiltInHook(rawText(property))) {
+            object.type === 'identifier' && getNodeText(object, content) === 'React' &&
+            isBuiltInHook(getNodeText(property, content))) {
           callsHook = true;
         }
       }
@@ -380,7 +374,7 @@ function findHookUsingFunctions(root: ASTNode): Set<string> {
 /**
  * Calculate component complexity based on various factors
  */
-function calculateComponentComplexity(node: ASTNode): number {
+function calculateComponentComplexity(node: ASTNode, content: string): number {
   let complexity = 1; // Base complexity
 
   walkAST(node, (child) => {
@@ -405,7 +399,7 @@ function calculateComponentComplexity(node: ASTNode): number {
       const expr = child.children?.[0];
       if (expr?.type === 'member_expression') {
         const propNode = expr.children?.[expr.children.length - 1];
-        if (propNode && rawText(propNode) === 'map') {
+        if (propNode && getNodeText(propNode, content) === 'map') {
           complexity++;
         }
       }
@@ -418,7 +412,7 @@ function calculateComponentComplexity(node: ASTNode): number {
 /**
  * Check if class component has error boundary methods
  */
-function hasErrorBoundaryMethods(node: ASTNode): boolean {
+function hasErrorBoundaryMethods(node: ASTNode, content: string): boolean {
   if (node.type !== 'class_declaration') return false;
 
   const errorBoundaryMethods = ['componentDidCatch', 'getDerivedStateFromError'];
@@ -434,7 +428,7 @@ function hasErrorBoundaryMethods(node: ASTNode): boolean {
       findChildOfType(member, 'private_property_identifier') ??
       findChildOfType(member, 'identifier');
     if (nameNode) {
-      methodNames.add(rawText(nameNode));
+      methodNames.add(getNodeText(nameNode, content));
     }
   }
 
