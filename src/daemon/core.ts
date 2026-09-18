@@ -29,7 +29,7 @@ import {
   patchLedgerRun,
   hashFileSet,
   reclaimStaleRunning,
-  type LedgerRunInput,
+  detectRunInput,
 } from '../ledger.js';
 import { findConfigFileUp, loadConfig } from '../config/configLoader.js';
 import { discoverFilesDetailed, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileDiscovery.js';
@@ -42,7 +42,7 @@ import {
   type FileRecord,
   type NextFileSnapshot,
 } from '../nextFileIncremental.js';
-import type { AuditConfig, AuditProgress, Violation } from '../types.js';
+import type { AuditConfig, AuditProgress, Violation, RuleCoverage } from '../types.js';
 import {
   type DaemonStatus,
   type DaemonState,
@@ -432,14 +432,13 @@ export class DaemonCore extends EventEmitter {
       // best-effort — the socket bind is the primary exclusivity guard.
     }
 
-    const runInput: LedgerRunInput = {
-      gitDirty: false,
-      toolVersion: PACKAGE_VERSION,
-      command: 'daemon',
-      surface: 'daemon',
-      scope: 'all',
-      target: this.projectRoot,
-    };
+    const runInput = detectRunInput(
+      'daemon',
+      'daemon',
+      'all',
+      this.projectRoot,
+      PACKAGE_VERSION,
+    );
     this.leaseRunId = createLedgerRun(this.db.rawDb, runInput, {
       status: 'running',
       projectRoot: this.projectRoot,
@@ -539,21 +538,20 @@ export class DaemonCore extends EventEmitter {
       corpusFindings: split.corpusFindings,
       schemaFindings: split.schemaFindings,
     };
-    this.persistCurrent(flattenSnapshot(this.snapshot), durationMs);
+    this.persistCurrent(flattenSnapshot(this.snapshot), durationMs, result.metadata?.coverage);
   }
 
   /** Persist the current findings to the ledger (durable snapshot for the CLI). */
-  private persistCurrent(violations: Violation[], durationMs: number): void {
+  private persistCurrent(violations: Violation[], durationMs: number, coverage?: RuleCoverage[]): void {
     if (!this.db) return;
-    const runInput: LedgerRunInput = {
-      gitDirty: false,
-      toolVersion: PACKAGE_VERSION,
-      command: 'daemon-audit',
-      surface: 'daemon',
-      scope: 'all',
-      target: this.projectRoot,
-    };
-    const runId = writeAuditToLedger(this.db.rawDb, runInput, violations, durationMs, 0);
+    const runInput = detectRunInput(
+      'daemon-audit',
+      'daemon',
+      'all',
+      this.projectRoot,
+      PACKAGE_VERSION,
+    );
+    const runId = writeAuditToLedger(this.db.rawDb, runInput, violations, durationMs, 0, { coverage });
     if (this.snapshot) {
       const fsh = hashFileSet(
         Object.keys(this.snapshot.files).map((r) => path.join(this.projectRoot, r)),
@@ -693,7 +691,7 @@ export class DaemonCore extends EventEmitter {
       this.snapshot.corpusFindings = merged.corpusFindings;
       this.snapshot.schemaFindings = merged.schemaFindings;
 
-      this.persistCurrent(flattenSnapshot(this.snapshot), durationMs);
+      this.persistCurrent(flattenSnapshot(this.snapshot), durationMs, result.metadata?.coverage);
       this.emitFindings();
     } finally {
       this.reindexing = false;

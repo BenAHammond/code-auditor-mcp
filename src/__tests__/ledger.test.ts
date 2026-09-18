@@ -36,6 +36,7 @@ describe('Findings Ledger — write and status', () => {
         git_sha      TEXT,
         git_dirty    INTEGER NOT NULL DEFAULT 0,
         tool_version TEXT NOT NULL,
+        tool_git_sha  TEXT,
         command      TEXT NOT NULL,
         surface      TEXT NOT NULL,
         scope        TEXT NOT NULL,
@@ -195,6 +196,7 @@ describe('Findings Ledger — reading and stats', () => {
         git_sha      TEXT,
         git_dirty    INTEGER NOT NULL DEFAULT 0,
         tool_version TEXT NOT NULL,
+        tool_git_sha  TEXT,
         command      TEXT NOT NULL,
         surface      TEXT NOT NULL,
         scope        TEXT NOT NULL,
@@ -383,6 +385,7 @@ describe('Findings Ledger — audit runner integration', () => {
       CREATE TABLE IF NOT EXISTS findings_ledger_runs (
         run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, git_sha TEXT,
         git_dirty INTEGER NOT NULL DEFAULT 0, tool_version TEXT NOT NULL,
+        tool_git_sha TEXT,
         command TEXT NOT NULL, surface TEXT NOT NULL, scope TEXT NOT NULL,
         target TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0,
         exit_status INTEGER NOT NULL DEFAULT 0, metadata_json TEXT DEFAULT '{}'
@@ -435,6 +438,7 @@ describe('Findings Ledger — audit runner integration', () => {
       CREATE TABLE IF NOT EXISTS findings_ledger_runs (
         run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, git_sha TEXT,
         git_dirty INTEGER NOT NULL DEFAULT 0, tool_version TEXT NOT NULL,
+        tool_git_sha TEXT,
         command TEXT NOT NULL, surface TEXT NOT NULL, scope TEXT NOT NULL,
         target TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0,
         exit_status INTEGER NOT NULL DEFAULT 0, metadata_json TEXT DEFAULT '{}'
@@ -482,6 +486,7 @@ describe('Findings Ledger — audit runner integration', () => {
       CREATE TABLE IF NOT EXISTS findings_ledger_runs (
         run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, git_sha TEXT,
         git_dirty INTEGER NOT NULL DEFAULT 0, tool_version TEXT NOT NULL,
+        tool_git_sha TEXT,
         command TEXT NOT NULL, surface TEXT NOT NULL, scope TEXT NOT NULL,
         target TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0,
         exit_status INTEGER NOT NULL DEFAULT 0, metadata_json TEXT DEFAULT '{}'
@@ -524,6 +529,7 @@ describe('Findings Ledger — corruption resilience', () => {
       CREATE TABLE IF NOT EXISTS findings_ledger_runs (
         run_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, git_sha TEXT,
         git_dirty INTEGER NOT NULL DEFAULT 0, tool_version TEXT NOT NULL,
+        tool_git_sha TEXT,
         command TEXT NOT NULL, surface TEXT NOT NULL, scope TEXT NOT NULL,
         target TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0,
         exit_status INTEGER NOT NULL DEFAULT 0, metadata_json TEXT DEFAULT '{}'

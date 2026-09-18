@@ -1233,6 +1233,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             violations,
             Date.now() - startTime,
             0, // exit status TBD — updateLedgerRunStatus by CLI after return
+            { coverage: result.metadata.coverage },
           );
         } catch (_err) {
           // ledger write is non-fatal — audit result is still valid

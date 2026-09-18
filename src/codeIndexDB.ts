@@ -303,7 +303,7 @@ export class CodeIndexDB {
   private stmts: Map<string, SqliteStatement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 14;
+  private static readonly SCHEMA_VERSION = 15;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -892,6 +892,20 @@ export class CodeIndexDB {
       }
     }
 
+    // Migration 14 → 15: tool's own git sha on the run (the second axis next to
+    // tool_version). `git_sha` already records the *audited project* commit; this
+    // records the *code-auditor* commit so a count change is attributable to a
+    // tool commit, not just a version. NULL when running from a published
+    // install (no .git) — best-effort, and tool_version stays always-present.
+    if (currentVersion < 15) {
+      const runCols = this.db
+        .prepare(`PRAGMA table_info('findings_ledger_runs')`)
+        .all() as Array<{ name: string }>;
+      if (!runCols.some((c) => c.name === 'tool_git_sha')) {
+        this.db.exec(`ALTER TABLE findings_ledger_runs ADD COLUMN tool_git_sha TEXT`);
+      }
+    }
+
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -1117,6 +1131,7 @@ export class CodeIndexDB {
         git_sha      TEXT,
         git_dirty    INTEGER NOT NULL DEFAULT 0,
         tool_version TEXT NOT NULL,
+        tool_git_sha TEXT,
         command      TEXT NOT NULL,
         surface      TEXT NOT NULL,
         scope        TEXT NOT NULL,

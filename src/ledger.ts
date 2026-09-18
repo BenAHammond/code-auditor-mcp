@@ -9,7 +9,8 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, dirname, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import type { SqliteDatabase } from './sqlite/types.js';
 import type { Violation, RuleCoverage, RuleCoverageState } from './types.js';
@@ -20,6 +21,7 @@ import { extractSymbol } from './symbols.js';
 
 export interface LedgerRunInput {
   gitSha?: string;
+  toolGitSha?: string | null;
   gitDirty: boolean;
   toolVersion: string;
   command: string;
@@ -32,6 +34,7 @@ export interface LedgerRunRecord {
   runId: string;
   timestamp: string;
   gitSha: string | null;
+  toolGitSha: string | null;
   gitDirty: boolean;
   toolVersion: string;
   command: string;
@@ -64,6 +67,7 @@ export interface LedgerRunSummary {
   durationMs: number;
   exitStatus: number;
   gitSha?: string | null;
+  toolGitSha?: string | null;
 }
 
 export interface LedgerStats {
@@ -174,6 +178,35 @@ function getGitInfo(target: string): { sha?: string; dirty: boolean } {
   }
 }
 
+/**
+ * Resolve the code-auditor package's own git sha, best-effort. Walks up from
+ * this module's location to the package root (the dir holding `package.json`)
+ * and runs `git rev-parse HEAD` there. Returns null when the tool runs from a
+ * published install (no `.git` in the package dir) — that is the correct answer
+ * there; `tool_version` remains the always-present axis. Distinct from
+ * `getGitInfo`, which resolves the *audited project*'s commit.
+ */
+function getToolGitSha(): string | null {
+  try {
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    let dir = moduleDir;
+    for (let i = 0; i < 8; i++) {
+      if (existsSync(join(dir, 'package.json'))) {
+        const sha = execSync('git rev-parse HEAD', { cwd: dir, stdio: 'pipe', timeout: 5000 })
+          .toString()
+          .trim();
+        return sha || null;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Writing ───────────────────────────────────────────────────────────────
 
 export function writeAuditToLedger(
@@ -190,8 +223,8 @@ export function writeAuditToLedger(
 
   const insertRun = db.prepare(`
     INSERT INTO findings_ledger_runs
-      (run_id, timestamp, git_sha, git_dirty, tool_version, command, surface, scope, target, duration_ms, exit_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (run_id, timestamp, git_sha, git_dirty, tool_version, tool_git_sha, command, surface, scope, target, duration_ms, exit_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertFinding = db.prepare(`
@@ -222,6 +255,7 @@ export function writeAuditToLedger(
         runInput.gitSha ?? null,
         runInput.gitDirty ? 1 : 0,
         runInput.toolVersion,
+        runInput.toolGitSha ?? null,
         runInput.command,
         runInput.surface,
         runInput.scope,
@@ -278,14 +312,15 @@ export function createLedgerRun(
 
   db.prepare(`
     INSERT INTO findings_ledger_runs
-      (run_id, timestamp, git_sha, git_dirty, tool_version, command, surface, scope, target, duration_ms, exit_status, status, project_root)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+      (run_id, timestamp, git_sha, git_dirty, tool_version, tool_git_sha, command, surface, scope, target, duration_ms, exit_status, status, project_root)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
   `).run(
     runId,
     timestamp,
     runInput.gitSha ?? null,
     runInput.gitDirty ? 1 : 0,
     runInput.toolVersion,
+    runInput.toolGitSha ?? null,
     runInput.command,
     runInput.surface,
     runInput.scope,
@@ -369,7 +404,7 @@ function safeJsonParse(raw: string | null | undefined, fallback: any): any {
 }
 
 const RUN_DETAIL_SELECT = `
-  run_id AS runId, timestamp, git_sha AS gitSha, git_dirty AS gitDirty,
+  run_id AS runId, timestamp, git_sha AS gitSha, tool_git_sha AS toolGitSha, git_dirty AS gitDirty,
   tool_version AS toolVersion, command, surface, scope, target,
   duration_ms AS durationMs, exit_status AS exitStatus, metadata_json AS metadataJson,
   status, project_root AS projectRoot, started_at AS startedAt, heartbeat_at AS heartbeatAt,
@@ -384,6 +419,7 @@ function mapRunRow(row: any): LedgerRunDetail {
     runId: row.runId,
     timestamp: String(row.timestamp),
     gitSha: row.gitSha ?? null,
+    toolGitSha: row.toolGitSha ?? null,
     gitDirty: !!row.gitDirty,
     toolVersion: row.toolVersion,
     command: row.command,
@@ -863,6 +899,7 @@ export function detectRunInput(
   const git = getGitInfo(target);
   return {
     gitSha: git.sha,
+    toolGitSha: getToolGitSha(),
     gitDirty: git.dirty,
     toolVersion,
     command,
@@ -885,6 +922,7 @@ export function listRuns(db: SqliteDatabase): LedgerRunSummary[] {
       r.duration_ms AS durationMs,
       r.exit_status AS exitStatus,
       r.git_sha AS gitSha,
+      r.tool_git_sha AS toolGitSha,
       COUNT(f.id) AS findingCount
     FROM findings_ledger_runs r
     LEFT JOIN findings_ledger_findings f ON f.run_id = r.run_id
@@ -902,6 +940,7 @@ export function listRuns(db: SqliteDatabase): LedgerRunSummary[] {
     durationMs: r.durationMs,
     exitStatus: r.exitStatus,
     gitSha: r.gitSha,
+    toolGitSha: r.toolGitSha ?? null,
   }));
 }
 
@@ -921,6 +960,7 @@ export function exportLedger(
       run_id AS runId,
       timestamp,
       git_sha AS gitSha,
+      tool_git_sha AS toolGitSha,
       git_dirty AS gitDirty,
       tool_version AS toolVersion,
       command,
