@@ -177,6 +177,7 @@ export function extractFunctionsFromSource(
     if (!nameNode) continue;
 
     const { line } = getLineAndColumn(func);
+    const endLine = func.location?.end?.line ?? line;
 
     // Extract function calls
     const body = findChildOfType(func, 'statement_block');
@@ -220,6 +221,8 @@ export function extractFunctionsFromSource(
       name: getNodeText(nameNode, content),
       filePath,
       lineNumber: line,
+      startLine: line,
+      endLine,
       language: getLanguageFromPath(filePath),
       dependencies,
       purpose: `Function ${getNodeText(nameNode, content)} implementation`,
@@ -253,6 +256,7 @@ export function extractFunctionsFromSource(
       if (!nameNode || !arrowFunc) continue;
 
       const { line } = getLineAndColumn(varDecl);
+      const endLine = arrowFunc.location?.end?.line ?? line;
 
       // Extract function calls
       const body = findChildOfType(arrowFunc, 'statement_block');
@@ -287,6 +291,8 @@ export function extractFunctionsFromSource(
         name: getNodeText(nameNode, content),
         filePath,
         lineNumber: line,
+        startLine: line,
+        endLine,
         language: getLanguageFromPath(filePath),
         dependencies,
         purpose: `Arrow function ${getNodeText(nameNode, content)}`,
@@ -320,6 +326,7 @@ export function extractFunctionsFromSource(
       if (!methodNameNode) continue;
 
       const { line } = getLineAndColumn(method);
+      const endLine = method.location?.end?.line ?? line;
 
       // Extract function calls
       const body = findChildOfType(method, 'statement_block');
@@ -354,6 +361,8 @@ export function extractFunctionsFromSource(
         name: `${className}.${getNodeText(methodNameNode, content)}`,
         filePath,
         lineNumber: line,
+        startLine: line,
+        endLine,
         language: getLanguageFromPath(filePath),
         dependencies,
         purpose: `Method ${getNodeText(methodNameNode, content)} of class ${className}`,
