@@ -30,6 +30,20 @@ registry with their re-tiered severities.
 
 **Breaking:** consumers grouping Go findings by `analyzer` must now group by `go`.
 
+### Go analyzer no longer ships a single darwin/amd64 binary to every platform
+
+The Go subprocess shipped as one prebuilt Mach-O (`darwin/amd64`). On any other
+platform/architecture that binary could not exec, and the failure collapsed into an
+empty-violation `go_analysis_skipped` — Go analysis silently did nothing everywhere but
+darwin/amd64. The runtime now inspects the binary's header and gates on it at the point
+of resolution, not just at build time, so a foreign or wrong-arch binary is caught on
+every path that reaches for it. A missing or mismatched binary triggers a rebuild from
+the shipped source, forcing `GOOS`/`GOARCH` to the host platform (an emulated amd64
+toolchain on darwin/arm64 still emits arm64). When no Go toolchain is present to rebuild,
+the run reports a named diagnostic — `go-analyzer-wrong-arch` for a foreign binary,
+`go-toolchain-missing` for an absent one, `go-analyzer-build-failed` for a build error —
+instead of an empty result.
+
 ### `next-file` cache can no longer silently drop findings
 
 Two bugs in the same class as the `end_line` NULL/one-path split-brain:

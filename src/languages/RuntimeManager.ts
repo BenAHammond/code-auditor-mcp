@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'node:url';
+import { binaryMatchesPlatform, describeBinaryMismatch, type BinaryMatch } from './goBinary.js';
 
 const execAsync = promisify(exec);
 
@@ -26,6 +27,48 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
+/** Filename of the Go analyzer binary for this platform. Go appends `.exe`
+ *  when GOOS=windows; we mirror that for the prebuilt name so a Windows rebuild
+ *  lands where `runGoAnalyzer` looks. */
+function goAnalyzerBinaryName(): string {
+  return process.platform === 'win32' ? 'analyzer.exe' : 'analyzer';
+}
+
+/** GOOS/GOARCH for a native rebuild, derived from the Node platform/arch the
+ *  runtime is executing on (NOT the arch of the Go toolchain, which may itself
+ *  be emulated — e.g. an amd64 toolchain on darwin/arm64 must still emit arm64). */
+function goBuildTarget(): { goos: string; goarch: string } {
+  const goos = process.platform === 'win32' ? 'windows' : process.platform;
+  const goarch =
+    ({ x64: 'amd64', arm64: 'arm64', ia32: '386', arm: 'arm' } as Record<string, string>)[process.arch]
+    ?? 'amd64';
+  return { goos, goarch };
+}
+
+/**
+ * Read the first bytes of a file as a header for `binaryMatchesPlatform`.
+ * Returns null when the file is absent or unreadable — callers already run
+ * their own existence check, so the distinction (absent vs. wrong content)
+ * lives in the match reason, not here.
+ */
+async function readExecutableHeader(filePath: string): Promise<Buffer | null> {
+  let handle;
+  try {
+    handle = await fs.open(filePath, 'r');
+  } catch {
+    return null;
+  }
+  try {
+    const buf = Buffer.alloc(128);
+    const { bytesRead } = await handle.read(buf, 0, 128, 0);
+    return bytesRead > 0 ? buf.subarray(0, bytesRead) : null;
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
 export interface RuntimeInfo {
   name: string;
   command: string;
@@ -38,6 +81,11 @@ export interface RuntimeInfo {
    *  shape; presence makes "no Go analyzer" into "the Go analyzer failed
    *  because X". */
   failureReason?: string;
+  /** Machine-readable category for `failureReason`, relayed to the report's
+   *  diagnostic channel so the named failure (`go-toolchain-missing`,
+   *  `go-analyzer-wrong-arch`, `go-analyzer-build-failed`) is distinguishable
+   *  from a bare notApplicable. */
+  failureKind?: string;
 }
 
 export interface LanguageAnalyzer {
@@ -145,61 +193,87 @@ class RuntimeManagerDetection {
   /**
    * Detect Go runtime.
    *
-   * Split into two steps so each failure mode carries its own reason instead of
-   * collapsing into a single `available: false` that reads identically whether
-   * the toolchain is absent, the path resolution broke, or the analyzer binary
-   * is missing. The orchestrator relays `failureReason` as a stated notApplicable
-   * rather than a silent skip (see LanguageOrchestrator.collectNotApplicable).
+   * Resolve the analyzer binary FIRST so availability is decided by "is there a
+   * native binary?" OR "is there a toolchain to rebuild one?" — not toolchain
+   * alone. That ordering is what lets a wrong-arch binary surface as its own
+   * named failure (`go-analyzer-wrong-arch`) instead of collapsing into the
+   * generic "toolchain missing" case. The orchestrator relays `failureReason` /
+   * `failureKind` as a stated diagnostic rather than a silent skip (see
+   * LanguageOrchestrator.collectNotApplicable).
    */
   private async detectGoRuntime(): Promise<void> {
     console.error('[RuntimeManager] Detecting Go runtime...');
 
-    // Step 1 — toolchain presence. `go version` failing means Go is not
-    // installed (or not on PATH); that is the "Go analysis skipped" case.
-    const version = await this.detectGoToolchainVersion();
-    if (version === null) {
-      this.runtimes.set('go', {
-        name: 'Go',
-        command: 'go',
-        version: 'unknown',
-        available: false,
-        failureReason: 'Go toolchain not found (go version failed)'
-      });
-      return;
-    }
-
-    // Step 2 — analyzer binary presence. A missing binary is NOT a detection
-    // failure: `ensureGoAnalyzerBuilt` compiles it from shipped source on first
-    // use. Only a path-resolution failure marks the runtime unavailable.
+    // Step 1 — binary. A native prebuilt binary means Go analysis runs with no
+    // toolchain at all. A missing or wrong-arch binary is NOT a detection
+    // failure either: `ensureGoAnalyzerBuilt` rebuilds it from shipped source on
+    // first use, provided a toolchain exists. Only path-resolution failure marks
+    // the runtime unavailable outright.
     const resolved = await this.resolveGoAnalyzerPath();
     if (resolved.failureReason) {
       this.runtimes.set('go', {
         name: 'Go',
         command: 'go',
-        version,
+        version: 'unknown',
         available: false,
-        failureReason: resolved.failureReason
+        failureReason: resolved.failureReason,
+        failureKind: 'go-analyzer-build-failed'
       });
       return;
     }
 
     const analyzerPath = resolved.path!;
-    const analyzerExists = resolved.exists!;
+    const version = await this.detectGoToolchainVersion();
+
+    // Native binary present → usable without a toolchain.
+    if (resolved.exists && resolved.matchesPlatform) {
+      this.runtimes.set('go', {
+        name: 'Go',
+        command: 'go',
+        version: version ?? 'unknown',
+        available: true,
+        minVersion: '1.18.0',
+        executablePath: analyzerPath,
+        analyzer: createGoAnalyzer(analyzerPath)
+      });
+      console.error('[RuntimeManager] Go runtime configured (native prebuilt binary)');
+      return;
+    }
+
+    // No usable binary → a toolchain is required to rebuild from source. Distinguish
+    // a wrong-arch binary (present but foreign) from a missing one, so the named
+    // diagnostic says which rather than a generic "go version failed".
+    if (version === null) {
+      const wrongArch = resolved.exists && !resolved.matchesPlatform;
+      this.runtimes.set('go', {
+        name: 'Go',
+        command: 'go',
+        version: 'unknown',
+        available: false,
+        failureReason: wrongArch
+          ? `${describeBinaryMismatch(resolved.match!, process.platform, process.arch)}; no Go toolchain to rebuild it`
+          : 'Go toolchain not found (go version failed) — needed to build the Go analyzer',
+        failureKind: wrongArch ? 'go-analyzer-wrong-arch' : 'go-toolchain-missing'
+      });
+      return;
+    }
+
+    // Toolchain present, no usable binary yet → available; rebuild on first use.
     this.runtimes.set('go', {
       name: 'Go',
       command: 'go',
       version,
       available: true,
       minVersion: '1.18.0',
-      executablePath: analyzerExists ? analyzerPath : undefined,
+      executablePath: undefined,
       analyzer: createGoAnalyzer(analyzerPath)
     });
-    console.error('[RuntimeManager] Go runtime configured successfully');
+    console.error('[RuntimeManager] Go runtime configured (rebuild on first use)');
   }
 
   /**
-   * Step 1 of Go detection: probe the toolchain. Returns the version string,
-   * or null when `go` is not installed / not on PATH.
+   * Probe the Go toolchain. Returns the version string, or null when `go` is
+   * not installed / not on PATH.
    */
   private async detectGoToolchainVersion(): Promise<string | null> {
     try {
@@ -215,21 +289,42 @@ class RuntimeManagerDetection {
   }
 
   /**
-   * Step 2 of Go detection: locate the analyzer binary. Returns the path and
-   * whether the binary already exists, or a `failureReason` when path
-   * resolution itself fails. A missing binary is NOT a failure — the runtime
-   * still registers as available and compiles it from source on first use.
+   * Locate the analyzer binary and report whether it runs natively here. Returns
+   * the path, existence, and a `BinaryMatch` against the current platform/arch;
+   * `failureReason` is set only when path resolution itself fails. A missing or
+   * mismatched binary is NOT a failure — it just means "rebuild on first use",
+   * so the mismatch is caught on every path that reaches for the binary, not
+   * only the one that happens to build it.
    */
-  private async resolveGoAnalyzerPath(): Promise<{ path?: string; exists?: boolean; failureReason?: string }> {
+  private async resolveGoAnalyzerPath(): Promise<{
+    path?: string;
+    exists: boolean;
+    matchesPlatform: boolean;
+    match: BinaryMatch | null;
+    failureReason?: string;
+  }> {
     try {
-      const analyzerPath = path.join(moduleDir, 'go', 'analyzer');
+      const analyzerPath = path.join(moduleDir, 'go', goAnalyzerBinaryName());
       console.error('[RuntimeManager] Looking for Go analyzer at:', analyzerPath);
-      const analyzerExists = (await this.fileExists(analyzerPath)) || (await this.fileExists(analyzerPath + '.exe'));
-      console.error('[RuntimeManager] Go analyzer exists:', analyzerExists);
-      return { path: analyzerPath, exists: analyzerExists };
+      const exists = await this.fileExists(analyzerPath);
+      console.error('[RuntimeManager] Go analyzer exists:', exists);
+
+      if (!exists) {
+        return { path: analyzerPath, exists: false, matchesPlatform: false, match: null };
+      }
+
+      const header = await readExecutableHeader(analyzerPath);
+      const match = binaryMatchesPlatform(header, process.platform, process.arch);
+      console.error('[RuntimeManager] Go analyzer matches platform:', match.matches, match.reason);
+      return { path: analyzerPath, exists: true, matchesPlatform: match.matches, match };
     } catch (error) {
       console.error('[RuntimeManager] Go analyzer path resolution failed:', error);
-      return { failureReason: `Go analyzer path resolution failed: ${describeError(error)}` };
+      return {
+        exists: false,
+        matchesPlatform: false,
+        match: null,
+        failureReason: `Go analyzer path resolution failed: ${describeError(error)}`
+      };
     }
   }
 
@@ -954,6 +1049,16 @@ function extractErrors(auditResult: any): any[] {
   return errors;
 }
 
+/** A Go analyzer build failure, tagged with a named kind so `GoAnalyzer.analyze`
+ *  can relay it to the report's diagnostic channel as `go-toolchain-missing` or
+ *  `go-analyzer-build-failed` rather than an anonymous skip. */
+class GoAnalyzerBuildError extends Error {
+  constructor(readonly code: 'go-toolchain-missing' | 'go-analyzer-build-failed', message: string) {
+    super(message);
+    this.name = 'GoAnalyzerBuildError';
+  }
+}
+
 class GoAnalyzer implements LanguageAnalyzer {
   name = 'go';
   runtime = 'go';
@@ -969,7 +1074,7 @@ class GoAnalyzer implements LanguageAnalyzer {
     const startTime = Date.now();
 
     try {
-      // Build the Go analyzer if needed
+      // Build the Go analyzer if needed (no-op when a native binary is present).
       const goAnalyzerDir = path.join(moduleDir, 'go');
       await this.ensureGoAnalyzerBuilt(goAnalyzerDir);
 
@@ -995,6 +1100,13 @@ class GoAnalyzer implements LanguageAnalyzer {
       const executionTime = Date.now() - startTime;
       console.error(`[GoAnalyzer] Error during analysis:`, error);
 
+      // Classify into a named diagnostic kind so a wrong-arch binary, a missing
+      // toolchain, and a failed build each say which — once — instead of all
+      // collapsing into `go_analysis_skipped` with empty violations.
+      const type = error instanceof GoAnalyzerBuildError
+        ? error.code
+        : (error instanceof Error && /timed out/i.test(error.message) ? 'timeout' : 'go-analysis-error');
+
       return {
         violations: [],
         indexEntries: [],
@@ -1003,8 +1115,8 @@ class GoAnalyzer implements LanguageAnalyzer {
           executionTime
         },
         errors: [{
-          message: error instanceof Error ? error.message : String(error),
-          type: 'go_analysis_skipped',
+          message: describeError(error),
+          type,
           language: 'go'
         }]
       };
@@ -1012,18 +1124,19 @@ class GoAnalyzer implements LanguageAnalyzer {
   }
 
   private async ensureGoAnalyzerBuilt(goDir: string): Promise<void> {
-    const binaryPath = path.join(goDir, 'analyzer');
+    const binaryPath = path.join(goDir, goAnalyzerBinaryName());
 
-    try {
-      // Check if binary exists
-      await fs.access(binaryPath);
-      console.log(`[GoAnalyzer] Binary already exists at ${binaryPath}`);
+    // A native binary is the fast path; anything else (absent, wrong arch, wrong
+    // format) must be rebuilt from shipped source rather than spawned — a foreign
+    // binary fails to exec, and a wrong-arch one would be silently mis-run.
+    const header = await readExecutableHeader(binaryPath);
+    const match = binaryMatchesPlatform(header, process.platform, process.arch);
+    if (match.matches) {
+      console.log(`[GoAnalyzer] Binary is native at ${binaryPath}`);
       return;
-    } catch {
-      // Binary absent — fall through to build-from-source.
     }
 
-    console.log(`[GoAnalyzer] Building Go analyzer binary...`);
+    console.log(`[GoAnalyzer] Rebuilding Go analyzer binary (${match.reason}): ${binaryPath}`);
 
     // A missing toolchain here is a stated, distinct failure — not a silent
     // zero. `detectGoRuntime` normally precludes this (it only registers Go as
@@ -1032,22 +1145,34 @@ class GoAnalyzer implements LanguageAnalyzer {
     try {
       await execAsync('go version');
     } catch {
-      throw new Error('Go toolchain not found — Go analysis skipped');
+      throw new GoAnalyzerBuildError(
+        'go-toolchain-missing',
+        `Go toolchain not found — cannot rebuild the Go analyzer (${describeBinaryMismatch(match, process.platform, process.arch)})`
+      );
     }
 
+    // Build for the platform Node is running on, NOT the toolchain's own arch
+    // (an amd64 toolchain on darwin/arm64 must still emit arm64, else the
+    // rebuild reproduces the same foreign binary and loops forever).
+    const { goos, goarch } = goBuildTarget();
     try {
-      const { stderr } = await execAsync(`cd "${goDir}" && go build -o analyzer main.go`);
+      const { stderr } = await execAsync(
+        `cd "${goDir}" && GOOS=${goos} GOARCH=${goarch} CGO_ENABLED=0 go build -o ${goAnalyzerBinaryName()} main.go`
+      );
       if (stderr) {
         console.warn(`[GoAnalyzer] Build warnings: ${stderr}`);
       }
-      console.log(`[GoAnalyzer] Successfully built Go analyzer binary`);
+      console.log(`[GoAnalyzer] Successfully built Go analyzer binary (${goos}/${goarch})`);
     } catch (buildError) {
-      throw new Error(`Go analyzer build failed: ${describeError(buildError)}`);
+      throw new GoAnalyzerBuildError(
+        'go-analyzer-build-failed',
+        `Go analyzer build failed (${goos}/${goarch}): ${describeError(buildError)}`
+      );
     }
   }
 
   private async runGoAnalyzer(goDir: string, files: string[], options: any): Promise<AnalysisResult> {
-    const binaryPath = path.join(goDir, 'analyzer');
+    const binaryPath = path.join(goDir, goAnalyzerBinaryName());
     return spawnGoAnalyzer(binaryPath, goDir, files, options);
   }
 }

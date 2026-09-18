@@ -107,7 +107,7 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
   // not found" reaches the report instead of collapsing into a silent zero.
   const diagnostics: Array<{ analyzerName: string; kind: string; message: string }> = [];
   for (const na of polyglotResult.notApplicable || []) {
-    diagnostics.push({ analyzerName: na.language, kind: 'notApplicable', message: na.reason });
+    diagnostics.push({ analyzerName: na.language, kind: na.kind || 'notApplicable', message: na.reason });
   }
   for (const err of polyglotResult.errors || []) {
     diagnostics.push({

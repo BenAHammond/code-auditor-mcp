@@ -52,8 +52,10 @@ export interface PolyglotAnalysisResult {
   // Languages discovered on disk but not analyzed because no runtime could run
   // them. Each entry names the language and the reason — a stated skip, not the
   // silent absence the orchestrator used to produce when Go files were present
-  // but the Go toolchain (or analyzer) was missing.
-  notApplicable?: Array<{ language: string; reason: string }>;
+  // but the Go toolchain (or analyzer) was missing. `kind` carries the runtime's
+  // named failure category when known, so the report's diagnostic channel can
+  // distinguish `go-toolchain-missing` from `go-analyzer-wrong-arch`.
+  notApplicable?: Array<{ language: string; reason: string; kind?: string }>;
 }
 
 export interface CrossLanguageViolation extends Violation {
@@ -303,9 +305,9 @@ export class LanguageOrchestrator {
   private collectNotApplicable(
     filesByLanguage: Record<string, string[]>,
     languagesToAnalyze: string[]
-  ): Array<{ language: string; reason: string }> {
+  ): Array<{ language: string; reason: string; kind?: string }> {
     const languageToRuntime = mapLanguageToRuntime();
-    const notApplicable: Array<{ language: string; reason: string }> = [];
+    const notApplicable: Array<{ language: string; reason: string; kind?: string }> = [];
 
     for (const [language, files] of Object.entries(filesByLanguage)) {
       if (files.length === 0) continue;
@@ -315,7 +317,7 @@ export class LanguageOrchestrator {
       const runtime = this.runtimeManager.getRuntime(runtimeName);
       const reason = runtime?.failureReason
         ?? `no ${runtimeName} runtime available to analyze ${language}`;
-      notApplicable.push({ language, reason });
+      notApplicable.push({ language, reason, ...(runtime?.failureKind ? { kind: runtime.failureKind } : {}) });
     }
 
     return notApplicable;
