@@ -325,6 +325,50 @@ describe('Spec-52 R2 — upsert classifier edge cases', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// R4 — interpolated-SQL line anchoring (indexOf(cleaned) sentinel bug)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Spec-52 R4 — interpolated-SQL line anchoring', () => {
+  const SQL = 'SELECT dedup_key FROM generation_queue WHERE target_slug IN (${placeholders})';
+
+  it('anchors a table reference in an interpolated template to its true line', () => {
+    const source = [
+      'async function rewind(heroes: string[]) {',
+      '  const rows = await d1(`' + SQL + '`, heroes);',
+      '  return rows;',
+      '}',
+    ].join('\n');
+
+    const refs = parseSqlTables(SQL, { line: 2, column: 21 }, source);
+    const genQueue = refs.find((r) => r.table === 'generation_queue');
+    expect(genQueue).toBeDefined();
+    expect(genQueue!.location.line).toBe(2);
+  });
+
+  it('anchors to the correct later line when the SQL spans multiple lines', () => {
+    const multiSql = 'SELECT dedup_key\n  FROM generation_queue\n  WHERE target_slug IN (${placeholders})';
+    const source = [
+      'async function rewind(heroes: string[]) {',
+      '  const rows = await d1(`' + multiSql + '`, heroes);',
+      '  return rows;',
+      '}',
+    ].join('\n');
+
+    // `generation_queue` sits on the 2nd line of the SQL → source line 3.
+    const refs = parseSqlTables(multiSql, { line: 2, column: 21 }, source);
+    const genQueue = refs.find((r) => r.table === 'generation_queue');
+    expect(genQueue).toBeDefined();
+    expect(genQueue!.location.line).toBe(3);
+  });
+
+  it('throws (does not mis-place) when the SQL text is absent from the source', () => {
+    const sqlText = 'SELECT * FROM generation_queue WHERE target_slug IN (${placeholders})';
+    const source = 'const s = "SELECT 1";';
+    expect(() => parseSqlTables(sqlText, { line: 1, column: 1 }, source)).toThrow(/SQL text not found in source/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // R3 — whole-program rules unsound under a scoped run
 // ═══════════════════════════════════════════════════════════════════════════
 

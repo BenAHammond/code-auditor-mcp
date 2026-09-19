@@ -1774,15 +1774,22 @@ class TsSafetyAnalysis extends TsConstantResolution {
     const text = sourceCode.slice(node.range[0], node.range[1]).trim();
     if (!text) return false;
 
-    // `.replace(/'/g, "''")` / `.replaceAll("'", "''")` — replacement arg is a
-    // doubled quote literal (`"''"` or `'""'`).
-    if (/\.(?:replace|replaceAll)\s*\(/.test(text) && /,\s*(?:"''"|'""')\s*\)/.test(text)) {
-      return true;
-    }
+    // Quote-doubling is the *specific* defense: the search argument must be a
+    // bare quote and the replacement that same quote doubled — `.replace(/'/g, "''")`
+    // / `.replaceAll("'", "''")` (single) or `.replace(/"/g, '""')` /
+    // `.replaceAll('"', '""')` (double). A generic `.replace()` whose replacement
+    // merely happens to be a doubled quote — `replace('x', "''")` or
+    // `replace(/x/g, "''")` — is NOT escaping and must not read as one. The
+    // search quote and the replacement quote must match in kind.
+    const singleReplace = /\.(?:replace|replaceAll)\s*\(\s*(?:\/'\/[a-z]*|"'")\s*,\s*"''"\s*\)/;
+    const doubleReplace = /\.(?:replace|replaceAll)\s*\(\s*(?:\/"\/[a-z]*|'"')\s*,\s*'""'\s*\)/;
+    if (singleReplace.test(text) || doubleReplace.test(text)) return true;
+
     // `.split("'").join("''")` — split on a quote, rejoin on its doubled form.
-    if (/\.split\(\s*(?:"'"|'"')\s*\)\s*\.join\(\s*(?:"''"|'""')\s*\)/.test(text)) {
-      return true;
-    }
+    const singleSplit = /\.split\(\s*"'"\s*\)\s*\.join\(\s*"''"\s*\)/;
+    const doubleSplit = /\.split\(\s*'"'\s*\)\s*\.join\(\s*'""'\s*\)/;
+    if (singleSplit.test(text) || doubleSplit.test(text)) return true;
+
     return false;
   }
 

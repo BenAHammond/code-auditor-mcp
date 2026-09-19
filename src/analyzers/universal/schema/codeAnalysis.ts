@@ -316,11 +316,32 @@ function matchSqlPatterns(ctx: SqlParseContext): TableReference[] {
       // Skip common false positives: common variable names, keywords
       if (isSqlKeyword(table)) continue;
 
-      // Calculate position in original source
+      // Calculate position in original source. Anchor against `sqlText` — the
+      // original SQL, which appears verbatim in the source — NOT `cleaned`, which
+      // carries `__TMPL__` sentinels for `${…}` substitutions that never appear
+      // in the source. `sourceCode.indexOf(cleaned)` returns -1 for any
+      // interpolated template, collapsing every anchor to a plausible-but-wrong
+      // line. An `indexOf` that returns -1 is a bug, not a fallback — throw
+      // rather than mis-place (same guard the severity lookup uses for `undefined`).
+      if (match[0].includes('__TMPL__')) {
+        // The match overlaps a template substitution (a templated table name);
+        // there is no verbatim anchor to point at, and the reference is filtered
+        // out downstream — skip it rather than fabricate a location.
+        continue;
+      }
+      const sqlAbs = sourceCode.indexOf(sqlText);
+      if (sqlAbs < 0) {
+        throw new Error(
+          `parseSqlTables: SQL text not found in source — a table reference that cannot be anchored is a bug, not something to mis-place.`,
+        );
+      }
       const offset = sqlText.indexOf(match[0]);
-      const location = offset >= 0
-        ? offsetToLocation(sourceCode, sourceCode.indexOf(cleaned) + offset, baseLocation)
-        : baseLocation;
+      if (offset < 0) {
+        throw new Error(
+          `parseSqlTables: match "${match[0]}" not found in SQL text — a table reference that cannot be anchored is a bug, not something to mis-place.`,
+        );
+      }
+      const location = offsetToLocation(sourceCode, sqlAbs + offset, baseLocation);
 
       references.push({
         table,

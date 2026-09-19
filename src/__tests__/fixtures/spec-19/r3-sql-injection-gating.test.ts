@@ -115,6 +115,35 @@ async function filterByMode(opts: { gameMode: string }) {
 `;
 
 /**
+ * Negative control — a generic `.replace()` is NOT escaping. `replace('x', 'y')`
+ * next to an interpolation transforms the value without doubling quotes, so the
+ * interpolation is still raw and must stay `critical` (not downgrade to advisory).
+ */
+const GENERIC_REPLACE_INTERPOLATION = `
+import { query } from './db';
+
+async function filterByMode(opts: { gameMode: string }) {
+  const rows = await query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace('x', 'y')}'\`);
+  return rows;
+}
+`;
+
+/**
+ * Negative control — `.replace(/x/g, "''")` *produces* quotes (replaces `x` with
+ * two apostrophes). The doubled-quote replacement alone must not read as a
+ * defense: the search is not a quote, so this is not quote-doubling and must
+ * stay `critical`.
+ */
+const REPLACE_WITH_QUOTES_INTERPOLATION = `
+import { query } from './db';
+
+async function filterByMode(opts: { gameMode: string }) {
+  const rows = await query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace(/x/g, "''")}'\`);
+  return rows;
+}
+`;
+
+/**
  * Template literal assigned to a variable, then used in a DB call —
  * we can't track the data flow, so should STILL flag (conservative).
  */
@@ -199,6 +228,18 @@ const TEST_CASES: TestCase[] = [
     code: ESCAPED_INTERPOLATION,
     expectedCount: 1,
     expectedSeverity: 'advisory',
+  },
+  {
+    name: 'generic .replace() next to interpolation — still critical, not advisory',
+    code: GENERIC_REPLACE_INTERPOLATION,
+    expectedCount: 1,
+    expectedSeverity: 'critical',
+  },
+  {
+    name: 'replace(/x/g, quotes) producing quotes — still critical, not advisory',
+    code: REPLACE_WITH_QUOTES_INTERPOLATION,
+    expectedCount: 1,
+    expectedSeverity: 'critical',
   },
 ];
 
