@@ -142,8 +142,8 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
   // ─────────────────────────────────────────────────────────────────────
   // 4. Styles — one component mixing three styling concerns.
   //
-  // Target rules: `undefined-class` (a className with no CSS definition),
-  // `token-bypass` (a raw `#1a2b3c` used instead of the `--color-brand`
+  // Target rules: `undefined-class` (a near-miss typo `cardd` of the defined
+  // `card`), `token-bypass` (a raw `#1a2b3c` used instead of the `--color-brand`
   // token), and `z-index-singleton` (a lone `z-index: 10` in a three-value
   // inventory). The defined classes and repeated z-index values stay silent.
   // ─────────────────────────────────────────────────────────────────────

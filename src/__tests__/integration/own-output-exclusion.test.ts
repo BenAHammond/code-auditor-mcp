@@ -37,9 +37,9 @@ beforeAll(async () => {
   await initParsers();
 });
 
-/** A real component with a genuinely undefined class, so the run is non-vacuous. */
+/** A real component with a near-miss typo of a defined class, so the run is non-vacuous. */
 const TSX_SOURCE = `export function Widget() {
-  return <div className="definitely-not-a-real-class-xyz">hi</div>;
+  return <div className="real-clas">hi</div>;
 }
 `;
 
@@ -115,6 +115,19 @@ describe('Bug #3 — own-output exclusion (run twice, no finding cites the repor
           v.file.includes(join('.cache', 'code-auditor')),
       );
       expect(citesOwnOutput, 'no finding may cite the report or index').toEqual([]);
+
+      // Same guarantee on the diagnostic channel: a scanned `zombie-capped`
+      // (embedded in the report) now surfaces as an undefined-class-not-found
+      // diagnostic, so exclusion must hold there too — not only for violations.
+      const diagnostics = result.metadata?.diagnostics ?? [];
+      const diagCitesOwnOutput = diagnostics.filter(
+        (d: any) =>
+          d.file &&
+          (d.file.includes('audit-report') ||
+            d.file.includes('.code-index') ||
+            d.file.includes(join('.cache', 'code-auditor'))),
+      );
+      expect(diagCitesOwnOutput, 'no diagnostic may cite the report or index').toEqual([]);
     } finally {
       try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }

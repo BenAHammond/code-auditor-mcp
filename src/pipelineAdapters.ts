@@ -1124,7 +1124,12 @@ export function createStylesReducer(): Stage3Reducer {
         const factsConsumed = context.indexHandle.count('style_declarations')
                             + context.indexHandle.count('style_tokens')
                             + context.indexHandle.count('style_class_usage');
-        return { violations: result.violations ?? [], facts: {}, factsConsumed };
+        return {
+          violations: result.violations ?? [],
+          facts: {},
+          factsConsumed,
+          ...((result.diagnostics?.length ?? 0) > 0 && { diagnostics: result.diagnostics }),
+        };
       } catch {
         return { violations: [], facts: {} };
       }

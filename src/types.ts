@@ -187,7 +187,7 @@ export interface CoverageDiagnostic {
   /** The diagnostic kind — `unresolved-query` / `unresolved-dynamic-import`
    *  (the analyzer couldn't see a region) or `config-error` / `engine-error` /
    *  `undefined-class-disabled` (the tool failed or skipped a check). */
-  kind: 'unresolved-query' | 'unresolved-dynamic-import' | 'config-error' | 'engine-error' | 'undefined-class-disabled';
+  kind: 'unresolved-query' | 'unresolved-dynamic-import' | 'config-error' | 'engine-error' | 'undefined-class-disabled' | 'undefined-class-not-found';
   /** Human-readable explanation of what could not be resolved. */
   message: string;
   /** File the unresolved construct is in. */

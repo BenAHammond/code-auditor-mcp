@@ -16,11 +16,11 @@ import path from 'path';
 import { initializeLanguages, initParsers } from '../languages/index.js';
 import { runAudit } from '../auditRunner.js';
 
-// An undefined class used in markup with a `<style>` block that defines a
-// different class — the `styles/undefined-class` rule fires with `file` set to
-// the `.astro` path, proving the file produced findings at stage 3.
+// A near-miss typo (`fooo`) of a class defined in the `<style>` block — the
+// `styles/undefined-class` rule fires with `file` set to the `.astro` path,
+// proving the file produced findings at stage 3.
 const ASTRO_SRC = [
-  '<div class="never-defined">hello</div>',
+  '<div class="fooo">hello</div>',
   '<style>',
   '  .foo { color: red; }',
   '</style>',

@@ -658,15 +658,52 @@ describe('Detector 3 — Undefined Classes', () => {
     });
   });
 
-  it('flags class names with no matching definition', async () => {
-    insertClassUsage('undefined-class-name', 'src/component.tsx', 5, 'className');
+  it('flags a near-miss typo of a defined class as a violation', async () => {
+    // `btn-primry` is edit-distance 1 from the defined `btn-primary` (the
+    // beforeEach declaration), so it is a typo — a defect with a rename hint —
+    // not a coverage gap.
+    insertClassUsage('btn-primry', 'src/component.tsx', 5, 'className');
 
     const violations = await runAnalyzer({ tailwindClasses: KNOWN_TAILWIND });
 
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(1);
-    expect(undef[0].message).toContain('undefined-class-name');
-    expect(undef[0].message).toContain('no matching definition');
+    expect(undef[0].message).toContain('btn-primry');
+    expect(undef[0].message).toContain('btn-primary');
+  });
+
+  it('reports a far-away class as a coverage diagnostic, not a violation', async () => {
+    // `undefined-class-name` is far from any defined class, so "not found" is a
+    // coverage gap (the tool did not find a definition, not that none exists).
+    insertClassUsage('undefined-class-name', 'src/component.tsx', 5, 'className');
+
+    const result = await runAnalyzerFull({ tailwindClasses: KNOWN_TAILWIND });
+
+    const undef = findViolations(result.violations, 'styles/undefined-class');
+    expect(undef.length).toBe(0);
+
+    const gaps = (result.diagnostics ?? []).filter(
+      (d: any) => d.kind === 'undefined-class-not-found' && d.message.includes('undefined-class-name'),
+    );
+    expect(gaps.length).toBe(1);
+  });
+
+  it('does NOT treat a distance-3 coincidence as a near-miss (border vs header)', async () => {
+    // `border` (a bare Tailwind utility) is edit-distance 3 from a defined
+    // `header`. Three edits across a six-character name is a coincidence, not a
+    // typo — it must stay a coverage diagnostic, never a "did you mean header".
+    insertDecl({ property: 'color', raw_value: 'black', mechanism: 'css', file_path: 'src/layout.css', line: 1, context: '.header' });
+    insertClassUsage('border', 'src/component.tsx', 5, 'className');
+
+    const result = await runAnalyzerFull({ tailwindClasses: KNOWN_TAILWIND });
+
+    const undef = findViolations(result.violations, 'styles/undefined-class');
+    expect(undef.length).toBe(0);
+
+    const gaps = (result.diagnostics ?? []).filter(
+      (d: any) => d.kind === 'undefined-class-not-found' && d.details?.className === 'border',
+    );
+    expect(gaps.length).toBe(1);
   });
 
   it('does NOT fire for classes defined in a stylesheet', async () => {
@@ -697,18 +734,19 @@ describe('Detector 3 — Undefined Classes', () => {
     expect(fromDynamic.length).toBe(0);
   });
 
-  it('skips PascalCase, function-like, brackets, and arbitrary-value classes; flags genuinely undefined classes', async () => {
+  it('skips PascalCase, function-like, brackets, and arbitrary-value classes; flags near-miss typos', async () => {
     insertClassUsage('hover:bg-blue-500', 'src/component.tsx', 5, 'className'); // variant → valid
     insertClassUsage('[active]', 'src/component.tsx', 8, 'className');  // bare brackets — skipped
     insertClassUsage('Button', 'src/component.tsx', 10, 'className');    // PascalCase
     insertClassUsage('mt-[17px]', 'src/component.tsx', 12, 'className'); // arbitrary values
     insertClassUsage('var(--x)', 'src/component.tsx', 14, 'className');  // function-like
-    insertClassUsage('hover:bg-blue', 'src/component.tsx', 16, 'className'); // bg-blue → genuinely undefined
+    insertClassUsage('hover:btn-primry', 'src/component.tsx', 16, 'className'); // typo of btn-primary → flagged
 
     const violations = await runAnalyzer({ tailwindClasses: KNOWN_TAILWIND });
     const undef = findViolations(violations, 'styles/undefined-class');
     expect(undef.length).toBe(1);
-    expect(undef[0].message).toContain('hover:bg-blue');
+    expect(undef[0].message).toContain('btn-primry');
+    expect(undef[0].message).toContain('btn-primary');
   });
 
   it('falls back to CSS-only detection when Tailwind is absent', async () => {
@@ -731,16 +769,24 @@ describe('Detector 3 — Undefined Classes', () => {
     expect(disabled.length).toBe(0);
 
     // CSS-only detection: btn-primary IS defined in the beforeEach CSS
-    // declaration. The other three are not.
+    // declaration, so it must not surface anywhere. The other three are
+    // undefined with no near-miss, so each becomes a coverage diagnostic —
+    // the tool cannot tell a missing Tailwind utility from a genuine gap.
     const undef = findViolations(violations, 'styles/undefined-class');
-    const names = undef.filter((v: any) => v.file === 'src/component.tsx')
-      .map((v: any) => v.message);
-    expect(names.length).toBe(3);
-    expect(names.some((m: string) => m.includes('bg-blue-500'))).toBe(true);
-    expect(names.some((m: string) => m.includes('flex'))).toBe(true);
-    expect(names.some((m: string) => m.includes('undefined-class-name'))).toBe(true);
-    // btn-primary is defined in beforeEach CSS, so it should NOT be in undef
-    expect(names.some((m: string) => m.includes('btn-primary'))).toBe(false);
+    expect(undef.length).toBe(0);
+
+    const gaps = (result.diagnostics ?? []).filter(
+      (d: any) => d.kind === 'undefined-class-not-found',
+    );
+    const gapClasses = gaps
+      .filter((d: any) => d.file === 'src/component.tsx')
+      .map((d: any) => d.details?.className);
+    expect(gapClasses.length).toBe(3);
+    expect(gapClasses).toContain('bg-blue-500');
+    expect(gapClasses).toContain('flex');
+    expect(gapClasses).toContain('undefined-class-name');
+    // btn-primary is defined in beforeEach CSS, so it must NOT be a gap.
+    expect(gapClasses).not.toContain('btn-primary');
   });
 
   it('disables undefined-class detection for Tailwind v4 CSS-first projects without node_modules', async () => {
@@ -1337,10 +1383,10 @@ describe('Edge cases', () => {
 
   it('reports undefined-class at its fixed severe severity', async () => {
     // Must have at least one declaration for the analyzer to run detectors
-    // (analyze() early-returns when declarations.length === 0).
-    insertDecl({ property: 'z-index', raw_value: '1', mechanism: 'css', file_path: 'src/base.css', line: 1 });
-    // Seed data for undefined-class detector
-    insertClassUsage('missing-class', 'src/comp.tsx', 5, 'className');
+    // (analyze() early-returns when declarations.length === 0). Seed a defined
+    // class so the near-miss typo below still resolves to a violation.
+    insertDecl({ property: 'z-index', raw_value: '1', mechanism: 'css', file_path: 'src/base.css', line: 1, context: '.real-widget' });
+    insertClassUsage('real-widgt', 'src/comp.tsx', 5, 'className');
 
     const violations = await runAnalyzer();
 
@@ -1350,8 +1396,8 @@ describe('Edge cases', () => {
   });
 
   it('handles files parameter correctly', async () => {
-    insertDecl({ property: 'z-index', raw_value: '1', mechanism: 'css', file_path: 'src/base.css', line: 1 });
-    insertClassUsage('a-missing-class', 'src/comp.tsx', 5, 'className');
+    insertDecl({ property: 'z-index', raw_value: '1', mechanism: 'css', file_path: 'src/base.css', line: 1, context: '.real-widget' });
+    insertClassUsage('real-widgt', 'src/comp.tsx', 5, 'className');
 
     const violations = await runAnalyzer({}, ['src/comp.tsx', 'src/other.tsx']);
 

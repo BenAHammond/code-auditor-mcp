@@ -354,6 +354,13 @@ export const BUILTIN_PATH_PROFILES: PathProfile[] = [
       'test/**',
       '__tests__/**',
       'fixtures/**',
+      // Type-test suites use their own directory and extension conventions.
+      // They exercise types, not behavior — a hardcoded connection string or
+      // dynamic SQL in a `.test-d.ts`/`.tst.ts` file is the file doing its job.
+      'test-tsd/**',
+      'test-tstyche/**',
+      '**/*.test-d.ts',
+      '**/*.tst.ts',
       '*.test.*',
       '*.spec.*',
     ],

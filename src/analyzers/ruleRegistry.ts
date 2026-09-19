@@ -1866,7 +1866,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['styles-css'],
     resolvable: true,
-    message: 'Undefined CSS class: "{class}" has no matching definition.',
+    message: 'Class "{class}" was not found in any read stylesheet or utility set.',
     docs: 'styles/undefined-class',
     thresholds: [],
     samples: {

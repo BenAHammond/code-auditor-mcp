@@ -995,6 +995,40 @@ export async function runPipeline(
   // Spec 38 R2 — surface per-rule timing, slowest first, only when opt-in.
   const ruleTiming = getRuleTimingSortedDesc();
 
+  // Spec 36 R4 — path-profile gate exclusion must reach every finding, not only
+  // stage-2 visitor findings. Stage-3/4 reducers emit violations directly
+  // (schema's unknown-table/stale-table-reference, cross-domain's
+  // read/write-never, dependency-graph's unreferenced-module) that never pass
+  // through the visitor loop where `gateExcluded` is first attached. Re-resolve
+  // each finding's file here so a test-dir critical from a reducer is excluded
+  // from the gate exactly like one from a stage-2 analyzer. Exclusion is a scope
+  // decision — it never softens severity; the finding still reports critical.
+  const gatePathProfiles = config.config?.['_infra']?.pathProfiles as PathProfile[] | undefined;
+  if (gatePathProfiles && gatePathProfiles.length > 0) {
+    const profileCache = new Map<string, ReturnType<typeof resolvePathProfile>>();
+    const resolveProfileFor = (file: string) => {
+      let r = profileCache.get(file);
+      if (!r) {
+        r = resolvePathProfile(file, config.projectRoot, gatePathProfiles);
+        profileCache.set(file, r);
+      }
+      return r;
+    };
+    for (const result of Object.values(analyzerResults)) {
+      if (!result.violations) continue;
+      for (const v of result.violations) {
+        if (!v.file) continue;
+        const resolved = resolveProfileFor(v.file);
+        if (resolved.matchedProfileNames.length > 0 && !v.profile) {
+          v.profile = resolved.matchedProfileNames[resolved.matchedProfileNames.length - 1];
+        }
+        if (resolved.excludeFromGate && !v.gateExcluded) {
+          v.gateExcluded = true;
+        }
+      }
+    }
+  }
+
   return {
     analyzerResults,
     metadata: {

@@ -735,7 +735,7 @@ function flagColorDriftStragglers(
 /** Resolves a batch of class names to their defining file (or absent if undefined). */
 type DefinedClassLookup = (names: string[]) => Map<string, string>;
 
-/** Suggests the nearest defined class (within edit distance 3) for one name. */
+/** Suggests the nearest defined class (within edit distance 2) for one name. */
 type DefinedClassSuggester = (name: string) => { name: string; filePath: string } | null;
 
 /** Bundled defined-class index the undefined-class detector queries against. */
@@ -822,10 +822,16 @@ function levenshteinDistance(a: string, b: string, maxDist: number): number {
 
 /**
  * Build a suggestion lookup that finds the nearest defined class within edit
- * distance 3. The candidate pool is bounded to classes sharing the query's
+ * distance 2. The candidate pool is bounded to classes sharing the query's
  * first character (a `LIKE` prefix lookup) — not a scan of the full catalog —
  * with a full-catalog fallback only when the prefix bucket is empty, so a
  * first-character typo still surfaces a suggestion.
+ *
+ * The ceiling is 2, matching the schema analyzer's table-suggestion distance
+ * (`getNearestTableSuggestions(..., 2)`): a distance-3 "near-miss" on a short
+ * name is a coincidence, not a typo — e.g. the Tailwind `border` utility is
+ * distance 3 from a defined `header`, and flagging that as a rename defeats the
+ * coverage-gap reframe.
  */
 function createDefinedClassSuggester(indexHandle: IndexHandle): DefinedClassSuggester {
   // Load the defined-class catalog once, lazily, and cache it. The catalog is
@@ -853,13 +859,16 @@ function createDefinedClassSuggester(indexHandle: IndexHandle): DefinedClassSugg
     let best: { name: string; filePath: string } | null = null;
     let bestDist = Infinity;
     for (const c of loadCatalog()) {
-      const dist = levenshteinDistance(lower, c.class_name.toLowerCase(), 3);
+      const dist = levenshteinDistance(lower, c.class_name.toLowerCase(), 2);
       if (dist < bestDist) {
         bestDist = dist;
         best = { name: c.class_name, filePath: c.file_path };
       }
     }
-    return best;
+    // The match ceiling is 2 edits. A "nearest" class farther than that is not
+    // a plausible typo — returning it anyway would mislabel a coverage gap as a
+    // near-miss (e.g. `border` → `header`, distance 3).
+    return bestDist <= 2 ? best : null;
   };
 }
 
@@ -905,37 +914,62 @@ function flagUnresolvedClasses(
   expander: TailwindUtilityExpander,
   report: StylesViolationReporter,
   suggest: DefinedClassSuggester,
-): Violation[] {
+): { violations: Violation[]; diagnostics: CoverageDiagnostic[] } {
   return withRuleTiming('styles/undefined-class', () => {
     const violations: Violation[] = [];
+    const diagnostics: CoverageDiagnostic[] = [];
     for (const u of usageEntries) {
       const resolved = expander.resolve(u.class_name);
       if (resolved.valid) continue;
 
-      const nearest = suggest(u.class_name);
+      // Suggest against the variant-stripped core name: `hover:btn-primry` must
+      // near-miss `btn-primary` on its utility part, not the full string.
+      const nearest = suggest(expander.stripVariantPrefix(u.class_name));
 
-      violations.push(report(
-        u.file_path,
-        u.line,
-        `Undefined CSS class: "${u.class_name}" has no matching definition ` +
-        `in any stylesheet, Tailwind utility set, or project config.`,
-        {
-          severity: 'severe',
-          rule: 'styles/undefined-class',
-          symbol: u.class_name,
-          resolution: {
-            action: nearest ? 'use-defined-class' : 'define-or-remove-class',
-            summary: nearest
-              ? `Rename "${u.class_name}" to the defined class "${nearest.name}"${nearest.filePath ? ` (defined in ${nearest.filePath})` : ''}.`
-              : `Define the class "${u.class_name}" in a stylesheet, or remove the usage.`,
-            symbols: nearest ? [nearest.name] : [u.class_name],
-            files: nearest ? [u.file_path, nearest.filePath] : [u.file_path],
-            lines: [u.line],
+      if (nearest) {
+        // A near-miss of a defined class is a typo, not a coverage gap: the
+        // class is one edit from something real, so "not found" upgrades to a
+        // defect with a rename resolution.
+        violations.push(report(
+          u.file_path,
+          u.line,
+          `Class "${u.class_name}" was not found in any read stylesheet or ` +
+          `utility set — did you mean "${nearest.name}"` +
+          `${nearest.filePath ? ` (defined in ${nearest.filePath})` : ''}?`,
+          {
+            severity: 'severe',
+            rule: 'styles/undefined-class',
+            symbol: u.class_name,
+            resolution: {
+              action: 'use-defined-class',
+              summary: `Rename "${u.class_name}" to the defined class "${nearest.name}"${nearest.filePath ? ` (defined in ${nearest.filePath})` : ''}.`,
+              symbols: [nearest.name],
+              files: [u.file_path, nearest.filePath],
+              lines: [u.line],
+            },
           },
-        },
-      ));
+        ));
+        continue;
+      }
+
+      // No near-miss: the tool only knows it did not find a definition, not that
+      // one does not exist. Report a coverage gap (off-ladder, never gates) —
+      // the class may be defined by a mechanism the tool does not read (Tailwind,
+      // CSS modules, styled-components, runtime-generated), or it may be missing.
+      diagnostics.push({
+        analyzerName: 'styles',
+        kind: 'undefined-class-not-found',
+        message:
+          `Class "${u.class_name}" was not found in any read stylesheet or ` +
+          `utility set; it may be defined by a framework or runtime mechanism ` +
+          `the tool does not read (Tailwind, CSS modules, styled-components, ` +
+          `or a runtime-generated class), or it may be missing.`,
+        file: u.file_path,
+        line: u.line,
+        details: { className: u.class_name },
+      });
     }
-    return violations;
+    return { violations, diagnostics };
   });
 }
 
@@ -1280,6 +1314,7 @@ class StylesStructureDetectors {
     definedClassIndex?: DefinedClassIndex,
   ): Promise<{ violations: Violation[]; diagnostics: CoverageDiagnostic[] }> {
     const violations: Violation[] = [];
+    const diagnostics: CoverageDiagnostic[] = [];
 
     const expander = getTailwindExpander();
 
@@ -1303,13 +1338,15 @@ class StylesStructureDetectors {
       await expander.validateBatch(undefinedCandidates);
     }
 
-    violations.push(...flagUnresolvedClasses(
+    const unresolved = flagUnresolvedClasses(
       usageEntries.filter((u) => !definedLocations.has(u.class_name)),
       expander,
       this.makeViolation.bind(this),
       definedClassIndex?.suggest ?? (() => null),
-    ));
-    return { violations, diagnostics: [] };
+    );
+    violations.push(...unresolved.violations);
+    diagnostics.push(...unresolved.diagnostics);
+    return { violations, diagnostics };
   }
 
   // -----------------------------------------------------------------------

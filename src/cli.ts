@@ -179,6 +179,24 @@ program
       const dismissedCount = result.summary.dismissed ?? 0;
       const dismissedSuffix = dismissedCount > 0 ? `, ${dismissedCount} dismissed` : '';
 
+      // Spec 36 R4 — a path-profile-excluded finding reports at its real
+      // severity but never gates. When any finding is gate-excluded, surface
+      // the gating count next to the total so a clean exit doesn't read as
+      // "0 findings" beside a non-zero critical count (e.g. knex: 38 critical,
+      // all test-dir, exit 0). The excluded total still reads in full — the
+      // distinction is gating vs. reporting, never subtraction.
+      const gateExcludedCount = violations.filter((v: any) => v.gateExcluded).length;
+      const gatingCount = (severity: Severity) =>
+        violations.filter(
+          (v: any) => v.severity === severity && !v.gateExcluded && !v.dismissed
+        ).length;
+      const findingsSuffix =
+        `${dismissedSuffix}${gateExcludedCount > 0 ? ` (${gateExcludedCount.toLocaleString()} excluded from gate)` : ''}`;
+      const summaryLine = (label: string, total: number, severity: Severity) =>
+        gateExcludedCount > 0
+          ? `${label}: ${total} (${gatingCount(severity)} gating)`
+          : `${label}: ${total}`;
+
       // ── Coverage panel leads the report (Spec 47 R2) ─────────────
       // A diagnostic report opens with what was measured before it lists any
       // readings, so a zero-reading report can't be mistaken for a clean tree.
@@ -204,7 +222,7 @@ program
       // file:line — visible and counted, never blocking (they never reach the
       // gate). Rendered alongside the coverage panel that leads the report.
       const coverageDiagnostics = (result.metadata?.diagnostics ?? []).filter(
-        (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import'
+        (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import' || d.kind === 'undefined-class-not-found'
       );
       if (coverageDiagnostics.length > 0) {
         const byKind: Record<string, number> = {};
@@ -287,19 +305,19 @@ program
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit --full')} to see all ${currentDebt.toLocaleString()} readings.`));
       } else if (!baseline) {
         // No baseline: current behavior + hint
-        console.log(`\nFound ${result.summary.totalViolations} findings${dismissedSuffix}`);
-        console.log(`Critical: ${result.summary.criticalIssues}`);
-        console.log(`Severe: ${result.summary.severe}`);
-        console.log(`Advisory: ${result.summary.advisory}`);
+        console.log(`\nFound ${result.summary.totalViolations} findings${findingsSuffix}`);
+        console.log(summaryLine('Critical', result.summary.criticalIssues, 'critical'));
+        console.log(summaryLine('Severe', result.summary.severe, 'severe'));
+        console.log(summaryLine('Advisory', result.summary.advisory, 'advisory'));
 
         console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
       } else {
         // --full with baseline: full itemized inventory (current behavior)
-        console.log(`\nFound ${result.summary.totalViolations} findings${dismissedSuffix}`);
-        console.log(`Critical: ${result.summary.criticalIssues}`);
-        console.log(`Severe: ${result.summary.severe}`);
-        console.log(`Advisory: ${result.summary.advisory}`);
+        console.log(`\nFound ${result.summary.totalViolations} findings${findingsSuffix}`);
+        console.log(summaryLine('Critical', result.summary.criticalIssues, 'critical'));
+        console.log(summaryLine('Severe', result.summary.severe, 'severe'));
+        console.log(summaryLine('Advisory', result.summary.advisory, 'advisory'));
 
         console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
       }
@@ -472,6 +490,11 @@ program
         const hasAtOrAbove = evaluableViolations.some((v: any) => {
           // Spec 57 — a dismissed finding never blocks the gate.
           if (v.dismissed) return false;
+          // Spec 36 R4 — a finding from a path-profile-excluded file (e.g. a
+          // test/script under "scripts-and-tests") never blocks the gate,
+          // whatever its severity. The file is doing its job; a hardcoded
+          // connection string in a stress-test script is not a defect to block on.
+          if (v.gateExcluded) return false;
           const vIndex = severityOrder.indexOf(v.severity);
           return vIndex >= 0 && vIndex <= failIndex;
         });

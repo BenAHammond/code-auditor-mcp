@@ -181,7 +181,7 @@ describe('R3 property — styles/undefined-class (two-file oracle)', () => {
       await writeFile(join(dir, 'styles.css'), '.card { display: flex; }');
       await writeFile(
         join(dir, 'view.tsx'),
-        'export const v = () => <div className="missing" />;',
+        'export const v = () => <div className="cardd" />;',
       );
       const result = await runAuditDispatch({ projectRoot: dir, writeToLedger: false } as any);
       const all = Object.values(result.analyzerResults ?? {}).flatMap(
