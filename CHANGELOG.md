@@ -2,6 +2,32 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [4.0.1] — 2026-09-19
+
+### `unreferenced-module` no longer flags package-manifest entry points
+
+A published library's ESM/types facades — `knex.mjs` and `knex.d.mts` beside
+`main: knex.js` — were flagged dead because no in-tree import reaches them; they are
+reached only through the package manifest. The dependency-graph analyzer now reads the
+root `package.json` (`main`/`module`/`types`/`typings`/`bin`/`exports`) and expands each
+declared entry into its sibling facades, so a file reachable only through the manifest
+counts as an entry point rather than `unreferenced-module`. This clears the knex false
+positive (+2 → 0) without changing anything else.
+
+### TypeScript pinned back to 5.9.2
+
+TypeScript 7.0.2 (the native Go compiler) rejected `moduleResolution: "bundler"`, import
+attributes, and current `@types/node` syntax — a build that had been broken since
+Release 3.0.0 but sat green because `verify:close` never ran `tsc`. The compiler is
+pinned to exact `5.9.2` rather than loosening the tsconfig to satisfy a compiler that
+was never a deliberate choice.
+
+### `verify:close` now type-checks
+
+`verify:close` runs `tsc --noEmit` (as `verify:types`) between `verify:disk-space` and
+`verify:dist-fresh` — a project that cannot compile no longer reaches the test steps.
+This is the gap that let the broken compiler sit green for two months.
+
 ## [4.0.0] — 2026-09-18
 
 ### Severity model recalibrated: `high` → `advisory` (Spec 54)
