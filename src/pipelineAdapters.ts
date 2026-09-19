@@ -48,7 +48,6 @@ import {
   buildImportMap,
   extractFunctionCalls,
 } from './utils/dependencyExtractor.js';
-import { resolveDependency, basenameNoExt } from './graph/importGraph.js';
 import { classifyImportSpecifier, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
 import {
   isReactComponent,
@@ -550,7 +549,11 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
         const virtualModules = (context.config as { importVirtualModules?: string[] }).importVirtualModules
           ?? DEFAULT_VIRTUAL_MODULES;
         const tsconfigAliases = (context.config as {
-          tsconfigAliases?: { pathPatterns?: string[] };
+          tsconfigAliases?: {
+            pathPatterns?: string[];
+            paths?: Record<string, string[]>;
+            baseUrl?: string;
+          };
         }).tsconfigAliases;
         for (const imp of staticImportInfos) {
           const { classification, resolvedPath } = classifyImportSpecifier(
@@ -560,6 +563,9 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
             {
               virtualModules,
               aliasPatterns: tsconfigAliases?.pathPatterns ?? [],
+              pathMappings: tsconfigAliases?.paths ?? {},
+              baseUrl: tsconfigAliases?.baseUrl,
+              projectRoot: context.projectRoot,
             },
           );
           indexFacts.push({
@@ -1845,29 +1851,53 @@ function clIsEntryPointFile(fp: string): boolean {
   return false;
 }
 
+interface ClReachabilityOptions {
+  /** Full corpus file set (unfiltered discovery list) for alias resolution. */
+  corpusFiles: ReadonlySet<string>;
+  /** Virtual-module specifiers (exact match). */
+  virtualModules: readonly string[];
+  /** tsconfig `paths` + `baseUrl` for `@/` alias resolution. */
+  tsconfigAliases?: {
+    pathPatterns?: string[];
+    paths?: Record<string, string[]>;
+    baseUrl?: string;
+  };
+  /** Absolute project root. */
+  projectRoot: string;
+}
+
+/** Resolve one import specifier to zero or one internal file via the classifier. */
+function clResolveImport(dep: string, sourceFile: string, options: ClReachabilityOptions): string[] {
+  const { classification, resolvedPath } = classifyImportSpecifier(dep, sourceFile, options.corpusFiles, {
+    virtualModules: options.virtualModules,
+    aliasPatterns: options.tsconfigAliases?.pathPatterns ?? [],
+    pathMappings: options.tsconfigAliases?.paths ?? {},
+    baseUrl: options.tsconfigAliases?.baseUrl,
+    projectRoot: options.projectRoot,
+  });
+  if (classification === 'internal-resolved' && resolvedPath) return [resolvedPath];
+  return [];
+}
+
 /**
  * Compute file-level reachability from per-file imports.
  *
  * A file is a framework entry point (live → 1.0), imported by another file
- * (live → 0.5), or referenced by nothing (dead → 0.0). The resolver mirrors
- * importGraph.ts and handles relative paths, npm/alias basenames, and fuzzy
- * path-segment matches.
+ * (live → 0.5), or referenced by nothing (dead → 0.0). Resolution goes through
+ * `classifyImportSpecifier` (relative paths and tsconfig `paths` aliases like
+ * `@/`) instead of the legacy basename/fuzzy matcher, so an alias import creates
+ * a real edge and a bare package import never fabricates a local one.
  */
 function clComputeReachability(
   fileFacts: Map<string, ClFileInfo>,
+  options: ClReachabilityOptions,
 ): { reachability: Map<string, number>; importersOf: Map<string, Set<string>> } {
   const filePaths = new Set(fileFacts.keys());
-  const moduleToFile = new Map<string, Set<string>>();
-  for (const fp of filePaths) {
-    const bn = basenameNoExt(fp);
-    if (!moduleToFile.has(bn)) moduleToFile.set(bn, new Set());
-    moduleToFile.get(bn)!.add(fp);
-  }
 
   const importersOf = new Map<string, Set<string>>();
   for (const [fp, info] of fileFacts) {
     for (const dep of info.imports) {
-      const targets = resolveDependency(dep, filePaths, moduleToFile, fp);
+      const targets = clResolveImport(dep, fp, options);
       for (const t of targets) {
         if (t === fp) continue;
         if (!importersOf.has(t)) importersOf.set(t, new Set());
@@ -2110,7 +2140,19 @@ export function createDependencyGraphReducer(): Stage4Reducer {
         // ── File-level reachability: unreferenced modules + ranking axis ──
         const fileFacts = clFileFacts(allFacts);
         if (fileFacts.size > 0) {
-          const { reachability, importersOf } = clComputeReachability(fileFacts);
+          // `context.config` is the reducer's merged config (namespace + `_infra`);
+          // a bare reducer context in a unit test omits it, so fall back to the
+          // file facts themselves as the corpus and a no-alias classification.
+          const infraConfig = (context.config ?? {}) as Record<string, unknown>;
+          const { reachability, importersOf } = clComputeReachability(fileFacts, {
+            corpusFiles: new Set(
+              (infraConfig.corpusFiles as string[] | undefined) ?? [...fileFacts.keys()],
+            ),
+            virtualModules:
+              (infraConfig.importVirtualModules as string[] | undefined) ?? DEFAULT_VIRTUAL_MODULES,
+            tsconfigAliases: infraConfig.tsconfigAliases as ClReachabilityOptions['tsconfigAliases'],
+            projectRoot: context.projectRoot ?? '',
+          });
 
           // Persist reachability to graph_cache so the post-pipeline reorder
           // (auditRunner hotspot block) can rank every finding by live/dead.

@@ -251,4 +251,66 @@ describe('classifyImportSpecifier', () => {
       classifyImportSpecifier('.my-virtual', SRC, corpus(), { virtualModules: DEFAULT_VIRTUAL_MODULES }),
     ).toEqual({ classification: 'internal-broken' });
   });
+
+  // ── alias resolution (Spec 60.1 — `@/` through tsconfig paths) ────────
+
+  it('resolves a `@/*` → `./*` alias through tsconfig paths', () => {
+    const files = corpus('/proj/app/components/Button.tsx');
+    expect(
+      classifyImportSpecifier('@/app/components/Button', '/proj/app/page.tsx', files, {
+        pathMappings: { '@/*': ['./*'] },
+        baseUrl: '.',
+        projectRoot: '/proj',
+      }),
+    ).toEqual({
+      classification: 'internal-resolved',
+      resolvedPath: '/proj/app/components/Button.tsx',
+    });
+  });
+
+  it('resolves an alias through a `baseUrl`-rooted target', () => {
+    const files = corpus('/proj/src/components/Button.tsx');
+    expect(
+      classifyImportSpecifier('@/components/Button', '/proj/app/page.tsx', files, {
+        pathMappings: { '@/*': ['src/*'] },
+        baseUrl: '.',
+        projectRoot: '/proj',
+      }),
+    ).toEqual({
+      classification: 'internal-resolved',
+      resolvedPath: '/proj/src/components/Button.tsx',
+    });
+  });
+
+  it('returns unresolved-alias when the alias target is absent from the corpus', () => {
+    expect(
+      classifyImportSpecifier('@/missing', '/proj/app/page.tsx', corpus(), {
+        pathMappings: { '@/*': ['./*'] },
+        baseUrl: '.',
+        projectRoot: '/proj',
+      }),
+    ).toEqual({ classification: 'unresolved-alias' });
+  });
+
+  it('resolves a `baseUrl`-rooted bare import to a local file', () => {
+    const files = corpus('/proj/app/actions.ts');
+    expect(
+      classifyImportSpecifier('app/actions', '/proj/app/page.tsx', files, {
+        baseUrl: '.',
+        projectRoot: '/proj',
+      }),
+    ).toEqual({
+      classification: 'internal-resolved',
+      resolvedPath: '/proj/app/actions.ts',
+    });
+  });
+
+  it('a bare import that is not under `baseUrl` stays `package`', () => {
+    expect(
+      classifyImportSpecifier('react', '/proj/app/page.tsx', corpus(), {
+        baseUrl: '.',
+        projectRoot: '/proj',
+      }),
+    ).toEqual({ classification: 'package' });
+  });
 });

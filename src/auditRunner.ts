@@ -682,9 +682,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         // is too narrow).
         corpusFiles,
         // Spec 60.1 — virtual-module list (config, default ['.blitz']) and the
-        // project's tsconfig `paths` patterns (alias classification only, no
-        // resolution). Threaded here so the function-index visitor reads them
-        // once per run rather than re-reading tsconfig per file.
+        // project's tsconfig `paths` + `baseUrl` (alias classification *and*
+        // resolution). Threaded here so the function-index visitor and the
+        // reachability reducer read them once per run rather than re-reading
+        // tsconfig per file.
         importVirtualModules: mergedOptions.importVirtualModules ?? DEFAULT_VIRTUAL_MODULES,
         tsconfigAliases: readTsconfigAliases(root),
       };

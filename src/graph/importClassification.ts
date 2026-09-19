@@ -9,9 +9,9 @@
  *                           answer (Node builtin, npm package, scoped package); never
  *                           an edge.
  *   - `unresolved-alias`  — does not begin with `.` or `/`, and *does* match a tsconfig
- *                           `paths` pattern or begins with `@/`. A gap in this tool's
- *                           coverage of the project, not a defect in the project. Never
- *                           an edge until alias resolution exists (out of scope here).
+ *                           `paths` pattern or begins with `@/`, but its target did not
+ *                           resolve to a corpus file. A gap in the tool's coverage of the
+ *                           project, not a defect in the project (never an edge).
  *   - `internal-resolved` — begins with `.` or `/`, and normalization finds exactly one
  *                           existing file in the corpus file set. Carries that path.
  *   - `internal-broken`   — begins with `.` or `/`, and normalization finds no existing
@@ -48,6 +48,14 @@ export interface ClassifyOptions {
   virtualModules?: readonly string[];
   /** tsconfig `compilerOptions.paths` keys, used for pattern matching only. */
   aliasPatterns?: readonly string[];
+  /** Full tsconfig `compilerOptions.paths` mapping (pattern → targets), used to
+   *  resolve alias specifiers to files. */
+  pathMappings?: Readonly<Record<string, readonly string[]>>;
+  /** tsconfig `compilerOptions.baseUrl`, resolved against `projectRoot` when
+   *  relative. Only meaningful alongside `pathMappings`. */
+  baseUrl?: string;
+  /** Absolute project root — the base `baseUrl` resolves against. */
+  projectRoot?: string;
 }
 
 /**
@@ -100,6 +108,71 @@ function matchesPathsPattern(specifier: string, pattern: string): boolean {
 }
 
 /**
+ * Probe a resolved base path for an existing corpus file: exact, then JS
+ * extension stripped + TypeScript probe extensions, then `/index` forms.
+ * Returns the first existing file, or `undefined`.
+ */
+function probeResolvedPath(base: string, corpusFiles: ReadonlySet<string>): string | undefined {
+  let stripped = base;
+  for (const ext of JS_STRIP_EXTS) {
+    if (base.endsWith(ext)) {
+      stripped = base.slice(0, base.length - ext.length);
+      break;
+    }
+  }
+  const candidates: string[] = [base];
+  for (const ext of PROBE_EXTS) candidates.push(stripped + ext);
+  for (const ext of PROBE_EXTS) candidates.push(stripped + '/index' + ext);
+
+  for (const candidate of candidates) {
+    if (corpusFiles.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a bare specifier through tsconfig `paths` mappings (alias resolution).
+ *
+ * For each mapping whose pattern matches the specifier, the `*` wildcard is
+ * captured and substituted into each target pattern; the result is resolved
+ * against `baseUrl` (relative to `projectRoot`) and probed against the corpus.
+ * Returns the first existing file, or `undefined` when nothing resolves.
+ *
+ * tsconfig `paths` supports a single `*` per pattern; multiple stars are
+ * unsupported here (they have no defined substitution order anyway).
+ */
+function resolveAliasTarget(
+  specifier: string,
+  options: ClassifyOptions,
+  corpusFiles: ReadonlySet<string>,
+): string | undefined {
+  const mappings = options.pathMappings;
+  const root = options.projectRoot;
+  if (!mappings || !root) return undefined;
+
+  for (const [pattern, targets] of Object.entries(mappings)) {
+    let wildcard: string | null = null;
+    const starIdx = pattern.indexOf('*');
+    if (starIdx !== -1) {
+      const prefix = pattern.slice(0, starIdx);
+      const suffix = pattern.slice(starIdx + 1);
+      if (!specifier.startsWith(prefix) || !specifier.endsWith(suffix)) continue;
+      wildcard = specifier.slice(prefix.length, specifier.length - suffix.length);
+    } else if (specifier !== pattern) {
+      continue;
+    }
+
+    for (const target of targets) {
+      const substituted = wildcard === null ? target : target.split('*').join(wildcard);
+      const base = normalizePath(path.resolve(root, options.baseUrl ?? '.', substituted));
+      const resolved = probeResolvedPath(base, corpusFiles);
+      if (resolved) return resolved;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Classify a single import specifier against the corpus file set.
  *
  * @param specifier   The raw specifier as written (quotes stripped), e.g. `react`,
@@ -108,9 +181,11 @@ function matchesPathsPattern(specifier: string, pattern: string): boolean {
  * @param corpusFiles The in-memory set of absolute paths in the corpus (the stage-1
  *                    discovery file list). Existence is checked against this set —
  *                    never `fs.existsSync`.
- * @param options     `virtualModules` (exact-match virtual list) and `aliasPatterns`
- *                    (tsconfig `paths` keys). Both default to empty; the caller
- *                    supplies them from config/tsconfig.
+ * @param options     `virtualModules` (exact-match virtual list), `aliasPatterns`
+ *                    (tsconfig `paths` keys), `pathMappings` (full `paths` mapping),
+ *                    and `baseUrl`/`projectRoot` (for alias + baseUrl-rooted bare
+ *                    resolution). All default to empty; the caller supplies them
+ *                    from config/tsconfig.
  */
 export function classifyImportSpecifier(
   specifier: string,
@@ -120,8 +195,25 @@ export function classifyImportSpecifier(
 ): ClassifiedSpecifier {
   const clean = stripQueryAndFragment(specifier);
 
-  // 1. Bare (non-relative) specifier → package vs unresolved-alias.
+  // 1. Bare (non-relative) specifier → alias resolution, then package vs alias.
   if (!clean.startsWith('.') && !clean.startsWith('/')) {
+    // A tsconfig `paths` alias that resolves to a corpus file is a live internal
+    // edge, not a coverage gap — resolve it before falling back to classification.
+    const aliasTarget = resolveAliasTarget(clean, options, corpusFiles);
+    if (aliasTarget) return { classification: 'internal-resolved', resolvedPath: aliasTarget };
+
+    // A `baseUrl`-rooted bare import (classic node resolution with `baseUrl`):
+    // `baseUrl + specifier` resolves a local file — e.g. hhra's `from "app/actions"`
+    // with `baseUrl: "."`. Probe it before declaring `package`; a non-existent
+    // target (e.g. `react`) simply misses and falls through to `package`.
+    if (options.baseUrl && options.projectRoot) {
+      const baseUrlTarget = probeResolvedPath(
+        normalizePath(path.resolve(options.projectRoot, options.baseUrl, clean)),
+        corpusFiles,
+      );
+      if (baseUrlTarget) return { classification: 'internal-resolved', resolvedPath: baseUrlTarget };
+    }
+
     if (clean.startsWith('@/')) return { classification: 'unresolved-alias' };
     for (const pattern of options.aliasPatterns ?? []) {
       if (matchesPathsPattern(clean, pattern)) {
@@ -142,25 +234,9 @@ export function classifyImportSpecifier(
   //    `.`/`..`; `normalizePath` converts backslashes and preserves a leading slash.
   const base = normalizePath(path.join(path.dirname(sourceFile), clean));
 
-  // 4. Strip a JS extension so `./types.js` can resolve to `types.ts`.
-  let stripped = base;
-  for (const ext of JS_STRIP_EXTS) {
-    if (base.endsWith(ext)) {
-      stripped = base.slice(0, base.length - ext.length);
-      break;
-    }
-  }
-
-  // 5. Probe in order — first existing file in the corpus file set wins.
-  const candidates: string[] = [base];
-  for (const ext of PROBE_EXTS) candidates.push(stripped + ext);
-  for (const ext of PROBE_EXTS) candidates.push(stripped + '/index' + ext);
-
-  for (const candidate of candidates) {
-    if (corpusFiles.has(candidate)) {
-      return { classification: 'internal-resolved', resolvedPath: candidate };
-    }
-  }
+  // 4-5. Probe in order — first existing file in the corpus file set wins.
+  const resolved = probeResolvedPath(base, corpusFiles);
+  if (resolved) return { classification: 'internal-resolved', resolvedPath: resolved };
 
   return { classification: 'internal-broken' };
 }
@@ -170,15 +246,17 @@ export function classifyImportSpecifier(
 export interface TsconfigAliases {
   /** Keys of `compilerOptions.paths` (e.g. `['@/*', '~/*']`). */
   pathPatterns: string[];
-  /** Raw `compilerOptions.baseUrl` string, if present (reported, not used to resolve). */
+  /** Raw `compilerOptions.baseUrl` string, if present. */
   baseUrl?: string;
   /** Whether a readable, parseable tsconfig.json existed at projectRoot. */
   hasTsconfig: boolean;
+  /** Full `compilerOptions.paths` mapping: pattern → target patterns. */
+  paths: Record<string, string[]>;
 }
 
 /**
  * Read `compilerOptions.paths` + `baseUrl` from the project's tsconfig.json for
- * pattern matching only. Behavior:
+ * alias classification and resolution. Behavior:
  *   - absent — returns `{ hasTsconfig: false, pathPatterns: [] }` (a project with no
  *     tsconfig still classifies `@/`-prefixed specifiers as alias, independent of this).
  *   - malformed (JSON parse fails, or comments the stripper can't recover from) —
@@ -193,24 +271,24 @@ export function readTsconfigAliases(projectRoot: string): TsconfigAliases {
 }
 
 function readTsconfigAt(configPath: string, visited: Set<string>): TsconfigAliases {
-  if (visited.has(configPath)) return { pathPatterns: [], hasTsconfig: false };
+  if (visited.has(configPath)) return { pathPatterns: [], hasTsconfig: false, paths: {} };
   visited.add(configPath);
 
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, 'utf-8');
   } catch {
-    return { pathPatterns: [], hasTsconfig: false };
+    return { pathPatterns: [], hasTsconfig: false, paths: {} };
   }
 
   let parsed: any;
   try {
     parsed = JSON.parse(stripJsonComments(raw));
   } catch {
-    return { pathPatterns: [], hasTsconfig: false };
+    return { pathPatterns: [], hasTsconfig: false, paths: {} };
   }
 
-  let base: TsconfigAliases = { pathPatterns: [], hasTsconfig: false };
+  let base: TsconfigAliases = { pathPatterns: [], hasTsconfig: false, paths: {} };
   if (typeof parsed.extends === 'string') {
     base = readTsconfigAt(path.resolve(path.dirname(configPath), parsed.extends), visited);
   }
@@ -218,12 +296,13 @@ function readTsconfigAt(configPath: string, visited: Set<string>): TsconfigAlias
   const co = parsed.compilerOptions ?? {};
   const baseUrl: string | undefined =
     typeof co.baseUrl === 'string' ? co.baseUrl : base.baseUrl;
-  const pathPatterns: string[] =
+  const paths: Record<string, string[]> =
     co.paths && typeof co.paths === 'object' && !Array.isArray(co.paths)
-      ? Object.keys(co.paths)
-      : base.pathPatterns;
+      ? (co.paths as Record<string, string[]>)
+      : base.paths;
+  const pathPatterns: string[] = Object.keys(paths);
 
-  return { pathPatterns, baseUrl, hasTsconfig: true };
+  return { pathPatterns, baseUrl, paths, hasTsconfig: true };
 }
 
 /** Strip `//` and `/* *‍/` comments, respecting double-quoted strings (JSON). */
