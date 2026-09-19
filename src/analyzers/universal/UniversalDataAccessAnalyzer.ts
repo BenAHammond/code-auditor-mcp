@@ -13,6 +13,7 @@ import {
   isDBProvenanced,
   getCallExpressionCallee,
   DB_CALL_METHODS,
+  ORM_METHODS,
   type ProvenanceContext,
   type DetectionMode,
 } from '../provenance.js';
@@ -972,6 +973,98 @@ function isStatementConstructionOnly(node: ASTNode, adapter: LanguageAdapter, so
   return (method === 'prepare' || method === 'bind') && !hasEagerMethodInCallChain(node, adapter, sourceCode);
 }
 
+/**
+ * True when a db-call node is SQL-string construction inside a query compiler:
+ * an ORM *builder* method (e.g. `aggregate`, `select`, `where` — never an eager
+ * I/O method) invoked on an unprovenanced `this` receiver whose result is
+ * accumulated into an array via `.push(...)`. knex's query compilers build SQL
+ * exactly this way — `sql.push(...this.aggregate(stmt))` inside a
+ * column-iteration loop — and the call returns a string fragment, not a query
+ * result, so the loop is not an N+1 (Spec 52 R1 extension). Eager methods
+ * (`run`/`all`/`exec`/`query`/…) are excluded, so a genuine
+ * `results.push(db.query(...))` still fires.
+ */
+function isSqlStringConstruction(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const method = dbCallMethodName(node, adapter, sourceCode);
+  if (!method || EAGER_DB_METHODS.has(method)) return false;
+  if (!ORM_METHODS.has(method)) return false;
+
+  const call = resolveDbCallNode(node, adapter);
+  if (!call) return false;
+  const memberExpr = findMemberCallee(call, adapter);
+  if (!memberExpr) return false;
+
+  // The receiver must be an unprovenanced `this`/`super` — the query-compiler
+  // object itself. `this.db.aggregate(...)` (receiver `this.db`) would be a real
+  // ORM query on a provenanced `db`, not a compiler fragment.
+  const objectText = memberObjectText(memberExpr, adapter, sourceCode);
+  if (objectText !== 'this' && objectText !== 'super') return false;
+
+  return isConsumedByArrayPush(call, adapter, sourceCode);
+}
+
+/** The object text of a member_expression (`this.aggregate` → `this`). */
+function memberObjectText(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const object = adapter.getChildren(node).find((c) => {
+    const t = adapter.getNodeType(c);
+    return t !== 'property_identifier' && t !== 'field_identifier' && t !== '.';
+  });
+  return object ? adapter.getNodeText(object, sourceCode) : null;
+}
+
+/**
+ * True when a call's result is consumed by an array `.push(...)` — the call is
+ * an argument (possibly spread) of a `push` invocation. The accumulation
+ * signature (`sql.push(...this.aggregate(stmt))`) marks the value as a string
+ * fragment being collected, not a query result being read.
+ */
+function isConsumedByArrayPush(
+  call: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  let cur = adapter.getParent(call);
+  if (cur && adapter.getNodeType(cur) === 'spread_element') {
+    cur = adapter.getParent(cur);
+  }
+  if (!cur || adapter.getNodeType(cur) !== 'arguments') return false;
+  const pushCall = adapter.getParent(cur);
+  if (!pushCall || adapter.getNodeType(pushCall) !== 'call_expression') return false;
+  const pushMember = findMemberCallee(pushCall, adapter);
+  return !!pushMember && memberPropertyName(pushMember, adapter, sourceCode) === 'push';
+}
+
+/**
+ * True when a db-call node is a call to a locally-defined DB *wrapper* function
+ * (provenance reason `wrapper`) — e.g. `fetchUser(db, id)`. The query execution
+ * lives inside the wrapper body, not at the call site, so a loop that only
+ * invokes the wrapper performs no query in its own body. The finding must anchor
+ * to the wrapper body's query (analyzed separately), not to the loop call.
+ */
+function isWrapperDelegation(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceContext?: ProvenanceContext,
+): boolean {
+  if (!provenanceContext) return false;
+  const call = resolveDbCallNode(node, adapter);
+  if (!call) return false;
+  const callee = getCallExpressionCallee(call, adapter);
+  if (!callee || adapter.getNodeType(callee) !== 'identifier') return false;
+  const name = adapter.getNodeText(callee, sourceCode);
+  if (!name) return false;
+  return provenanceContext.dbProvenanced.get(name)?.reason === 'wrapper';
+}
+
 /** True when a call's arguments contain a spread_element (…binds). */
 function hasSpreadArgument(call: ASTNode, adapter: LanguageAdapter): boolean {
   const args = adapter.getChildren(call).find(
@@ -1759,6 +1852,17 @@ function checkLoopQueries(
     // Spec 52 R1 — skip statement construction (prepare/bind with no eager call);
     // an eager call or a prepare chained into one still fires.
     if (isStatementConstructionOnly(node, adapter, sourceCode)) continue;
+
+    // Spec 52 R1 (extension) — skip SQL-string construction inside a query
+    // compiler: an ORM builder method (e.g. `aggregate`) on an unprovenanced
+    // `this` whose result is accumulated via `.push(...)` returns a string
+    // fragment, not a query result (knex `sql.push(...this.aggregate(stmt))`).
+    if (isSqlStringConstruction(node, adapter, sourceCode)) continue;
+
+    // Spec 21 — skip a loop that only calls a DB *wrapper* function
+    // (`fetchUser(db, id)`); the query execution lives inside the wrapper body,
+    // not in the loop's own body, so it is not a query-in-loop here.
+    if (isWrapperDelegation(node, adapter, sourceCode, provenanceContext)) continue;
 
     const loopInfo = findEnclosingLoop(node, adapter);
     if (!loopInfo) continue;
