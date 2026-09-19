@@ -1567,6 +1567,14 @@ export interface SchemaUsage {
   column?: number;
   rawQuery?: string;
   parameters?: string[];
+  /**
+   * When set, the usage came from the knex-style fluent builder form
+   * (`db('table').select(...)`). Persisted to schema_usage so the cross-domain
+   * lifecycle rules can exempt a table whose usage is *entirely* query-builder —
+   * a scratch/test table built and consumed through the fluent builder is not a
+   * one-sided lifecycle defect. See `TableReference.origin`.
+   */
+  origin?: 'query-builder';
 }
 
 export interface SchemaIndexMetadata {

@@ -88,6 +88,9 @@ export function findTableReferences(
   // (4) Spec 15 R2 — ORM-aware extraction (Drizzle + Prisma)
   references.push(...extractOrmRefs(ast, adapter, sourceCode));
 
+  // (5) knex-style query-builder reads — db('table').select(...) / .where(...) / .first(...)
+  references.push(...extractQueryBuilderRefs(ast, adapter, sourceCode, ctx));
+
   return { references, unresolved };
 }
 
@@ -232,6 +235,100 @@ function extractOrmRefs(
   }
 
   return references;
+}
+
+/**
+ * Strategy (5): knex-style fluent builder *reads* — the query-builder form
+ * `db('table').select(...)` / `db('table').where(...)` / `db('table').first(...)`.
+ *
+ * The table selector is a *receiver call* (`db('table')`) whose first argument
+ * is a string-literal table name — distinct from the `db.method(sql)` member-call
+ * form strategy (2) handles. This is the same blindness the ORM adapters close
+ * for Drizzle/Prisma: a fluent builder call carries the table in a receiver-call
+ * argument, not a SQL keyword, so `parseSqlTables` never sees it. Without this,
+ * a knex `db('cp_test').select('name')` leaves `cp_test` "written (create) but
+ * never read" — a live written-never-read false positive.
+ *
+ * Only *reads* are recorded. Writes (`insert`/`update`/`del`) and the
+ * schema-builder `createTable` form are deliberately left unrecorded: they are
+ * overwhelmingly scratch/negative-test fixtures in a test-heavy corpus, and
+ * recording them floods the cross-domain lifecycle rules with one-sided
+ * `create`/`write` usages whose matching read is unparseable (`ages` in a
+ * create-and-drop transaction test has no read at all). The query-builder read
+ * is enough to *balance* a non-builder write/create (the cp_test case) — and a
+ * fluent-only table is exempted from the one-sided lifecycle rules by the
+ * `origin` discriminator in the cross-domain analyzer, so the read does not
+ * mirror into a `read-never-written` flood.
+ *
+ * References are tagged `origin: 'query-builder'` so the naming-convention,
+ * unknown-table, and (via the cross-domain discriminator) lifecycle checks skip
+ * them — a scratch/test table name carried in a fluent builder call is not a
+ * schema violation, and feeding it into unknown-table floods a test-heavy corpus
+ * and flips the fail-open ratio.
+ */
+
+/** Extra knex/transaction receiver names beyond the configured DB receivers. */
+const QUERY_BUILDER_RECEIVER_NAMES = ['trx', 'knex'] as const;
+
+function extractQueryBuilderRefs(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  ctx: FindTableReferencesContext,
+): TableReference[] {
+  const references: TableReference[] = [];
+  const receivers = new Set<string>([
+    ...(ctx.config.dbReceiverNames ?? [...DB_RECEIVER_NAMES]),
+    ...QUERY_BUILDER_RECEIVER_NAMES,
+  ]);
+
+  const calls = adapter.findNodes(ast, { type: 'call_expression' });
+  for (const call of calls) {
+    // Only the outermost call of a query chain carries the complete text and the
+    // terminal method; the inner `db('table')` receiver call is its object. A
+    // call that is itself the object of a parent member_expression is chained
+    // further, so its text would truncate the terminal method and misclassify.
+    if (isChainedFurther(call, adapter)) continue;
+
+    const text = adapter.getNodeText(call, sourceCode);
+    // `receiver('table')` as the leftmost call, followed by a chained method
+    // call (the `.method(` is required — a bare `db('table')` is ambiguous).
+    const m = /^([A-Za-z_$][\w$]*)\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\.\s*[A-Za-z_$][\w$]*\s*\(/.exec(text);
+    if (!m) continue;
+    const [, receiver, rawTable] = m;
+    if (!receivers.has(receiver)) continue;
+
+    const table = normalizeQueryBuilderTable(rawTable);
+
+    references.push({
+      table,
+      type: 'select',
+      location: call.location.start,
+      context: `${receiver}(${table})`,
+      origin: 'query-builder',
+    });
+  }
+
+  return references;
+}
+
+/** Strip a SQL alias from a query-builder table selector — `accounts as a1` →
+ *  `accounts`. Bare table names (and knex's deliberately-weird test names like
+ *  `CREATE TABLE`) pass through unchanged. */
+function normalizeQueryBuilderTable(table: string): string {
+  return table.split(/\s+as\s+/i)[0].trim();
+}
+
+/** True when `call` is the object of a parent member_expression (it is chained
+ *  into a further `.method(...)`), so it is not the outermost call of its chain. */
+function isChainedFurther(call: ASTNode, adapter: LanguageAdapter): boolean {
+  const parent = adapter.getParent(call);
+  if (!parent || adapter.getNodeType(parent) !== 'member_expression') return false;
+  const object = adapter.getChildren(parent).find((c) => {
+    const t = adapter.getNodeType(c);
+    return t !== 'property_identifier' && t !== 'field_identifier' && t !== '.';
+  });
+  return object === call;
 }
 
 /**
@@ -536,6 +633,11 @@ export function checkNamingConventions(
   const violations: Violation[] = [];
 
   for (const ref of references) {
+    // Fluent-builder references carry a dynamic table string whose name is a
+    // test/scratch fixture, not a declared schema name — naming conformance
+    // (snake_case / reserved-word) is a property of the schema, not the call.
+    if (ref.origin === 'query-builder') continue;
+
     // Conformance check instead of an uppercase-proxy: a table name is valid
     // when it is snake_case (`/^[a-z][a-z0-9_]*$/`), or when it is an ORM
     // class name following the `Table`-suffix policy (e.g. `UsersTable` for
@@ -799,7 +901,11 @@ export function checkMissingReferences(
   const violations: Violation[] = [];
 
   const unknownRefs = references.filter(
-    ref => !allTables.has(ref.table) && !isSystemTable(ref.table) && !isTableValuedFunction(ref.table)
+    ref =>
+      ref.origin !== 'query-builder' &&
+      !allTables.has(ref.table) &&
+      !isSystemTable(ref.table) &&
+      !isTableValuedFunction(ref.table)
   );
   const knownCount = allTables.size;
   const unknownCount = unknownRefs.length;

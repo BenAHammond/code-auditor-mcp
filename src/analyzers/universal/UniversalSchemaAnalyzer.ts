@@ -255,6 +255,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
           line: ref.location.line,
           column: ref.location.column,
           rawQuery: ref.context,
+          origin: ref.origin,
         });
       }
     } catch {

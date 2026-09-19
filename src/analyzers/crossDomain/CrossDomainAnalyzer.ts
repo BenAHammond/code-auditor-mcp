@@ -415,6 +415,24 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
 // ── R1: Written-Never-Read ──────────────────────────────────────────────
 
 /**
+ * SQL fragment excluding tables whose `schema_usage` is *entirely* query-builder
+ * (`origin = 'query-builder'` on every row). A fluent scratch/test table built
+ * and consumed through the knex query-builder is not a one-sided lifecycle
+ * defect, so the R1 one-sided detectors skip it. A table with even one
+ * non-builder row (raw SQL, tagged template, .sql, ORM) is still considered —
+ * that is what lets a query-builder *read* balance a raw-SQL `create` (cp_test).
+ */
+function nonQueryBuilderTableFilter(fp: { clause: string; params: string[] }): { clause: string; params: string[] } {
+  return {
+    clause: `AND table_name IN (
+        SELECT DISTINCT table_name FROM schema_usage
+        WHERE (origin IS NULL OR origin != 'query-builder') ${fp.clause}
+      )`,
+    params: fp.params,
+  };
+}
+
+/**
  * Detect tables that are written to (INSERT/UPDATE/DELETE/CREATE) but
  * never read from (SELECT). These might be dead writes or missed read paths.
  */
@@ -422,16 +440,18 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
   const violations: Violation[] = [];
 
   const fp = scope.apply('file_path');
+  const qb = nonQueryBuilderTableFilter(fp);
 
   const rows = indexHandle
     .query(`SELECT DISTINCT table_name, file_path, function_name, function_start_line, function_start_column, line, usage_type
        FROM schema_usage
        WHERE usage_type IN ('insert', 'update', 'delete', 'create')
          ${fp.clause}
+         ${qb.clause}
          AND table_name NOT IN (
            SELECT DISTINCT table_name FROM schema_usage WHERE usage_type = 'select' ${fp.clause}
          )
-       ORDER BY table_name, file_path`, [...fp.params, ...fp.params]) as SchemaUsageRow[];
+       ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params]) as SchemaUsageRow[];
 
   // Deduplicate by table_name — one violation per table, anchored to
   // the first writing file encountered.
@@ -466,17 +486,19 @@ function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Vio
   const violations: Violation[] = [];
 
   const fp = scope.apply('file_path');
+  const qb = nonQueryBuilderTableFilter(fp);
 
   const rows = indexHandle
     .query(`SELECT DISTINCT table_name, file_path, function_name, function_start_line, function_start_column, line, usage_type
        FROM schema_usage
        WHERE usage_type = 'select'
          ${fp.clause}
+         ${qb.clause}
          AND table_name NOT IN (
            SELECT DISTINCT table_name FROM schema_usage
            WHERE usage_type IN ('insert', 'update', 'delete', 'create') ${fp.clause}
          )
-       ORDER BY table_name, file_path`, [...fp.params, ...fp.params]) as SchemaUsageRow[];
+       ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params]) as SchemaUsageRow[];
 
   const seen = new Set<string>();
   for (const row of rows) {

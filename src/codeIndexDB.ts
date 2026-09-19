@@ -311,7 +311,7 @@ export class CodeIndexDB {
   private stmts: Map<string, SqliteStatement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 15;
+  private static readonly SCHEMA_VERSION = 16;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -887,6 +887,7 @@ export class CodeIndexDB {
             "column"      INTEGER,
             raw_query     TEXT,
             parameters    TEXT,
+            origin        TEXT,
             recorded_at   TEXT DEFAULT (datetime('now'))
           );
           INSERT INTO schema_usage (id, schema_id, table_name, file_path, function_name, usage_type, line, "column", raw_query, parameters, recorded_at)
@@ -911,6 +912,21 @@ export class CodeIndexDB {
         .all() as Array<{ name: string }>;
       if (!runCols.some((c) => c.name === 'tool_git_sha')) {
         this.db.exec(`ALTER TABLE findings_ledger_runs ADD COLUMN tool_git_sha TEXT`);
+      }
+    }
+
+    // Migration 15 → 16: schema_usage gains an `origin` column. Rows produced by
+    // the knex-style fluent-builder read extractor carry `origin = 'query-builder'`;
+    // every other extractor (raw SQL, tagged template, .sql, ORM) leaves it NULL.
+    // The cross-domain lifecycle rules use it to exempt tables whose usage is
+    // entirely query-builder — scratch/test tables built and consumed through the
+    // fluent builder are not one-sided lifecycle defects.
+    if (currentVersion < 16) {
+      const suCols = this.db
+        .prepare(`PRAGMA table_info('schema_usage')`)
+        .all() as Array<{ name: string }>;
+      if (!suCols.some((c) => c.name === 'origin')) {
+        this.db.exec(`ALTER TABLE schema_usage ADD COLUMN origin TEXT`);
       }
     }
 
@@ -1083,6 +1099,7 @@ export class CodeIndexDB {
         "column"      INTEGER,
         raw_query     TEXT,
         parameters    TEXT,
+        origin        TEXT,
         recorded_at   TEXT DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_schema_usage_table ON schema_usage(table_name);
@@ -3187,17 +3204,17 @@ export class CodeIndexDB {
 
     if (existing) {
       this.db.prepare(
-        'UPDATE schema_usage SET schema_id = ?, function_name = ?, usage_type = ?, "column" = ?, raw_query = ?, parameters = ?, recorded_at = ? WHERE id = ?'
+        'UPDATE schema_usage SET schema_id = ?, function_name = ?, usage_type = ?, "column" = ?, raw_query = ?, parameters = ?, origin = ?, recorded_at = ? WHERE id = ?'
       ).run(schemaId ?? 'default', usage.functionName ?? null, usage.usageType, usage.column ?? null,
-        usage.rawQuery ?? null, JSON.stringify(usage.parameters ?? []),
+        usage.rawQuery ?? null, JSON.stringify(usage.parameters ?? []), usage.origin ?? null,
         new Date().toISOString(), (existing as any).id);
     } else {
       this.db.prepare(
-        'INSERT INTO schema_usage (schema_id, table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, "column", raw_query, parameters, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO schema_usage (schema_id, table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, "column", raw_query, parameters, origin, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       ).run(schemaId ?? 'default', usage.tableName, usage.filePath, usage.functionName ?? null,
         usage.functionStartLine ?? null, usage.functionStartColumn ?? null,
         usage.usageType, usage.line ?? null, usage.column ?? null,
-        usage.rawQuery ?? null, JSON.stringify(usage.parameters ?? []), new Date().toISOString());
+        usage.rawQuery ?? null, JSON.stringify(usage.parameters ?? []), usage.origin ?? null, new Date().toISOString());
     }
   }
 

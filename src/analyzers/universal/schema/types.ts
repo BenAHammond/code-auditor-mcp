@@ -73,6 +73,16 @@ export interface TableReference {
   type: 'select' | 'insert' | 'update' | 'delete' | 'create' | 'reference';
   location: { line: number; column: number };
   context: string;
+  /**
+   * When set, the reference came from the knex-style fluent builder form
+   * (`db('t').select(...)`, `db('t').where(...)`, `db('t').first(...)`).
+   * These carry a dynamic table string whose name is only meaningful to the
+   * lifecycle (schema_usage) rules — the naming-convention and unknown-table
+   * checks skip them because a scratch/test table name is not a schema violation,
+   * and the cross-domain lifecycle rules exempt tables that are *entirely*
+   * query-builder.
+   */
+  origin?: 'query-builder';
 }
 
 /**

@@ -2516,6 +2516,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
             line: usage.line,
             column: usage.column,
             raw_query: usage.rawQuery,
+            origin: usage.origin ?? null,
           },
         });
       }
@@ -2539,15 +2540,20 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       // Check SQL injection
       violations.push(...checkSQLInjection(ast as AST, adapter as LanguageAdapter, sourceCode));
 
-      // Emit facts for the Stage 3 reducer
+      // Emit facts for the Stage 3 reducer. Fluent-builder references
+      // (`origin: 'query-builder'`) are excluded from the unknown-table check:
+      // a scratch/test table name carried by `db('t').select(...)` is not a
+      // schema catalog miss, and feeding it in flips the 10:1 fail-open ratio.
       const fileFacts: Record<string, unknown> = {
-        tableRefs: tableRefs.map((r: { table: string; type: string; location: { line: number; column: number }; context: string }) => ({
-          table: r.table,
-          type: r.type,
-          line: r.location.line,
-          column: r.location.column,
-          context: r.context,
-        })),
+        tableRefs: tableRefs
+          .filter((r) => (r as { origin?: string }).origin !== 'query-builder')
+          .map((r: { table: string; type: string; location: { line: number; column: number }; context: string }) => ({
+            table: r.table,
+            type: r.type,
+            line: r.location.line,
+            column: r.location.column,
+            context: r.context,
+          })),
         ormTables,
         tableProvenance: tableProvenances,
       };
