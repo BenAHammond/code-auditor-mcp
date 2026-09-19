@@ -697,3 +697,69 @@ script's new "coverage diagnostics" section):
 | styles::styles/token-bypass | 3 |
 | dependency-graph::tight-coupling | 1 |
 | solid::function-length | 1 |
+
+---
+
+## Spec 60 — test coverage & size distributions (reporting-only)
+
+Re-pinned 2026-09-19. Spec 60 (R1 test coverage, R2 size distributions, R3
+dead-and-duplicated) is reporting-only: it introduces no new findings and moves no
+existing rule's count. The figures below are new metadata, pinned here so a future
+delta can be attributed to a named cause. Two of them supersede numbers the Spec 59
+target table carried, because that table predated two changes — alias-aware import
+resolution and a defined size-sample population.
+
+### R1 — tested / untested-live / untested-dead (file-level import edges)
+
+`tested` = a non-test module imported by ≥1 test file. `untested-live` = imported, but
+by no test file. `untested-dead` = imported by nothing and not a framework entry point;
+reported post-exception with the pre-exception count and the entry-point drop.
+
+**Why these moved from the Spec 59 targets:** the Spec 59 numbers were measured with a
+pre-alias-aware resolver, which dropped `@/`-style import edges. The current `importersOf`
+resolves path aliases, so more import edges resolve — `tested` rises and the dead bucket
+shrinks. Proof on hhra-org: its three `tested` modules (`database/schema.ts`,
+`database/services/app-db/index.ts`, `lib/utils/organizationFilters.ts`) are all imported
+by `tests/unit/organization-isolation.test.ts` via `@/` aliases, which the old resolver
+could not see — hence Spec 59's "tested 0".
+
+| corpus | tested | untested-live | untested-dead (post) | dead pre-exception | entry-point drop | total |
+| --- | --- | --- | --- | --- | --- | --- |
+| endless-guessing | 16 | 47 | 0 | 4 | 4 | 63 |
+| knex | 48 | 117 | 23 | 35 | 12 | 188 |
+| blitz | 41 | 317 | 253 | 385 | 132 | 611 |
+| hhra-org | 3 | 480 | 87 | 211 | 124 | 570 |
+| recall-protocol | 92 | 1002 | 196 | 656 | 460 | 1290 |
+
+### R2 — size distributions (population pinned)
+
+Five measures are reported per run (`metadata.sizeDistributions`): function-length,
+parameter-count, complexity, class-size, interface-size. The function-like measures are
+pinned to **named functions + methods, anonymous excluded** — an inline callback
+(`items.map(x => …)`) or an IIFE has no stable identity and is overwhelmingly trivial
+(cyclomatic complexity 1), so it is not counted; a variable-assigned arrow
+(`const f = () => …`) is named by its variable and is counted. `class-size` counts all
+classes; `interface-size` counts all interfaces. Each distribution carries its
+`population` string and `count`, so the denominator is defined.
+
+**Why these moved from the Spec 59 targets:** the Spec 59 complexity medians were
+measured on an undefined function set — whether anonymous and method functions were
+included was never stated, so the denominator had no fixed meaning. Pinning the
+population reproduces the Spec 59 medians on four of five corpora (endless-guessing 2,
+knex 1, blitz 2, recall-protocol 3 — all exact). The residual differences (hhra-org
+median 3 vs 2; max consistently ~+4…+13) are the pre-existing `adapter.getComplexity`
+cyclomatic formula and corpus drift, not a population ambiguity.
+
+**complexity** (cyclomatic complexity, named functions + methods):
+
+| corpus | median | p95 | max | n |
+| --- | --- | --- | --- | --- |
+| endless-guessing | 2 | 12 | 27 | 215 |
+| knex | 1 | 8 | 39 | 1492 |
+| blitz | 2 | 11 | 170 | 792 |
+| hhra-org | 3 | 17 | 239 | 1286 |
+| recall-protocol | 3 | 19 | 166 | 5817 |
+
+The other four measures report under the same pinned population — function-length and
+parameter-count share the named-functions+methods set; class-size and interface-size
+count all classes/interfaces. Their full figures live in `metadata.sizeDistributions`.

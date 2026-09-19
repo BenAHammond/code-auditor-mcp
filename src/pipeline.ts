@@ -32,6 +32,8 @@ import {
   type Stage3Reducer,
   type Stage4Reducer,
   type Violation,
+  type TestCoverageReport,
+  type DeadCluster,
 } from './types.js';
 import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
 import { evaluateRuleApplicability, scopedWholeProgramApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
@@ -647,6 +649,7 @@ async function runStage4(
           status: { status: 'reducer-ran', factsConsumed: result.factsConsumed ?? factsConsumed },
           executionTime: rMs,
           analyzerName: dr.name,
+          ...(result.facts && Object.keys(result.facts).length > 0 && { metrics: result.facts }),
           ...(result.diagnostics && result.diagnostics.length > 0 && { diagnostics: result.diagnostics }),
         });
       }
@@ -939,6 +942,16 @@ export async function runPipeline(
   const schemaFacts = combinedFacts['schema'] as Record<string, unknown> | undefined;
   const tableCatalog = schemaFacts?.tableCatalog as Array<{ table: string; sources: any[] }> | undefined;
 
+  // Spec 60 R1/R3 — lift the dependency-graph reducer's reporting facts
+  // (testCoverage + deadClusters) into metadata. These are reporting artifacts,
+  // not findings: no rule's `input` names the `dependency-graph` fact-key, so
+  // surfacing them does not change any rule's coverage state or count.
+  const depGraphMetrics = analyzerResults['dependency-graph']?.metrics as
+    | { testCoverage?: TestCoverageReport; deadClusters?: DeadCluster[] }
+    | undefined;
+  const testCoverage = depGraphMetrics?.testCoverage;
+  const deadClusters = depGraphMetrics?.deadClusters;
+
   // Spec 31: surface oversized orphan files skipped by stage-1 streaming.
   // The schema-sql visitor marks them with `skipped: true`; here they are lifted
   // into metadata so a skipped file is visible in coverage without adding a
@@ -1046,6 +1059,8 @@ export async function runPipeline(
         kind: app.kind,
       })),
       tableCatalog,
+      ...(testCoverage && { testCoverage }),
+      ...(deadClusters && deadClusters.length > 0 && { deadClusters }),
       ...(skippedFiles.length > 0 && { skippedFiles }),
       ...(unparsedFiles.length > 0 && { unparsedFiles }),
       ...(skippedExtensions.length > 0 && { skippedExtensions }),

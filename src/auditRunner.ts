@@ -74,8 +74,9 @@ import {
   createAPIContractReducer,
   createDependencyGraphReducer,
 } from './pipelineAdapters.js';
-import type { DryVisitorBundle, ReactVisitorBundle } from './pipelineAdapters.js';
-import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer } from './types.js';
+import type { DryVisitorBundle, ReactVisitorBundle, SolidVisitorBundle } from './pipelineAdapters.js';
+import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer, TestCoverageReport, DeadCluster, SizeDistribution } from './types.js';
+import { computeSizeDistributions } from './reporting/sizeDistribution.js';
 
 // Package version — stamped into the build (see constants.ts), not read from
 // package.json at runtime, so a stale binary reports the version it was built as.
@@ -484,6 +485,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let pipelineRuleTiming: Array<{ ruleId: string; totalMs: number; calls: number }> | undefined;
     let pipelineFileAccounting: FileAccountingSummary | undefined;
     let pipelineDiagnostics: Array<{ analyzerName: string; kind: string; message: string; file?: string; line?: number; details?: Record<string, unknown> }> | undefined;
+    let pipelineTestCoverage: TestCoverageReport | undefined;
+    let pipelineDeadClusters: DeadCluster[] | undefined;
+    let pipelineSizeDistributions: SizeDistribution[] | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -544,6 +548,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
     let dryBundle: DryVisitorBundle | undefined;
     let reactBundle: ReactVisitorBundle | undefined;
+    let solidBundle: SolidVisitorBundle | undefined;
 
     // Always-on infrastructure: function-index visitor populates the
     // `functions` table so conventions + cross-domain reducers have data
@@ -556,7 +561,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // reusing the stage-1 parse (eliminates the style-index re-parse).
     if (enabledAnalyzers.includes('styles')) pipelineVisitors.push(createStylesSourceVisitor());
 
-    if (enabledAnalyzers.includes('solid')) pipelineVisitors.push(createSolidVisitor());
+    if (enabledAnalyzers.includes('solid')) {
+      solidBundle = createSolidVisitor();
+      pipelineVisitors.push(solidBundle.visitor);
+    }
     if (enabledAnalyzers.includes('dry')) {
       dryBundle = createDryVisitor(fullFunctionIndex);
       pipelineVisitors.push(dryBundle.visitor);
@@ -805,6 +813,15 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         pipelineRuleTiming = pipelineResult.metadata?.ruleTiming;
         pipelineFileAccounting = pipelineResult.metadata?.fileAccounting;
         pipelineDiagnostics = pipelineResult.metadata?.diagnostics;
+        pipelineTestCoverage = pipelineResult.metadata?.testCoverage;
+        pipelineDeadClusters = pipelineResult.metadata?.deadClusters;
+
+        // Spec 60 R2 — aggregate the SOLID analyzer's raw size readings into
+        // per-measure distributions (median/p95/max + tail annotation).
+        if (solidBundle) {
+          const samples = await solidBundle.getSizeSamples();
+          pipelineSizeDistributions = computeSizeDistributions(samples);
+        }
       } catch (error) {
         if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
           throw error;
@@ -1192,6 +1209,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         ...(pipelineInputPresence && { inputPresence: pipelineInputPresence }),
         ...(pipelineRuleTiming && { ruleTiming: pipelineRuleTiming }),
         ...(pipelineFileAccounting && { fileAccounting: pipelineFileAccounting }),
+        ...(pipelineTestCoverage && { testCoverage: pipelineTestCoverage }),
+        ...(pipelineDeadClusters && pipelineDeadClusters.length > 0 && { deadClusters: pipelineDeadClusters }),
+        ...(pipelineSizeDistributions && pipelineSizeDistributions.length > 0 && { sizeDistributions: pipelineSizeDistributions }),
         ...(collectedFunctions.length > 0 && {
           collectedFunctions,
           fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)

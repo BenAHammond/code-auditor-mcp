@@ -29,7 +29,10 @@ import type {
   VisitorContext,
   ReducerContext,
   CoverageDiagnostic,
+  TestCoverageReport,
+  DeadCluster,
 } from './types.js';
+import type { SizeSample } from './analyzers/universal/UniversalSOLIDAnalyzer.js';
 import type { AST, ASTNode, LanguageAdapter } from './languages/types.js';
 import type { MigrationOp } from './analyzers/universal/UniversalSchemaAnalyzer.js';
 import { TYPESCRIPT_EXTENSIONS, JAVASCRIPT_EXTENSIONS, getLanguageFromPath } from './utils/fileDiscovery.js';
@@ -96,14 +99,20 @@ function lazySingleton<T>(loader: () => Promise<T>): () => Promise<T> {
 
 // ── SOLID visitor ────────────────────────────────────────────────────────────
 
-export function createSolidVisitor(): Stage2Visitor {
+export interface SolidVisitorBundle {
+  visitor: Stage2Visitor;
+  /** Spec 60 R2 — extract the raw size readings accumulated by the SOLID analyzer. */
+  getSizeSamples: () => Promise<SizeSample[]>;
+}
+
+export function createSolidVisitor(): SolidVisitorBundle {
   const getAnalyzer = lazySingleton<any>(() =>
     import('./analyzers/universal/UniversalSOLIDAnalyzer.js').then(
       (m) => new m.UniversalSOLIDAnalyzer(),
     ),
   );
 
-  return {
+  const visitor: Stage2Visitor = {
     name: 'solid',
     stage: 'visitor',
     getRuleIds: () => getRuleIdsFor('solid'),
@@ -120,6 +129,18 @@ export function createSolidVisitor(): Stage2Visitor {
     defaultConfig: {},
     description: 'Detects violations of SOLID principles',
     category: 'architecture',
+  };
+
+  return {
+    visitor,
+    getSizeSamples: async () => {
+      try {
+        const a = await getAnalyzer();
+        return a.sizeSamples ?? [];
+      } catch {
+        return [];
+      }
+    },
   };
 }
 
@@ -1919,6 +1940,108 @@ function clComputeReachability(
 }
 
 /**
+ * Spec 60 R1 — classify every non-test source module as `tested`,
+ * `untested-live`, or `untested-dead` off the file-level import edges
+ * (`importersOf`), not `function_dependencies`.
+ *
+ * A module is `tested` when a test file imports it *directly* (the edge set is
+ * alias-aware — built by `clResolveImport` through `classifyImportSpecifier`).
+ * `untested-dead` is the *post*-exception dead bucket: a file imported by
+ * nothing *and* not a framework entry point. `deadPreException` is the
+ * empty-importers count before the entry-point exception, so the drop
+ * (`deadPreException - untestedDead`) attributes the entry points exempted.
+ */
+export function classifyTestCoverage(
+  fileFacts: Map<string, ClFileInfo>,
+  importersOf: Map<string, Set<string>>,
+  packageEntrySet: ReadonlySet<string>,
+): TestCoverageReport {
+  const result: TestCoverageReport = {
+    tested: 0,
+    untestedLive: 0,
+    untestedDead: 0,
+    total: 0,
+    deadPreException: 0,
+    deadPostException: 0,
+    deadDrop: 0,
+    entryPointExemptions: [],
+    testedFiles: [],
+    untestedLiveFiles: [],
+    untestedDeadFiles: [],
+  };
+
+  for (const fp of fileFacts.keys()) {
+    if (clIsTestFile(fp)) continue;
+    result.total++;
+
+    const importers = importersOf.get(fp);
+    if (!importers || importers.size === 0) {
+      // Imported by nothing — dead *unless* it is a framework entry point.
+      result.deadPreException++;
+      const isPackageEntry = packageEntrySet.has(fp);
+      const isEntry = isPackageEntry || clIsEntryPointFile(fp);
+      if (isEntry) {
+        result.untestedLive++;
+        result.untestedLiveFiles.push(fp);
+        result.entryPointExemptions.push({
+          file: fp,
+          kind: isPackageEntry ? 'package-entry' : 'entry-point',
+        });
+      } else {
+        result.untestedDead++;
+        result.untestedDeadFiles.push(fp);
+      }
+      continue;
+    }
+
+    let hasTestImporter = false;
+    for (const importer of importers) {
+      if (clIsTestFile(importer)) {
+        hasTestImporter = true;
+        break;
+      }
+    }
+    if (hasTestImporter) {
+      result.tested++;
+      result.testedFiles.push(fp);
+    } else {
+      result.untestedLive++;
+      result.untestedLiveFiles.push(fp);
+    }
+  }
+
+  result.deadPostException = result.untestedDead;
+  result.deadDrop = result.deadPreException - result.untestedDead;
+  return result;
+}
+
+/**
+ * Spec 60 R3 — group unreferenced modules by basename, surfacing the pattern of
+ * the same file name appearing in several sibling directories (e.g. two
+ * `ErrorState.tsx`, three `services.ts` under separate `reports` folders). Only
+ * basenames with ≥2 files become clusters; a singleton dead file is not a duplicate.
+ */
+export function clusterDeadModules(deadFiles: string[]): DeadCluster[] {
+  const byBasename = new Map<string, string[]>();
+  for (const fp of deadFiles) {
+    const segments = fp.replace(/\\/g, '/').split('/').filter(Boolean);
+    const basename = segments[segments.length - 1] ?? fp;
+    const list = byBasename.get(basename) ?? [];
+    list.push(fp);
+    byBasename.set(basename, list);
+  }
+
+  const clusters: DeadCluster[] = [];
+  for (const [basename, files] of byBasename) {
+    if (files.length >= 2) {
+      clusters.push({ basename, count: files.length, files });
+    }
+  }
+  clusters.sort((a, b) => b.count - a.count || a.basename.localeCompare(b.basename));
+  return clusters;
+}
+
+/**
  * Build `calls` cross-references by resolving each entity's extracted callee
  * names against the corpus entity name index. Library calls (fetch, map, …)
  * resolve to nothing and are dropped — only real intra-corpus call edges become
@@ -2142,6 +2265,8 @@ export function createDependencyGraphReducer(): Stage4Reducer {
 
         // ── File-level reachability: unreferenced modules + ranking axis ──
         const fileFacts = clFileFacts(allFacts);
+        let testCoverage: TestCoverageReport | undefined;
+        let deadClusters: DeadCluster[] = [];
         if (fileFacts.size > 0) {
           // `context.config` is the reducer's merged config (namespace + `_infra`);
           // a bare reducer context in a unit test omits it, so fall back to the
@@ -2183,15 +2308,42 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             }
           }
 
+          // Spec 60 R1 — persist the file-level import edges (reverse adjacency:
+          // module → its direct importers) so "what tests exercise this module"
+          // is answerable downstream from `importersOf`, not the symbol-level
+          // `function_dependencies` table.
+          if (context.indexHandle?.rawDb) {
+            try {
+              const db = context.indexHandle.rawDb as any;
+              const del = db.prepare("DELETE FROM graph_cache WHERE graph_type = 'importers'");
+              const ins = db.prepare(
+                "INSERT OR REPLACE INTO graph_cache (graph_type, node_key, neighbor_key, weight) VALUES ('importers', ?, ?, 1)"
+              );
+              const tx = db.transaction(() => {
+                del.run();
+                for (const [fp, importers] of importersOf) {
+                  for (const importer of importers) {
+                    ins.run(fp, importer);
+                  }
+                }
+              });
+              tx();
+            } catch {
+              // Importer-edge persistence is advisory, like reachability.
+            }
+          }
+
           // Flag files that export symbols yet are imported by nothing and are
           // not framework entry points — a dead module. This is the signal the
           // orphaned-nodes check missed: a whole unreferenced file whose every
           // internal symbol still forms a connected component.
+          const deadModuleFiles: string[] = [];
           for (const [fp, info] of fileFacts) {
             if (!info.hasExports) continue;
             if (clIsTestFile(fp)) continue;
             if (clIsEntryPointFile(fp) || packageEntrySet.has(fp)) continue;
             if ((importersOf.get(fp)?.size ?? 0) > 0) continue;
+            deadModuleFiles.push(fp);
             violations.push({
               file: fp,
               line: 1,
@@ -2206,6 +2358,14 @@ export function createDependencyGraphReducer(): Stage4Reducer {
               details: { imports: info.imports },
             } as Violation);
           }
+
+          // Spec 60 R1 — classify each non-test module off the import edge set.
+          testCoverage = classifyTestCoverage(fileFacts, importersOf, packageEntrySet);
+
+          // Spec 60 R3 — cluster the unreferenced modules by basename so the
+          // "dead-and-duplicated" pattern (same file name in sibling dirs) is
+          // visible as a cluster rather than scattered one-per-file findings.
+          deadClusters = clusterDeadModules(deadModuleFiles);
 
           // Spec 58 R2 — computed-specifier dynamic imports. `import(someVar)`
           // cannot be resolved into an edge, so any module in this corpus could
@@ -2245,7 +2405,10 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             details: s.affectedNodes ? { affectedNodes: s.affectedNodes } : undefined,
           } as Violation);
         }
-        return { violations, facts: {}, factsConsumed: entities.length, ...(diagnostics.length > 0 && { diagnostics }) };
+        const facts: Record<string, unknown> = {};
+        if (testCoverage) facts.testCoverage = testCoverage;
+        if (deadClusters.length > 0) facts.deadClusters = deadClusters;
+        return { violations, facts, factsConsumed: entities.length, ...(diagnostics.length > 0 && { diagnostics }) };
       } catch (e: any) {
         console.error('[dependency-graph reducer] error:', e.message);
         return { violations: [], facts: {}, factsConsumed: 0 };

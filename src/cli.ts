@@ -240,6 +240,52 @@ program
         }
       }
 
+      // ── Spec 60 R1 — test coverage (reporting, not detection) ─────
+      // Classifies every non-test module as tested / untested-live /
+      // untested-dead off the file-level import edges. The dead count is
+      // post-entry-point-exception, with the drop attributed.
+      const testCoverage = result.metadata?.testCoverage;
+      if (testCoverage) {
+        const pct = testCoverage.total > 0
+          ? ((testCoverage.tested / testCoverage.total) * 100).toFixed(1)
+          : '0.0';
+        let line = `tested ${testCoverage.tested}/${testCoverage.total} (${pct}%)` +
+          ` · untested-live ${testCoverage.untestedLive}` +
+          ` · untested-dead ${testCoverage.untestedDead}`;
+        if (testCoverage.deadDrop > 0) {
+          line += ` (was ${testCoverage.deadPreException} pre-exception; −${testCoverage.deadDrop} entry points exempted)`;
+        }
+        console.log(chalk.gray(`── Test coverage ── ${line}`));
+      }
+
+      // ── Spec 60 R2 — size distributions (median / p95 / max) ──────
+      const sizeDistributions = result.metadata?.sizeDistributions;
+      if (sizeDistributions && sizeDistributions.length > 0) {
+        console.log(chalk.gray(`── Size distributions ──`));
+        for (const d of sizeDistributions) {
+          const fmt = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(1);
+          const tail = d.maxEntry
+            ? ` (${d.maxEntry.name}${d.maxEntry.fileType ? ` · ${d.maxEntry.fileType}` : ''} · ${d.maxEntry.entityType})`
+            : '';
+          const pop = d.population ? `${d.population}, n=${d.count}` : `n=${d.count}`;
+          console.log(chalk.gray(
+            `  ${d.measure} [${pop}]: median ${fmt(d.median)} · p95 ${fmt(d.p95)} · max ${fmt(d.max)}${tail}`
+          ));
+        }
+      }
+
+      // ── Spec 60 R3 — dead-and-duplicated clusters ─────────────────
+      const deadClusters = result.metadata?.deadClusters;
+      if (deadClusters && deadClusters.length > 0) {
+        console.log(chalk.gray(`── Dead-and-duplicated ── ${deadClusters.length} clusters`));
+        for (const c of deadClusters.slice(0, 10)) {
+          console.log(chalk.gray(`  ${c.count} × ${c.basename}`));
+        }
+        if (deadClusters.length > 10) {
+          console.log(chalk.gray(`  … and ${deadClusters.length - 10} more clusters`));
+        }
+      }
+
       // ── Delta output (Spec 18 R2) ─────────────────────────────────
       if (baseline && !options.full) {
         const newViolations = violations.filter((v: any) => v.new === true);

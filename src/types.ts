@@ -217,6 +217,69 @@ export interface RuleCoverage {
 }
 
 /**
+ * Spec 60 R1 — per-module test-coverage classification, computed off the
+ * file-level import edges (`importersOf`) rather than `function_dependencies`.
+ *
+ * A non-test source module is `tested` (a test file imports it directly),
+ * `untested-live` (imported by something, or a framework entry point), or
+ * `untested-dead` (imported by nothing and not an entry point). `untestedDead`
+ * is the *post*-exception dead count — entry points (filename heuristic +
+ * package-manifest entries) are pulled out of the dead bucket; `deadPreException`
+ * is the count before that exception, and `deadDrop` attributes the difference.
+ */
+export interface TestCoverageReport {
+  tested: number;
+  untestedLive: number;
+  /** Post-exception dead count — entry points excluded. */
+  untestedDead: number;
+  /** tested + untestedLive + untestedDead (non-test source modules). */
+  total: number;
+  /** Empty-importers count before the entry-point exception was applied. */
+  deadPreException: number;
+  /** = untestedDead. Present for an explicit pre/post pairing in the report. */
+  deadPostException: number;
+  /** deadPreException - deadPostException (the entry points exempted from dead). */
+  deadDrop: number;
+  /** The entry points exempted from the dead bucket, attributed by kind. */
+  entryPointExemptions: Array<{ file: string; kind: 'entry-point' | 'package-entry' }>;
+  testedFiles: string[];
+  untestedLiveFiles: string[];
+  untestedDeadFiles: string[];
+}
+
+/**
+ * Spec 60 R3 — a cluster of unreferenced modules that share a basename across
+ * sibling directories (e.g. three `services.ts` across `reports` folders).
+ */
+export interface DeadCluster {
+  basename: string;
+  count: number;
+  files: string[];
+}
+
+/**
+ * Spec 60 R2 — one size measure's distribution over a corpus. `maxEntry` annotates
+ * the tail (largest sample) with its entity type and file type so a reader can
+ * tell a reducer (function) from a mega-component (class).
+ */
+export interface SizeDistribution {
+  measure: 'function-length' | 'parameter-count' | 'complexity' | 'class-size' | 'interface-size';
+  /** The exact population `count` enumerates, so the denominator is defined when
+   *  the number is read later. Function-like measures are "named functions +
+   *  methods, anonymous excluded"; class/interface-size are "all classes"/"all
+   *  interfaces". */
+  population: string;
+  count: number;
+  median: number;
+  p95: number;
+  max: number;
+  maxEntry?: { entityType: string; fileType: string; file: string; name: string };
+  /** Tail entries (value ≥ p95, capped) annotated so a reader can tell a reducer
+   *  from a mega-component. */
+  tail?: Array<{ value: number; entityType: string; fileType: string; file: string; name: string }>;
+}
+
+/**
  * Spec 33 Item 14 — per-rule input presence, computed once per pipeline run.
  *
  * A rule's `input` (see {@link RuleRegistryEntry.input}) names one or more input
@@ -573,6 +636,12 @@ export interface PipelineResult {
     ruleApplicability?: Array<{ ruleId: string; applicable: boolean; reason?: string; kind?: 'notApplicable' | 'cannot-fire' }>;
     /** Spec 44: per-file accounting (analyzed vs. dropped, with reasons). */
     fileAccounting?: FileAccountingSummary;
+    /** Spec 60 R1: per-module tested/untested/dead classification. */
+    testCoverage?: TestCoverageReport;
+    /** Spec 60 R3: unreferenced modules clustered by basename. */
+    deadClusters?: DeadCluster[];
+    /** Spec 60 R2: per-size-measure distributions (median/p95/max). */
+    sizeDistributions?: SizeDistribution[];
   };
   indexFacts?: IndexFactsEntry[];
 }
@@ -688,6 +757,12 @@ export interface AuditResult {
     /** Spec 50 R2 — which config layer supplied each size threshold (default,
      *  project-config, project-lint-config, preset:<id>). */
     thresholdSources?: ThresholdSource[];
+    /** Spec 60 R1: per-module tested/untested/dead classification. */
+    testCoverage?: TestCoverageReport;
+    /** Spec 60 R3: unreferenced modules clustered by basename. */
+    deadClusters?: DeadCluster[];
+    /** Spec 60 R2: per-size-measure distributions (median/p95/max). */
+    sizeDistributions?: SizeDistribution[];
   };
 }
 

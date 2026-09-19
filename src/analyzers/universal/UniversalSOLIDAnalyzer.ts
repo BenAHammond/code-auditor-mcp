@@ -130,13 +130,53 @@ function functionSymbol(func: FunctionInfo): string {
 }
 
 /**
+ * True when the function has no name — an arrow function, IIFE, or inline
+ * callback the adapters surface as `name === '<anonymous>'` (or no name at all).
+ * Anonymous functions have no stable identity, so they are excluded from the
+ * Spec 60 size distributions (see {@link recordSample}); they still run the
+ * violation checks, since a long/complex anonymous function is a real finding.
+ */
+function isAnonymousFunction(func: FunctionInfo): boolean {
+  return !func.name || func.name === '<anonymous>';
+}
+
+/**
+ * Spec 60 R2 — one raw size reading, accumulated across every file the SOLID
+ * visitor processes. `entityType` distinguishes a reducer (`function`) from a
+ * mega-component (`class`) in the distribution tail; `fileType` is the source
+ * extension (`ts`/`tsx`/`js`/`go`) so a tail entry is attributable at a glance.
+ */
+export interface SizeSample {
+  measure: 'function-length' | 'parameter-count' | 'complexity' | 'class-size' | 'interface-size';
+  value: number;
+  entityType: 'function' | 'method' | 'class' | 'interface';
+  fileType: string;
+  file: string;
+  name: string;
+}
+
+/**
  * Universal solid analyzer.
  */
 export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   readonly name = 'solid';
   readonly description = 'Detects violations of SOLID principles';
   readonly category = 'architecture';
-  
+
+  /** Spec 60 R2 — raw size readings, accumulated across the visitor's per-file
+   *  `analyzeAST` calls and read post-pipeline by the solid bundle getter. */
+  readonly sizeSamples: SizeSample[] = [];
+
+  private recordSample(
+    measure: SizeSample['measure'],
+    value: number,
+    entityType: SizeSample['entityType'],
+    name: string,
+    filePath: string,
+  ): void {
+    this.sizeSamples.push({ measure, value, entityType, fileType: fileTypeOf(filePath), file: filePath, name });
+  }
+
   protected async analyzeAST(
     ast: AST,
     adapter: LanguageAdapter,
@@ -202,6 +242,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   private checkClassSize(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): void {
     const { ast, config } = ctx;
 
+    // Spec 60 R2 — class size (method count) feeds the `class-size` distribution.
+    this.recordSample('class-size', cls.methods.length, 'class', cls.name, ast.filePath);
+
     withRuleTiming('solid/class-size', () => {
       const methodsThreshold = config.classMethodsThreshold ?? config.maxMethodsPerClass ?? 20;
       if (cls.methods.length > methodsThreshold) {
@@ -258,6 +301,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
       if (methodNode) {
         const methodComplexity = adapter.getComplexity(methodNode);
         aggregateComplexity += methodComplexity;
+
+        // Spec 60 R2 — per-method cyclomatic complexity feeds the `complexity` distribution.
+        this.recordSample('complexity', methodComplexity, 'method', `${cls.name}.${method.name}`, ast.filePath);
 
         const maxMethod = config.maxMethodComplexity ?? 50;
         if (methodComplexity > maxMethod) {
@@ -322,6 +368,19 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
   private checkFunctionSize(func: FunctionInfo, ctx: SolidContext, violations: Violation[]): void {
     const { ast, config } = ctx;
 
+    // Spec 60 R2 — parameter count and function length feed the two size
+    // distributions. `func.isMethod` distinguishes a method from a standalone
+    // function so the tail annotation reads "reducer" vs "method".
+    const entityType: SizeSample['entityType'] = func.isMethod ? 'method' : 'function';
+    const lineCount = func.location.end.line - func.location.start.line + 1;
+    // The distribution is pinned to named functions + methods; anonymous
+    // functions are excluded from the sample only (their violation checks
+    // below still run — a 300-line arrow callback is still a size finding).
+    if (!isAnonymousFunction(func)) {
+      this.recordSample('parameter-count', func.parameters.length, entityType, functionSymbol(func), ast.filePath);
+      this.recordSample('function-length', lineCount, entityType, functionSymbol(func), ast.filePath);
+    }
+
     withRuleTiming('parameter-count', () => {
       if (func.parameters.length > (config.maxParametersPerMethod || 6)) {
         violations.push(this.createViolation(
@@ -341,7 +400,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     });
 
     withRuleTiming('function-length', () => {
-      const lineCount = func.location.end.line - func.location.start.line + 1;
       if (lineCount > (config.maxLinesPerMethod || 200)) {
         violations.push(this.createViolation(
           ast.filePath,
@@ -409,6 +467,15 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     if (!funcNode) return;
 
     const cyclomaticComplexity = ctx.adapter.getComplexity(funcNode);
+
+    // Spec 60 R2 — standalone-function cyclomatic complexity feeds the
+    // `complexity` distribution (methods are recorded in analyzeClassMethods).
+    // Anonymous functions are excluded from the sample only (the violation
+    // check below still runs on them).
+    if (!isAnonymousFunction(func)) {
+      this.recordSample('complexity', cyclomaticComplexity, 'function', functionSymbol(func), ctx.ast.filePath);
+    }
+
     const maxMethod = ctx.config.maxMethodComplexity ?? 50;
     if (cyclomaticComplexity > maxMethod) {
       violations.push(this.createViolation(
@@ -445,6 +512,9 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     const members = iface.members || [];
     const memberCount = members.length;
     const maxMembers = config.maxInterfaceMembers || 25;
+
+    // Spec 60 R2 — interface member count feeds the `interface-size` distribution.
+    this.recordSample('interface-size', memberCount, 'interface', iface.name, ast.filePath);
 
     // A pure data-shape interface (every member is a property signature, e.g. a
     // config/options bag) is a record type, not a large behavior interface;
@@ -649,6 +719,13 @@ function isTestFile(filePath: string): boolean {
   ];
 
   return testPatterns.some(pattern => pattern.test(filePath));
+}
+
+/** Source-file extension without the dot (`ts`, `tsx`, `js`, `go`), or '' when none. */
+function fileTypeOf(filePath: string): string {
+  const base = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
 }
 
 /** Breadth-first search for the node whose start position matches `location`. */
