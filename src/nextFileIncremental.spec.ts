@@ -6,6 +6,7 @@ import { join } from 'path';
 import {
   diffFiles,
   assertNoStaleFiles,
+  hasSchemaDefinitionChange,
   mergeFindings,
   splitFindings,
   summarizeViolations,
@@ -35,6 +36,22 @@ describe('diffFiles', () => {
   it('returns empty lists when nothing changed', () => {
     const diff = diffFiles({ 'a.ts': rec('A') }, { 'a.ts': rec('A') });
     expect(diff).toEqual({ changed: [], added: [], deleted: [] });
+  });
+});
+
+describe('hasSchemaDefinitionChange', () => {
+  it('flags a changed, added, or deleted .sql/.prisma file (schema-surface change)', () => {
+    expect(hasSchemaDefinitionChange(['migrations/0001.sql'], [], [])).toBe(true);
+    expect(hasSchemaDefinitionChange([], ['schema.prisma'], [])).toBe(true);
+    expect(hasSchemaDefinitionChange([], [], ['old.sql'])).toBe(true);
+  });
+
+  it('does not flag code-only changes (the common incremental path stays scoped)', () => {
+    expect(hasSchemaDefinitionChange(['src/a.ts', 'src/b.tsx'], ['src/c.ts'], ['src/d.ts'])).toBe(false);
+  });
+
+  it('returns false for an empty diff', () => {
+    expect(hasSchemaDefinitionChange([], [], [])).toBe(false);
   });
 });
 

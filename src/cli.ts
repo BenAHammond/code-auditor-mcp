@@ -1029,6 +1029,10 @@ function printNextFile(
         enclosingSymbol: v.symbol || v.enclosingFunction || '',
         suggestion: v.suggestion || '',
         details: v.details || '',
+        // Structured next action — the full report (`audit --json`) carries this
+        // as `resolution`; next-file was dropping it, leaving an agent with an
+        // empty `suggestion`/`details` and no actionable guidance (defect #49).
+        resolution: v.resolution ?? null,
         ...(v.new !== undefined && { new: v.new }),
       })),
     };

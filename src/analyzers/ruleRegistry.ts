@@ -1285,7 +1285,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       invalid: [
         {
           code: 'db.query("SELECT * FROM legacy_orders")',
-          resolution: { action: 'update-stale-reference', summary: 'The table "legacy_orders" was dropped in 002_drop_legacy.sql. That migration creates "orders" — update this reference to a table that still exists.', symbols: ['orders'] },
+          resolution: { action: 'update-stale-reference', summary: 'The table "legacy_orders" was dropped in 002_drop_legacy.sql. That migration introduces "orders" — review this reference and update or remove it.', symbols: ['orders'] },
         },
       ],
     },

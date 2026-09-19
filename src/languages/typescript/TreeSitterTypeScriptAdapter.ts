@@ -1758,6 +1758,34 @@ class TsSafetyAnalysis extends TsConstantResolution {
     });
   }
 
+  /**
+   * Public entry point (LanguageAdapter.isEscapedInterpolation).  True when the
+   * expression applies manual quote-doubling — `.replace(/'/g, "''")`,
+   * `.replace(/"/g, '""')`, `.replaceAll("'", "''")`, or
+   * `.split("'").join("''")` (and the double-quote variants).  Such input is
+   * defended but NOT provably safe: single-quote doubling handles only the
+   * single-quote vector, not backslash escapes, unicode quote variants, or
+   * numeric/identifier positions.  The caller downgrades these from `critical`
+   * to `advisory` rather than certifying them safe.
+   */
+  isEscapedInterpolation(node: ASTNode, ast: AST, sourceCode: string): boolean {
+    // Source slice, not `raw.text` — web-tree-sitter's Node.text is unreliable
+    // without a text provider (the adapter reads text via sourceCode.slice).
+    const text = sourceCode.slice(node.range[0], node.range[1]).trim();
+    if (!text) return false;
+
+    // `.replace(/'/g, "''")` / `.replaceAll("'", "''")` — replacement arg is a
+    // doubled quote literal (`"''"` or `'""'`).
+    if (/\.(?:replace|replaceAll)\s*\(/.test(text) && /,\s*(?:"''"|'""')\s*\)/.test(text)) {
+      return true;
+    }
+    // `.split("'").join("''")` — split on a quote, rejoin on its doubled form.
+    if (/\.split\(\s*(?:"'"|'"')\s*\)\s*\.join\(\s*(?:"''"|'""')\s*\)/.test(text)) {
+      return true;
+    }
+    return false;
+  }
+
   /** Recursive safety check against the traversal context in `ctx`. */
   protected isSafeExpression(node: ASTNode | null, ctx: SafetyContext): boolean {
     if (!node) return false;

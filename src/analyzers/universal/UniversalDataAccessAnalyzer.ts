@@ -11,6 +11,7 @@ import type { AST, LanguageAdapter, ASTNode, DynamicPart } from '../../languages
 import {
   buildProvenanceContext,
   isDBProvenanced,
+  getCallExpressionCallee,
   DB_CALL_METHODS,
   type ProvenanceContext,
   type DetectionMode,
@@ -206,6 +207,9 @@ interface DatabaseCall {
   hasFilter: boolean;
   hasParameterizedQuery: boolean;
   hasSqlInjectionRisk: boolean;
+  /** True when the injection risk is defended (manual quote-escaping) rather
+   *  than raw unescaped interpolation — downgrades the finding to advisory. */
+  sqlEscaped: boolean;
   /** Enclosing function name for stable fingerprinting (Spec 18 Gap 2). */
   enclosingFunction?: string;
 }
@@ -418,6 +422,7 @@ function buildDatabaseCall(
     hasFilter,
     hasParameterizedQuery: security.parameterized,
     hasSqlInjectionRisk: security.injectionRisk,
+    sqlEscaped: security.escaped,
     enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
   };
 }
@@ -539,20 +544,38 @@ function checkViolations(
   const push = (message: string, opts: Omit<DataAccessViolationClassification, 'symbol'>) =>
     violations.push(makeViolation(filePath, { line: call.line, column: call.column }, message, { ...opts, symbol }));
 
-  // Security: SQL injection — string-interpolated SQL from input is exploitable
-  // now, so `critical`; manual quote-escaping is not sanitization.
+  // Security: SQL injection.  Raw unescaped interpolation of input is a live
+  // vulnerability now → `critical`.  Manual quote-escaping
+  // (`.replace(/'/g, "''")`) is *defended* — single-quote doubling handles only
+  // the single-quote vector, not backslash escapes or unicode quote variants —
+  // so it downgrades to `advisory` ("verify escaping") rather than asserting a
+  // certified vulnerability.
   if (config.checkSQLInjection && call.hasSqlInjectionRisk) {
-    push(`Potential SQL injection risk in ${call.method}. Use parameterized queries.`, {
-      severity: 'critical',
-      rule: 'sql-injection-risk',
-      resolution: {
-        action: 'parameterize',
-        summary: `Replace the string-interpolated SQL in ${call.method} with a parameterized query — bind values via the driver's placeholder form (\`?\`, \`$1\`, or \`:name\`) instead of concatenating them into the statement.`,
-        symbols: [call.method],
-        files: [filePath],
-        lines: [call.line],
-      },
-    });
+    if (call.sqlEscaped) {
+      push(`Interpolated SQL in ${call.method} — verify escaping is sufficient. Use parameterized queries.`, {
+        severity: 'advisory',
+        rule: 'sql-injection-risk',
+        resolution: {
+          action: 'parameterize',
+          summary: `The SQL in ${call.method} interpolates a manually quote-escaped value. Quote-doubling defends only the single-quote case (not backslash escapes, unicode quote variants, or numeric/identifier positions) — replace the interpolation with a parameterized query (\`?\`, \`$1\`, or \`:name\`) for a full guarantee.`,
+          symbols: [call.method],
+          files: [filePath],
+          lines: [call.line],
+        },
+      });
+    } else {
+      push(`Potential SQL injection risk in ${call.method}. Use parameterized queries.`, {
+        severity: 'critical',
+        rule: 'sql-injection-risk',
+        resolution: {
+          action: 'parameterize',
+          summary: `Replace the string-interpolated SQL in ${call.method} with a parameterized query — bind values via the driver's placeholder form (\`?\`, \`$1\`, or \`:name\`) instead of concatenating them into the statement.`,
+          symbols: [call.method],
+          files: [filePath],
+          lines: [call.line],
+        },
+      });
+    }
   }
 
   // Security: Missing Organization Filter — a query on a tenant-scoped table with
@@ -1068,10 +1091,12 @@ function isWrapperFunctionWithBindParams(
   if (!call || adapter.getNodeType(call) !== 'call_expression') return false;
 
   // Check if the callee is a simple identifier (not member expression)
-  // matching one of the wrapper names.
-  const children = adapter.getChildren(call);
-  const callee = children.find(c => adapter.getNodeType(c) === 'identifier');
-  if (!callee) return false;
+  // matching one of the wrapper names.  Use the shared callee extractor so an
+  // `await fn<T>(...)` call — whose callee is an `await_expression` wrapping the
+  // identifier, plus a `type_arguments` child — resolves the same way the
+  // provenance detector does.  A naive `children.find(identifier)` misses it.
+  const callee = getCallExpressionCallee(call, adapter);
+  if (!callee || adapter.getNodeType(callee) !== 'identifier') return false;
   const calleeName = adapter.getNodeText(callee, sourceCode);
   if (!wrapperNames.includes(calleeName)) return false;
 
@@ -1419,12 +1444,32 @@ function isParameterizedByChain(
   adapter: LanguageAdapter,
   sourceCode: string,
   config: DataAccessAnalyzerConfig,
+  wrapperNames: string[],
 ): boolean {
   if (isInPrepareBindChain(node, adapter, sourceCode)) return true;
   if (isInExecChain(node, adapter, sourceCode)) return true;
   if (isD1ConvenienceCall(node, adapter, sourceCode)) return true;
-  if (isWrapperFunctionWithBindParams(node, adapter, sourceCode, config.dbWrapperNames ?? [])) return true;
+  if (isWrapperFunctionWithBindParams(node, adapter, sourceCode, wrapperNames)) return true;
   return false;
+}
+
+/**
+ * The effective set of DB-wrapper names the FP guards recognize as
+ * parameterized.  This is the union of the static `config.dbWrapperNames`
+ * (d1Query, d1Exec) and the names the provenance detector *learned* at
+ * file-scan time (`reason: 'wrapper'` — e.g. a bare `d1(sql, params)` D1 REST
+ * helper).  Keeping the two in sync is what prevents a wrapper the detector
+ * already treats as DB-bound from being re-flagged as raw interpolation by
+ * `checkQuerySecurity`.
+ */
+function effectiveWrapperNames(scan: DataAccessScanContext): string[] {
+  const staticNames = scan.config.dbWrapperNames ?? [];
+  const learned = scan.provenanceContext
+    ? [...scan.provenanceContext.dbProvenanced.values()]
+        .filter(ev => ev.reason === 'wrapper')
+        .map(ev => ev.identifier)
+    : [];
+  return [...new Set([...staticNames, ...learned])];
 }
 
 /**
@@ -1480,38 +1525,44 @@ function checkQuerySecurity(
   text: string,
   ast: AST,
   scan: DataAccessScanContext,
-): { parameterized: boolean; injectionRisk: boolean; message?: string } {
+): { parameterized: boolean; injectionRisk: boolean; escaped: boolean; message?: string } {
   const { adapter, sourceCode, config } = scan;
 
   // Parameterized chains (.prepare().bind(), .exec() spread, D1 convenience,
   // DB wrappers) and explicit parameterization are always safe.
-  if (isParameterizedByChain(node, adapter, sourceCode, config)) {
-    return { parameterized: true, injectionRisk: false };
+  if (isParameterizedByChain(node, adapter, sourceCode, config, effectiveWrapperNames(scan))) {
+    return { parameterized: true, injectionRisk: false, escaped: false };
   }
   if ((config.securityPatterns?.parameterizedQueries || []).some(p => text.includes(p))) {
-    return { parameterized: true, injectionRisk: false };
+    return { parameterized: true, injectionRisk: false, escaped: false };
   }
 
   // No dynamic-string capability → can't prove unsafe; err quiet.
   if (!adapter.isDynamicStringConstruction || !adapter.getDynamicParts) {
-    return { parameterized: false, injectionRisk: false };
+    return { parameterized: false, injectionRisk: false, escaped: false };
   }
   // Only a dynamically-constructed string carrying SQL keywords can inject.
   if (!adapter.isDynamicStringConstruction(node) || !containsSQLKeywords(text)) {
-    return { parameterized: false, injectionRisk: false };
+    return { parameterized: false, injectionRisk: false, escaped: false };
   }
 
   const unresolved = adapter.getDynamicParts(node, sourceCode)
-    .filter(part => !isSafeDynamicPart(part, ast, scan))
-    .map(part => part.text);
+    .filter(part => !isSafeDynamicPart(part, ast, scan));
   if (unresolved.length === 0) {
-    return { parameterized: false, injectionRisk: false };
+    return { parameterized: false, injectionRisk: false, escaped: false };
   }
+
+  // Manual quote-escaping (`.replace(/'/g, "''")`) is defended, not raw — every
+  // unresolved part being quote-escaped downgrades the finding to advisory.
+  const escaped = unresolved.every(part =>
+    !!part.node && !!adapter.isEscapedInterpolation && adapter.isEscapedInterpolation(part.node, ast, sourceCode),
+  );
 
   return {
     parameterized: false,
     injectionRisk: true,
-    message: `Cannot protect interpolated content: ${unresolved.map(id => '${' + id + '}').join(', ')}`,
+    escaped,
+    message: `Cannot protect interpolated content: ${unresolved.map(part => '${' + part.text + '}').join(', ')}`,
   };
 }
 
@@ -1526,11 +1577,10 @@ function extractCallExpressionMethod(
   // keywords (COUNT, JOIN, WHERE, ...) that appear inside template literals
   // in the call arguments, which a regex scan of the full call-expression
   // text would incorrectly match.
-  const children = adapter.getChildren(callExpr);
-  const callee = children.find(c => {
-    const t = adapter.getNodeType(c);
-    return t === 'member_expression' || t === 'identifier';
-  });
+  // Use the shared callee extractor: it recurses through `await_expression` and
+  // skips `type_arguments`, so `await d1<{...}>(...)` resolves to `d1` rather
+  // than falling through to the "unknown" regex fallback.
+  const callee = getCallExpressionCallee(callExpr, adapter);
   if (callee) {
     const calleeType = adapter.getNodeType(callee);
     if (calleeType === 'member_expression') {
@@ -1646,6 +1696,36 @@ function isConnectionString(text: string): boolean {
 // ── R4.1: Loop-query detection ──────────────────────────────────────
 
 /**
+ * LLM provider / SDK namespaces. A callee whose text carries one of these is
+ * an unambiguous LLM/agent invocation (e.g. `gatewayDeepseekModel`,
+ * `anthropic.messages.create`, `openai.chat`).
+ */
+const LLM_PROVIDER_RE =
+  /(?:anthropic|openai|deepseek|claude|gpt|gemini|cohere|mistral|bedrock|vertex|ollama|llm|gateway)/i;
+
+/**
+ * LLM action verbs — AI SDK methods and the wrapper names that survive the
+ * provider-token check (e.g. `aiEmbed`, `chatCompletion`, `thesisEngine`).
+ * Deliberately narrower than `generate`/`extract` (those collide with ordinary
+ * helpers like `insertSingleGeneratedBuild`); the provider namespace and the
+ * model-client argument signal cover the rest.
+ */
+const LLM_ACTION_RE =
+  /(?:embed|reembed|completion|chat|prompt|synthesize|thesis|agent|classify|summarize|translate)/i;
+
+/**
+ * Identifier names that denote an LLM/model client when they appear as a call
+ * argument (e.g. `extractBuildsFromCorpus(db, model, …)`) or as the object of a
+ * member callee (e.g. `model.chat(…)`). Deliberately excludes `client`/`ai`
+ * (ambiguous — a DB client is also a `client`) so we never suppress a real N+1
+ * on a generic variable name.
+ */
+const LLM_CLIENT_ARG_NAMES = new Set([
+  'model', 'llm', 'embedder', 'gateway',
+  'anthropic', 'openai', 'deepseek', 'claude', 'gpt', 'gemini', 'cohere', 'mistral', 'bedrock',
+]);
+
+/**
  * R4.1: Find database queries inside loops and flag them as N+1 risks.
  * Each finding carries the query call location (never line 1).
  */
@@ -1683,9 +1763,20 @@ function checkLoopQueries(
     const loopInfo = findEnclosingLoop(node, adapter);
     if (!loopInfo) continue;
 
-    // R4.1: query node's actual location (never line 1) + runtime dedup.
-    const queryLine = node.location.start.line;
-    const dedupKey = `${queryLine}:${loopInfo.loopNode.location.start.line}`;
+    // R4.1 (Spec 46): LLM-pipeline discriminator. A loop whose body invokes an
+    // LLM/agent (embedding, model completion, corpus extraction) is an intentional
+    // *sequential pipeline* — its per-item DB calls are persistence steps gated by
+    // rate limits and per-item crash-recovery, not a batchable N+1. Batching or
+    // joining would regress those semantics, so suppress the finding rather than
+    // emit an unfixable `severe`.
+    if (loopBodyContainsLlmCall(loopInfo.loopNode, adapter, sourceCode)) continue;
+
+    // R4.1: one finding per *loop*, not per query — an N+1 is a property of the
+    // loop, so a loop issuing several queries is still one violation (defect #51).
+    // Key on the loop node's start byte offset so distinct loops (including
+    // nested ones) never collapse, while every query in the same loop dedups to
+    // the first. The finding anchors to that first query's location below.
+    const dedupKey = String(loopInfo.loopNode.range[0]);
     if (reported.has(dedupKey)) continue;
     reported.add(dedupKey);
 
@@ -1704,6 +1795,83 @@ function checkLoopQueries(
   }
 
   return violations;
+}
+
+/**
+ * R4.1 (Spec 46): True when the loop's subtree contains an LLM/agent invocation.
+ * Used as the discriminator between a batchable N+1 (no LLM call — the queries
+ * should be batched/joined) and an intentional sequential pipeline (an LLM call
+ * — the per-item DB calls are persistence steps behind rate limits and
+ * crash-recovery). Walking the whole loop subtree (header + body) is safe: a
+ * loop header rarely hosts an LLM call, and a body-level one is exactly the
+ * signal we want.
+ */
+function loopBodyContainsLlmCall(
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  let found = false;
+  walkSubtree(loopNode, adapter, (node) => {
+    if (found || adapter.getNodeType(node) !== 'call_expression') return;
+    if (isLlmCallNode(node, adapter, sourceCode)) found = true;
+  });
+  return found;
+}
+
+/** Depth-first walk over an ASTNode subtree (children only, no parent links). */
+function walkSubtree(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  visitor: (n: ASTNode) => void,
+): void {
+  visitor(node);
+  for (const child of adapter.getChildren(node)) {
+    walkSubtree(child, adapter, visitor);
+  }
+}
+
+/**
+ * Classify a call_expression as an LLM/agent invocation via three unambiguous
+ * signals: a provider/SDK namespace in the callee text, an LLM action verb in the
+ * callee text, or a model-client identifier passed as an argument / used as the
+ * member-callee object.
+ */
+function isLlmCallNode(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const children = adapter.getChildren(node);
+  const callee = children.find(c => adapter.getNodeType(c) !== 'arguments');
+  if (callee) {
+    const calleeText = adapter.getNodeText(callee, sourceCode);
+    if (LLM_PROVIDER_RE.test(calleeText) || LLM_ACTION_RE.test(calleeText)) return true;
+    // Member callee whose object is an LLM client: `model.chat(…)`, `llm.invoke(…)`.
+    if (adapter.getNodeType(callee) === 'member_expression') {
+      const obj = adapter.getChildren(callee).find(c => adapter.getNodeType(c) === 'identifier');
+      if (obj && LLM_CLIENT_ARG_NAMES.has(adapter.getNodeText(obj, sourceCode))) return true;
+    }
+  }
+
+  // Argument signal: an LLM client identifier passed into the call, e.g.
+  // `extractBuildsFromCorpus(db, model, …)`.
+  const args = children.find(c => adapter.getNodeType(c) === 'arguments');
+  if (args) {
+    for (const arg of adapter.getChildren(args)) {
+      if (adapter.getNodeType(arg) === 'identifier' &&
+          LLM_CLIENT_ARG_NAMES.has(adapter.getNodeText(arg, sourceCode))) {
+        return true;
+      }
+      // Member access argument (`client.messages`) — check its object identifier.
+      if (adapter.getNodeType(arg) === 'member_expression') {
+        const obj = adapter.getChildren(arg).find(c => adapter.getNodeType(c) === 'identifier');
+        if (obj && LLM_CLIENT_ARG_NAMES.has(adapter.getNodeText(obj, sourceCode))) return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 /** True when `node` is a function call whose callee is DB-provenanced. */

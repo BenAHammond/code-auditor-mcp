@@ -282,6 +282,22 @@ export interface OptionalCapabilities {
    * @param sourceCode - The source text.
    */
   isSafeInterpolation?(node: ASTNode, ast: AST, sourceCode: string): boolean;
+
+  /**
+   * Returns true when an interpolated expression is manually quote-escaped —
+   * `x.replace(/'/g, "''")`, `x.replace(/"/g, '""')`, `x.replaceAll("'", "''")`,
+   * or `x.split("'").join("''")` (and the double-quote variants).  Such input is
+   * NOT provably safe (single-quote doubling handles only the single-quote
+   * vector), but it is *defended* — the caller should downgrade an injection
+   * finding from `critical` to `advisory` ("verify escaping") rather than assert
+   * a live vulnerability.  Complements `isSafeInterpolation`, which clears only
+   * provably-safe expressions.
+   *
+   * @param node - The expression node inside a ${…} substitution (or operand).
+   * @param ast - The full AST for scope traversal.
+   * @param sourceCode - The source text.
+   */
+  isEscapedInterpolation?(node: ASTNode, ast: AST, sourceCode: string): boolean;
 }
 
 /**

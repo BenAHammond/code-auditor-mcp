@@ -1,0 +1,9 @@
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+
+CREATE TABLE generation_queue (
+  id INTEGER PRIMARY KEY,
+  state TEXT NOT NULL
+);

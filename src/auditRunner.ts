@@ -830,7 +830,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Extracted to runZeroFilesDiagnostics() for testability. Runs against the
     // raw analyzerResults before truthiness filtering so the "no result" pass
     // catches analyzers skipped by the registry, abort, or handoff exceptions.
-    const zeroFilesDiagnostics = runZeroFilesDiagnostics(enabledAnalyzers, analyzerResults, files.length);
+    const hasGoFiles = files.some((f) => f.endsWith('.go'));
+    const zeroFilesDiagnostics = runZeroFilesDiagnostics(enabledAnalyzers, analyzerResults, files.length, hasGoFiles);
     for (const w of zeroFilesDiagnostics) {
       console.warn(w.message);
     }
@@ -1573,6 +1574,7 @@ export function runZeroFilesDiagnostics(
   enabledAnalyzers: string[],
   analyzerResults: Record<string, AnalyzerResult>,
   totalFiles?: number,
+  hasGoFiles?: boolean,
 ): DiagnosticWarning[] {
   // When there were zero files to process, zero-files is expected, not a bug.
   if (totalFiles === 0) return [];
@@ -1582,6 +1584,11 @@ export function runZeroFilesDiagnostics(
   // Pass 1: enabled but absent from results
   for (const analyzerName of enabledAnalyzers) {
     if (!analyzerResults[analyzerName]) {
+      // The `go` analyzer is a polyglot subprocess reached only via
+      // `runAuditDispatch` when `.go` files exist. On a TypeScript-only corpus
+      // it is legitimately notApplicable, not a dropped analyzer (defect #50) —
+      // zero `.go` files means there was nothing for it to run on.
+      if (analyzerName === 'go' && hasGoFiles === false) continue;
       warnings.push({
         analyzerName,
         kind: 'no-result',
@@ -1598,6 +1605,7 @@ export function runZeroFilesDiagnostics(
   // files and still shows visitor-ran + 0 files is broken — whether it errored or
   // silently returned.
   for (const [analyzerName, result] of Object.entries(analyzerResults)) {
+    if (analyzerName === 'go' && hasGoFiles === false) continue;
     if (
       isVisitorStatus(result.status) && getFilesProcessed(result.status) === 0
     ) {

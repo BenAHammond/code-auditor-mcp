@@ -237,6 +237,19 @@ describe('Spec-52 R1 — countQueries edge cases', () => {
     const sql = 'INSERT INTO users (id, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)';
     expect(countQueries(sql)).toBe(1);
   });
+
+  it('a parameterized .exec() ternary collapses to one call site, not three literals (defect #47)', () => {
+    const sql = 'db.exec(gameMode === undefined ? "SELECT a FROM t" : gameMode === null ? "SELECT b FROM t" : "SELECT c FROM t WHERE m = ?")';
+    expect(countQueries(sql)).toBe(1);
+  });
+
+  it('two distinct parameterized .exec() calls count two queries', () => {
+    const sql = [
+      'const a = this.sql.exec(m ? "SELECT a FROM t" : "SELECT b FROM t");',
+      'const b = this.sql.exec(m ? "SELECT c FROM u" : "SELECT d FROM u");',
+    ].join('\n');
+    expect(countQueries(sql)).toBe(2);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

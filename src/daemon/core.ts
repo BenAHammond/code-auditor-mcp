@@ -38,6 +38,7 @@ import {
   diffFiles,
   splitFindings,
   mergeFindings,
+  hasSchemaDefinitionChange,
   SNAPSHOT_VERSION,
   type FileRecord,
   type NextFileSnapshot,
@@ -50,9 +51,6 @@ import {
   type DaemonFindingsResult,
   type DaemonSeedPhase,
 } from './types.js';
-
-/** Extensions that carry table/DDL definitions — a change can shift the schema catalog. */
-const SCHEMA_DEFINITION_EXTENSIONS = new Set(['.sql', '.prisma']);
 
 /** Daemon lease TTL (longer than the 30s audit-job lease: a long-lived idle process). */
 const DAEMON_LEASE_TTL_MS = Number(process.env.CODE_AUDITOR_DAEMON_LEASE_TTL_MS) || 60_000;
@@ -657,6 +655,19 @@ export class DaemonCore extends EventEmitter {
         );
       }
 
+      // Schema-catalog hazard (mirrors next-file): a scoped run rebuilds the
+      // known-tables catalog from only the changed files, so a table-definition
+      // change can falsely flag unchanged query files `unknown-table`. A
+      // `.sql`/`.prisma` file is the authoritative table-definition surface (DDL
+      // + Prisma models); any change to one can shift the catalog, so escalate
+      // BEFORE the scoped pass — running it first would throw its result away
+      // (the next-file double-pipeline, defect #48).
+      if (hasSchemaDefinitionChange(changed, added, deleted)) {
+        await this.seed();
+        this.emitFindings();
+        return;
+      }
+
       const scopeFiles = [...changed, ...added].map((r) => path.join(this.projectRoot, r));
       const start = Date.now();
       const result = await runAuditDispatch({
@@ -668,15 +679,12 @@ export class DaemonCore extends EventEmitter {
 
       const fresh = splitFindings(result.analyzerResults, this.projectRoot);
 
-      // Schema-catalog hazard (mirrors next-file): a scoped run rebuilds the
-      // known-tables catalog from only the changed files, so a table-definition
-      // change can falsely flag unchanged query files `unknown-table`. Escalate
-      // to a full re-seed rather than serve silently-wrong schema findings.
+      // Code-file ORM table definitions (drizzle/`pgTable` in a `.ts` file) also
+      // feed the catalog, and there is no cheap extension pre-check for those. A
+      // scoped run's `tableCatalog` holds only the tables *changed* files define,
+      // so a non-empty catalog here means a table definition may have shifted.
       const schemaCatalogTouched = (result.metadata?.tableCatalog?.length ?? 0) > 0;
-      const schemaDefinitionChanged = [...changed, ...added, ...deleted].some((rel) =>
-        SCHEMA_DEFINITION_EXTENSIONS.has(rel.slice(rel.lastIndexOf('.'))),
-      );
-      if (schemaCatalogTouched || schemaDefinitionChanged) {
+      if (schemaCatalogTouched) {
         await this.seed();
         this.emitFindings();
         return;

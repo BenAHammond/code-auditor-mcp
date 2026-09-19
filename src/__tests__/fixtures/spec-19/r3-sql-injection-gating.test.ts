@@ -100,6 +100,21 @@ async function searchUsers(keyword: string) {
 `;
 
 /**
+ * Spec 54 R-fix — manual quote-escaping (`.replace(/'/g, "''")`) is *defended*,
+ * not raw: single-quote doubling handles only the single-quote vector, so the
+ * finding downgrades to `advisory` ("verify escaping") instead of asserting a
+ * live `critical` vulnerability.
+ */
+const ESCAPED_INTERPOLATION = `
+import { query } from './db';
+
+async function filterByMode(opts: { gameMode: string }) {
+  const rows = await query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace(/'/g, "''")}'\`);
+  return rows;
+}
+`;
+
+/**
  * Template literal assigned to a variable, then used in a DB call —
  * we can't track the data flow, so should STILL flag (conservative).
  */
@@ -178,6 +193,12 @@ const TEST_CASES: TestCase[] = [
     name: 'console.log with SQL template — should NOT trigger (non-DB sink)',
     code: CONSOLE_LOG_TEMPLATE,
     expectedCount: 0,
+  },
+  {
+    name: 'escaped interpolation (quote-doubling) — advisory, not critical',
+    code: ESCAPED_INTERPOLATION,
+    expectedCount: 1,
+    expectedSeverity: 'advisory',
   },
 ];
 

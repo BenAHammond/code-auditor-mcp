@@ -1203,27 +1203,52 @@ export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean 
 }
 
 /**
- * Count the number of DB queries a function body issues.
+ * SQL statement keyword patterns that mark a query. Shared by the standalone
+ * SQL-keyword pass and the `.exec`-body probe so the two can never drift. A
+ * bare `UPDATE` keyword is counted, but not the `DO UPDATE` / `KEY UPDATE`
+ * clause of an upsert (`INSERT … ON CONFLICT … DO UPDATE` /
+ * `INSERT … ON DUPLICATE KEY UPDATE`) — that clause is part of the one INSERT
+ * statement, not a second query (Spec 52 R2).
+ */
+const SQL_QUERY_PATTERNS: RegExp[] = [
+  /SELECT\s+/gi,
+  /INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?\s+INTO|REPLACE\s+INTO/gi,
+  /(?<!DO\s)(?<!KEY\s)UPDATE\s+/gi,
+  /DELETE\s+FROM/gi,
+];
+
+/** Number of SQL-statement keyword occurrences a text slice contains. */
+function countSqlKeywordOccurrences(text: string): number {
+  let count = 0;
+  for (const pattern of SQL_QUERY_PATTERNS) {
+    const matches = text.match(pattern);
+    if (matches) count += matches.length;
+  }
+  return count;
+}
+
+/**
+ * Count the number of DB queries a function body issues — by *call site*, not
+ * by SQL literal (defect #47: counting literals made parameterizing a query into
+ * a ternary of three template strings read as three queries).
  *
- * An eager execution method call (`.run()`/`.all()`/`.first()`/`.raw()`/
- * `.batch()`, plus the generic `.query()`/`.execute()` wrappers) is one query;
- * each standalone SQL keyword (SELECT, INSERT [OR …] INTO / REPLACE INTO,
- * UPDATE, DELETE FROM) outside such a call is also one query. SQL keywords
- * inside a call's argument are not counted separately — otherwise a single
- * `run('SELECT ...')` call is counted twice (once for the call, once for the
- * SQL it carries). `.prepare()` bodies are likewise stripped (Spec 52 R1):
- * preparation is statement construction, not execution, so its SQL is not a
- * query the function issues — but a `db.prepare(sql).bind(x).run()` chain still
- * counts one query for the eager `.run()`. `Promise.all(...)` is not a query
- * and is excluded from the `.all()` count. Optional TypeScript type arguments
- * (`.all<Row>()`/`.first<Row>()`) are matched. `.exec()` is deliberately
- * omitted: `regex.exec()`/`child_process.exec()` are too common to distinguish
- * from `db.exec()` in a text heuristic, and a `db.exec('SELECT …')` literal is
- * still counted via its bare SQL keyword. A bare `UPDATE` keyword is counted,
- * but not the `DO UPDATE` / `KEY UPDATE` clause of an upsert
- * (`INSERT … ON CONFLICT … DO UPDATE` / `INSERT … ON DUPLICATE KEY UPDATE`) —
- * that clause is part of the one INSERT statement, not a second query
- * (Spec 52 R2).
+ * - An eager execution method call (`.run()`/`.all()`/`.first()`/`.raw()`/
+ *   `.batch()`, plus the generic `.query()`/`.execute()` wrappers) is one query.
+ * - Each `.exec()` whose body carries a SQL keyword is one query. `.exec` is
+ *   matched this way — not as a bare eager method — because `regex.exec()` and
+ *   `child_process.exec()` are too common to distinguish by name; the SQL-keyword
+ *   probe keeps those at zero while collapsing a parameterized
+ *   `db.exec(a ? 'SELECT x' : b ? 'SELECT y' : 'SELECT z')` to a single call site.
+ * - A standalone SQL keyword outside any recognized DB-call body is one query.
+ *
+ * SQL keywords inside a recognized call's argument are NOT counted separately —
+ * otherwise a single `run('SELECT ...')` is counted twice (once for the call,
+ * once for the SQL it carries). `.prepare()` bodies are stripped too (Spec 52
+ * R1): preparation is statement construction, not execution, so its SQL is not
+ * a query — but `db.prepare(sql).bind(x).run()` still counts one for the eager
+ * `.run()`. `Promise.all(...)` is not a query and is excluded from the `.all()`
+ * count. Optional TypeScript type arguments (`.all<Row>()`/`.first<Row>()`) are
+ * matched.
  *
  * @param text The function body text.
  * @returns The number of DB queries the function issues.
@@ -1231,35 +1256,55 @@ export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean 
 export function countQueries(text: string): number {
   const callCount = (text.match(/\.(?:query|execute|run|first|raw|batch)\b[^()\n]*\(|(?<!Promise)\.all\b[^()\n]*\(/g) || []).length;
 
-  const bodyless = stripQueryCallBodies(text);
-  const sqlPatterns = [
-    /SELECT\s+/gi,
-    /INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?\s+INTO|REPLACE\s+INTO/gi,
-    /(?<!DO\s)(?<!KEY\s)UPDATE\s+/gi,
-    /DELETE\s+FROM/gi,
-  ];
-  let sqlCount = 0;
-  for (const pattern of sqlPatterns) {
-    const matches = bodyless.match(pattern);
-    if (matches) sqlCount += matches.length;
-  }
+  const execCount = countExecCallsWithSql(text);
 
-  return callCount + sqlCount;
+  const bodyless = stripQueryCallBodies(text);
+  const sqlCount = countSqlKeywordOccurrences(bodyless);
+
+  return callCount + execCount + sqlCount;
+}
+
+/**
+ * Count `.exec(...)` calls whose balanced body carries a SQL statement keyword.
+ * This is the only way `.exec` is counted: `db.exec('SELECT …')` is one query,
+ * while `regex.exec(str)` and `child_process.exec('ls')` carry no SQL keyword and
+ * stay at zero. A parameterized ternary (`db.exec(a ? 'SELECT x' : b ? 'SELECT y' : 'SELECT z')`)
+ * is one call site, so its three literals collapse to a single count.
+ */
+function countExecCallsWithSql(text: string): number {
+  const re = /\.exec\b[^()\n]*\(/g;
+  let count = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const openParen = m.index + m[0].length;
+    let depth = 1;
+    let i = openParen;
+    while (i < text.length && depth > 0) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')') depth--;
+      i++;
+    }
+    if (countSqlKeywordOccurrences(text.slice(openParen, i - 1)) > 0) count++;
+    re.lastIndex = i;
+  }
+  return count;
 }
 
 /**
  * Blank out the bodies of eager execution method calls (`.run()`/`.all()`/
  * `.first()`/`.raw()`/`.batch()`/`.query()`/`.execute()`) and of `.prepare()`
- * calls (balanced-paren aware) so SQL keywords inside their arguments are not
- * double-counted. `.prepare()` carries SQL but does not execute it (Spec 52
- * R1), so its body is stripped too. `Promise.all(...)` is not a query and is
- * left intact so the DB calls it contains stay visible.
+ * and `.exec()` calls (balanced-paren aware) so SQL keywords inside their
+ * arguments are not double-counted. `.prepare()` carries SQL but does not
+ * execute it (Spec 52 R1), so its body is stripped too. `.exec()` is stripped
+ * because its SQL is counted by `countExecCallsWithSql` instead of leaking into
+ * the standalone-keyword pass. `Promise.all(...)` is not a query and is left
+ * intact so the DB calls it contains stay visible.
  *
  * @param text The function body text.
- * @returns The text with eager/`query`/`execute`/`prepare` call bodies replaced by spaces.
+ * @returns The text with eager/`query`/`execute`/`prepare`/`exec` call bodies replaced by spaces.
  */
 function stripQueryCallBodies(text: string): string {
-  const re = /\.(?:query|execute|prepare|run|first|raw|batch)\b[^()\n]*\(|(?<!Promise)\.all\b[^()\n]*\(/g;
+  const re = /\.(?:query|execute|exec|prepare|run|first|raw|batch)\b[^()\n]*\(|(?<!Promise)\.all\b[^()\n]*\(/g;
   let result = '';
   let last = 0;
   let m: RegExpExecArray | null;

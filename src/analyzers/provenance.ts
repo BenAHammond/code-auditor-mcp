@@ -138,7 +138,7 @@ export const ORM_METHODS: ReadonlySet<string> = new Set([
 // Types
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type ProvenanceReason = 'package' | 'binding' | 'type' | 'propagation' | 'fallback';
+export type ProvenanceReason = 'package' | 'binding' | 'type' | 'propagation' | 'fallback' | 'wrapper';
 
 export interface ProvenanceEvidence {
   identifier: string;
@@ -812,8 +812,13 @@ function getMemberExpressionReceiver(
 
 /**
  * Get the callee of a call expression (everything before arguments).
+ *
+ * Handles the two tree-sitter shapes the data-access analyzer and wrapper FP
+ * guards must agree on: a bare `identifier`, a `member_expression`/`selector`,
+ * and — for `await fn<T>(...)` — an `await_expression` wrapping the callee plus
+ * a `type_arguments` child (skipped, not mistaken for the callee).
  */
-function getCallExpressionCallee(
+export function getCallExpressionCallee(
   node: ASTNode,
   adapter: LanguageAdapter,
 ): ASTNode | null {
@@ -951,6 +956,11 @@ export function buildProvenanceContext(
       dbBindingNames: options.dbBindingNames ?? [],
       dbWrapperNames: options.dbWrapperNames ?? [],
     });
+    // 3a. Wrapper detection: learn DB-wrapper function names from function
+    //     bodies (a D1 REST fetch, or delegation to an already-provenanced
+    //     receiver). A bare call like `d1(sql)` then resolves as DB-provenanced
+    //     and its SQL reaches the table rules instead of bypassing them.
+    dbProvenanced = detectDbWrapperFunctions(ast, adapter, sourceCode, dbProvenanced);
   }
 
   // 4. In names mode, use ONLY name lists
@@ -1080,6 +1090,148 @@ function identifierAppearsInSource(
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Wrapper detection — learn DB-wrapper function names from function bodies
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Function-node types whose bodies may define a DB wrapper. */
+const FUNCTION_NODE_TYPES = new Set([
+  'function_declaration',
+  'function_expression',
+  'arrow_function',
+  'method_definition',
+  'generator_function_declaration',
+  'generator_function_expression',
+]);
+
+/**
+ * Learn DB-wrapper function names from function bodies and merge them into the
+ * provenance map.
+ *
+ * A wrapper is a named function whose own body performs a DB operation — either
+ * a `fetch` to the Cloudflare D1 HTTP query API, or a call that delegates to an
+ * already DB-provenanced identifier/receiver. Adding the wrapper's name to
+ * `dbProvenanced` lets `isDBProvenanced` treat a bare call like `d1(sql)` as a
+ * DB call, so its SQL argument reaches the table rules (unknown-table /
+ * stale-table-reference) and the data-access rules instead of bypassing them.
+ *
+ * This is structural evidence, not name matching — the function's body literally
+ * talks to a database — so it is only run in hybrid mode (alongside the name
+ * fallbacks), never strict `provenance`/`names` modes.
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param dbProvenanced The current provenance map (mutated in place and returned).
+ * @returns The provenance map with any learned wrapper names added.
+ */
+function detectDbWrapperFunctions(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  dbProvenanced: Map<string, ProvenanceEvidence>,
+): Map<string, ProvenanceEvidence> {
+  const functionNodes = adapter.findNodes(ast, {
+    custom: (node: ASTNode) => FUNCTION_NODE_TYPES.has(node.type),
+  });
+
+  for (const fn of functionNodes) {
+    const name = adapter.getNodeName(fn);
+    if (!name) continue;
+    if (dbProvenanced.has(name)) continue;
+    if (!isDbWrapperBody(fn, adapter, sourceCode, dbProvenanced)) continue;
+    dbProvenanced.set(name, {
+      identifier: name,
+      reason: 'wrapper',
+      source: 'function body performs a DB operation',
+      chain: [],
+    });
+  }
+
+  return dbProvenanced;
+}
+
+/**
+ * Decide whether a function's own body performs a DB operation: a D1 REST fetch,
+ * or a call delegating to an already DB-provenanced receiver/identifier.
+ * Nested function bodies are excluded so an inner function's DB op is not
+ * mis-attributed to an outer wrapper.
+ */
+function isDbWrapperBody(
+  fn: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
+): boolean {
+  const calls = collectOwnCallExpressions(fn, adapter);
+  for (const call of calls) {
+    if (isD1RestCall(call, adapter, sourceCode)) return true;
+    if (delegatesToProvenanced(call, adapter, sourceCode, dbProvenanced)) return true;
+  }
+  return false;
+}
+
+/**
+ * Collect call_expression nodes within `fn`'s body, not descending into nested
+ * function declarations/expressions (so an inner function's DB op doesn't make
+ * the outer function look like a wrapper).
+ */
+function collectOwnCallExpressions(fn: ASTNode, adapter: LanguageAdapter): ASTNode[] {
+  const calls: ASTNode[] = [];
+  const walk = (node: ASTNode): void => {
+    for (const child of adapter.getChildren(node)) {
+      if (FUNCTION_NODE_TYPES.has(child.type)) continue;
+      if (child.type === 'call_expression') calls.push(child);
+      walk(child);
+    }
+  };
+  walk(fn);
+  return calls;
+}
+
+/**
+ * True when `call` is a `fetch(...)` to the Cloudflare D1 HTTP query API
+ * (`…/d1/database/<id>/query`). That endpoint is specific enough that a match
+ * is conclusive evidence the surrounding function is a D1 wrapper.
+ */
+function isD1RestCall(call: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+  const callee = getCallExpressionCallee(call, adapter);
+  if (!callee) return false;
+  const calleeText = adapter.getNodeText(callee, sourceCode) ?? '';
+  if (calleeText !== 'fetch' && !calleeText.endsWith('.fetch')) return false;
+  const callText = adapter.getNodeText(call, sourceCode) ?? '';
+  return callText.includes('/d1/database/');
+}
+
+/**
+ * True when `call` delegates to an identifier or member-receiver that is already
+ * DB-provenanced (e.g. `db.prepare(...)` inside a `d1Query(sql)` wrapper).
+ */
+function delegatesToProvenanced(
+  call: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
+): boolean {
+  const callee = getCallExpressionCallee(call, adapter);
+  if (!callee) return false;
+
+  if (callee.type === 'identifier') {
+    const name = adapter.getNodeText(callee, sourceCode);
+    return name !== null && dbProvenanced.has(name);
+  }
+
+  if (callee.type === 'member_expression' || callee.type === 'selector_expression') {
+    const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode);
+    if (!receiver) return false;
+    if (dbProvenanced.has(receiver)) return true;
+    // Compound receivers ("env.DB", "db.users") — match any dotted segment.
+    return receiver.split('.').some((part) => dbProvenanced.has(part));
+  }
+
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

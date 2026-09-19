@@ -2798,9 +2798,14 @@ export function createSchemaReducer(): Stage3Reducer {
                 symbol: ref.table,
                 resolution: {
                   action: 'update-stale-reference',
+                  // The tables `created` are evidence the migration replaced the
+                  // dropped table, not proof of a drop-in successor — schemas can
+                  // be split or changed incompatibly, in which case the file must
+                  // be removed rather than updated. The summary names them as
+                  // context and leaves update-vs-remove to the reviewer.
                   summary: created.length > 0
-                    ? `The table '${ref.table}' was dropped in ${migrationName}. That migration creates ${joinEnglish(created)} — update this reference to a table that still exists.`
-                    : `The table '${ref.table}' was dropped in ${migrationName} and not recreated — update or remove this reference.`,
+                    ? `The table '${ref.table}' was dropped in ${migrationName}. That migration introduces ${joinEnglish(created)} — review this reference and update or remove it.`
+                    : `The table '${ref.table}' was dropped in ${migrationName} and was not recreated — update or remove this reference.`,
                   symbols: created.length > 0 ? created : [ref.table],
                   files: [ref.file],
                   lines: [ref.line],

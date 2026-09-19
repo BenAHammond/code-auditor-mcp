@@ -59,8 +59,24 @@ const SNAPSHOT_KEY = 'next-file:snapshot';
 // guard closes.
 export const SNAPSHOT_VERSION = 2;
 
-/** Extensions that carry table/DDL definitions — a deleted one can shift the catalog. */
+/** Extensions that carry table/DDL definitions — a changed one can shift the catalog. */
 const SCHEMA_DEFINITION_EXTENSIONS = new Set(['.sql', '.prisma']);
+
+/**
+ * True when any changed/added/deleted file is a `.sql`/`.prisma` table-definition
+ * surface (DDL + Prisma models). Such a change can shift the known-tables catalog,
+ * so it must escalate to a full re-seed *before* a scoped pass runs (defect #48:
+ * running the scoped pass first would throw its result away when escalating).
+ */
+export function hasSchemaDefinitionChange(
+  changed: string[],
+  added: string[],
+  deleted: string[],
+): boolean {
+  return [...changed, ...added, ...deleted].some((rel) =>
+    SCHEMA_DEFINITION_EXTENSIONS.has(rel.slice(rel.lastIndexOf('.'))),
+  );
+}
 
 /**
  * File-local analyzers: a finding on F is a pure function of F's AST (+ rules).
@@ -427,6 +443,17 @@ export async function runNextFile(options: {
     return { snapshot, violations: flatten(snapshot), cold: false, summary: summarizeViolations(flatten(snapshot)) };
   }
 
+  // Schema catalog hazard: the known-tables catalog is rebuilt in-memory from a
+  // run's visitor facts, so a scoped run only sees the tables *changed* files
+  // define. A `.sql`/`.prisma` file is the authoritative table-definition surface
+  // (DDL + Prisma models); any change to one can shift the catalog, so escalate
+  // BEFORE the scoped pass. Running the scoped pass first would throw its result
+  // away when escalating — the double-pipeline that made next-file ~96s (defect
+  // #48). The daemon's `core.ts` mirrors this pre-check.
+  if (hasSchemaDefinitionChange(diff.changed, diff.added, diff.deleted)) {
+    return fullSeed();
+  }
+
   const scopeFiles = [...diff.changed, ...diff.added].map((rel) => join(root, rel));
   const runner = createAuditRunner({
     projectRoot: root,
@@ -436,17 +463,12 @@ export async function runNextFile(options: {
   const result = await runner.run();
   const fresh = splitFindings(result.analyzerResults, root);
 
-  // Schema catalog hazard: the known-tables catalog is rebuilt in-memory from a
-  // run's visitor facts, so a scoped run only sees the tables *changed* files
-  // define. If a changed/added file defined any table (a non-empty tableCatalog
-  // in this scoped run) — or a schema-definition file was deleted — the catalog
-  // may have shifted and must be rebuilt from the full corpus: escalate to a
-  // full re-seed rather than return a silently-wrong unknown-table verdict.
+  // Code-file ORM table definitions (drizzle/`pgTable` in a `.ts` file) also feed
+  // the catalog, and there is no cheap extension pre-check for those. A scoped
+  // run's `tableCatalog` holds only the tables *changed* files define, so a
+  // non-empty catalog here means a table definition may have shifted — escalate.
   const schemaCatalogTouched = (result.metadata?.tableCatalog?.length ?? 0) > 0;
-  const schemaDefinitionDeleted = diff.deleted.some((rel) =>
-    SCHEMA_DEFINITION_EXTENSIONS.has(rel.slice(rel.lastIndexOf('.'))),
-  );
-  if (schemaCatalogTouched || schemaDefinitionDeleted) {
+  if (schemaCatalogTouched) {
     return fullSeed();
   }
 
