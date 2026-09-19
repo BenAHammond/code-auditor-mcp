@@ -2718,10 +2718,15 @@ export function createSchemaReducer(): Stage3Reducer {
         // Genuinely-new tables introduced by this migration (excludes rename/rebuild
         // churn like `ALTER … RENAME TO x_old` + re-CREATE of the same name).
         const createdHere: string[] = [];
+        const createdTables = new Set<string>();
+        const droppedTables = new Set<string>();
         for (const op of sqlFile.ops) {
+          const t = stripIdentifier(op.table);
           if (op.op === 'CREATE') {
-            const t = stripIdentifier(op.table);
+            createdTables.add(t);
             if (!before.has(t)) createdHere.push(t);
+          } else if (op.op === 'DROP') {
+            droppedTables.add(t);
           }
         }
         for (const op of sqlFile.ops) {
@@ -2730,6 +2735,21 @@ export function createSchemaReducer(): Stage3Reducer {
             dropProvenance.set(t, { migrationFile: sqlFile.filePath, createdInSameMigration: createdHere });
           } else if (op.op === 'CREATE') {
             dropProvenance.delete(t);
+          }
+        }
+        // A table created and dropped within this same file is a self-contained
+        // fixture — a scratch table a test or script creates, uses, then tears
+        // down. Its DROP is teardown, not a migration, so it must neither surface
+        // as a stale-table-reference nor leave the name unknown: keep it known and
+        // clear the drop provenance this file recorded for it. (A genuine dropped
+        // table stays stale because its DROP lives in a migration that never also
+        // CREATEs it — e.g. recall's `generation_queue`, dropped in 0198.)
+        for (const t of createdTables) {
+          if (droppedTables.has(t)) {
+            knownTables.add(t);
+            if (dropProvenance.get(t)?.migrationFile === sqlFile.filePath) {
+              dropProvenance.delete(t);
+            }
           }
         }
       }
