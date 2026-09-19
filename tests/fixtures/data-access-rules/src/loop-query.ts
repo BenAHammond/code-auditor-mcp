@@ -1,9 +1,11 @@
 /**
- * loop-query rule — true positive + near-miss negative
+ * loop-query rule — true positives + near-miss negative
  *
- * True positive: database query executed inside a for loop (N+1 risk).
- * Near-miss negative: database query defined as function, called from loop
- *   but the query execution itself is NOT syntactically inside the loop.
+ * True positive 1: database query executed directly inside a for loop (N+1 risk).
+ * True positive 2: a loop calling a local helper that queries per iteration —
+ *   the helper existing does not make it not a loop query (still an N+1).
+ * Near-miss negative: a batched query — one query issued outside the loop, with
+ *   the loop only accumulating results (no per-iteration query).
  */
 import { getDB } from './fake-db';
 
@@ -17,7 +19,7 @@ export function queryUsersInLoop(): void {
   }
 }
 
-// NEAR-MISS NEGATIVE — query function defined outside loop, called within
+// TRUE POSITIVE — loop calls a local helper that queries per iteration
 function fetchUser(db: ReturnType<typeof getDB>, id: number): void {
   db.prepare(`SELECT * FROM users WHERE id = ?`).bind(id).all();
 }
@@ -25,6 +27,20 @@ function fetchUser(db: ReturnType<typeof getDB>, id: number): void {
 export function queryUsersWithFunction(): void {
   const db = getDB();
   for (const id of ids) {
-    fetchUser(db, id);  // query happens inside fetchUser, not directly in loop
+    fetchUser(db, id);  // helper queries per iteration → still an N+1
   }
+}
+
+// NEAR-MISS NEGATIVE — batched query: one query outside the loop, loop only
+// accumulates (mirrors a `WHERE id IN (…)` fan-in like recall's validateSlugs)
+export function findMissingIds(): number[] {
+  const db = getDB();
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = db.prepare(`SELECT id FROM items WHERE id IN (${placeholders})`).bind(...ids).all();
+  const present = new Set(rows.map((r) => r.id));
+  const missing: number[] = [];
+  for (const id of ids) {
+    if (!present.has(id)) missing.push(id);  // no query in the loop body
+  }
+  return missing;
 }

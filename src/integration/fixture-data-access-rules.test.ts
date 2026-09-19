@@ -15,10 +15,10 @@
  * under `tests/` (Spec 55 R3 excludes them by default).
  *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  *
- * Total violations: 7
+ * Total violations: 8
  *   - complex-query: 1 (line 12 in complex-query.ts — 9 tables)
- *   - loop-query: 1 (line 16 in loop-query.ts)
- *   - missing-org-filter: 4 (complex-query.ts:32, loop-query.ts:16/22, missing-org-filter.ts:12)
+ *   - loop-query: 2 (loop-query.ts:18 direct, loop-query.ts:30 helper-in-loop)
+ *   - missing-org-filter: 4 (complex-query.ts:32, loop-query.ts:18/24, missing-org-filter.ts:12)
  *   - unfiltered-query: 1 (unfiltered-query.ts:13 — the unfiltered DELETE)
  */
 
@@ -74,7 +74,7 @@ describe('data-access-rules fixture', () => {
 
   it('total violations match baseline', () => {
     const violations = runAndGetViolations(testDir);
-    expect(violations.length).toBe(7);
+    expect(violations.length).toBe(8);
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -135,20 +135,29 @@ describe('data-access-rules fixture', () => {
   describe('loop-query rule', () => {
     it('true positive: db.prepare() inside for loop triggers loop-query', () => {
       const violations = runAndGetViolations(testDir);
-      expect(ruleCount(violations, 'loop-query.ts', 'loop-query')).toBe(1);
+      expect(ruleCount(violations, 'loop-query.ts', 'loop-query')).toBe(2);
     });
 
-    it('near-miss negative: db.prepare() in helper function called from loop does NOT trigger loop-query', () => {
+    it('true positive: loop calling a local helper that queries per iteration triggers loop-query', () => {
       const violations = runAndGetViolations(testDir);
-      // The near-miss function (fetchUser) contains db.prepare() but is defined
-      // outside the loop syntactically. The loop is in the caller queryUsersWithFunction.
-      // The analyzer walks the AST parent chain from db.prepare() → fetchUser body.
-      // Since fetchUser is NOT inside a loop, loop-query does not fire.
       const fileV = fileViolations(violations, 'loop-query.ts');
       const loopViolations = fileV.filter((v: any) => v.rule === 'loop-query');
-      expect(loopViolations.length).toBe(1);
-      // The single loop-query is on the true-positive function (db.prepare in for loop body)
-      expect(loopViolations[0].line).toBe(16);
+      expect(loopViolations.length).toBe(2);
+      // One finding anchors to the direct db.prepare in the loop body (line 18);
+      // the other to the helper call inside the loop (line 30) — a helper that
+      // queries per iteration is still an N+1.
+      expect(loopViolations.map((v: any) => v.line).sort((a: number, b: number) => a - b))
+        .toEqual([18, 30]);
+    });
+
+    it('near-miss negative: batched query outside the loop does NOT trigger loop-query', () => {
+      const violations = runAndGetViolations(testDir);
+      // findMissingIds issues one query OUTSIDE the loop and only accumulates in
+      // the loop body, so there is no per-iteration query to flag. The two
+      // loop-query findings are both from the true-positive functions.
+      const fileV = fileViolations(violations, 'loop-query.ts');
+      const loopViolations = fileV.filter((v: any) => v.rule === 'loop-query');
+      expect(loopViolations.length).toBe(2);
     });
   });
 
@@ -200,9 +209,9 @@ describe('data-access-rules fixture', () => {
       expect(poolViolations.length).toBe(0);
     });
 
-    it('baseline total is unchanged by non-db-receiver.ts (7 violations)', () => {
+    it('baseline total is unchanged by non-db-receiver.ts (8 violations)', () => {
       const violations = runAndGetViolations(testDir);
-      expect(violations.length).toBe(7);
+      expect(violations.length).toBe(8);
     });
   });
 });

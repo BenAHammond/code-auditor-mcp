@@ -1042,29 +1042,6 @@ function isConsumedByArrayPush(
   return !!pushMember && memberPropertyName(pushMember, adapter, sourceCode) === 'push';
 }
 
-/**
- * True when a db-call node is a call to a locally-defined DB *wrapper* function
- * (provenance reason `wrapper`) — e.g. `fetchUser(db, id)`. The query execution
- * lives inside the wrapper body, not at the call site, so a loop that only
- * invokes the wrapper performs no query in its own body. The finding must anchor
- * to the wrapper body's query (analyzed separately), not to the loop call.
- */
-function isWrapperDelegation(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  provenanceContext?: ProvenanceContext,
-): boolean {
-  if (!provenanceContext) return false;
-  const call = resolveDbCallNode(node, adapter);
-  if (!call) return false;
-  const callee = getCallExpressionCallee(call, adapter);
-  if (!callee || adapter.getNodeType(callee) !== 'identifier') return false;
-  const name = adapter.getNodeText(callee, sourceCode);
-  if (!name) return false;
-  return provenanceContext.dbProvenanced.get(name)?.reason === 'wrapper';
-}
-
 /** True when a call's arguments contain a spread_element (…binds). */
 function hasSpreadArgument(call: ASTNode, adapter: LanguageAdapter): boolean {
   const args = adapter.getChildren(call).find(
@@ -1858,11 +1835,6 @@ function checkLoopQueries(
     // `this` whose result is accumulated via `.push(...)` returns a string
     // fragment, not a query result (knex `sql.push(...this.aggregate(stmt))`).
     if (isSqlStringConstruction(node, adapter, sourceCode)) continue;
-
-    // Spec 21 — skip a loop that only calls a DB *wrapper* function
-    // (`fetchUser(db, id)`); the query execution lives inside the wrapper body,
-    // not in the loop's own body, so it is not a query-in-loop here.
-    if (isWrapperDelegation(node, adapter, sourceCode, provenanceContext)) continue;
 
     const loopInfo = findEnclosingLoop(node, adapter);
     if (!loopInfo) continue;
