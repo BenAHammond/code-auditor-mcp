@@ -1862,6 +1862,8 @@ interface ClReachabilityOptions {
     paths?: Record<string, string[]>;
     baseUrl?: string;
   };
+  /** Absolute paths reachable only through package.json (entry points). */
+  packageEntryPoints?: ReadonlySet<string>;
   /** Absolute project root. */
   projectRoot: string;
 }
@@ -1893,6 +1895,7 @@ function clComputeReachability(
   options: ClReachabilityOptions,
 ): { reachability: Map<string, number>; importersOf: Map<string, Set<string>> } {
   const filePaths = new Set(fileFacts.keys());
+  const packageEntries = options.packageEntryPoints ?? new Set<string>();
 
   const importersOf = new Map<string, Set<string>>();
   for (const [fp, info] of fileFacts) {
@@ -1908,7 +1911,7 @@ function clComputeReachability(
 
   const reachability = new Map<string, number>();
   for (const fp of filePaths) {
-    const entry = clIsEntryPointFile(fp);
+    const entry = clIsEntryPointFile(fp) || packageEntries.has(fp);
     const imported = (importersOf.get(fp)?.size ?? 0) > 0;
     reachability.set(fp, entry ? 1 : imported ? 0.5 : 0);
   }
@@ -2144,6 +2147,9 @@ export function createDependencyGraphReducer(): Stage4Reducer {
           // a bare reducer context in a unit test omits it, so fall back to the
           // file facts themselves as the corpus and a no-alias classification.
           const infraConfig = (context.config ?? {}) as Record<string, unknown>;
+          const packageEntrySet = new Set(
+            (infraConfig.packageEntryPoints as string[] | undefined) ?? [],
+          );
           const { reachability, importersOf } = clComputeReachability(fileFacts, {
             corpusFiles: new Set(
               (infraConfig.corpusFiles as string[] | undefined) ?? [...fileFacts.keys()],
@@ -2151,6 +2157,7 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             virtualModules:
               (infraConfig.importVirtualModules as string[] | undefined) ?? DEFAULT_VIRTUAL_MODULES,
             tsconfigAliases: infraConfig.tsconfigAliases as ClReachabilityOptions['tsconfigAliases'],
+            packageEntryPoints: packageEntrySet,
             projectRoot: context.projectRoot ?? '',
           });
 
@@ -2183,7 +2190,7 @@ export function createDependencyGraphReducer(): Stage4Reducer {
           for (const [fp, info] of fileFacts) {
             if (!info.hasExports) continue;
             if (clIsTestFile(fp)) continue;
-            if (clIsEntryPointFile(fp)) continue;
+            if (clIsEntryPointFile(fp) || packageEntrySet.has(fp)) continue;
             if ((importersOf.get(fp)?.size ?? 0) > 0) continue;
             violations.push({
               file: fp,

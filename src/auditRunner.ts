@@ -37,7 +37,7 @@ import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js'
 import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
 import { applyDismissals } from './dismissals.js';
 import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
-import { readTsconfigAliases, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
+import { readTsconfigAliases, readPackageEntryPoints, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
 
 // Import universal analyzers
 import { initializeLanguages } from './languages/index.js';
@@ -688,6 +688,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         // tsconfig per file.
         importVirtualModules: mergedOptions.importVirtualModules ?? DEFAULT_VIRTUAL_MODULES,
         tsconfigAliases: readTsconfigAliases(root),
+        // Files reachable only through package.json (main/module/types/bin/exports
+        // + their sibling facades) are entry points, not dead modules — knex's
+        // `knex.mjs` / `knex.d.mts` beside `main: knex.js` were flagged
+        // `unreferenced-module` because no in-tree import reaches them.
+        packageEntryPoints: readPackageEntryPoints(root).entryPaths,
       };
 
       const pipelineConfig: PipelineConfig = {

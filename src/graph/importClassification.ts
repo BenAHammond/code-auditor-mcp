@@ -338,3 +338,121 @@ function stripJsonComments(text: string): string {
   }
   return out;
 }
+
+// ── package.json entry-point reading ─────────────────────────────────────────
+
+export interface PackageEntryPoints {
+  /** Absolute paths of declared entry points plus their sibling facades. */
+  entryPaths: string[];
+  /** Whether a readable, parseable package.json existed at projectRoot. */
+  hasPackageJson: boolean;
+}
+
+/**
+ * Facade extensions in stem-stripping order. Declaration extensions (`.d.mts`,
+ * `.d.cts`, `.d.ts`) come first so `knex.d.mts` strips its stem to `knex`
+ * rather than `knex.d`; the code extensions follow. This is the module-format
+ * set a published package ships its entry in — and the `.mjs` / `.d.mts` /
+ * `.cjs` siblings of `main` are exactly the files `unreferenced-module` flags
+ * dead (knex's `knex.mjs` / `knex.d.mts` beside `main: knex.js`), because no
+ * in-tree import ever reaches them.
+ */
+const FACADE_EXTS = [
+  '.d.mts', '.d.cts', '.d.ts',
+  '.mts', '.cts', '.tsx',
+  '.mjs', '.cjs', '.jsx', '.js', '.ts',
+] as const;
+
+function stripFacadeExt(p: string): string {
+  for (const ext of FACADE_EXTS) {
+    if (p.endsWith(ext)) return p.slice(0, p.length - ext.length);
+  }
+  return p;
+}
+
+/**
+ * Collect relative subpath targets (`./dist/x.js`) from an `exports` field.
+ * `exports` is a nested structure of condition keys (`import`, `require`,
+ * `node`, `types`, `default`, …) over string targets, fallback arrays, or
+ * nested objects. Only string leaves are local files; a non-relative leaf
+ * (a package name or bare pattern) is not.
+ */
+function collectExportsTargets(exports: unknown, out: string[]): void {
+  if (typeof exports === 'string') {
+    if (exports.startsWith('./')) out.push(exports);
+    return;
+  }
+  if (Array.isArray(exports)) {
+    for (const e of exports) collectExportsTargets(e, out);
+    return;
+  }
+  if (exports && typeof exports === 'object') {
+    for (const v of Object.values(exports as Record<string, unknown>)) {
+      collectExportsTargets(v, out);
+    }
+  }
+}
+
+/**
+ * Pure: expand declared entry paths (package.json `main`/`module`/`types`/
+ * `bin`/`exports` targets) into their absolute paths plus every sibling facade.
+ * `main: knex.js` expands to `knex.js`, `knex.mjs`, `knex.cjs`, `knex.d.mts`,
+ * … so the ESM/types facades that no in-tree import reaches are still counted
+ * as live. Each declared path is resolved against `projectRoot`; `./`-prefixed
+ * and extensionless entries resolve the same way.
+ */
+export function expandEntryPointFacades(
+  declared: readonly string[],
+  projectRoot: string,
+): Set<string> {
+  const entryPaths = new Set<string>();
+  for (const d of declared) {
+    const resolved = normalizePath(path.resolve(projectRoot, d));
+    entryPaths.add(resolved);
+    const stem = stripFacadeExt(resolved);
+    for (const ext of FACADE_EXTS) entryPaths.add(stem + ext);
+  }
+  return entryPaths;
+}
+
+/**
+ * Read a package's declared entry points from package.json and expand each into
+ * its sibling facades. A file reachable only through the package manifest is an
+ * entry point, not dead code — the filename heuristic (`clIsEntryPointFile`)
+ * covers `app`/`route`/`page`/`index` but not `knex.mjs` / `knex.d.mts`, so a
+ * published library's facades were being flagged `unreferenced-module`.
+ *
+ * Malformed or absent package.json yields an empty set (same failure mode as
+ * `readTsconfigAliases`).
+ */
+export function readPackageEntryPoints(projectRoot: string): PackageEntryPoints {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path.resolve(projectRoot, 'package.json'), 'utf-8');
+  } catch {
+    return { entryPaths: [], hasPackageJson: false };
+  }
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(stripJsonComments(raw));
+  } catch {
+    return { entryPaths: [], hasPackageJson: false };
+  }
+
+  const declared: string[] = [];
+  for (const key of ['main', 'module', 'types', 'typings']) {
+    const v = parsed[key];
+    if (typeof v === 'string') declared.push(v);
+  }
+  const bin = parsed.bin;
+  if (typeof bin === 'string') declared.push(bin);
+  else if (bin && typeof bin === 'object' && !Array.isArray(bin)) {
+    for (const v of Object.values(bin as Record<string, unknown>)) {
+      if (typeof v === 'string') declared.push(v);
+    }
+  }
+  collectExportsTargets(parsed.exports, declared);
+
+  return { entryPaths: [...expandEntryPointFacades(declared, projectRoot)], hasPackageJson: true };
+}

@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyImportSpecifier,
+  expandEntryPointFacades,
   DEFAULT_VIRTUAL_MODULES,
   type SpecifierClassification,
 } from '../importClassification.js';
@@ -312,5 +313,34 @@ describe('classifyImportSpecifier', () => {
         projectRoot: '/proj',
       }),
     ).toEqual({ classification: 'package' });
+  });
+});
+
+describe('expandEntryPointFacades', () => {
+  it('expands `main` to its ESM/types facade siblings', () => {
+    const got = expandEntryPointFacades(['knex.js'], '/pkg');
+    expect(got.has('/pkg/knex.js')).toBe(true);
+    expect(got.has('/pkg/knex.mjs')).toBe(true);
+    expect(got.has('/pkg/knex.cjs')).toBe(true);
+    expect(got.has('/pkg/knex.d.mts')).toBe(true);
+    expect(got.has('/pkg/knex.d.ts')).toBe(true);
+  });
+
+  it('strips a declaration extension so the code siblings share the stem', () => {
+    const got = expandEntryPointFacades(['types/index.d.ts'], '/pkg');
+    expect(got.has('/pkg/types/index.d.ts')).toBe(true);
+    expect(got.has('/pkg/types/index.js')).toBe(true);
+    expect(got.has('/pkg/types/index.d.mts')).toBe(true);
+  });
+
+  it('resolves `./`-prefixed and nested entry paths against the root', () => {
+    const got = expandEntryPointFacades(['./bin/cli.js', 'dist/index.mjs'], '/pkg');
+    expect(got.has('/pkg/bin/cli.js')).toBe(true);
+    expect(got.has('/pkg/dist/index.mjs')).toBe(true);
+  });
+
+  it('keeps the exact declared path even when it has no facade extension', () => {
+    const got = expandEntryPointFacades(['lib/entry'], '/pkg');
+    expect(got.has('/pkg/lib/entry')).toBe(true);
   });
 });
