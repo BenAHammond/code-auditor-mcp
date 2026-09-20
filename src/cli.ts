@@ -483,7 +483,12 @@ program
         }
 
         const { generateReport } = await import('./reporting/reportGenerator.js');
-        const report = generateReport(result, options.format as any);
+        const { readVersionControlProvenance } = await import('./reporting/sarifReportGenerator.js');
+        const rootDir = resolve(options.path || process.cwd());
+        const config = options.format === 'sarif'
+          ? { rootDir, ...readVersionControlProvenance(rootDir) }
+          : { rootDir };
+        const report = generateReport(result, options.format as any, config);
         const outputDir = options.output || process.cwd();
         const ext = options.format === 'sarif' ? 'sarif' : options.format;
         const reportPath = join(outputDir, `audit-report.${ext}`);
@@ -654,8 +659,9 @@ program
 
       // JSON output
       if (options.format === 'sarif') {
-        const { generateSARIFReport } = await import('./reporting/sarifReportGenerator.js');
-        const sarifOutput = generateSARIFReport(result);
+        const { generateSARIFReport, readVersionControlProvenance } = await import('./reporting/sarifReportGenerator.js');
+        const projectDir = resolve(options.path || process.cwd());
+        const sarifOutput = generateSARIFReport(result, { rootDir: projectDir, ...readVersionControlProvenance(projectDir) });
         process.stdout.write(sarifOutput + '\n');
       } else if (options.json) {
         const projectDir = resolve(options.path || process.cwd());

@@ -11,6 +11,7 @@ import type { AuditResult, Violation } from '../types.js';
 import { getFilesProcessed } from '../pipeline.js';
 import { PACKAGE_VERSION } from '../constants.js';
 import { fingerprint, buildFingerprintInput } from '../fingerprint.js';
+import { execSync } from 'node:child_process';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -115,6 +116,10 @@ function normalizeAnalyzerName(name: string): string {
 export interface SARIFReportConfig {
   /** Base path for making artifact URIs relative (default: process.cwd()) */
   rootDir?: string;
+  /** Repository URI for `versionControlProvenance` (e.g. `https://github.com/owner/repo`). */
+  repositoryUri?: string;
+  /** Commit SHA for `versionControlProvenance` (e.g. `git rev-parse HEAD`). */
+  revisionId?: string;
 }
 
 /**
@@ -136,7 +141,7 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
       // Collect unique rules
       if (!seenRuleIds.has(fullRuleId)) {
         seenRuleIds.add(fullRuleId);
-        driverRules.push({
+        const rule: DriverRule = {
           id: fullRuleId,
           shortDescription: {
             text: buildShortDescription(normName, resolveRuleId(violation)),
@@ -145,7 +150,13 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
             text: violation.message,
           },
           helpUri: buildHelpUri(fullRuleId),
-        });
+        };
+        // Carry the remediation guidance on the rule so GitHub surfaces it as
+        // per-rule help alongside the alert (Spec 06 R1.5).
+        if (violation.suggestion) {
+          rule.help = { text: violation.suggestion };
+        }
+        driverRules.push(rule);
       }
 
       // Build result
@@ -154,7 +165,9 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
         region.startLine = violation.line;
         region.endLine = violation.line;
       }
-      if (violation.column != null) {
+      // SARIF `startColumn` has `minimum: 1`; a 0-based or unknown column is not
+      // representable. Omit it rather than clamping to 1 (Spec 06 R1.5).
+      if (violation.column != null && violation.column >= 1) {
         region.startColumn = violation.column;
       }
 
@@ -164,7 +177,7 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
         ruleId: fullRuleId,
         level: mapSeverity(violation.severity),
         message: {
-          text: violation.message,
+          text: buildResultMessage(violation),
         },
         locations: [
           {
@@ -176,18 +189,17 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
             },
           },
         ],
-        partialFingerprints: buildPartialFingerprints(analyzerName, violation),
+        partialFingerprints: buildPartialFingerprints(analyzerName, violation, artifactUri),
       };
 
-      // Add suggestion as a fix if present
+      // Carry the suggestion as a machine-readable property. It is NOT emitted as
+      // a `fixes` array — a SARIF fix requires `artifactChanges`, which we don't
+      // produce, so a bare `fixes` entry is schema-invalid (Spec 06 R1.5).
       if (violation.suggestion) {
-        sarifResult.fixes = [
-          {
-            description: {
-              text: `Suggestion: ${violation.suggestion}`,
-            },
-          },
-        ];
+        sarifResult.properties = {
+          ...sarifResult.properties,
+          resolution: violation.suggestion,
+        };
       }
 
       // Add baseline status as a property (Spec 18 R5)
@@ -217,11 +229,24 @@ export function generateSARIFReport(result: AuditResult, config?: SARIFReportCon
   }
 
   // Build the SARIF log
+  const versionControlProvenance =
+    config?.repositoryUri && config?.revisionId
+      ? [{ repositoryUri: config.repositoryUri, revisionId: config.revisionId }]
+      : undefined;
+
   const sarifLog = {
     $schema: SARIF_SCHEMA,
     version: SARIF_VERSION,
     runs: [
       {
+        // `automationDetails.id` is parsed by GitHub as `category/run-id`: the
+        // segment before the first `/` is the analysis category. A tool-scoped
+        // category lets this tool's uploads coexist with other tools' uploads
+        // (e.g. CodeQL) under distinct categories on GitHub.
+        automationDetails: {
+          id: `${TOOL_NAME}/${PACKAGE_VERSION}`,
+        },
+        ...(versionControlProvenance ? { versionControlProvenance } : {}),
         tool: {
           driver: {
             name: TOOL_NAME,
@@ -251,6 +276,7 @@ interface DriverRule {
   shortDescription: { text: string };
   fullDescription: { text: string };
   helpUri?: string;
+  help?: { text: string };
 }
 
 interface SARIFRegion {
@@ -271,7 +297,6 @@ interface SARIFResult {
   }>;
   partialFingerprints: Record<string, string>;
   properties?: Record<string, string>;
-  fixes?: Array<{ description: { text: string } }>;
 }
 
 function mapSeverity(severity: string): string {
@@ -299,11 +324,49 @@ function buildHelpUri(fullRuleId: string): string {
   return `${INFORMATION_URI}#${fullRuleId.replace(/\//g, '-')}`;
 }
 
-function buildPartialFingerprints(_analyzerName: string, violation: Violation): Record<string, string> {
-  const fp = fingerprint(buildFingerprintInput(violation));
+function buildResultMessage(violation: Violation): string {
+  if (!violation.suggestion) return violation.message;
+  return `${violation.message}\n\nSuggested resolution: ${violation.suggestion}`;
+}
+
+function buildPartialFingerprints(_analyzerName: string, violation: Violation, relativeFile: string): Record<string, string> {
+  // GitHub alert identity must be stable across checkouts and machines, so the
+  // SARIF partial fingerprint is computed from the repo-relative path rather
+  // than the absolute path that feeds the internal baseline fingerprint
+  // (`fingerprint.ts`). The internal fingerprint is intentionally unchanged.
+  const input = buildFingerprintInput(violation);
+  const fp = fingerprint({ ...input, file: relativeFile });
   return {
     'primary': fp,
   };
+}
+
+/**
+ * Best-effort read of version-control provenance for a SARIF run.
+ *
+ * `repositoryUri` is the `origin` remote and `revisionId` is the current HEAD
+ * commit. Any failure (not a git repo, no commits, no remote) yields an empty
+ * object — provenance is optional and must never break SARIF generation.
+ */
+export function readVersionControlProvenance(rootDir: string): { repositoryUri?: string; revisionId?: string } {
+  const result: { repositoryUri?: string; revisionId?: string } = {};
+  try {
+    const rev = execSync('git rev-parse HEAD', { cwd: rootDir, stdio: 'pipe', timeout: 5000 })
+      .toString()
+      .trim();
+    if (rev) result.revisionId = rev;
+  } catch {
+    // not a git repo, or no commits yet
+  }
+  try {
+    const uri = execSync('git config --get remote.origin.url', { cwd: rootDir, stdio: 'pipe', timeout: 5000 })
+      .toString()
+      .trim();
+    if (uri) result.repositoryUri = uri;
+  } catch {
+    // no origin remote
+  }
+  return result;
 }
 
 // ── Backward-compatible object export ────────────────────────────────────────

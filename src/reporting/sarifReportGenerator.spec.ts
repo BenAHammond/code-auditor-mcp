@@ -505,15 +505,17 @@ describe('SARIF Report Generator', () => {
     });
   });
 
-  describe('Fixes from suggestions', () => {
-    it('includes fixes array when violation has a suggestion', () => {
-      const result = makeAuditResult({
+  describe('Resolution from suggestions (Spec 06 R1.5)', () => {
+    const suggestion = 'Add JSDoc comment describing the function purpose and parameters';
+
+    function makeResultWithSuggestion() {
+      return makeAuditResult({
         'documentation-analyzer': {
           violations: [
             makeViolation({
               severity: 'high',
               message: 'Function lacks documentation',
-              suggestion: 'Add JSDoc comment describing the function purpose and parameters',
+              suggestion,
               functionName: 'doWork',
             }),
           ],
@@ -521,12 +523,149 @@ describe('SARIF Report Generator', () => {
           executionTime: 10,
         },
       });
+    }
 
-      const sarif = generateSARIFReport(result);
-      const parsed = JSON.parse(sarif);
+    it('produces schema-valid output when a suggestion is present', () => {
+      const parsed = JSON.parse(generateSARIFReport(makeResultWithSuggestion()));
+      const valid = validate(parsed);
+      if (!valid) {
+        console.error('Schema errors:', JSON.stringify(validate.errors, null, 2));
+      }
+      expect(valid).toBe(true);
+    });
 
-      expect(parsed.runs[0].results[0].fixes).toBeDefined();
-      expect(parsed.runs[0].results[0].fixes[0].description.text).toContain('Add JSDoc');
+    it('does not emit a schema-invalid `fixes` array', () => {
+      const parsed = JSON.parse(generateSARIFReport(makeResultWithSuggestion()));
+      expect(parsed.runs[0].results[0].fixes).toBeUndefined();
+    });
+
+    it('surfaces the resolution in the result message', () => {
+      const parsed = JSON.parse(generateSARIFReport(makeResultWithSuggestion()));
+      expect(parsed.runs[0].results[0].message.text).toContain(suggestion);
+    });
+
+    it('carries the resolution verbatim in properties.resolution', () => {
+      const parsed = JSON.parse(generateSARIFReport(makeResultWithSuggestion()));
+      expect(parsed.runs[0].results[0].properties.resolution).toBe(suggestion);
+    });
+
+    it('carries the resolution as per-rule help', () => {
+      const parsed = JSON.parse(generateSARIFReport(makeResultWithSuggestion()));
+      const rule = parsed.runs[0].tool.driver.rules[0];
+      expect(rule.help).toBeDefined();
+      expect(rule.help.text).toBe(suggestion);
+    });
+  });
+
+  describe('Regions', () => {
+    it('omits startColumn when the column is 0 (SARIF minimum is 1)', () => {
+      const result = makeAuditResult({
+        'solid-analyzer': {
+          violations: [
+            makeViolation({ column: 0, principle: 'single-responsibility', functionName: 'fn' }),
+          ],
+          status: makeVisitorStatus(1),
+          executionTime: 10,
+        },
+      });
+
+      const parsed = JSON.parse(generateSARIFReport(result));
+      const region = parsed.runs[0].results[0].locations[0].physicalLocation.region;
+      expect(region.startLine).toBe(42);
+      expect(region.startColumn).toBeUndefined();
+
+      const valid = validate(parsed);
+      if (!valid) {
+        console.error('Schema errors:', JSON.stringify(validate.errors, null, 2));
+      }
+      expect(valid).toBe(true);
+    });
+  });
+
+  describe('Relative URIs', () => {
+    it('makes artifact URIs repo-relative when rootDir is supplied', () => {
+      const result = makeAuditResult({
+        'solid-analyzer': {
+          violations: [
+            makeViolation({
+              file: '/repo/src/services/auth.ts',
+              line: 42,
+              column: 5,
+              principle: 'single-responsibility',
+              functionName: 'authenticate',
+            }),
+          ],
+          status: makeVisitorStatus(1),
+          executionTime: 10,
+        },
+      });
+
+      const parsed = JSON.parse(generateSARIFReport(result, { rootDir: '/repo' }));
+      const location = parsed.runs[0].results[0].locations[0];
+      expect(location.physicalLocation.artifactLocation.uri).toBe('src/services/auth.ts');
+    });
+  });
+
+  describe('Run metadata (Spec 06 R1.5)', () => {
+    it('sets a stable, tool-scoped automationDetails.id (category/run-id)', () => {
+      const parsed = JSON.parse(generateSARIFReport(makeAuditResult()));
+      expect(parsed.runs[0].automationDetails.id).toMatch(/^code-auditor-mcp\//);
+      // The segment before the first `/` is GitHub's analysis category.
+      expect(parsed.runs[0].automationDetails.id.split('/')[0]).toBe('code-auditor-mcp');
+    });
+
+    it('omits versionControlProvenance when not configured', () => {
+      const parsed = JSON.parse(generateSARIFReport(makeAuditResult()));
+      expect(parsed.runs[0].versionControlProvenance).toBeUndefined();
+    });
+
+    it('emits versionControlProvenance when repository and revision are supplied', () => {
+      const result = makeAuditResult({
+        'solid-analyzer': {
+          violations: [makeViolation({ principle: 'single-responsibility', functionName: 'fn' })],
+          status: makeVisitorStatus(1),
+          executionTime: 10,
+        },
+      });
+
+      const parsed = JSON.parse(generateSARIFReport(result, {
+        rootDir: '/repo',
+        repositoryUri: 'https://github.com/owner/repo.git',
+        revisionId: 'abc123def456',
+      }));
+
+      const prov = parsed.runs[0].versionControlProvenance;
+      expect(prov).toHaveLength(1);
+      expect(prov[0].repositoryUri).toBe('https://github.com/owner/repo.git');
+      expect(prov[0].revisionId).toBe('abc123def456');
+
+      const valid = validate(parsed);
+      if (!valid) {
+        console.error('Schema errors:', JSON.stringify(validate.errors, null, 2));
+      }
+      expect(valid).toBe(true);
+    });
+  });
+
+  describe('Fingerprint path stability', () => {
+    it('derives partialFingerprints from the repo-relative path, not the absolute path', () => {
+      const base = {
+        severity: 'critical' as const,
+        message: 'SRP violation',
+        rule: 'single-responsibility',
+        functionName: 'fn',
+      };
+      const fpFor = (file: string, rootDir: string) => {
+        const result = makeAuditResult({
+          'solid-analyzer': {
+            violations: [makeViolation({ ...base, file })],
+            status: makeVisitorStatus(1),
+            executionTime: 10,
+          },
+        });
+        return JSON.parse(generateSARIFReport(result, { rootDir })).runs[0].results[0].partialFingerprints.primary;
+      };
+      expect(fpFor('/checkout-a/src/x.ts', '/checkout-a')).toBe(fpFor('/checkout-b/src/x.ts', '/checkout-b'));
     });
   });
 });

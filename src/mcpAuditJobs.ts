@@ -1326,7 +1326,7 @@ export async function getAuditResultsAsSarif(args: any): Promise<string> {
     });
   }
 
-  const { generateSARIFReport } = await import('./reporting/sarifReportGenerator.js');
+  const { generateSARIFReport, readVersionControlProvenance } = await import('./reporting/sarifReportGenerator.js');
 
   // Reconstruct an AuditResult shape from stored data
   const auditResult = {
@@ -1353,7 +1353,11 @@ export async function getAuditResultsAsSarif(args: any): Promise<string> {
     },
   };
 
-  return generateSARIFReport(auditResult as any);
+  const projectRoot = CodeIndexDB.currentProject || process.cwd();
+  return generateSARIFReport(auditResult as any, {
+    rootDir: projectRoot,
+    ...readVersionControlProvenance(projectRoot),
+  });
 }
 
 export async function getAuditResultsPage(args: any): Promise<Record<string, unknown>> {
