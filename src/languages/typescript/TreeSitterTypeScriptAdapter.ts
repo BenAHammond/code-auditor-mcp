@@ -1112,21 +1112,44 @@ class TsScopeStatic extends TsPredicatesOptional {
   }
 
   /** Walk the parent chain to find the enclosing function scope node. */
+  /** Tree-sitter node types that open a scope boundary for local-constant
+   *  resolution. */
+  private static readonly SCOPE_TYPES = new Set([
+    'function_declaration',
+    'arrow_function',
+    'function_expression',
+    'generator_function_declaration',
+    'method_definition',
+    'program',
+  ]);
+
   protected findEnclosingScope(node: ASTNode, ast: AST): ASTNode | null {
     let current: ASTNode | null = node;
     while (current) {
-      const type = (getRawNode(current)).type;
-      if (
-        type === 'function_declaration' ||
-        type === 'arrow_function' ||
-        type === 'function_expression' ||
-        type === 'generator_function_declaration' ||
-        type === 'method_definition' ||
-        type === 'program'
-      ) {
-        return current;
-      }
+      if (TsScopeStatic.SCOPE_TYPES.has((getRawNode(current)).type)) return current;
       current = current.parent ?? null;
+    }
+
+    // Detached node (`wrapRaw` sets parent undefined): the ASTNode parent chain
+    // is empty, so walk the raw tree-sitter parent chain to the nearest scope
+    // and resolve it back to the *parsed* AST by node id. Without this, a
+    // function-local identifier resolves against the whole file and picks a
+    // same-named declaration from a different function — e.g. the reassigned
+    // `let where` in `listLedgerRuns` shadowing `queryLedgerFindings`' safe
+    // `const where`. Correct scope is what makes placeholder/clause-template
+    // arrays resolve as the local literal they are.
+    let raw = getRawNode(node).parent;
+    while (raw) {
+      if (TsScopeStatic.SCOPE_TYPES.has(raw.type)) {
+        const scopeId = raw.id;
+        let found: ASTNode | null = null;
+        this.walk(ast.root, (candidate) => {
+          if (found) return;
+          if (getRawNode(candidate).id === scopeId) found = candidate;
+        });
+        if (found) return found;
+      }
+      raw = raw.parent;
     }
     return ast.root; // fallback to file-level
   }
@@ -1952,7 +1975,12 @@ class TsSafetyAnalysis extends TsConstantResolution {
     // 1. Static-array `.map().join()` chain (e.g. `FLAGS.map((c) => \`a.${c}\`).join(", ")`).
     if (this.isSafeMapJoin(node, ctx)) return true;
 
-    // 2. Local function call with a safe body and safe call sites.
+    // 2. `.join(sep)` on a provably-safe array — e.g. `where.join(' AND ')`
+    //    where `where` is a literal `['col = ?']` clause array. The joined
+    //    fragments and separator are safe, so the result is safe.
+    if (this.isSafeJoin(node, ctx)) return true;
+
+    // 3. Local function call with a safe body and safe call sites.
     if (this.isLocalFunctionCallSafe(node, ctx)) return true;
 
     return false;
@@ -1976,18 +2004,91 @@ class TsSafetyAnalysis extends TsConstantResolution {
     const mapObj = (mapFn as any).childForFieldName?.('object') as TreeSitterNode | null;
     if (!mapProp || !mapObj || mapProp.text !== 'map') return false;
 
+    const callback = mapArgs?.namedChildren[0] ?? null;
+    if (!callback || !['arrow_function', 'function_expression', 'function'].includes(callback.type)) return false;
+    const cbParams = this.getParamNames(this.wrapRaw(callback)!);
+
+    // A zero-parameter callback ignores every element, so the map output is a
+    // constant list — safe regardless of the source array's contents. This is
+    // the placeholder pattern `filePaths.map(() => '?').join(', ')`: the values
+    // are bound out-of-band, so the interpolated text is only `?` placeholders.
+    if (cbParams.length === 0) {
+      return this.isBodySafeUnderParams(this.wrapRaw(callback)!, { ...ctx, paramMap: new Map() });
+    }
+
     // The array being mapped must itself be provably safe (static array/const).
     if (!this.isSafeExpression(this.wrapRaw(mapObj), ctx)) return false;
 
     // The callback must be safe for any element — bind its first parameter to a
     // compile-time string sentinel and check the callback body.
-    const callback = mapArgs?.namedChildren[0] ?? null;
-    if (!callback || !['arrow_function', 'function_expression', 'function'].includes(callback.type)) return false;
-    const cbParams = this.getParamNames(this.wrapRaw(callback)!);
-    if (cbParams.length === 0) return false;
     const bound = new Map<string, ASTNode | null>(ctx.paramMap);
     bound.set(cbParams[0], SAFE_STRING_NODE);
     return this.isBodySafeUnderParams(this.wrapRaw(callback)!, { ...ctx, paramMap: bound });
+  }
+
+  /** True when the node is a `.join(...)` whose receiver is a provably-safe array
+   *  and whose separator is safe — e.g. `where.join(' AND ')` where `where` is a
+   *  literal `['col = ?']` clause array. The values are bound out-of-band, so the
+   *  joined text is only `col = ?` fragments, never raw data.
+   *
+   *  Boundary (same as `isSafeMapJoin`): the receiver's *initializer* is checked,
+   *  not its later `.push()` mutations — intra-function, no taint tracking. An
+   *  array declared safe and later `.push(userInput)`-ed is not caught here; that
+   *  is the documented "partial coverage" of the taint-aware detector. */
+  protected isSafeJoin(node: ASTNode, ctx: SafetyContext): boolean {
+    const raw = getRawNode(node);
+    const fnNode = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
+    if (!fnNode || fnNode.type !== 'member_expression') return false;
+    const joinProp = (fnNode as any).childForFieldName?.('property') as TreeSitterNode | null;
+    const joinObj = (fnNode as any).childForFieldName?.('object') as TreeSitterNode | null;
+    if (!joinProp || !joinObj || joinProp.text !== 'join') return false;
+
+    // The array being joined must be provably safe: a literal array, an
+    // identifier whose declaration is a safe array, or a safe `.map()` chain.
+    if (!this.isSafeExpression(this.wrapRaw(joinObj), ctx)) return false;
+
+    // An identifier receiver is usually built up with `.push(...)` after its
+    // declaration (the clause-template idiom). Every pushed element must also
+    // be safe, otherwise a `['safe'].push(userInput).join()` would read as
+    // cleared. (Index assignment `arr[i] = x` is not tracked — the same
+    // boundary as `hasReassignment`, documented partial coverage.)
+    if (joinObj.type === 'identifier'
+        && !this.isArrayMutatedSafely(joinObj.text, node, ctx)) {
+      return false;
+    }
+
+    // The separator (first argument) must be safe too.
+    const args = (raw as any).childForFieldName?.('arguments') as TreeSitterNode | null;
+    const sep = args?.namedChildren?.[0] ?? null;
+    if (sep && !this.isSafeExpression(this.wrapRaw(sep), ctx)) return false;
+
+    return true;
+  }
+
+  /** True when every `.push()`/`.unshift()` on `name` within the enclosing scope
+   *  of `callNode` passes a provably-safe argument. True when there are no such
+   *  mutations (the declaration value alone is then the whole array). */
+  protected isArrayMutatedSafely(name: string, callNode: ASTNode, ctx: SafetyContext): boolean {
+    const enclosing = this.findEnclosingScope(callNode, ctx.ast);
+    const scopeRoot = enclosing ?? ctx.ast.root;
+    let safe = true;
+    this.walk(scopeRoot, (n) => {
+      if (!safe) return;
+      const raw = getRawNode(n);
+      if (raw.type !== 'call_expression') return;
+      const fn = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
+      if (!fn || fn.type !== 'member_expression') return;
+      const prop = (fn as any).childForFieldName?.('property') as TreeSitterNode | null;
+      const obj = (fn as any).childForFieldName?.('object') as TreeSitterNode | null;
+      if (!prop || !obj) return;
+      if ((prop.text !== 'push' && prop.text !== 'unshift')
+          || obj.type !== 'identifier' || obj.text !== name) return;
+      const args = (raw as any).childForFieldName?.('arguments') as TreeSitterNode | null;
+      for (const a of (args?.namedChildren ?? [])) {
+        if (!this.isSafeExpression(this.wrapRaw(a), ctx)) { safe = false; return; }
+      }
+    });
+    return safe;
   }
 
   /** True when the node is a call to a local (in-file) function whose body is

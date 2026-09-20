@@ -14,6 +14,9 @@ export interface QueryResult<T = unknown> {
 
 export interface PreparedStatement {
   bind(...params: unknown[]): QueryResult;
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown;
+  run(...params: unknown[]): unknown;
 }
 
 export interface MockDB {
@@ -31,6 +34,9 @@ const mockResult: QueryResult = {
 
 const mockPrepared: PreparedStatement = {
   bind: (..._params: unknown[]) => mockResult,
+  all: (..._params: unknown[]) => [],
+  get: (..._params: unknown[]) => null,
+  run: (..._params: unknown[]) => undefined,
 };
 
 const mockDB: MockDB = {

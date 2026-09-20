@@ -113,6 +113,18 @@ describe('sql-fp-guards fixture', () => {
       // for (const table of TABLES) — loop variable resolved as constant
       expect(counts.get('src/for-of-resolved.ts') || 0).toBe(0);
     });
+
+    // ── placeholder-list / clause-template guards ──────────────────────
+
+    it('placeholder-list.ts: zero-param .map(() => \'?\').join() placeholder list', () => {
+      // filePaths.map(() => '?').join(', ') — constant placeholder list, values bound out-of-band
+      expect(counts.get('src/placeholder-list.ts') || 0).toBe(0);
+    });
+
+    it('clause-template.ts: literal .join(\' AND \') clause template', () => {
+      // where.join(' AND ') over literal 'col = ?' fragments, values bound out-of-band
+      expect(counts.get('src/clause-template.ts') || 0).toBe(0);
+    });
   });
 
   describe('true positive — must detect real injection', () => {
