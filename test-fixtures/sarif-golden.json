@@ -6,7 +6,7 @@
       "tool": {
         "driver": {
           "name": "code-auditor-mcp",
-          "version": "4.0.1",
+          "version": "4.0.2",
           "informationUri": "https://github.com/BenAHammond/code-auditor-mcp",
           "rules": [
             {

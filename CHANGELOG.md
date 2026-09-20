@@ -2,6 +2,60 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [4.0.2] — 2026-09-19
+
+### Severity vocabulary restored: `advisory` → `high`
+
+The third severity tier is `high` again. A recalibration had renamed it to
+`advisory` in code while the severity-assignment ledger stayed on `high`,
+letting code and ledger drift apart. Every consumer now sees `high` where it
+previously saw `advisory` — in `--json` output, SARIF, the CLI summary, and MCP
+tool results. The three non-severity meanings of "advisory" are unchanged: hook
+mode (`hookType: 'blocking' | 'advisory' | 'none'`), the non-invariant
+"advisory findings" report channel, and consultative "advisory" (= non-fatal).
+
+### Fifteen rules restored from `severe` to `high`
+
+The same recalibration escalated fifteen rules to `severe` that Spec 54 had
+deliberately placed at `high`. They return to `high`:
+
+`solid/class-size`, `solid/method-complexity`, `solid/dependency-inversion`,
+`interface-size`, `parameter-count`, `function-length`, `function-size`,
+`struct-size`, `switch-size`, `dry/duplicate`, `complex-query`,
+`unfiltered-query`, `imports/import-style`, `tight-coupling`, `hub-nodes`.
+
+### Severity-ledger conformance guard
+
+A new test (`severity-ledger-conformance.test.ts`) asserts, in both directions,
+that every emit site's most-severe level matches its severity-assignment-ledger
+row — the same drift-guard shape as the SKILL.md check. It fails the build when
+code and ledger disagree.
+
+### `loop-query` no longer flags queue consumers
+
+A loop whose body acks/nacks/retries the message it iterates over (`msg.ack()`,
+`msg.retry()`, `msg.nack()`, `msg.acknowledge()`, `msg.deleteMessage()`) is a
+queue consumer, not a batchable N+1 — batching or joining would break the
+retry contract, so the finding is suppressed. Two negative controls pin the
+suppression to the lifecycle vocabulary: a plain query-in-loop and an unrelated
+member call (`item.markSeen()`) still fire.
+
+### Corpus baselines re-pinned
+
+The six corpus baselines are re-pinned after the rule rework. The earlier
+"corpus shrank" reading was wrong — the delta was a tool change (gitignore-aware
+discovery, Spec 58), not a change to the corpora themselves.
+
+### Spec 60: reporting metadata — test coverage, size distributions, dead clustering
+
+Reporting-only metadata; no new findings and no rule's count moves:
+- test-coverage classification (tested / untested-live / untested-dead) off
+  alias-aware file-level import edges, with an entry-point exception;
+- size distributions (median/p95/max) for `function-length`, `parameter-count`,
+  `complexity`, `class-size`, `interface-size`;
+- `unreferenced-module` clusters grouped by basename + sibling-directory
+  position.
+
 ## [4.0.1] — 2026-09-19
 
 ### `unreferenced-module` no longer flags package-manifest entry points
