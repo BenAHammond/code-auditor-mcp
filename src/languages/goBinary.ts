@@ -1,13 +1,14 @@
 /**
  * Prebuilt-binary architecture inspection for the Go analyzer subprocess.
  *
- * The Go analyzer ships as a single prebuilt binary (currently darwin/amd64).
- * On any other platform/architecture it cannot run, so the runtime must detect
- * the mismatch and rebuild from the shipped source instead of spawning a binary
- * that will fail to exec (or silently no-op). This module is the pure,
- * header-only check shared by path resolution (detection) and the build step,
- * so a stale or wrong-arch binary is caught on every path that reaches for it —
- * not only the one that happens to rebuild.
+ * The Go analyzer ships as per-platform prebuilt binaries
+ * (`analyzer-<goos>-<goarch>`, e.g. darwin/arm64, linux/amd64, windows/amd64).
+ * On a platform with no shipped binary the runtime must detect the mismatch and
+ * rebuild from the shipped source instead of spawning a binary that will fail to
+ * exec (or silently no-op). This module is the pure, header-only check shared by
+ * path resolution (detection) and the build step, so a stale or wrong-arch
+ * binary is caught on every path that reaches for it — not only the one that
+ * happens to rebuild.
  *
  * No filesystem access here: callers read the first bytes of the binary and
  * pass the buffer in, which keeps this deterministic and unit-testable.

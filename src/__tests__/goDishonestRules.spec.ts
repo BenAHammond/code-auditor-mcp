@@ -15,9 +15,10 @@
  * analyzer binary over JSON-RPC — the same boundary the production pipeline
  * uses — so a reverted predicate fails the test.
  *
- * The binary at src/languages/go/analyzer is rebuilt from source before the
- * tests run (when a Go toolchain is available), so a stale committed binary
- * cannot mask a regression.
+ * The platform-qualified binary (`analyzer-<goos>-<goarch>`) is rebuilt from
+ * source into a temp dir before the tests run (when a Go toolchain is
+ * available), so a stale committed binary cannot mask a regression and the
+ * source tree is never written by a test.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -25,11 +26,20 @@ import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const execFileAsync = promisify(execFile);
 
 const goDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'languages', 'go');
-const binaryPath = join(goDir, 'analyzer');
+
+// The shipped binary is platform-qualified (`analyzer-<goos>-<goarch>`), the
+// same name RuntimeManager.goAnalyzerBinaryName() derives. This test spawns the
+// real binary, so it must resolve the same name.
+const goos = process.platform === 'win32' ? 'windows' : process.platform;
+const goarch = ({ x64: 'amd64', arm64: 'arm64', ia32: '386', arm: 'arm' } as Record<string, string>)[process.arch] ?? 'amd64';
+const binaryName = `analyzer-${goos}-${goarch}${goos === 'windows' ? '.exe' : ''}`;
+let binaryPath = join(goDir, binaryName);
 
 interface GoViolation {
   rule?: string;
@@ -41,12 +51,17 @@ interface GoResult {
   violations: GoViolation[];
 }
 
-/** Rebuild the analyzer binary from source so the test exercises current code. */
+/** Rebuild the analyzer binary from source so the test exercises current code.
+ *  Builds into a temp dir (never `src/languages/go`), mirroring the runtime's
+ *  cache-dir fallback — the source tree must not be written by a test. */
 async function ensureBinaryFresh(): Promise<void> {
   try {
-    await execFileAsync('go', ['build', '-o', 'analyzer', 'main.go'], { cwd: goDir });
+    const tmp = mkdtempSync(join(tmpdir(), 'ca-go-analyzer-'));
+    const freshPath = join(tmp, binaryName);
+    await execFileAsync('go', ['build', '-o', freshPath, 'main.go'], { cwd: goDir });
+    binaryPath = freshPath;
   } catch {
-    // No Go toolchain — fall through to the committed binary below.
+    // No Go toolchain — fall through to the committed per-platform binary below.
   }
 }
 

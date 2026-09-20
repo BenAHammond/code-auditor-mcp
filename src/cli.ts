@@ -218,6 +218,28 @@ program
         );
       }
 
+      // ── Skipped analyzers (Spec 61) ──────────────────────────────
+      // A language present on disk but never analyzed is a stated gap, not a
+      // silent zero. The Go path surfaces a named runtime failure (missing
+      // toolchain, wrong-arch prebuilt binary, failed rebuild) as a
+      // metadata.diagnostics entry; before this section those kinds were
+      // invisible outside --json, so a polyglot repo with .go files and no Go
+      // toolchain printed zero Go findings and exited clean — the silent-zero
+      // failure mode. These lead above coverage gaps: a skipped analyzer is a
+      // whole language unmeasured, more severe than a per-file visibility gap.
+      const skippedAnalyzers = (result.metadata?.diagnostics ?? []).filter(
+        (d: any) => d.kind === 'go-toolchain-missing' ||
+          d.kind === 'go-analyzer-wrong-arch' ||
+          d.kind === 'go-analyzer-build-failed'
+      );
+      if (skippedAnalyzers.length > 0) {
+        console.log(chalk.yellow(`── Skipped analyzers ── ${skippedAnalyzers.length}`));
+        for (const d of skippedAnalyzers) {
+          const name = d.analyzerName || 'go';
+          console.log(chalk.yellow(`  ${name} [${d.kind}] — ${d.message}`));
+        }
+      }
+
       // ── Coverage gaps (Spec 58 follow-up) ─────────────────────────
       // Coverage diagnostics are the analyzer saying "my visibility ends here",
       // not "the code is wrong". They lead with counts, then per-occurrence

@@ -279,21 +279,30 @@ else
   fail "Some WASM grammars are missing from the distributed package"
 fi
 
-# --- Guard 8: Go analyzer subprocess (source + binary) ships ------------------
+# --- Guard 8: Go analyzer subprocess (source + per-platform binaries) ships ---
 # The Go analysis runs in a subprocess (JSON-RPC over stdio), not in-process.
 # `tsc` does NOT copy main.go, go.mod, the analyzer-src/ module, or the prebuilt
-# `analyzer` binary into dist — scripts/build-go.sh does. If any of these is
+# per-platform binaries into dist — scripts/build-go.sh does. If any of these is
 # absent from the tarball, the Go subprocess is unbuildable/unrunnable for the
 # stranger who installed it, and the runtime degrades to a silent "no Go
 # analyzer". Same file-accounting as the WASM grammars above: a file silently
 # dropped from dist is a hard error.
+#
+# Beyond presence, this guard asserts the binary for the RUNNING platform exists
+# AND executes (responds to a JSON-RPC ping). A shipped native binary that does
+# not exec is the exact silent-zero failure — "a binary is present" was never
+# enough; the guard must prove the one this machine will actually spawn works.
 echo ""
 echo "Checking Go analyzer subprocess shipped..."
 GO_DIR="node_modules/code-auditor-mcp/dist/languages/go"
 GO_FILES=(
   "main.go"
   "go.mod"
-  "analyzer"
+  "analyzer-darwin-arm64"
+  "analyzer-darwin-amd64"
+  "analyzer-linux-amd64"
+  "analyzer-linux-arm64"
+  "analyzer-windows-amd64.exe"
   "analyzer-src/analyzer.go"
   "analyzer-src/indexer.go"
   "analyzer-src/parser.go"
@@ -312,24 +321,43 @@ for f in "${GO_FILES[@]}"; do
   fi
 done
 if [ "$GO_MISSING" -eq 0 ]; then
-  pass "Go analyzer subprocess source + binary present in dist/languages/go/"
+  pass "Go analyzer subprocess source + 5 platform binaries present in dist/languages/go/"
 else
   fail "Go analyzer subprocess is incomplete in the distributed package"
 fi
 
-# Runtime ping check — only meaningful on the platform the prebuilt binary
-# targets (darwin/amd64). On other platforms the source is present so
-# ensureGoAnalyzerBuilt's `go build` fallback still works; a non-pong here is a
-# warn, not a fail.
-if [ -f "$GO_DIR/analyzer" ] && [ -x "$GO_DIR/analyzer" ]; then
+# Map the running platform to its shipped binary name, then require that binary
+# to exist AND execute. `uname` covers the build host (darwin/linux); Windows
+# builds run under Git Bash / MSYS.
+GO_BIN=""
+case "$(uname -s)" in
+  Darwin)
+    case "$(uname -m)" in
+      arm64) GO_BIN="analyzer-darwin-arm64" ;;
+      x86_64) GO_BIN="analyzer-darwin-amd64" ;;
+    esac ;;
+  Linux)
+    case "$(uname -m)" in
+      x86_64) GO_BIN="analyzer-linux-amd64" ;;
+      aarch64) GO_BIN="analyzer-linux-arm64" ;;
+    esac ;;
+  MINGW*|MSYS*|CYGWIN*) GO_BIN="analyzer-windows-amd64.exe" ;;
+esac
+
+if [ -n "$GO_BIN" ]; then
   echo ""
-  echo "Checking Go analyzer responds to ping..."
-  PONG=$(printf '{"method":"ping","params":{},"id":1}\n' | "$GO_DIR/analyzer" 2>/dev/null | head -1)
-  if echo "$PONG" | grep -q '"pong"'; then
-    pass "Go analyzer subprocess responds to ping"
-  else
-    warn "Go analyzer binary did not respond to ping (prebuilt for a different platform — 'go build' source fallback remains available)"
+  echo "Checking Go analyzer binary for this platform ($GO_BIN) exists and executes..."
+  if [ ! -f "$GO_DIR/$GO_BIN" ]; then
+    fail "running-platform Go binary $GO_BIN is missing from the tarball"
   fi
+  PONG=$(printf '{"method":"ping","params":{},"id":1}\n' | "$GO_DIR/$GO_BIN" 2>/dev/null | head -1)
+  if echo "$PONG" | grep -q '"pong"'; then
+    pass "Go analyzer binary $GO_BIN responds to ping (native, executes)"
+  else
+    fail "Go analyzer binary $GO_BIN did not respond to ping — the running-platform binary does not execute (silent-zero failure)"
+  fi
+else
+  warn "Could not map running platform to a Go binary — running-platform execute check skipped"
 fi
 
 # --- Guard 9: npm-12 blocked install scripts → node:sqlite carries the load --

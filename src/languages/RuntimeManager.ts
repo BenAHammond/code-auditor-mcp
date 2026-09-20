@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'node:url';
 import { binaryMatchesPlatform, describeBinaryMismatch, type BinaryMatch } from './goBinary.js';
+import { resolveGoAnalyzerCacheDir } from '../dataPaths.js';
 
 const execAsync = promisify(exec);
 
@@ -27,11 +28,15 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-/** Filename of the Go analyzer binary for this platform. Go appends `.exe`
- *  when GOOS=windows; we mirror that for the prebuilt name so a Windows rebuild
- *  lands where `runGoAnalyzer` looks. */
+/** Filename of the Go analyzer binary for the platform Node is running on,
+ *  platform-qualified so one machine ships prebuilt binaries for every target
+ *  without collision: `analyzer-<goos>-<goarch>` (+ `.exe` on Windows). The
+ *  shipped binary in `dist/languages/go` and a rebuilt binary in the cache dir
+ *  both use this name, so `ensureGoAnalyzerBuilt` resolves whichever exists and
+ *  `runGoAnalyzer` spawns that exact path. */
 function goAnalyzerBinaryName(): string {
-  return process.platform === 'win32' ? 'analyzer.exe' : 'analyzer';
+  const { goos, goarch } = goBuildTarget();
+  return `analyzer-${goos}-${goarch}${goos === 'windows' ? '.exe' : ''}`;
 }
 
 /** GOOS/GOARCH for a native rebuild, derived from the Node platform/arch the
@@ -289,8 +294,10 @@ class RuntimeManagerDetection {
   }
 
   /**
-   * Locate the analyzer binary and report whether it runs natively here. Returns
-   * the path, existence, and a `BinaryMatch` against the current platform/arch;
+   * Locate the analyzer binary and report whether it runs natively here. Checks
+   * the shipped prebuilt binary first, then a cached rebuild from a prior run —
+   * either is a native binary that runs with no toolchain. Returns the path,
+   * existence, and a `BinaryMatch` against the current platform/arch;
    * `failureReason` is set only when path resolution itself fails. A missing or
    * mismatched binary is NOT a failure — it just means "rebuild on first use",
    * so the mismatch is caught on every path that reaches for the binary, not
@@ -304,19 +311,32 @@ class RuntimeManagerDetection {
     failureReason?: string;
   }> {
     try {
-      const analyzerPath = path.join(moduleDir, 'go', goAnalyzerBinaryName());
-      console.error('[RuntimeManager] Looking for Go analyzer at:', analyzerPath);
-      const exists = await this.fileExists(analyzerPath);
-      console.error('[RuntimeManager] Go analyzer exists:', exists);
+      const shippedPath = path.join(moduleDir, 'go', goAnalyzerBinaryName());
+      const cachePath = path.join(resolveGoAnalyzerCacheDir(), goAnalyzerBinaryName());
 
-      if (!exists) {
-        return { path: analyzerPath, exists: false, matchesPlatform: false, match: null };
+      // Shipped prebuilt binary first, then a cached rebuild — a native binary in
+      // either location means Go analysis runs with no toolchain.
+      for (const candidate of [shippedPath, cachePath]) {
+        if (!(await this.fileExists(candidate))) continue;
+        const header = await readExecutableHeader(candidate);
+        const match = binaryMatchesPlatform(header, process.platform, process.arch);
+        if (match.matches) {
+          console.error(`[RuntimeManager] Go analyzer found (native) at ${candidate}`);
+          return { path: candidate, exists: true, matchesPlatform: true, match };
+        }
       }
 
-      const header = await readExecutableHeader(analyzerPath);
-      const match = binaryMatchesPlatform(header, process.platform, process.arch);
-      console.error('[RuntimeManager] Go analyzer matches platform:', match.matches, match.reason);
-      return { path: analyzerPath, exists: true, matchesPlatform: match.matches, match };
+      // No native binary in either location. Report the SHIPPED binary's state so
+      // the named diagnostic says "wrong-arch" vs "missing" — the cache is a
+      // derived artifact, not what the user ships, so its absence is not a
+      // failure mode worth a distinct name.
+      const shippedExists = await this.fileExists(shippedPath);
+      if (shippedExists) {
+        const header = await readExecutableHeader(shippedPath);
+        const match = binaryMatchesPlatform(header, process.platform, process.arch);
+        return { path: shippedPath, exists: true, matchesPlatform: false, match };
+      }
+      return { path: shippedPath, exists: false, matchesPlatform: false, match: null };
     } catch (error) {
       console.error('[RuntimeManager] Go analyzer path resolution failed:', error);
       return {
@@ -1074,9 +1094,10 @@ class GoAnalyzer implements LanguageAnalyzer {
     const startTime = Date.now();
 
     try {
-      // Build the Go analyzer if needed (no-op when a native binary is present).
+      // Resolve the binary to run (shipped → cached → rebuilt to cache). The
+      // source dir stays read-only: a rebuild never writes into moduleDir/go.
       const goAnalyzerDir = path.join(moduleDir, 'go');
-      await this.ensureGoAnalyzerBuilt(goAnalyzerDir);
+      const binaryPath = await this.ensureGoAnalyzerBuilt(goAnalyzerDir);
 
       // Prepare analysis options
       const analysisOptions = {
@@ -1088,7 +1109,7 @@ class GoAnalyzer implements LanguageAnalyzer {
       };
 
       // Run the Go analyzer via JSON-RPC
-      const result = await this.runGoAnalyzer(goAnalyzerDir, files, analysisOptions);
+      const result = await this.runGoAnalyzer(binaryPath, goAnalyzerDir, files, analysisOptions);
 
       const executionTime = Date.now() - startTime;
       result.metrics.executionTime = executionTime;
@@ -1123,20 +1144,29 @@ class GoAnalyzer implements LanguageAnalyzer {
     }
   }
 
-  private async ensureGoAnalyzerBuilt(goDir: string): Promise<void> {
-    const binaryPath = path.join(goDir, goAnalyzerBinaryName());
-
-    // A native binary is the fast path; anything else (absent, wrong arch, wrong
-    // format) must be rebuilt from shipped source rather than spawned — a foreign
-    // binary fails to exec, and a wrong-arch one would be silently mis-run.
-    const header = await readExecutableHeader(binaryPath);
-    const match = binaryMatchesPlatform(header, process.platform, process.arch);
-    if (match.matches) {
-      console.log(`[GoAnalyzer] Binary is native at ${binaryPath}`);
-      return;
+  private async ensureGoAnalyzerBuilt(goDir: string): Promise<string> {
+    // Fast path 1 — the shipped prebuilt binary is native for this platform.
+    const shippedPath = path.join(goDir, goAnalyzerBinaryName());
+    const shippedMatch = binaryMatchesPlatform(
+      await readExecutableHeader(shippedPath), process.platform, process.arch
+    );
+    if (shippedMatch.matches) {
+      console.log(`[GoAnalyzer] Binary is native (shipped) at ${shippedPath}`);
+      return shippedPath;
     }
 
-    console.log(`[GoAnalyzer] Rebuilding Go analyzer binary (${match.reason}): ${binaryPath}`);
+    // Fast path 2 — a binary already rebuilt for this platform in a prior run.
+    const cacheDir = resolveGoAnalyzerCacheDir();
+    const cachePath = path.join(cacheDir, goAnalyzerBinaryName());
+    const cacheMatch = binaryMatchesPlatform(
+      await readExecutableHeader(cachePath), process.platform, process.arch
+    );
+    if (cacheMatch.matches) {
+      console.log(`[GoAnalyzer] Binary is native (cached) at ${cachePath}`);
+      return cachePath;
+    }
+
+    console.log(`[GoAnalyzer] Rebuilding Go analyzer binary (${shippedMatch.reason}): ${cachePath}`);
 
     // A missing toolchain here is a stated, distinct failure — not a silent
     // zero. `detectGoRuntime` normally precludes this (it only registers Go as
@@ -1147,22 +1177,26 @@ class GoAnalyzer implements LanguageAnalyzer {
     } catch {
       throw new GoAnalyzerBuildError(
         'go-toolchain-missing',
-        `Go toolchain not found — cannot rebuild the Go analyzer (${describeBinaryMismatch(match, process.platform, process.arch)})`
+        `Go toolchain not found — cannot rebuild the Go analyzer (${describeBinaryMismatch(shippedMatch, process.platform, process.arch)})`
       );
     }
 
     // Build for the platform Node is running on, NOT the toolchain's own arch
     // (an amd64 toolchain on darwin/arm64 must still emit arm64, else the
-    // rebuild reproduces the same foreign binary and loops forever).
+    // rebuild reproduces the same foreign binary and loops forever). The output
+    // lands in the cache dir, never the shipped tree, so a read-only install
+    // still yields a working binary.
     const { goos, goarch } = goBuildTarget();
     try {
+      await fs.mkdir(cacheDir, { recursive: true });
       const { stderr } = await execAsync(
-        `cd "${goDir}" && GOOS=${goos} GOARCH=${goarch} CGO_ENABLED=0 go build -o ${goAnalyzerBinaryName()} main.go`
+        `cd "${goDir}" && GOOS=${goos} GOARCH=${goarch} CGO_ENABLED=0 go build -o "${cachePath}" main.go`
       );
       if (stderr) {
         console.warn(`[GoAnalyzer] Build warnings: ${stderr}`);
       }
-      console.log(`[GoAnalyzer] Successfully built Go analyzer binary (${goos}/${goarch})`);
+      console.log(`[GoAnalyzer] Successfully built Go analyzer binary (${goos}/${goarch}) at ${cachePath}`);
+      return cachePath;
     } catch (buildError) {
       throw new GoAnalyzerBuildError(
         'go-analyzer-build-failed',
@@ -1171,8 +1205,7 @@ class GoAnalyzer implements LanguageAnalyzer {
     }
   }
 
-  private async runGoAnalyzer(goDir: string, files: string[], options: any): Promise<AnalysisResult> {
-    const binaryPath = path.join(goDir, goAnalyzerBinaryName());
+  private async runGoAnalyzer(binaryPath: string, goDir: string, files: string[], options: any): Promise<AnalysisResult> {
     return spawnGoAnalyzer(binaryPath, goDir, files, options);
   }
 }

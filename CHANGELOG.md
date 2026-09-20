@@ -2,6 +2,34 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [4.0.4] — 2026-09-20
+
+### Go analysis now works everywhere, not just Intel Macs
+
+Go analysis silently returned zero findings on every platform but Intel Macs.
+The shipped Go analyzer was a single `darwin/amd64` binary, so Apple Silicon,
+Linux, and Windows (including all Linux/Windows CI) skipped Go entirely and
+reported a clean tree. That silent-skip is fixed:
+
+- **Per-platform binaries** — five static `CGO_ENABLED=0` binaries ship in the
+  package (`analyzer-darwin-arm64`, `analyzer-darwin-amd64`,
+  `analyzer-linux-amd64`, `analyzer-linux-arm64`, `analyzer-windows-amd64.exe`),
+  cross-compiled from one machine. The runtime picks the binary from **Node's**
+  platform/arch (Node spawns the process), not the Go toolchain's — a subtlety
+  that matters under Rosetta, where `go env` reports `amd64` while Node reports
+  `arm64`.
+- **Cache-dir rebuild fallback** — when no native binary is present, the
+  analyzer now builds into the OS cache dir (`~/Library/Caches/code-auditor`,
+  `~/.cache/code-auditor`, `%LOCALAPPDATA%\code-auditor`) instead of writing into
+  the read-only shipped tree and overwriting the artifact.
+- **Silent failure now says so** — a missing toolchain, wrong-arch binary, or
+  failed build surfaces as a named `Skipped analyzers` diagnostic in the text
+  CLI (`go-toolchain-missing`, `go-analyzer-wrong-arch`,
+  `go-analyzer-build-failed`) instead of a silent zero.
+- **Guard 8** now asserts all five shipped binaries are present *and* that the
+  running platform's binary executes — a build where one cross-compile failed
+  can no longer pass on one machine and ship broken for another.
+
 ## [4.0.3] — 2026-09-20
 
 ### SQL injection: parameterized-query false positives fixed
