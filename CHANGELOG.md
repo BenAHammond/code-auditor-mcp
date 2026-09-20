@@ -2,7 +2,53 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [4.0.2] — 2026-09-19
+## [4.0.3] — 2026-09-20
+
+### SQL injection: parameterized-query false positives fixed
+
+Two parameterized-query idioms were misread as `sql-injection-risk` at every
+prior count. The safety analysis now proves them safe instead of flagging them:
+
+- **Placeholder list** — `filePaths.map(() => '?').join(', ')` is a constant
+  list of `?` placeholders regardless of the source array's contents; the values
+  are bound out-of-band, so the interpolated text is never raw data.
+- **Literal clause template** — `['run_id = ?', 'rule = ?'].join(' AND ')` is a
+  join over literal `col = ?` fragments with values bound out-of-band. A new
+  `isSafeJoin` proves the receiver and every `.push()`ed element are safe, so a
+  `.push(userInput)` before the join is still flagged.
+
+The two patterns were clearing real findings in `codeIndexDB`, `blastRadius`,
+and `ledger`. Both are now correctly recognized as safe; the remaining
+`sql-injection-risk` findings are genuine dynamic SQL (table/column identifier
+interpolation, escaped name lists, reassigned `let` clauses) rather than
+parameterized queries. Guard coverage is pinned by new fixtures
+(`placeholder-list.ts`, `clause-template.ts`) asserting exact zero counts.
+
+This also fixed a latent scope-resolution bug: `findEnclosingScope` fell back to
+file-level first-match when a wrapped node was detached from its parent chain,
+so `const where: string[] = [...]` in one function could resolve against a
+different function's `let where` of the same name. The enclosing scope is now
+resolved through the raw parent chain.
+
+### SARIF: version-control provenance and schema validity
+
+SARIF 2.1.0 output now carries GitHub Code Scanning metadata and emits only
+schema-valid fields:
+
+- `versionControlProvenance` (`repositoryUri` + `revisionId`) is read
+  best-effort from the project's git remote and HEAD, so uploaded alerts are
+  tied to a commit.
+- `automationDetails.id` is set to `<tool>/<version>`, giving this tool's
+  uploads a distinct analysis category alongside CodeQL and others.
+- Suggestions are emitted as `properties.resolution` (and a `help` string per
+  rule) instead of a bare `fixes` array — a SARIF fix requires `artifactChanges`,
+  which this tool does not produce, so the old output was schema-invalid.
+- `startColumn` is omitted rather than clamped for 0-based/unknown columns
+  (SARIF requires a minimum of 1).
+- Partial fingerprints are computed from the repo-relative path so GitHub alert
+  identity is stable across checkouts and machines.
+
+
 
 ### Severity vocabulary restored: `advisory` → `high`
 
@@ -14,15 +60,16 @@ tool results. The three non-severity meanings of "advisory" are unchanged: hook
 mode (`hookType: 'blocking' | 'advisory' | 'none'`), the non-invariant
 "advisory findings" report channel, and consultative "advisory" (= non-fatal).
 
-### Fifteen rules restored from `severe` to `high`
+### Sixteen rules restored from `severe` to `high`
 
-The same recalibration escalated fifteen rules to `severe` that Spec 54 had
+The same recalibration escalated sixteen rules to `severe` that Spec 54 had
 deliberately placed at `high`. They return to `high`:
 
 `solid/class-size`, `solid/method-complexity`, `solid/dependency-inversion`,
 `interface-size`, `parameter-count`, `function-length`, `function-size`,
 `struct-size`, `switch-size`, `dry/duplicate`, `complex-query`,
-`unfiltered-query`, `imports/import-style`, `tight-coupling`, `hub-nodes`.
+`unfiltered-query`, `react/performance`, `imports/import-style`, `tight-coupling`,
+`hub-nodes`.
 
 ### Severity-ledger conformance guard
 
