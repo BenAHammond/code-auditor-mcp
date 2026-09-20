@@ -66,7 +66,7 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
   const violations = polyglotResult.violations || [];
   const criticalIssues = violations.filter((v: any) => v.severity === 'critical').length;
   const severe = violations.filter((v: any) => v.severity === 'severe').length;
-  const advisory = violations.filter((v: any) => v.severity === 'advisory').length;
+  const high = violations.filter((v: any) => v.severity === 'high').length;
   const totalFiles = polyglotResult.metrics?.totalFiles || 0;
   const executionTime = polyglotResult.metrics?.executionTime || 0;
 
@@ -123,7 +123,7 @@ export function convertPolyglotToAuditResult(polyglotResult: any, auditPath: str
       totalViolations: violations.length,
       criticalIssues,
       severe,
-      advisory,
+      high,
       totalFiles,
       violationsByCategory,
       topIssues,

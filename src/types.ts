@@ -11,21 +11,21 @@ import type { FileAccounting } from './services/fileAccounting.js';
  *     (dropped table, unescaped SQL injection, a live tenant-isolation breach).
  *   - `severe`   — a real defect that has not bitten yet (dead code, unfiltered
  *     writes, missing alt text, an N+1 query, a 250-line function).
- *   - `advisory` — the code is correct but does not match a convention (off-scale
+ *   - `high` — the code is correct but does not match a convention (off-scale
  *     spacing, token bypass, missing JSDoc). Not the bottom of a defect ladder —
  *     a separate class.
  */
-export type Severity = 'critical' | 'severe' | 'advisory';
+export type Severity = 'critical' | 'severe' | 'high';
 
 /** Rank order, high → low. Used for ordering, `minSeverity` filters, and `--fail-on`. */
-export const SEVERITY_RANK: Record<Severity, number> = { critical: 3, severe: 2, advisory: 1 };
+export const SEVERITY_RANK: Record<Severity, number> = { critical: 3, severe: 2, high: 1 };
 
 /** Every severity, in urgency order (highest first). */
-export const SEVERITIES: Severity[] = ['critical', 'severe', 'advisory'];
+export const SEVERITIES: Severity[] = ['critical', 'severe', 'high'];
 
 /**
  * Spec 54 R3 — the blocking gate is a fixed all-three set. There is no
- * configurable gate and nothing below `advisory`: every level still blocks (the
+ * configurable gate and nothing below `high`: every level still blocks (the
  * recalibration re-labels the bottom tier, it does not stop it from gating).
  * `excludeFromGate` scopes files *out* of the gate; that is a scope decision, not
  * a severity re-label.
@@ -694,7 +694,7 @@ export interface AuditSummary {
   totalViolations: number;
   criticalIssues: number;
   severe: number;
-  advisory: number;
+  high: number;
   violationsByCategory: Record<string, number>;
   topIssues: Array<{ type: string; count: number }>;
   /**

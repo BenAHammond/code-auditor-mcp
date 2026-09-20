@@ -209,7 +209,7 @@ interface DatabaseCall {
   hasParameterizedQuery: boolean;
   hasSqlInjectionRisk: boolean;
   /** True when the injection risk is defended (manual quote-escaping) rather
-   *  than raw unescaped interpolation — downgrades the finding to advisory. */
+   *  than raw unescaped interpolation — downgrades the finding to high. */
   sqlEscaped: boolean;
   /** Enclosing function name for stable fingerprinting (Spec 18 Gap 2). */
   enclosingFunction?: string;
@@ -232,7 +232,7 @@ interface QueryAnalysis {
  * call rather than a 6-arg one (Spec 34 param-count bundling).
  */
 interface DataAccessViolationClassification {
-  severity: 'critical' | 'severe' | 'advisory';
+  severity: 'critical' | 'severe' | 'high';
   rule: string;
   symbol?: string;
   /** Spec 37 R1 — structured next action carried on gating findings. */
@@ -549,12 +549,12 @@ function checkViolations(
   // vulnerability now → `critical`.  Manual quote-escaping
   // (`.replace(/'/g, "''")`) is *defended* — single-quote doubling handles only
   // the single-quote vector, not backslash escapes or unicode quote variants —
-  // so it downgrades to `advisory` ("verify escaping") rather than asserting a
+  // so it downgrades to `high` ("verify escaping") rather than asserting a
   // certified vulnerability.
   if (config.checkSQLInjection && call.hasSqlInjectionRisk) {
     if (call.sqlEscaped) {
       push(`Interpolated SQL in ${call.method} — verify escaping is sufficient. Use parameterized queries.`, {
-        severity: 'advisory',
+        severity: 'high',
         rule: 'sql-injection-risk',
         resolution: {
           action: 'parameterize',
@@ -589,7 +589,7 @@ function checkViolations(
   // Performance: Complex Query — a join-heavy query (many tables).  Spec 55 R5:
   // a subquery alone is no longer "complex" — it is an ordinary SQLite/D1 idiom.
   if (analysis.performanceRisk === 'high') {
-    push(`Query references ${call.tables.length} tables`, { severity: 'severe', rule: 'complex-query' });
+    push(`Query references ${call.tables.length} tables`, { severity: 'high', rule: 'complex-query' });
   }
 
   // Performance: Unfiltered Query — an unfiltered write (DELETE/UPDATE with no
@@ -597,7 +597,7 @@ function checkViolations(
   // a query-shape rule excluded from test files; R5: it is about writes now, not
   // reads (an unfiltered SELECT is often an intentional full-set load).
   if (!skipTestRules && analysis.performanceRisk === 'medium') {
-    push(`Unfiltered write on ${call.tables.join(', ')} has no WHERE/HAVING/LIMIT`, { severity: 'severe', rule: 'unfiltered-query' });
+    push(`Unfiltered write on ${call.tables.join(', ')} has no WHERE/HAVING/LIMIT`, { severity: 'high', rule: 'unfiltered-query' });
   }
 
   return violations;
@@ -1623,7 +1623,7 @@ function checkQuerySecurity(
   }
 
   // Manual quote-escaping (`.replace(/'/g, "''")`) is defended, not raw — every
-  // unresolved part being quote-escaped downgrades the finding to advisory.
+  // unresolved part being quote-escaped downgrades the finding to high.
   const escaped = unresolved.every(part =>
     !!part.node && !!adapter.isEscapedInterpolation && adapter.isEscapedInterpolation(part.node, ast, sourceCode),
   );
@@ -1796,6 +1796,18 @@ const LLM_CLIENT_ARG_NAMES = new Set([
 ]);
 
 /**
+ * Message-lifecycle methods a queue consumer invokes per message (`msg.ack()`,
+ * `msg.retry()`, `msg.nack()`, …). A loop whose body acknowledges or retries the
+ * item it iterates over is a queue-consumer message loop: each message is an
+ * independent job that must be acked/nacked/retried in isolation, so a
+ * per-iteration query is the contract, not a batchable N+1. Batching or joining
+ * would regress the retry semantics. `ack`/`nack`/`acknowledge`/`deleteMessage`
+ * are unambiguous queue vocabulary; `retry` is queue-contextual (a lone
+ * `.retry()` inside a collection loop is overwhelmingly a per-item queue retry).
+ */
+const MESSAGE_LIFECYCLE_METHODS = new Set(['ack', 'nack', 'acknowledge', 'deleteMessage', 'retry']);
+
+/**
  * R4.1: Find database queries inside loops and flag them as N+1 risks.
  * Each finding carries the query call location (never line 1).
  */
@@ -1847,6 +1859,12 @@ function checkLoopQueries(
     // emit an unfixable `severe`.
     if (loopBodyContainsLlmCall(loopInfo.loopNode, adapter, sourceCode)) continue;
 
+    // R4.1 (queue consumer): a loop whose body acks/nacks/retries the message it
+    // iterates over is a queue consumer, not a batchable N+1. Each message is an
+    // independent job that must ack/retry in isolation, so batching or joining the
+    // per-iteration queries would break the retry contract — suppress the finding.
+    if (loopBodyContainsMessageLifecycleCall(loopInfo.loopNode, adapter, sourceCode)) continue;
+
     // R4.1: one finding per *loop*, not per query — an N+1 is a property of the
     // loop, so a loop issuing several queries is still one violation (defect #51).
     // Key on the loop node's start byte offset so distinct loops (including
@@ -1891,6 +1909,29 @@ function loopBodyContainsLlmCall(
   walkSubtree(loopNode, adapter, (node) => {
     if (found || adapter.getNodeType(node) !== 'call_expression') return;
     if (isLlmCallNode(node, adapter, sourceCode)) found = true;
+  });
+  return found;
+}
+
+/**
+ * R4.1 (queue consumer): True when the loop's subtree contains a
+ * message-lifecycle call — a member call whose property is a queue lifecycle
+ * method (`ack`, `nack`, `acknowledge`, `deleteMessage`, `retry`). The signature
+ * of a queue consumer (`for (const msg of batch.messages) { …; msg.ack(); }`)
+ * marks per-message independent jobs, not a batchable N+1. Walking the whole loop
+ * subtree is safe: the header (`batch.messages`) carries no lifecycle property,
+ * and a body-level `msg.ack()`/`msg.retry()` is exactly the signal we want.
+ */
+function loopBodyContainsMessageLifecycleCall(
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  let found = false;
+  walkSubtree(loopNode, adapter, (node) => {
+    if (found || adapter.getNodeType(node) !== 'member_expression') return;
+    const prop = memberPropertyName(node, adapter, sourceCode);
+    if (prop && MESSAGE_LIFECYCLE_METHODS.has(prop)) found = true;
   });
   return found;
 }

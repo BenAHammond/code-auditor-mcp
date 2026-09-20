@@ -44,4 +44,4 @@ Spec-54 shape:
   summary    → { "criticalIssues": 0, "severe": 0, "high": 1 }
 
 Exit code 2 (not 1, not 0) proves a `high` reading blocks the gate — every
-level is a defect; nothing below `high` is advisory.
+level is a defect; nothing below `high` is optional.

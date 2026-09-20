@@ -1183,7 +1183,7 @@ describe('Detector 5 — Mechanism Fragmentation', () => {
     expect(mixing.length).toBe(1);
     expect(mixing[0].message).toContain('mixed.tsx');
     expect(mixing[0].message).toContain('3 different style mechanisms');
-    expect(mixing[0].severity).toBe('advisory');
+    expect(mixing[0].severity).toBe('high');
   });
 
   it('does NOT fire when only 2 mechanisms are involved', async () => {
@@ -1344,7 +1344,7 @@ describe('Detector 7 — Z-Index Inventory', () => {
     expect(singles.length).toBe(1);
     expect(singles[0].message).toContain('99');
     expect(singles[0].message).toContain('only once');
-    expect(singles[0].severity).toBe('advisory');
+    expect(singles[0].severity).toBe('high');
   });
 
   it('does NOT fire sprawl when distinct values ≤ max', async () => {

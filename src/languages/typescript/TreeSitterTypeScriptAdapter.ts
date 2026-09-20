@@ -1766,7 +1766,7 @@ class TsSafetyAnalysis extends TsConstantResolution {
    * defended but NOT provably safe: single-quote doubling handles only the
    * single-quote vector, not backslash escapes, unicode quote variants, or
    * numeric/identifier positions.  The caller downgrades these from `critical`
-   * to `advisory` rather than certifying them safe.
+   * to `high` rather than certifying them safe.
    */
   isEscapedInterpolation(node: ASTNode, ast: AST, sourceCode: string): boolean {
     // Source slice, not `raw.text` — web-tree-sitter's Node.text is unreliable

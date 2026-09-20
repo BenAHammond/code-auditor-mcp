@@ -6,36 +6,37 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 101 / 111
-- **critical:** 8
-- **severe:** 37
-- **high:** 56
+- **Assigned:** 99 / 99 live severity rules
+- **critical:** 9
+- **severe:** 36
+- **high:** 54
+- **diagnostics (off-ladder, no severity):** 4 — `config-error`, `engine-error`,
+  `undefined-class-not-found`, `undefined-class-disabled`
+- **cannot-fire (no severity):** 10
 
-## Inventory note (reconciles to 111, not the spec's 105)
+## Inventory note (reconciles to 113 rule/kinds, not the spec's 105)
 
-The spec calls for 105 rules. The accurate inventory is **111** rules, which
-decompose into **101 live** (have an emission site) plus **10 `cannot-fire`**
+The spec calls for 105 rules. The accurate inventory is **113** rule/kinds, which
+decompose into **99 live severity rules** (each gets a row), **10 `cannot-fire`**
 (registered but structurally unreachable — see `CANNOT_FIRE_RULES` in
-`src/analyzers/applicability.ts`).
+`src/analyzers/applicability.ts`), and **4 diagnostics** (off the severity
+ladder, `CoverageDiagnostic.kind`).
 
-- **102** in `RULE_REGISTRY`, plus **9 unregistered live** emit sites —
-  `dry/diverging-clone` (`auditRunner.ts`), `missing-schemas`
-  (`UniversalSchemaAnalyzer.ts`), `reserved-word` and `too-many-queries`
-  (`schema/codeAnalysis.ts`), and five Go-subprocess rules in `analyzer.go`
-  (`imports/import-style`, `imports/import-organization`,
-  `errors/error-handling`, `goroutines/concurrency`,
-  `channels/channel-deadlock`).
-- Of the 102 registered, **10 `cannot-fire`**: all six `api-contract` rules,
-  `schema/file-error`, and three `schema-validator` rules (`field-mismatch`,
-  `constraint-mismatch`, `version-mismatch`).
+- **107** entries in `RULE_REGISTRY` = 97 live severity rules + 10 `cannot-fire`.
+- **2 unregistered live** severity emit sites: `missing-schemas`
+  (`UniversalSchemaAnalyzer.ts`) and `reserved-word` (`schema/codeAnalysis.ts`).
+- **4 diagnostics**: `config-error` + `engine-error` (`invariantsAnalyzer.ts`,
+  Spec 59) and `undefined-class-not-found` + `undefined-class-disabled`
+  (`UniversalStylesAnalyzer.ts`, Spec 60).
 
-Every live rule gets a severity row. `cannot-fire` rules are accounted for with a
-note and **no** severity — there is nothing to gate until an emission site exists.
+Every live severity rule gets a row. `cannot-fire` rules and diagnostics are
+accounted for with a note and **no** severity — there is nothing to gate until an
+emission site exists, or the finding is off-ladder by design.
 
 Per-analyzer counts (live / cannot-fire): solid 13/0, secrets 1/0, data-access 6/0,
-dry 6/0, documentation 6/0, react 7/0, schema 23/1, schema-validator 3/3,
-api-contract 0/6, dependency-graph 9/0, invariants 2/0, styles 10/0,
-conventions 5/0, cross-domain 5/0, go-subprocess 5/0.
+dry 6/0, documentation 6/0, react 7/0, schema 24/1, schema-validator 3/3,
+api-contract 0/6, dependency-graph 9/0, invariants 0/0 (+2 diagnostics),
+styles 9/0 (+2 diagnostics), conventions 5/0, cross-domain 5/0, go-subprocess 5/0.
 
 ## Measuring stick for the "Disagrees" column
 
@@ -343,9 +344,47 @@ reconciles to 111, not 106.
 
 ---
 
+## Session 16 — reconciliation (Spec 54 conformance guard)
+
+The conformance guard (`src/analyzers/__tests__/severity-ledger-conformance.test.ts`)
+asserts, in both directions, that every emit site's most-severe level equals its
+ledger row — the same drift-guard shape as Spec 46's SKILL.md check. Building it
+surfaced four discrepancies the earlier sessions either missed or recorded under
+an intent that later changed. Each is corrected here; the earlier rows stand as
+the record of what was decided then.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `missing-org-filter` | severe | critical | A query on a tenant-scoped table with no org filter is a live data-isolation breach — "already wrong in production", so critical, not severe (the emit site carries this comment). | yes |
+| `styles/undefined-class` | high | severe | The near-miss/not-found split: a class one edit from a defined class is a typo (a defect with a rename resolution) → severe; a class with no near-miss is a coverage gap → off-ladder diagnostic. This row is the near-miss side. | yes |
+| `stale-table-reference` | critical | critical | Missed by the original sweep — a whole-program schema rule (a table CREATE'd then DROP'd in a migration with a live code reference). Emits critical; recorded here at the emitted level. | no |
+
+Off-ladder moves (the earlier severity is superseded — these are diagnostics
+now, never counted in finding totals):
+
+- `config-error` (Session 11, was critical) → diagnostic `config-error` (Spec 59).
+- `engine-error` (Session 11, was severe) → diagnostic `engine-error` (Spec 59).
+- `styles/undefined-class-disabled` (Session 12, was high) → diagnostic
+  `undefined-class-disabled`.
+- `undefined-class-not-found` — the not-found half of the undefined-class split;
+  new as a diagnostic (no earlier severity row).
+
+`sql-injection-risk` sub-path (already correct, recorded for completeness): raw
+interpolation → `critical`, manual quote-escaping → `high`. The ledger records
+the worst case (`critical`); the guard compares `max(emit) === ledger`, so the
+`high` sub-path does not read as drift.
+
+Session 15 notation: the five Go-subprocess rules were recorded under
+`analyzer/rule` form (`imports/…`, `errors/…`, `goroutines/…`, `channels/…`)
+while the emitted and registered IDs are bare (`import-organization`,
+`import-style`, `error-handling`, `concurrency`, `channel-deadlock`). The guard
+encodes that alias rather than rewriting Session 15.
+
+---
+
 ## Sweep complete
 
-All 111 rules accounted for: 101 live assigned across 15 analyzer sessions
-(`critical` 8, `severe` 37, `high` 56) plus 10 `cannot-fire` rules noted with no
-severity. Every row above records current (effective) severity, new level,
-reason, and whether it departs from the mechanical remap baseline.
+99 live severity rules assigned — `critical` 9, `severe` 36, `high` 54 — plus
+4 diagnostics (off-ladder) and 10 `cannot-fire` rules noted with no severity.
+Every row above records current (effective) severity, new level, reason, and
+whether it departs from the mechanical remap baseline.

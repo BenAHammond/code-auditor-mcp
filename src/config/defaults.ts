@@ -29,7 +29,7 @@ export function getDefaultConfig(): AuditConfig {
     enabledAnalyzers: [...ALL_ANALYZERS],
     outputFormats: ['html', 'json'],
     outputDirectory: './audit-reports',
-    minSeverity: 'advisory',
+    minSeverity: 'high',
     failOnCritical: false,
     showProgress: true,
     thresholds: {
@@ -39,7 +39,7 @@ export function getDefaultConfig(): AuditConfig {
     },
     // Spec 54 R3 — severity is urgency, not permission. There is no
     // `severityOverrides` and no `gateSeverities`: every rule is assigned on the
-    // urgency axis (critical/severe/advisory) and every finding blocks. Per-rule
+    // urgency axis (critical/severe/high) and every finding blocks. Per-rule
     // severity tuning disappeared with the old vocabulary.
     // Spec 50 R5 — daemon lifecycle. Never auto-start (a background process the
     // user did not ask for); idle-exit after 5 minutes so it does not linger.
@@ -102,7 +102,7 @@ export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
       return {
         outputFormats: ['html'],
         showProgress: true,
-        minSeverity: 'advisory'
+        minSeverity: 'high'
       };
 
     case 'production':

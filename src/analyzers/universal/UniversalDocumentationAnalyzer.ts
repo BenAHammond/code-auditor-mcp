@@ -7,7 +7,7 @@
  * R1.4: scope: "all" restores pre-spec-17 behaviour minus R1.1 skips.
  * R1.5: File-header checks default OFF (fileHeaders replaces requireFileDocs).
  * R1.6: Finding messages name the audience reason.
- * R7:   All documentation/* severities are "advisory" (missing documentation is
+ * R7:   All documentation/* severities are "high" (missing documentation is
  *       a maintainability gap — the code is correct, it just does not match
  *       the convention).
  */
@@ -174,7 +174,7 @@ export class UniversalDocumentationAnalyzer extends UniversalAnalyzer {
  * call rather than a 6-arg one (Spec 34 param-count bundling).
  */
 interface DocumentationViolationClassification {
-  severity: 'critical' | 'severe' | 'advisory';
+  severity: 'critical' | 'severe' | 'high';
   rule: string;
   symbol?: string;
 }
@@ -233,7 +233,7 @@ function checkFileHeader(
       ast.filePath,
       { line: 1, column: 1 },
       'File lacks a leading documentation comment',
-      { severity: 'advisory', rule: 'file-documentation' }
+      { severity: 'high', rule: 'file-documentation' }
     ));
   }
   return violations;
@@ -309,7 +309,7 @@ function checkFunctionDocumentation(
       ast.filePath,
       func.location.start,
       reason,
-      { severity: 'advisory', rule: 'function-documentation', symbol: func.name }
+      { severity: 'high', rule: 'function-documentation', symbol: func.name }
     ));
     return violations;
   }
@@ -339,7 +339,7 @@ function checkFunctionDocTags(
         file,
         func.location.start,
         `Function '${func.name}' missing documentation for parameter '${param}'`,
-        { severity: 'advisory', rule: 'parameter-documentation', symbol: func.name }
+        { severity: 'high', rule: 'parameter-documentation', symbol: func.name }
       ));
     }
   }
@@ -354,7 +354,7 @@ function checkFunctionDocTags(
       file,
       func.location.start,
       `Function '${func.name}' missing return value documentation`,
-      { severity: 'advisory', rule: 'return-documentation', symbol: func.name }
+      { severity: 'high', rule: 'return-documentation', symbol: func.name }
     ));
   }
 
@@ -413,7 +413,7 @@ function analyzeClassDocumentation(
         ast.filePath,
         cls.location.start,
         `Class '${cls.name}' lacks a documentation comment`,
-        { severity: 'advisory', rule: 'class-documentation', symbol: cls.name }
+        { severity: 'high', rule: 'class-documentation', symbol: cls.name }
       ));
     }
 
@@ -450,7 +450,7 @@ function checkClassMethodDocumentation(
         ast.filePath,
         method.location.start,
         `public method '${cls.name}.${method.name}' lacks a documentation comment`,
-        { severity: 'advisory', rule: 'method-documentation', symbol: `${cls.name}.${method.name}` }
+        { severity: 'high', rule: 'method-documentation', symbol: `${cls.name}.${method.name}` }
       ));
     }
   }

@@ -310,7 +310,7 @@ export interface DependencyEdge {
 
 export interface DependencyCycle {
   nodes: string[];                       // IDs of nodes in cycle
-  severity: 'critical' | 'severe' | 'advisory'; // Cycle severity
+  severity: 'critical' | 'severe' | 'high'; // Cycle severity
   suggestion?: string;                   // How to break the cycle
 }
 

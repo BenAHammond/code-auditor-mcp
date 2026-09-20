@@ -5,7 +5,7 @@
  * R3.2: Minimum block size 5 → 15.
  * R3.3: Rule-id split — dry/duplicate (exact token match) + dry/structural-similarity
  *       (identical token-kind sequence with different identifiers/literals).
- * R7:   dry/duplicate → severe, dry/structural-similarity → advisory.
+ * R7:   dry/duplicate → severe, dry/structural-similarity → high.
  *
  * Spec 13 R5 — Diverging Clones: Exports DryPairSeed during analysis for
  * two-phase tracking (seed + re-measure pass in auditRunner).
@@ -780,7 +780,7 @@ function extractCodeBlocks(ctx: BlockContext): CodeBlock[] {
  * Detects duplicate and structurally-similar code blocks across a codebase.
  *
  * Emits `dry/duplicate` (severe) for exact token matches and, when enabled,
- * `dry/structural-similarity` (advisory) for token-kind matches. During
+ * `dry/structural-similarity` (high) for token-kind matches. During
  * analysis it seeds {@link DryPairSeed} records for Spec-13 diverging-clone
  * tracking.
  */
@@ -874,7 +874,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
             block.start,
             `Duplicate code block detected (${block.lineCount} lines). ` +
             `First occurrence at ${original.file}:${original.start.line}`,
-            { severity: 'severe', rule: 'dry/duplicate', symbol: block.hash,  // duplicate → severe
+            { severity: 'high', rule: 'dry/duplicate', symbol: block.hash,  // duplicate → high
               resolution: {
                 action: 'extract-duplicate',
                 summary: `Extract the ${block.lineCount}-line block duplicated at ${original.file}:${original.start.line} into a shared function both sites call.`,
@@ -896,7 +896,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * Report structurally-similar duplicates (dry/structural-similarity, advisory).
+   * Report structurally-similar duplicates (dry/structural-similarity, high).
    *
    * Compares every pair of blocks by the Jaccard similarity of their token-kind
    * skeletons (identifiers→ID, literals→LIT) and reports those at or above
@@ -939,7 +939,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
             block.start,
             `Structurally similar code block detected (${Math.round(similarity * 100)}% similar). ` +
             `First occurrence at ${original.file}:${original.start.line}`,
-            { severity: 'advisory', rule: 'dry/structural-similarity', symbol: block.hash }  // structural-similarity → advisory
+            { severity: 'high', rule: 'dry/structural-similarity', symbol: block.hash }  // structural-similarity → high
           );
           violation.fix = {
             oldText: block.text,
@@ -955,7 +955,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
   }
 
   /**
-   * Report near-identical expression shapes (dry/similar-expression, advisory).
+   * Report near-identical expression shapes (dry/similar-expression, high).
    *
    * Two fragments are "near-identical" when their field/method-name sequence
    * shares a common subsequence of at least `minShapeNames` names — the same
@@ -1014,7 +1014,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
       `Near-identical ${label}${targetClause} detected (${shared.length} shared ${unit}: ${shared.join(', ')}). ` +
       `First occurrence at ${first.file}:${first.start.line}`,
       {
-        severity: 'advisory',
+        severity: 'high',
         rule: 'dry/similar-expression',
         symbol: shared.join('.'),
         resolution: {
@@ -1056,7 +1056,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
             block.start,
             `Duplicate code block detected (${block.lineCount} lines). ` +
             `First occurrence in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name})`,
-            { severity: 'severe', rule: 'dry/duplicate', symbol: block.hash,
+            { severity: 'high', rule: 'dry/duplicate', symbol: block.hash,
               resolution: {
                 action: 'extract-duplicate',
                 summary: `Extract the ${block.lineCount}-line block duplicated in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name}) into a shared function both sites call.`,
@@ -1136,7 +1136,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           locations[0],
           `String literal "${value.substring(0, 30)}..." is duplicated ${locations.length} times`,
-          { severity: 'advisory', rule: 'duplicate-string-literal', symbol: value.substring(0, 50) }
+          { severity: 'high', rule: 'duplicate-string-literal', symbol: value.substring(0, 50) }
         );
         violation.fix = {
           oldText: value,
@@ -1176,7 +1176,7 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           locs[0],
           `Module "${source}" is imported ${locs.length} times`,
-          { severity: 'advisory', rule: 'duplicate-import', symbol: source }
+          { severity: 'high', rule: 'duplicate-import', symbol: source }
         ));
       }
     }

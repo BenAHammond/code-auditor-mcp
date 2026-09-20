@@ -85,7 +85,7 @@ describe('cross-domain fixture', () => {
       );
       expect(wnr.length).toBe(1);
       expect(wnr[0].file).toBe('src/audit-log.ts');
-      expect(wnr[0].severity).toBe('severe');
+      expect(wnr[0].severity).toBe('high');
       expect(wnr[0].message).toContain("Table 'audit_log' is written");
       expect(wnr[0].message).toContain('never read (SELECT)');
       // Should reference the audit_log table, not any other table
@@ -121,7 +121,7 @@ describe('cross-domain fixture', () => {
       );
       expect(txn.length).toBe(1);
       expect(txn[0].file).toBe('src/transfer.ts');
-      expect(txn[0].severity).toBe('severe');
+      expect(txn[0].severity).toBe('high');
       expect(txn[0].message).toContain('writes to 2 distinct tables');
       expect(txn[0].message).toContain('transaction-boundary risk');
       // Should mention both tables
@@ -158,12 +158,22 @@ describe('cross-domain fixture', () => {
     });
   });
 
-  describe('violations are severe severity', () => {
-    it('all cross-domain violations are severe', () => {
+  describe('violations carry ledger severity', () => {
+    it('cross-domain severity matches the severity ledger', () => {
       const violations = runAndGetViolations(testDir);
       expect(violations.length).toBeGreaterThan(0);
+      // Spec 54 re-tier: written-never-read / multi-table-write / uncovered-risk
+      // are `high` (smells that "have not bitten"); read-never-written and
+      // no-validator-reachable stay `severe` (they surface on first use).
+      const ledgerSeverity: Record<string, string> = {
+        'cross-domain/written-never-read': 'high',
+        'cross-domain/read-never-written': 'severe',
+        'cross-domain/multi-table-write': 'high',
+        'cross-domain/no-validator-reachable': 'severe',
+        'cross-domain/uncovered-risk': 'high',
+      };
       for (const v of violations) {
-        expect(v.severity).toBe('severe');
+        expect(ledgerSeverity[v.rule]).toBe(v.severity);
       }
     });
   });

@@ -548,75 +548,193 @@ script's new "coverage diagnostics" section):
 - hhra-org **743 → 743** (0) and primer-css **16 → 16** (0) — neither corpus has an
   unresolvable query or computed specifier, so nothing moved.
 
+Re-pinned 2026-09-19 at 4.0.1. The 4.0.0 release (severity rework) and the nine
+4.0.1 fixes moved rules on five corpora; every corpus is re-measured at 4.0.1,
+and file counts are pinned alongside finding counts for the first time. Counts
+below are total non-invariant findings (severity-independent) — "advisory"
+here denotes the non-gating report channel (every analyzer except invariants),
+not a severity level. The 4.0.0
+release also changed file discovery (gitignore-aware, below), so recall-protocol
+and hhra-org lost files from the discovery set — a tool change, not a corpus
+change.
+
+**Gitignore-aware discovery — Spec 58 (v4.0.0).** Discovery now delegates to
+`git ls-files --others --ignored` and prunes gitignored paths before the walk.
+Neither corpus changed on disk: recall-protocol's `c007f6ed` ("park public
+site", 2026-09-10) touched only `src/worker.ts` and `wrangler.toml`, and its
+tracked file count is unchanged (2,418 before and after). The file-count drops
+are the newly-pruned gitignored trees.
+
+- recall-protocol **4,268 → 2,099 files** (−2,169) — verified exactly: the
+  3.10.0 walk (no gitignore pruning) discovers 4,268, the 4.0.0+ walk 2,099.
+  The pruned trees are gitignored dirs (`scripts/` outside its already-excluded
+  `.cache`, `infra/`, `scraped/`, `snapshots/`, `.astro/`, `.claude/`, …). Its finding
+  deltas are a mix of those files leaving analysis and the rule fixes below;
+  the one-off decrements (off-scale −1, token-bypass −1, orphaned-nodes −1,
+  accessibility −1) are findings on pruned files.
+- hhra-org **760 → 757 files** (−3) — three gitignored files
+  (`next-env.d.ts`, `data/`, `.claude/`) leave the discovery set.
+- knex (474), primer-css (137), blitz (788), endless-guessing (87) — no
+  gitignored source, unchanged.
+
+**`styles/undefined-class` — 6eba841 (near-miss / not-found split).** "This class
+doesn't exist" is no longer asserted when the style index merely failed to find
+a definition. A near-miss of a defined class (edit distance ≤ 2) stays a finding;
+everything else moves off the ladder to an `undefined-class-not-found` coverage
+diagnostic. One-for-one on every corpus that had the rule:
+
+- recall-protocol 47 → 2 (**−45**; 45 → `undefined-class-not-found` diagnostics).
+- hhra-org 346 → 0 (**−346**; 346 → diagnostics).
+- blitz 15 → 2 (**−13**; 13 → diagnostics).
+
+**`data-access::loop-query` — 62e3997 + ea10e2a + 500584c #46/#51.** The rule now
+discriminates query-compiler SQL construction from wrapper delegation, stops
+suppressing loops that call local DB wrappers, suppresses intentional sequential
+LLM pipelines, and dedups to one finding per loop rather than one per query:
+
+- recall-protocol 290 → 193 (**−97**; part gitignore-prune, part the four fixes).
+- hhra-org 18 → 7 (**−11**).
+- knex 2 → 0 (**−2**).
+- endless-guessing 3 → 5 (**+2** — ea10e2a removes the local-wrapper
+  suppression, so two genuine N+1s a `db.*` wrapper call had hidden now fire).
+
+**`dependency-graph::unreferenced-module` — 8dcb7c9 (exact alias resolution) +
+bd1b3ec (package.json entry points).** The reachability reducer swapped the
+basename/fuzzy matcher (which fabricated edges — blitz tested=350 against a truth
+of 39) for `classifyImportSpecifier`, so an alias import creates a real edge and
+a bare package import never fabricates a local one. A false-positive narrowing
+*and* a completeness gain: basename collisions that hid real dead code surface,
+while published entry points stay live.
+
+- hhra-org 60 → 84 (**+24** — the two `HighRiskFiltersWrapper.tsx` files and
+  three `constants.ts` files were hiding behind basename collisions; now dead).
+- blitz 0 → 205 (**+205**). The largest single move in the re-pin, and not in the
+  commit message (which documented only hhra and knex). The 205 are the
+  monorepo's genuinely-unimported files that the fuzzy matcher had papered over:
+  59 `packages/generator/templates/*` (template source, never imported — copied
+  into generated apps), the `apps/*/src` and `integration-tests/*/src` sources
+  imported only through the `@blitzjs/*` package name (which classifies `package`,
+  never an internal edge — a monorepo gap, not dead code), and Next.js `pages/`
+  route files the `app/api | pages/api` entry-point heuristic does not cover.
+  This is the honest output of the exact resolver and a known limitation of
+  `unreferenced-module` on workspace-package monorepos — recorded, not papered
+  over.
+- knex 0 → 2 → 0 (net **0**): 8dcb7c9 flagged `knex.mjs`/`knex.d.mts`; bd1b3ec
+  then treated package.json `main`/`exports` facades as live and cleared them.
+
+**`schema::unknown-table` — 9a93808 + 8c3509e.** Same-file create-and-drop tables
+are self-contained fixtures, and knex query-builder reads count as reads:
+
+- recall-protocol 10 → 2 (**−8**).
+- knex 16 → 12 (**−4**).
+
+**`data-access::sql-injection-risk` — 500584c #45 + a1b3579.** Manual
+quote-doubling (`.replace(/'/g, "''")`) is defended but not provably safe, so it
+now fires at `high` instead of reading as safe; the discriminator was tightened so
+only a bare-quote → doubled-same-quote replacement reads as "escaped":
+
+- recall-protocol 4 → 15 (**+11** — the quote-doubled interpolations that used to
+  read as safe now fire at `high`).
+
+**`schema::stale-table-reference` — new in 4.0.0, refined by 9a93808 / 500584c
+#53.** A table referenced after it is dropped (a stale successor claim) is now
+flagged, and successor resolution no longer over-claims:
+
+- recall-protocol 0 → 19 (**+19** — the only corpus with dropped-table migrations
+  still referenced downstream).
+
+**`cross-domain::cross-domain/multi-table-write` — 500584c #52.** Wrapper-learned
+helpers (`d1(sql, params)`) no longer bypass table extraction:
+
+- recall-protocol 7 → 10 (**+3**).
+
+**`cross-domain::cross-domain/written-never-read` — 8c3509e.** knex query-builder
+reads are now recognized as reads:
+
+- knex 1 → 0 (**−1**).
+
+**`react::performance` — the 4.0.0 react rework (9d36cec).** The inline-`onClick`
+and missing-list-key checks moved from a truncated string-context window to full
+AST `jsxElementDetails`, so truncation no longer hides on-Click handlers far from
+the component head. This is a 4.0.0 change that had not yet been re-pinned (these
+tables were last measured 2026-09-15, before 4.0.0):
+
+- blitz 9 → 37 (**+28** — 35 inline-`onClick` + 2 missing-list-key findings, all
+  in test/template files: `apps/*/src/pages/index.tsx`,
+  `packages/generator/templates/**`, `integration-tests/*`). Sampled and
+  confirmed genuine; the "9" was the truncated-context undercount.
+
+primer-css shows zero delta on every rule.
+
 ---
 
-## recall-protocol — 3,146 advisory findings (4,268 files)
+## recall-protocol — 3,025 advisory findings (2,099 files)
 
 | analyzer::rule | count |
 | --- | --- |
-| solid::function-length | 95 |
-| styles::styles/off-scale | 759 |
+| styles::styles/off-scale | 758 |
 | documentation::function-documentation | 574 |
-| styles::styles/token-bypass | 456 |
-| data-access::loop-query | 290 |
+| styles::styles/token-bypass | 455 |
+| data-access::loop-query | 193 |
 | dependency-graph::unreferenced-module | 114 |
 | react::raw-element | 111 |
-| dependency-graph::orphaned-nodes | 24 |
 | react::performance | 95 |
+| solid::function-length | 95 |
 | schema-code::too-many-queries | 84 |
-| solid::parameter-count | 11 |
 | documentation::method-documentation | 80 |
-| data-access::complex-query | 1 |
-| react::complexity | 29 |
 | conventions::conventions/usage-pair | 60 |
 | styles::styles/mechanism-fragmentation | 52 |
 | conventions::conventions/error-handling | 51 |
-| styles::styles/undefined-class | 47 |
 | solid::solid/method-complexity | 33 |
-| data-access::unfiltered-query | 6 |
-| cross-domain::cross-domain/read-never-written | 14 |
+| react::complexity | 29 |
+| dependency-graph::orphaned-nodes | 23 |
 | dry::dry/similar-expression | 21 |
 | styles::styles/declaration-set-similarity | 21 |
-| documentation::class-documentation | 16 |
-| react::accessibility | 13 |
-| conventions::conventions/naming | 10 |
-| cross-domain::cross-domain/multi-table-write | 7 |
-| schema::unknown-table | 10 |
-| styles::styles/mechanism-mixing | 9 |
 | cross-domain::cross-domain/written-never-read | 19 |
+| schema::stale-table-reference | 19 |
+| documentation::class-documentation | 16 |
+| data-access::sql-injection-risk | 15 |
+| cross-domain::cross-domain/read-never-written | 14 |
+| react::accessibility | 12 |
+| solid::parameter-count | 11 |
+| conventions::conventions/naming | 10 |
+| cross-domain::cross-domain/multi-table-write | 10 |
+| styles::styles/mechanism-mixing | 9 |
 | styles::styles/z-index-singleton | 7 |
+| data-access::unfiltered-query | 6 |
 | dry::dry/duplicate | 6 |
 | conventions::conventions/import-form | 5 |
-| data-access::sql-injection-risk | 4 |
 | solid::solid/dependency-inversion | 3 |
+| schema::unknown-table | 2 |
 | solid::solid/class-size | 2 |
 | solid::interface-size | 2 |
+| styles::styles/undefined-class | 2 |
 | conventions::conventions/export-shape | 1 |
-| dependency-graph::tight-coupling | 1 |
+| data-access::complex-query | 1 |
 | dependency-graph::circular-dependency | 1 |
+| dependency-graph::tight-coupling | 1 |
 | dependency-graph::hub-nodes | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## hhra-org — 743 advisory findings (760 files)
+## hhra-org — 410 advisory findings (757 files)
 
 | analyzer::rule | count |
 | --- | --- |
-| solid::function-length | 32 |
-| styles::styles/undefined-class | 346 |
+| dependency-graph::unreferenced-module | 84 |
 | documentation::method-documentation | 69 |
-| dependency-graph::unreferenced-module | 60 |
 | react::performance | 57 |
 | documentation::function-documentation | 51 |
 | documentation::class-documentation | 39 |
-| react::complexity | 6 |
-| data-access::loop-query | 18 |
-| dependency-graph::orphaned-nodes | 4 |
+| solid::function-length | 32 |
 | schema-code::too-many-queries | 21 |
 | solid::solid/dependency-inversion | 8 |
+| data-access::loop-query | 7 |
 | solid::solid/method-complexity | 7 |
 | conventions::conventions/naming | 6 |
+| react::complexity | 6 |
 | conventions::conventions/usage-pair | 5 |
 | dry::dry/similar-expression | 5 |
+| dependency-graph::orphaned-nodes | 4 |
 | cross-domain::cross-domain/written-never-read | 2 |
 | cross-domain::cross-domain/read-never-written | 1 |
 | dependency-graph::circular-dependency | 1 |
@@ -626,25 +744,23 @@ script's new "coverage diagnostics" section):
 | schema::invalid-json | 1 |
 | schema-code::dynamic-sql-construction | 1 |
 
-## knex — 112 advisory findings (474 files)
+## knex — 105 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
-| schema-code::too-many-queries | 3 |
-| solid::function-length | 9 |
-| solid::solid/class-size | 15 |
-| solid::solid/dependency-inversion | 12 |
-| dependency-graph::orphaned-nodes | 7 |
-| schema::unknown-table | 16 |
 | data-access::hardcoded-connection | 16 |
+| solid::solid/class-size | 15 |
+| schema::unknown-table | 12 |
 | solid::solid/open-closed | 12 |
-| solid::interface-size | 4 |
-| data-access::loop-query | 2 |
+| solid::solid/dependency-inversion | 12 |
+| solid::function-length | 9 |
+| dependency-graph::orphaned-nodes | 7 |
 | data-access::sql-injection-risk | 5 |
 | cross-domain::cross-domain/read-never-written | 4 |
-| cross-domain::cross-domain/written-never-read | 1 |
-| dependency-graph::hub-nodes | 1 |
+| solid::interface-size | 4 |
+| schema-code::too-many-queries | 3 |
 | dependency-graph::circular-dependency | 1 |
+| dependency-graph::hub-nodes | 1 |
 | dependency-graph::tight-coupling | 1 |
 | dry::dry/similar-expression | 1 |
 | schema-code::table-naming-convention | 1 |
@@ -661,39 +777,40 @@ script's new "coverage diagnostics" section):
 | styles::styles/token-bypass | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## blitz — 721 advisory findings (788 files)
+## blitz — 941 advisory findings (788 files)
 
 | analyzer::rule | count |
 | --- | --- |
+| dependency-graph::unreferenced-module | 205 |
 | documentation::function-documentation | 191 |
 | documentation::method-documentation | 161 |
 | styles::styles/declaration-set-similarity | 161 |
-| solid::function-length | 3 |
 | react::raw-element | 54 |
 | dependency-graph::orphaned-nodes | 44 |
+| react::performance | 37 |
 | documentation::class-documentation | 34 |
 | styles::styles/token-bypass | 16 |
-| styles::styles/undefined-class | 15 |
 | solid::solid/dependency-inversion | 11 |
-| react::performance | 9 |
 | schema::unknown-table | 4 |
 | schema-code::reserved-word | 4 |
 | secrets::hardcoded-secret | 3 |
+| solid::function-length | 3 |
 | conventions::conventions/naming | 2 |
 | data-access::loop-query | 2 |
 | solid::solid/open-closed | 2 |
+| styles::styles/undefined-class | 2 |
 | conventions::conventions/export-shape | 1 |
-| dependency-graph::tight-coupling | 1 |
 | dependency-graph::circular-dependency | 1 |
+| dependency-graph::tight-coupling | 1 |
 | dependency-graph::hub-nodes | 1 |
 | solid::solid/method-complexity | 1 |
 
-## endless-guessing — 20 advisory findings (87 files)
+## endless-guessing — 22 advisory findings (87 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | react::performance | 12 |
-| data-access::loop-query | 3 |
+| data-access::loop-query | 5 |
 | styles::styles/token-bypass | 3 |
 | dependency-graph::tight-coupling | 1 |
 | solid::function-length | 1 |

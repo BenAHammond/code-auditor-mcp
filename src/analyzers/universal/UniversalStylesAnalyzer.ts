@@ -211,7 +211,7 @@ function declValueKey(d: StyleDeclRow): string {
  * than a 6-arg one (Spec 34 param-count bundling).
  */
 interface StyleViolationClassification {
-  severity: 'critical' | 'severe' | 'advisory';
+  severity: 'critical' | 'severe' | 'high';
   rule: string;
   symbol?: string;
   /** Spec 37 R1 — structured next action carried on gating findings. */
@@ -523,7 +523,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
           `(${list.length} of ${total} usages, ${(share * 100).toFixed(1)}%). ` +
           `The dominant value "${modeList[0].raw_value}" is used ${modeList.length} times. ` +
           `Consider using a consistent value or design token.`,
-          { severity: 'advisory', rule: 'styles/value-drift', symbol: declValueKey(sample) },
+          { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(sample) },
         ));
       }
     }
@@ -587,7 +587,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
             `Off-scale "${property}" value: "${decl.raw_value}" (${px}px) ` +
             `is not on the project's declared ${label}. ` +
             `Nearest scale values: ${lower}px or ${upper}px.`,
-            { severity: 'advisory', rule: 'styles/off-scale', symbol: declValueKey(decl) },
+            { severity: 'high', rule: 'styles/off-scale', symbol: declValueKey(decl) },
           ));
         }
       }
@@ -724,7 +724,7 @@ function flagColorDriftStragglers(
         `(used ${cluster.length} time${cluster.length === 1 ? '' : 's'}, ` +
         `${(share * 100).toFixed(1)}% of ${total} usages). ` +
         `Dominant cluster has ${dominantSize} values. Consider using a design token.`,
-        { severity: 'advisory', rule: 'styles/value-drift', symbol: declValueKey(item.decl) },
+        { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(item.decl) },
       ));
     }
   }
@@ -1048,7 +1048,7 @@ function flagPropertyValueFragmentation(
       `Mechanism fragmentation: "${prop}: ${sample.raw_value}" is applied via ` +
       `${mechs.size} different mechanisms (${[...mechs].sort().join(', ')}). ` +
       `Consolidate to a single mechanism or design token.`,
-      { severity: 'advisory', rule: 'styles/mechanism-fragmentation', symbol: declValueKey(sample) },
+      { severity: 'high', rule: 'styles/mechanism-fragmentation', symbol: declValueKey(sample) },
     ));
   }
 
@@ -1076,7 +1076,7 @@ function flagFileMechanismMixing(
       `Mechanism mixing: ${file} uses ${mechs.size} different style ` +
       `mechanisms (${[...mechs].sort().join(', ')}). ` +
       `Consolidate to fewer mechanisms for maintainability.`,
-      { severity: 'advisory', rule: 'styles/mechanism-mixing' },
+      { severity: 'high', rule: 'styles/mechanism-mixing' },
     ));
   }
 
@@ -1235,7 +1235,7 @@ function verifyCandidates(
         `in ${b.filePath} share ${intersection.size} of ${union.size} ` +
         `declarations (${(similarity * 100).toFixed(0)}%). ` +
         `Consider consolidating these rules or extracting a shared mixin.`,
-        { severity: 'advisory', rule: 'styles/declaration-set-similarity', symbol: `${a.context} & ${b.context}` },
+        { severity: 'high', rule: 'styles/declaration-set-similarity', symbol: `${a.context} & ${b.context}` },
       ));
     }
   }
@@ -1389,7 +1389,7 @@ class StylesStructureDetectors {
         `Token bypass: "${d.raw_value}" for "${d.property}" matches design ` +
         `token "${tokenInfo.name}" but was used as a raw value. ` +
         `Use the token reference instead to keep styles consistent.`,
-        { severity: 'advisory', rule: 'styles/token-bypass', symbol: declValueKey(d) },
+        { severity: 'high', rule: 'styles/token-bypass', symbol: declValueKey(d) },
       ));
     }
 
@@ -1473,7 +1473,7 @@ class StylesStructureDetectors {
         `Z-index sprawl: ${values.size} distinct z-index values ` +
         `(${sortedVals.join(', ')}). Consider defining a z-index scale ` +
         `(e.g., $z-layers: (dropdown: 100, modal: 200, toast: 300)).`,
-        { severity: 'advisory', rule: 'styles/z-index-sprawl', symbol: declValueKey(sample) },
+        { severity: 'high', rule: 'styles/z-index-sprawl', symbol: declValueKey(sample) },
       ));
     }
 
@@ -1486,7 +1486,7 @@ class StylesStructureDetectors {
           d.line,
           `Singleton z-index: z-index: ${val} is used only once. ` +
           `Consider whether this value belongs in a shared z-index scale.`,
-          { severity: 'advisory', rule: 'styles/z-index-singleton', symbol: declValueKey(d) },
+          { severity: 'high', rule: 'styles/z-index-singleton', symbol: declValueKey(d) },
         ));
       }
     }

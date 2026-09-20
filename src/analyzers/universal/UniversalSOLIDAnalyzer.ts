@@ -252,7 +252,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           cls.location.start,
           `Class "${cls.name}" has ${cls.methods.length} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting into smaller classes.`,
-          { severity: 'severe', rule: 'solid/class-size', symbol: cls.name,  // class-size → severe
+          { severity: 'high', rule: 'solid/class-size', symbol: cls.name,  // class-size → high
             resolution: {
               action: 'split-class',
               summary: `Split class "${cls.name}" (${cls.methods.length} methods) into smaller classes by extracting a cohesive subset of its methods.`,
@@ -274,7 +274,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
           cls.location.start,
           `Class "${cls.name}" has aggregate cyclomatic complexity ${aggregateComplexity}, ` +
           `exceeding the maximum of ${maxAggregate}. Consider splitting the class.`,
-          { severity: 'severe', rule: 'solid/class-size', symbol: cls.name,  // class-size → severe
+          { severity: 'high', rule: 'solid/class-size', symbol: cls.name,  // class-size → high
             resolution: {
               action: 'split-class',
               summary: `Split class "${cls.name}" (aggregate complexity ${aggregateComplexity}) to move its most-complex methods into a separate class.`,
@@ -312,7 +312,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             method.location.start,
             `Method "${cls.name}.${method.name}" has cyclomatic complexity ${methodComplexity}, ` +
             `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller methods.`,
-            { severity: 'severe', rule: 'solid/method-complexity', symbol: `${cls.name}.${method.name}` }  // method-complexity → severe
+            { severity: 'high', rule: 'solid/method-complexity', symbol: `${cls.name}.${method.name}` }  // method-complexity → high
           ));
         }
       }
@@ -333,7 +333,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         ctx.ast.filePath,
         cls.location.start,
         `Class "${cls.name}" uses instanceof against a user-defined type. Consider composition or inheritance for extension.`,
-        { severity: 'advisory', rule: 'solid/open-closed', symbol: cls.name }
+        { severity: 'high', rule: 'solid/open-closed', symbol: cls.name }
       ));
     }
   }
@@ -387,7 +387,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           func.location.start,
           `Function "${func.name}" has ${func.parameters.length} parameters, exceeding the maximum of ${config.maxParametersPerMethod || 6}. Consider using an options object.`,
-          { severity: 'severe', rule: 'parameter-count', symbol: functionSymbol(func),
+          { severity: 'high', rule: 'parameter-count', symbol: functionSymbol(func),
             resolution: {
               action: 'bundle-params',
               summary: `Bundle the ${func.parameters.length} parameters of "${func.name}" into an options object.`,
@@ -405,7 +405,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           func.location.start,
           `Function "${func.name}" has ${lineCount} lines, exceeding the maximum of ${config.maxLinesPerMethod || 200}. Consider breaking it down.`,
-          { severity: 'severe', rule: 'function-length', symbol: functionSymbol(func),
+          { severity: 'high', rule: 'function-length', symbol: functionSymbol(func),
             resolution: {
               action: 'break-down-function',
               summary: `Break "${func.name}" (${lineCount} lines) into smaller functions, extracting named helper blocks.`,
@@ -447,7 +447,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         ast.filePath,
         func.location.start,
         `Function "${func.name}" mixes ${groupCount} unrelated concerns (${labels.join(', ')}). Split it into one function per concern.`,
-        { severity: 'advisory', rule: 'solid/single-responsibility', symbol: functionSymbol(func),
+        { severity: 'high', rule: 'solid/single-responsibility', symbol: functionSymbol(func),
           resolution: {
             action: 'split-function',
             summary: `Split "${func.name}" into one function per concern (${labels.join(', ')}) and compose them at the call site.`,
@@ -483,7 +483,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         func.location.start,
         `Function "${func.name}" has cyclomatic complexity ${cyclomaticComplexity}, ` +
         `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller functions.`,
-        { severity: 'severe', rule: 'solid/method-complexity', symbol: functionSymbol(func) }  // method-complexity → severe
+        { severity: 'high', rule: 'solid/method-complexity', symbol: functionSymbol(func) }  // method-complexity → high
       ));
     }
   }
@@ -527,7 +527,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         ast.filePath,
         iface.location.start,
         `Interface "${iface.name}" has ${memberCount} members, exceeding the maximum of ${maxMembers}. Consider splitting this large interface into smaller interfaces.`,
-        { severity: 'severe', rule: 'interface-size', symbol: iface.name }
+        { severity: 'high', rule: 'interface-size', symbol: iface.name }
       ));
     }
 
@@ -639,7 +639,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         ctx.ast.filePath,
         cls.location.start,
         `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
-        { severity: 'severe', rule: 'solid/dependency-inversion', symbol: cls.name }
+        { severity: 'high', rule: 'solid/dependency-inversion', symbol: cls.name }
       ));
     }
   }

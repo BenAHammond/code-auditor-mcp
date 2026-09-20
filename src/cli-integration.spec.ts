@@ -181,7 +181,7 @@ describe('CLI integration — foreign CWD with -p', () => {
 
     // The 'changed' command with a file list (not 'changed' scope) audits
     // the listed files directly. Pipe an absolute file path via stdin.
-    // The undocumented `doStuff` is an advisory-severity finding, which Spec 45 R2
+    // The undocumented `doStuff` is an high-severity finding, which Spec 45 R2
     // blocks (exit 2) — but the command must still resolve the project via -p
     // (not the foreign CWD) and emit parseable JSON on stdout.
     let stdout = '';
@@ -203,13 +203,13 @@ describe('CLI integration — foreign CWD with -p', () => {
       exitCode = err.status ?? 1;
     }
 
-    // An advisory finding blocks (Spec 45 R2), but the audit still ran against the
+    // An high finding blocks (Spec 45 R2), but the audit still ran against the
     // right project: the finding path is project-relative, not resolved from the CWD.
     expect(exitCode).toBe(2);
     const parsed = JSON.parse(stdout.trim());
     expect(Array.isArray(parsed.violations)).toBe(true);
     expect(parsed.violations[0].file).toBe('src/helper.ts');
-    expect(parsed.violations[0].severity).toBe('advisory');
+    expect(parsed.violations[0].severity).toBe('high');
   });
 
   it('changed with -p from foreign CWD finds project-specific config', async () => {

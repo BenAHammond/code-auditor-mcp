@@ -137,7 +137,7 @@ describe('validateConfig — pathProfiles', () => {
     enabledAnalyzers: ['solid'],
     outputFormats: ['json'],
     outputDirectory: './reports',
-    minSeverity: 'advisory',
+    minSeverity: 'high',
     failOnCritical: false,
     showProgress: false,
   };
@@ -288,9 +288,9 @@ export function undocumentedFn(items: number[]): number {
 }
 `;
 
-// Documentation violations now ship at `advisory` (Spec 54 — no `suggestion` tier,
+// Documentation violations now ship at `high` (Spec 54 — no `suggestion` tier,
 // and `severityOverrides` is removed). Gate exclusion must leave severity
-// untouched, so a gate-excluded file still reports its real `advisory` severity.
+// untouched, so a gate-excluded file still reports its real `high` severity.
 
 describe('pathProfiles — integration', () => {
   let testDir: string;
@@ -317,7 +317,7 @@ describe('pathProfiles — integration', () => {
 
   // Test 7: Different gate exclusion per directory.
   // src/ gets a doc-required profile (no exclusion); scripts/ is excluded
-  // from the gate. Both report the real `advisory` severity: gate exclusion is
+  // from the gate. Both report the real `high` severity: gate exclusion is
   // observable without conflating it with a severity change.
   it('applies per-directory profile overrides during audit (Test 7)', async () => {
     const srcDir = path.join(testDir, 'src');
@@ -344,15 +344,15 @@ describe('pathProfiles — integration', () => {
     expect(srcV.length).toBeGreaterThan(0);
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // src has no gate exclusion → advisory, not excluded
+    // src has no gate exclusion → high, not excluded
     for (const v of srcV) {
-      expect(v.severity).toBe('advisory');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('source-strict');
       expect(v.gateExcluded).toBeUndefined();
     }
-    // scripts is gate-excluded, but severity is untouched (still advisory)
+    // scripts is gate-excluded, but severity is untouched (still high)
     for (const v of scriptsV) {
-      expect(v.severity).toBe('advisory');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('scripts-lenient');
       expect(v.gateExcluded).toBe(true);
     }
@@ -405,8 +405,8 @@ export function foo() { return something(); }
   });
 
   // Test 9: gate exclusion leaves severity untouched.
-  // function-documentation ships at `advisory`; a path profile excludes src/**
-  // from the gate. Severity must remain `advisory` — exclusion never softens a
+  // function-documentation ships at `high`; a path profile excludes src/**
+  // from the gate. Severity must remain `high` — exclusion never softens a
   // finding (Spec-36 R4).
   it('gate exclusion leaves severity untouched (Test 9)', async () => {
     await mkdir(path.join(testDir, 'src'), { recursive: true });
@@ -425,25 +425,25 @@ export function foo() { return something(); }
     const docsV = violationsFor(result, 'src/module.ts');
     expect(docsV.length).toBeGreaterThan(0);
 
-    // Exclusion must NOT soften — severity stays advisory, only gateExcluded set
+    // Exclusion must NOT soften — severity stays high, only gateExcluded set
     for (const v of docsV) {
-      expect(v.severity).toBe('advisory');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('excluded');
       expect(v.gateExcluded).toBe(true);
     }
   });
 
   // Test 10: Baseline fingerprint stable under gate exclusion.
-  // function-documentation ships at `advisory` → first run sees `advisory`, no gate
+  // function-documentation ships at `high` → first run sees `high`, no gate
   // exclusion; second run adds a profile excludeFromGate: true → severity stays
-  // `advisory`, only gateExcluded flips. The fingerprint (symbol) MUST stay
+  // `high`, only gateExcluded flips. The fingerprint (symbol) MUST stay
   // identical because it is intentionally severity-free AND gate-free.
   it('baseline fingerprint is stable under gate exclusion (Test 10)', async () => {
     await mkdir(path.join(testDir, 'src'), { recursive: true });
 
     await writeFile(path.join(testDir, 'src', 'module.ts'), EXPORTED_FN_SRC, 'utf-8');
 
-    // Audit 1: advisory severity, no exclusion
+    // Audit 1: high severity, no exclusion
     const result1 = await runAudit({
       projectRoot: testDir,
       enabledAnalyzers: ['documentation'],
@@ -451,7 +451,7 @@ export function foo() { return something(); }
     });
     const v1 = violationsFor(result1, 'src/module.ts');
     expect(v1.length).toBeGreaterThan(0);
-    expect(v1[0].severity).toBe('advisory');
+    expect(v1[0].severity).toBe('high');
     expect(v1[0].gateExcluded).toBeUndefined();
 
     // Audit 2: same severity, but profile excludes from gate
@@ -465,7 +465,7 @@ export function foo() { return something(); }
     });
     const v2 = violationsFor(result2, 'src/module.ts');
     expect(v2.length).toBeGreaterThan(0);
-    expect(v2[0].severity).toBe('advisory');
+    expect(v2[0].severity).toBe('high');
     expect(v2[0].gateExcluded).toBe(true);
 
     // Gate exclusion differs
@@ -494,9 +494,9 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Built-in excludes from gate; severity stays advisory
+    // Built-in excludes from gate; severity stays high
     for (const v of scriptsV) {
-      expect(v.severity).toBe('advisory');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('scripts-and-tests');
       expect(v.gateExcluded).toBe(true);
     }
@@ -520,9 +520,9 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Built-in excludes from gate while severity stays at its real `advisory`
+    // Built-in excludes from gate while severity stays at its real `high`
     for (const v of scriptsV) {
-      expect(v.severity).toBe('advisory');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBe('scripts-and-tests');
       expect(v.gateExcluded).toBe(true);
     }
@@ -546,10 +546,10 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Without built-in profile, severity stays at advisory and the file is NOT
+    // Without built-in profile, severity stays at high and the file is NOT
     // gate-excluded.
     for (const v of scriptsV) {
-      expect(v.severity).toBe('advisory');
+      expect(v.severity).toBe('high');
       expect(v.profile).toBeUndefined();
       expect(v.gateExcluded).toBeUndefined();
     }

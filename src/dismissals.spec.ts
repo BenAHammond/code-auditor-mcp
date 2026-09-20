@@ -139,7 +139,7 @@ describe('applyDismissals', () => {
         totalViolations: violations.length,
         criticalIssues: violations.filter((v) => v.severity === 'critical').length,
         severe: 0,
-        advisory: 0,
+        high: 0,
         violationsByCategory: {},
         topIssues: [],
       },

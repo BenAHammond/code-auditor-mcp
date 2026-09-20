@@ -49,7 +49,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             analyzer: 'dry',
             file: 'src/utils.ts',
             line: 15,
-            severity: 'advisory',
+            severity: 'high',
             message: 'Similar code found in 3 locations',
             type: 'similar-code',
             functionName: 'parseConfig',
@@ -81,7 +81,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
       totalViolations: 4,
       criticalIssues: 2,
       severe: 1,
-      advisory: 1
+      high: 1
     },
     recommendations: [],
     metadata: {
@@ -148,7 +148,7 @@ describe('handleProjectTasks from_audit', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.created).toBe(4); // 2 critical + 1 severe + 1 advisory (all included by default)
+    expect(result.created).toBe(4); // 2 critical + 1 severe + 1 high (all included by default)
     expect(result.skipped).toBe(0);
     expect(Array.isArray(result.tasks)).toBe(true);
     expect(result.tasks).toHaveLength(4);
@@ -157,7 +157,7 @@ describe('handleProjectTasks from_audit', () => {
     const priorities = result.tasks.map((t: any) => t.priority);
     expect(priorities).toContain('high'); // critical → high
     expect(priorities).toContain('medium'); // severe → medium
-    expect(priorities).toContain('low'); // advisory → low
+    expect(priorities).toContain('low'); // high → low
 
     // Verify source is 'audit'
     for (const task of result.tasks) {
@@ -167,19 +167,19 @@ describe('handleProjectTasks from_audit', () => {
     }
   });
 
-  it('includes advisory severity when explicitly requested', async () => {
+  it('includes high severity when explicitly requested', async () => {
     await storeFixtureAudit();
 
     const result = await handleProjectTasks({
       action: 'from_audit',
       projectPath,
-      severities: ['critical', 'severe', 'advisory']
+      severities: ['critical', 'severe', 'high']
     });
 
     expect(result.success).toBe(true);
     expect(result.created).toBe(4); // all violations
     const priorities = result.tasks.map((t: any) => t.priority);
-    expect(priorities.filter((p: string) => p === 'low')).toHaveLength(1); // advisory → low
+    expect(priorities.filter((p: string) => p === 'low')).toHaveLength(1); // high → low
   });
 
   it('filters by analyzer', async () => {
@@ -192,7 +192,7 @@ describe('handleProjectTasks from_audit', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.created).toBe(1); // dry violation is severity 'advisory', included by default
+    expect(result.created).toBe(1); // dry violation is severity 'high', included by default
     expect(result.skipped).toBe(0);
   });
 
@@ -203,7 +203,7 @@ describe('handleProjectTasks from_audit', () => {
       action: 'from_audit',
       projectPath,
       analyzers: ['dry'],
-      severities: ['advisory']
+      severities: ['high']
     });
 
     expect(result.success).toBe(true);
@@ -405,7 +405,7 @@ describe('handleProjectTasks from_audit', () => {
     const result = await handleProjectTasks({
       action: 'from_audit',
       projectPath,
-      severities: ['critical', 'severe', 'advisory']
+      severities: ['critical', 'severe', 'high']
     });
 
     const fingerprints = result.tasks.map((t: any) => t.fingerprint);

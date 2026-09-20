@@ -358,18 +358,21 @@ describe('Skill file (SKILL.md)', () => {
 });
 
 /**
- * Spec 46 R1 (extended by Spec 54) — guard the skill docs against re-teaching a
- * reverted gate model.
+ * Spec 46 R1 (extended by Spec 54, then by the advisory→high rename) — guard the
+ * skill docs against re-teaching a reverted gate model.
  *
- * Two reversions are guarded here. Spec 45 reverted the per-rule `gating: true`
+ * Three reversions are guarded here. Spec 45 reverted the per-rule `gating: true`
  * opt-in, the binary (severity-free) gate, and diff-scoped enforcement. Spec 54
  * then removed the configurable gate (`gateSeverities`), per-path severity
  * capping (`severityOverrides`), and the `warning`/`suggestion` vocabulary —
- * every reading is now `critical`, `severe`, or `advisory`, and every one of them
- * blocks. The skill files are what a consuming agent reads to learn how the gate
- * behaves, so drift here is the highest-leverage place a reverted model could
- * survive. This test fails if any of the three skill files re-mentions either
- * reverted model, so the docs and the code cannot silently diverge again.
+ * every reading is now `critical`, `severe`, or `high`, and every one of them
+ * blocks. Spec 54's own third-tier name `advisory` was later renamed to `high`
+ * because "advisory" read as optional — the same failure mode the rename was
+ * meant to eliminate — so `advisory` is a reverted phrase too. The skill files
+ * are what a consuming agent reads to learn how the gate behaves, so drift here
+ * is the highest-leverage place a reverted model could survive. This test fails
+ * if any of the three skill files re-mentions a reverted model, so the docs and
+ * the code cannot silently diverge again.
  */
 describe('Skill gate-model drift guard (Spec 46 R1)', () => {
   const SKILL_FILES = ['SKILL.md', 'SKILL-RULE-KINDS.md', 'SKILL-SEARCH.md'];
@@ -390,6 +393,7 @@ describe('Skill gate-model drift guard (Spec 46 R1)', () => {
     'per-rule flag', // per-rule gating flag (removed)
     'gateSeverities', // the configurable gate (Spec 54 — removed)
     'severityOverrides', // per-path severity capping (Spec 54 — removed)
+    'advisory', // Spec 54's third-tier name (renamed to `high` — it read as optional)
   ];
 
   for (const file of SKILL_FILES) {
@@ -401,7 +405,7 @@ describe('Skill gate-model drift guard (Spec 46 R1)', () => {
           `${file} re-mentions the reverted gate model: "${phrase}". ` +
             'Spec 45 reverted the per-rule gate and Spec 54 removed the ' +
             'configurable gate and the warning/suggestion vocabulary — every ' +
-            'reading is critical, severe, or advisory, every severity blocks, and ' +
+            'reading is critical, severe, or high, every severity blocks, and ' +
             'enforcement is not diff-scoped.',
         ).toBe(false);
       }
@@ -416,7 +420,7 @@ describe('Skill gate-model drift guard (Spec 46 R1)', () => {
     // All three severities name themselves as gating readings.
     expect(content).toContain('critical');
     expect(content).toContain('severe');
-    expect(content).toContain('advisory');
+    expect(content).toContain('high');
   });
 });
 

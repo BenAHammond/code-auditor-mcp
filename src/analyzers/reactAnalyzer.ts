@@ -104,7 +104,7 @@ function checkComponentComplexity(
   return [{
     file: component.filePath,
     line: component.lineNumber,
-    severity: 'severe',
+    severity: 'high',
     message: `Component '${component.name}' has high complexity (${component.complexity})`,
     componentName: component.name,
     rule: 'complexity',
@@ -128,7 +128,7 @@ function checkPropsValidation(
   return [{
     file: component.filePath,
     line: component.lineNumber,
-    severity: 'advisory',
+    severity: 'high',
     message: `Component '${component.name}' is missing prop type definitions`,
     componentName: component.name,
     rule: 'missing-props',
@@ -161,7 +161,7 @@ function checkHooksRules(component: ComponentMetadata): ReactViolation[] {
     violations.push({
       file: component.filePath,
       line: hook.line,
-      severity: 'advisory',
+      severity: 'high',
       message: `Custom hook '${hook.name}' should start with 'use'`,
       componentName: component.name,
       rule: 'hooks-naming',
@@ -205,7 +205,7 @@ function checkPerformanceIssues(
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
-      severity: 'severe',
+      severity: 'high',
       message: `Consider memoizing component '${component.name}' for better performance`,
       componentName: component.name,
       rule: 'performance',
@@ -233,7 +233,7 @@ function checkPerformanceIssues(
     violations.push({
       file: component.filePath,
       line: attr.line,
-      severity: 'severe',
+      severity: 'high',
       message: `Component '${component.name}' passes an inline function prop (onClick) causing unnecessary re-renders`,
       componentName: component.name,
       rule: 'performance',
@@ -313,7 +313,7 @@ function checkMissingKeys(component: ComponentMetadata): ReactViolation[] {
     violations.push({
       file: component.filePath,
       line: component.lineNumber,
-      severity: 'severe',
+      severity: 'high',
       message: `Component '${component.name}' may be rendering lists without keys`,
       componentName: component.name,
       rule: 'performance',
@@ -389,7 +389,7 @@ export function checkCircularDependencies(
     if (cycle) {
       violations.push({
         file: 'component-dependencies',
-        severity: 'severe',
+        severity: 'high',
         message: `Circular dependency detected: ${cycle.join(' → ')}`,
         rule: 'complexity',
         violationType: 'complexity',
@@ -642,7 +642,7 @@ export function checkRawElements(
 
     // ── Phase 3: Emit violations ──────────────────────────────────────────
     const minUsages = config.wrapperMinUsages ?? 5;
-    const severity: 'advisory' = 'advisory';
+    const severity: 'high' = 'high';
 
     for (const loc of rawUsageLocations) {
       const count = rawUsageCounts.get(loc.element) || 0;

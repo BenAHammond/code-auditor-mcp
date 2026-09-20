@@ -1245,7 +1245,7 @@ export function importLedgerFromDir(db: SqliteDatabase, dirPath: string): { impo
       const violations: Violation[] = data.violations.map((v) => ({
         file: v.file || 'unknown',
         line: v.line,
-        severity: (v.severity as any) || 'advisory',
+        severity: (v.severity as any) || 'high',
         message: v.message || '',
         analyzer: v.analyzer || 'unknown',
         rule: v.rule ?? '',

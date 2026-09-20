@@ -85,6 +85,8 @@ async function main() {
   const sortedRules = [...byRule.entries()].sort((a, b) => b[1] - a[1]);
 
   console.log(`\n=== CORPUS: ${projectRoot} ===`);
+  const filesAnalyzed = (result as any).metadata?.filesAnalyzed;
+  console.log(`files analyzed: ${filesAnalyzed ?? 'n/a'}`);
   console.log(`advisory findings: ${advisory.length}`);
   console.log('\n--- per-analyzer ---');
   for (const [name, count] of sortedAnalyzers) console.log(`${name}: ${count}`);

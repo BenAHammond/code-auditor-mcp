@@ -199,7 +199,7 @@ function severityToDiagnosticSeverity(s: Severity): DiagnosticSeverity {
       return DiagnosticSeverity.Error;
     case 'severe':
       return DiagnosticSeverity.Warning;
-    case 'advisory':
+    case 'high':
       return DiagnosticSeverity.Hint;
     default:
       return DiagnosticSeverity.Information;

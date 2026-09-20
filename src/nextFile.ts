@@ -11,7 +11,7 @@ import type { Severity, Violation } from './types.js';
 const SEVERITY_RANK: Record<Severity, number> = {
   critical: 0,
   severe: 1,
-  advisory: 2,
+  high: 2,
 };
 
 /**
@@ -33,7 +33,7 @@ function severityRank(severity: Severity): number {
 
 export interface RankedFile {
   file: string;
-  /** Highest severity present on the file (critical < severe < advisory). */
+  /** Highest severity present on the file (critical < severe < high). */
   maxSeverity: Severity;
   /** Total findings on the file across all analyzers. */
   count: number;
@@ -58,7 +58,7 @@ export function rankFilesByPriority(violations: Violation[]): RankedFile[] {
       file,
       maxSeverity: vs.reduce<Severity>(
         (max, v) => (severityRank(v.severity) < severityRank(max) ? v.severity : max),
-        'advisory'
+        'high'
       ),
       count: vs.length,
       violations: vs,
@@ -73,7 +73,7 @@ export function rankFilesByPriority(violations: Violation[]): RankedFile[] {
 }
 
 /**
- * Order one file's findings critical → severe → advisory so the consumer
+ * Order one file's findings critical → severe → high so the consumer
  * sees the most urgent defect first. Stable for equal severities.
  */
 export function orderFindingsWithinFile(violations: Violation[]): Violation[] {

@@ -103,7 +103,7 @@ Exported symbols in files matching the `path` glob must match the `exports` rege
 {
   "id": "constants-upper",
   "kind": "naming",
-  "severity": "advisory",
+  "severity": "high",
   "path": "src/**/constants.ts",
   "exports": "^[A-Z][A-Z0-9_]*$",
   "message": "Exported constants should use UPPER_SNAKE_CASE."
@@ -183,22 +183,22 @@ Severity is urgency, not permission. There are three levels, and the axis is
 |----------|---------------|
 | `critical` | Already wrong in production, or will fail when this code runs |
 | `severe` | A real defect that has not bitten yet |
-| `advisory` | Correct, but it does not match a convention |
+| `high` | Correct, but it does not match a convention |
 
-`critical` and `severe` are defects; `advisory` is a convention reading — the
+`critical` and `severe` are defects; `high` is a convention reading — the
 code works, but it deviates from a documented norm (docs, style, naming).
 Every severity blocks by default. The edit hook gates on any finding from any
-rule — there is no non-blocking tier and no per-rule opt-in. An `advisory`
+rule — there is no non-blocking tier and no per-rule opt-in. An `high`
 finding blocks the edit exactly like a `critical` one; urgency only sets the
 order you fix things, never whether they gate.
 
-> **Severity ranks urgency, never whether a finding is real.** `advisory` is
+> **Severity ranks urgency, never whether a finding is real.** `high` is
 > not a "noise" tier — a convention reading still blocks the edit until it is
 > resolved or the rule that produces it is edited in `.codeauditor.json`. There
 > is no "waive" — a finding leaves the queue only by being resolved or by
 > changing the rule that fires it. The `next-file` queue orders work worst-first;
 > that ordering is triage, not permission — a finding that surfaces later in the
-> queue still gates. Documentation findings ship at `advisory`: missing JSDoc is
+> queue still gates. Documentation findings ship at `high`: missing JSDoc is
 > a maintainability convention, not a runtime defect — but it still blocks.
 
 A fourth channel, **diagnostic**, sits outside the severity ladder. It is not a
@@ -211,7 +211,7 @@ severity tier: it carries tool-failure and coverage notices (`engine-error`,
 Rules are validated against `invariant-rules.schema.json` on startup. Common errors:
 
 - **Missing required field**: each kind has required fields (e.g., `import-ban` requires `module`)
-- **Invalid severity**: must be one of `critical`, `severe`, `advisory`
+- **Invalid severity**: must be one of `critical`, `severe`, `high`
 - **Invalid kind**: must be one of the seven kinds above
 - **Both allowFrom and denyFrom**: `call-constraint` requires exactly one
 - **Empty pattern**: `ast-pattern` requires a non-empty `pattern` string

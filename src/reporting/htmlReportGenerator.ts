@@ -62,9 +62,9 @@ function generateSummarySection(result: AuditResult): string {
                 <h3>${summary.severe}</h3>
                 <p>Severe</p>
             </div>
-            <div class="stat-card advisory">
-                <h3>${summary.advisory}</h3>
-                <p>Advisory</p>
+            <div class="stat-card high">
+                <h3>${summary.high}</h3>
+                <p>High</p>
             </div>
             <div class="stat-card total">
                 <h3>${summary.totalViolations}</h3>
@@ -121,7 +121,7 @@ function generateViolationsSection(result: AuditResult): string {
   
   // Sort by severity
   const sortedViolations = allViolations.sort((a, b) => {
-    const severityOrder = { critical: 3, severe: 2, advisory: 1 };
+    const severityOrder = { critical: 3, severe: 2, high: 1 };
     return severityOrder[b.severity] - severityOrder[a.severity];
   });
   
@@ -191,7 +191,7 @@ function getDefaultCSS(theme: 'light' | 'dark'): string {
       cardBg: '#f5f5f5',
       critical: '#d32f2f',
       severe: '#f57c00',
-      advisory: '#1976d2'
+      high: '#1976d2'
     },
     dark: {
       bg: '#1e1e1e',
@@ -200,7 +200,7 @@ function getDefaultCSS(theme: 'light' | 'dark'): string {
       cardBg: '#2d2d2d',
       critical: '#f44336',
       severe: '#ff9800',
-      advisory: '#2196f3'
+      high: '#2196f3'
     }
   };
   
@@ -266,7 +266,7 @@ function getDefaultCSS(theme: 'light' | 'dark'): string {
     
     .stat-card.critical { border-left: 4px solid ${colors.critical}; }
     .stat-card.severe { border-left: 4px solid ${colors.severe}; }
-    .stat-card.advisory { border-left: 4px solid ${colors.advisory}; }
+    .stat-card.high { border-left: 4px solid ${colors.high}; }
     
     .violation-card {
         background: ${colors.cardBg};
@@ -278,7 +278,7 @@ function getDefaultCSS(theme: 'light' | 'dark'): string {
     
     .violation-card.critical { border-left: 4px solid ${colors.critical}; }
     .violation-card.severe { border-left: 4px solid ${colors.severe}; }
-    .violation-card.advisory { border-left: 4px solid ${colors.advisory}; }
+    .violation-card.high { border-left: 4px solid ${colors.high}; }
     
     .violation-header {
         display: flex;
@@ -301,8 +301,8 @@ function getDefaultCSS(theme: 'light' | 'dark'): string {
     }
     
     .analyzer-badge {
-        background: ${colors.advisory}20;
-        color: ${colors.advisory};
+        background: ${colors.high}20;
+        color: ${colors.high};
     }
     
     .file-path {
@@ -336,7 +336,7 @@ function getDefaultCSS(theme: 'light' | 'dark'): string {
     }
     
     .bar {
-        background: ${colors.advisory};
+        background: ${colors.high};
         height: 24px;
         border-radius: 4px;
         display: flex;

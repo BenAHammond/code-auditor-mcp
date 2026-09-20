@@ -194,7 +194,7 @@ function validateJsonSchema(
   const ctx: ValidationCtx = { filePath, config, violations: [] };
 
   if (!schema.$schema && config.jsonSchemaVersion) {
-    emit(ctx, 'advisory', 'missing-schema-declaration', 'JSON Schema missing $schema declaration');
+    emit(ctx, 'high', 'missing-schema-declaration', 'JSON Schema missing $schema declaration');
   }
 
   validateSchemaTypes(schema, ctx);

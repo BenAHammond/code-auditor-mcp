@@ -45,7 +45,7 @@ export interface TelemetryPayload {
   v: string;
   /** Canonical rule ID of the dismissed finding. */
   rule: string;
-  /** Urgency level — critical | severe | advisory. */
+  /** Urgency level — critical | severe | high. */
   level: Severity;
   /** Dismissal reason, verbatim (the product — it is the human's words). */
   reason: string;

@@ -129,7 +129,7 @@ export function generateCompactJSONReport(result: AuditResult): string {
       d: result.summary.dismissed ?? 0,
       c: result.summary.criticalIssues,
       se: result.summary.severe,
-      a: result.summary.advisory
+      a: result.summary.high
     },
     v: Object.entries(result.analyzerResults).flatMap(([analyzer, data]) =>
       data.violations.map(v => ({

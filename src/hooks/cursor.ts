@@ -94,7 +94,7 @@ export function formatViolationContext(output: HookAuditOutput): {
   // Every finding is a defect — severity is urgency (how fast to act), not
   // permission (whether to block). Order worst-first so the agent fixes in
   // urgency order; the queue is a ranking, not a gate.
-  const order: Severity[] = ['critical', 'severe', 'advisory'];
+  const order: Severity[] = ['critical', 'severe', 'high'];
   const ranked = [...output.violations].sort(
     (a, b) => order.indexOf(a.severity) - order.indexOf(b.severity)
   );
@@ -137,7 +137,7 @@ export function formatViolationContext(output: HookAuditOutput): {
 export async function processCursorEvent(
   rawStdin: string,
   auditFn: (filePaths: string[], projectRoot: string) => Promise<HookAuditOutput> = async (filePaths, projectRoot) =>
-    runHookAudit({ filePaths, projectRoot, failOn: 'advisory' })
+    runHookAudit({ filePaths, projectRoot, failOn: 'high' })
 ): Promise<CursorHookResult> {
   const result: CursorHookResult = { exitCode: 0, stdout: '', stderr: '' };
 

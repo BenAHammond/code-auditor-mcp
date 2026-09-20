@@ -102,7 +102,7 @@ async function searchUsers(keyword: string) {
 /**
  * Spec 54 R-fix — manual quote-escaping (`.replace(/'/g, "''")`) is *defended*,
  * not raw: single-quote doubling handles only the single-quote vector, so the
- * finding downgrades to `advisory` ("verify escaping") instead of asserting a
+ * finding downgrades to `high` ("verify escaping") instead of asserting a
  * live `critical` vulnerability.
  */
 const ESCAPED_INTERPOLATION = `
@@ -117,7 +117,7 @@ async function filterByMode(opts: { gameMode: string }) {
 /**
  * Negative control — a generic `.replace()` is NOT escaping. `replace('x', 'y')`
  * next to an interpolation transforms the value without doubling quotes, so the
- * interpolation is still raw and must stay `critical` (not downgrade to advisory).
+ * interpolation is still raw and must stay `critical` (not downgrade to high).
  */
 const GENERIC_REPLACE_INTERPOLATION = `
 import { query } from './db';
@@ -182,7 +182,7 @@ type TestCase = {
   /** Expected number of sql-injection-risk violations */
   expectedCount: number;
   /** Expected severity of the first sql-injection-risk violation (if any) */
-  expectedSeverity?: 'critical' | 'severe' | 'advisory';
+  expectedSeverity?: 'critical' | 'severe' | 'high';
 };
 
 const TEST_CASES: TestCase[] = [
@@ -224,19 +224,19 @@ const TEST_CASES: TestCase[] = [
     expectedCount: 0,
   },
   {
-    name: 'escaped interpolation (quote-doubling) — advisory, not critical',
+    name: 'escaped interpolation (quote-doubling) — high, not critical',
     code: ESCAPED_INTERPOLATION,
     expectedCount: 1,
-    expectedSeverity: 'advisory',
+    expectedSeverity: 'high',
   },
   {
-    name: 'generic .replace() next to interpolation — still critical, not advisory',
+    name: 'generic .replace() next to interpolation — still critical, not high',
     code: GENERIC_REPLACE_INTERPOLATION,
     expectedCount: 1,
     expectedSeverity: 'critical',
   },
   {
-    name: 'replace(/x/g, quotes) producing quotes — still critical, not advisory',
+    name: 'replace(/x/g, quotes) producing quotes — still critical, not high',
     code: REPLACE_WITH_QUOTES_INTERPOLATION,
     expectedCount: 1,
     expectedSeverity: 'critical',

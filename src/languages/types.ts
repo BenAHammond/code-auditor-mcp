@@ -289,7 +289,7 @@ export interface OptionalCapabilities {
    * or `x.split("'").join("''")` (and the double-quote variants).  Such input is
    * NOT provably safe (single-quote doubling handles only the single-quote
    * vector), but it is *defended* — the caller should downgrade an injection
-   * finding from `critical` to `advisory` ("verify escaping") rather than assert
+   * finding from `critical` to `high` ("verify escaping") rather than assert
    * a live vulnerability.  Complements `isSafeInterpolation`, which clears only
    * provably-safe expressions.
    *

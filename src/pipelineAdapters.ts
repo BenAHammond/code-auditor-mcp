@@ -759,7 +759,7 @@ export function createReactVisitor(): ReactVisitorBundle {
           violations.push(...checkRawElements(scanResults, cfg));
         }
       } catch {
-        // Cross-component checks are advisory
+        // Cross-component checks are high
       }
       return violations;
     },
@@ -2388,15 +2388,15 @@ export function createDependencyGraphReducer(): Stage4Reducer {
 
         const HEALTH_SEVERITY: Record<string, Violation['severity']> = {
           'break-cycles': 'severe',
-          'reduce-coupling': 'advisory',
-          'split-responsibilities': 'advisory',
+          'reduce-coupling': 'high',
+          'split-responsibilities': 'high',
           'review-orphans': 'severe',
         };
         for (const s of health.suggestions) {
           violations.push({
             file: '(multiple)',
             line: 0,
-            severity: HEALTH_SEVERITY[s.type] ?? 'advisory',
+            severity: HEALTH_SEVERITY[s.type] ?? 'high',
             message: s.description,
             rule: s.type,
             type: s.type,

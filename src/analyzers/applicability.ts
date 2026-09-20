@@ -149,7 +149,7 @@ export function evaluateRuleApplicability(
  * of an emission site) so a reader can tell *why* it cannot fire. Remove an id
  * here when its extraction begins emitting it.
  */
-const CANNOT_FIRE_RULES: ReadonlyMap<string, string> = new Map([
+export const CANNOT_FIRE_RULES: ReadonlyMap<string, string> = new Map([
   // api-contract — reads response/auth metadata that extractEndpoints /
   // extractAPICalls never populate, or has no emission site at all.
   ['api-type-mismatch', 'cannot fire — extractEndpoints/extractAPICalls never populate responseSchema/expectedResponseType/deprecated, the fields this rule reads'],

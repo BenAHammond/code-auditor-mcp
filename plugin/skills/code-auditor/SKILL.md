@@ -16,7 +16,7 @@ You have the `code-audit` CLI available. It indexes every function, component, a
 
 - **Reading** — the human-facing name for one rule observation. The machine contract calls the same thing a **violation** (a "finding" in the JSON). The audit *takes* readings; it does not issue verdicts.
 - **Coverage panel** — the report leads with what was measured (which rules fired, which were clean, which were not applicable), so a zero-reading run is not mistaken for a clean tree.
-- **Triage** — severity is urgency, not permission. Three levels, and the axis is how fast a reading bites you: **critical** (already wrong in production, or will fail when this code runs), **severe** (a real defect that has not bitten yet), **advisory** (correct, but it does not match a convention). `critical` and `severe` are defects; `advisory` is a convention reading. Every reading blocks the edit gate by default. Queue order (`critical` → `severe` → `advisory`) is the order to act, not a license to skip.
+- **Triage** — severity is urgency, not permission. Three levels, and the axis is how fast a reading bites you: **critical** (already wrong in production, or will fail when this code runs), **severe** (a real defect that has not bitten yet), **high** (correct, but it does not match a convention). `critical` and `severe` are defects; `high` is a convention reading. Every reading blocks the edit gate by default. Queue order (`critical` → `severe` → `high`) is the order to act, not a license to skip.
 
 ## When to use which command
 
@@ -51,9 +51,9 @@ code-audit changed --json                            # Diff-scoped audit (hook c
 
 Use `code-audit changed` after edits to confirm you haven't introduced violations. If the hook is active it already runs `code-audit changed` automatically on Write/Edit — pay attention to its output.
 
-**Every reading is a measurement, not a verdict.** The audit is a diagnostic instrument: it reports what it measured (the coverage panel) and takes one reading per rule violation. Work readings in urgency order — critical first, then severe, then advisory — and resolve them all. Severity is urgency, the order to act, never a judgment on whether a reading is real; there is no "noise" tier — an advisory reading still blocks. Documentation readings (missing JSDoc) ship at advisory: maintainability conventions, not stylistic niceties, and still gating. If you choose not to resolve one, record why before moving on — never silently dismiss it.
+**Every reading is a measurement, not a verdict.** The audit is a diagnostic instrument: it reports what it measured (the coverage panel) and takes one reading per rule violation. Work readings in urgency order — critical first, then severe, then high — and resolve them all. Severity is urgency, the order to act, never a judgment on whether a reading is real; there is no "noise" tier — an high reading still blocks. Documentation readings (missing JSDoc) ship at high: maintainability conventions, not stylistic niceties, and still gating. If you choose not to resolve one, record why before moving on — never silently dismiss it.
 
-Expected output: JSON violation list (with `--json`) or colored terminal summary. The full `audit` command exits non-zero when violations at or above `--fail-on` severity exist. Every severity blocks: `critical`, `severe`, and `advisory` are all gating. The `changed` hook blocks on any violation from any rule — there is no non-blocking tier — and enforcement is not diff-scoped (a pre-existing violation in the audited file blocks exactly like a new one).
+Expected output: JSON violation list (with `--json`) or colored terminal summary. The full `audit` command exits non-zero when violations at or above `--fail-on` severity exist. Every severity blocks: `critical`, `severe`, and `high` are all gating. The `changed` hook blocks on any violation from any rule — there is no non-blocking tier — and enforcement is not diff-scoped (a pre-existing violation in the audited file blocks exactly like a new one).
 
 ### `code-audit next-file` — fix violations one file at a time
 
@@ -62,7 +62,7 @@ code-audit next-file --path .        # Highest-priority file + all its readings
 code-audit next-file --path . --json # Machine-readable
 ```
 
-This is the refactoring loop. `next-file` audits the project and returns the single highest-priority file — ranked by highest-severity reading, then total reading count — with every reading on it, ordered critical → severe → advisory. Fix that file, then run it again: a still-broken file comes back, otherwise the next-worst file surfaces. `{done:true}` means the tree is clean.
+This is the refactoring loop. `next-file` audits the project and returns the single highest-priority file — ranked by highest-severity reading, then total reading count — with every reading on it, ordered critical → severe → high. Fix that file, then run it again: a still-broken file comes back, otherwise the next-worst file surfaces. `{done:true}` means the tree is clean.
 
 There is **no skip or decline affordance** in `next-file`. A reading leaves the queue only by being fixed, by editing the rule that produces it in `.codeauditor.json` (your rules editor), or — if it is a genuine false positive — by dismissing that one instance with a written reason (`code-audit dismiss`, below). If a rule keeps firing on something you judge correct, change the rule — never work around it.
 
@@ -117,7 +117,7 @@ Path profiles are an ordered array — files matching multiple profiles merge ov
 
 A **built-in** `scripts-and-tests` profile ships with every install — it excludes `scripts/**`, `tests/**`, `__tests__/**`, `fixtures/**`, and `*.test.*`/`*.spec.*` files from the gate. Disable it with `"builtin": false` in `.codeauditor.json`.
 
-Invariant violations are **immune** to path profile gate exclusion — invariants enforce declared laws and block on the same gate as every other rule (all of `critical`, `severe`, and `advisory`).
+Invariant violations are **immune** to path profile gate exclusion — invariants enforce declared laws and block on the same gate as every other rule (all of `critical`, `severe`, and `high`).
 
 ### `code-audit index` — refresh the index after structural changes
 
@@ -145,7 +145,7 @@ Creates a `.codeauditor.json` configuration file with invariant rules for your p
 
 ### `code-audit conventions` — mine and propose rules
 
-Code Auditor learns your codebase's unwritten conventions from the function index and flags deviations at advisory severity. Use these to discover norms an unfamiliar agent would otherwise break:
+Code Auditor learns your codebase's unwritten conventions from the function index and flags deviations at high severity. Use these to discover norms an unfamiliar agent would otherwise break:
 
 ```bash
 code-audit conventions list                          # See what conventions were mined
@@ -167,7 +167,7 @@ code-audit conventions propose --json                # JSON proposal array
 
 **Usage:** Run a full audit or `code-audit index sync` to mine conventions from the codebase index. Then `code-audit conventions list` to see what was found, and `code-audit conventions propose` to get the rules. Paste the proposals into the `rules` array in `.codeauditor.json`.
 
-Convention readings ship at `advisory` severity by default. Severity is urgency — how fast a reading bites, not whether it matters. `advisory` is a convention reading, not a defect, but it still blocks the edit gate by default — resolve it or edit the rule, never ignore it.
+Convention readings ship at `high` severity by default. Severity is urgency — how fast a reading bites, not whether it matters. `high` is a convention reading, not a defect, but it still blocks the edit gate by default — resolve it or edit the rule, never ignore it.
 
 ### `code-audit hotspots` — identify churn-prone code
 
@@ -209,7 +209,7 @@ When an edit hook blocks your edit with a violation message:
 1. **Read the violation** — it includes the invariant rule's `message` field explaining *why* the edit was blocked
 2. **Fix the violation** — change your approach to comply with the invariant
 3. **Do NOT retry the same edit** — the hook will block it again
-4. The hook runs `code-audit changed`, and its gate blocks on every violation from any rule — `critical`, `severe`, and `advisory` all block; there is no non-blocking severity tier. An `advisory` reading blocks the edit exactly like a `critical` one; urgency only sets the order you fix things, never whether they gate.
+4. The hook runs `code-audit changed`, and its gate blocks on every violation from any rule — `critical`, `severe`, and `high` all block; there is no non-blocking severity tier. An `high` reading blocks the edit exactly like a `critical` one; urgency only sets the order you fix things, never whether they gate.
 
 The hook auto-installs the package to a cache dir on first use — no manual npm step needed. If the hook reports `[code-auditor] code-audit could not run`, the auto-install failed (network, unsupported platform). The agent should try again; if it persists, `npm install code-auditor-mcp` is the manual fix.
 

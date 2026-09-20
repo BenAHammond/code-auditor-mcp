@@ -992,7 +992,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         const severityOrder: Record<string, number> = {
           critical: 0,
           severe: 1,
-          advisory: 2,
+          high: 2,
           info: 3,
         };
 
@@ -1441,7 +1441,7 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
   let totalViolations = 0;
   let criticalIssues = 0;
   let severe = 0;
-  let advisory = 0;
+  let high = 0;
   const violationsByCategory: Record<string, number> = {};
   const byAnalyzer: Record<string, { violations: number; filesProcessed: number; fatalErrors: number }> = {};
 
@@ -1458,8 +1458,8 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
         case 'severe':
           severe++;
           break;
-        case 'advisory':
-          advisory++;
+        case 'high':
+          high++;
           break;
       }
 
@@ -1485,7 +1485,7 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
     totalViolations,
     criticalIssues,
     severe,
-    advisory,
+    high,
     violationsByCategory,
     byAnalyzer,
     topIssues

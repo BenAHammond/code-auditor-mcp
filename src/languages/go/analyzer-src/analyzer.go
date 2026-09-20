@@ -158,7 +158,7 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 			violations = append(violations, Violation{
 				File:     filePath,
 				Line:     line,
-				Severity: "advisory",
+				Severity: "high",
 				Message:  "Import block mixes standard library and third-party imports without grouping",
 				Details: map[string]interface{}{
 					"importCount":        len(file.Imports),
@@ -177,7 +177,7 @@ func (a *Analyzer) runImportAnalysis() []Violation {
 				violations = append(violations, Violation{
 					File:     filePath,
 					Line:     pos.Line,
-					Severity: "advisory",
+					Severity: "high",
 					Message:  "Dot import detected - can lead to namespace pollution",
 					Details: map[string]interface{}{
 						"import": importSpec.Path.Value,
@@ -329,7 +329,7 @@ func (a *Analyzer) filterViolationsBySeverity(violations []Violation) []Violatio
 	}
 
 	severityOrder := map[string]int{
-		"advisory": 1,
+		"high": 1,
 		"severe":   2,
 		"critical": 3,
 	}

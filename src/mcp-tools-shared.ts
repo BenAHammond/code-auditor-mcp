@@ -65,9 +65,9 @@ export const tools: Tool[] = [
         name: 'minSeverity',
         type: 'string',
         required: false,
-        description: 'Minimum severity level to report (advisory included by default).',
-        default: 'advisory',
-        enum: ['advisory', 'severe', 'critical'],
+        description: 'Minimum severity level to report (high included by default).',
+        default: 'high',
+        enum: ['high', 'severe', 'critical'],
       },
       {
         name: 'indexFunctions',
@@ -494,9 +494,9 @@ export const uiTools: Tool[] = [
         name: 'minSeverity',
         type: 'string',
         required: false,
-        description: 'Minimum severity level (advisory included by default).',
-        default: 'advisory',
-        enum: ['advisory', 'severe', 'critical'],
+        description: 'Minimum severity level (high included by default).',
+        default: 'high',
+        enum: ['high', 'severe', 'critical'],
       },
     ],
   },
@@ -541,7 +541,7 @@ export class ToolHandlers {
     const options: AuditRunnerOptions = {
       projectRoot: isFile ? path.dirname(auditPath) : auditPath,
       enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'documentation', 'react', 'data-access'],
-      minSeverity: ((args.minSeverity as string) || 'advisory') as Severity,
+      minSeverity: ((args.minSeverity as string) || 'high') as Severity,
       verbose: false,
       indexFunctions,
       ...(isFile && { includePaths: [auditPath] }),
@@ -640,7 +640,7 @@ export class ToolHandlers {
         totalViolations: auditResult.summary.totalViolations,
         criticalIssues: auditResult.summary.criticalIssues,
         severe: auditResult.summary.severe,
-        advisory: auditResult.summary.advisory,
+        high: auditResult.summary.high,
         filesAnalyzed: auditResult.metadata.filesAnalyzed,
         executionTime: auditResult.metadata.auditDuration,
         healthScore: ToolHandlers.calculateHealthScore(auditResult),
@@ -674,7 +674,7 @@ export class ToolHandlers {
     const runner = createAuditRunner({
       projectRoot: auditPath,
       enabledAnalyzers: [...MCP_DEFAULT_ANALYZERS],
-      minSeverity: 'advisory',
+      minSeverity: 'high',
       verbose: false,
       indexFunctions,
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
@@ -773,7 +773,7 @@ export class ToolHandlers {
         totalViolations: auditResult.summary.totalViolations,
         criticalViolations: auditResult.summary.criticalIssues,
         severeViolations: auditResult.summary.severe,
-        advisoryViolations: auditResult.summary.advisory,
+        highViolations: auditResult.summary.high,
       },
       recommendation: ToolHandlers.getHealthRecommendation(healthScore, auditResult),
       ...(indexingResult && { functionIndexing: indexingResult }),
@@ -1276,17 +1276,17 @@ export class ToolHandlers {
     const filesAnalyzed = result.metadata?.filesAnalyzed || 1;
     const critical = result.summary.criticalIssues || 0;
     const severe = result.summary.severe || 0;
-    const advisory = result.summary.advisory || 0;
+    const high = result.summary.high || 0;
 
     const weights = {
       critical: 10,
       severe: 3,
-      advisory: 0.5
+      high: 0.5
     };
 
     const weightedViolations = (critical * weights.critical) +
                                (severe * weights.severe) +
-                               (advisory * weights.advisory);
+                               (high * weights.high);
 
     const violationsPerFile = weightedViolations / filesAnalyzed;
     let score = 100 - (violationsPerFile * 2);

@@ -36,10 +36,12 @@ import { describeSqliteBackend } from './sqlite/driver.js';
 
 const program = new Command();
 
-// Legacy severity names that were renamed in Spec-54 (severity as urgency).
-// `--fail-on high` must fail loudly and name the new tier, not emit a generic
-// "must be one of" list that leaves the user guessing what `high` became.
-const LEGACY_SEVERITY_NAMES: Record<string, string> = { high: 'advisory' };
+// Legacy severity names that were renamed off Spec-54's "advisory" back to "high"
+// (Spec-54's third tier rendered as "advisory", which read as optional — the very
+// word shape the rename was meant to eliminate — so it is now "high").
+// `--fail-on advisory` must fail loudly and name the new tier, not emit a generic
+// "must be one of" list that leaves the user guessing what `advisory` became.
+const LEGACY_SEVERITY_NAMES: Record<string, string> = { advisory: 'high' };
 
 // Spec 44 R4 — file accounting summary line + `--explain-skipped` breakdown.
 // The full per-reason file lists live in the JSON report (`metadata.fileAccounting`);
@@ -116,7 +118,7 @@ program
   .option('--fail-on <severity>', 'Exit code 2 when violations at or above this severity exist')
   .option('--full', 'Show full violation inventory (overrides default delta view when baseline exists)')
   .option('--include-baseline', 'Evaluate baseline-known violations in --fail-on checks')
-  .option('--fail-on-regression', 'Exit code 2 when total advisory debt exceeds the baseline snapshot')
+  .option('--fail-on-regression', 'Exit code 2 when total high debt exceeds the baseline snapshot')
   .option('--preset <id>', 'Apply a shareable preset (repeatable)', (v: string, prev: string[]) => prev.concat([v]), [])
   .option('--detach', 'Run the audit in a detached background process and print the job ID')
   .option('--partition-strategy <strategy>', 'Partition strategy for detached runs: none, auto, or top-level')
@@ -138,7 +140,7 @@ program
       await initParsers();
 
       // Validate --fail-on severity
-      const validSeverities: Severity[] = ['critical', 'severe', 'advisory'];
+      const validSeverities: Severity[] = ['critical', 'severe', 'high'];
       const failOnSeverity = options.failOn as Severity | undefined;
       if (failOnSeverity && !validSeverities.includes(failOnSeverity as Severity)) {
         const renamed = LEGACY_SEVERITY_NAMES[failOnSeverity as string];
@@ -354,7 +356,7 @@ program
         console.log(`\nFound ${result.summary.totalViolations} findings${findingsSuffix}`);
         console.log(summaryLine('Critical', result.summary.criticalIssues, 'critical'));
         console.log(summaryLine('Severe', result.summary.severe, 'severe'));
-        console.log(summaryLine('Advisory', result.summary.advisory, 'advisory'));
+        console.log(summaryLine('High', result.summary.high, 'high'));
 
         console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
         console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
@@ -363,7 +365,7 @@ program
         console.log(`\nFound ${result.summary.totalViolations} findings${findingsSuffix}`);
         console.log(summaryLine('Critical', result.summary.criticalIssues, 'critical'));
         console.log(summaryLine('Severe', result.summary.severe, 'severe'));
-        console.log(summaryLine('Advisory', result.summary.advisory, 'advisory'));
+        console.log(summaryLine('High', result.summary.high, 'high'));
 
         console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
       }
@@ -491,7 +493,7 @@ program
       }
 
       // ── Fail-on logic (Spec 18 R3) ───────────────────────────────
-      // --fail-on-regression: compare total advisory debt to baseline snapshot
+      // --fail-on-regression: compare total high debt to baseline snapshot
       if (baseline && options.failOnRegression) {
         const currentDebt = violations.filter((v: any) => v.new || v.new === false).length;
         const snapshotDebt = baseline.previousKnownCount ?? 0;
@@ -531,7 +533,7 @@ program
         const evaluableViolations = (baseline && !options.includeBaseline)
           ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
           : violations;
-        const severityOrder: Severity[] = ['critical', 'severe', 'advisory'];
+        const severityOrder: Severity[] = ['critical', 'severe', 'high'];
         const failIndex = severityOrder.indexOf(failOnSeverity);
         const hasAtOrAbove = evaluableViolations.some((v: any) => {
           // Spec 57 — a dismissed finding never blocks the gate.
@@ -646,7 +648,7 @@ program
       // agent-facing before/after count (Spec 45 A2) and the exit code agree on
       // the same number. Every registered rule participates (R1); enforcement is
       // not diff-scoped (R4). Spec 54: the blocking set is the fixed all-three
-      // {critical, severe, advisory} — every finding is a defect and every finding
+      // {critical, severe, high} — every finding is a defect and every finding
       // blocks; there is no configurable gate.
       const { blocking, resolutionGaps } = computeGatingDecision(violations as any, BLOCKING_SEVERITIES);
 
@@ -854,7 +856,7 @@ async function buildChangedResultFromDiagnostics(violations: any[], projectRoot:
 
 // Self-audit gate (Spec 33 Item 15 + Spec 44 remediation). Runs the full
 // analyzer pipeline over the tool's own production source and asserts zero
-// *blocking* (critical/severe/advisory) findings in the self-audit scope — the same
+// *blocking* (critical/severe/high) findings in the self-audit scope — the same
 // scope + severity contract as scripts/verify-self.mjs, but callable from the
 // shipped CLI so the edit-time plugin hook can enforce it. `verify:self` (the
 // release gate) stays authoritative; this command is its per-edit sibling.
@@ -884,12 +886,12 @@ program
   .option('--json', 'Output violations as machine-readable JSON to stdout')
   .option('--stdin', 'Read file paths from stdin (one per line)')
   .option('-p, --path <projectPath>', 'Project root path', process.cwd())
-  .option('--fail-on <severity>', 'Blocking severity floor: critical, severe, or advisory', 'advisory')
+  .option('--fail-on <severity>', 'Blocking severity floor: critical, severe, or high', 'high')
   .action(async (paths: string[], options: Record<string, any>) => {
     try {
       await initParsers();
 
-      const validSeverities: Severity[] = ['critical', 'severe', 'advisory'];
+      const validSeverities: Severity[] = ['critical', 'severe', 'high'];
       const failOnSeverity = options.failOn as Severity;
       if (!validSeverities.includes(failOnSeverity)) {
         const renamed = LEGACY_SEVERITY_NAMES[failOnSeverity as string];
@@ -941,7 +943,7 @@ program
         (r: any) => r.violations || []
       );
 
-      const severityOrder: Severity[] = ['critical', 'severe', 'advisory'];
+      const severityOrder: Severity[] = ['critical', 'severe', 'high'];
       const failIndex = severityOrder.indexOf(failOnSeverity);
       const blocking = violations.filter((v: any) => {
         if (!isSelfAuditInScope(v.file ?? '')) return false;
@@ -1066,7 +1068,7 @@ function printNextFile(
   }
 
   const top = ranked[0];
-  // Every issue on the file, ordered critical → severe → advisory.
+  // Every issue on the file, ordered critical → severe → high.
   const ordered = orderFindingsWithinFile(top.violations);
 
   const relativize = (filePath: string): string => {
@@ -2160,7 +2162,7 @@ tasksCmd
   .command('from-audit')
   .description('Populate tasks from audit violations')
   .option('--auditJobId <id>', 'Specific audit result ID')
-  .option('--severities <severities>', 'Comma-separated severities (critical,severe,advisory)', 'critical,severe,advisory')
+  .option('--severities <severities>', 'Comma-separated severities (critical,severe,high)', 'critical,severe,high')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
@@ -2621,7 +2623,7 @@ async function runDetachedAudit(options: {
   });
   const defaultsJson = JSON.stringify({
     defaultAnalyzers: DETACHED_DEFAULT_ANALYZERS,
-    defaultMinSeverity: 'advisory',
+    defaultMinSeverity: 'high',
     defaultGenerateCodeMap: false,
   });
 
@@ -2703,7 +2705,7 @@ program
   .option('--rule <rule>', 'Filter by rule id')
   .option('--analyzer <analyzer>', 'Filter by analyzer')
   .option('--file <file>', 'Filter by file path (substring match)')
-  .option('--severity <severity>', 'Filter by severity (critical|severe|advisory)')
+  .option('--severity <severity>', 'Filter by severity (critical|severe|high)')
   .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|cannot-fire|unassessed); omit value for all')
   .option('--count', 'Group findings by analyzer/rule with counts')
   .option('--limit <n>', 'Max findings to return (0 = unbounded)', '50')
@@ -3938,9 +3940,9 @@ async function buildRulesInteractively(): Promise<Record<string, unknown>> {
         choices: [
           { name: chalk.red('Critical — exploitable or broken now'), value: 'critical' },
           { name: chalk.yellow('Severe — wrong, and it will surface'), value: 'severe' },
-          { name: chalk.blue('Advisory — correct but off-convention'), value: 'advisory' },
+          { name: chalk.blue('High — correct but off-convention'), value: 'high' },
         ],
-        default: 'advisory',
+        default: 'high',
       },
       message: {
         type: 'input',

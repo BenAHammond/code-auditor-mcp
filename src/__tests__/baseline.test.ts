@@ -94,7 +94,7 @@ async function writeConfig(testDir: string, overrides: Record<string, any> = {})
       enabledAnalyzers: ['documentation'],
       includePaths: ['src/**/*.ts'],
       excludePaths: ['**/node_modules/**', '**/*.test.ts', '**/*.spec.ts'],
-      minSeverity: 'advisory',
+      minSeverity: 'high',
       showProgress: false,
       ...overrides,
     }, null, 2),
@@ -222,7 +222,7 @@ describe('Spec-18 — Baseline module', () => {
 
   it('createBaselineFromFindings excludes invariant violations', () => {
     const violations: Violation[] = [
-      { file: 'src/a.ts', line: 1, column: 1, severity: 'advisory', message: 'doc', rule: 'function-documentation', analyzer: 'documentation', functionName: 'myFn' },
+      { file: 'src/a.ts', line: 1, column: 1, severity: 'high', message: 'doc', rule: 'function-documentation', analyzer: 'documentation', functionName: 'myFn' },
       { file: 'src/b.ts', line: 1, column: 1, severity: 'critical', message: 'ban', rule: 'import-ban', analyzer: 'invariants' },
     ];
     const baseline = createBaselineFromFindings(violations, {
@@ -236,7 +236,7 @@ describe('Spec-18 — Baseline module', () => {
   });
 
   it('createBaselineFromFindings deduplicates by fingerprint', () => {
-    const v: Violation = { file: 'src/a.ts', line: 1, column: 1, severity: 'advisory', message: 'undocumented', rule: 'function-documentation', analyzer: 'documentation', functionName: 'myFn' };
+    const v: Violation = { file: 'src/a.ts', line: 1, column: 1, severity: 'high', message: 'undocumented', rule: 'function-documentation', analyzer: 'documentation', functionName: 'myFn' };
     const violations: Violation[] = [
       { ...v, line: 1 },
       { ...v, line: 42 },  // different line, same fingerprint
@@ -288,7 +288,7 @@ describe('Spec-18 — Baseline module', () => {
     };
 
     const violation: Violation = {
-      file: 'src/a.ts', line: 1, column: 1, severity: 'advisory', message: 'no doc',
+      file: 'src/a.ts', line: 1, column: 1, severity: 'high', message: 'no doc',
       rule: 'function-documentation', analyzer: 'documentation', functionName: 'myFn',
     };
 
@@ -313,7 +313,7 @@ describe('Spec-18 — Baseline module', () => {
 
     // Violation in a different file → different fingerprint → new
     const violation: Violation = {
-      file: 'src/b.ts', line: 1, column: 1, severity: 'advisory', message: 'no doc',
+      file: 'src/b.ts', line: 1, column: 1, severity: 'high', message: 'no doc',
       rule: 'function-documentation', analyzer: 'documentation', functionName: 'otherFn',
     };
 
@@ -405,7 +405,7 @@ describe('Spec-18 — Baseline module', () => {
     // Only "touched.ts" is in scope. The violation matches entry → known.
     // untouchedEntry should NOT appear as "fixed" because it's out of scope.
     const violation: Violation = {
-      file: 'src/touched.ts', line: 1, column: 1, severity: 'advisory', message: 'no doc',
+      file: 'src/touched.ts', line: 1, column: 1, severity: 'high', message: 'no doc',
       rule: 'function-documentation', analyzer: 'documentation', functionName: 'touchedFn',
     };
 
@@ -815,7 +815,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
           file: 'src/Component.tsx',
           line: 40,
           column: 1,
-          severity: 'advisory',
+          severity: 'high',
           message: 'effect missing deps',
           analyzer: 'react',
           rule: 'react/missing-deps',
@@ -844,7 +844,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
           file: 'src/e.ts',
           line: 60,
           column: 1,
-          severity: 'advisory',
+          severity: 'high',
           message: 'some issue',
           analyzer: 'documentation',
           rule: 'some-rule',
@@ -915,7 +915,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
       {
         label: 'universal-documentation: rule = file-documentation',
         violation: {
-          file: 'src/a.ts', line: 1, column: 1, severity: 'advisory',
+          file: 'src/a.ts', line: 1, column: 1, severity: 'high',
           message: 'undocumented', analyzer: 'documentation',
           rule: 'file-documentation', functionName: 'myFn',
         },
@@ -942,7 +942,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
       {
         label: 'universal-DRY: rule = dry/duplicate',
         violation: {
-          file: 'src/d.ts', line: 15, column: 1, severity: 'advisory',
+          file: 'src/d.ts', line: 15, column: 1, severity: 'high',
           message: 'duplicate code', analyzer: 'dry',
           rule: 'dry/duplicate', functionName: 'helperFn',
         } as any,
@@ -971,7 +971,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
       {
         label: 'reactAnalyzer: rule = complexity',
         violation: {
-          file: 'src/App.tsx', line: 35, column: 1, severity: 'advisory',
+          file: 'src/App.tsx', line: 35, column: 1, severity: 'high',
           message: 'component too complex', analyzer: 'react',
           rule: 'complexity', componentName: 'App',
         } as any,
@@ -1020,7 +1020,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
       {
         label: 'unknown-analyzer: rule = structural-issue',
         violation: {
-          file: 'src/h.ts', line: 50, column: 1, severity: 'advisory',
+          file: 'src/h.ts', line: 50, column: 1, severity: 'high',
           message: 'some issue', analyzer: 'unknown-analyzer',
           rule: 'structural-issue', functionName: 'someFn',
         } as any,
@@ -1030,7 +1030,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
       {
         label: 'react: rule = react/nested-rule',
         violation: {
-          file: 'src/i.ts', line: 55, column: 1, severity: 'advisory',
+          file: 'src/i.ts', line: 55, column: 1, severity: 'high',
           message: 'nested rule violation', analyzer: 'react',
           rule: 'react/nested-rule', functionName: 'renderView',
         } as any,
@@ -1040,7 +1040,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
       {
         label: 'no rule field at all → empty string',
         violation: {
-          file: 'src/j.ts', line: 60, column: 1, severity: 'advisory',
+          file: 'src/j.ts', line: 60, column: 1, severity: 'high',
           message: 'unknown issue', analyzer: 'unknown',
           functionName: 'unlabeledFn',
         } as any,
@@ -1072,8 +1072,8 @@ describe('Spec-18 — Audit pipeline integration', () => {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CLI integration tests — end-to-end via shell-out
-// NOTE: --fail-on advisory is used because `advisory` is the lowest severity and
-//       catches every documentation violation (none are below advisory).
+// NOTE: --fail-on high is used because `high` is the lowest severity and
+//       catches every documentation violation (none are below high).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Spec-18 — CLI end-to-end', () => {
@@ -1088,25 +1088,25 @@ describe('Spec-18 — CLI end-to-end', () => {
     try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
-  it('R6.1/2 — CLI: --fail-on advisory exits 2 for new finding, 0 after baseline', async () => {
-    // Step 1: Write undocumented file, audit with --fail-on advisory
+  it('R6.1/2 — CLI: --fail-on high exits 2 for new finding, 0 after baseline', async () => {
+    // Step 1: Write undocumented file, audit with --fail-on high
     await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
     await writeConfig(testDir);
 
-    // Finding is new → --fail-on advisory should exit 2
-    const r1 = runCli(`audit -p "${testDir}" --fail-on advisory`, testDir);
+    // Finding is new → --fail-on high should exit 2
+    const r1 = runCli(`audit -p "${testDir}" --fail-on high`, testDir);
     expect(r1.exitCode).toBe(2);
 
     // Step 2: Run baseline to snapshot
     const rBaseline = runCli(`baseline -p "${testDir}" --json`, testDir);
     expect(rBaseline.exitCode).toBe(0);
 
-    // Step 3: Re-audit → findings are known → --fail-on advisory exits 0
-    const r2 = runCli(`audit -p "${testDir}" --fail-on advisory`, testDir);
+    // Step 3: Re-audit → findings are known → --fail-on high exits 0
+    const r2 = runCli(`audit -p "${testDir}" --fail-on high`, testDir);
     expect(r2.exitCode).toBe(0);
 
     // Step 4: --include-baseline restores full evaluation → exits 2
-    const r3 = runCli(`audit -p "${testDir}" --fail-on advisory --include-baseline`, testDir);
+    const r3 = runCli(`audit -p "${testDir}" --fail-on high --include-baseline`, testDir);
     expect(r3.exitCode).toBe(2);
   });
 
@@ -1274,15 +1274,15 @@ describe('Spec-18 — CLI end-to-end', () => {
       ],
     });
 
-    // First audit — documentation violation + no invariant violation = exits 2 on advisory
-    const r1 = runCli(`audit -p "${testDir}" --fail-on advisory`, testDir);
+    // First audit — documentation violation + no invariant violation = exits 2 on high
+    const r1 = runCli(`audit -p "${testDir}" --fail-on high`, testDir);
     expect(r1.exitCode).toBe(2);
 
     // Baseline the documentation findings
     runCli(`baseline -p "${testDir}" --json`, testDir);
 
-    // After baseline, documentation findings are known → --fail-on advisory exits 0
-    const r2 = runCli(`audit -p "${testDir}" --fail-on advisory`, testDir);
+    // After baseline, documentation findings are known → --fail-on high exits 0
+    const r2 = runCli(`audit -p "${testDir}" --fail-on high`, testDir);
     expect(r2.exitCode).toBe(0);
 
     // But invariant violations are always "new" — --fail-on critical should NOT
@@ -1675,7 +1675,7 @@ describe('Rule Registry', () => {
       rule: 'table-naming-convention',
       file: 'a.ts',
       symbol: 'UserProfiles',
-      severity: 'advisory',
+      severity: 'high',
       message: 'x',
     }));
     expect(newFp).toBe(oldFp);
@@ -1827,7 +1827,7 @@ describe('JSON output purity', () => {
   it('tasks from-audit --json produces parseable JSON', () => {
     // Must sync + audit first so from-audit has violations to process
     runCli(`sync -p "${testDir}"`, testDir);
-    runCli(`audit -f json --fail-on advisory -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on high -p "${testDir}"`, testDir);
     const r = runCli(`tasks from-audit --json`, testDir);
     let parsed: any;
     expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
@@ -1837,7 +1837,7 @@ describe('JSON output purity', () => {
   it('hotspots --json produces parseable JSON (after audit)', () => {
     // Hotspots needs prior audit data in the ledger
     runCli(`sync -p "${testDir}"`, testDir);
-    runCli(`audit -f json --fail-on advisory -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on high -p "${testDir}"`, testDir);
     const r = runCli(`hotspots --json`, testDir);
     let parsed: any;
     expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
@@ -1846,7 +1846,7 @@ describe('JSON output purity', () => {
 
   it('ledger stats --json produces parseable JSON (after audit)', () => {
     runCli(`sync -p "${testDir}"`, testDir);
-    runCli(`audit -f json --fail-on advisory -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on high -p "${testDir}"`, testDir);
     const r = runCli(`ledger stats --json`, testDir);
     let parsed: any;
     expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
@@ -1856,7 +1856,7 @@ describe('JSON output purity', () => {
 
   it('ledger list --json produces parseable JSON (after audit)', () => {
     runCli(`sync -p "${testDir}"`, testDir);
-    runCli(`audit -f json --fail-on advisory -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on high -p "${testDir}"`, testDir);
     const r = runCli(`ledger list --json`, testDir);
     let parsed: any;
     expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
@@ -1873,7 +1873,7 @@ describe('JSON output purity', () => {
   it('baseline --json produces parseable JSON (after audit)', () => {
     // Baseline snapshots current findings — needs audit first
     runCli(`sync -p "${testDir}"`, testDir);
-    runCli(`audit -f json --fail-on advisory -p "${testDir}"`, testDir);
+    runCli(`audit -f json --fail-on high -p "${testDir}"`, testDir);
     const r = runCli(`baseline --json -p "${testDir}"`, testDir);
     let parsed: any;
     expect(() => { parsed = JSON.parse(r.stdout.trim()); }).not.toThrow();
