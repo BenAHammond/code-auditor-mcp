@@ -666,9 +666,30 @@ tables were last measured 2026-09-15, before 4.0.0):
 
 primer-css shows zero delta on every rule.
 
+Re-pinned 2026-09-20 at 4.0.3. The `sql-injection-risk` parameterized-query
+narrowing (fix `1ee1e54`) moved exactly one rule on exactly one corpus:
+
+- `data-access::sql-injection-risk` 15 → 12 (recall-protocol). **−3** — three
+  interpolations of a *static column-name list* (`.join(", ")` over a const array
+  of string literals) are no longer flagged: `scrub-build-citation-markers.ts:62`
+  (`PROSE_COLUMNS.join(", ")`) and `validate-atomic-gate-live.ts:43`/`:44`
+  (`ABILITY_STATS.join(", ")` / `WEAPON_STATS.join(", ")`). Each joins a literal
+  identifier list into a statement, not user data, so the new `isSafeJoin` guard
+  clears them.
+
+hhra-org, knex, primer-css, blitz, and endless-guessing show zero delta — none
+interpolate a static column-name `.join()` that the old code still flagged
+(knex's 5 are unchanged). recall-protocol's 12 survivors sampled and confirmed
+genuine: dynamic value interpolation (`inspect-claims-table.ts` `${table}` /
+`${sampleCols}`, `morning-triage.ts` `${a.build_id}`,
+`backfill-strategy-heroes.ts` `${values}` built from row data) plus the
+acknowledged quote-doubling FP (`reconcile-migration-ledger.ts`
+`${table.replace(/'/g,"''")}` — documented `high` in the 4.0.1 pin, not cleared).
+No genuine injection lost — a clean narrowing, not a weakening to zero.
+
 ---
 
-## recall-protocol — 3,025 advisory findings (2,099 files)
+## recall-protocol — 3,022 advisory findings (2,099 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -693,7 +714,7 @@ primer-css shows zero delta on every rule.
 | cross-domain::cross-domain/written-never-read | 19 |
 | schema::stale-table-reference | 19 |
 | documentation::class-documentation | 16 |
-| data-access::sql-injection-risk | 15 |
+| data-access::sql-injection-risk | 12 |
 | cross-domain::cross-domain/read-never-written | 14 |
 | react::accessibility | 12 |
 | solid::parameter-count | 11 |
