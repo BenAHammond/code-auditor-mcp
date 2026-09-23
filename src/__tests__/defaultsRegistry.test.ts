@@ -19,7 +19,7 @@
  *   const finalConfig = { ...DEFAULT_*_CONFIG, ...(user config) };
  */
 import { describe, it, expect } from 'vitest';
-import { getDefaultConfig, DEFAULT_ANALYZER_CONFIGS } from '../config/defaults.js';
+import { getDefaultConfig, getProjectTypeDefaults, getEnvironmentDefaults, DEFAULT_ANALYZER_CONFIGS } from '../config/defaults.js';
 import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
 // Analyzer defaults — used by each analyzer's constructor/analyzeAST
 import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
@@ -131,5 +131,31 @@ describe('config-key guards (Spec 22 Item 3)', () => {
       const sp = defaultsDataAccess.securityPatterns as Record<string, unknown> | undefined;
       expect(sp?.sanitized).toBeUndefined();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Report-output defaults must not be advertised
+// ---------------------------------------------------------------------------
+//
+// `outputFormats`/`outputDirectory` were dead defaults: nothing in the run path
+// read them, but `print-config` surfaced them as defaults, so a user copied the
+// key into `.codeauditor.json` and either got refused (`output-directory-refused`)
+// or silently ignored. They are removed from the defaults so print-config stops
+// advertising a key the loader then refuses/ignores.
+describe('report-output defaults are not advertised', () => {
+  it('getDefaultConfig has no outputFormats/outputDirectory key', () => {
+    const defaults = getDefaultConfig() as Record<string, unknown>;
+    expect('outputFormats' in defaults).toBe(false);
+    expect('outputDirectory' in defaults).toBe(false);
+  });
+
+  it('project-type and environment defaults do not reintroduce outputFormats', () => {
+    for (const t of ['nextjs', 'react', 'node']) {
+      expect('outputFormats' in (getProjectTypeDefaults(t) as Record<string, unknown>)).toBe(false);
+    }
+    for (const e of ['ci', 'development', 'production']) {
+      expect('outputFormats' in (getEnvironmentDefaults(e) as Record<string, unknown>)).toBe(false);
+    }
   });
 });

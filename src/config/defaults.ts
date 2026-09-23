@@ -27,8 +27,10 @@ export function getDefaultConfig(): AuditConfig {
       '**/*.spec.{ts,tsx,js,jsx}'
     ],
     enabledAnalyzers: [...ALL_ANALYZERS],
-    outputFormats: ['html', 'json'],
-    outputDirectory: './audit-reports',
+    // Note: no `outputFormats`/`outputDirectory` default. Reports are written
+    // only to an explicit CLI `--output` path (or stdout); a config default here
+    // would advertise a key that `print-config` then shows and the loader then
+    // refuses/ignores. See configLoader.ts `output-directory-refused`.
     minSeverity: 'high',
     failOnCritical: false,
     showProgress: true,
@@ -77,8 +79,7 @@ export function getProjectTypeDefaults(projectType: string): Partial<AuditConfig
     
     case 'node':
       return {
-        includePaths: ['src/**/*.{ts,js}', 'lib/**/*.{ts,js}'],
-        outputFormats: ['json', 'csv']
+        includePaths: ['src/**/*.{ts,js}', 'lib/**/*.{ts,js}']
       };
     
     default:
@@ -93,14 +94,12 @@ export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
   switch (env) {
     case 'ci':
       return {
-        outputFormats: ['json'],
         failOnCritical: true,
         showProgress: false
       };
-    
+
     case 'development':
       return {
-        outputFormats: ['html'],
         showProgress: true,
         minSeverity: 'high'
       };

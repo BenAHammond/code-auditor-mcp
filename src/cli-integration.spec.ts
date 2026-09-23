@@ -14,7 +14,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, writeFile, mkdir } from 'fs/promises';
-import { rmSync, accessSync } from 'fs';
+import { rmSync, accessSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
@@ -683,6 +683,96 @@ describe('INSERT/DELETE table patterns + provenance fixture', () => {
     for (const v of d1ExecViolations) {
       expect(v.functionName).toContain('runMigration');
     }
+  });
+});
+
+// ── Report-write safety — no file into the audited tree without consent ─────
+// A bare `audit --format json` used to write `audit-report.json` into the
+// audited project's root (`options.output || process.cwd()`), silently
+// overwriting any existing file. The report writer now (a) defaults to stdout
+// when no `--output` is given and (b) refuses to clobber an existing report file
+// unless `--overwrite` is passed.
+describe('report-write safety', () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), 'ca-report-write-'));
+    // Minimal valid project so the audit reaches the report-writing step.
+    await mkdir(join(testDir, 'src'), { recursive: true });
+    await writeFile(join(testDir, 'src', 'widget.tsx'), 'export const Widget = () => <div className="card">hi</div>;\n', 'utf-8');
+  });
+
+  afterEach(() => {
+    try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('--format json without --output writes nothing to disk and emits the report on stdout', () => {
+    const { stdout } = runCli(`audit --path "${testDir}" -f json`, testDir);
+
+    expect(existsSync(join(testDir, 'audit-report.json'))).toBe(false);
+    expect(stdout).toContain('analyzerResults');
+  });
+
+  it('--format json --output onto an existing report fails rather than clobbering it', () => {
+    const outDir = join(testDir, 'reports');
+    mkdirSync(outDir, { recursive: true });
+    const reportPath = join(outDir, 'audit-report.json');
+    writeFileSync(reportPath, '{"sentinel": true}\n', 'utf-8');
+
+    const { exitCode, stderr } = runCli(`audit --path "${testDir}" -f json -o "${outDir}"`, testDir);
+
+    expect(exitCode).toBe(1);
+    expect(readFileSync(reportPath, 'utf-8')).toBe('{"sentinel": true}\n');
+    expect(stderr).toContain('Refusing to overwrite');
+  });
+
+  it('--format json --output --overwrite replaces an existing report', () => {
+    const outDir = join(testDir, 'reports');
+    mkdirSync(outDir, { recursive: true });
+    const reportPath = join(outDir, 'audit-report.json');
+    writeFileSync(reportPath, '{"sentinel": true}\n', 'utf-8');
+
+    runCli(`audit --path "${testDir}" -f json -o "${outDir}" --overwrite`, testDir);
+
+    const after = readFileSync(reportPath, 'utf-8');
+    expect(after).not.toBe('{"sentinel": true}\n');
+    expect(after).toContain('analyzerResults');
+  });
+});
+
+// `map -o <file>` used to `fs.writeFile(options.output, ...)` with no existence
+// check — the same silent-clobber defect as the report writer. It now refuses to
+// overwrite an existing file unless `--overwrite` is passed.
+describe('map output safety', () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), 'ca-map-write-'));
+  });
+
+  afterEach(() => {
+    try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('map -o onto an existing file fails rather than clobbering it', () => {
+    const outPath = join(testDir, 'map.txt');
+    writeFileSync(outPath, 'sentinel\n', 'utf-8');
+
+    const { exitCode, stderr } = runCli(`map -p "${testDir}" -o "${outPath}"`, testDir);
+
+    expect(exitCode).toBe(1);
+    expect(readFileSync(outPath, 'utf-8')).toBe('sentinel\n');
+    expect(stderr).toContain('Refusing to overwrite');
+  });
+
+  it('map -o --overwrite replaces an existing file', () => {
+    const outPath = join(testDir, 'map.txt');
+    writeFileSync(outPath, 'sentinel\n', 'utf-8');
+
+    const { exitCode } = runCli(`map -p "${testDir}" -o "${outPath}" --overwrite`, testDir);
+
+    expect(exitCode).toBe(0);
+    expect(readFileSync(outPath, 'utf-8')).not.toBe('sentinel\n');
   });
 });
 

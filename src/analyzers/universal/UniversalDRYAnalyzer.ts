@@ -13,7 +13,7 @@
 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
-import type { Violation, FunctionMetadata } from '../../types.js';
+import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
 import * as crypto from 'crypto';
 
@@ -65,8 +65,6 @@ export interface DRYAnalyzerConfig {
   minShapeNames?: number;
   ignoreComments?: boolean;
   ignoreWhitespace?: boolean;
-  /** Full function index (all functions in codebase) for cross-file duplicate detection in scoped audits */
-  fullFunctionIndex?: FunctionMetadata[];
 }
 
 export const DEFAULT_DRY_CONFIG: DRYAnalyzerConfig = {
@@ -531,23 +529,13 @@ function normalizeStructure(code: string): string {
  */
 function normalizeCode(code: string, config: DRYAnalyzerConfig): string {
   let normalized = code;
-
   if (config.ignoreWhitespace) {
-    // Normalize whitespace but preserve structure
-    normalized = normalized
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0)
-      .join('\n');
+    normalized = normalized.split('\n').map(line => line.trim()).filter(line => line.length > 0).join('\n');
   }
-
   if (config.ignoreComments) {
-    // Remove single-line comments
     normalized = normalized.replace(/\/\/.*$/gm, '');
-    // Remove multi-line comments
     normalized = normalized.replace(/\/\*[\s\S]*?\*\//g, '');
   }
-
   return normalized;
 }
 
@@ -832,7 +820,6 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
       const fragments = extractShapeFragments(ctx, finalConfig.minShapeNames || 4);
       this.reportExpressionSimilarities(fragments, finalConfig, violations);
     }
-    this.reportCrossFileDuplicates(blocks, finalConfig, violations);
 
     // Check for duplicate string literals if enabled
     if (finalConfig.checkStrings) {
@@ -1030,78 +1017,6 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
       newText: `// Consider extracting the shared ${unit} into a shared helper`,
     };
     return violation;
-  }
-
-  /**
-   * Report blocks that duplicate a function body from the full codebase index.
-   * Only used in scoped (changed-file) audits.
-   */
-  private reportCrossFileDuplicates(
-    blocks: CodeBlock[],
-    config: DRYAnalyzerConfig,
-    violations: Violation[]
-  ): void {
-    withRuleTiming('dry/duplicate', () => {
-      if (!config.fullFunctionIndex || config.fullFunctionIndex.length === 0) return;
-
-      const fullHashmap = this.buildFullFunctionHashmap(config);
-
-      for (const block of blocks) {
-        if (!isBlockLargeEnough(block, config)) continue;
-
-        const fullMatch = fullHashmap.get(block.hash);
-        if (fullMatch && fullMatch.file !== block.file) {
-          const violation = this.createViolation(
-            block.file,
-            block.start,
-            `Duplicate code block detected (${block.lineCount} lines). ` +
-            `First occurrence in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name})`,
-            { severity: 'high', rule: 'dry/duplicate', symbol: block.hash,
-              resolution: {
-                action: 'extract-duplicate',
-                summary: `Extract the ${block.lineCount}-line block duplicated in ${fullMatch.file}:${fullMatch.line} (${fullMatch.name}) into a shared function both sites call.`,
-                files: [block.file, fullMatch.file],
-                lines: [block.start.line, fullMatch.line],
-              } }
-          );
-          violation.fix = {
-            oldText: block.text,
-            newText: `// Consider extracting to a shared function`
-          };
-          violations.push(violation);
-        }
-      }
-    });
-  }
-
-  /**
-   * Build a hash→location map of every function body in the full codebase index.
-   */
-  private buildFullFunctionHashmap(
-    config: DRYAnalyzerConfig
-  ): Map<string, { file: string; name: string; line: number }> {
-    const fullHashmap = new Map<string, { file: string; name: string; line: number }>();
-
-    for (const func of config.fullFunctionIndex || []) {
-      const body = (func as any).body;
-      if (!body) continue;
-
-      try {
-        const normalized = normalizeCode(body, config);
-        const hash = hashCode(normalized);
-        if (!fullHashmap.has(hash)) {
-          fullHashmap.set(hash, {
-            file: func.filePath,
-            name: func.name,
-            line: func.startLine ?? func.lineNumber ?? 0
-          });
-        }
-      } catch {
-        // Skip functions whose body can't be normalized
-      }
-    }
-
-    return fullHashmap;
   }
 
   /**

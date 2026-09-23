@@ -84,10 +84,10 @@ export async function requestDaemonShutdown(socketPath: string): Promise<boolean
 
 /**
  * Start a daemon detached from the caller. Used by `daemon start` (no
- * `--foreground`) and by the `daemon.autoStart` opt-in. The child is `unref`'d
- * so the parent exits immediately; the daemon talks to the ledger, never back
- * to the parent. `spawn` + `unref` (no IPC channel) mirrors the Spec 41
- * `--detach` pattern — the child survives the parent, not the other way around.
+ * `--foreground`). The child is `unref`'d so the parent exits immediately; the
+ * daemon talks to the ledger, never back to the parent. `spawn` + `unref` (no
+ * IPC channel) mirrors the Spec 41 `--detach` pattern — the child survives the
+ * parent, not the other way around.
  */
 export function startDaemonDetached(projectRoot: string, configName?: string): void {
   const args = [resolveDaemonEntrypoint(), path.resolve(projectRoot)];

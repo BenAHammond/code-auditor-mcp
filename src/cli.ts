@@ -115,6 +115,7 @@ program
   .option('-c, --config <config>', 'Configuration name')
   .option('-o, --output <dir>', 'Output directory for reports')
   .option('-f, --format <format>', 'Report format: html, json, csv, or sarif')
+  .option('--overwrite', 'Overwrite an existing report file at --output (default: refuse)')
   .option('--fail-on <severity>', 'Exit code 2 when violations at or above this severity exist')
   .option('--full', 'Show full violation inventory (overrides default delta view when baseline exists)')
   .option('--include-baseline', 'Evaluate baseline-known violations in --fail-on checks')
@@ -526,12 +527,31 @@ program
           ? { rootDir, ...readVersionControlProvenance(rootDir) }
           : { rootDir };
         const report = generateReport(result, options.format as any, config);
-        const outputDir = options.output || process.cwd();
         const ext = options.format === 'sarif' ? 'sarif' : options.format;
-        const reportPath = join(outputDir, `audit-report.${ext}`);
-        await fs.mkdir(dirname(reportPath), { recursive: true });
-        await fs.writeFile(reportPath, report, 'utf-8');
-        console.log(chalk.green(`\nReport written to ${reportPath}`));
+
+        if (options.output) {
+          // Explicit output path — write a file. Refuse to clobber an existing
+          // report unless --overwrite is passed. A report write is destructive;
+          // a silent overwrite of `audit-report.json` in a consuming repo is the
+          // defect this guard removes.
+          const outputDir = resolve(options.output);
+          const reportPath = join(outputDir, `audit-report.${ext}`);
+          let exists = false;
+          try { await fs.access(reportPath); exists = true; } catch { /* ok */ }
+          if (exists && !options.overwrite) {
+            console.error(
+              chalk.red(`Refusing to overwrite existing report ${reportPath} — pass --overwrite to replace it.`)
+            );
+            process.exit(1);
+          }
+          await fs.mkdir(dirname(reportPath), { recursive: true });
+          await fs.writeFile(reportPath, report, 'utf-8');
+          console.log(chalk.green(`\nReport written to ${reportPath}`));
+        } else {
+          // No output path — default to stdout. Never write a report into the
+          // audited project without an explicit --output on the command line.
+          process.stdout.write(report + '\n');
+        }
       }
 
       // ── Fail-on logic (Spec 18 R3) ───────────────────────────────
@@ -1350,8 +1370,9 @@ program
   .description('Generate a .codeauditor.json scaffold with invariant rules')
   .option('-o, --output <dir>', 'Output directory', '.')
   .option('-i, --interactive', 'Interactive rule builder')
-  .option('-f, --force', 'Force overwrite existing file without confirmation')
-  .option('-y, --yes', 'Skip confirmation prompts (same as --force)')
+  .option('--overwrite', 'Overwrite an existing .codeauditor.json without confirmation')
+  .option('-f, --force', 'Alias for --overwrite')
+  .option('-y, --yes', 'Alias for --overwrite')
   .action(async (options) => {
     console.log(chalk.blue('🛠️  Code Auditor Config Generator'));
     console.log(chalk.gray('════════════════════════════════════════════════════'));
@@ -1973,6 +1994,7 @@ program
   .option('--no-unused-imports', 'Hide unused import warnings')
   .option('--min-complexity <threshold>', 'Minimum complexity threshold for warnings', '7')
   .option('-o, --output <file>', 'Save output to file instead of displaying')
+  .option('--overwrite', 'Overwrite an existing output file (default: refuse)')
   .action(async (options) => {
     console.log(chalk.blue('🗺️  Codebase Map Generator'));
     console.log(chalk.gray('════════════════════════════════════════════════════'));
@@ -3426,9 +3448,6 @@ program
       // normalizes the real config, so path keys compare cleanly instead of
       // reading as "user-set" because one side is absolute and the other is not.
       const pristine: any = { ...getDefaultConfig(), codeIndex: { ...DEFAULT_CODE_INDEX_CONFIG } };
-      if (pristine.outputDirectory) {
-        pristine.outputDirectory = pathModule.resolve(projectRoot, pristine.outputDirectory);
-      }
       pristine.includePaths = (pristine.includePaths ?? []).map((p: string) =>
         pathModule.isAbsolute(p) ? p : pathModule.resolve(projectRoot, p));
       pristine.excludePaths = (pristine.excludePaths ?? []).map((p: string) =>
@@ -3859,6 +3878,9 @@ const SCAFFOLD_CONFIG: Record<string, unknown> = {
 async function generateConfigurations(options: any): Promise<void> {
   const outputDir = resolve(options.output || '.');
   const outputPath = join(outputDir, '.codeauditor.json');
+  // One consent spelling across the CLI: `--overwrite`. `--force`/`--yes` are
+  // retained as aliases for back-compat.
+  const overwrite = Boolean(options.overwrite || options.force || options.yes);
 
   let config: Record<string, unknown>;
 
@@ -3882,7 +3904,7 @@ async function generateConfigurations(options: any): Promise<void> {
     }
 
     // Confirm output directory
-    if (!options.force && !options.yes) {
+    if (!overwrite) {
       const { dir } = await inquirer.prompt({
         dir: {
           type: 'input',
@@ -3920,13 +3942,13 @@ async function generateConfigurations(options: any): Promise<void> {
     let exists = false;
     try { await fs.access(outputPath); exists = true; } catch { /* ok */ }
 
-    if (exists && !options.force && !options.yes) {
+    if (exists && !overwrite) {
       console.log(chalk.yellow(`.codeauditor.json already exists at ${outputPath}`));
-      console.log(chalk.gray('Use --force or --yes to overwrite, or --interactive to build a custom config.'));
+      console.log(chalk.gray('Use --overwrite to replace it, or --interactive to build a custom config.'));
       return;
     }
 
-    if (exists && (options.force || options.yes)) {
+    if (exists && overwrite) {
       console.log(chalk.yellow('Overwriting existing .codeauditor.json...'));
     }
 
@@ -4218,9 +4240,20 @@ async function generateCodeMap(options: any): Promise<void> {
 
     // Output results
     if (options.output) {
-      // Save to file
-      await fs.writeFile(options.output, textOutput);
-      console.log(chalk.green(`✓ Code map saved to: ${options.output}`));
+      // Save to file. Refuse to clobber an existing file unless --overwrite is
+      // passed — same guard as the report writer, so `map -o` cannot silently
+      // destroy a file the developer did not consent to replacing.
+      const outPath = resolve(options.output);
+      let exists = false;
+      try { await fs.access(outPath); exists = true; } catch { /* ok */ }
+      if (exists && !options.overwrite) {
+        console.error(
+          chalk.red(`Refusing to overwrite existing file ${outPath} — pass --overwrite to replace it.`)
+        );
+        process.exit(1);
+      }
+      await fs.writeFile(outPath, textOutput);
+      console.log(chalk.green(`✓ Code map saved to: ${outPath}`));
       
       // Show summary
       console.log('');

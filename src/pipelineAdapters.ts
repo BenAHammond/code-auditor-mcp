@@ -162,7 +162,7 @@ export interface DryVisitorBundle {
   }>>;
 }
 
-export function createDryVisitor(fullFunctionIndex?: any[]): DryVisitorBundle {
+export function createDryVisitor(): DryVisitorBundle {
   const getAnalyzer = lazySingleton<any>(() =>
     import('./analyzers/universal/UniversalDRYAnalyzer.js').then(
       (m) => new m.UniversalDRYAnalyzer(),
@@ -175,11 +175,8 @@ export function createDryVisitor(fullFunctionIndex?: any[]): DryVisitorBundle {
     getRuleIds: () => getRuleIdsFor('dry'),
     async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
       const a = await getAnalyzer();
-      const config = fullFunctionIndex
-        ? { ...context.config, fullFunctionIndex }
-        : context.config;
       const violations: Violation[] = await a.analyzeAST(
-        ast as AST, adapter as LanguageAdapter, config, sourceCode,
+        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
       );
       return { violations, facts: {} };
     },

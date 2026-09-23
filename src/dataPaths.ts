@@ -82,6 +82,19 @@ export function resolveDaemonLogPath(projectRoot: string): string {
 }
 
 /**
+ * Log file for the MCP server in development mode (explicit `--dev` only).
+ *
+ * Routed to the OS cache `logs/` dir rather than `process.cwd()`: dev mode is a
+ * maintainer convenience, never a reason to drop a bare `mcp-server.log` into
+ * whatever project happens to be the working directory. That was the same
+ * silent-write-into-the-consumer-tree defect as the report writer's old
+ * `options.output || process.cwd()` default, wearing a different hat.
+ */
+export function resolveMcpDevLogPath(): string {
+  return path.join(getFallbackCacheRoot(), 'logs', 'mcp-server.log');
+}
+
+/**
  * Cache directory for a rebuilt Go analyzer binary. A rebuild — needed when the
  * running platform has no shipped prebuilt binary — lands here, never in
  * `dist/languages/go`, so the shipped tree stays read-only (npm/pnpm store, CI

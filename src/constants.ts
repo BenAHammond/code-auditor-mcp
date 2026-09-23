@@ -25,8 +25,13 @@ export const DEFAULT_SERVER_URL = `http://localhost:${DEFAULT_PORT}`;
 // MCP server name
 export const MCP_SERVER_NAME = 'code-index';
 
-// Development mode detection
-export const IS_DEV_MODE = process.env.NODE_ENV === 'development' || 
-                         process.env.DEBUG === '1' || 
-                         process.argv.includes('--dev') ||
-                         process.argv.includes('dev');
+// Development mode detection.
+//
+// Opt-in via an explicit `--dev` flag only. It must NOT key off `NODE_ENV` or
+// `DEBUG`: those are generic, framework-set signals that a consumer's dev shell
+// sets by default (Next/Vite/tsx all put `NODE_ENV=development` on child
+// processes), and tripping them used to drop a bare `mcp-server.log` into the
+// consumer's project root — the same silent-write defect as the report writer's
+// old cwd default. The previous check also had a loose `process.argv.includes('dev')`
+// that matched *any* argument equal to the string "dev", not just the flag.
+export const IS_DEV_MODE = process.argv.includes('--dev');

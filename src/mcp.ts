@@ -70,7 +70,7 @@ import {
   ListToolsRequestSchema,
   InitializeRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, mkdirSync } from 'node:fs';
 import fs from 'node:fs/promises';
 
 import { createAuditRunner } from './auditRunner.js';
@@ -83,6 +83,7 @@ import { resolveConfigGenerateDir } from './config/configGeneratePath.js';
 import { getInstallId, getTelemetryOptIn, setTelemetryOptIn, PRIVACY_MESSAGE, resolveTelemetryEndpoint } from './installConfig.js';
 import { MCP_DEFAULT_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
+import { resolveMcpDevLogPath } from './dataPaths.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { logMcpDebug, logMcpInfo, mcpDebugStderr, mcpTraceStderr } from './mcpDiagnostics.js';
@@ -96,7 +97,10 @@ const originalConsoleError = console.error;
 
 let logStream: any = null;
 if (IS_DEV_MODE) {
-  const logFilePath = path.join(process.cwd(), 'mcp-server.log');
+  // Dev mode is opt-in (`--dev`); even so, the log lives in the OS cache, never
+  // in cwd — a consumer that opts in must not get a bare file in their tree.
+  const logFilePath = resolveMcpDevLogPath();
+  mkdirSync(path.dirname(logFilePath), { recursive: true });
   logStream = createWriteStream(logFilePath, { flags: 'a' });
   console.error(chalk.blue('[INFO]'), `Development mode: Logging to file: ${logFilePath}`);
 }

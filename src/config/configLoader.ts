@@ -16,7 +16,7 @@ import { RUNNABLE_ANALYZERS } from '../analyzers/ruleRegistry.js';
 export interface RejectedConfigEntry {
   key: string;
   value: string;
-  reason: 'unknown-key' | 'outside-project-root';
+  reason: 'unknown-key' | 'outside-project-root' | 'output-directory-refused';
 }
 
 /**
@@ -127,12 +127,12 @@ export function sanitizeProjectFileConfig(
 
     if (key === 'outputDir' || key === 'outputDirectory') {
       if (typeof value !== 'string') continue;
-      const resolved = path.resolve(configDir, value);
-      if (!isWithinProjectRoot(realpathExistingAncestor(resolved), projectRootReal)) {
-        rejected.push({ key, value, reason: 'outside-project-root' });
-        continue;
-      }
-      config[key] = resolved;
+      // Spec 61 R1.2 follow-up — a file-config-supplied output path is refused,
+      // not clamped. The report writer writes only to an explicit CLI `--output`
+      // path (or stdout); accepting an in-tree config path would pin a
+      // destructive report write inside the audited project. Refuse the key so
+      // it can never silently redirect a report into the tree.
+      rejected.push({ key, value, reason: 'output-directory-refused' });
       continue;
     }
 
@@ -376,7 +376,8 @@ export function validateConfig(config: AuditConfig): string[] {
 
 /**
  * Validate Spec 50 R5 daemon config. `idleTimeoutMs` must be a positive number;
- * `autoStart` must be a boolean.
+ * `autoStart` must be a boolean — and, since it is declared-but-not-wired, must
+ * not be `true` (a user setting it gets told, instead of getting silence).
  */
 function validateDaemonConfig(daemon: AuditConfig['daemon']): string[] {
   const errors: string[] = [];
@@ -387,6 +388,9 @@ function validateDaemonConfig(daemon: AuditConfig['daemon']): string[] {
   }
   if (daemon.autoStart !== undefined && typeof daemon.autoStart !== 'boolean') {
     errors.push('daemon.autoStart must be a boolean');
+  }
+  if (daemon.autoStart === true) {
+    errors.push('daemon.autoStart is not implemented — a daemon is only started by `code-audit daemon start`; remove the flag or set it to false');
   }
   if (
     daemon.idleTimeoutMs !== undefined &&

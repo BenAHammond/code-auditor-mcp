@@ -294,32 +294,10 @@ describe('Spec-19 R4: DRY sub-rule retirement', () => {
       const ast = parseFile(filePath, sourceCode)!;
       if (!ast) throw new Error(`Failed to parse ${filePath}`);
 
-      // Pass fullFunctionIndex with the other files to simulate cross-file analysis
-      const allFilePaths = Object.keys(files).map(f => join(fixtureDir, f));
-      const fullFunctionIndex = [];
-      for (const otherPath of allFilePaths) {
-        if (otherPath === filePath) continue;
-        const otherSource = await readFile(otherPath, 'utf-8');
-        const otherAst = parseFile(otherPath, otherSource);
-        if (otherAst) {
-          const functions = tsAdapter.extractFunctions(otherAst);
-          for (const func of functions) {
-            fullFunctionIndex.push({
-              filePath: otherPath,
-              name: func.name,
-              startLine: func.location.start.line,
-              endLine: func.location.end.line,
-              // The analyzer casts to `any` to access body/metadata.body
-              body: func.body ?? '',
-            } as any);
-          }
-        }
-      }
-
       const violations = await (analyzer as any).analyzeAST(
         ast,
         tsAdapter,
-        { ...DEFAULT_DRY_CONFIG, ...configOverrides, fullFunctionIndex },
+        { ...DEFAULT_DRY_CONFIG, ...configOverrides },
         sourceCode
       );
 

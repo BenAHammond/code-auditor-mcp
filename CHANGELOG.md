@@ -2,6 +2,42 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [4.1.1] — 2026-09-23
+
+### Report writes stop destroying files
+
+**4.1.0 and earlier overwrote `audit-report.json` in the audited project's root
+without asking; 4.1.1 writes to stdout unless `-o` is passed and refuses to
+clobber.** Anyone who ran a formatted audit in a repo with that filename should
+check their history.
+
+- `audit --format` no longer defaults its output path to `process.cwd()`: with no
+  `-o` it writes the report to stdout, and with `-o` it refuses to overwrite an
+  existing `audit-report.{ext}` unless `--overwrite` is passed.
+- `map -o <file>` gets the same guard — it no longer silently clobbers an
+  existing file.
+- A file-config-supplied `outputDirectory`/`outputDir` is refused outright
+  (`output-directory-refused`) rather than clamped into the project tree.
+- `outputFormats`/`outputDirectory` removed from the defaults and `print-config`
+  — they were advertised but never consumed for writes.
+- The MCP dev log (`mcp-server.log`) no longer keys off `NODE_ENV`/`DEBUG` (a
+  consumer dev shell could trip it) and no longer lands in `process.cwd()`; it
+  is opt-in via `--dev` and routed to the OS cache.
+- Consent flag unified: `--overwrite` is the spelling across `audit`, `map`, and
+  `generate-config` (`--force`/`--yes` remain as aliases).
+
+### Cross-file duplicate detection never worked — the dead load is gone
+
+Cross-file `dry/duplicate` detection was advertised as a "problems only visible
+between files" feature, but it **never fired**: the index stored the
+`statement_block` text while the DRY analyzer hashed the full function node, so
+the comparison could not match. The only thing the comparison ever did was load
+every function body into memory on every single-file `changed` run —
+O(whole-project) per save, for zero findings. The load is deleted (no schema
+change, no migration, no `dry_hash` column); `dry/duplicate` remains, and remains
+correct, as a **within-file** rule. A structural guard now asserts the scoped
+path issues no whole-table `functions` read, so the load can't quietly return.
+
 ## [4.1.0] — 2026-09-23
 
 ### Severity becomes a three-tier urgency ladder, not a permission knob

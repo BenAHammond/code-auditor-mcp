@@ -14,7 +14,6 @@ import {
   Violation,
   AuditProgress,
   FunctionMetadata,
-  DryFunctionIndexEntry,
   AuditResultScope,
   AuditAbortedError,
   AuditHandoffError,
@@ -421,25 +420,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       }
     }
 
-    // ── Build full function index for scoped DRY ─────────────────────
-    // When scope is not 'all', DRY must compare scoped functions against
-    // the full index so new duplicates are caught (R2.2).
-    let fullFunctionIndex: DryFunctionIndexEntry[] | undefined;
-    if (isScoped) {
-      try {
-        const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
-        fullFunctionIndex = await db.getAllFunctionsForDry();
-        logMcpInfo('analysis', 'loaded full function index for scoped DRY', {
-          functionCount: fullFunctionIndex.length
-        });
-      } catch (err) {
-        // Non-fatal: DRY will just run within scope
-        logMcpInfo('analysis', 'failed to load full index for DRY (continuing)', {
-          error: err instanceof Error ? err.message : String(err)
-        });
-      }
-    }
-
     // Run analyzers
     const analyzerResults: Record<string, AnalyzerResult> = {};
     const enabledAnalyzers = getEnabledAnalyzers(mergedOptions, analyzerRegistry);
@@ -576,7 +556,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       pipelineVisitors.push(solidBundle.visitor);
     }
     if (enabledAnalyzers.includes('dry')) {
-      dryBundle = createDryVisitor(fullFunctionIndex);
+      dryBundle = createDryVisitor();
       pipelineVisitors.push(dryBundle.visitor);
     }
     if (enabledAnalyzers.includes('data-access')) {

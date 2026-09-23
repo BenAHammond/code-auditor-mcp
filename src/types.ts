@@ -994,15 +994,15 @@ const _exhaustive: _MissingKey extends never ? true : never = true;
 /**
  * Spec 50 R5 — daemon lifecycle config.
  *
- * `autoStart` (default `false`): when a CLI read finds no daemon, start one in
- * the background rather than falling back to an in-process audit. Off by default
- * — a background process is never started unless the user opted in (R5).
+ * `autoStart` (default `false`): NOT IMPLEMENTED — declared, defaulted, and
+ * validated, but never read by any entry point. Setting it to `true` is rejected
+ * by config validation rather than silently ignored. A daemon is only ever
+ * started by `code-audit daemon start`.
  *
  * `idleTimeoutMs` (default 5 min): the daemon exits after this much time with no
  * active client, no LSP connection, and no watcher-triggered re-audit. Recorded
  * decision: exit-after-inactivity beats a lingering process the user forgot; the
- * restart (`code-audit daemon start`, an editor reconnect, or `autoStart`) is a
- * single command.
+ * restart (`code-audit daemon start` or an editor reconnect) is a single command.
  */
 export interface DaemonConfig {
   autoStart?: boolean;
@@ -1163,23 +1163,6 @@ export interface FunctionMetadata {
   context: string;
   body?: string;
   metadata?: Record<string, any>;
-}
-
-/**
- * Minimal function index entry for the scoped-DRY gate path (Spec 43 R4).
- *
- * `UniversalDRYAnalyzer.buildFullFunctionHashmap` reads only `name`, `filePath`,
- * `startLine ?? lineNumber`, and `body` from each indexed function. The narrow
- * query selects exactly those columns, avoiding the wide JSON fields
- * (`parameters`, `hooks`, `props`, `signature`, `metadata_json`, `content_hash`)
- * and the per-row `JSON.parse` cost they incur on the hot `changed` path.
- */
-export interface DryFunctionIndexEntry {
-  name: string;
-  filePath: string;
-  lineNumber?: number;
-  startLine?: number;
-  body?: string;
 }
 
 // Enhanced function metadata with additional searchable fields
