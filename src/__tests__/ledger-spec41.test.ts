@@ -49,7 +49,7 @@ function makeViolation(overrides: Partial<Violation> = {}): Violation {
   return {
     file: 'src/foo.ts',
     line: 42,
-    severity: 'warning',
+    severity: 'severe',
     message: 'Test violation',
     analyzer: 'data-access',
     rule: 'missing-org-filter',
@@ -176,10 +176,10 @@ describe('Spec 41 — ledger lifecycle', () => {
   it('queryLedgerFindings supports rule/analyzer/file/severity filters, count, and pagination', () => {
     const runId = createLedgerRun(db.rawDb, makeRunInput(), { projectRoot: dir });
     const violations: Violation[] = [
-      makeViolation({ file: 'src/one.ts', analyzer: 'data-access', rule: 'missing-org-filter', severity: 'warning' }),
-      makeViolation({ file: 'src/two.ts', analyzer: 'data-access', rule: 'missing-org-filter', severity: 'warning' }),
+      makeViolation({ file: 'src/one.ts', analyzer: 'data-access', rule: 'missing-org-filter', severity: 'severe' }),
+      makeViolation({ file: 'src/two.ts', analyzer: 'data-access', rule: 'missing-org-filter', severity: 'severe' }),
       makeViolation({ file: 'src/three.ts', analyzer: 'react', rule: 'hooks-deps', severity: 'critical' }),
-      makeViolation({ file: 'lib/four.ts', analyzer: 'react', rule: 'jsx-key', severity: 'suggestion' }),
+      makeViolation({ file: 'lib/four.ts', analyzer: 'react', rule: 'jsx-key', severity: 'high' }),
     ];
     writeAuditToLedger(db.rawDb, makeRunInput(), violations, 0, 0, { runId });
 

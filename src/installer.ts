@@ -213,6 +213,19 @@ export function warmPinnedCli(packageVersion: string): Promise<void> {
 }
 
 /**
+ * The pinned-CLI invocation for a hook subcommand (Spec 61 R5.2).
+ *
+ * Cursor (`cursor-hook`) and Codex (`codex-hook`) hook commands must run the
+ * *pinned* CLI (`code-auditor-mcp@<PACKAGE_VERSION>`) rather than whatever
+ * `code-audit` happens to be on PATH — otherwise the hook is running an
+ * unpinned binary. Centralizing the command string means the pin is asserted by
+ * a unit test rather than left to a string literal buried in the switch.
+ */
+export function pinnedCliCommand(subcommand: string): string {
+  return `npx -y -p code-auditor-mcp@${PACKAGE_VERSION} code-audit ${subcommand}`;
+}
+
+/**
  * Print the support matrix (--list).
  */
 async function printMatrix(): Promise<void> {
@@ -419,7 +432,7 @@ function getHookConfig(agent: AgentInfo, scope: 'user' | 'project'): { configFil
           hooks: {
             afterFileEdit: [
               {
-                command: 'npx -y code-auditor-mcp code-audit cursor-hook',
+                command: pinnedCliCommand('cursor-hook'),
               },
             ],
           },
@@ -441,7 +454,7 @@ function getHookConfig(agent: AgentInfo, scope: 'user' | 'project'): { configFil
                 hooks: [
                   {
                     type: 'command',
-                    command: 'npx -y code-auditor-mcp code-audit codex-hook',
+                    command: pinnedCliCommand('codex-hook'),
                   },
                 ],
               },

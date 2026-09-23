@@ -8,6 +8,7 @@ import path from 'node:path';
 
 let autoIndexPath: string | undefined;
 let uiMode = false;
+let uiHost: string | undefined;
 let stdioMode = false;
 let showHelp = false;
 
@@ -32,6 +33,13 @@ for (let i = 0; i < argv.length; i++) {
     }
   } else if (a === '--ui') {
     uiMode = true;
+  } else if (a === '--host') {
+    const val = argv[i + 1];
+    if (val && !val.startsWith('-')) {
+      uiHost = val;
+    } else {
+      console.error('[code-auditor] --host requires an address (next argv). Using 127.0.0.1.');
+    }
   } else if (a === '--stdio') {
     stdioMode = true;
   } else if (a === '--help' || a === '-h') {
@@ -41,10 +49,11 @@ for (let i = 0; i < argv.length; i++) {
 
 if (showHelp) {
   console.error(`code-auditor-mcp v${PACKAGE_VERSION}
-Usage: code-auditor-mcp [--stdio] [--ui] [--auto-index <path>] [--data-dir <dir>]
+Usage: code-auditor-mcp [--stdio] [--ui] [--host <addr>] [--auto-index <path>] [--data-dir <dir>]
 
   --stdio        Start MCP stdio server (default mode)
   --ui           Start the HTTP UI server on port 3001 (or MCP_UI_PORT)
+  --host <addr>  Bind the UI server to <addr> (default 127.0.0.1)
   --auto-index   Sync the index from <path> and exit
   --data-dir     Directory for persistent data (index.db, tasks, configs)
   --help, -h     Show this message
@@ -63,7 +72,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
-import { homedir } from 'node:os';
 
 import { createAuditRunner } from './auditRunner.js';
 import type { AuditResult, AuditScope, FunctionMetadata, Severity } from './types.js';
@@ -71,6 +79,7 @@ import { searchFunctions, findDefinition, syncFileIndex, getDatabase } from './c
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
+import { resolveConfigGenerateDir } from './config/configGeneratePath.js';
 import { getInstallId, getTelemetryOptIn, setTelemetryOptIn, PRIVACY_MESSAGE, resolveTelemetryEndpoint } from './installConfig.js';
 import { MCP_DEFAULT_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
@@ -1083,7 +1092,11 @@ function registerAllTools(registry: ToolRegistry): void {
         handler: async (args) => {
           const tools = args.tools as string[];
           const serverUrl = (args.serverUrl as string) || DEFAULT_SERVER_URL;
-          const outputDir = ((args.outputDir as string) || '.').replace(/^~(?=$|\/)/, homedir());
+          const rawOutputDir = (args.outputDir as string) || '.';
+          // Containment (Spec 61 R5.1): generated configs land only inside the
+          // working directory. `~` expansion still resolves (so a project under
+          // `~` keeps working), but it is no longer a way to escape cwd.
+          const outputDir = resolveConfigGenerateDir(rawOutputDir, process.cwd());
           const overwrite = (args.overwrite as boolean) || false;
 
           if (!Array.isArray(tools) || tools.length === 0)
@@ -1805,7 +1818,7 @@ async function main() {
   if (uiMode) {
     // --ui: start the HTTP UI server
     const { startMcpUIServer } = await import('./mcp-ui-simple.js');
-    await startMcpUIServer();
+    await startMcpUIServer(uiHost ? { host: uiHost } : undefined);
     return;
   }
 

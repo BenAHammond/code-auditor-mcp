@@ -88,9 +88,14 @@ describe('DEFAULT_TELEMETRY_ENDPOINT', () => {
     expect(DEFAULT_TELEMETRY_ENDPOINT).toMatch(/^https:\/\/.+\/ingest$/);
   });
 
-  it('positive — resolveTelemetryEndpoint defaults to it, but an explicit value wins', () => {
+  it('positive — resolveTelemetryEndpoint defaults to it, but an explicit https value wins', () => {
     expect(resolveTelemetryEndpoint()).toBe(DEFAULT_TELEMETRY_ENDPOINT);
     expect(resolveTelemetryEndpoint('   ')).toBe(DEFAULT_TELEMETRY_ENDPOINT);
-    expect(resolveTelemetryEndpoint('http://localhost:8787/ingest')).toBe('http://localhost:8787/ingest');
+    expect(resolveTelemetryEndpoint('https://custom.example/ingest')).toBe('https://custom.example/ingest');
+  });
+
+  it('guard — a non-https or non-URL endpoint is rejected, not silently sent', () => {
+    expect(() => resolveTelemetryEndpoint('http://localhost:8787/ingest')).toThrow(/https/);
+    expect(() => resolveTelemetryEndpoint('not a url')).toThrow(/not a valid URL/);
   });
 });

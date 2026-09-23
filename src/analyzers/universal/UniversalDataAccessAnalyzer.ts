@@ -25,6 +25,7 @@ import {
 } from './UniversalSchemaAnalyzer.js';
 import { isSqlKeyword, findEnclosingFunctionIdentity, functionIdentityLabel } from './schema/codeAnalysis.js';
 import { isTestOrSpecPath } from '../../languages/testConventions.js';
+import { buildOrgFilterTierSet, tableRequiresOrgFilter } from '../orgFilterTiers.js';
 
 /**
  * SQL keywords recognized as evidence that a string is a SQL query.
@@ -189,7 +190,7 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   sanitizerNames: ['escapeSql'],
 };
 
-interface DatabaseCall {
+export interface DatabaseCall {
   type: string;
   method: string;
   file: string;
@@ -518,6 +519,9 @@ function analyzeQuery(
     // mutation — the old read-rule carried this same `tables.length > 0` guard
     // and the write-rule must too. (Spec 55 R5 fix.)
     performanceRisk = 'medium';
+  } else if (isUnfilteredRead(call, config) && call.tables.length > 0) {
+    // Read case (tenant-scoped): a filterless read of a tenant table.
+    performanceRisk = 'medium';
   }
 
   return {
@@ -579,12 +583,11 @@ function checkViolations(
     }
   }
 
-  // Security: Missing Organization Filter — a query on a tenant-scoped table with
-  // no org/tenant filter is a live data-isolation breach: one tenant reads
-  // another's rows. `critical` (already wrong in production), not `severe`.
-  if (config.checkOrgFilters && !call.hasOrganizationFilter && call.tables.length > 0 && requiresOrgFilter(call.tables, config)) {
-    push(`Query on ${call.tables.join(', ')} missing organization/tenant filter`, { severity: 'critical', rule: 'missing-org-filter' });
-  }
+  // Security: Missing Organization Filter is now a Stage-4 derived reducer
+  // (Spec 62 Amendment B) — it joins per-query facts against the declared +
+  // DDL-discovered tenant tiers, which Stage 2 cannot read. The data-access
+  // visitor emits the query facts (`DatabaseCall`) instead; the reducer fires
+  // `missing-org-filter` at the same query-site location.
 
   // Performance: Complex Query — a join-heavy query (many tables).  Spec 55 R5:
   // a subquery alone is no longer "complex" — it is an ordinary SQLite/D1 idiom.
@@ -597,7 +600,9 @@ function checkViolations(
   // a query-shape rule excluded from test files; R5: it is about writes now, not
   // reads (an unfiltered SELECT is often an intentional full-set load).
   if (!skipTestRules && analysis.performanceRisk === 'medium') {
-    push(`Unfiltered write on ${call.tables.join(', ')} has no WHERE/HAVING/LIMIT`, { severity: 'high', rule: 'unfiltered-query' });
+    const kind = isUnfilteredWrite(call) ? 'write' : 'read';
+    const subject = kind === 'read' ? `tenant table ${call.tables.join(', ')}` : call.tables.join(', ');
+    push(`Unfiltered ${kind} on ${subject} has no WHERE/HAVING/LIMIT`, { severity: 'high', rule: 'unfiltered-query' });
   }
 
   return violations;
@@ -1504,6 +1509,23 @@ function isUnfilteredWrite(call: DatabaseCall): boolean {
 }
 
 /**
+ * True when a call should be surfaced by the `unfiltered-query` rule's *read*
+ * case: a filterless read (`SELECT *` with no WHERE/HAVING/LIMIT) against a
+ * table that carries declared tenancy.  A filterless full-table read of a
+ * tenant table is the same tenant-leak surface the write rule guards — it
+ * sweeps every tenant's rows.  Non-tenant tables (lookups, config) stay out of
+ * scope, which is precisely what kept the Spec 55 narrowing's false positives
+ * (non-tenant full-set loads) from returning.  Reuses `requiresOrgFilter` for
+ * the tenancy determination so the write case and this read case cannot drift
+ * to two different tenancy definitions.
+ */
+function isUnfilteredRead(call: DatabaseCall, config: DataAccessAnalyzerConfig): boolean {
+  return !call.hasFilter
+    && !hasWriteVerb(call.queryText)
+    && requiresOrgFilter(call.tables, config);
+}
+
+/**
  * True when the query is already parameterized by one of the four chain
  * shapes (.prepare().bind(), .exec() spread, D1 convenience call, or a DB
  * wrapper function with bind params).  All four short-circuit checkQuerySecurity
@@ -1697,18 +1719,24 @@ function extractMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: 
 }
 
 /**
- * Spec 21 R6.2 (reworked for Spec 44 — rule authenticity): two-tier org-filter
- * detection, keyed on *declared tenancy* rather than a guessed English name.
+ * Spec 21 R6.2 (reworked for Spec 44 — rule authenticity, and Spec 62 Amendment
+ * B): declared-tenancy org-filter detection, keyed on *declared* tenancy rather
+ * than a guessed English name. This is the *config-only* tenancy determination
+ * used by the Stage-2 `unfiltered-query` read case — a query-shape rule that
+ * stays at Stage 2 and therefore cannot read the Stage-3 DDL table catalog.
  *
- * Tier 1 (config-primary): `orgFilterTables` — the user's explicit declaration
- *   of which tables are multi-tenant. Tenancy is policy; this is the
- *   declaration of record.
+ *   Tier 1 (config-primary): `orgFilterTables` — the user's explicit list of
+ *     multi-tenant tables. Tenancy is policy; this is the declaration of record.
+ *   Tier 2 (schema-inference): a configured schema table carrying a column that
+ *     matches `orgFilterColumns` (default org_id/tenant_id/organization_id/
+ *     workspace_id). Makes non-English table names (e.g. 注文) detectable with
+ *     zero explicit orgFilterTables declaration.
  *
- * Tier 2 (schema-inference): A table requires the filter when a configured
- *   schema definition carries a column matching `orgFilterColumns`
- *   (default: org_id/tenant_id/organization_id/workspace_id) on it. This is
- *   what makes non-English table names (e.g., 注文) detectable with zero
- *   explicit orgFilterTables declaration.
+ * The DDL-discovered tier (Tier 3) is deliberately NOT read here: it lives at
+ * Stage 3, and this function serves a Stage-2 rule. The full three-tier
+ * predicate (Tier 3 included) lives in {@link buildOrgFilterTierSet} +
+ * {@link tableRequiresOrgFilter} and is consumed by the Stage-4
+ * `missing-org-filter` reducer.
  *
  * The old Tier 3 — a hardcoded English fallback list (`users`, `projects`,
  * `orders`, `customers`, `accounts`, `teams`) — was dishonest: it accused
@@ -1719,32 +1747,7 @@ function extractMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: 
  * word list.
  */
 function requiresOrgFilter(tables: string[], config: DataAccessAnalyzerConfig): boolean {
-  const orgFilterTables = config.orgFilterTables ?? [];
-  const orgFilterColumns = config.orgFilterColumns ?? ['org_id', 'tenant_id', 'organization_id', 'workspace_id'];
-  const schemas = config.schemas ?? [];
-
-  // Build a lookup set of tables from schema definitions that have an
-  // org-filter column — this is the schema-inference tier.
-  const schemaOrgTables = new Set<string>();
-  for (const schema of schemas) {
-    for (const table of schema.tables) {
-      if (table.columns.some(c => orgFilterColumns.includes(c.name.toLowerCase()))) {
-        schemaOrgTables.add(table.name.toLowerCase());
-      }
-    }
-  }
-
-  return tables.some(table => {
-    const tableLower = table.toLowerCase();
-
-    // Tier 1: config-primary — explicit user declaration
-    if (orgFilterTables.some(t => t.toLowerCase() === tableLower)) {
-      return true;
-    }
-
-    // Tier 2: schema-based inference — table has an org-filter column
-    return schemaOrgTables.has(tableLower);
-  });
+  return tableRequiresOrgFilter(tables, buildOrgFilterTierSet(config, undefined));
 }
 
 function isStringLiteral(node: ASTNode, adapter: LanguageAdapter): boolean {
@@ -2167,6 +2170,25 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     config: DataAccessAnalyzerConfig,
     sourceCode: string
   ): Promise<Violation[]> {
+    return (await this.analyzeWithFacts(ast, adapter, config, sourceCode)).violations;
+  }
+
+  /**
+   * Spec 62 Amendment B — run the full data-access scan and return BOTH the
+   * violations and the extracted query facts (`DatabaseCall[]`). The pipeline's
+   * data-access visitor emits the calls as facts for the Stage-4
+   * `missing-org-filter` derived reducer to join against the declared + DDL
+   * tenant tiers; the remaining rules (sql-injection, loop-query,
+   * unfiltered-query, hardcoded-connection, complex-query) fire here at Stage 2
+   * exactly as before. Emitting the calls as a by-product of this one scan
+   * avoids a second traversal or re-parse.
+   */
+  async analyzeWithFacts(
+    ast: AST,
+    adapter: LanguageAdapter,
+    config: DataAccessAnalyzerConfig,
+    sourceCode: string
+  ): Promise<{ violations: Violation[]; calls: DatabaseCall[] }> {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
 
@@ -2200,8 +2222,9 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     const skipTestRules = finalConfig.skipTestFiles !== false && isTestOrSpecPath(ast.filePath);
 
     // Analyze each database call, tracking symbol ordinals for stable fingerprints.
+    const calls = extractDatabaseCalls(ast, scan);
     const symbolOrdinals = new Map<string, number>();
-    for (const call of extractDatabaseCalls(ast, scan)) {
+    for (const call of calls) {
       const analysis = analyzeQuery(call, finalConfig);
       violations.push(...checkViolations(call, analysis, {
         filePath: ast.filePath,
@@ -2217,6 +2240,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     }
     violations.push(...checkGeneralPatterns(ast, adapter, sourceCode, finalConfig));
 
-    return violations;
+    return { violations, calls };
   }
 }

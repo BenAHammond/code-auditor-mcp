@@ -186,8 +186,10 @@ export interface CoverageDiagnostic {
   analyzerName: string;
   /** The diagnostic kind — `unresolved-query` / `unresolved-dynamic-import`
    *  (the analyzer couldn't see a region) or `config-error` / `engine-error` /
-   *  `undefined-class-disabled` (the tool failed or skipped a check). */
-  kind: 'unresolved-query' | 'unresolved-dynamic-import' | 'config-error' | 'engine-error' | 'undefined-class-disabled' | 'undefined-class-not-found';
+   *  `undefined-class-disabled` (the tool failed or skipped a check), or
+   *  `cannot-fire` (a project config could not be read statically — Spec 61 R3),
+   *  or `config-key-rejected` (a file-sourced config key was dropped — Spec 61 R1). */
+  kind: 'unresolved-query' | 'unresolved-dynamic-import' | 'config-error' | 'engine-error' | 'undefined-class-disabled' | 'undefined-class-not-found' | 'cannot-fire' | 'config-key-rejected';
   /** Human-readable explanation of what could not be resolved. */
   message: string;
   /** File the unresolved construct is in. */
@@ -922,6 +924,72 @@ export interface AuditConfig {
    */
   daemon?: DaemonConfig;
 }
+
+/**
+ * The set of keys a `.codeauditor.json` may set, from the config half of the
+ * file. Values of this type are untrusted: they originate from a repository
+ * that may not be the operator's. (The invariant-rules half — `rules` and
+ * `$schema` — is also whitelisted here because `loadConfig` merges both halves
+ * into one object; see those fields below.)
+ *
+ * `scope` is deliberately absent. It was never declared on `AuditConfig`; it
+ * reached `execSync(\`git diff --name-only ${ref}\`)` only because `mergeConfig`
+ * iterated raw JSON keys. `scope` remains available on `AuditRunnerOptions` for
+ * CLI, MCP and programmatic callers, unchanged.
+ */
+export interface ProjectFileConfig {
+  includePaths?: string[];
+  excludePaths?: string[];
+  enabledAnalyzers?: string[];
+  outputFormats?: ReportFormat[];
+  outputDir?: string;
+  outputDirectory?: string;
+  minSeverity?: Severity;
+  failOnCritical?: boolean;
+  showProgress?: boolean;
+  parallel?: boolean;
+  thresholds?: AuditConfig['thresholds'];
+  pathProfiles?: PathProfile[];
+  builtin?: boolean;
+  churn?: ChurnConfig;
+  divergence?: DivergenceConfig;
+  crossDomain?: CrossDomainConfig;
+  analyzerOptions?: Record<string, any>;
+  analyzerConfigs?: Record<string, any>;
+  rationales?: Record<string, string>;
+  importVirtualModules?: string[];
+  daemon?: DaemonConfig;
+  /** Invariant rules — the other half of `.codeauditor.json`, read by the
+   *  invariants analyzer via the merged config. Passed through untouched
+   *  (validated by `validateRulesConfig`, not the config loader). Not a path
+   *  or process sink, so no containment applies. */
+  rules?: unknown[];
+  /** JSON Schema pointer (editor validation only). Harmless; whitelisted so a
+   *  schema pointer is not reported as an unknown key on every audit. */
+  $schema?: string;
+}
+
+/**
+ * The exact set of keys a project file may set. `sanitizeProjectFileConfig`
+ * copies only these; every other key is dropped and reported. The
+ * exhaustiveness assertion below makes adding a key to `ProjectFileConfig`
+ * without adding it here a compile error — a whitelist someone has to remember
+ * to update is the same bug with an extra step.
+ */
+export const PROJECT_FILE_CONFIG_KEYS = [
+  'includePaths', 'excludePaths', 'enabledAnalyzers', 'outputFormats',
+  'outputDir', 'outputDirectory', 'minSeverity', 'failOnCritical',
+  'showProgress', 'parallel', 'thresholds', 'pathProfiles', 'builtin',
+  'churn', 'divergence', 'crossDomain', 'analyzerOptions', 'analyzerConfigs',
+  'rationales', 'importVirtualModules', 'daemon', 'rules', '$schema',
+] as const satisfies readonly (keyof ProjectFileConfig)[];
+
+// Compile-time proof the array covers the type exhaustively. Removing a key
+// from the array (or adding one to the interface without adding it here)
+// changes `_MissingKey` to a non-`never` type, so `_exhaustive` fails to
+// assign `true` and `tsc --noEmit` fails.
+type _MissingKey = Exclude<keyof ProjectFileConfig, typeof PROJECT_FILE_CONFIG_KEYS[number]>;
+const _exhaustive: _MissingKey extends never ? true : never = true;
 
 /**
  * Spec 50 R5 — daemon lifecycle config.

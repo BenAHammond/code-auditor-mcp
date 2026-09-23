@@ -1,15 +1,58 @@
 {
   "analyzer": "data-access",
-  "config": {},
+  "config": {
+    "schemas": [
+      {
+        "name": "data-access",
+        "tables": [
+          {
+            "name": "orders",
+            "columns": [
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "user_id", "type": "integer" },
+              { "name": "status", "type": "text" }
+            ]
+          },
+          {
+            "name": "users",
+            "columns": [
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "name", "type": "text" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "rationales": {
+    "data-access.missing-org-filter": "Spec 62 A1.3 — the fixture was legitimately broken: `const db = { query: async … }` is a bare mock with no driver import, so the analyzer never established DB provenance and never extracted `orders`/`users` — no missing-org-filter could fire. Fix: a real `drizzle(env.DB)` import (mirroring the non-english corpus), plus a `schemas` config that DECLARES `orders`/`users` as tenant (each carrying org_id). Tenancy is declared, not inferred from the deleted English fallback."
+  },
   "expectedViolations": [
-    { "file": "src/n-plus-one.ts", "rule": "missing-org-filter", "severity": "warning" },
-    { "file": "src/n-plus-one.ts", "rule": "unfiltered-query", "severity": "suggestion" },
-    { "file": "src/n-plus-one.ts", "rule": "loop-query", "severity": "warning" },
-    { "file": "src/clean-queries.ts", "rule": "missing-org-filter", "severity": "warning" },
-    { "file": "src/clean-queries.ts", "rule": "unfiltered-query", "severity": "suggestion" },
-    { "file": "src/clean-queries.ts", "rule": "missing-org-filter", "severity": "warning" },
-    { "file": "src/clean-queries.ts", "rule": "unfiltered-query", "severity": "suggestion" }
+    {
+      "file": "src/n-plus-one.ts",
+      "rule": "missing-org-filter",
+      "severity": "critical"
+    },
+    {
+      "file": "src/n-plus-one.ts",
+      "rule": "loop-query",
+      "severity": "severe"
+    },
+    {
+      "file": "src/clean-queries.ts",
+      "rule": "missing-org-filter",
+      "severity": "critical"
+    },
+    {
+      "file": "src/clean-queries.ts",
+      "rule": "missing-org-filter",
+      "severity": "critical"
+    }
   ],
-  "nearMissFiles": ["src/no-sql-signal.ts"],
-  "description": "Tests for the data-access analyzer — SQL patterns. All db.query() calls trigger multiple checks."
+  "nearMissFiles": [
+    "src/no-sql-signal.ts"
+  ],
+  "description": "Tests for the data-access analyzer — SQL patterns with a real drizzle-orm provenance import. n-plus-one.ts: loop-query (N+1) + missing-org-filter on `orders`. clean-queries.ts: two tenant queries (`orders WHERE user_id = ANY($1)`, `users WHERE id = $1`) fire missing-org-filter but NOT loop-query (no loop) and NOT unfiltered-query (both have a WHERE). no-sql-signal.ts: plain-JS array/string/object methods — zero SQL findings."
 }

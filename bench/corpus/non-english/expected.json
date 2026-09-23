@@ -6,156 +6,136 @@
         "name": "non-english",
         "tables": [
           {
-            "name": "\u6ce8\u6587",
+            "name": "注文",
             "columns": [
-              {
-                "name": "id",
-                "type": "integer"
-              },
-              {
-                "name": "org_id",
-                "type": "integer"
-              },
-              {
-                "name": "\u30e6\u30fc\u30b6\u30fcID",
-                "type": "integer"
-              }
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "ユーザーID", "type": "integer" }
             ]
           },
           {
-            "name": "\u5546\u54c1",
+            "name": "商品",
             "columns": [
-              {
-                "name": "id",
-                "type": "integer"
-              },
-              {
-                "name": "org_id",
-                "type": "integer"
-              },
-              {
-                "name": "name",
-                "type": "text"
-              },
-              {
-                "name": "\u4fa1\u683c",
-                "type": "integer"
-              }
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "name", "type": "text" },
+              { "name": "価格", "type": "integer" }
+            ]
+          },
+          {
+            "name": "orders",
+            "columns": [
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "user_id", "type": "integer" },
+              { "name": "status", "type": "text" },
+              { "name": "type", "type": "text" }
+            ]
+          },
+          {
+            "name": "users",
+            "columns": [
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "name", "type": "text" },
+              { "name": "role", "type": "text" }
+            ]
+          },
+          {
+            "name": "products",
+            "columns": [
+              { "name": "id", "type": "integer" },
+              { "name": "org_id", "type": "integer" },
+              { "name": "name", "type": "text" },
+              { "name": "category", "type": "text" }
             ]
           }
         ]
       }
     ]
   },
+  "rationales": {
+    "data-access.missing-org-filter": "Spec 62 Amendment A1: the rule is declared-or-discovered, never the deleted English fallback (commit f6493af / Spec 44). Tenancy here is DECLARED via `schemas` (Tier 2 — a table carrying an org_id column), for both the Japanese tables (注文/商品) and the English-named tables (orders/users/products). Declaring the English names in this fixture's config is the honest replacement for the fallback: the fixture now states its tenant set explicitly instead of relying on `requiresOrgFilter` hardcoding a word list. Proof the fallback is gone: `requiresOrgFilter` (UniversalDataAccessAnalyzer.ts:1743) consults only `orgFilterTables` (Tier 1) and `schemas` (Tier 2); an English table name with no declaration fires nothing."
+  },
   "expectedViolations": [
     {
       "file": "src/abfragen.ts",
       "rule": "loop-query",
-      "severity": "warning"
+      "severity": "severe"
     },
     {
       "file": "src/abfragen.ts",
       "rule": "missing-org-filter",
-      "severity": "warning"
+      "severity": "critical"
     },
     {
       "file": "src/abfragen.ts",
       "rule": "missing-org-filter",
-      "severity": "warning"
+      "severity": "critical"
     },
     {
       "file": "src/abfragen.ts",
       "rule": "unfiltered-query",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/abfragen.ts",
-      "rule": "unfiltered-query",
-      "severity": "suggestion"
+      "severity": "high"
     },
     {
       "file": "src/consultas.ts",
       "rule": "missing-org-filter",
-      "severity": "warning"
+      "severity": "critical"
     },
     {
       "file": "src/consultas.ts",
       "rule": "missing-org-filter",
-      "severity": "warning"
-    },
-    {
-      "file": "src/consultas.ts",
-      "rule": "unfiltered-query",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/consultas.ts",
-      "rule": "unfiltered-query",
-      "severity": "suggestion"
+      "severity": "critical"
     },
     {
       "file": "src/kuesutori.ts",
       "rule": "missing-org-filter",
-      "severity": "warning"
+      "severity": "critical"
     },
     {
       "file": "src/kuesutori.ts",
       "rule": "missing-org-filter",
-      "severity": "warning"
+      "severity": "critical"
     },
     {
       "file": "src/kuesutori.ts",
       "rule": "unfiltered-query",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/kuesutori.ts",
-      "rule": "unfiltered-query",
-      "severity": "suggestion"
+      "severity": "high"
     },
     {
       "file": "src/verarbeiten.ts",
       "rule": "missing-org-filter",
-      "severity": "warning"
+      "severity": "critical"
     },
     {
       "file": "src/verarbeiten.ts",
       "rule": "missing-org-filter",
-      "severity": "warning"
+      "severity": "critical"
     },
     {
       "file": "src/verarbeiten.ts",
-      "rule": "unfiltered-query",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/verarbeiten.ts",
-      "rule": "unfiltered-query",
-      "severity": "suggestion"
-    },
-    {
-      "file": "src/verarbeiten.ts",
-      "rule": "unfiltered-query",
-      "severity": "suggestion"
+      "rule": "missing-org-filter",
+      "severity": "critical"
     }
   ],
   "knownMisses": [
     {
       "file": "src/autoriser.ts",
       "rule": "missing-auth",
-      "severity": "warning"
+      "severity": "severe"
     },
     {
       "file": "src/nettoyer.ts",
       "rule": "missing-sanitization",
-      "severity": "warning"
+      "severity": "severe"
     },
     {
       "file": "src/verarbeiten.ts",
       "rule": "open-closed",
-      "severity": "suggestion"
+      "severity": "high"
     }
   ],
   "nearMissFiles": [],
-  "description": "Non-English identifiers \u2014 mixed Portuguese, German, Japanese, French. DB access via provenance only. 22 ground-truth violations (16 original + 6 from verarbeiten.ts). 3 known-misses: missing-auth (French autoriser), missing-sanitization (French nettoyer), open-closed (German verarbeiten). Gaps seeded per Spec 21 send-back; fixes deferred to Spec 15 neighborhood. R5 Unicode regex fix recovered 2 unfiltered-query detections. Spec 21 R6.2 three-tier requiresOrgFilter() fix recovered 2 missing-org-filter detections. True recall without known-miss debt: 22/22 = 1.0. 13 remaining violations after v3.4.8 direct-sql deletion."
+  "description": "Non-English identifiers — mixed Portuguese, German, Japanese, French. DB access via drizzle-orm provenance only (no mock db). All six tables (注文/商品 + orders/users/products) are DECLARED tenant via the schemas config, each carrying an org_id column. 12 ground-truth violations: 9 missing-org-filter (every tenant-table query filters on something other than org_id, or not at all), 2 unfiltered-query (the two genuinely filterless reads — `SELECT * FROM users` in abfragen.ts and `SELECT * FROM 商品` in kuesutori.ts), 1 loop-query (abfragen.ts N+1). The WHERE-clause queries (user_id/status/type/role/category) are correctly NOT unfiltered-query — they have a filter, just not an org filter. 3 known-misses: missing-auth (French autoriser), missing-sanitization (French nettoyer), open-closed (German verarbeiten) — cross-analyzer gaps deferred to Spec 15 neighborhood."
 }

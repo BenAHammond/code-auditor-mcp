@@ -70,6 +70,11 @@ import {
   extractTablesFromRegistry,
 } from './analyzers/universal/schema/discovery.js';
 import { applyMigrationOps, stripIdentifier } from './analyzers/universal/schema/migrations.js';
+import {
+  buildOrgFilterTierSet,
+  tableRequiresOrgFilter,
+  type OrgFilterConfig,
+} from './analyzers/orgFilterTiers.js';
 import type { CrossLanguageEntity, CrossReference } from './types/crossLanguage.js';
 
 // ── Rule ID helpers ──────────────────────────────────────────────────────────
@@ -211,13 +216,110 @@ export function createDataAccessVisitor(): Stage2Visitor {
     getRuleIds: () => getRuleIdsFor('data-access'),
     async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
       const a = await getAnalyzer();
-      const violations: Violation[] = await a.analyzeAST(
+      // Spec 62 Amendment B — emit the extracted query facts (per-file) for the
+      // Stage-4 missing-org-filter reducer to join against the tenant tiers.
+      // The violations returned here exclude missing-org-filter (moved to the
+      // derived reducer); the calls carry resolved table + filter presence +
+      // DB provenance + the query-site location.
+      const { violations, calls } = await a.analyzeWithFacts(
         ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
       );
-      return { violations, facts: {} };
+      const facts: Record<string, unknown> = {};
+      if (calls.length > 0) {
+        facts[context.filePath] = { calls };
+      }
+      return { violations, facts };
     },
     defaultConfig: {},
     description: 'Analyzes database access patterns and data layer interactions',
+    category: 'security',
+  };
+}
+
+// ── Data-Access org-filter reducer (Spec 62 Amendment B) ─────────────────────
+
+/**
+ * Stage-4 derived reducer for `missing-org-filter`. It joins the data-access
+ * visitor's per-query facts (resolved tables + org-filter presence + query-site
+ * location) against the tenant tiers resolved from config + the schema
+ * reducer's corpus-wide DDL column catalog. Moving the rule here (out of the
+ * Stage-2 analyzer) is the fix for the Amendment B defect: the firing predicate
+ * needed the DDL tier only Stage 3 produces, but the Stage-2 analyzer could only
+ * read config tiers — so a DDL-declared multi-tenant codebase was un-suppressed
+ * without ever firing, and reported `clean` on a real leak.
+ *
+ * Firing and applicability both derive from {@link buildOrgFilterTierSet}, so
+ * they read the identical tier set (Tier 1 config / Tier 2 schema / Tier 3 DDL).
+ */
+export function createOrgFilterReducer(): Stage4Reducer {
+  return {
+    name: 'data-access-org-filter',
+    stage: 'derivedReducer',
+    // Hard dependency on the data-access visitor's per-query facts. The schema
+    // table catalog (`allFacts['schema'].tableColumns`) is read opportunistically
+    // so an MCP-default run (which omits `schema`) degrades to Tier 1–2
+    // (config-only) instead of throwing — see buildOrgFilterTierSet.
+    consumes: ['data-access'],
+    getRuleIds: () => getRuleIdsFor('data-access-org-filter'),
+    async reduce(allFacts: Readonly<Record<string, unknown>>, context: ReducerContext) {
+      const violations: Violation[] = [];
+
+      const schemaFacts = allFacts['schema'] as Record<string, unknown> | undefined;
+      const ddlTableColumns = schemaFacts?.tableColumns as Record<string, string[]> | undefined;
+
+      // One tier source of truth — the same function the applicability predicate
+      // reads, so firing and applicability cannot drift to different tier sets.
+      const tierSet = buildOrgFilterTierSet(
+        context.config as OrgFilterConfig | undefined,
+        ddlTableColumns,
+      );
+
+      const daFacts = (allFacts['data-access'] ?? {}) as Record<
+        string,
+        {
+          calls?: Array<{
+            file: string;
+            line: number;
+            column: number;
+            tables: string[];
+            hasOrganizationFilter: boolean;
+            method: string;
+            enclosingFunction?: string;
+          }>;
+        }
+      >;
+      for (const fileFacts of Object.values(daFacts)) {
+        for (const call of fileFacts.calls ?? []) {
+          if (call.hasOrganizationFilter) continue;
+          if (!call.tables || call.tables.length === 0) continue;
+          if (!tableRequiresOrgFilter(call.tables, tierSet)) continue;
+          const symbol = `${call.enclosingFunction ?? 'top-level'}:${call.method}`;
+          violations.push({
+            file: call.file,
+            line: call.line,
+            column: call.column,
+            severity: 'critical' as const,
+            message: `Query on ${call.tables.join(', ')} has no organization/tenant predicate`,
+            suggestion:
+              'Add the tenant column (organization_id / org_id) to the WHERE predicate so this query is scoped to the current organization, not just by primary key.',
+            // Structured next action (Spec 37 R1) — the rule is `resolvable`, so
+            // the gate requires a `resolution`, not just the `suggestion` string.
+            resolution: {
+              action: 'add-tenant-predicate',
+              summary: `Add the tenant column (organization_id / org_id) to the WHERE predicate on ${call.tables.join(', ')} so this query is scoped to the current organization, not just by primary key.`,
+              symbols: call.tables,
+            },
+            rule: 'missing-org-filter',
+            analyzer: 'data-access',
+            functionName: symbol,
+          } as Violation);
+        }
+      }
+
+      return { violations, facts: {} };
+    },
+    defaultConfig: {},
+    description: 'Detects queries on tenant-scoped tables that omit an organization/tenant predicate',
     category: 'security',
   };
 }
@@ -270,6 +372,32 @@ export function createSecretsVisitor(): Stage2Visitor {
     },
     defaultConfig: {},
     description: 'Detects hardcoded credentials, API keys, and tokens',
+    category: 'security',
+  };
+}
+
+// ── Security visitor (Spec 61 R6) ────────────────────────────────────────────
+
+export function createSecurityVisitor(): Stage2Visitor {
+  const getAnalyzer = lazySingleton<any>(() =>
+    import('./analyzers/universal/UniversalSecurityAnalyzer.js').then(
+      (m) => new m.UniversalSecurityAnalyzer(),
+    ),
+  );
+
+  return {
+    name: 'security',
+    stage: 'visitor',
+    getRuleIds: () => getRuleIdsFor('security'),
+    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
+      const a = await getAnalyzer();
+      const violations: Violation[] = await a.analyzeAST(
+        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
+      );
+      return { violations, facts: {} };
+    },
+    defaultConfig: {},
+    description: 'Detects command injection, dynamic require of project paths, and unescaped HTML interpolation',
     category: 'security',
   };
 }
@@ -819,6 +947,11 @@ export function createStylesCssVisitor(): Stage2Visitor {
  * styles and (b) skip re-writing files whose stored rows are already current.
  */
 export function createStylesSourceVisitor(): Stage2Visitor {
+  // Spec 61 R3.4 — a project tailwind config that exists but cannot be read
+  // statically is a `cannot-fire` coverage diagnostic. Emit it exactly once per
+  // visitor instance (the config is project-global, not per-file) so a config
+  // gap reads once, not once per source file.
+  let emittedTailwindDiagnostic = false;
   return {
     name: 'styles-source',
     stage: 'visitor',
@@ -835,17 +968,24 @@ export function createStylesSourceVisitor(): Stage2Visitor {
 
       // Memoized per projectRoot (the style-index sync already called it this
       // run), so this is a cache hit — never a re-walk of the project tree.
-      const tailwindTokens = loadTailwindConfig(context.projectRoot).tokens;
+      const tailwindConfig = loadTailwindConfig(context.projectRoot);
+      const tailwindTokens = tailwindConfig.tokens;
 
       const declarations = extractDeclarations(filePath, tsAdapter, sourceCode, tsAst, tailwindTokens);
       const classUsage = extractClassUsage(filePath, sourceCode);
       const contentHash = createHash('sha256').update(sourceCode).digest('hex');
+
+      const diagnostic = tailwindConfig.diagnostic && !emittedTailwindDiagnostic
+        ? tailwindConfig.diagnostic
+        : undefined;
+      if (diagnostic) emittedTailwindDiagnostic = true;
 
       return {
         violations: [],
         facts: {
           [filePath]: { declarations, classUsage, contentHash },
         },
+        ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
       };
     },
     defaultConfig: {},
@@ -2539,13 +2679,14 @@ export function createSchemaSqlVisitor(): Stage2Visitor {
     getRuleIds: () => [],
     async visit(_ast: unknown, _adapter: unknown, context: VisitorContext, sourceCode: string) {
       const { extractMigrationOpsFromFile } = await getMigrationExtractor();
-      const { ops, columns, skipped, bytes } = await extractMigrationOpsFromFile(context.filePath, sourceCode);
+      const { ops, columns, tableColumns, skipped, bytes } = await extractMigrationOpsFromFile(context.filePath, sourceCode);
       return {
         violations: [],
         facts: {
           [context.filePath]: {
             ddlOps: ops,
             ...(columns.length > 0 && { ddlColumns: columns }),
+            ...(Object.keys(tableColumns).length > 0 && { ddlTableColumns: tableColumns }),
             ...(skipped && { skipped: true, bytes }),
           },
         },
@@ -2568,6 +2709,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       defaults: m.DEFAULT_SCHEMA_CONFIG,
       parseMigrationOps: m.parseMigrationOps,
       extractDdlColumnNames: m.extractDdlColumnNames,
+      extractDdlTableColumns: m.extractDdlTableColumns,
     })),
   );
 
@@ -2577,7 +2719,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
     extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'],
     getRuleIds: () => getRuleIdsFor('schema'),
     async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const { analyzer: a, defaults, parseMigrationOps, extractDdlColumnNames } = await getAnalyzer();
+      const { analyzer: a, defaults, parseMigrationOps, extractDdlColumnNames, extractDdlTableColumns } = await getAnalyzer();
       const pm = await _getProvenanceModule();
       const violations: Violation[] = [];
       const diagnostics: CoverageDiagnostic[] = [];
@@ -2628,6 +2770,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       }
       const doDDLSql = doDDL.length > 0 ? doDDL.join(';\n') : null;
       const doDDLColumns = doDDLSql ? extractDdlColumnNames(doDDLSql) : [];
+      const doDDLTableColumns = doDDLSql ? extractDdlTableColumns(doDDLSql) : {};
 
       // Build provenance context for this file — defaults from DEFAULT_SCHEMA_CONFIG
       const detectionMode = ((schemaConfig.detection as any)?.mode as string) ?? ('hybrid' as any);
@@ -2645,6 +2788,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
         if (doDDL.length > 0) {
           (facts[context.filePath] as any).ddlOps = parseMigrationOps(doDDLSql!);
           if (doDDLColumns.length > 0) (facts[context.filePath] as any).ddlColumns = doDDLColumns;
+          if (Object.keys(doDDLTableColumns).length > 0) (facts[context.filePath] as any).ddlTableColumns = doDDLTableColumns;
         }
         return { violations: [], facts };
       }
@@ -2730,6 +2874,7 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
       if (doDDL.length > 0) {
         (fileFacts as any).ddlOps = parseMigrationOps(doDDLSql!);
         if (doDDLColumns.length > 0) (fileFacts as any).ddlColumns = doDDLColumns;
+        if (Object.keys(doDDLTableColumns).length > 0) (fileFacts as any).ddlTableColumns = doDDLTableColumns;
       }
 
       return {
@@ -2959,11 +3104,30 @@ export function createSchemaReducer(): Stage3Reducer {
       //      the reducer folds them into a single case-insensitive, deduplicated
       //      set so downstream applicability predicates can ask "does ANY table
       //      carry a tenant-scoping column?" without per-table column lists.
+      //
+      //      Spec 62 Amendment B — additionally fold the per-table
+      //      `ddlTableColumns` into a corpus-wide `tableColumns` (Record<table,
+      //      string[]>) so the Stage-4 missing-org-filter reducer can answer the
+      //      per-query question "does THIS table carry a tenant column?" that the
+      //      flat set cannot.
       const ddlColumns = new Set<string>();
+      const tableColumnsMap = new Map<string, Set<string>>();
       for (const [filePath, fact] of perFile()) {
         const cols: string[] = (fact as any).ddlColumns ?? [];
         for (const c of cols) ddlColumns.add(String(c).toLowerCase());
+
+        const perTable: Record<string, string[]> = (fact as any).ddlTableColumns ?? {};
+        for (const [table, tableCols] of Object.entries(perTable)) {
+          let set = tableColumnsMap.get(table);
+          if (!set) {
+            set = new Set<string>();
+            tableColumnsMap.set(table, set);
+          }
+          for (const c of tableCols) set.add(String(c).toLowerCase());
+        }
       }
+      const tableColumns: Record<string, string[]> = {};
+      for (const [table, set] of tableColumnsMap) tableColumns[table] = [...set];
 
       // ── 2. Unknown-table detection ────────────────────────────────────────
       //
@@ -3122,7 +3286,7 @@ export function createSchemaReducer(): Stage3Reducer {
 
       return {
         violations,
-        facts: { tableCatalog: catalogEntries, ddlColumns: [...ddlColumns].sort() },
+        facts: { tableCatalog: catalogEntries, ddlColumns: [...ddlColumns].sort(), tableColumns },
         factsConsumed: [...perFile()].length,
       };
     },

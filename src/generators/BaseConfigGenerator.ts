@@ -3,7 +3,7 @@
  * Abstract class for all AI tool config generators
  */
 
-import { DEFAULT_SERVER_URL, DEFAULT_API_KEY } from '../constants.js';
+import { DEFAULT_SERVER_URL } from '../constants.js';
 
 export interface ConfigOutput {
   filename: string;
@@ -91,12 +91,5 @@ export abstract class BaseConfigGenerator {
    */
   requiresAuth(): boolean {
     return true;
-  }
-
-  /**
-   * Get the default API key for this tool
-   */
-  getDefaultApiKey(): string {
-    return DEFAULT_API_KEY;
   }
 }

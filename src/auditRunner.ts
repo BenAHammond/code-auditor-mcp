@@ -5,7 +5,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { randomUUID } from 'node:crypto';
 import {
   AuditResult,
@@ -24,7 +24,7 @@ import {
 } from './types.js';
 import { discoverFiles, discoverFilesDetailed } from './utils/fileDiscovery.js';
 import { FileAccounting } from './services/fileAccounting.js';
-import { loadConfig, findConfigFileUp } from './config/configLoader.js';
+import { loadConfig, findConfigFileUp, type RejectedConfigEntry } from './config/configLoader.js';
 import { mergePathProfiles } from './config/defaults.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
 import { readProjectLintThresholds, thresholdsToAnalyzerConfig } from './config/lintConfigReader.js';
@@ -54,8 +54,10 @@ import {
   createSolidVisitor,
   createDryVisitor,
   createDataAccessVisitor,
+  createOrgFilterReducer,
   createDocumentationVisitor,
   createSecretsVisitor,
+  createSecurityVisitor,
   createFunctionIndexVisitor,
   createStylesCssVisitor,
   createStylesSourceVisitor,
@@ -105,7 +107,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
    * Load configuration from file
    */
   async function loadConfiguration(configPath: string): Promise<AuditRunnerOptions> {
-    const config = await loadConfig({ configPath });
+    const { config } = await loadConfig({ configPath, projectRoot: path.dirname(configPath) });
     return { ...options, ...config };
   }
   
@@ -120,9 +122,13 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // createAuditRunner options override both.
     const rootForConfig = runOptions?.projectRoot || options.projectRoot || process.cwd();
     const configPath = await findConfigFileUp(rootForConfig);
-    const fileConfig: Partial<AuditRunnerOptions> = configPath
-      ? await loadConfig({ configPath })
-      : {};
+    let fileConfig: Partial<AuditRunnerOptions> = {};
+    let rejected: RejectedConfigEntry[] = [];
+    if (configPath) {
+      const loaded = await loadConfig({ configPath, projectRoot: rootForConfig });
+      fileConfig = loaded.config;
+      rejected = loaded.rejected;
+    }
     const mergedOptions = { ...fileConfig, ...options, ...runOptions };
 
     // Spec 36 R5 — a threshold change needs a written rationale. Check the
@@ -158,6 +164,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     const lintRoot = path.resolve(mergedOptions.projectRoot || process.cwd());
     const lintResult = await readProjectLintThresholds(lintRoot);
     const lintThresholds: Record<string, number> = lintResult?.thresholds ?? {};
+    // Spec 61 R3.2 — an ESLint config that exists but could not be read
+    // statically is a `cannot-fire` coverage diagnostic, surfaced (never
+    // silently treated as "no config").
+    const lintConfigDiagnostics = lintResult?.diagnostic ? [lintResult.diagnostic] : [];
     if (Object.keys(lintThresholds).length > 0) {
       mergedOptions.analyzerConfigs = mergeLintUnderProject(
         thresholdsToAnalyzerConfig(lintThresholds),
@@ -569,8 +579,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       dryBundle = createDryVisitor(fullFunctionIndex);
       pipelineVisitors.push(dryBundle.visitor);
     }
-    if (enabledAnalyzers.includes('data-access')) pipelineVisitors.push(createDataAccessVisitor());
+    if (enabledAnalyzers.includes('data-access')) {
+      pipelineVisitors.push(createDataAccessVisitor());
+      // Spec 62 Amendment B — the missing-org-filter rule is a Stage-4 derived
+      // reducer that joins the data-access query facts against the declared +
+      // DDL-discovered tenant tiers. Registered whenever data-access is enabled,
+      // mirroring the data-access visitor it consumes.
+      pipelineDerivedReducers.push(createOrgFilterReducer());
+    }
     if (enabledAnalyzers.includes('secrets')) pipelineVisitors.push(createSecretsVisitor());
+    if (enabledAnalyzers.includes('security')) pipelineVisitors.push(createSecurityVisitor());
     if (enabledAnalyzers.includes('react')) {
       reactBundle = createReactVisitor();
       pipelineVisitors.push(reactBundle.visitor);
@@ -626,6 +644,14 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       const pipelineAnalyzerConfig: Record<string, Record<string, unknown>> = {};
       for (const name of enabledAnalyzers) {
         pipelineAnalyzerConfig[name] = { ...(mergedOptions.analyzerConfigs?.[name] ?? {}) };
+      }
+      // Spec 62 Amendment B — the missing-org-filter Stage-4 reducer reads the
+      // data-access config namespace (orgFilterTables/orgFilterColumns/schemas),
+      // so it inherits the data-access analyzer's config rather than a fresh
+      // empty namespace. `data-access-org-filter` is never in enabledAnalyzers
+      // (it is auto-registered), so this is the only place its config is set.
+      if (enabledAnalyzers.includes('data-access')) {
+        pipelineAnalyzerConfig['data-access-org-filter'] = { ...(pipelineAnalyzerConfig['data-access'] ?? {}) };
       }
       // Pass invariant rules from .codeauditor.json into the invariants pipeline config.
       // The rules field lives at the top level of the loaded config (not under analyzerConfigs).
@@ -874,6 +900,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           }
         }
       }
+      // Spec 62 Amendment B — `data-access-org-filter` is auto-registered (never
+      // in enabledAnalyzers), so surface its Stage-4 row right after data-access.
+      if (analyzerName === 'data-access' && analyzerResults['data-access-org-filter']) {
+        orderedAnalyzerResults['data-access-org-filter'] = analyzerResults['data-access-org-filter'];
+      }
     }
 
     // ── Normalize the analyzer field on every violation to its result key ──
@@ -887,9 +918,17 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // of truth — a no-op for every analyzer that already labels itself, and it
     // also fixes any future analyzer that forgets. Runs before baseline
     // classification (Spec 18) so fingerprints and analyzerCounts are correct.
+    // Spec 62 Amendment B — the `data-access-org-filter` reducer stamps its
+    // findings with `analyzer: 'data-access'` so the ledger group
+    // `data-access/missing-org-filter` stays stable across the Stage-2 → Stage-4
+    // move. The result key is otherwise the single source of truth (see above).
+    const analyzerFieldOverride: Record<string, string> = {
+      'data-access-org-filter': 'data-access',
+    };
     for (const [resultName, result] of Object.entries(orderedAnalyzerResults)) {
+      const stampedAnalyzer = analyzerFieldOverride[resultName] ?? resultName;
       for (const v of result.violations) {
-        v.analyzer = resultName;
+        v.analyzer = stampedAnalyzer;
       }
     }
 
@@ -1194,8 +1233,19 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         scope: scopeResultType,
         provenanceResolutionMs: provenanceTiming.totalMs,
         ...(blastRadius && { blastRadius }),
-        ...((zeroFilesDiagnostics.length > 0 || (pipelineDiagnostics?.length ?? 0) > 0) && {
-          diagnostics: [...zeroFilesDiagnostics, ...(pipelineDiagnostics ?? [])],
+        ...((zeroFilesDiagnostics.length > 0 || (pipelineDiagnostics?.length ?? 0) > 0 || rejected.length > 0 || lintConfigDiagnostics.length > 0) && {
+          diagnostics: [
+            ...zeroFilesDiagnostics,
+            ...(pipelineDiagnostics ?? []),
+            ...lintConfigDiagnostics,
+            ...rejected.map((entry) => ({
+              analyzerName: 'config',
+              kind: 'config-key-rejected',
+              message: `${entry.key}: ${entry.value} (${entry.reason})`,
+              ...(configPath ? { file: configPath } : {}),
+              details: { key: entry.key, value: entry.value, reason: entry.reason },
+            })),
+          ],
         }),
         ...(baselineMetadata && { baseline: baselineMetadata }),
         ...(pipelineCoverage && { coverage: pipelineCoverage }),
@@ -1327,9 +1377,19 @@ async function discoverProjectFiles(
 function resolveGitScopeFiles(options: AuditRunnerOptions, ref: string): string[] {
   const rootDir = path.resolve(options.projectRoot || process.cwd());
 
+  // Validate the ref before it reaches git. An argv array alone is not enough —
+  // git accepts `--output=<file>`, so `git:--output=/etc/cron.d/x` is still a
+  // write primitive through execFileSync. The leading character class rejects
+  // anything beginning with `-`. `--end-of-options` below is the second guard;
+  // neither suffices alone.
+  const GIT_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/@{}^~:-]*(\.\.\.?[A-Za-z0-9][A-Za-z0-9._/@{}^~:-]*)?$/;
+  if (!GIT_REF_PATTERN.test(ref)) {
+    throw new Error(`Invalid git ref in scope: ${JSON.stringify(ref)}`);
+  }
+
   // Verify git worktree
   try {
-    execSync('git rev-parse --git-dir', { cwd: rootDir, stdio: 'pipe' });
+    execFileSync('git', ['rev-parse', '--git-dir'], { cwd: rootDir, stdio: 'pipe' });
   } catch {
     throw new Error(
       `git:<ref> scope requires a git worktree. "${rootDir}" is not a git repository.`
@@ -1340,7 +1400,7 @@ function resolveGitScopeFiles(options: AuditRunnerOptions, ref: string): string[
 
   // git diff --name-only <ref>
   try {
-    const diffOutput = execSync(`git diff --name-only ${ref}`, {
+    const diffOutput = execFileSync('git', ['diff', '--name-only', '--end-of-options', ref], {
       cwd: rootDir,
       stdio: 'pipe',
       encoding: 'utf-8',
@@ -1358,7 +1418,7 @@ function resolveGitScopeFiles(options: AuditRunnerOptions, ref: string): string[
 
   // Untracked files
   try {
-    const untrackedOutput = execSync('git ls-files --others --exclude-standard', {
+    const untrackedOutput = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
       cwd: rootDir,
       stdio: 'pipe',
       encoding: 'utf-8'

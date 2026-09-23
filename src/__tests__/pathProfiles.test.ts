@@ -147,7 +147,7 @@ describe('validateConfig — pathProfiles', () => {
     const config: AuditConfig = {
       ...baseConfig,
       pathProfiles: [
-        { name: 'bad', paths: ['src/**'], overrides: { severityCap: 'suggestion' } },
+        { name: 'bad', paths: ['src/**'], overrides: { severityCap: 'high' } },
       ],
     };
     const errors = validateConfig(config);

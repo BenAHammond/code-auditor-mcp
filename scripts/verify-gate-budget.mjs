@@ -32,7 +32,11 @@ import { resolve } from 'node:path';
 
 const CLI = resolve(process.cwd(), 'dist/cli.js');
 const REPRESENTATIVE_FILE = 'src/analyzers/universal/UniversalSOLIDAnalyzer.ts';
-const BUDGET_MS = 300;
+// The budget is Spec 38 R3's 300 ms, but it is overridable via env so the
+// gate-liveness test can force a violation (`VERIFY_GATE_BUDGET_MS=0` → fail)
+// without waiting on a genuinely slow rule — the same env-knob pattern as
+// verify-disk-space's `VERIFY_MIN_FREE_BYTES`.
+const BUDGET_MS = Number(process.env.VERIFY_GATE_BUDGET_MS ?? 300);
 
 if (!existsSync(CLI)) {
   console.error('verify:gate-budget: dist/cli.js not found — run `npm run build` first.');

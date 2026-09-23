@@ -17,6 +17,8 @@ import { tmpdir } from 'os';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { initParsers } from './languages/tree-sitter/parser.js';
 import { initializeLanguages } from './languages/index.js';
+import { SEVERITIES } from './types.js';
+import type { Severity } from './types.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -287,7 +289,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
   describe('scoped result isolation', () => {
     it('stores scoped results with scope metadata', async () => {
       const auditResult = {
-        summary: { criticalIssues: 1, warnings: 0, suggestions: 0 },
+        summary: { criticalIssues: 1, severe: 0, high: 0 },
         analyzerResults: { dry: { violations: [] } },
         violations: [],
         recommendations: [],
@@ -303,7 +305,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
 
     it('stores full results with scope metadata', async () => {
       const auditResult = {
-        summary: { criticalIssues: 0, warnings: 2, suggestions: 1 },
+        summary: { criticalIssues: 0, severe: 2, high: 1 },
         analyzerResults: {},
         violations: [],
         recommendations: [],
@@ -368,7 +370,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       // Store a full audit
       const fullId = await db.storeAuditResults(
         {
-          summary: { criticalIssues: 3, warnings: 5, suggestions: 10 },
+          summary: { criticalIssues: 3, severe: 5, high: 10 },
           analyzerResults: { solids: { violations: [{ msg: 'hi' }] } },
           violations: [],
           recommendations: [],
@@ -393,7 +395,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       const full = await db.getAuditResults(fullId);
       expect(full).not.toBeNull();
       expect(full.summary.criticalIssues).toBe(3);
-      expect(full.summary.warnings).toBe(5);
+      expect(full.summary.severe).toBe(5);
     });
   });
 });
@@ -401,50 +403,52 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
 // ── CLI `changed` subcommand tests ────────────────────────────────────
 
 describe('Spec 04 — CLI changed subcommand (R4)', () => {
-  it('validates --fail-on severity values', () => {
-    const validSeverities = ['critical', 'warning', 'suggestion'];
-    expect(validSeverities.includes('critical')).toBe(true);
-    expect(validSeverities.includes('warning')).toBe(true);
-    expect(validSeverities.includes('suggestion')).toBe(true);
-    expect(validSeverities.includes('invalid' as any)).toBe(false);
+  // The production --fail-on validation (src/cli.ts) rejects any severity not
+  // in `SEVERITIES` (src/types.ts). These tests assert against that production
+  // constant directly — a local `['critical', 'warning', 'suggestion']` would
+  // validate itself while the real gate drifted (exactly the Spec 54
+  // recalibration this guard exists to catch).
+  it('accepts exactly the production severity list for --fail-on', () => {
+    expect(SEVERITIES).toEqual(['critical', 'severe', 'high']);
+    for (const s of SEVERITIES) {
+      expect(SEVERITIES.includes(s)).toBe(true);
+    }
+    expect((SEVERITIES as string[]).includes('invalid')).toBe(false);
   });
 
   it('exit code 2 logic: fail-on=critical with critical violation', () => {
-    const severityOrder = ['critical', 'warning', 'suggestion'] as const;
-    const failIndex = severityOrder.indexOf('critical');
-    const hasAtOrAbove = [{ severity: 'critical' }].some((v) => {
-      const vIndex = severityOrder.indexOf(v.severity as any);
+    const failIndex = SEVERITIES.indexOf('critical');
+    const hasAtOrAbove = [{ severity: 'critical' as Severity }].some((v) => {
+      const vIndex = SEVERITIES.indexOf(v.severity);
       return vIndex >= 0 && vIndex <= failIndex;
     });
     expect(hasAtOrAbove).toBe(true);
   });
 
-  it('exit code 2 logic: fail-on=critical with only suggestion', () => {
-    const severityOrder = ['critical', 'warning', 'suggestion'] as const;
-    const failIndex = severityOrder.indexOf('critical');
-    const hasAtOrAbove = [{ severity: 'suggestion' }].some((v) => {
-      const vIndex = severityOrder.indexOf(v.severity as any);
+  it('exit code 2 logic: fail-on=critical with only high', () => {
+    const failIndex = SEVERITIES.indexOf('critical');
+    const hasAtOrAbove = [{ severity: 'high' as Severity }].some((v) => {
+      const vIndex = SEVERITIES.indexOf(v.severity);
       return vIndex >= 0 && vIndex <= failIndex;
     });
     expect(hasAtOrAbove).toBe(false);
   });
 
-  it('exit code 2 logic: fail-on=warning catches warning + critical', () => {
-    const severityOrder = ['critical', 'warning', 'suggestion'] as const;
-    const failIndex = severityOrder.indexOf('warning');
-    // critical is at index 0, which is <= 1 (warning index)
-    const hasCritical = [{ severity: 'critical' }].some((v) => {
-      const vIndex = severityOrder.indexOf(v.severity as any);
+  it('exit code 2 logic: fail-on=severe catches severe + critical, not high', () => {
+    const failIndex = SEVERITIES.indexOf('severe');
+    // critical is at index 0, which is <= 1 (severe index)
+    const hasCritical = [{ severity: 'critical' as Severity }].some((v) => {
+      const vIndex = SEVERITIES.indexOf(v.severity);
       return vIndex >= 0 && vIndex <= failIndex;
     });
     expect(hasCritical).toBe(true);
 
-    // suggestion is at index 2, which is > 1
-    const hasSuggestions = [{ severity: 'suggestion' }].some((v) => {
-      const vIndex = severityOrder.indexOf(v.severity as any);
+    // high is at index 2, which is > 1
+    const hasHigh = [{ severity: 'high' as Severity }].some((v) => {
+      const vIndex = SEVERITIES.indexOf(v.severity);
       return vIndex >= 0 && vIndex <= failIndex;
     });
-    expect(hasSuggestions).toBe(false);
+    expect(hasHigh).toBe(false);
   });
 
   it('resolves relative paths to absolute in CLI', () => {

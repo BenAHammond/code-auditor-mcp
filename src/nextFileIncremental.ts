@@ -396,7 +396,7 @@ export async function runNextFile(options: {
 
   // Load config (walk-up) so discovery matches what the audit actually sees.
   const configPath = await findConfigFileUp(root);
-  const config = await loadConfig({ configPath: configPath ?? undefined });
+  const { config } = await loadConfig({ configPath: configPath ?? undefined, projectRoot: root });
 
   const discovered = await discoverFilesDetailed(root, {
     includePaths: config.includePaths,

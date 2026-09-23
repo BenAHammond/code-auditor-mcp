@@ -957,15 +957,15 @@ describe('Spec-18 — Audit pipeline integration', () => {
         } as any,
         expectedRule: 'sql-injection-risk',
       },
-      // ── SchemaValidator: rule = field-mismatch (previously used violationType field) ─
+      // ── SchemaValidator: rule = schema-field-mismatch (previously used violationType field) ─
       {
-        label: 'SchemaValidator: rule = field-mismatch',
+        label: 'SchemaValidator: rule = schema-field-mismatch',
         violation: {
           file: 'src/g.proto', line: 30, column: 1, severity: 'severe',
           message: 'field mismatch', analyzer: 'schema-validator',
-          rule: 'field-mismatch', functionName: 'validateSchema',
+          rule: 'schema-field-mismatch', functionName: 'validateSchema',
         } as any,
-        expectedRule: 'field-mismatch',
+        expectedRule: 'schema-field-mismatch',
       },
       // ── reactAnalyzer: rule = complexity (previously used violationType field) ─
       {
@@ -987,34 +987,15 @@ describe('Spec-18 — Audit pipeline integration', () => {
         } as any,
         expectedRule: 'hooks-naming',
       },
-      // ── APIContractAnalyzer: rule = api-type-mismatch (previously used contractType field) ─
-      {
-        label: 'APIContractAnalyzer: rule = api-type-mismatch',
-        violation: {
-          file: 'src/api.ts', line: 42, column: 1, severity: 'severe',
-          message: 'API type mismatch', analyzer: 'api-contract',
-          rule: 'api-type-mismatch', functionName: 'fetchUser',
-        } as any,
-        expectedRule: 'api-type-mismatch',
-      },
-      {
-        label: 'APIContractAnalyzer: rule = missing-endpoint',
-        violation: {
-          file: 'src/call.ts', line: 15, column: 1, severity: 'severe',
-          message: 'no matching endpoint', analyzer: 'api-contract',
-          rule: 'missing-endpoint', functionName: 'callLegacy',
-        } as any,
-        expectedRule: 'missing-endpoint',
-      },
       // ── rule is the single source of truth (no multi-tier fallback) ─
       {
         label: 'rule field is the single source of truth',
         violation: {
           file: 'src/api.ts', line: 50, column: 1, severity: 'severe',
           message: 'dual field violation', analyzer: 'schema-validator',
-          rule: 'field-mismatch', functionName: 'validate',
+          rule: 'schema-field-mismatch', functionName: 'validate',
         } as any,
-        expectedRule: 'field-mismatch',
+        expectedRule: 'schema-field-mismatch',
       },
       // ── type field: rule = structural-issue (previously used type field as fallback) ─
       {
@@ -1447,8 +1428,13 @@ describe('Rule Registry', () => {
 
     // MCP polyglot-path analyzers (LanguageOrchestrator)
     expect(analyzers.has('schema-validator'), 'schema-validator must be registered').toBe(true);
-    expect(analyzers.has('api-contract'), 'api-contract must be registered').toBe(true);
     expect(analyzers.has('dependency-graph'), 'dependency-graph must be registered').toBe(true);
+
+    // `api-contract` is deliberately absent: its six rules were removed in 4.1.0
+    // (all cannot-fire — see applicability.ts), so it has no registry entries.
+    // The analyzer remains a no-op stub in LanguageOrchestrator pending real
+    // endpoint/call extraction.
+    expect(analyzers.has('api-contract'), 'api-contract must have zero rules').toBe(false);
   });
 
   it('maps every rule ID to a reachable analyzer — no dead registry entries', () => {
@@ -1462,6 +1448,11 @@ describe('Rule Registry', () => {
       // CLI pipeline (auditRunner analyzerRegistry)
       'solid', 'dry', 'data-access', 'react', 'documentation',
       'invariants', 'schema', 'styles', 'conventions', 'cross-domain', 'secrets',
+      'security',
+      // Spec 62 Amendment B — Stage-4 derived reducer auto-registered alongside
+      // data-access (never user-selectable, but it does have a production run
+      // path via pipelineDerivedReducers).
+      'data-access-org-filter',
       // MCP polyglot path (LanguageOrchestrator instantiates these)
       'schema-validator', 'api-contract', 'dependency-graph',
       // Go subprocess (LanguageOrchestrator → Go analyzer binary)

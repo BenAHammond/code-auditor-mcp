@@ -34,7 +34,7 @@ describe('socketServer', () => {
       getState: vi.fn(() => ({ status: 'ready', retryAfterMs: null, throughputUnknown: false })),
       getDiagnostics: vi.fn((files: string[]) => ({
         status: 'ready',
-        diagnostics: files.map((f) => ({ file: f, rule: 'x', severity: 'warning', message: 'm' })),
+        diagnostics: files.map((f) => ({ file: f, rule: 'x', severity: 'severe', message: 'm' })),
         staleFiles: [],
       })),
       getFindings: vi.fn(() => ({ status: 'ready', violations: [], staleFiles: [] })),

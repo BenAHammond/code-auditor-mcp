@@ -6,23 +6,22 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 ## Running total (recompute at the top of every session's commit)
 
-- **Assigned:** 99 / 99 live severity rules
-- **critical:** 9
-- **severe:** 36
+- **Assigned:** 102 / 102 live severity rules
+- **critical:** 11
+- **severe:** 37
 - **high:** 54
 - **diagnostics (off-ladder, no severity):** 4 — `config-error`, `engine-error`,
   `undefined-class-not-found`, `undefined-class-disabled`
-- **cannot-fire (no severity):** 10
+- **cannot-fire (no severity):** 0
 
-## Inventory note (reconciles to 113 rule/kinds, not the spec's 105)
+## Inventory note (reconciles to 106 rule/kinds, not the spec's 105)
 
-The spec calls for 105 rules. The accurate inventory is **113** rule/kinds, which
-decompose into **99 live severity rules** (each gets a row), **10 `cannot-fire`**
-(registered but structurally unreachable — see `CANNOT_FIRE_RULES` in
-`src/analyzers/applicability.ts`), and **4 diagnostics** (off the severity
-ladder, `CoverageDiagnostic.kind`).
+The spec calls for 105 rules. The accurate inventory is **106** rule/kinds, which
+decompose into **102 live severity rules** (each gets a row), **0 `cannot-fire`**
+(removed in 4.1.0 — see `CANNOT_FIRE_RULES` in `src/analyzers/applicability.ts`),
+and **4 diagnostics** (off the severity ladder, `CoverageDiagnostic.kind`).
 
-- **107** entries in `RULE_REGISTRY` = 97 live severity rules + 10 `cannot-fire`.
+- **100** entries in `RULE_REGISTRY` = 100 live severity rules + 0 `cannot-fire`.
 - **2 unregistered live** severity emit sites: `missing-schemas`
   (`UniversalSchemaAnalyzer.ts`) and `reserved-word` (`schema/codeAnalysis.ts`).
 - **4 diagnostics**: `config-error` + `engine-error` (`invariantsAnalyzer.ts`,
@@ -34,8 +33,8 @@ accounted for with a note and **no** severity — there is nothing to gate until
 emission site exists, or the finding is off-ladder by design.
 
 Per-analyzer counts (live / cannot-fire): solid 13/0, secrets 1/0, data-access 6/0,
-dry 6/0, documentation 6/0, react 7/0, schema 24/1, schema-validator 3/3,
-api-contract 0/6, dependency-graph 9/0, invariants 0/0 (+2 diagnostics),
+dry 6/0, documentation 6/0, react 7/0, schema 24/0, schema-validator 3/0,
+security 3/0, dependency-graph 9/0, invariants 0/0 (+2 diagnostics),
 styles 9/0 (+2 diagnostics), conventions 5/0, cross-domain 5/0, go-subprocess 5/0.
 
 ## Measuring stick for the "Disagrees" column
@@ -170,11 +169,12 @@ and `raw-element` is dynamic (`warning` when `componentMap` is set, else
 
 ---
 
-## Session 7 — schema (23 live + 1 cannot-fire)
+## Session 7 — schema (23 live)
 
 Emit sites: `jsonSchema.ts` (JSON validation), `codeAnalysis.ts` (SQL/table
-rules), `UniversalSchemaAnalyzer.ts` (`missing-schemas`). `file-error` is
-`cannot-fire` (routed to `state.errors`), so it gets no severity.
+rules), `UniversalSchemaAnalyzer.ts` (`missing-schemas`). (`file-error` was
+removed in 4.1.0 — see Session 19; `stale-table-reference` was added in
+Session 16, bringing the analyzer to 24 live.)
 
 | Rule | Current (effective) | New level | Reason | Disagrees |
 |---|---|---|---|---|
@@ -202,15 +202,12 @@ rules), `UniversalSchemaAnalyzer.ts` (`missing-schemas`). `file-error` is
 | `reserved-word` | warning | severe | A reserved word as a table name breaks when the SQL runs. | no |
 | `too-many-queries` | warning | high | A function issuing many queries is a chatty-perf smell that has not bitten. | yes |
 
-`cannot-fire` (no severity): `file-error`.
-
 ---
 
-## Session 8 — schema-validator (3 live + 3 cannot-fire)
+## Session 8 — schema-validator (3 live)
 
-Emit sites: `SchemaValidator.ts`. `field-mismatch`, `constraint-mismatch`, and
-`version-mismatch` are `cannot-fire` (legacy alias / unpopulated extractor
-fields), so they get no severity.
+Emit sites: `SchemaValidator.ts`. (`field-mismatch`, `constraint-mismatch`, and
+`version-mismatch` were removed in 4.1.0 — see Session 19.)
 
 | Rule | Current (effective) | New level | Reason | Disagrees |
 |---|---|---|---|---|
@@ -218,21 +215,14 @@ fields), so they get no severity.
 | `missing-field` | warning | severe | A field is present in one schema but absent in the other — surfaces on integration. | no |
 | `extra-field` | warning | severe | A field is present where the schema does not declare it — surfaces on integration. | no |
 
-`cannot-fire` (no severity): `field-mismatch`, `constraint-mismatch`, `version-mismatch`.
-
 ---
 
-## Session 9 — api-contract (0 live + 6 cannot-fire)
+## Session 9 — api-contract (removed, 4.1.0)
 
-`APIContractAnalyzer` has **no emission site** for any of its six rules. All six
-are `cannot-fire`: `extractEndpoints`/`extractAPICalls` never populate the fields
-these rules read, or the rule has no producing code at all (per
-`CANNOT_FIRE_RULES`). No severity is assigned — there is nothing to gate until
-extraction lands. This is a standing finding about the analyzer, not a project
-verdict.
-
-`cannot-fire` (no severity): `api-type-mismatch`, `missing-endpoint`,
-`api-extra-field`, `api-missing-field`, `method-mismatch`, `auth-mismatch`.
+All six `api-contract` rules (`api-type-mismatch`, `missing-endpoint`,
+`api-extra-field`, `api-missing-field`, `method-mismatch`, `auth-mismatch`) were
+`cannot-fire` and removed outright — see Session 19. `APIContractAnalyzer` is now
+a no-op returning `[]`, pending real endpoint/call extraction. No rows remain.
 
 ---
 
@@ -355,7 +345,7 @@ the record of what was decided then.
 
 | Rule | Current (effective) | New level | Reason | Disagrees |
 |---|---|---|---|---|
-| `missing-org-filter` | severe | critical | A query on a tenant-scoped table with no org filter is a live data-isolation breach — "already wrong in production", so critical, not severe (the emit site carries this comment). | yes |
+| `missing-org-filter` | severe | critical | A query on a tenant-scoped table with no org/tenant *predicate* is a live data-isolation breach — "already wrong in production", so critical, not severe (the emit site carries this comment). The rule means "no tenant predicate", not "no filter": a query scoped by primary key (`WHERE id = $1`) still fires because it is scoped by id, not by tenant. | yes |
 | `styles/undefined-class` | high | severe | The near-miss/not-found split: a class one edit from a defined class is a typo (a defect with a rename resolution) → severe; a class with no near-miss is a coverage gap → off-ladder diagnostic. This row is the near-miss side. | yes |
 | `stale-table-reference` | critical | critical | Missed by the original sweep — a whole-program schema rule (a table CREATE'd then DROP'd in a migration with a live code reference). Emits critical; recorded here at the emitted level. | no |
 
@@ -385,6 +375,73 @@ encodes that alias rather than rewriting Session 15.
 ## Sweep complete
 
 99 live severity rules assigned — `critical` 9, `severe` 36, `high` 54 — plus
-4 diagnostics (off-ladder) and 10 `cannot-fire` rules noted with no severity.
+4 diagnostics (off-ladder). (The 10 `cannot-fire` rules noted at the time were
+later removed in 4.1.0 — see Session 19.)
 Every row above records current (effective) severity, new level, reason, and
 whether it departs from the mechanical remap baseline.
+
+---
+
+## Session 17 — security (3 rules)
+
+Emit site: `src/analyzers/universal/UniversalSecurityAnalyzer.ts` (the three
+Spec 61 R6 rules that should have caught the twelve hand-found security
+defects). Each is live — it fires on the pre-fix tree at the proof sites and
+goes quiet on the fixed tree — so all three are assigned severity rather than
+`cannot-fire`.
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `command-injection-risk` | suggestion | critical | A shell/process command built by interpolation/concatenation turns a value into a shell command — arbitrary code execution at audit time. | yes |
+| `dynamic-require-of-project-path` | suggestion | critical | `require()`/`import()` of a path discovered from the project tree executes a repo-supplied file — the config-trust-boundary breach. | yes |
+| `unescaped-html-interpolation` | suggestion | severe | A data value interpolated into an HTML template without escaping is stored XSS in the dashboard/report. | yes |
+
+The three bring the live total to 102 (`critical` 11, `severe` 37, `high` 54).
+The `unescaped-html-interpolation` rule is `severe` rather than `critical`: it
+gates only when a string actually carries markup — a serious but not
+always-code-executing finding, unlike the two process/config rules which are
+arbitrary execution.
+
+---
+
+## Session 18 — unfiltered-query read case (Spec 62 A1.4)
+
+`unfiltered-query` was narrowed to *writes* at Spec 55 (commit 22facb1). Spec 62
+Amendment A restores a *read* case, but tenant-scoped: a filterless read of a
+table that carries declared/discovered tenancy (`requiresOrgFilter`), on top of
+the unchanged write case. Severity is unchanged — both sub-cases stay `high`:
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `unfiltered-query` (write) | high | high | A mass `DELETE`/`UPDATE` with no WHERE/HAVING/LIMIT is a mutation foot-gun that has not bitten. | no |
+| `unfiltered-query` (read) | high | high | A filterless full-table read of a *tenant* table is a full-scan smell that has not bitten. The tenant-isolation concern it also raises is already priced by `missing-org-filter` (critical); this rule stays the "no filter at all" smell one rung below. | no |
+
+The read case reuses `requiresOrgFilter` (the same tenancy determination as
+`missing-org-filter`) so the write and read sub-cases cannot drift to two
+different tenant sets. No new severity, no running-total change: `unfiltered-query`
+remains `high`.
+
+---
+
+## Session 19 — remove the ten `cannot-fire` rules (4.1.0)
+
+All ten `cannot-fire` rules were removed outright — registry entry, emission
+site, and ledger row — rather than kept as standing no-severity findings:
+
+- **schema** — `file-error` (1).
+- **schema-validator** — `field-mismatch`, `constraint-mismatch`, `version-mismatch` (3).
+- **api-contract** — `api-type-mismatch`, `missing-endpoint`, `api-extra-field`,
+  `api-missing-field`, `method-mismatch`, `auth-mismatch` (6).
+
+Each had no reachable emission site (legacy alias, or a predicate reading a
+field no extractor ever populated). They were removed because a rule that can
+never fire is a standing finding about the analyzer, not a rule to assign
+severity to; keeping them meant the `cannot-fire` class sat on the ledger forever
+while nothing could gate it. The ten IDs are tombstoned in
+`src/ruleAliases.ts` so a stale reference reports *why* each was removed.
+
+No severity row is added or removed for a live rule. The `cannot-fire` count
+drops 10 → 0; the live severity total is unchanged at 102. The
+`api-contract` analyzer is now a no-op (returns no violations) pending real
+endpoint/call extraction; the `schema-validator` aliases and the schema
+`file-error` path were deleted with their emission sites.

@@ -37,7 +37,7 @@
     "solid",
     "dry",
     "security",
-    "component",
+    "react",
     "data-access"
   ],
   
@@ -134,8 +134,8 @@
   },
   
   "// Behavior": "",
-  "// Minimum severity level to report: critical, warning, suggestion": "",
-  "minSeverity": "suggestion",
+  "// Minimum severity level to report: critical, severe, high": "",
+  "minSeverity": "high",
   "// Exit with error code if critical issues found": "",
   "failOnCritical": false,
   "// Show detailed progress during analysis": "",

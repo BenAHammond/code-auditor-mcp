@@ -1,9 +1,18 @@
 {
   "analyzer": "documentation",
-  "config": { "scope": "public", "docsMinLines": 5 },
+  "config": {
+    "scope": "public",
+    "docsMinLines": 5
+  },
   "expectedViolations": [
-    { "file": "src/undocumented.ts", "rule": "function-documentation", "severity": "suggestion" }
+    {
+      "file": "src/undocumented.ts",
+      "rule": "function-documentation",
+      "severity": "high"
+    }
   ],
-  "nearMissFiles": ["src/short-enough.ts"],
+  "nearMissFiles": [
+    "src/short-enough.ts"
+  ],
   "description": "Tests for the documentation analyzer — public API surface without JSDoc"
 }

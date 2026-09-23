@@ -18,7 +18,7 @@
   ],
   
   "enabledAnalyzers": [
-    "component",
+    "react",
     "solid",
     "dry"
   ],
@@ -48,7 +48,7 @@
   "outputFormats": ["html", "json"],
   "outputDirectory": "./audit-reports",
   
-  "minSeverity": "warning",
+  "minSeverity": "severe",
   "showProgress": true,
   
   "thresholds": {

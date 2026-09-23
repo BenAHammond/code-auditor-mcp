@@ -578,16 +578,16 @@ async function runAPIContractAnalysis(allEntities: any[]): Promise<CrossLanguage
       const contractAnalyzer = new APIContractAnalyzer();
       const contractViolations = await contractAnalyzer.analyzeContracts(endpoints, apiCalls);
 
-      // Convert to CrossLanguageViolation format
+      // Convert to CrossLanguageViolation format. The api-contract rules were
+      // removed in 4.1.0, so analyzeContracts() returns no violations and this
+      // loop is currently unreachable; it remains for when real contract
+      // extraction lands.
       for (const violation of contractViolations) {
         violations.push({
           ...violation,
           crossLanguageType: 'api-mismatch',
-          relatedFiles: [violation.file, ...(violation.endpoint ? [violation.endpoint.file] : [])],
-          relatedLanguages: [
-            violation.call?.language || 'unknown',
-            violation.endpoint?.language || 'unknown'
-          ].filter(lang => lang !== 'unknown')
+          relatedFiles: [violation.file],
+          relatedLanguages: [],
         });
       }
     }

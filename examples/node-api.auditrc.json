@@ -64,7 +64,7 @@
   "outputFormats": ["json", "html"],
   "outputDirectory": "./audit-reports",
   
-  "minSeverity": "warning",
+  "minSeverity": "severe",
   "failOnCritical": true,
   
   "thresholds": {

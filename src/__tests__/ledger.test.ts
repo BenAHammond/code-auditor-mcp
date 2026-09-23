@@ -19,7 +19,7 @@ function makeViolation(overrides: Partial<Violation> = {}): Violation {
   return {
     file: overrides.file ?? 'src/foo.ts',
     line: overrides.line ?? 42,
-    severity: overrides.severity ?? 'warning',
+    severity: overrides.severity ?? 'severe',
     message: overrides.message ?? 'Test violation',
     ...overrides,
   };
@@ -114,9 +114,9 @@ describe('Findings Ledger — write and status', () => {
         target: '/tmp/test',
       },
       [
-        makeViolation({ analyzer: 'docs', rule: 'undocumented', file: 'src/a.ts', line: 1, severity: 'warning', message: 'Missing JSDoc' }),
-        makeViolation({ analyzer: 'solid', rule: 'high-complexity', file: 'src/b.ts', line: 10, severity: 'suggestion', message: 'Function is too complex' }),
-        makeViolation({ analyzer: 'schema', rule: 'unknown-table', file: 'src/c.ts', line: 20, severity: 'warning', message: 'Unknown table "heroes"' }),
+        makeViolation({ analyzer: 'docs', rule: 'undocumented', file: 'src/a.ts', line: 1, severity: 'severe', message: 'Missing JSDoc' }),
+        makeViolation({ analyzer: 'solid', rule: 'high-complexity', file: 'src/b.ts', line: 10, severity: 'high', message: 'Function is too complex' }),
+        makeViolation({ analyzer: 'schema', rule: 'unknown-table', file: 'src/c.ts', line: 20, severity: 'severe', message: 'Unknown table "heroes"' }),
       ],
       3200,
       2,
@@ -137,7 +137,7 @@ describe('Findings Ledger — write and status', () => {
     expect(findings).toHaveLength(3);
     expect(findings[0].analyzer).toBe('docs');
     expect(findings[0].file).toBe('src/a.ts');
-    expect(findings[0].severity).toBe('warning');
+    expect(findings[0].severity).toBe('severe');
     expect(findings[0].fingerprint).toBeTruthy();
     expect(findings[1].analyzer).toBe('solid');
     expect(findings[2].analyzer).toBe('schema');
@@ -153,11 +153,11 @@ describe('Findings Ledger — write and status', () => {
       { gitDirty: false, toolVersion: '1.0', command: 'audit', surface: 'cli', scope: 'full', target: '.' },
       [
         // symbol field explicitly set
-        { file: 'src/a.ts', line: 1, severity: 'suggestion', message: 'test', analyzer: 'test', rule: 'test', symbol: 'MyClass' },
+        { file: 'src/a.ts', line: 1, severity: 'high', message: 'test', analyzer: 'test', rule: 'test', symbol: 'MyClass' },
         // functionName fallback
-        { file: 'src/b.ts', line: 2, severity: 'suggestion', message: 'test', analyzer: 'test', rule: 'test', functionName: 'myFunction' },
+        { file: 'src/b.ts', line: 2, severity: 'high', message: 'test', analyzer: 'test', rule: 'test', functionName: 'myFunction' },
         // neither — should produce empty symbol but different fingerprint
-        { file: 'src/c.ts', line: 3, severity: 'suggestion', message: 'test', analyzer: 'test', rule: 'test' },
+        { file: 'src/c.ts', line: 3, severity: 'high', message: 'test', analyzer: 'test', rule: 'test' },
       ],
       0, 0,
     );
@@ -319,9 +319,9 @@ describe('Findings Ledger — reading and stats', () => {
       db,
       { gitDirty: false, toolVersion: '1.0', command: 'audit', surface: 'cli', scope: 'full', target: '.' },
       [
-        makeViolation({ analyzer: 'docs', rule: 'undocumented', severity: 'warning' }),
-        makeViolation({ analyzer: 'docs', rule: 'undocumented', severity: 'suggestion' }),
-        makeViolation({ analyzer: 'solid', rule: 'complexity', severity: 'warning' }),
+        makeViolation({ analyzer: 'docs', rule: 'undocumented', severity: 'severe' }),
+        makeViolation({ analyzer: 'docs', rule: 'undocumented', severity: 'high' }),
+        makeViolation({ analyzer: 'solid', rule: 'complexity', severity: 'severe' }),
       ],
       0, 0,
     );
@@ -329,8 +329,8 @@ describe('Findings Ledger — reading and stats', () => {
       db,
       { gitDirty: false, toolVersion: '1.0', command: 'changed', surface: 'cli', scope: 'scoped', target: '.' },
       [
-        makeViolation({ analyzer: 'docs', rule: 'undocumented', severity: 'warning' }),
-        makeViolation({ analyzer: 'schema', rule: 'unknown', severity: 'suggestion' }),
+        makeViolation({ analyzer: 'docs', rule: 'undocumented', severity: 'severe' }),
+        makeViolation({ analyzer: 'schema', rule: 'unknown', severity: 'high' }),
       ],
       0, 0,
     );
@@ -338,11 +338,11 @@ describe('Findings Ledger — reading and stats', () => {
     const stats = getLedgerStats(db);
     expect(stats.totalRuns).toBe(2);
 
-    // docs: 3 total (2 warnings + 1 suggestion)
+    // docs: 3 total (2 severe + 1 high)
     expect(stats.perAnalyzer['docs'].total).toBe(3);
     expect(stats.perAnalyzer['docs'].perRule['undocumented']).toBe(3);
-    expect(stats.perAnalyzer['docs'].severityDistribution['warning']).toBe(2);
-    expect(stats.perAnalyzer['docs'].severityDistribution['suggestion']).toBe(1);
+    expect(stats.perAnalyzer['docs'].severityDistribution['severe']).toBe(2);
+    expect(stats.perAnalyzer['docs'].severityDistribution['high']).toBe(1);
 
     // solid: 1
     expect(stats.perAnalyzer['solid'].total).toBe(1);
@@ -462,7 +462,7 @@ describe('Findings Ledger — audit runner integration', () => {
       db,
       { gitDirty: false, toolVersion: '1.0', command: 'audit', surface: 'cli', scope: 'full', target: '.' },
       [
-        makeViolation({ analyzer: 'docs', rule: 'undocumented', file: 'src/a.ts', severity: 'warning', symbol: 'foo' }),
+        makeViolation({ analyzer: 'docs', rule: 'undocumented', file: 'src/a.ts', severity: 'severe', symbol: 'foo' }),
       ],
       0, 0,
     );
@@ -470,7 +470,7 @@ describe('Findings Ledger — audit runner integration', () => {
       db,
       { gitDirty: false, toolVersion: '1.0', command: 'audit', surface: 'cli', scope: 'full', target: '.' },
       [
-        makeViolation({ analyzer: 'docs', rule: 'undocumented', file: 'src/a.ts', severity: 'suggestion', symbol: 'foo' }),
+        makeViolation({ analyzer: 'docs', rule: 'undocumented', file: 'src/a.ts', severity: 'high', symbol: 'foo' }),
       ],
       0, 0,
     );
@@ -554,7 +554,7 @@ describe('Findings Ledger — corruption resilience', () => {
       writeAuditToLedger(
         db,
         { gitDirty: false, toolVersion: '1.0', command: 'audit', surface: 'cli', scope: 'full', target: '.' },
-        [{ file: 'src/a.ts', severity: 'suggestion', message: 'test' } as Violation],
+        [{ file: 'src/a.ts', severity: 'high', message: 'test' } as Violation],
         0, 0,
       );
     }).not.toThrow();
@@ -571,7 +571,7 @@ describe('Findings Ledger — corruption resilience', () => {
       file: 'src/App.tsx',
       line: 42,
       rule: 'complexity',
-      severity: 'suggestion',
+      severity: 'high',
       message: 'Component is too complex',
       analyzer: 'react',
       violationType: 'complexity',
@@ -582,7 +582,7 @@ describe('Findings Ledger — corruption resilience', () => {
       file: 'src/App.tsx',
       line: 42,
       rule: 'accessibility',
-      severity: 'warning',
+      severity: 'severe',
       message: 'Missing aria-label',
       analyzer: 'react',
       violationType: 'accessibility',
@@ -603,7 +603,7 @@ describe('Findings Ledger — corruption resilience', () => {
       file: 'src/useToggle.ts',
       line: 10,
       rule: 'hooks-naming',
-      severity: 'suggestion',
+      severity: 'high',
       message: 'Hook name should start with "use"',
       analyzer: 'react',
       violationType: 'hooks-naming',
@@ -621,7 +621,7 @@ describe('Findings Ledger — corruption resilience', () => {
       file: 'src/Home.tsx',
       line: 15,
       rule: 'raw-element',
-      severity: 'warning',
+      severity: 'severe',
       message: 'raw <button> — this project uses <Button>',
       analyzer: 'react',
       violationType: 'raw-element',

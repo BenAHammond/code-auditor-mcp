@@ -74,6 +74,7 @@ const SOURCE_FOLDERS = ['app', 'src'];
 const GLOBAL_ONLY_ANALYZERS = new Set([
   'dry',
   'data-access',
+  'data-access-org-filter',
   'schema',
   'styles',
   'conventions',

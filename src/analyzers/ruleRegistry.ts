@@ -175,7 +175,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         { code: 'function simple(x) {\n  if (x > 0) return x;\n  return -x;\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'function complex(x) {\n  if (a && b) { if (c) { while (d) { if (e) return 1; } } }\n  if (f || g) { for (;;) { if (h) break; } }\n  return 0;\n}' },
+        { code: 'function complex(x) {\n  if (x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x && x) return 1;\n  return 0;\n}' },
       ],
     },
   },
@@ -274,7 +274,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         { code: 'interface Printer {\n  print(doc) { return doc; }\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'interface Machine {\n  op1() {}\n  op2() {}\n  op3() {}\n  op4() {}\n  op5() {}\n  op6() {}\n  op7() {}\n  op8() {}\n  op9() {}\n  op10() {}\n  op11() {}\n  op12() {}\n  op13() {}\n  op14() {}\n  op15() {}\n  op16() {}\n  op17() {}\n  op18() {}\n  op19() {}\n  op20() {}\n  op21() {}\n  op22() {}\n  op23() {}\n  op24() {}\n  op25() {}\n  op26() {}\n}' },
+        { code: 'interface Machine {\n  op1(): void;\n  op2(): void;\n  op3(): void;\n  op4(): void;\n  op5(): void;\n  op6(): void;\n  op7(): void;\n  op8(): void;\n  op9(): void;\n  op10(): void;\n  op11(): void;\n  op12(): void;\n  op13(): void;\n  op14(): void;\n  op15(): void;\n  op16(): void;\n  op17(): void;\n  op18(): void;\n  op19(): void;\n  op20(): void;\n  op21(): void;\n  op22(): void;\n  op23(): void;\n  op24(): void;\n  op25(): void;\n  op26(): void;\n}' },
       ],
     },
   },
@@ -528,8 +528,13 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
       invalid: [
         {
-          code: 'function a() {\n  const x = compute(1);\n  const y = compute(2);\n  return x + y;\n}\nfunction b() {\n  const x = compute(1);\n  const y = compute(2);\n  return x + y;\n}',
-          resolution: { action: 'extract-shared', summary: 'Extract the duplicated block into a shared helper and call it from both sites.', symbols: ['a', 'b'] },
+          // Two IDENTICAL ≥15-line for-loops — `dry/duplicate` is an *exact*
+          // token match (normalizeCode keeps identifiers), so the two blocks must
+          // be byte-identical, not merely same-shape. The old sample (`function a`
+          // / `function b` with identical bodies) was doubly dead: its names differ
+          // (no exact hash match) and it was under minLineThreshold.
+          code: 'function process(rows) {\n  for (const row of rows) {\n    const id = row.id;\n    const name = row.name;\n    const value = row.value;\n    const category = row.category;\n    const tags = row.tags;\n    const meta = row.meta;\n    const score = computeScore(row);\n    const rank = computeRank(score);\n    const label = formatLabel(name);\n    const bucket = assignBucket(rank);\n    const flags = extractFlags(row);\n    const audit = buildAudit(flags);\n    const record = { id, name, value, category, tags, meta, score, rank, label, bucket, audit };\n    push(record);\n    notify(record.id);\n  }\n  for (const row of rows) {\n    const id = row.id;\n    const name = row.name;\n    const value = row.value;\n    const category = row.category;\n    const tags = row.tags;\n    const meta = row.meta;\n    const score = computeScore(row);\n    const rank = computeRank(score);\n    const label = formatLabel(name);\n    const bucket = assignBucket(rank);\n    const flags = extractFlags(row);\n    const audit = buildAudit(flags);\n    const record = { id, name, value, category, tags, meta, score, rank, label, bucket, audit };\n    push(record);\n    notify(record.id);\n  }\n}',
+          resolution: { action: 'extract-shared', summary: 'Extract the duplicated block into a shared helper and call it from both sites.', symbols: ['process'] },
         },
       ],
     },
@@ -548,7 +553,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         { code: 'function a(x) {\n  return x + 1;\n}\nfunction b(x) {\n  return x * 2;\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'function a(x) {\n  return fetch(x).then((r) => r.json());\n}\nfunction b(y) {\n  return fetch(y).then((r) => r.json());\n}' },
+        {
+          // Two structurally-identical ≥15-line functions with different
+          // identifiers/literals. `dry/structural-similarity` compares the
+          // token-kind skeleton (normalizeCodeForStructure), so the two must share
+          // structure but differ in names — the old two-line `fetch().then()`
+          // pair was under minLineThreshold and never emitted.
+          code: 'function computeA(rows) {\n  for (const item of rows) {\n    const id = item.id;\n    const name = item.name;\n    const value = item.value;\n    const category = item.category;\n    const tags = item.tags;\n    const meta = item.meta;\n    const score = scoreA(item);\n    const rank = rankA(score);\n    const label = labelA(name);\n    const bucket = bucketA(rank);\n    const flags = flagsA(item);\n    const audit = auditA(flags);\n    const record = { id, name, value, category, tags, meta, score, rank, label, bucket, audit };\n    appendA(record);\n    emitA(record.id);\n  }\n}\nfunction computeB(rows) {\n  for (const entry of rows) {\n    const id = entry.id;\n    const name = entry.name;\n    const value = entry.value;\n    const category = entry.category;\n    const tags = entry.tags;\n    const meta = entry.meta;\n    const score = scoreB(entry);\n    const rank = rankB(score);\n    const label = labelB(name);\n    const bucket = bucketB(rank);\n    const flags = flagsB(entry);\n    const audit = auditB(flags);\n    const record = { id, name, value, category, tags, meta, score, rank, label, bucket, audit };\n    appendB(record);\n    emitB(record.id);\n  }\n}',
+        },
       ],
     },
   },
@@ -670,11 +682,16 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'missing-org-filter': {
-    analyzer: 'data-access',
+    analyzer: 'data-access-org-filter',
     field: 'rule',
-    input: ['schema'],
-    resolvable: false,
-    message: 'Query on {tables} is missing an organization/tenant filter.',
+    input: ['data-access', 'schema'],
+    resolvable: true,
+    // The claim is "no organization/tenant *predicate*", NOT "no filter". A
+    // query scoped by primary key (`WHERE id = $1`) still fires, because it is
+    // scoped by id but not by tenant — an IDOR surface if the id is
+    // request-reachable. The fix is to add the tenant column to the predicate,
+    // not to add a filter (one already exists in the PK-scoped case).
+    message: 'Query on {tables} has no organization/tenant predicate.',
     docs: 'missing-org-filter',
     thresholds: [],
     samples: {
@@ -682,7 +699,14 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         { code: 'db.query("SELECT * FROM projects WHERE org_id = ?", [orgId])', nearMiss: true },
       ],
       invalid: [
-        { code: 'db.query("SELECT * FROM projects WHERE id = ?", [id])' },
+        {
+          code: 'db.query("SELECT * FROM projects WHERE id = ?", [id])',
+          resolution: {
+            action: 'add-tenant-predicate',
+            summary: 'Add the tenant column (organization_id / org_id) to the WHERE predicate so the query is scoped to the current organization, not just by primary key.',
+            symbols: ['db', 'query'],
+          },
+        },
       ],
     },
   },
@@ -709,7 +733,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
-    message: 'Unfiltered write on {tables} has no WHERE/HAVING/LIMIT.',
+    message: 'Unfiltered write or tenant-scoped read on {tables} has no WHERE/HAVING/LIMIT.',
     docs: 'unfiltered-query',
     thresholds: [],
     samples: {
@@ -856,10 +880,21 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: [],
     samples: {
       valid: [
-        { code: '/**\n * Computes.\n * @returns the result\n */\nfunction compute() {}', nearMiss: true },
+        {
+          // return-documentation only applies to a typed, non-void return
+          // (`func.returnType && !== 'void'`). The old sample returned nothing,
+          // so the guard was vacuous; this one returns `number` and documents it.
+          code: '/**\n * Computes the result.\n * @returns the result.\n */\nfunction compute(): number { return 1; }',
+          nearMiss: true,
+        },
       ],
       invalid: [
-        { code: '/** Computes. */\nfunction compute() {}' },
+        {
+          // Missing @returns on a typed, non-void function. The old sample
+          // (`function compute() {}`) had no return type, so the return-doc guard
+          // never applied.
+          code: '/** Computes the result. */\nfunction compute(): number { return 1; }',
+        },
       ],
     },
   },
@@ -982,23 +1017,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
       invalid: [
         { code: '{"field": "age", "minimum": 200, "maximum": 100}' },
-      ],
-    },
-  },
-  'file-error': {
-    analyzer: 'schema',
-    field: 'rule',
-    input: ['schema-json'],
-    resolvable: false,
-    message: 'Error processing schema file: {error}.',
-    docs: 'file-error',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: '{"valid": true}', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'not a readable schema' },
       ],
     },
   },
@@ -1352,7 +1370,13 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         { code: 'function Simple({ x }) {\n  return <div>{x}</div>;\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'function Complex(props) {\n  if (a) { if (b) { if (c) { if (d) { return <X/>; } } } }\n  if (e) { if (f) { return <Y/>; } }\n  return <Z/>;\n}' },
+        {
+          // 22 `if` statements — component complexity (base 1 + one per branch)
+          // must exceed maxComponentComplexity (20). The old sample had 6
+          // branches (complexity 7), under the recalibrated ceiling, so it never
+          // fired.
+          code: 'function Complex(props) {\n  if (props.x === 1) return <C1 />;\n  if (props.x === 2) return <C2 />;\n  if (props.x === 3) return <C3 />;\n  if (props.x === 4) return <C4 />;\n  if (props.x === 5) return <C5 />;\n  if (props.x === 6) return <C6 />;\n  if (props.x === 7) return <C7 />;\n  if (props.x === 8) return <C8 />;\n  if (props.x === 9) return <C9 />;\n  if (props.x === 10) return <C10 />;\n  if (props.x === 11) return <C11 />;\n  if (props.x === 12) return <C12 />;\n  if (props.x === 13) return <C13 />;\n  if (props.x === 14) return <C14 />;\n  if (props.x === 15) return <C15 />;\n  if (props.x === 16) return <C16 />;\n  if (props.x === 17) return <C17 />;\n  if (props.x === 18) return <C18 />;\n  if (props.x === 19) return <C19 />;\n  if (props.x === 20) return <C20 />;\n  if (props.x === 21) return <C21 />;\n  if (props.x === 22) return <C22 />;\n  return <Z />;\n}',
+        },
       ],
     },
   },
@@ -1458,23 +1482,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // as a finding).
 
   // ── schema-validator (SchemaValidator) ──────────────────────────────────
-  'field-mismatch': {
-    analyzer: 'schema-validator',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Field mismatch: {detail}.',
-    docs: 'field-mismatch',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'model User { id Int @id }', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'model User { id String @id }' },
-      ],
-    },
-  },
   'schema-field-mismatch': {
     analyzer: 'schema-validator',
     field: 'rule',
@@ -1526,145 +1533,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'constraint-mismatch': {
-    analyzer: 'schema-validator',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Constraint mismatch: {detail}.',
-    docs: 'constraint-mismatch',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'model User { id Int @id @default(autoincrement()) }', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'model User { id Int @id }' },
-      ],
-    },
-  },
-  'version-mismatch': {
-    analyzer: 'schema-validator',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Version mismatch: {detail}.',
-    docs: 'version-mismatch',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'export const version = "1.2.3";', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'export const version = "0.0.1";' },
-      ],
-    },
-  },
-
-  // ── api-contract (APIContractAnalyzer) ──────────────────────────────────
-  'api-type-mismatch': {
-    analyzer: 'api-contract',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'API type mismatch: {detail}.',
-    docs: 'api-type-mismatch',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'function getUser(id: number): User { return {} as User; }', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'function getUser(id: number): string { return ""; }' },
-      ],
-    },
-  },
-  'missing-endpoint': {
-    analyzer: 'api-contract',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Missing API endpoint: {endpoint}.',
-    docs: 'missing-endpoint',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'app.get("/users", handler);', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'app.get("/unlisted", handler);' },
-      ],
-    },
-  },
-  'api-extra-field': {
-    analyzer: 'api-contract',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Extra field in API response: {field}.',
-    docs: 'api-extra-field',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'return res.json({ id, name });', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'return res.json({ id, name, internal });' },
-      ],
-    },
-  },
-  'api-missing-field': {
-    analyzer: 'api-contract',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Missing field in API response: {field}.',
-    docs: 'api-missing-field',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'return res.json({ id, name });', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'return res.json({ id });' },
-      ],
-    },
-  },
-  'method-mismatch': {
-    analyzer: 'api-contract',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'HTTP method mismatch: {detail}.',
-    docs: 'method-mismatch',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'app.post("/users", createUser);', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'app.get("/users", createUser);' },
-      ],
-    },
-  },
-  'auth-mismatch': {
-    analyzer: 'api-contract',
-    field: 'rule',
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Authentication mismatch: {detail}.',
-    docs: 'auth-mismatch',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'app.get("/users", auth, handler);', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'app.get("/users", handler);' },
-      ],
-    },
-  },
-
   // ── dependency-graph (DependencyGraphBuilder) ───────────────────────────
   'circular-dependency': {
     analyzer: 'dependency-graph',
@@ -2166,6 +2034,73 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
+
+  // ── security (UniversalSecurityAnalyzer) — Spec 61 R6 ─────────────────────
+  'command-injection-risk': {
+    analyzer: 'security',
+    field: 'rule',
+    input: ['files'],
+    resolvable: true,
+    message: 'Unsafe process invocation: {method} is passed a command built by interpolation/concatenation.',
+    docs: 'command-injection-risk',
+    thresholds: [],
+    samples: {
+      valid: [
+        { code: "execFileSync('git', ['diff', '--name-only', ref])", nearMiss: true },
+      ],
+      invalid: [
+        { code: "execSync(`git diff --name-only ${ref}`)", resolution: { action: 'use-argv-array', summary: 'Replace execSync with execFileSync/spawn whose command is a string literal and whose arguments are separate array elements, so no shell interprets them.', symbols: ['execSync'] } },
+      ],
+    },
+  },
+  'dynamic-require-of-project-path': {
+    analyzer: 'security',
+    field: 'rule',
+    input: ['files'],
+    resolvable: true,
+    message: 'Dynamic require/import of a project config path: {path}.',
+    docs: 'dynamic-require-of-project-path',
+    thresholds: [],
+    samples: {
+      valid: [
+        { code: "import('./builtin-helper.js')", nearMiss: true },
+        { code: "require('tailwindcss')", nearMiss: true },
+      ],
+      invalid: [
+        { code: "require(configPath)", resolution: { action: 'static-config-extraction', summary: 'Read the config without executing it (static extraction) rather than require()/import() a path discovered from the project tree.', symbols: ['require'] } },
+      ],
+    },
+  },
+  'unescaped-html-interpolation': {
+    analyzer: 'security',
+    field: 'rule',
+    input: ['files'],
+    resolvable: true,
+    message: 'Unescaped HTML interpolation: {field} is inserted into an HTML template without an escaping call.',
+    docs: 'unescaped-html-interpolation',
+    thresholds: [],
+    samples: {
+      valid: [
+        {
+          // Same sink (`.innerHTML`) + same member-access interpolation, but the
+          // value is escape-wrapped — the fix, not the finding. The old near-miss
+          // (`const html = ...` with no sink) "passed" only because there was no
+          // sink to read.
+          code: 'el.innerHTML = `<p>${escapeHtml(user.name)}</p>`;',
+          nearMiss: true,
+        },
+      ],
+      invalid: [
+        {
+          // Needs BOTH a sink (`.innerHTML` assignment) and a member-expression
+          // interpolation (`user.name`, not a bare identifier). The old sample
+          // (`const html = `${userName}``) had neither, so it never emitted.
+          code: 'el.innerHTML = `<p>${user.name}</p>`;',
+          resolution: { action: 'escape-html-interpolation', summary: 'Wrap the interpolation in an escaping call (e.g. ${escapeHtml(user.name)}) before it reaches the HTML template.', symbols: ['user.name'] },
+        },
+      ],
+    },
+  },
 };
 
 /**
@@ -2197,7 +2132,27 @@ export const MCP_DEFAULT_ANALYZERS: readonly string[] = [
   'documentation',
   'react',
   'data-access',
+  'data-access-org-filter',
 ];
+
+/**
+ * Analyzers the pipeline can run that emit *no* registry rule. Their rules come
+ * from a runtime source other than {@link RULE_REGISTRY}: `invariants` reads its
+ * rules from the `.codeauditor.json` `rules` array (the seven invariant rule
+ * kinds), not from registry rows, so it is absent from {@link ALL_ANALYZERS}.
+ */
+export const PIPELINE_ONLY_ANALYZERS: readonly string[] = ['invariants'];
+
+/**
+ * Every analyzer `enabledAnalyzers` may legitimately name — {@link ALL_ANALYZERS}
+ * (registry rule emitters) plus {@link PIPELINE_ONLY_ANALYZERS}. This is the
+ * single source of truth for "can this analyzer actually run?" — used by config
+ * validation, which must not reject `invariants` (a valid pipeline analyzer that
+ * happens to carry no registry rule).
+ */
+export const RUNNABLE_ANALYZERS: readonly string[] = [
+  ...new Set([...ALL_ANALYZERS, ...PIPELINE_ONLY_ANALYZERS]),
+].sort();
 
 /**
  * A violation in the loose shape the gate and baseline code handle (a Violation

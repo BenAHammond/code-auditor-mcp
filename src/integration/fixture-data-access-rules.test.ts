@@ -15,11 +15,13 @@
  * under `tests/` (Spec 55 R3 excludes them by default).
  *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  *
- * Total violations: 8
+ * Total violations: 9
  *   - complex-query: 1 (line 12 in complex-query.ts — 9 tables)
  *   - loop-query: 2 (loop-query.ts:18 direct, loop-query.ts:30 helper-in-loop)
  *   - missing-org-filter: 4 (complex-query.ts:32, loop-query.ts:18/24, missing-org-filter.ts:12)
- *   - unfiltered-query: 1 (unfiltered-query.ts:13 — the unfiltered DELETE)
+ *   - unfiltered-query: 2 (unfiltered-query.ts:13 — the unfiltered DELETE write;
+ *     missing-org-filter.ts:12 — the A1.4 tenant-scoped *read* case, a filterless
+ *     full-table SELECT of `projects`)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -55,7 +57,16 @@ describe('data-access-rules fixture', () => {
     const reportPath = join(testDir, 'audit-report.json');
     const reportRaw = execSync(`cat "${reportPath}"`, { encoding: 'utf-8' });
     const report = JSON.parse(reportRaw);
-    return report?.analyzerResults?.['data-access']?.violations ?? [];
+    // Spec 62 Amendment B — missing-org-filter now emits from the Stage-4
+    // `data-access-org-filter` reducer, so its findings live in a sibling
+    // bucket rather than the Stage-2 `data-access` bucket. Merge the two so the
+    // baseline counts (8 total, 4 missing-org-filter) stay a single assertion
+    // over the data-access rule family.
+    const results = report?.analyzerResults ?? {};
+    return [
+      ...(results['data-access']?.violations ?? []),
+      ...(results['data-access-org-filter']?.violations ?? []),
+    ];
   }
 
   /**
@@ -74,7 +85,7 @@ describe('data-access-rules fixture', () => {
 
   it('total violations match baseline', () => {
     const violations = runAndGetViolations(testDir);
-    expect(violations.length).toBe(8);
+    expect(violations.length).toBe(9);
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -114,7 +125,21 @@ describe('data-access-rules fixture', () => {
       const violations = runAndGetViolations(testDir);
       const fileV = fileViolations(violations, 'missing-org-filter.ts');
       const mofViolations = fileV.filter((v: any) => v.rule === 'missing-org-filter');
-      // Only 1 missing-org-filter violation — from true positive (line 12), not near-miss (line 18)
+      // Only 1 missing-org-filter violation — from the true positive (line 12);
+      // neither near-miss (org_id = ? at line 18, organization_id = $1 at line 26) fires.
+      expect(mofViolations.length).toBe(1);
+      expect(mofViolations[0].line).toBe(12);
+    });
+
+    it('near-miss negative: organization_id = $n (exact hhra-org shape) does NOT trigger missing-org-filter', () => {
+      // The spelling that fooled the old 2-tier predicate: `organization_id`
+      // (long form) with a `$n` positional operand. The Stage-4 tenant predicate
+      // must count this as "has a tenant predicate" and stay quiet.
+      const violations = runAndGetViolations(testDir);
+      const fileV = fileViolations(violations, 'missing-org-filter.ts');
+      const mofViolations = fileV.filter((v: any) => v.rule === 'missing-org-filter');
+      // Still exactly one finding (the true positive at line 12); the exact-shape
+      // near-miss at line 26 does not fire.
       expect(mofViolations.length).toBe(1);
       expect(mofViolations[0].line).toBe(12);
     });
@@ -209,9 +234,9 @@ describe('data-access-rules fixture', () => {
       expect(poolViolations.length).toBe(0);
     });
 
-    it('baseline total is unchanged by non-db-receiver.ts (8 violations)', () => {
+    it('baseline total is unchanged by non-db-receiver.ts (9 violations)', () => {
       const violations = runAndGetViolations(testDir);
-      expect(violations.length).toBe(8);
+      expect(violations.length).toBe(9);
     });
   });
 });

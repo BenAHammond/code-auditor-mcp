@@ -100,8 +100,16 @@ function findNodeModulesDir(start: string): string | null {
   let dir = path.resolve(start);
   for (;;) {
     const candidate = path.join(dir, 'node_modules');
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-      return candidate;
+    // lstat, not stat/existsSync: a symlinked `node_modules` is skipped rather
+    // than followed, so a link pointing elsewhere on disk cannot redirect the
+    // cache root out of the project tree. Symlinks are skipped by continuing up.
+    try {
+      const st = fs.lstatSync(candidate);
+      if (st.isDirectory()) {
+        return candidate;
+      }
+    } catch {
+      // no candidate here — continue up
     }
     const parent = path.dirname(dir);
     if (parent === dir) {

@@ -10,10 +10,13 @@
  *     reports the manifest version is still preferred, so npm installs keep their
  *     fast path (nothing is trusted on presence alone).
  *   - **compatible** — a global `code-audit` on PATH that reports the manifest
- *     version is still used (the fast path is preserved when it is not stale).
- *   - **stale**    — a bundled sibling OR global `code-audit` whose `--version`
- *     does not match the manifest is skipped with a one-line warn, and resolution
- *     falls through to the pinned install instead of hard-failing.
+ *     version is still used when the pinned install cannot complete (a
+ *     version-matched local install keeps its fast path when the registry is
+ *     unreachable).
+ *   - **stale**    — a bundled sibling whose `--version` does not match the
+ *     manifest is skipped with a one-line warn and falls through to the pinned
+ *     install; a stale global is likewise warned and skipped (only reachable when
+ *     the pin also fails), ending at the last-ditch npx command.
  *   - **install-failure** — when the pinned install cannot complete, resolution
  *     emits a last-ditch `npx` command (that `assert_compatible` will reject) —
  *     never an empty command.
@@ -152,18 +155,27 @@ describe('resolve_code_audit — pinned-install fallback (Spec 59)', () => {
     expect(stderr).toContain('9.9.8');
   });
 
-  it('compatible: a global code-audit reporting the manifest version (with a banner suffix) is still used', () => {
+  it('order: a successful pinned install shadows a compatible global (pin is tried before PATH)', () => {
+    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.9' });
+    // npm exits 0, so the pin succeeds and wins over the version-matched global
+    // that the old order would have returned as the PATH fast path.
+    expect(resolve(layout)).toBe(pinnedBin(layout, '9.9.9'));
+  });
+
+  it('compatible: a global code-audit reporting the manifest version (with a banner suffix) is used when the pin cannot install', () => {
     // The "(sqlite: …)" suffix is what the real CLI prints; semver_of must strip
     // it before comparing — the thing that let assert_compatible go quiet for
-    // three releases. A bare "9.9.9" would never exercise that strip.
-    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.9 (sqlite: node-sqlite)' });
+    // three releases. A bare "9.9.9" would never exercise that strip. The pinned
+    // install is tried first, so this path is only reached when that install
+    // fails (npmExitCode: 1); a version-matched global then keeps its fast path.
+    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.9 (sqlite: node-sqlite)', npmExitCode: 1 });
     expect(resolve(layout)).toBe('code-audit');
   });
 
-  it('stale: a mismatched global is skipped with a warn and falls through to the pinned install', () => {
-    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.8' });
+  it('stale: with a failed pin, a mismatched global is skipped with a warn and falls through to the last-ditch npx', () => {
+    const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.8', npmExitCode: 1 });
     const { stdout, stderr } = resolveDetail(layout);
-    expect(stdout).toBe(pinnedBin(layout, '9.9.9'));
+    expect(stdout).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
     expect(stderr).toContain('warn');
     expect(stderr).toContain('9.9.8');
   });

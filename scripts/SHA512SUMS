@@ -1,0 +1,15 @@
+# SHA512SUMS — pinned digests for the @ast-grep/napi platform binaries.
+#
+# One line per platform package, digest over the extracted `.node` binary at the
+# pinned VERSION below. download-natives.sh verifies every extracted/cached
+# binary against this file; a mismatch fails the script non-zero so a tampered
+# or silently-updated binary cannot be bundled and shipped.
+#
+# version: 0.44.1
+aa44466f9f910cf9a03a469a5ebde6b2d4c8f52c1f315fe275730af17ff2c5256fb803b306589f7b2233d7730e4b3fc5dbada5241bdcae5afd4d2548977b5740  ast-grep-napi.darwin-arm64.node
+25d42027d350f8de3c4c8c13ee13a9a08ebbcbc05411410ee1dc7ab535e1d678bb172a83203ba1b0f650300cdcf18bcfac2ddffa7f9a722ce2a2ebf797cbd4f9  ast-grep-napi.darwin-x64.node
+9f22e007aa8cf7093e5a9c9c8bfa9a4d282088be7eb04d4ee6beccafaeb16e608485f4588f5f71e9c196f0c2f0fc7cfaba9b833b154bc91a2a6be83158eb4b74  ast-grep-napi.linux-arm64-gnu.node
+ebe85330b60d3c4e571cadeb96d83d50cda2ecc2998a16d44b4ce9bf739b37c087665941a6f1b2444dcf98f43324c63199ae2e646b389d4a1d6aa8f5746bd8ba  ast-grep-napi.linux-arm64-musl.node
+5678afed8d1bbdc649fbc7693e10083fdaea0c9dc79d3584183ad7e38a7cb247cbbbe9ff372f57695ac2741292170e25ef16e90ca64f18519b111ceff27d8da3  ast-grep-napi.linux-x64-gnu.node
+e70844cafc06380d83047c0a855da5b105db7fdc3ee7191798d009e03292f1eb403c7c18f5f8838b490816585f218a7717bf2ca64fa179db8b27d9a2acd0c26b  ast-grep-napi.linux-x64-musl.node
+e18f4d15a5eb4fcb3a8eca1af354e1045ae48b46d1196a5a1627151334c08d3d7498fb0bb6aab008c137e5e96ce48ef8ac11ab6eda9925fe06563ba1598b323b  ast-grep-napi.win32-x64-msvc.node

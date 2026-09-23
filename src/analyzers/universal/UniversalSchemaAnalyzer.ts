@@ -29,6 +29,7 @@ import { makeVisitorStatus } from '../../pipeline.js';
 import {
   parseMigrationOps,
   extractDdlColumnNames,
+  extractDdlTableColumns,
   extractReExports,
   sqlFileHasDdl,
   extractMigrationOpsFromFile,
@@ -75,6 +76,7 @@ import {
 export {
   parseMigrationOps,
   extractDdlColumnNames,
+  extractDdlTableColumns,
   extractReExports,
   sqlFileHasDdl,
   extractMigrationOpsFromFile,

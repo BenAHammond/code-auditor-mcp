@@ -3,7 +3,7 @@
  * Detects mismatches between frontend and backend APIs
  */
 
-import { CrossReference, APIContract, TypeSchema, ErrorSchema } from '../../types/crossLanguage.js';
+import { TypeSchema, ErrorSchema } from '../../types/crossLanguage.js';
 import { Violation } from '../../types.js';
 
 export interface APIEndpoint {
@@ -32,291 +32,34 @@ export interface APICall {
   timeout?: number;
 }
 
-export interface ContractViolation extends Violation {
-  rule: 'api-type-mismatch' | 'missing-endpoint' | 'api-extra-field' | 'api-missing-field' | 'method-mismatch' | 'auth-mismatch';
-  contractType: 'api-type-mismatch' | 'missing-endpoint' | 'api-extra-field' | 'api-missing-field' | 'method-mismatch' | 'auth-mismatch';
-  endpoint?: APIEndpoint;
-  call?: APICall;
-  expectedType?: string;
-  actualType?: string;
-  missingFields?: string[];
-  extraFields?: string[];
-}
-
 /**
  * Api contract analyzer.
+ *
+ * All six api-contract rules were removed in 4.1.0: each was `cannot-fire` (its
+ * extractor never populated the fields it read, or its computation was a name
+ * proxy). The rules were removed outright rather than kept as standing findings,
+ * so this analyzer is a no-op that returns no violations. The endpoint/call
+ * extraction below remains for when real contract extraction lands.
  */
 export class APIContractAnalyzer {
-  private endpoints: APIEndpoint[] = [];
-  private calls: APICall[] = [];
-
   /**
-   * Analyze API contracts and find violations
-    * @param calls
-    * @param endpoints
-    * @returns
+   * Detect mismatches between a project's declared API endpoints and the calls
+   * its clients make against them.
+   *
+   * A no-op as of 4.1.0: all six api-contract rules this method fed were removed
+   * (each was `cannot-fire`), so it always returns an empty list. Kept as the
+   * seam real contract extraction will plug into — the endpoint/call extraction
+   * below remains for that work.
+   *
+   * @param _endpoints The API endpoints extracted from the corpus.
+   * @param _calls The API calls extracted from the corpus.
+   * @returns An empty list (no contract rules are live).
    */
   async analyzeContracts(
-    endpoints: APIEndpoint[],
-    calls: APICall[]
-  ): Promise<ContractViolation[]> {
-    this.endpoints = endpoints;
-    this.calls = calls;
-
-    const violations: ContractViolation[] = [];
-
-    // Find unmatched API calls
-    violations.push(...await this.findUnmatchedCalls());
-
-    // Validate matched endpoint-call pairs
-    violations.push(...await this.validateMatchedPairs());
-
-    // Check for deprecated API usage
-    violations.push(...await this.checkDeprecatedUsage());
-
-    // Validate authentication requirements
-    violations.push(...await this.validateAuthentication());
-
-    return violations;
-  }
-
-  /**
-   * Find API calls that don't have matching endpoints
-   */
-  private async findUnmatchedCalls(): Promise<ContractViolation[]> {
-    const violations: ContractViolation[] = [];
-
-    for (const call of this.calls) {
-      const matchingEndpoint = this.findMatchingEndpoint(call);
-      if (!matchingEndpoint) {
-        violations.push({
-          file: call.file,
-          line: call.line,
-          severity: 'severe',
-          message: `API call to ${call.method} ${call.url} has no matching endpoint`,
-          rule: 'missing-endpoint',
-          contractType: 'missing-endpoint',
-          call,
-          details: {
-            method: call.method,
-            url: call.url,
-            language: call.language
-          },
-          suggestion: 'Ensure the endpoint exists or update the API call',
-          analyzer: 'api-contract',
-          category: 'cross-language-api'
-        });
-      }
-    }
-
-    return violations;
-  }
-
-  /**
-   * Validate matched endpoint-call pairs for compatibility
-   */
-  private async validateMatchedPairs(): Promise<ContractViolation[]> {
-    const violations: ContractViolation[] = [];
-
-    for (const call of this.calls) {
-      const endpoint = this.findMatchingEndpoint(call);
-      if (!endpoint) continue;
-
-      // Validate HTTP method
-      if (call.method.toUpperCase() !== endpoint.method) {
-        violations.push({
-          file: call.file,
-          line: call.line,
-          severity: 'severe',
-          message: `HTTP method mismatch: call uses ${call.method}, endpoint expects ${endpoint.method}`,
-          rule: 'method-mismatch',
-          contractType: 'method-mismatch',
-          endpoint,
-          call,
-          details: {
-            expectedMethod: endpoint.method,
-            actualMethod: call.method
-          },
-          suggestion: `Change the API call method to ${endpoint.method}`,
-          analyzer: 'api-contract',
-          category: 'cross-language-api'
-        });
-      }
-
-      // Validate response type compatibility
-      if (endpoint.responseSchema && call.expectedResponseType) {
-        const typeViolations = this.validateTypeCompatibility(
-          endpoint.responseSchema,
-          call.expectedResponseType,
-          endpoint,
-          call
-        );
-        violations.push(...typeViolations);
-      }
-    }
-
-    return violations;
-  }
-
-  /**
-   * Check for usage of deprecated APIs
-   */
-  private async checkDeprecatedUsage(): Promise<ContractViolation[]> {
-    const violations: ContractViolation[] = [];
-
-    for (const call of this.calls) {
-      const endpoint = this.findMatchingEndpoint(call);
-      if (endpoint?.deprecated) {
-        violations.push({
-          file: call.file,
-          line: call.line,
-          severity: 'severe',
-          message: `Using deprecated API endpoint: ${endpoint.method} ${endpoint.path}`,
-          rule: 'api-type-mismatch',
-          contractType: 'api-type-mismatch', // Reusing type for deprecated
-          endpoint,
-          call,
-          details: {
-            deprecatedEndpoint: `${endpoint.method} ${endpoint.path}`,
-            endpointFile: endpoint.file
-          },
-          suggestion: 'Update to use the current API version',
-          analyzer: 'api-contract',
-          category: 'cross-language-api'
-        });
-      }
-    }
-
-    return violations;
-  }
-
-  /**
-   * Validate authentication requirements
-   */
-  private async validateAuthentication(): Promise<ContractViolation[]> {
-    const violations: ContractViolation[] = [];
-
-    for (const call of this.calls) {
-      const endpoint = this.findMatchingEndpoint(call);
-      if (!endpoint) continue;
-
-      if (endpoint.authentication && !this.callHasAuthentication(call)) {
-        violations.push({
-          file: call.file,
-          line: call.line,
-          severity: 'severe',
-          message: `API call missing required authentication for endpoint ${endpoint.method} ${endpoint.path}`,
-          rule: 'auth-mismatch',
-          contractType: 'auth-mismatch',
-          endpoint,
-          call,
-          details: {
-            requiredAuth: endpoint.authentication,
-            endpointFile: endpoint.file
-          },
-          suggestion: `Add ${endpoint.authentication} authentication to the API call`,
-          analyzer: 'api-contract',
-          category: 'cross-language-api'
-        });
-      }
-    }
-
-    return violations;
-  }
-
-  /**
-   * Find matching endpoint for an API call
-   */
-  private findMatchingEndpoint(call: APICall): APIEndpoint | null {
-    // Match on path only. HTTP method is validated separately in
-    // validateMatchedPairs so a path hit with the wrong verb surfaces as
-    // method-mismatch — matching on method here would make that check dead,
-    // since every matched pair would then already have equal methods.
-    for (const endpoint of this.endpoints) {
-      if (this.pathsMatch(endpoint.path, call.url)) {
-        return endpoint;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Check if two API paths match (handling path parameters)
-   */
-  private pathsMatch(endpointPath: string, callUrl: string): boolean {
-    // Simple path matching - in practice would need more sophisticated logic
-    // Handle path parameters like /users/:id matching /users/123
-
-    const endpointParts = endpointPath.split('/');
-    const callParts = callUrl.split('/').map(part => part.split('?')[0]); // Remove query params
-
-    if (endpointParts.length !== callParts.length) {
-      return false;
-    }
-
-    for (let i = 0; i < endpointParts.length; i++) {
-      const endpointPart = endpointParts[i];
-      const callPart = callParts[i];
-
-      // Skip parameter parts (starting with : or {})
-      if (endpointPart.startsWith(':') ||
-          (endpointPart.startsWith('{') && endpointPart.endsWith('}'))) {
-        continue;
-      }
-
-      if (endpointPart !== callPart) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  /**
-   * Validate type compatibility between endpoint and call
-   */
-  private validateTypeCompatibility(
-    endpointSchema: TypeSchema,
-    callType: string,
-    endpoint: APIEndpoint,
-    call: APICall
-  ): ContractViolation[] {
-    const violations: ContractViolation[] = [];
-
-    // Simplified type checking - in practice would need full schema validation
-    if (endpointSchema.type === 'object' && callType.includes('[]')) {
-      violations.push({
-        file: call.file,
-        line: call.line,
-        severity: 'severe',
-        message: `Type mismatch: endpoint returns object, call expects array`,
-        rule: 'api-type-mismatch',
-        contractType: 'api-type-mismatch',
-        endpoint,
-        call,
-        expectedType: 'object',
-        actualType: 'array',
-        details: {
-          endpointSchema: endpointSchema,
-          callType: callType
-        },
-        suggestion: 'Update the API call to handle object response instead of array',
-        analyzer: 'api-contract',
-        category: 'cross-language-api'
-      });
-    }
-
-    return violations;
-  }
-
-  /**
-   * Check if an API call includes authentication
-   */
-  private callHasAuthentication(call: APICall): boolean {
-    // Simplified check - would analyze the actual code for auth headers/tokens
-    return call.file.includes('auth') ||
-           call.id.toLowerCase().includes('token') ||
-           call.id.toLowerCase().includes('bearer');
+    _endpoints: APIEndpoint[],
+    _calls: APICall[]
+  ): Promise<Violation[]> {
+    return [];
   }
 }
 
@@ -324,23 +67,9 @@ export class APIContractAnalyzer {
 // Endpoint/call extraction (pure functions — no analyzer state)
 // ---------------------------------------------------------------------------
 //
-// UNREACHABLE RULES: four of the six api-contract rules never fire with the
-// extraction below. `api-type-mismatch` and `auth-mismatch` require
-// `responseSchema`/`authentication` on the endpoint; `api-extra-field` /
-// `api-missing-field` and the deprecated check require
-// `responseSchema`/`expectedResponseType`/`deprecated`. None of those fields
-// are populated by extractEndpoints/extractAPICalls (the "would extract … in
-// real implementation" stubs below). These dead rules are a follow-up
-// requiring real endpoint/call extraction, not a threshold fix — do not read
-// their zero count as "clean"; they are structurally unreachable.
-//
-// FABRICATED RULES: the remaining two, `missing-endpoint` and `method-mismatch`,
-// DO fire, but on fabricated data. `extractMethodFrom*`/`extractPathFromGo`
-// derive method and URL/path from the entity NAME (`getJson` → `GET /api/getjson`),
-// so `missing-endpoint` flags every name-matched function and `method-mismatch`
-// compares two name-derived strings. Both report `notApplicable` via
-// applicability.ts (FABRICATED_API_CONTRACT_RULES) until real endpoint/call
-// extraction exists — do not read their counts as real API-contract findings.
+// These stubs remain for when real contract extraction lands (4.1.0 removed the
+// six api-contract rules that depended on fields these functions never
+// populated). They are not wired to any live rule.
 
 /**
  * Extract API endpoints from code entities

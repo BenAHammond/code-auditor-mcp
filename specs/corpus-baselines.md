@@ -838,6 +838,57 @@ No genuine injection lost — a clean narrowing, not a weakening to zero.
 
 ---
 
+## Spec 61 — `security` analyzer (additive, not movement)
+
+Spec 61 adds a `security` analyzer with three rules (`command-injection-risk`,
+`dynamic-require-of-project-path`, `unescaped-html-interpolation`). It is a *new*
+analyzer, so its findings are additive: they appear as `security::*` rows that did
+not exist in any prior baseline. None of the per-corpus tables above changed a
+single existing `analyzer::rule` count — the Spec 61 guard (acceptance criterion 13).
+
+Additive counts measured via `scripts/measure-corpus-counts.ts` against the post-Spec-60 baseline:
+
+| corpus | `security::` findings (breakdown) |
+| --- | --- |
+| recall-protocol | 24 (`command-injection-risk` 24) |
+| hhra-org | 0 |
+| knex | 1 (`command-injection-risk` 1) |
+| blitz | 1 (`dynamic-require-of-project-path` 1) |
+| endless-guessing | 3 (`unescaped-html-interpolation` 3) |
+| primer-css | 0 |
+
+`unescaped-html-interpolation` was re-pinned after its trigger was rewritten from a
+text heuristic ("template contains an HTML tag") to a flow computation ("template's
+value reaches an HTML sink — `res.send` / `res.write` / `document.write` /
+`insertAdjacentHTML`, or an `innerHTML` / `outerHTML` assignment"). The text trigger
+fired 77 false positives across the corpora (recall-protocol 58, hhra-org 15,
+endless-guessing 4): HTML-shaped template strings that reach no sink — React
+components, messages, and email bodies rendered through safe channels. The flow
+trigger fires zero on every corpus; the only HTML sinks in any corpus are a React
+`dangerouslySetInnerHTML` over a static icon map (not a template literal) and
+Playwright `.innerHTML()` *reads* in test files. `command-injection-risk` (24 / 1)
+and `dynamic-require-of-project-path` (1) are unchanged — this re-pin touches only
+the `unescaped-html-interpolation` trigger, which is the Spec 61 criterion-15 fix.
+
+**Sink-set completion (4.1.0).** The table above was re-measured after the HTML
+sink set was completed (Spec 61 R6 item 3): the six-sink flow computation gained
+the remaining injection points — `setHTMLUnsafe`, Vue `v-html`, the jQuery/Hono
+`.html(x)` setter, and React `dangerouslySetInnerHTML` (both the `{ __html: … }`
+key and the JSX attribute). The only corpus delta is `endless-guessing` 0 → **3**
+(`unescaped-html-interpolation` 3), surfaced by the newly-recognized Hono
+`c.html(…)` sink in `src/worker/ssr/leaderboard.tsx` and `archive.tsx`. All three
+are the rule's documented member-expression-without-type-analysis profile, not
+exploitable XSS: `e.rank` / `e.score` are numeric fields (no markup), and
+`opts.body` is a pre-built HTML fragment whose only free-text source (`q.body`) is
+already `esc()`-wrapped inside it. Every other corpus's `security::` count is
+byte-identical to the pre-completion table, so completing the sink set is a
+one-corpus additive delta, not a reclassification of existing findings.
+
+A future baseline re-pin should treat these rows as a *new analyzer section*, never
+as a delta against the pre-Spec-61 advisory rows.
+
+---
+
 ## Spec 60 — test coverage & size distributions (reporting-only)
 
 Re-pinned 2026-09-19. Spec 60 (R1 test coverage, R2 size distributions, R3

@@ -406,7 +406,7 @@ export class DaemonCore extends EventEmitter {
     // install dir), not the served project — the seed would then discover zero
     // files (R4's file-set hash would be empty) even though the pipeline's own
     // discovery (defaults against the project root) finds the corpus.
-    this.config = configPath ? await loadConfig({ configPath }) : null;
+    this.config = configPath ? (await loadConfig({ configPath, projectRoot: this.projectRoot })).config : null;
     this.db = CodeIndexDB.getInstance(undefined, this.projectRoot);
     await this.db.initialize();
 

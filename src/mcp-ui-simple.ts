@@ -8,28 +8,78 @@
  */
 
 import express from 'express';
+import type { Server } from 'node:http';
 import cors from 'cors';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import { createUIResource } from '@mcp-ui/server';
 import { tools, uiTools, ToolHandlers } from './mcp-tools-shared.js';
 import { formatMcpToolErrorPayload } from './mcpToolErrors.js';
 import chalk from 'chalk';
 
 const app: express.Application = express();
-const PORT = process.env.MCP_UI_PORT || 3001;
 
-// Middleware
+// Resolved in startMcpUIServer(); defaults keep the module usable before the
+// server starts (used by the iframe URLs in the POST handlers and the token
+// guard below).
+let serverPort = Number(process.env.MCP_UI_PORT) || 3001;
+let serverHost = '127.0.0.1';
+let serverToken: string | null = null;
+
 app.use(express.json());
+
+// CORS allowlist derived from the bind address — never a wildcard. Registered
+// at module load (before the routes) but resolves host/port lazily from the
+// module state that startMcpUIServer() sets.
+function isAllowedOrigin(requestOrigin: string | undefined): boolean {
+  if (!requestOrigin) return true;
+  const allowed = [
+    `http://${serverHost}:${serverPort}`,
+    `http://localhost:${serverPort}`,
+    `http://127.0.0.1:${serverPort}`,
+  ];
+  return allowed.includes(requestOrigin);
+}
+
 app.use(cors({
-  origin: '*',
+  origin: (requestOrigin, cb) => cb(null, isAllowedOrigin(requestOrigin)),
   exposedHeaders: ['Content-Type'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
+const HTML_ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+/** Escape a value for safe interpolation into an HTML template. */
+function escapeHtml(s: unknown): string {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
+}
+
+function isLoopback(host: string): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+/** Reject requests lacking the bearer token when the server is bound non-loopback. */
+function tokenGuard(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): void {
+  if (!serverToken || req.headers.authorization === `Bearer ${serverToken}`) {
+    next();
+    return;
+  }
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
 /**
  * API endpoint to run audit and return UI resource
  */
-app.post('/api/audit-dashboard', async (req, res) => {
+app.post('/api/audit-dashboard', tokenGuard, async (req, res) => {
   try {
     const args = req.body || {};
     
@@ -52,7 +102,7 @@ app.post('/api/audit-dashboard', async (req, res) => {
       uri: `ui://code-auditor/dashboard/${sessionKey}`,
       content: {
         type: 'externalUrl',
-        iframeUrl: `http://localhost:${PORT}/dashboard/${sessionKey}`
+        iframeUrl: `http://localhost:${serverPort}/dashboard/${sessionKey}`
       },
       encoding: 'text'
     });
@@ -75,7 +125,7 @@ app.post('/api/audit-dashboard', async (req, res) => {
 /**
  * API endpoint to run code map and return UI resource
  */
-app.post('/api/code-map-viewer', async (req, res) => {
+app.post('/api/code-map-viewer', tokenGuard, async (req, res) => {
   try {
     const args = req.body || {};
     
@@ -99,7 +149,7 @@ app.post('/api/code-map-viewer', async (req, res) => {
       uri: `ui://code-auditor/codemap/${sessionKey}`,
       content: {
         type: 'externalUrl',
-        iframeUrl: `http://localhost:${PORT}/codemap/${sessionKey}`
+        iframeUrl: `http://localhost:${serverPort}/codemap/${sessionKey}`
       },
       encoding: 'text'
     });
@@ -130,7 +180,7 @@ app.get('/dashboard/:sessionKey', (req, res) => {
     return res.status(404).send(`
       <html><body>
         <h1>Audit Session Not Found</h1>
-        <p>Session key: ${sessionKey}</p>
+        <p>Session key: ${escapeHtml(sessionKey)}</p>
         <p>This session may have expired or been cleaned up.</p>
       </body></html>
     `);
@@ -231,7 +281,7 @@ app.get('/dashboard/:sessionKey', (req, res) => {
         <div class="container">
             <div class="header">
                 <h1>🔍 Code Audit Dashboard</h1>
-                <p>Interactive analysis results for ${sessionData.path} • ${auditResult.summary?.filesAnalyzed || 0} files analyzed</p>
+                <p>Interactive analysis results for ${escapeHtml(sessionData.path)} • ${auditResult.summary?.filesAnalyzed || 0} files analyzed</p>
             </div>
             
             <div class="stats-grid">
@@ -278,14 +328,14 @@ app.get('/dashboard/:sessionKey', (req, res) => {
                 <div class="violations-list" id="violations-list">
                     ${violations.length === 0 ? '<div class="loading">No violations found! 🎉</div>' : 
                       violations.map(violation => `
-                        <div class="violation" data-severity="${violation.severity}">
-                            <div class="violation-title">${violation.message}</div>
+                        <div class="violation" data-severity="${escapeHtml(violation.severity)}">
+                            <div class="violation-title">${escapeHtml(violation.message)}</div>
                             <div class="violation-meta">
-                                <span class="violation-file">${violation.file}:${violation.line}:${violation.column}</span>
-                                <span class="severity-badge severity-${violation.severity}">${violation.severity}</span>
-                                <span>Analyzer: ${violation.analyzer}</span>
+                                <span class="violation-file">${escapeHtml(violation.file)}:${escapeHtml(violation.line)}:${escapeHtml(violation.column)}</span>
+                                <span class="severity-badge severity-${escapeHtml(violation.severity)}">${escapeHtml(violation.severity)}</span>
+                                <span>Analyzer: ${escapeHtml(violation.analyzer)}</span>
                             </div>
-                            ${violation.recommendation ? `<div class="recommendation">${violation.recommendation}</div>` : ''}
+                            ${violation.recommendation ? `<div class="recommendation">${escapeHtml(violation.recommendation)}</div>` : ''}
                         </div>
                       `).join('')}
                 </div>
@@ -347,7 +397,7 @@ app.get('/codemap/:sessionKey', (req, res) => {
     return res.status(404).send(`
       <html><body>
         <h1>Code Map Session Not Found</h1>
-        <p>Session key: ${sessionKey}</p>
+        <p>Session key: ${escapeHtml(sessionKey)}</p>
       </body></html>
     `);
   }
@@ -376,18 +426,18 @@ app.get('/codemap/:sessionKey', (req, res) => {
         
         <div class="content">
             <h2>📊 Map Summary</h2>
-            <p><strong>Map ID:</strong> ${codeMap?.mapId || 'N/A'}</p>
+            <p><strong>Map ID:</strong> ${escapeHtml(codeMap?.mapId || 'N/A')}</p>
             <p><strong>Total Sections:</strong> ${codeMap?.summary?.totalSections || 0}</p>
             
             <h2>🔍 Quick Preview</h2>
-            <pre>${codeMap?.quickPreview || 'No preview available'}</pre>
+            <pre>${escapeHtml(codeMap?.quickPreview || 'No preview available')}</pre>
             
             ${codeMap?.summary?.sectionsAvailable ? `
             <h2>📑 Available Sections</h2>
             ${codeMap.summary.sectionsAvailable.map((section: { type: string; size: number; description: string }) => `
                 <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 4px;">
-                    <strong>${section.type}</strong> (${section.size} characters)<br>
-                    <em>${section.description}</em>
+                    <strong>${escapeHtml(section.type)}</strong> (${escapeHtml(section.size)} characters)<br>
+                    <em>${escapeHtml(section.description)}</em>
                 </div>
             `).join('')}
             ` : ''}
@@ -418,8 +468,8 @@ app.get('/health', (req, res) => {
 /**
  * API endpoint to get audit data as JSON
  */
-app.get('/api/audit/:sessionKey', (req, res) => {
-  const { sessionKey } = req.params;
+app.get('/api/audit/:sessionKey', tokenGuard, (req, res) => {
+  const sessionKey = req.params.sessionKey as string;
   const sessionData = global.auditSessions?.get(sessionKey);
   
   if (!sessionData) {
@@ -432,13 +482,28 @@ app.get('/api/audit/:sessionKey', (req, res) => {
 /**
  * Start the MCP-UI HTTP server
  */
-export function startMcpUIServer() {
-  app.listen(PORT, () => {
-    console.error(chalk.green('🚀 MCP-UI Code Auditor Server running on'), chalk.cyan(`http://localhost:${PORT}`));
+export function startMcpUIServer(opts?: { host?: string; port?: number }): Server {
+  const host = opts?.host ?? '127.0.0.1';
+  const port = opts?.port ?? (Number(process.env.MCP_UI_PORT) || 3001);
+
+  serverHost = host;
+  serverPort = port;
+
+  // A non-loopback bind is reachable by others — require a bearer token.
+  if (!isLoopback(host)) {
+    serverToken = randomBytes(32).toString('hex');
+  }
+
+  const server = app.listen(port, host, () => {
+    console.error(chalk.green('🚀 MCP-UI Code Auditor Server running on'), chalk.cyan(`http://${host}:${port}`));
     console.error(chalk.blue('📡 API endpoints:'));
-    console.error(chalk.blue('  POST'), chalk.cyan(`http://localhost:${PORT}/api/audit-dashboard`));
-    console.error(chalk.blue('  POST'), chalk.cyan(`http://localhost:${PORT}/api/code-map-viewer`));
-    console.error(chalk.blue('❤️  Health check:'), chalk.cyan(`http://localhost:${PORT}/health`));
+    console.error(chalk.blue('  POST'), chalk.cyan(`http://${host}:${port}/api/audit-dashboard`));
+    console.error(chalk.blue('  POST'), chalk.cyan(`http://${host}:${port}/api/code-map-viewer`));
+    console.error(chalk.blue('❤️  Health check:'), chalk.cyan(`http://${host}:${port}/health`));
+    if (serverToken) {
+      console.error(chalk.yellow('🔐 Non-loopback bind — API endpoints require a bearer token:'));
+      console.error(chalk.cyan(`   Authorization: Bearer ${serverToken}`));
+    }
     console.error(chalk.gray('Ready to serve interactive audit interfaces...'));
   });
 
@@ -447,6 +512,8 @@ export function startMcpUIServer() {
     console.error(chalk.yellow('\n🛑 Shutting down MCP-UI server...'));
     process.exit(0);
   });
+
+  return server;
 }
 
 // Declare global session storage types

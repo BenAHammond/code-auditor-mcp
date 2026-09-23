@@ -24,7 +24,7 @@
     "solid",
     "dry",
     "security",
-    "component",
+    "react",
     "data-access"
   ],
   
@@ -48,7 +48,7 @@
   "outputFormats": ["html", "json"],
   "outputDirectory": "./audit-reports",
   
-  "minSeverity": "suggestion",
+  "minSeverity": "high",
   "failOnCritical": false,
   "verbose": false,
   "showProgress": true,

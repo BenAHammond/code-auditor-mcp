@@ -56,10 +56,11 @@ TSEOF
 
 # Spec file at project root triggers the built-in "scripts-and-tests" path profile
 # (pattern "*.spec.*" matches filenames at the project root level).
-# The violation on this file gets profile="scripts-and-tests" + severity capped to "suggestion".
+# The violation on this file reports at its real severity but is excluded from
+# the blocking gate by the scripts-and-tests profile (Spec 36 R4).
 cat > utils.spec.ts << 'TSEOF'
 // Undocumented export in a spec file — triggers documentation violation
-// with profile="scripts-and-tests" and severity capped to "suggestion"
+// carrying profile="scripts-and-tests" and excluded from the blocking gate
 // Body must be >= 5 lines to satisfy the universal analyzer's docsMinLines gate.
 export function parseJson(raw: string): unknown {
   const trimmed = raw.trim();
@@ -76,7 +77,7 @@ cat > .codeauditor.json << 'JSONEOF'
   "enabledAnalyzers": ["documentation", "solid"],
   "includePaths": ["src/**/*.ts", "*.ts"],
   "excludePaths": ["**/node_modules/**", "**/*.test.ts"],
-  "minSeverity": "suggestion",
+  "minSeverity": "high",
   "analyzerConfigs": {
     "documentation": {
       "exemptPatterns": ["\\\\.d\\\\.ts$", "mock", "fixture"]

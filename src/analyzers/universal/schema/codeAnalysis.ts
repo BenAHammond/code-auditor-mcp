@@ -1315,6 +1315,20 @@ export function isDeleteFrom(sqlText: string, fromIndex: number): boolean {
   return /\bDELETE\s+$/iu.test(sqlText.slice(0, fromIndex));
 }
 
+/**
+ * Whether the `from` keyword at `fromIndex` is the FROM of a module
+ * `import`/`export` statement rather than the read-FROM of a SQL `SELECT`/`JOIN`.
+ *
+ * Scans back from `fromIndex` to the enclosing statement boundary (a `;` or a
+ * blank line — a module introducer never crosses either) and checks that the
+ * prefix is introduced by `import`/`export`. This keeps `SELECT … FROM`,
+ * `JOIN …`, and `INSERT … SELECT … FROM` out of the module-import count while
+ * letting `IMPORT … FROM` and `EXPORT … FROM` through.
+ *
+ * @param sqlText The source text being scanned.
+ * @param fromIndex The character index of the `from` keyword within `sqlText`.
+ * @returns True when the introducer preceding `fromIndex` is an import/export.
+ */
 export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean {
   let start = fromIndex;
   while (start > 0) {
@@ -1392,6 +1406,24 @@ export function countQueries(text: string): number {
 }
 
 /**
+ * Scan forward from just after an opening `(` (at `openParen`) to the matching
+ * closing `)`, honouring nested parens. Returns the index just past the closing
+ * paren — the position scanning should resume from. Shared by the `.exec`-body
+ * probe and the eager-call body stripper so their balanced-paren walks cannot
+ * drift.
+ */
+function scanBalancedParens(text: string, openParen: number): number {
+  let depth = 1;
+  let i = openParen;
+  while (i < text.length && depth > 0) {
+    if (text[i] === '(') depth++;
+    else if (text[i] === ')') depth--;
+    i++;
+  }
+  return i;
+}
+
+/**
  * Count `.exec(...)` calls whose balanced body carries a SQL statement keyword.
  * This is the only way `.exec` is counted: `db.exec('SELECT …')` is one query,
  * while `regex.exec(str)` and `child_process.exec('ls')` carry no SQL keyword and
@@ -1404,13 +1436,7 @@ function countExecCallsWithSql(text: string): number {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const openParen = m.index + m[0].length;
-    let depth = 1;
-    let i = openParen;
-    while (i < text.length && depth > 0) {
-      if (text[i] === '(') depth++;
-      else if (text[i] === ')') depth--;
-      i++;
-    }
+    const i = scanBalancedParens(text, openParen);
     if (countSqlKeywordOccurrences(text.slice(openParen, i - 1)) > 0) count++;
     re.lastIndex = i;
   }
@@ -1437,13 +1463,7 @@ function stripQueryCallBodies(text: string): string {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const openParen = m.index + m[0].length;
-    let depth = 1;
-    let i = openParen;
-    while (i < text.length && depth > 0) {
-      if (text[i] === '(') depth++;
-      else if (text[i] === ')') depth--;
-      i++;
-    }
+    const i = scanBalancedParens(text, openParen);
     result += text.slice(last, openParen);
     result += ' '.repeat(Math.max(0, i - openParen));
     last = i;

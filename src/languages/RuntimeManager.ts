@@ -3,7 +3,7 @@
  * Detects available language runtimes and manages analyzer processes
  */
 
-import { exec, spawn } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { binaryMatchesPlatform, describeBinaryMismatch, type BinaryMatch } from './goBinary.js';
 import { resolveGoAnalyzerCacheDir } from '../dataPaths.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // This module is ESM, so `__dirname` is undefined at runtime. Derive the
 // directory of this file (src/languages in dev, dist/languages when compiled)
@@ -174,7 +174,7 @@ class RuntimeManagerDetection {
    */
   private async detectNodeRuntime(): Promise<void> {
     try {
-      const { stdout } = await execAsync('node --version');
+      const stdout = execFileSync('node', ['--version'], { encoding: 'utf-8' });
       const version = stdout.trim();
 
       this.runtimes.set('node', {
@@ -282,7 +282,7 @@ class RuntimeManagerDetection {
    */
   private async detectGoToolchainVersion(): Promise<string | null> {
     try {
-      const { stdout } = await execAsync('go version');
+      const stdout = execFileSync('go', ['version'], { encoding: 'utf-8' });
       const versionMatch = stdout.match(/go(\d+\.\d+\.\d+)/);
       const version = versionMatch ? versionMatch[1] : stdout.trim();
       console.error('[RuntimeManager] Go version detected:', version);
@@ -356,7 +356,7 @@ class RuntimeManagerDetection {
 
     for (const cmd of pythonCommands) {
       try {
-        const { stdout } = await execAsync(`${cmd} --version`);
+        const stdout = execFileSync(cmd, ['--version'], { encoding: 'utf-8' });
         const versionMatch = stdout.match(/Python (\d+\.\d+\.\d+)/);
         const version = versionMatch ? versionMatch[1] : stdout.trim();
 
@@ -387,7 +387,7 @@ class RuntimeManagerDetection {
    */
   private async detectRustRuntime(): Promise<void> {
     try {
-      const { stdout } = await execAsync('rustc --version');
+      const stdout = execFileSync('rustc', ['--version'], { encoding: 'utf-8' });
       const versionMatch = stdout.match(/rustc (\d+\.\d+\.\d+)/);
       const version = versionMatch ? versionMatch[1] : stdout.trim();
 
@@ -414,7 +414,7 @@ class RuntimeManagerDetection {
    */
   private async detectDenoRuntime(): Promise<void> {
     try {
-      const { stdout } = await execAsync('deno --version');
+      const stdout = execFileSync('deno', ['--version'], { encoding: 'utf-8' });
       const versionMatch = stdout.match(/deno (\d+\.\d+\.\d+)/);
       const version = versionMatch ? versionMatch[1] : stdout.trim();
 
@@ -441,7 +441,7 @@ class RuntimeManagerDetection {
    */
   private async detectBunRuntime(): Promise<void> {
     try {
-      const { stdout } = await execAsync('bun --version');
+      const stdout = execFileSync('bun', ['--version'], { encoding: 'utf-8' });
       const version = stdout.trim();
 
       this.runtimes.set('bun', {
@@ -1173,7 +1173,7 @@ class GoAnalyzer implements LanguageAnalyzer {
     // available when `go version` succeeds), but a direct call or a toolchain
     // removed mid-run reaches this branch and must say why.
     try {
-      await execAsync('go version');
+      execFileSync('go', ['version'], { encoding: 'utf-8' });
     } catch {
       throw new GoAnalyzerBuildError(
         'go-toolchain-missing',
@@ -1189,9 +1189,10 @@ class GoAnalyzer implements LanguageAnalyzer {
     const { goos, goarch } = goBuildTarget();
     try {
       await fs.mkdir(cacheDir, { recursive: true });
-      const { stderr } = await execAsync(
-        `cd "${goDir}" && GOOS=${goos} GOARCH=${goarch} CGO_ENABLED=0 go build -o "${cachePath}" main.go`
-      );
+      const { stderr } = await execFileAsync('go', ['build', '-o', cachePath, 'main.go'], {
+        cwd: goDir,
+        env: { ...process.env, GOOS: goos, GOARCH: goarch, CGO_ENABLED: '0' },
+      });
       if (stderr) {
         console.warn(`[GoAnalyzer] Build warnings: ${stderr}`);
       }

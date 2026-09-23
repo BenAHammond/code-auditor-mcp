@@ -98,11 +98,29 @@ interface LokiFindQuery {
   [key: string]: any;
 }
 
+const SQL_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Reject a value that is not a plain SQL identifier. Table and column names are
+ *  interpolated into SQL (SQLite cannot parameterize identifiers), so a value that
+ *  fails this check is a would-be injection surface and is refused, never run. */
+export function assertSqlIdentifier(name: string, context: string): void {
+  if (!SQL_IDENTIFIER_RE.test(name)) {
+    throw new Error(`invalid SQL identifier in ${context}: ${JSON.stringify(name)}`);
+  }
+}
+
+/** Escape regex metacharacters so a string matches itself literally. */
+export function escapeRegExpLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 class SqliteCollectionAdapter {
   constructor(
     private db: SqliteDatabase,
     private tableName: string
-  ) {}
+  ) {
+    assertSqlIdentifier(this.tableName, 'table name');
+  }
 
   /** Return all rows, or rows matching the query. */
   find(query?: LokiFindQuery): any[] {
@@ -113,6 +131,7 @@ class SqliteCollectionAdapter {
     const clauses: string[] = [];
     const params: Record<string, any> = {};
     for (const [key, value] of Object.entries(query)) {
+      if (key !== '$loki') assertSqlIdentifier(key, 'column name');
       if (value === null || value === undefined) {
         clauses.push(`"${key}" IS NULL`);
       } else if (key === '$loki' && typeof value === 'object' && value.$in) {
@@ -139,6 +158,7 @@ class SqliteCollectionAdapter {
     const clauses: string[] = [];
     const params: Record<string, any> = {};
     for (const [key, value] of Object.entries(query)) {
+      if (key !== '$loki') assertSqlIdentifier(key, 'column name');
       if (value === null || value === undefined) {
         clauses.push(`"${key}" IS NULL`);
       } else {
@@ -177,6 +197,7 @@ class SqliteCollectionAdapter {
 
   insert(doc: any): any {
     const keys = Object.keys(doc);
+    for (const k of keys) assertSqlIdentifier(k, 'column name');
     const vals = keys.map(k => `@${k}`);
     const sql = `INSERT INTO "${this.tableName}" ("${keys.join('", "')}") VALUES (${vals.join(', ')})`;
     const params: Record<string, unknown> = {};
@@ -187,6 +208,7 @@ class SqliteCollectionAdapter {
 
   update(doc: any): void {
     const keys = Object.keys(doc).filter(k => k !== '$loki' && k !== 'meta');
+    for (const k of keys) assertSqlIdentifier(k, 'column name');
     const sets = keys.map(k => `"${k}" = @${k}`);
     const params: Record<string, any> = {};
     for (const k of keys) params[k] = this.bindable(doc[k]);
@@ -205,6 +227,7 @@ class SqliteCollectionAdapter {
     const clauses: string[] = [];
     const params: Record<string, any> = {};
     for (const [key, value] of Object.entries(query)) {
+      if (key !== '$loki') assertSqlIdentifier(key, 'column name');
       if (value === null || value === undefined) {
         clauses.push(`"${key}" IS NULL`);
       } else if (key === 'timestamp' && typeof value === 'object' && value.$lt) {
@@ -2697,7 +2720,13 @@ export class CodeIndexDB {
     }
     if (filters.filePath) {
       if (filters.filePath.includes('*') || filters.filePath.includes('?')) {
-        const pattern = filters.filePath.replace(/\*/g, '.*').replace(/\?/g, '.').replace(/\//g, '\\/');
+        // `*` and `?` are the only glob wildcards; every other character is
+        // escaped so it matches literally. A path like `foo[0-9].ts` no longer
+        // becomes an accidental regex character class.
+        const pattern = filters.filePath
+          .split(/([*?])/)
+          .map((seg) => (seg === '*' ? '.*' : seg === '?' ? '.' : escapeRegExpLiteral(seg)))
+          .join('');
         const regex = new RegExp(pattern);
         filtered = filtered.filter(doc => regex.test(doc.filePath));
       } else if (filters.filePath.endsWith('.ts') || filters.filePath.endsWith('.tsx') ||
@@ -3632,6 +3661,7 @@ export class CodeIndexDB {
   /** Count rows in a table, with optional WHERE clause. */
   count(table: string, where?: string, params?: any[]): number {
     this.ensureInitialized();
+    assertSqlIdentifier(table, 'table name');
     const whereClause = where ? ` WHERE ${where}` : '';
     const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM ${table}${whereClause}`).get(...(params ?? [])) as { cnt: number };
     return row.cnt;
@@ -3640,6 +3670,7 @@ export class CodeIndexDB {
   /** Check if a table has any rows. */
   tableHasRows(table: string): boolean {
     this.ensureInitialized();
+    assertSqlIdentifier(table, 'table name');
     const row = this.db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get();
     return row !== undefined;
   }

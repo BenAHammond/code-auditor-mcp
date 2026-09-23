@@ -29,10 +29,22 @@ export const PRIVACY_MESSAGE =
 export const DEFAULT_TELEMETRY_ENDPOINT =
   'https://code-auditor-dismissals.ben-a-hammond.workers.dev/ingest';
 
-/** Resolve the effective endpoint: an explicit non-blank value wins, else the shipped default. */
+/** Resolve the effective endpoint: an explicit non-blank value wins, else the shipped
+ *  default. The endpoint must be an https URL — telemetry leaves the machine, so a
+ *  plaintext (or non-URL) scheme is rejected loudly rather than silently sent. */
 export function resolveTelemetryEndpoint(input?: string): string {
   const trimmed = (input ?? '').trim();
-  return trimmed || DEFAULT_TELEMETRY_ENDPOINT;
+  const endpoint = trimmed || DEFAULT_TELEMETRY_ENDPOINT;
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new Error(`telemetry endpoint is not a valid URL: ${endpoint}`);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`telemetry endpoint must use https (got ${parsed.protocol}//) — refusing ${endpoint}`);
+  }
+  return endpoint;
 }
 
 const INSTALL_ID_FILENAME = 'install-id';

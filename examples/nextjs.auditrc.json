@@ -22,7 +22,7 @@
   ],
   
   "enabledAnalyzers": [
-    "component",
+    "react",
     "security",
     "solid",
     "dry",

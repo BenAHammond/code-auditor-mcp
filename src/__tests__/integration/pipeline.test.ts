@@ -74,7 +74,7 @@ async function writeConfig(
       enabledAnalyzers: ['documentation'],
       includePaths: ['src/**/*.ts'],
       excludePaths: ['**/node_modules/**', '**/*.test.ts'],
-      minSeverity: 'suggestion',
+      minSeverity: 'high',
       showProgress: false,
       ...overrides,
     }, null, 2),

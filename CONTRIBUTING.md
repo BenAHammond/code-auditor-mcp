@@ -121,7 +121,7 @@ const analyzeFile = async (
         file: filePath,
         line: location.line,
         column: location.column,
-        severity: 'warning',
+        severity: 'severe',
         message: 'Your violation message',
         type: 'your-type',
         recommendation: 'How to fix this issue',
@@ -233,7 +233,7 @@ interface Violation {
   file: string;              // File path
   line: number;              // Line number (1-based)
   column: number;            // Column number (1-based)
-  severity: 'critical' | 'warning' | 'suggestion';
+  severity: 'critical' | 'severe' | 'high';
   message: string;           // Human-readable description
   analyzer: string;          // Your analyzer name
   type: string;              // Violation category (e.g., 'god-class', 'sql-injection')
@@ -301,8 +301,8 @@ export function sortViolations(violations): Violation[]
 
 1. **Consistent Severity Levels**:
    - **Critical**: Security vulnerabilities, data loss risks
-   - **Warning**: SOLID violations, performance issues
-   - **Suggestion**: Style issues, minor improvements
+   - **Severe**: SOLID violations, performance issues
+   - **High**: Style issues, minor improvements
 
 2. **Clear Messages**: Include context in messages
    ```typescript

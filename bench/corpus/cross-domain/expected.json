@@ -19,13 +19,25 @@
   },
   "expectedViolations": [],
   "expectedMetrics": {
-    "writtenNeverReadCount": { "min": 5 },
-    "readNeverWrittenCount": { "min": 1 },
-    "transactionBoundaryRiskCount": { "min": 1 },
-    "validationBypassCount": { "min": 4 },
-    "uncoveredRiskCount": { "min": 1 },
-    "totalViolations": { "min": 15 }
+    "writtenNeverReadCount": {
+      "min": 5
+    },
+    "readNeverWrittenCount": {
+      "min": 1
+    },
+    "transactionBoundaryRiskCount": {
+      "min": 1
+    },
+    "validationBypassCount": {
+      "min": 4
+    },
+    "uncoveredRiskCount": {
+      "min": 1
+    },
+    "totalViolations": {
+      "min": 15
+    }
   },
   "nearMissFiles": [],
-  "description": "Cross-Domain Joins (Spec 15) — post-analysis DB queries for schema lifecycle, validation bypass, and coverage by importance. All detectors enter at suggestion severity."
+  "description": "Cross-Domain Joins (Spec 15) — post-analysis DB queries for schema lifecycle, validation bypass, and coverage by importance. All detectors enter at high severity."
 }

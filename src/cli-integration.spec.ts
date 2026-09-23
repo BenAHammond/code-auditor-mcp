@@ -630,9 +630,14 @@ describe('INSERT/DELETE table patterns + provenance fixture', () => {
     const reportRaw = execSync(`cat "${reportPath}"`, { encoding: 'utf-8' });
     const report = JSON.parse(reportRaw);
 
-    // Collect all violation messages from the data-access analyzer
-    const daResult = report.analyzerResults?.['data-access'];
-    const messages: string[] = (daResult?.violations ?? []).map((v: any) => v.message);
+    // Collect all violation messages from the data-access analyzer family.
+    // Spec 62 Amendment B — missing-org-filter findings (which carry the table
+    // names this test asserts on) now emit from the Stage-4 `data-access-org-filter`
+    // reducer, so merge the sibling bucket into the Stage-2 data-access bucket.
+    const messages: string[] = [
+      ...(report.analyzerResults?.['data-access']?.violations ?? []),
+      ...(report.analyzerResults?.['data-access-org-filter']?.violations ?? []),
+    ].map((v: any) => v.message);
     const allText = messages.join('\n');
 
     // audit_log — INSERT-only table (proves INSERT INTO pattern fix)
@@ -658,8 +663,10 @@ describe('INSERT/DELETE table patterns + provenance fixture', () => {
     const reportRaw = execSync(`cat "${reportPath}"`, { encoding: 'utf-8' });
     const report = JSON.parse(reportRaw);
 
-    const daResult = report.analyzerResults?.['data-access'];
-    const violations: any[] = daResult?.violations ?? [];
+    const violations: any[] = [
+      ...(report.analyzerResults?.['data-access']?.violations ?? []),
+      ...(report.analyzerResults?.['data-access-org-filter']?.violations ?? []),
+    ];
 
     // d1Exec is a locally-defined DB wrapper function in the fixture.
     // Without the dbWrapperNames provenance fix in pipelineAdapters.ts,

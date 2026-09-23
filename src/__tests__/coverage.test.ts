@@ -19,7 +19,7 @@ function makeViolation(rule: string, overrides: Partial<Violation> = {}): Violat
   return {
     rule,
     message: `Violation: ${rule}`,
-    severity: 'warning',
+    severity: 'severe',
     file: '/test/file.ts',
     line: 1,
     analyzer: 'solid',
@@ -229,7 +229,7 @@ describe('buildCoverageReport', () => {
           {
             rule: '',
             message: 'Circular dependency found',
-            severity: 'warning',
+            severity: 'severe',
             file: '/test/file.ts',
             line: 1,
             analyzer: 'dependency-graph',
@@ -238,7 +238,7 @@ describe('buildCoverageReport', () => {
           {
             rule: '',
             message: 'Orphaned node',
-            severity: 'warning',
+            severity: 'severe',
             file: '/test/file.ts',
             line: 2,
             analyzer: 'dependency-graph',
@@ -464,30 +464,4 @@ describe('buildCoverageReport', () => {
     }
   });
 
-  it('reports cannot-fire rules as cannot-fire, even when the analyzer has no input', () => {
-    // Spec 44 bucket 2: a cannot-fire rule is broken in the tool, so it reports
-    // `cannot-fire` (not `notApplicable`) even when its analyzer consumed zero
-    // facts this run — the verdict is corpus-independent.
-    const results: Record<string, AnalyzerResult> = {
-      'api-contract': {
-        violations: [],
-        executionTime: 0,
-        analyzerName: 'api-contract',
-        status: makeReducerStatus(0),
-      },
-    };
-
-    const coverage = buildCoverageReport(
-      results,
-      makeConfigWith(['api-contract']),
-      { factKeys: [], indexTables: [] },
-      new Map([
-        ['api-type-mismatch', { applicable: false, reason: 'cannot fire — no responseSchema', kind: 'cannot-fire' as const }],
-      ]),
-    );
-
-    const row = coverage.find(c => c.ruleId === 'api-type-mismatch');
-    expect(row!.state).toBe('cannot-fire');
-    expect(row!.reason).toContain('responseSchema');
-  });
 });

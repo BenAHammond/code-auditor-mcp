@@ -29,7 +29,7 @@ import { resolveTelemetryConfig, signatureForFinding, buildTelemetryPayload, for
 import { getInstallId } from './installConfig.js';
 import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { computeGatingDecision } from './enforcement/gate.js';
-import { BLOCKING_SEVERITIES } from './types.js';
+import { BLOCKING_SEVERITIES, SEVERITIES } from './types.js';
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 import { describeSqliteBackend } from './sqlite/driver.js';
@@ -140,7 +140,7 @@ program
       await initParsers();
 
       // Validate --fail-on severity
-      const validSeverities: Severity[] = ['critical', 'severe', 'high'];
+      const validSeverities: Severity[] = SEVERITIES;
       const failOnSeverity = options.failOn as Severity | undefined;
       if (failOnSeverity && !validSeverities.includes(failOnSeverity as Severity)) {
         const renamed = LEGACY_SEVERITY_NAMES[failOnSeverity as string];
@@ -240,13 +240,28 @@ program
         }
       }
 
+      // ── Ignored config keys (Spec 61 R1.4) ─────────────────────────
+      // Keys dropped by sanitizeProjectFileConfig: undeclared keys (like
+      // `scope`, which previously reached execSync via mergeConfig's raw-key
+      // iteration) and path keys resolving outside the project root. Surfaced
+      // so a silently-ignored config never reads as "loaded fine".
+      const ignoredConfigKeys = (result.metadata?.diagnostics ?? []).filter(
+        (d: any) => d.kind === 'config-key-rejected'
+      );
+      if (ignoredConfigKeys.length > 0) {
+        console.log(chalk.yellow(`── Ignored config keys ── ${ignoredConfigKeys.length}`));
+        for (const d of ignoredConfigKeys) {
+          console.log(chalk.yellow(`  ${d.message}`));
+        }
+      }
+
       // ── Coverage gaps (Spec 58 follow-up) ─────────────────────────
       // Coverage diagnostics are the analyzer saying "my visibility ends here",
       // not "the code is wrong". They lead with counts, then per-occurrence
       // file:line — visible and counted, never blocking (they never reach the
       // gate). Rendered alongside the coverage panel that leads the report.
       const coverageDiagnostics = (result.metadata?.diagnostics ?? []).filter(
-        (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import' || d.kind === 'undefined-class-not-found'
+        (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import' || d.kind === 'undefined-class-not-found' || d.kind === 'cannot-fire'
       );
       if (coverageDiagnostics.length > 0) {
         const byKind: Record<string, number> = {};
@@ -560,7 +575,7 @@ program
         const evaluableViolations = (baseline && !options.includeBaseline)
           ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
           : violations;
-        const severityOrder: Severity[] = ['critical', 'severe', 'high'];
+        const severityOrder: Severity[] = SEVERITIES;
         const failIndex = severityOrder.indexOf(failOnSeverity);
         const hasAtOrAbove = evaluableViolations.some((v: any) => {
           // Spec 57 — a dismissed finding never blocks the gate.
@@ -919,7 +934,7 @@ program
     try {
       await initParsers();
 
-      const validSeverities: Severity[] = ['critical', 'severe', 'high'];
+      const validSeverities: Severity[] = SEVERITIES;
       const failOnSeverity = options.failOn as Severity;
       if (!validSeverities.includes(failOnSeverity)) {
         const renamed = LEGACY_SEVERITY_NAMES[failOnSeverity as string];
@@ -971,7 +986,7 @@ program
         (r: any) => r.violations || []
       );
 
-      const severityOrder: Severity[] = ['critical', 'severe', 'high'];
+      const severityOrder: Severity[] = SEVERITIES;
       const failIndex = severityOrder.indexOf(failOnSeverity);
       const blocking = violations.filter((v: any) => {
         if (!isSelfAuditInScope(v.file ?? '')) return false;
@@ -1636,7 +1651,7 @@ configCmd
 
       try {
         await fs.access(configPath);
-        const config = await loadConfig({ configPath });
+        const { config } = await loadConfig({ configPath, projectRoot });
         profiles = config.pathProfiles || [];
       } catch {
         // No config file — use defaults only
@@ -1745,7 +1760,7 @@ configCmd
       try {
         const configPath = pathModule.join(projectRoot, '.codeauditor.json');
         await fsPromises.access(configPath);
-        config = await loadConfig({ configPath });
+        config = (await loadConfig({ configPath, projectRoot })).config;
       } catch {
         // No config — use defaults
       }
@@ -3423,7 +3438,7 @@ program
       let config: any;
       try {
         await fs.access(configPath);
-        config = await loadConfig({ configPath });
+        config = (await loadConfig({ configPath, projectRoot })).config;
       } catch {
         config = pristine;
       }

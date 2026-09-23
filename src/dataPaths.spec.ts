@@ -78,6 +78,21 @@ describe('resolvePersistedIndexPath', () => {
     );
   });
 
+  it('skips a symlinked node_modules and falls back to the OS cache (Spec 61 R5.4)', () => {
+    const root = makeTempDir('ca-project-');
+    const realTarget = makeTempDir('ca-nm-target-');
+    // A `node_modules` that is a symlink points elsewhere on disk; following it
+    // would let a link redirect the cache root out of the project tree, so it
+    // must be skipped (lstat, not stat) and the OS cache used instead.
+    fs.symlinkSync(realTarget, path.join(root, 'node_modules'));
+    const xdg = makeTempDir('ca-xdg-');
+    process.env.XDG_CACHE_HOME = xdg;
+    const hash = createHash('sha256').update(fs.realpathSync(root)).digest('hex').substring(0, 16);
+    expect(resolvePersistedIndexPath(root)).toBe(
+      path.join(xdg, 'code-auditor', 'projects', hash, 'index.db')
+    );
+  });
+
   it('falls back to the OS cache dir (via XDG_CACHE_HOME) for projects without node_modules', () => {
     const root = makeTempDir('ca-project-');
     const xdg = makeTempDir('ca-xdg-');

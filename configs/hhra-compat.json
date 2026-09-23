@@ -24,7 +24,7 @@
   ],
   
   "enabledAnalyzers": [
-    "component",
+    "react",
     "security",
     "solid",
     "dry",
@@ -138,7 +138,7 @@
   "outputFormats": ["html", "json"],
   "outputDirectory": "./audit-reports",
   
-  "minSeverity": "suggestion",
+  "minSeverity": "high",
   "failOnCritical": false,
   "verbose": false,
   "showProgress": true,

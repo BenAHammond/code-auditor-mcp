@@ -92,7 +92,7 @@ Code Auditor's built-in rules fall into two categories:
 | **Deterministic** | Structural fact — an engineer would act on every finding | `single-responsibility` (300-line functions), `solid/method-complexity` (cyclomatic complexity > 20), `solid/class-size` (40+ method classes), `dependency-inversion` (concrete imports where an interface exists) |
 | **Advisory** | Heuristic signal — may be wrong depending on domain | `sql-injection-risk` (AST-level string-pattern matching without type info), `missing-org-filter` (domain-specific — assumes SaaS tenant isolation), `unknown-table` (requires user-provided schema), `dry/duplicate` (token-identical blocks) |
 
-Deterministic rules ship at `critical` or `warning`. Advisory rules ship at `warning` or `suggestion`. Rules proven near-zero precision on a real corpus are **disabled by default** (`off`) — users opt in when the rule matches their domain.
+Deterministic rules ship at `critical` or `severe`. Advisory rules ship at `severe` or `high`. Rules proven near-zero precision on a real corpus are **disabled by default** (`off`) — users opt in when the rule matches their domain.
 
 ### Recalibration
 
@@ -103,9 +103,9 @@ Every disabled rule documents what corpus it *would* be useful on. Users can res
 ```json
 {
   "severityOverrides": {
-    "sql-injection-risk": "warning",
-    "missing-org-filter": "critical",
-    "loop-query": "warning"
+    "sql-injection-risk": "critical",
+    "missing-org-filter": "severe",
+    "loop-query": "severe"
   }
 }
 ```
@@ -195,7 +195,7 @@ code-audit search "mechanism:inline css:color"          # inline color declarati
 code-audit search "token:--color-primary"                # bypassing a design token
 ```
 
-**The React analyzer** also gains raw-element detection: if your project has a `Button` wrapper, raw `<button>` usages outside `Button`'s definition become warnings.
+**The React analyzer** also gains raw-element detection: if your project has a `Button` wrapper, raw `<button>` usages outside `Button`'s definition become severe findings.
 
 ## License
 

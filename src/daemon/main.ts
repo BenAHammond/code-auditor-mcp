@@ -74,7 +74,7 @@ export async function runDaemonForeground(options: DaemonRunOptions): Promise<vo
   if (idleTimeoutMs === undefined || !Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) {
     try {
       const configPath = await findConfigFileUp(projectRoot);
-      const config = await loadConfig({ configPath: configPath ?? undefined });
+      const { config } = await loadConfig({ configPath: configPath ?? undefined, projectRoot });
       idleTimeoutMs = config.daemon?.idleTimeoutMs;
     } catch {
       // No/invalid config — fall through to the default.

@@ -73,7 +73,7 @@ describe('mcpAuditJobs partition planning', () => {
         violations: [
           {
             type: 'dup',
-            severity: 'warning',
+            severity: 'severe',
             file: 'src/a.ts',
             line: 10,
             message: 'duplicate',
@@ -88,7 +88,7 @@ describe('mcpAuditJobs partition planning', () => {
         violations: [
           {
             type: 'dup',
-            severity: 'warning',
+            severity: 'severe',
             file: 'src/a.ts',
             line: 10,
             message: 'duplicate',
@@ -96,7 +96,7 @@ describe('mcpAuditJobs partition planning', () => {
           },
           {
             type: 'other',
-            severity: 'suggestion',
+            severity: 'high',
             file: 'src/a.ts',
             line: 12,
             message: 'other issue',
@@ -122,7 +122,7 @@ describe('mcpAuditJobs partition planning', () => {
     const shardViolation = (file: string): any => ({
       file,
       rule,
-      severity: 'warning',
+      severity: 'severe',
       message: `Table read but never written (${file})`,
     });
     const shards = Array.from({ length: 4 }, (_, i) => ({
@@ -164,7 +164,7 @@ describe('mcpAuditJobs partition planning', () => {
         },
       },
     ];
-    const v = (file: string): any => ({ file, rule, severity: 'warning', message: `SRP (${file})` });
+    const v = (file: string): any => ({ file, rule, severity: 'severe', message: `SRP (${file})` });
     const ordered = {
       solid: {
         violations: [v('src/a.ts'), v('src/b.ts'), v('src/c.ts'), v('src/d.ts'), v('src/e.ts')],

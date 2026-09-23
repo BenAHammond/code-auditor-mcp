@@ -870,7 +870,10 @@ export async function runPipeline(
   // reducer's `ddlColumns` fact is available.
   const dataAccessConfig = (config.config ?? {})['data-access'] as Record<string, unknown> | undefined;
   const schemaReducerFacts = combinedFacts['schema'] as Record<string, unknown> | undefined;
-  const ddlColumns = schemaReducerFacts?.ddlColumns as string[] | undefined;
+  // Spec 62 Amendment B — applicability reads the corpus-wide per-table DDL
+  // columns (Tier 3), the same fact the Stage-4 missing-org-filter reducer
+  // consumes, so applicability and firing share one tier picture.
+  const ddlTableColumns = schemaReducerFacts?.tableColumns as Record<string, string[]> | undefined;
   // Spec 45 R5 — stylesheet sources the indexer could not read. These do NOT
   // silence styles/undefined-class; they become reportable context attached to
   // each undefined-class finding below.
@@ -887,7 +890,7 @@ export async function runPipeline(
   }
   const ruleApplicability = new Map<string, RuleApplicability>();
   for (const ruleId of Object.keys(RULE_REGISTRY)) {
-    const app = evaluateRuleApplicability(ruleId, dataAccessConfig, ddlColumns);
+    const app = evaluateRuleApplicability(ruleId, dataAccessConfig, ddlTableColumns);
     if (app) ruleApplicability.set(ruleId, app);
   }
 
@@ -1426,6 +1429,14 @@ export function buildCoverageReport(
  *     input and found nothing to flag).
  *   - All input sources absent → `notApplicable` (the input this rule reads was
  *     never produced this run).
+ *
+ * Spec 62 Amendment B (B4) — `clean` means "could have fired". This function is
+ * reached only *after* the derived-applicability branch in
+ * {@link buildCoverageReport} has already diverted any rule whose predicate
+ * evaluated false (Spec 39) or is structurally unreachable (Spec 44). For the
+ * tiered class (`missing-org-filter`) that predicate *is* firing reachability
+ * (`hasDeclaredTenancy`), so "input present" here implies "firing was reachable"
+ * — a zero-violation result is an honest `clean`, never a false one.
  *
  * An input source is "present" when it is the literal `'files'` (always present
  * at this branch — earlier checks already excluded empty-input analyzers), a

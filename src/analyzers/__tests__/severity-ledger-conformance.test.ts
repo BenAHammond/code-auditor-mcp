@@ -47,14 +47,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { CANNOT_FIRE_RULES } from '../applicability.js';
+import { SEVERITIES, SEVERITY_RANK, type Severity } from '../../types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = join(__dirname, '..', '..', '..');
 const LEDGER_PATH = join(APP_ROOT, 'specs', 'severity-assignment-ledger.md');
 
-const SEVERITIES = ['critical', 'severe', 'high'] as const;
-type Severity = (typeof SEVERITIES)[number];
-const SEVERITY_RANK: Record<Severity, number> = { critical: 3, severe: 2, high: 1 };
 
 /** Emit-site files that carry severity-bearing `rule`/`violationType`/`issueType`
  *  literals or positional emit helpers. Non-analyzer files (cli.ts, types.ts,
@@ -62,6 +60,7 @@ const SEVERITY_RANK: Record<Severity, number> = { critical: 3, severe: 2, high: 
 const EMIT_FILES = [
   'src/analyzers/universal/UniversalSOLIDAnalyzer.ts',
   'src/analyzers/universal/UniversalSecretsAnalyzer.ts',
+  'src/analyzers/universal/UniversalSecurityAnalyzer.ts',
   'src/analyzers/universal/UniversalDataAccessAnalyzer.ts',
   'src/analyzers/universal/UniversalDRYAnalyzer.ts',
   'src/analyzers/universal/UniversalDocumentationAnalyzer.ts',
@@ -109,6 +108,7 @@ const COVERAGE_DIAGNOSTIC_KINDS = new Set([
   'engine-error',
   'undefined-class-not-found',
   'undefined-class-disabled',
+  'config-key-rejected',
 ]);
 
 /** Ledger rule IDs that resolved to a diagnostic (off the ladder, no severity).

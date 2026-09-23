@@ -8,7 +8,7 @@ describe('audit worker protocol', () => {
       includePaths: ['/tmp/project/src/**/*'],
       excludePaths: ['**/*.test.ts'],
       fileExtensions: ['.ts'],
-      minSeverity: 'warning',
+      minSeverity: 'severe',
       enabledAnalyzers: ['solid', 'react'],
       indexFunctions: true,
       analyzerConfigs: { solid: { maxMethodsPerClass: 20 } },
@@ -19,7 +19,7 @@ describe('audit worker protocol', () => {
     expect(options.includePaths).toEqual(['/tmp/project/src/**/*']);
     expect(options.excludePaths).toEqual(['**/*.test.ts']);
     expect(options.fileExtensions).toEqual(['.ts']);
-    expect(options.minSeverity).toBe('warning');
+    expect(options.minSeverity).toBe('severe');
     expect(options.enabledAnalyzers).toEqual(['solid', 'react']);
     expect(options.indexFunctions).toBe(true);
     expect(options.analyzerConfigs).toEqual({ solid: { maxMethodsPerClass: 20 } });

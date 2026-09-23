@@ -145,9 +145,9 @@ function generateViolationCard(violation: Violation & { analyzer: string }): str
     <div class="violation-card ${violation.severity}">
         <div class="violation-header">
             <span class="severity-badge">${violation.severity.toUpperCase()}</span>
-            <span class="analyzer-badge">${violation.analyzer}</span>
+            <span class="analyzer-badge">${escapeHtml(violation.analyzer)}</span>
             ${hotspotBadge}
-            <span class="file-path">${violation.file}${violation.line ? `:${violation.line}` : ''}</span>
+            <span class="file-path">${escapeHtml(violation.file)}${violation.line ? `:${violation.line}` : ''}</span>
         </div>
         <div class="violation-body">
             <p class="message">${escapeHtml(violation.message)}</p>

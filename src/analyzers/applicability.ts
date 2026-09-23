@@ -13,7 +13,18 @@
  * UniversalSchemaAnalyzer.js → makeVisitorStatus), so a static analyzer import
  * here would create a pipeline↔analyzer cycle. The pipeline-side convention is
  * to reach analyzers only through dynamic import() (see pipelineAdapters.ts).
+ *
+ * The one exception is {@link orgFilterTiers}: a pure, dependency-free module
+ * that is the single source of truth for tenant-scoping tiers. Both this
+ * applicability predicate and the Stage-4 missing-org-filter reducer derive
+ * from it, so firing and applicability can never read different tier sets.
  */
+
+import {
+  buildOrgFilterTierSet,
+  hasDeclaredTenancy,
+  type OrgFilterConfig,
+} from './orgFilterTiers.js';
 
 export interface RuleApplicability {
   applicable: boolean;
@@ -89,14 +100,6 @@ export function scopedWholeProgramApplicability(
 }
 
 /**
- * Default tenant-scoping column names. The single source of truth is
- * DEFAULT_DATA_ACCESS_CONFIG.orgFilterColumns in UniversalDataAccessAnalyzer.js;
- * this is a local copy because importing that module here would create the cycle
- * described above. Keep in sync with that constant.
- */
-const DEFAULT_ORG_FILTER_COLUMNS = ['org_id', 'tenant_id', 'organization_id', 'workspace_id'];
-
-/**
  * A stylesheet source the style indexer could not read (Spec 45 R5). When any
  * exist, `styles/undefined-class` still fires — the class has no matching
  * definition in any *read* stylesheet — but each finding carries this list as
@@ -118,17 +121,18 @@ export interface UnreadStyleSourceInfo {
  *
  * @param ruleId The registry rule id.
  * @param dataAccessConfig The namespaced data-access config (may be undefined).
- * @param ddlColumns Aggregated DDL-declared columns from the schema reducer.
+ * @param ddlTableColumns Aggregated DDL-declared per-table columns from the
+ *   schema reducer (`Record<table, columns>`), folded corpus-wide.
  * @returns The rule's applicability verdict, or null when the rule declares no
  * applicability predicate and runs unconditionally.
  */
 export function evaluateRuleApplicability(
   ruleId: string,
   dataAccessConfig: Record<string, unknown> | undefined,
-  ddlColumns: string[] | undefined,
+  ddlTableColumns: Record<string, string[]> | undefined,
 ): RuleApplicability | null {
   if (ruleId === 'missing-org-filter') {
-    return evaluateMissingOrgFilterApplicability(dataAccessConfig, ddlColumns);
+    return evaluateMissingOrgFilterApplicability(dataAccessConfig, ddlTableColumns);
   }
   const cannotFireReason = CANNOT_FIRE_RULES.get(ruleId);
   if (cannotFireReason !== undefined) {
@@ -148,61 +152,47 @@ export function evaluateRuleApplicability(
  * Each reason names the specific extractor and the specific field (or absence
  * of an emission site) so a reader can tell *why* it cannot fire. Remove an id
  * here when its extraction begins emitting it.
+ *
+ * As of 4.1.0 this map is empty: the ten `cannot-fire` rules (the six
+ * api-contract rules, `file-error`, and the three schema-validator aliases)
+ * were removed outright — registry entry, emission site, and ledger row — rather
+ * than kept as standing findings. The `cannot-fire` verdict remains part of the
+ * applicability vocabulary for when a future rule is genuinely unreachable, but
+ * no such rule currently exists.
+ *
+ * This map is NOT the only producer of the `cannot-fire` state: the static-config
+ * extractors (`lintConfigReader.ts`, `tailwindConfigLoader.ts`, and the
+ * styles-source visitor in `pipelineAdapters.ts`) emit a `CoverageDiagnostic`
+ * with `kind: 'cannot-fire'` when a project config cannot be read statically
+ * (Spec 61 R3.4). That diagnostic route is independent of this map, so emptying
+ * this map does not dead the `cannot-fire` state — the diagnostic route remains
+ * live (and is exercised by `spec61-exploits.spec.ts` fixture 8). The
+ * unresolvable dynamic-import path emits the sibling `unresolved-dynamic-import`
+ * kind, not `cannot-fire`.
  */
-export const CANNOT_FIRE_RULES: ReadonlyMap<string, string> = new Map([
-  // api-contract — reads response/auth metadata that extractEndpoints /
-  // extractAPICalls never populate, or has no emission site at all.
-  ['api-type-mismatch', 'cannot fire — extractEndpoints/extractAPICalls never populate responseSchema/expectedResponseType/deprecated, the fields this rule reads'],
-  ['missing-endpoint', 'cannot fire — gated: extractMethodFrom*/extractPathFromGo derive method and URL from function names (name proxy), so any finding is fabricated'],
-  ['api-extra-field', 'cannot fire — no emission site: the analyzer has no code that produces this rule'],
-  ['api-missing-field', 'cannot fire — no emission site: the analyzer has no code that produces this rule'],
-  ['method-mismatch', 'cannot fire — gated: extractMethodFrom* derives the verb from function names (name proxy), so any finding is fabricated'],
-  ['auth-mismatch', 'cannot fire — extractEndpoints never sets `authentication`, the field this rule reads'],
-
-  // schema — file errors are routed to state.errors, never a file-error violation.
-  ['file-error', 'cannot fire — schema file errors are routed to state.errors, never emitted as a `file-error` violation'],
-
-  // schema-validator — legacy alias or reads constraints/version the extractor never assigns.
-  ['field-mismatch', 'cannot fire — legacy alias: the validator emits `schema-field-mismatch`, never `field-mismatch`'],
-  ['constraint-mismatch', 'cannot fire — extractSchemas never assigns `constraints` on fields, the input this rule reads'],
-  ['version-mismatch', 'cannot fire — extractSchemas never assigns `version` on schemas, the input this rule reads'],
-]);
+export const CANNOT_FIRE_RULES: ReadonlyMap<string, string> = new Map([]);
 
 /**
- * Spec 39/42 R3 — `missing-org-filter` is applicable when the project declares a
- * tenant-scoping column in one of three places: configured tenant tables by name,
- * a configured schema table, or the DDL-derived table catalog.
+ * Spec 39/42 R3 + Spec 62 Amendment B — `missing-org-filter` is applicable when
+ * the project declares tenancy in any tier. Applicability and firing read the
+ * SAME tier set, built once by {@link buildOrgFilterTierSet}:
+ *
+ *   Tier 1 (config-primary) — `orgFilterTables`, the explicit tenant-table list.
+ *   Tier 2 (schema-inference) — a configured schema table carrying a
+ *     tenant-scoping column (org_id/tenant_id/organization_id/workspace_id).
+ *   Tier 3 (DDL-discovery) — a table whose DDL columns carry a tenant-scoping
+ *     column. This tier was the Amendment B defect: applicability read it (3
+ *     tiers) while the firing predicate read only Tiers 1–2, so a DDL-declared
+ *     multi-tenant codebase un-suppressed the rule without ever making it fire —
+ *     reporting `clean` on a real leak. Both consumers now derive from one
+ *     function, so they cannot drift.
  */
 function evaluateMissingOrgFilterApplicability(
   dataAccessConfig: Record<string, unknown> | undefined,
-  ddlColumns: string[] | undefined,
+  ddlTableColumns: Record<string, string[]> | undefined,
 ): RuleApplicability {
-  // Tier 1 — user declared tenant-scoped tables by name (policy of record).
-  const orgFilterTables: string[] = (dataAccessConfig?.orgFilterTables as string[] | undefined) ?? [];
-  if (orgFilterTables.length > 0) return { applicable: true };
-
-  const orgFilterColumns: string[] =
-    (dataAccessConfig?.orgFilterColumns as string[] | undefined) ?? DEFAULT_ORG_FILTER_COLUMNS;
-  const schemas: Array<{ tables?: Array<{ columns?: Array<{ name: unknown }> }> }> =
-    (dataAccessConfig?.schemas as any) ?? [];
-
-  const tenantColumns = new Set(orgFilterColumns.map((c) => String(c).toLowerCase()));
-
-  // Tier 2 — a configured schema declares a table carrying a tenant-scoping column.
-  for (const schema of schemas) {
-    for (const table of schema.tables ?? []) {
-      for (const column of table.columns ?? []) {
-        if (tenantColumns.has(String(column.name).toLowerCase())) {
-          return { applicable: true };
-        }
-      }
-    }
-  }
-
-  // Tier 3 — the table catalog (DDL-derived columns) carries a tenant-scoping column.
-  if (ddlColumns?.some((c) => tenantColumns.has(String(c).toLowerCase()))) {
-    return { applicable: true };
-  }
+  const tierSet = buildOrgFilterTierSet(dataAccessConfig as OrgFilterConfig | undefined, ddlTableColumns);
+  if (hasDeclaredTenancy(tierSet)) return { applicable: true };
 
   return {
     applicable: false,

@@ -127,6 +127,61 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
     reason:
       'Renamed to cross-domain/no-validator-reachable — the detector computes BFS reachability to a validator within a bounded depth, not a "validation bypass" and not "the input was not validated"; the honest claim is the reachability result.',
   },
+  // ── 4.1.0 removal — ten cannot-fire rules (see applicability.ts) ──────────
+  // Each of these shipped in the registry but had no reachable emission site:
+  // either a legacy alias, or a predicate reading a field no extractor ever
+  // populated. Removed outright rather than kept as standing cannot-fire
+  // findings. Tombstoned so a stale reference reports *why* it was removed.
+  'file-error': {
+    to: null,
+    reason:
+      'Removed — schema file read errors route to state.errors, never to a file-error violation (no emission site).',
+  },
+  'field-mismatch': {
+    to: null,
+    reason:
+      'Removed — legacy alias; the schema validator emits schema-field-mismatch, never field-mismatch.',
+  },
+  'constraint-mismatch': {
+    to: null,
+    reason:
+      'Removed — extractSchemas never populates FieldConstraints, the input this rule read, so it could not fire.',
+  },
+  'version-mismatch': {
+    to: null,
+    reason:
+      'Removed — extractSchemas never populates the version field, the input this rule read, so it could not fire.',
+  },
+  'api-type-mismatch': {
+    to: null,
+    reason:
+      'Removed — extractEndpoints/extractAPICalls never populate responseSchema/expectedResponseType/deprecated, so it could not fire.',
+  },
+  'missing-endpoint': {
+    to: null,
+    reason:
+      'Removed — method/URL were derived from function names (a name proxy), not real endpoint/call extraction.',
+  },
+  'api-extra-field': {
+    to: null,
+    reason:
+      'Removed — no emission site; the field-set comparison was never implemented.',
+  },
+  'api-missing-field': {
+    to: null,
+    reason:
+      'Removed — no emission site; the field-set comparison was never implemented.',
+  },
+  'method-mismatch': {
+    to: null,
+    reason:
+      'Removed — the HTTP verb was derived from function names (a name proxy), not real route/call extraction.',
+  },
+  'auth-mismatch': {
+    to: null,
+    reason:
+      'Removed — extractEndpoints never set authentication, the input this rule read, so it could not fire.',
+  },
 };
 
 /**

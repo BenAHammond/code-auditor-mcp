@@ -2,6 +2,102 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [4.1.0] — 2026-09-23
+
+### Severity becomes a three-tier urgency ladder, not a permission knob
+
+The `warning`/`suggestion` vocabulary that leaked from the old linter semantics
+is gone. Every finding is now `critical`, `severe`, or `high` — three defect
+tiers with nothing below `high` — and the agent gate blocks **all three**. The
+old per-rule severity knobs (`gateSeverities`, `DEFAULT_BLOCKING_SEVERITIES`,
+`severityOverrides`, and path-profile severity capping) are deleted: a team that
+disagrees with a level scopes the finding out of the gate (`excludeFromGate`) or
+edits the rule, it never re-labels severity.
+
+- **102 live severity rules** re-assigned on the urgency axis — 11 `critical`, 37
+  `severe`, 54 `high` — one row per rule with rationale in
+  `specs/severity-assignment-ledger.md`, plus 4 off-ladder diagnostics.
+- `--fail-on` and `excludeFromGate` remain — they are *scope* controls, not level
+  controls.
+- Stale `warning`/`suggestion` literals swept from the shipped configs, README,
+  CONTRIBUTING, and the 78 corpus `expected.json` fixtures; a new
+  `examplesValidate.spec.ts` loads every shipped example through `loadConfig`, so
+  a stale value regresses to a red test rather than silently shipping.
+
+### Ten rules that could never fire are removed, not kept as standing no-ops
+
+A rule with no reachable emission site is a finding about the analyzer, not a
+rule to assign severity to. Six `api-contract` rules, the schema `file-error`,
+and three schema-validator aliases (`field-mismatch`, `constraint-mismatch`,
+`version-mismatch`) had exactly that shape — a legacy alias or a predicate
+reading a field no extractor ever populated — so they were deleted outright
+(registry entry, emitter, and ledger row). The ten IDs are tombstoned in
+`ruleAliases.ts` so a stale reference reports *why* each was removed. The
+`cannot-fire` class drops 10 → 0; `APIContractAnalyzer` is now a no-op returning
+`[]`, pending real endpoint/call extraction.
+
+### `missing-org-filter` fires where it should: hhra-org 0 → 9
+
+The rule was *applicable* on a DDL-declared multi-tenant corpus (hhra-org) yet
+*fired zero findings* — a false `clean` on a real tenant-isolation leak. Firing
+and applicability had drifted to two different tenancy predicates. Both now
+derive from a single `buildOrgFilterTierSet`, and the rule moved to Stage 4,
+where the DDL-discovered tenant columns live. hhra-org now reports 9
+`missing-org-filter` findings (was 0), and the exact `organization_id = $n`
+positional shape is pinned in a fixture so the long-form column case can't go
+vacuous again. Severity stays `critical` — no provenance tier (recorded, not
+assumed).
+
+### `unescaped-html-interpolation` stops trusting what a string *looks* like
+
+The rule used to fire on any template literal whose text contained an HTML tag —
+which flagged a react-analyzer violation *message* as stored XSS and missed 8
+real sinks. It now computes flow: `computeHtmlSinkTemplates` backward-propagates
+from genuine HTML sinks to find which template values actually reach one. The
+sink set is completed to include `setHTMLUnsafe`, Vue `v-html`, the jQuery/Hono
+`.html(x)` setter, and React `dangerouslySetInnerHTML`. The old text trigger's 77
+false positives across corpora are gone; the one real delta is `endless-guessing`
+0 → 3 (a Hono `c.html(…)` sink).
+
+### The self-audit gate actually enforces all three tiers now
+
+`verify:self`'s blocking predicate had drifted to `critical | severe` — a
+two-tier narrowing that let `high` findings through the ratchet (itself a second
+bug on top of the earlier `'warning'` fix). It now matches `BLOCKING_SEVERITIES`
+(`critical | severe | high`). Re-running surfaced 7 in-scope findings, resolved
+as 4 fixes (including splitting `computeHtmlSinkTemplates`' fused visitor into
+three single-purpose phases) and 3 correct-by-design `(file, rule)` scoped
+exemptions with written rationale — excluded *by scope*, never by re-labelling
+severity. The exemptions are now also self-policing: `verify:self` fails on any
+exemption whose `(file, rule)` pair no longer fires, so a suppression can't
+outlive the finding it suppressed (the `SKIP_RULES` failure mode).
+
+### Gate-liveness tests (Spec 62 R9)
+
+A gate that "passes" because it checks nothing is the same defect shape as
+`missing-org-filter` — a clean result from a check that isn't there. New
+`gate-liveness.test.ts` proves each gate's failure branch is live: `verify:self`'s
+predicate (extracted to `verify-self-core.mjs`), `verify:disk-space`,
+`verify:gate-budget`, and `assert_compatible` each exit non-zero against their
+own trigger, so a gate can no longer silently pass by checking nothing.
+
+### Registry ↔ ledger reconciliation
+
+The rule registry and the authenticity/severity ledgers are now reconciled
+bidirectionally — registry ids with no ledger row, ledger rows with no registry
+id, and the two unregistered-live emit sites are pinned by a membership test so
+the two books can't drift apart.
+
+### Release-rail changes
+
+- **`bench` removed from `verify:close`** — it is a measurement, not a gate. The
+  close gate is now `verify:disk-space && verify:types && verify:dist-fresh &&
+  test && test:integration && verify:gate-budget && verify:clean-install &&
+  verify:dist && verify:self`.
+- `verify:gate-budget` and `verify:disk-space` gained env overrides
+  (`VERIFY_GATE_BUDGET_MS`, `VERIFY_MIN_FREE_BYTES`) so their failure branches are
+  testable without a genuinely slow rule or a genuinely full disk.
+
 ## [4.0.4] — 2026-09-20
 
 ### Go analysis now works everywhere, not just Intel Macs

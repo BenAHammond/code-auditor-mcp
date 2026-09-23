@@ -48,6 +48,12 @@ function parameterCountViolations(result: any): any[] {
 
 describe('readProjectLintThresholds (unit)', () => {
   let dirs: string[] = [];
+
+  beforeAll(async () => {
+    initializeLanguages();
+    await initParsers();
+  }, 30_000);
+
   const scratch = async (files: Record<string, string>): Promise<string> => {
     const dir = await mkdtemp(join(tmpdir(), 'ca-lint-'));
     dirs.push(dir);

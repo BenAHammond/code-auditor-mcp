@@ -1069,8 +1069,13 @@ export class ToolHandlers {
     specificTables?: string[]
   ): { name: string; sql: string; description: string }[] {
     const queries: { name: string; sql: string; description: string }[] = [];
-    const tableFilter = specificTables && specificTables.length > 0 
-      ? `WHERE table_name IN (${specificTables.map(t => `'${t}'`).join(', ')})`
+    // Identifiers are interpolated into generated SQL text (run by the agent,
+    // never this tool), so a name that is not a plain identifier is dropped —
+    // a quoted name could otherwise escape the string literal and inject SQL.
+    const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    const validTables = (specificTables ?? []).filter(t => IDENTIFIER_RE.test(t));
+    const tableFilter = validTables.length > 0
+      ? `WHERE table_name IN (${validTables.map(t => `'${t}'`).join(', ')})`
       : '';
 
     switch (databaseType.toLowerCase()) {

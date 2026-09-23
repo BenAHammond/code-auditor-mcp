@@ -6,30 +6,30 @@
       "file": "src/fixture.ts",
       "rule": "conventions/usage-pair",
       "symbol": "errorHandler",
-      "severity": "suggestion"
+      "severity": "high"
     },
     {
       "file": "src/fixture.ts",
       "rule": "conventions/import-form",
-      "severity": "suggestion"
+      "severity": "high"
     },
     {
       "file": "src/fixture.ts",
       "rule": "conventions/error-handling",
       "symbol": "handlePromiseError",
-      "severity": "suggestion"
+      "severity": "high"
     },
     {
       "file": "src/fixture.ts",
       "rule": "conventions/export-shape",
       "symbol": "DefaultExporter",
-      "severity": "suggestion"
+      "severity": "high"
     },
     {
       "file": "src/fixture.ts",
       "rule": "conventions/naming",
       "symbol": "my_snake_function",
-      "severity": "suggestion"
+      "severity": "high"
     }
   ],
   "nearMissFiles": [

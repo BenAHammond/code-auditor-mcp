@@ -14,9 +14,10 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import type { StyleToken } from './types.js';
+import type { CoverageDiagnostic } from '../types.js';
+import { extractModuleExport } from '../config/staticObjectExtract.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +37,9 @@ export interface TailwindConfigResult {
   /** How the config was resolved. */
   source: 'v3-js' | 'v4-css' | 'defaults' | 'none';
   configPath: string | null;
+  /** When a v3 JS config exists but could not be read statically (Spec 61 R3.3),
+   *  a `cannot-fire` coverage diagnostic naming the file and the reason. */
+  diagnostic?: CoverageDiagnostic;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +78,7 @@ export function loadTailwindConfig(projectRoot: string): TailwindConfigResult {
   if (cached) return cached;
 
   // Tier 1: Tailwind v3 JS config
-  const v3Result = tryLoadV3Config(projectRoot);
+  const { result: v3Result, diagnostic: v3Diagnostic } = tryLoadV3Config(projectRoot);
   if (v3Result) {
     configCache.set(projectRoot, v3Result);
     return v3Result;
@@ -83,8 +87,9 @@ export function loadTailwindConfig(projectRoot: string): TailwindConfigResult {
   // Tier 2: Tailwind v4 CSS config
   const v4Result = tryLoadV4Config(projectRoot);
   if (v4Result) {
-    configCache.set(projectRoot, v4Result);
-    return v4Result;
+    const result = v3Diagnostic ? { ...v4Result, diagnostic: v3Diagnostic } : v4Result;
+    configCache.set(projectRoot, result);
+    return result;
   }
 
   // Tier 3: Bundled defaults
@@ -92,6 +97,7 @@ export function loadTailwindConfig(projectRoot: string): TailwindConfigResult {
     tokens: { ...DEFAULT_TOKENS },
     source: 'defaults',
     configPath: null,
+    ...(v3Diagnostic ? { diagnostic: v3Diagnostic } : {}),
   } satisfies TailwindConfigResult;
   configCache.set(projectRoot, fallback);
   return fallback;
@@ -150,7 +156,7 @@ export function tokensToStyleTokens(
 // Tier 1: v3 JS config
 // ---------------------------------------------------------------------------
 
-function tryLoadV3Config(projectRoot: string): TailwindConfigResult | null {
+function tryLoadV3Config(projectRoot: string): { result: TailwindConfigResult | null; diagnostic?: CoverageDiagnostic } {
   const candidates = [
     'tailwind.config.js',
     'tailwind.config.ts',
@@ -163,53 +169,64 @@ function tryLoadV3Config(projectRoot: string): TailwindConfigResult | null {
     if (!existsSync(configPath)) continue;
 
     try {
-      const tokens = loadV3ConfigFile(configPath);
+      const { tokens, diagnostic } = loadV3ConfigFile(configPath);
       if (tokens) {
-        return { tokens, source: 'v3-js', configPath };
+        return { result: { tokens, source: 'v3-js', configPath } };
+      }
+      if (diagnostic) {
+        return { result: null, diagnostic };
       }
     } catch {
       // Silently fall through — config exists but can't be parsed
     }
   }
 
-  return null;
+  return { result: null };
 }
 
-function loadV3ConfigFile(configPath: string): TailwindThemeTokens | null {
+function loadV3ConfigFile(configPath: string): { tokens: TailwindThemeTokens | null; diagnostic?: CoverageDiagnostic } {
+  let sourceText: string;
   try {
-    // Dynamic require to load the config module
-    const require = createRequire(import.meta.url);
-    const config = require(configPath);
-
-    // Handle default exports
-    const resolved = config.default ?? config;
-    if (!resolved || !resolved.theme) return null;
-
-    const theme = resolved.theme;
-    const extend = theme.extend ?? {};
-
-    // Merge extend over theme
-    return {
-      colors: mergeThemeConfig(
-        theme.colors ?? {},
-        extend.colors ?? {},
-      ),
-      spacing: mergeThemeConfig(
-        resolveSpacing(theme.spacing),
-        resolveSpacing(extend.spacing),
-      ),
-      fontSize: mergeThemeConfig(
-        theme.fontSize ?? {},
-        extend.fontSize ?? {},
-      ),
-      borderRadius: mergeThemeConfig(
-        theme.borderRadius ?? {},
-        extend.borderRadius ?? {},
-      ),
-    };
+    sourceText = readFileSync(configPath, 'utf-8');
   } catch {
-    return null;
+    return { tokens: null };
   }
+
+  // Spec 61 R3.3 — read the config without executing it. A factory, a
+  // computed key, an imported spread, etc. is unresolved and reported as a
+  // `cannot-fire` diagnostic, never silently treated as "no config".
+  const extracted = extractModuleExport(configPath, sourceText);
+  if (!extracted.resolved) {
+    return {
+      tokens: null,
+      diagnostic: {
+        analyzerName: 'styles',
+        kind: 'cannot-fire',
+        message: `Tailwind config ${configPath} could not be read statically: ${extracted.reason}`,
+        file: configPath,
+        line: extracted.node?.line ?? 0,
+        details: { reason: extracted.reason },
+      },
+    };
+  }
+
+  const config = extracted.value;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return { tokens: null };
+
+  const theme = (config as Record<string, unknown>).theme;
+  if (!theme || typeof theme !== 'object' || Array.isArray(theme)) return { tokens: null };
+
+  const t = theme as Record<string, unknown>;
+  const extend = asRecord(t.extend);
+
+  return {
+    tokens: {
+      colors: mergeThemeConfig(asRecord(t.colors), asRecord(extend.colors)),
+      spacing: mergeThemeConfig(resolveSpacing(t.spacing), resolveSpacing(extend.spacing)),
+      fontSize: mergeThemeConfig(asRecord(t.fontSize), asRecord(extend.fontSize)),
+      borderRadius: mergeThemeConfig(asRecord(t.borderRadius), asRecord(extend.borderRadius)),
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -455,16 +472,13 @@ function flattenNested(
 }
 
 function resolveSpacing(spacing: unknown): Record<string, unknown> {
-  if (!spacing) return {};
-  if (typeof spacing === 'function') {
-    // Spacing in Tailwind v3 can be a function
-    try {
-      return (spacing as () => Record<string, unknown>)();
-    } catch {
-      return {};
-    }
-  }
-  return spacing as Record<string, unknown>;
+  return asRecord(spacing);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function resetLastIndex(regex: RegExp): void {

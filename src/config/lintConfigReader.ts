@@ -28,8 +28,8 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import type { CoverageDiagnostic } from '../types.js';
+import { extractModuleExport } from './staticObjectExtract.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +46,9 @@ export interface LintThresholdResult {
   recognizedUnmapped: Array<{ rule: string; value: unknown }>;
   /** The raw rules object, for transparency in coverage output. */
   rawRules: Record<string, unknown>;
+  /** When the config exists but could not be read statically (Spec 61 R3.2),
+   *  a `cannot-fire` coverage diagnostic naming the file and the reason. */
+  diagnostic?: CoverageDiagnostic;
 }
 
 /** ESLint rule → dot-notation code-auditor threshold key. */
@@ -93,11 +96,14 @@ export async function readProjectLintThresholds(
   if (!configPath) return null;
 
   let loaded: unknown;
+  let diagnostic: CoverageDiagnostic | undefined;
   try {
-    loaded = await loadConfigModule(configPath, projectRoot);
+    const result = await loadConfigModule(configPath, projectRoot);
+    loaded = result.value;
+    diagnostic = result.diagnostic;
   } catch {
-    // Fail-open: an unloadable config (e.g. a `.ts` config without a loader,
-    // or a `.js` config that throws at import time) is treated as absent.
+    // Fail-open: an unreadable config (e.g. the file was deleted between
+    // discovery and read) is treated as absent.
     return null;
   }
 
@@ -109,6 +115,7 @@ export async function readProjectLintThresholds(
       thresholds: {},
       recognizedUnmapped: [],
       rawRules: {},
+      ...(diagnostic ? { diagnostic } : {}),
     };
   }
 
@@ -132,6 +139,7 @@ export async function readProjectLintThresholds(
     thresholds,
     recognizedUnmapped,
     rawRules,
+    ...(diagnostic ? { diagnostic } : {}),
   };
 }
 
@@ -180,52 +188,49 @@ function configKind(configPath: string): 'flat' | 'legacy' {
 // ---------------------------------------------------------------------------
 
 /**
- * Load a lint config module from disk. Handles JSON, ESM (`.mjs`, or `.js`
- * under `"type": "module"`), and CommonJS (`.cjs`, or `.js` under CJS).
- * `.ts` and `.yaml`/`.yml` are attempted but fail open when they cannot be
- * loaded without a runtime loader.
+ * Load a lint config from disk **without executing it** (Spec 61 R3.2).
+ *
+ * A config file inside a cloned repository is data, not code. JSON is parsed;
+ * `.js` / `.cjs` / `.mjs` / `.ts` are reduced to a plain value by
+ * `extractModuleExport` — never `require()`d, never `import()`ed, never invoked
+ * as a factory. A config whose export is not a literal (a call, a computed key,
+ * an imported spread, a template substitution) yields `{ value: null,
+ * diagnostic }` naming the file and the reason; the caller surfaces that as a
+ * `cannot-fire` coverage diagnostic rather than silently reading "absent".
  */
-async function loadConfigModule(configPath: string, projectRoot: string): Promise<unknown> {
+async function loadConfigModule(
+  configPath: string,
+  projectRoot: string,
+): Promise<{ value: unknown | null; diagnostic?: CoverageDiagnostic }> {
   const ext = extname(configPath);
 
   if (ext === '.json') {
-    return JSON.parse(readFileSync(configPath, 'utf-8'));
+    return { value: JSON.parse(readFileSync(configPath, 'utf-8')) };
   }
 
   if (ext === '.yaml' || ext === '.yml') {
     // No YAML dependency is bundled; a legacy .eslintrc.yaml is rare and
     // fails open here rather than pulling a parser.
-    return null;
+    return { value: null };
   }
 
-  // .cjs is always CommonJS; .mjs is always ESM.
-  if (ext === '.cjs') {
-    return createRequire(join(projectRoot, 'package.json'))(configPath);
+  const sourceText = readFileSync(configPath, 'utf-8');
+  const extracted = extractModuleExport(configPath, sourceText);
+  if (!extracted.resolved) {
+    return {
+      value: null,
+      diagnostic: {
+        analyzerName: 'config',
+        kind: 'cannot-fire',
+        message: `Config ${configPath} could not be read statically: ${extracted.reason}`,
+        file: configPath,
+        line: extracted.node?.line ?? 0,
+        details: { reason: extracted.reason },
+      },
+    };
   }
 
-  let loaded: unknown;
-  if (ext === '.mjs' || readPackageType(projectRoot) === 'module') {
-    const mod = await import(pathToFileURL(configPath).href);
-    loaded = (mod as { default?: unknown }).default ?? mod;
-  } else {
-    loaded = createRequire(join(projectRoot, 'package.json'))(configPath);
-  }
-
-  // Some flat configs export a factory function that returns the array.
-  if (typeof loaded === 'function') {
-    loaded = await (loaded as () => unknown | Promise<unknown>)();
-  }
-
-  return loaded;
-}
-
-function readPackageType(projectRoot: string): 'module' | 'commonjs' {
-  try {
-    const pkg = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf-8'));
-    return pkg?.type === 'module' ? 'module' : 'commonjs';
-  } catch {
-    return 'commonjs';
-  }
+  return { value: extracted.value };
 }
 
 // ---------------------------------------------------------------------------

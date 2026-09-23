@@ -32,23 +32,21 @@
 
 # resolve_code_audit — emit the CLI invocation to use.
 #
-# Resolution is version-aware: EVERY candidate — bundled sibling, project-local,
-# global — is used only when its `--version` matches this plugin's manifest
-# version. A stale candidate is warned about and skipped, so a mismatched binary
-# no longer turns the hook into a hard failure; the pinned install below resolves
-# the correct CLI on its own (and warn_stale tells the user to update so the fast
-# path comes back).
+# Resolution is version-aware: EVERY candidate — bundled sibling, pinned install,
+# project-local, global — is used only when its `--version` matches this plugin's
+# manifest version. A stale candidate is warned about and skipped, so a mismatched
+# binary no longer turns the hook into a hard failure.
 #
 # 1. The plugin's bundled CLI (`${CLAUDE_PLUGIN_ROOT}/../dist/cli.js` ships in the
 #    same npm package, so it usually matches) — but a marketplace checkout has no
 #    npm-paired dist/, and a locally built one can be stale, so it is
 #    version-checked like everything else.
-# 2. Project-local install (consumer project's own node_modules) — if compatible.
-# 3. Global install / PATH — if compatible.
-# 4. Pinned install, exact manifest version — never a range — the guaranteed-
-#    correct fallback when nothing compatible is installed. The package is
-#    installed to a deterministic dir and its bin invoked by absolute path; npx is
-#    deliberately NOT used for execution (see resolve_pinned_bin).
+# 2. Pinned install, exact manifest version — never a range — tried before the
+#    project-local and PATH candidates so a version-matched pin wins over a stale
+#    project-local/global shim (the shadowing that resolve_pinned_bin's
+#    install-to-known-dir approach exists to avoid).
+# 3. Project-local install (consumer project's own node_modules) — if compatible.
+# 4. Global install / PATH — if compatible.
 resolve_code_audit() {
   local candidate
   if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js" ]; then
@@ -59,6 +57,18 @@ resolve_code_audit() {
     fi
     warn_stale "${candidate}"
   fi
+
+  # Pin to the plugin's exact version, not a range: `@^3.0.0` could resolve a
+  # cached older CLI and silently drive this plugin with the wrong analyzer code.
+  local pv bin
+  pv="$(plugin_version)"
+  if [ -n "${pv}" ]; then
+    if bin="$(resolve_pinned_bin)"; then
+      echo "${bin}"
+      return
+    fi
+  fi
+
   if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -x "${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit" ]; then
     candidate="${CLAUDE_PROJECT_DIR}/node_modules/.bin/code-audit"
     if cli_is_compatible "${candidate}"; then
@@ -75,23 +85,13 @@ resolve_code_audit() {
     fi
     warn_stale "${candidate}"
   fi
-  # Pin to the plugin's exact version, not a range: `@^3.0.0` could resolve a
-  # cached older CLI and silently drive this plugin with the wrong analyzer code.
-  local pv bin
-  pv="$(plugin_version)"
+
+  # Pinned install failed (offline, registry error, npm missing), or the manifest
+  # is unreadable. Emit the npx form as a last-ditch command so the hook still has
+  # something to run; assert_compatible rejects it loudly if it cannot be verified.
   if [ -n "${pv}" ]; then
-    if bin="$(resolve_pinned_bin)"; then
-      echo "${bin}"
-    else
-      # Install failed (offline, registry error, npm missing). Emit the npx form
-      # as a last-ditch command so the hook still has something to run;
-      # assert_compatible rejects it loudly if it cannot be verified — the same
-      # treatment as the unreadable-manifest case below.
-      echo "npx -y -p code-auditor-mcp@${pv} code-audit"
-    fi
+    echo "npx -y -p code-auditor-mcp@${pv} code-audit"
   else
-    # Manifest unreadable — assert_compatible will reject whatever this fetches,
-    # so `@latest` is only a last-ditch command that never survives the pin.
     echo "npx -y -p code-auditor-mcp@latest code-audit"
   fi
 }

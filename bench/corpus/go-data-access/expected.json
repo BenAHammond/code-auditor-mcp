@@ -2,10 +2,24 @@
   "analyzer": "go-data-access",
   "config": {},
   "expectedViolations": [
-    { "file": "src/dynamic-sql.go", "rule": "sql-injection-risk", "severity": "error" },
-    { "file": "src/parameterized.go", "rule": "missing-org-filter", "severity": "warning" },
-    { "file": "src/parameterized.go", "rule": "unfiltered-query", "severity": "suggestion" }
+    {
+      "file": "src/dynamic-sql.go",
+      "rule": "sql-injection-risk",
+      "severity": "critical"
+    },
+    {
+      "file": "src/parameterized.go",
+      "rule": "missing-org-filter",
+      "severity": "critical"
+    },
+    {
+      "file": "src/parameterized.go",
+      "rule": "unfiltered-query",
+      "severity": "high"
+    }
   ],
-  "nearMissFiles": ["src/no-db.go"],
+  "nearMissFiles": [
+    "src/no-db.go"
+  ],
   "description": "Tests for the data-access analyzer on Go code — fmt.Sprintf SQL injection vs $1 parameterized queries"
 }

@@ -20,7 +20,8 @@ vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => spawnMock(...args),
 }));
 
-import { warmPinnedCli } from './installer.js';
+import { warmPinnedCli, pinnedCliCommand } from './installer.js';
+import { VERSION } from './version.generated.js';
 
 const CACHE = '/tmp/ca-warm-cache';
 
@@ -77,5 +78,19 @@ describe('warmPinnedCli — pinned-CLI warm at install (Spec 59)', () => {
     const p = warmPinnedCli('3.9.11');
     child.emit('exit', 1);
     await p; // resolves despite exit 1
+  });
+});
+
+describe('pinnedCliCommand (Spec 61 R5.2 pinned CLI)', () => {
+  it('pins cursor-hook to the build-stamped package version', () => {
+    expect(pinnedCliCommand('cursor-hook')).toBe(
+      `npx -y -p code-auditor-mcp@${VERSION} code-audit cursor-hook`
+    );
+  });
+
+  it('pins codex-hook to the build-stamped package version', () => {
+    expect(pinnedCliCommand('codex-hook')).toBe(
+      `npx -y -p code-auditor-mcp@${VERSION} code-audit codex-hook`
+    );
   });
 });

@@ -37,8 +37,8 @@ export interface FieldConstraints {
 }
 
 export interface SchemaViolation extends Violation {
-  rule: 'field-mismatch' | 'schema-field-mismatch' | 'missing-field' | 'extra-field' | 'constraint-mismatch' | 'version-mismatch';
-  violationType: 'field-mismatch' | 'schema-field-mismatch' | 'missing-field' | 'extra-field' | 'constraint-mismatch' | 'version-mismatch';
+  rule: 'schema-field-mismatch' | 'missing-field' | 'extra-field';
+  violationType: 'schema-field-mismatch' | 'missing-field' | 'extra-field';
   schemas: SchemaDefinition[];
   fieldName?: string;
   expectedType?: string;
@@ -128,12 +128,6 @@ export class SchemaValidator {
     current: SchemaDefinition
   ): Promise<SchemaViolation[]> {
     const violations: SchemaViolation[] = [];
-
-    // Check version compatibility
-    if (reference.version && current.version) {
-      const versionViolation = this.checkVersionCompatibility(reference, current);
-      if (versionViolation) violations.push(versionViolation);
-    }
 
     // Create field maps for easier comparison
     const refFields = new Map(reference.fields.map(f => [f.name, f]));
@@ -228,43 +222,9 @@ export class SchemaValidator {
       const cmp: FieldComparison = { fieldName, refField, curField, reference, current };
       const typeViolation = this.compareFieldTypes(cmp);
       if (typeViolation) violations.push(typeViolation);
-
-      violations.push(...this.compareFieldConstraints(cmp));
     }
 
     return violations;
-  }
-
-  /**
-   * Check version compatibility between schemas
-   */
-  private checkVersionCompatibility(
-    reference: SchemaDefinition,
-    current: SchemaDefinition
-  ): SchemaViolation | null {
-    if (!reference.version || !current.version) return null;
-
-    const refVersion = parseVersion(reference.version);
-    const curVersion = parseVersion(current.version);
-
-    const compatible = this.areVersionsCompatible(refVersion, curVersion);
-
-    if (!compatible) {
-      return {
-        file: current.file,
-        line: current.line,
-        severity: 'severe',
-        message: `Version mismatch: ${reference.name} v${reference.version} vs v${current.version}`,
-        rule: "version-mismatch",
-        violationType: 'version-mismatch',
-        schemas: [reference, current],
-        suggestion: 'Ensure schemas are using compatible versions',
-        analyzer: 'schema-validator',
-        category: 'cross-language-schema'
-      };
-    }
-
-    return null;
   }
 
   /**
@@ -317,72 +277,6 @@ export class SchemaValidator {
     return null;
   }
 
-  /**
-   * Compare field constraints
-   */
-  private compareFieldConstraints(cmp: FieldComparison): SchemaViolation[] {
-    const { fieldName, refField, curField, reference: refSchema, current: curSchema } = cmp;
-    const violations: SchemaViolation[] = [];
-
-    if (!refField.constraints || !curField.constraints) return violations;
-
-    const refConstraints = refField.constraints;
-    const curConstraints = curField.constraints;
-
-    // Check length constraints
-    if (refConstraints.minLength !== curConstraints.minLength ||
-        refConstraints.maxLength !== curConstraints.maxLength) {
-      violations.push({
-        file: curSchema.file,
-        line: curSchema.line,
-        severity: 'severe',
-        message: `Length constraint mismatch for field '${fieldName}'`,
-        rule: "constraint-mismatch",
-        violationType: 'constraint-mismatch',
-        schemas: [refSchema, curSchema],
-        fieldName,
-        suggestion: 'Align length constraints across schema implementations',
-        analyzer: 'schema-validator',
-        category: 'cross-language-schema'
-      });
-    }
-
-    // Check numeric constraints
-    if (refConstraints.minimum !== curConstraints.minimum ||
-        refConstraints.maximum !== curConstraints.maximum) {
-      violations.push({
-        file: curSchema.file,
-        line: curSchema.line,
-        severity: 'severe',
-        message: `Numeric constraint mismatch for field '${fieldName}'`,
-        rule: "constraint-mismatch",
-        violationType: 'constraint-mismatch',
-        schemas: [refSchema, curSchema],
-        fieldName,
-        suggestion: 'Align numeric constraints across schema implementations',
-        analyzer: 'schema-validator',
-        category: 'cross-language-schema'
-      });
-    }
-
-    return violations;
-  }
-
-  /**
-   * Check if versions are compatible
-   */
-  private areVersionsCompatible(v1: any, v2: any): boolean {
-    switch (this.options.versionTolerance) {
-      case 'strict':
-        return v1.major === v2.major && v1.minor === v2.minor && v1.patch === v2.patch;
-      case 'minor':
-        return v1.major === v2.major && v1.minor === v2.minor;
-      case 'major':
-        return v1.major === v2.major;
-      default:
-        return true;
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -563,18 +457,6 @@ function areTypesCompatible(type1: string, type2: string): boolean {
   if (m1 && m2) return areTypesCompatible(m1[1], m2[1]) && areTypesCompatible(m1[2], m2[2]);
 
   return false;
-}
-
-/**
- * Parse version string
- */
-function parseVersion(version: string): { major: number; minor: number; patch: number } {
-  const parts = version.replace(/^v/, '').split('.').map(Number);
-  return {
-    major: parts[0] || 0,
-    minor: parts[1] || 0,
-    patch: parts[2] || 0
-  };
 }
 
 // ---------------------------------------------------------------------------

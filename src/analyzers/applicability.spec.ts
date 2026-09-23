@@ -8,7 +8,7 @@
  *      no tenant-scoping column anywhere → notApplicable, no config flag.
  */
 import { describe, it, expect } from 'vitest';
-import { evaluateRuleApplicability } from './applicability.js';
+import { evaluateRuleApplicability, CANNOT_FIRE_RULES } from './applicability.js';
 
 describe('evaluateRuleApplicability — styles/undefined-class (Spec 45 R5)', () => {
   it('returns null (runs unconditionally) — unread stylesheets never disable it', () => {
@@ -70,16 +70,16 @@ describe('evaluateRuleApplicability — missing-org-filter (R3)', () => {
   });
 
   it('applies when the DDL-derived table catalog carries a tenant column (Tier 3)', () => {
-    const app = evaluateRuleApplicability('missing-org-filter', undefined, [
-      'id',
-      'workspace_id',
-      'name',
-    ]);
+    const app = evaluateRuleApplicability('missing-org-filter', undefined, {
+      accounts: ['id', 'workspace_id', 'name'],
+    });
     expect(app!.applicable).toBe(true);
   });
 
   it('reports notApplicable naming the absent tenant column when nothing matches', () => {
-    const app = evaluateRuleApplicability('missing-org-filter', undefined, ['id', 'name', 'slug']);
+    const app = evaluateRuleApplicability('missing-org-filter', undefined, {
+      accounts: ['id', 'name', 'slug'],
+    });
     expect(app).toEqual({
       applicable: false,
       reason: 'no tenant-scoping column found in table catalog',
@@ -87,56 +87,28 @@ describe('evaluateRuleApplicability — missing-org-filter (R3)', () => {
   });
 
   it('is notApplicable on an empty catalog', () => {
-    const app = evaluateRuleApplicability('missing-org-filter', undefined, []);
+    const app = evaluateRuleApplicability('missing-org-filter', undefined, {});
     expect(app!.applicable).toBe(false);
+  });
+
+  it('is table-scoped: a tenant column on one table does not mark another table tenant (Tier 3)', () => {
+    // Amendment B — applicability is per-table now, not "any column anywhere".
+    const app = evaluateRuleApplicability('missing-org-filter', undefined, {
+      audit_log: ['id', 'org_id'],
+      // `tags` has no tenant column; the flat catalog of old would have been
+      // fooled, but the per-table map keeps tenancy table-scoped.
+    });
+    expect(app!.applicable).toBe(true);
   });
 });
 
 describe('evaluateRuleApplicability — cannot-fire rules (Spec 44 bucket 2)', () => {
-  it('marks the four unreachable api-contract rules cannot-fire naming the field', () => {
-    const expected: Record<string, string> = {
-      'api-type-mismatch': 'responseSchema',
-      'api-extra-field': 'no emission site',
-      'api-missing-field': 'no emission site',
-      'auth-mismatch': 'authentication',
-    };
-    for (const [ruleId, needle] of Object.entries(expected)) {
-      const app = evaluateRuleApplicability(ruleId, undefined, undefined);
-      expect(app?.applicable).toBe(false);
-      expect(app?.kind).toBe('cannot-fire');
-      expect(app?.reason).toContain(needle);
-    }
-  });
-
-  it('marks the two fabricated api-contract rules cannot-fire naming the name proxy', () => {
-    for (const ruleId of ['missing-endpoint', 'method-mismatch']) {
-      const app = evaluateRuleApplicability(ruleId, undefined, undefined);
-      expect(app?.applicable).toBe(false);
-      expect(app?.kind).toBe('cannot-fire');
-      expect(app?.reason).toContain('name proxy');
-    }
-  });
-
-  it('marks the schema/schema-validator rules cannot-fire naming the missing extractor', () => {
-    const expected: Record<string, string> = {
-      'file-error': 'state.errors',
-      'field-mismatch': 'schema-field-mismatch',
-      'constraint-mismatch': 'constraints',
-      'version-mismatch': 'version',
-    };
-    for (const [ruleId, needle] of Object.entries(expected)) {
-      const app = evaluateRuleApplicability(ruleId, undefined, undefined);
-      expect(app?.applicable).toBe(false);
-      expect(app?.kind).toBe('cannot-fire');
-      expect(app?.reason).toContain(needle);
-    }
-  });
-
-  it('keeps cannot-fire distinct from notApplicable (missing-org-filter)', () => {
-    const cannotFire = evaluateRuleApplicability('file-error', undefined, undefined);
-    const notApplicable = evaluateRuleApplicability('missing-org-filter', undefined, []);
-    expect(cannotFire?.kind).toBe('cannot-fire');
-    expect(notApplicable?.kind).toBeUndefined();
+  it('has no cannot-fire rules after the 4.1.0 removal', () => {
+    // The ten cannot-fire rules (six api-contract, file-error, three
+    // schema-validator aliases) were removed in 4.1.0 — registry entry, emission
+    // site, and ledger row. The `cannot-fire` verdict remains in the
+    // applicability vocabulary (RuleApplicability.kind) but no rule carries it.
+    expect(CANNOT_FIRE_RULES.size).toBe(0);
   });
 });
 

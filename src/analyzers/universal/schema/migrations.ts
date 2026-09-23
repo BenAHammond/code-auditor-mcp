@@ -162,20 +162,30 @@ function leadingColumnName(def: string): string | null {
 }
 
 /**
- * Extract column names from migration SQL — CREATE TABLE bodies (via a
- * depth-tracking paren scan that finds each matching close paren) and
- * ALTER TABLE … ADD COLUMN statements. Returns lowercased, deduplicated names
- * so the schema reducer can answer "does any table carry a tenant-scoping
- * column?" without materializing per-table column lists.
+ * Extract per-table column names from migration SQL — CREATE TABLE bodies (via
+ * a depth-tracking paren scan that finds each matching close paren) and
+ * ALTER TABLE … ADD COLUMN statements. Returns a `Record<table, columns>` with
+ * lowercased, deduplicated column names, so the schema reducer can answer
+ * "does THIS table carry a tenant-scoping column?" — the per-query question the
+ * flat set cannot.
  * @param source Migration/DDL SQL text.
- * @returns The set of column names declared across the source.
+ * @returns Per-table lowercased column-name lists.
  */
-export function extractDdlColumnNames(source: string): string[] {
-  const columns = new Set<string>();
+export function extractDdlTableColumns(source: string): Record<string, string[]> {
+  const tableColumns = new Map<string, Set<string>>();
+  const columnsFor = (table: string): Set<string> => {
+    let cols = tableColumns.get(table);
+    if (!cols) {
+      cols = new Set<string>();
+      tableColumns.set(table, cols);
+    }
+    return cols;
+  };
 
   const createRe = /\bCREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s*\(/gi;
   let match: RegExpExecArray | null;
   while ((match = createRe.exec(source)) !== null) {
+    const table = stripIdentifier(match[1]);
     const openParen = createRe.lastIndex - 1;
     let depth = 0;
     let closeParen = -1;
@@ -194,19 +204,40 @@ export function extractDdlColumnNames(source: string): string[] {
       createRe.lastIndex = openParen + 1;
       continue;
     }
+    const cols = columnsFor(table);
     const body = source.slice(openParen + 1, closeParen);
     for (const def of splitColumnDefs(body)) {
       const name = leadingColumnName(def);
-      if (name) columns.add(name.toLowerCase());
+      if (name) cols.add(name.toLowerCase());
     }
     createRe.lastIndex = closeParen + 1;
   }
 
   const alterRe = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)/gi;
   while ((match = alterRe.exec(source)) !== null) {
-    columns.add(stripIdentifier(match[2]).toLowerCase());
+    columnsFor(stripIdentifier(match[1])).add(stripIdentifier(match[2]).toLowerCase());
   }
 
+  const result: Record<string, string[]> = {};
+  for (const [table, cols] of tableColumns) result[table] = [...cols];
+  return result;
+}
+
+/**
+ * Extract column names from migration SQL — CREATE TABLE bodies (via a
+ * depth-tracking paren scan that finds each matching close paren) and
+ * ALTER TABLE … ADD COLUMN statements. Returns lowercased, deduplicated names
+ * so the schema reducer can answer "does any table carry a tenant-scoping
+ * column?" without materializing per-table column lists. The flat union of
+ * {@link extractDdlTableColumns}.
+ * @param source Migration/DDL SQL text.
+ * @returns The set of column names declared across the source.
+ */
+export function extractDdlColumnNames(source: string): string[] {
+  const columns = new Set<string>();
+  for (const cols of Object.values(extractDdlTableColumns(source))) {
+    for (const c of cols) columns.add(c);
+  }
   return [...columns];
 }
 
@@ -344,9 +375,15 @@ export async function sqlFileHasDdl(filePath: string): Promise<boolean> {
 export async function extractMigrationOpsFromFile(
   filePath: string,
   sourceCode: string,
-): Promise<{ ops: MigrationOp[]; columns: string[]; skipped: boolean; bytes: number }> {
+): Promise<{ ops: MigrationOp[]; columns: string[]; tableColumns: Record<string, string[]>; skipped: boolean; bytes: number }> {
   if (sourceCode !== '') {
-    return { ops: parseMigrationOps(sourceCode), columns: extractDdlColumnNames(sourceCode), skipped: false, bytes: Buffer.byteLength(sourceCode) };
+    return {
+      ops: parseMigrationOps(sourceCode),
+      columns: extractDdlColumnNames(sourceCode),
+      tableColumns: extractDdlTableColumns(sourceCode),
+      skipped: false,
+      bytes: Buffer.byteLength(sourceCode),
+    };
   }
   let size = 0;
   try {
@@ -356,11 +393,17 @@ export async function extractMigrationOpsFromFile(
   }
   if (size <= MAX_ORPHAN_SOURCE_BYTES) {
     // Empty or small file whose read produced an empty string — nothing to do.
-    return { ops: [], columns: [], skipped: false, bytes: size };
+    return { ops: [], columns: [], tableColumns: {}, skipped: false, bytes: size };
   }
   if (!(await sqlFileHasDdl(filePath))) {
-    return { ops: [], columns: [], skipped: true, bytes: size };
+    return { ops: [], columns: [], tableColumns: {}, skipped: true, bytes: size };
   }
   const full = await fs.readFile(filePath, 'utf-8');
-  return { ops: parseMigrationOps(full), columns: extractDdlColumnNames(full), skipped: false, bytes: size };
+  return {
+    ops: parseMigrationOps(full),
+    columns: extractDdlColumnNames(full),
+    tableColumns: extractDdlTableColumns(full),
+    skipped: false,
+    bytes: size,
+  };
 }

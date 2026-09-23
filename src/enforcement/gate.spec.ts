@@ -17,9 +17,11 @@ function v(partial: Partial<Violation> & { analyzer: string; rule: string }): Vi
   } as Violation;
 }
 
-const DEFAULT = new Set<Severity>(['critical', 'warning']);
+// Test fixtures for `computeGatingDecision`'s blocking-set parameter, not the
+// production default (which is `BLOCKING_SEVERITIES` — the fixed all-three set).
+const DEFAULT = new Set<Severity>(['critical', 'severe']);
 const CRITICAL_ONLY = new Set<Severity>(['critical']);
-const EVERYTHING = new Set<Severity>(['critical', 'warning', 'suggestion']);
+const EVERYTHING = new Set<Severity>(['critical', 'severe', 'high']);
 
 const RESOLVABLE = { analyzer: 'solid', rule: 'solid/class-size' };
 const NON_RESOLVABLE = { analyzer: 'solid', rule: 'solid/method-complexity' };
@@ -33,30 +35,30 @@ describe('computeGatingDecision — Spec 45 R1/R2/R4', () => {
     expect(decision.resolutionGaps).toHaveLength(0);
   });
 
-  it('blocks a warning finding (default blocking set includes warning) — R2', () => {
+  it('blocks a severe finding (blocking set includes severe) — R2', () => {
     const decision = computeGatingDecision([
-      v({ ...RESOLVABLE, severity: 'warning', resolution: { action: 'x', summary: 'y' } }),
+      v({ ...RESOLVABLE, severity: 'severe', resolution: { action: 'x', summary: 'y' } }),
     ], DEFAULT);
     expect(decision.blocking).toHaveLength(1);
   });
 
-  it('does not block a suggestion finding by default — R2', () => {
+  it('does not block a high finding when the blocking set excludes high — R2', () => {
     const decision = computeGatingDecision([
-      v({ ...RESOLVABLE, severity: 'suggestion', resolution: { action: 'x', summary: 'y' } }),
+      v({ ...RESOLVABLE, severity: 'high', resolution: { action: 'x', summary: 'y' } }),
     ], DEFAULT);
     expect(decision.blocking).toHaveLength(0);
   });
 
-  it('blocks a suggestion finding when the blocking set is widened — R2 configurable', () => {
+  it('blocks a high finding when the blocking set includes high — R2 configurable', () => {
     const decision = computeGatingDecision([
-      v({ ...RESOLVABLE, severity: 'suggestion', resolution: { action: 'x', summary: 'y' } }),
+      v({ ...RESOLVABLE, severity: 'high', resolution: { action: 'x', summary: 'y' } }),
     ], EVERYTHING);
     expect(decision.blocking).toHaveLength(1);
   });
 
-  it('does not block a warning when only critical blocks — R2 configurable narrower set', () => {
+  it('does not block a severe when only critical blocks — R2 configurable narrower set', () => {
     const decision = computeGatingDecision([
-      v({ ...RESOLVABLE, severity: 'warning', resolution: { action: 'x', summary: 'y' } }),
+      v({ ...RESOLVABLE, severity: 'severe', resolution: { action: 'x', summary: 'y' } }),
     ], CRITICAL_ONLY);
     expect(decision.blocking).toHaveLength(0);
   });
@@ -72,7 +74,7 @@ describe('computeGatingDecision — Spec 45 R1/R2/R4', () => {
     // `solid/method-complexity` previously carried `gating: false`. Every
     // registered rule now gates; severity alone decides.
     const decision = computeGatingDecision([
-      v({ ...NON_RESOLVABLE, severity: 'warning', resolution: { action: 'x', summary: 'y' } }),
+      v({ ...NON_RESOLVABLE, severity: 'severe', resolution: { action: 'x', summary: 'y' } }),
     ], DEFAULT);
     expect(decision.blocking).toHaveLength(1);
   });

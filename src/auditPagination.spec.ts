@@ -45,7 +45,7 @@ describe('audit pagination (cached auditId workflow)', () => {
     const violations: Violation[] = Array.from({ length: 125 }, (_, i) => ({
       file: 'sample.ts',
       line: i + 1,
-      severity: 'warning' as const,
+      severity: 'severe' as const,
       message: `issue-${i}`,
     }));
 
@@ -53,8 +53,8 @@ describe('audit pagination (cached auditId workflow)', () => {
       summary: {
         totalViolations: 125,
         criticalIssues: 0,
-        warnings: 125,
-        suggestions: 0,
+        severe: 125,
+        high: 0,
       },
       metadata: { filesAnalyzed: 3, auditDuration: 42 },
       violations,

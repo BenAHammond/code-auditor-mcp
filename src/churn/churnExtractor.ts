@@ -13,7 +13,7 @@
  * its line range.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as path from 'path';
 import type { ChurnConfig } from '../types.js';
 
@@ -56,7 +56,7 @@ export function extractChurn(
   // ── Meta-hash: skip if HEAD + window haven't changed ────────────────
   let headSha: string;
   try {
-    headSha = execSync('git rev-parse HEAD', { cwd: targetPath, stdio: 'pipe', timeout: 5000 })
+    headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: targetPath, stdio: 'pipe', timeout: 5000 })
       .toString()
       .trim();
   } catch {
@@ -105,7 +105,7 @@ export function extractChurn(
 
 function hasGitRepo(targetPath: string): boolean {
   try {
-    execSync('git rev-parse --git-dir', { cwd: targetPath, stdio: 'pipe', timeout: 3000 });
+    execFileSync('git', ['rev-parse', '--git-dir'], { cwd: targetPath, stdio: 'pipe', timeout: 3000 });
     return true;
   } catch {
     return false;
@@ -134,8 +134,8 @@ function extractFileChurn(targetPath: string, windowMonths: number): Map<string,
   try {
     // --numstat gives: <added>\t<deleted>\t<file>
     // Separator between commits is the commit header line
-    const output = execSync(
-      `git log --numstat --format='%H|%an|%at' --since='${sinceStr}'`,
+    const output = execFileSync(
+      'git', ['log', '--numstat', '--format=%H|%an|%at', `--since=${sinceStr}`],
       { cwd: targetPath, stdio: 'pipe', timeout: 30000, maxBuffer: 50 * 1024 * 1024 },
     ).toString();
 
@@ -277,8 +277,8 @@ function extractAndWriteFunctionChurn(
   // Only process files that have functions AND changed in the window
   for (const [filePath, fileFuncs] of funcsByFile) {
     try {
-      const output = execSync(
-        `git log -p --since='${sinceStr}' -- "${filePath}"`,
+      const output = execFileSync(
+        'git', ['log', '-p', `--since=${sinceStr}`, '--', filePath],
         { cwd: targetPath, stdio: 'pipe', timeout: 15000, maxBuffer: 10 * 1024 * 1024 },
       ).toString();
 
