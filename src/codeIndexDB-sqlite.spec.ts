@@ -846,3 +846,116 @@ describe('CodeIndexDB SQLite — LokiJS migration', () => {
     await db.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Schema migration replay (Spec 63 R6)
+// ---------------------------------------------------------------------------
+
+describe('CodeIndexDB SQLite — schema migration replay', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'code-auditor-replay-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Reconstruct the pre-17 `functions` shape on a freshly-initialized v17 DB:
+  // re-add the always-empty `signature` column and rebuild `functions_fts` (and
+  // its triggers) with the `signature` term, then populate real rows. This is the
+  // on-disk state an in-place upgrade from ≤16 would actually meet — the reverse
+  // of migration 16→17.
+  function reconstructPreBumpIndex(raw: any): void {
+    raw.exec(`
+      ALTER TABLE functions ADD COLUMN signature TEXT;
+      DROP TRIGGER IF EXISTS functions_ai;
+      DROP TRIGGER IF EXISTS functions_ad;
+      DROP TRIGGER IF EXISTS functions_au;
+      DROP TABLE IF EXISTS functions_fts;
+      CREATE VIRTUAL TABLE functions_fts USING fts5(
+        name, signature, jsdoc_description, purpose, context, body,
+        content='functions', content_rowid='id',
+        tokenize='porter unicode61'
+      );
+      CREATE TRIGGER functions_ai AFTER INSERT ON functions BEGIN
+        INSERT INTO functions_fts(rowid, name, signature, jsdoc_description, purpose, context, body)
+        VALUES (new.id, new.name, new.signature, new.jsdoc_description, new.purpose, new.context, new.body);
+      END;
+      CREATE TRIGGER functions_ad AFTER DELETE ON functions BEGIN
+        INSERT INTO functions_fts(functions_fts, rowid, name, signature, jsdoc_description, purpose, context, body)
+        VALUES ('delete', old.id, old.name, old.signature, old.jsdoc_description, old.purpose, old.context, old.body);
+      END;
+      CREATE TRIGGER functions_au AFTER UPDATE ON functions BEGIN
+        INSERT INTO functions_fts(functions_fts, rowid, name, signature, jsdoc_description, purpose, context, body)
+        VALUES ('delete', old.id, old.name, old.signature, old.jsdoc_description, old.purpose, old.context, old.body);
+        INSERT INTO functions_fts(rowid, name, signature, jsdoc_description, purpose, context, body)
+        VALUES (new.id, new.name, new.signature, new.jsdoc_description, new.purpose, new.context, new.body);
+      END;
+    `);
+
+    // Populate real rows (the ai trigger mirrors each into functions_fts).
+    raw.exec(`
+      INSERT INTO functions (name, file_path, line_number, signature, purpose, context, body, content_hash)
+      VALUES ('add', 'src/math.ts', 1, '', 'add two numbers', 'module', 'function add(a, b) { return a + b; }', 'stale-hash-a'),
+             ('multiply', 'src/math.ts', 5, '', 'multiply two numbers', 'module', 'function multiply(a, b) { return a * b; }', 'stale-hash-b');
+    `);
+  }
+
+  it('replays the full 0→17 chain against a populated pre-bump index and stays sound', async () => {
+    const dbPath = join(dir, 'index.db');
+    const db = new CodeIndexDB(dbPath);
+    await db.initialize();
+    reconstructPreBumpIndex((db as any).db);
+    (db as any).db.prepare(`UPDATE meta SET value = '0' WHERE key = 'schema_version'`).run();
+    await db.close();
+
+    const reopened = new CodeIndexDB(dbPath);
+    await reopened.initialize();
+
+    // The destructive 16→17 step cleared the derived index rather than reading
+    // the stale rows.
+    expect((await reopened.getAllFunctions()).length).toBe(0);
+
+    // And it left the database sound, not just empty.
+    const integrity = (reopened as any).db.prepare(`PRAGMA integrity_check`).get() as { integrity_check: string };
+    expect(integrity.integrity_check).toBe('ok');
+
+    // The `signature` column and its FTS mirror are gone.
+    const fnCols = (reopened as any).db.prepare(`PRAGMA table_info('functions')`).all() as Array<{ name: string }>;
+    expect(fnCols.some(c => c.name === 'signature')).toBe(false);
+    const ftsCols = (reopened as any).db.prepare(`PRAGMA table_info('functions_fts')`).all() as Array<{ name: string }>;
+    expect(ftsCols.some(c => c.name === 'signature')).toBe(false);
+
+    const version = (reopened as any).db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as { value: string };
+    expect(version.value).toBe('17');
+
+    await reopened.close();
+  });
+
+  it('integrity holds after replaying forward from every historical version', async () => {
+    for (let version = 0; version < 17; version++) {
+      const vdir = join(dir, `v${version}`);
+      await mkdir(vdir, { recursive: true });
+      const dbPath = join(vdir, 'index.db');
+
+      const db = new CodeIndexDB(dbPath);
+      await db.initialize();
+      reconstructPreBumpIndex((db as any).db);
+      (db as any).db.prepare(`UPDATE meta SET value = ? WHERE key = 'schema_version'`).run(String(version));
+      await db.close();
+
+      const reopened = new CodeIndexDB(dbPath);
+      await reopened.initialize();
+
+      const integrity = (reopened as any).db.prepare(`PRAGMA integrity_check`).get() as { integrity_check: string };
+      expect(integrity.integrity_check, `from version ${version}`).toBe('ok');
+
+      const verRow = (reopened as any).db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as { value: string };
+      expect(verRow.value, `from version ${version}`).toBe('17');
+
+      await reopened.close();
+    }
+  });
+});

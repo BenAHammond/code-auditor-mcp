@@ -305,13 +305,23 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       await db.detectChangedFunctions([filePath]);
       expect((await db.getAllFunctions()).length).toBe(1);
 
+      // The corruption this migration risks only surfaces when the FTS mirror
+      // holds real rows. Confirm `functions_fts` was actually populated (via the
+      // insert trigger) before we stamp the index down — an empty mirror would
+      // pass a row-count-only rebuild check while never exercising the
+      // DELETE-before-FTS-drop ordering that turned a near-miss into a test.
+      const raw = (db as any).db;
+      const ftsBefore = raw
+        .prepare(`SELECT COUNT(*) AS cnt FROM functions_fts`)
+        .get() as { cnt: number };
+      expect(ftsBefore.cnt).toBeGreaterThan(0);
+
       // Simulate a pre-bump index on disk: an older build stamped
       // schema_version=16 and stored a content_hash under the old
       // body|signature formula. Stamp the version down and plant a stale hash
       // — this is the state a silently-consumed index would hand to the next
       // run, where an old stored hash no longer matches the freshly
       // recomputed one and the diff is attributed to the code, not the index.
-      const raw = (db as any).db;
       raw.prepare(`UPDATE meta SET value = '16' WHERE key = 'schema_version'`).run();
       raw.prepare(`UPDATE functions SET content_hash = 'stale-hash-old-formula'`).run();
       await db.close();
@@ -322,6 +332,13 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       await db.initialize();
 
       expect((await db.getAllFunctions()).length).toBe(0);
+
+      // The rebuild must leave the database *sound*, not just empty. Corruption
+      // that a subsequent row count happens not to read still fails here.
+      const integrity = (db as any).db
+        .prepare(`PRAGMA integrity_check`)
+        .get() as { integrity_check: string };
+      expect(integrity.integrity_check).toBe('ok');
 
       const version = (db as any).db
         .prepare(`SELECT value FROM meta WHERE key = 'schema_version'`)

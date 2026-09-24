@@ -1018,7 +1018,25 @@ export class CodeIndexDB {
 
   // ── SQLite schema ───────────────────────────────────────────────────
 
+  /** Whether a table already exists in the connected database. */
+  private tableExists(name: string): boolean {
+    const row = this.db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`
+    ).get(name) as { name: string } | undefined;
+    return row !== undefined;
+  }
+
   private createSchema(): void {
+    // A fresh database is created by `CREATE TABLE` below at the *current* schema
+    // shape — there is no history to replay. Migrations run only against an
+    // existing index being upgraded in place. Stamping a fresh DB at the current
+    // version and skipping the blocks turns "every future migration author must
+    // remember to write an idempotence guard" into "there is nothing to guard
+    // against" — the same structural move as the tier function and the
+    // exhaustiveness assertion. Detected before the exec because `functions` is
+    // created by it.
+    const isFresh = !this.tableExists('functions');
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (
         key    TEXT PRIMARY KEY,
@@ -1190,6 +1208,19 @@ export class CodeIndexDB {
       CREATE INDEX IF NOT EXISTS idx_schema_usage_function ON schema_usage(function_name);
       CREATE INDEX IF NOT EXISTS idx_schema_usage_usage_type ON schema_usage(usage_type);
 
+      -- Spec 60 — import classification at emission (one row per static import
+      -- specifier occurrence). classification is free TEXT (no constraint).
+      CREATE TABLE IF NOT EXISTS import_specifiers (
+        file_path       TEXT NOT NULL,
+        specifier       TEXT NOT NULL,
+        classification  TEXT NOT NULL,
+        resolved_path   TEXT,
+        line            INTEGER,
+        PRIMARY KEY (file_path, specifier, line)
+      );
+      CREATE INDEX IF NOT EXISTS idx_import_specifiers_class ON import_specifiers(classification);
+      CREATE INDEX IF NOT EXISTS idx_import_specifiers_resolved ON import_specifiers(resolved_path);
+
       CREATE TABLE IF NOT EXISTS coverage_data (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         function_name TEXT NOT NULL,
@@ -1350,6 +1381,18 @@ export class CodeIndexDB {
         created_at TEXT DEFAULT (datetime('now'))
       );
 
+      -- Spec 45 R5: defined-class catalog (class_name, file_path) so the
+      -- undefined-class detector can resolve a class name with an indexed
+      -- "class_name IN (...)" lookup. Populated by the style indexer on insert.
+      CREATE TABLE IF NOT EXISTS style_defined_classes (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        class_name TEXT NOT NULL,
+        file_path  TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(class_name, file_path)
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_defined_class_name ON style_defined_classes(class_name);
+
       -- Spec 12: Convention mining
       CREATE TABLE IF NOT EXISTS conventions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1436,10 +1479,23 @@ export class CodeIndexDB {
       );
       CREATE INDEX IF NOT EXISTS idx_dph_fingerprint ON dry_pair_history(pair_fingerprint);
       CREATE INDEX IF NOT EXISTS idx_dph_run ON dry_pair_history(run_id);
+
+      -- Spec 14: graph cache for call/import graph construction
+      CREATE TABLE IF NOT EXISTS graph_cache (
+        graph_type   TEXT NOT NULL,
+        node_key     TEXT NOT NULL,
+        neighbor_key TEXT NOT NULL,
+        weight       REAL NOT NULL,
+        PRIMARY KEY (graph_type, node_key, neighbor_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_gc_type_node ON graph_cache(graph_type, node_key);
+      CREATE INDEX IF NOT EXISTS idx_gc_type_neighbor ON graph_cache(graph_type, neighbor_key);
     `);
 
-    // Run schema migrations
-    this.runMigrations();
+    // Run schema migrations (only an existing index needs upgrading)
+    if (!isFresh) {
+      this.runMigrations();
+    }
 
     // Record schema version
     this.db.prepare(

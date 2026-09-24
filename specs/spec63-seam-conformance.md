@@ -214,11 +214,34 @@ would be **silently consumed**: a no-edit `changed` run recomputes a body-only
 hash, compares it to the stored body|signature hash, and reports the whole file
 changed — attributing to the code what was actually the index's stale hash.
 
-**The rebuild is demonstrated, not just coded.** `auditScope.spec.ts`
-"stale-index rebuild (Spec 63 R6)" indexes a function, stamps the stored
-`schema_version` down to 16 and plants a stale hash, re-opens the DB, and
-asserts the row is gone (`getAllFunctions()` is empty) and the version is now 17
-— i.e. the stale index was rebuilt rather than read.
+**The rebuild is demonstrated, not just coded.** Three tests pin it:
+
+- `auditScope.spec.ts` "stale-index rebuild (Spec 63 R6)" indexes a function,
+  stamps the stored `schema_version` down to 16 and plants a stale hash,
+  re-opens the DB, and asserts the row is gone (`getAllFunctions()` is empty)
+  and the version is now 17. It also asserts `functions_fts` held a real row
+  *before* the stamp-down (the DELETE-before-FTS-drop ordering that risks
+  corruption only surfaces with populated FTS content) and that
+  `PRAGMA integrity_check` returns `ok` afterward — the rebuild leaves the
+  database *sound*, not just empty.
+- `codeIndexDB-sqlite.spec.ts` "schema migration replay" reconstructs the
+  pre-17 `functions` shape (signature column, signature-bearing `functions_fts`
+  and triggers, populated rows), then replays the chain forward from every
+  historical version 0..16, asserting `integrity_check = ok` and
+  `schema_version = 17` after each. Ordering hazards between `functions` and its
+  external-content FTS aren't unique to 16→17 — one test covers the class.
+
+**A fresh database skips migrations entirely.** `createSchema` produces the
+current shape, so `runMigrations` runs only against an existing index being
+upgraded in place: `createSchema` detects a fresh DB (no `functions` table
+before its `CREATE TABLE`s) and stamps `schema_version = SCHEMA_VERSION` without
+replaying history the DB never lived through. This turns "every future migration
+author must remember an idempotence guard" into "there is nothing to guard
+against" — the same structural move as the tier function and the exhaustiveness
+assertion. Completing the move surfaced that three tables (`graph_cache`,
+`import_specifiers`, `style_defined_classes`) were created only by migrations,
+not by `createSchema`; they are now in `createSchema` too, so a fresh DB really
+does get the full current shape.
 
 ### Reducer `filesProcessed: 0` residual (raised mid-R6)
 
