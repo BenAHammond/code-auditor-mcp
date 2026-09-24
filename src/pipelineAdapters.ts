@@ -1345,7 +1345,12 @@ export function createConventionsReducer(): Stage3Reducer {
         // analyzer — counting it as "facts consumed" misreports a present input as
         // notApplicable. (Spec 39 R2/R3 bug B)
         const factsConsumed = context.indexHandle.count('functions');
-        return { violations: result.violations ?? [], facts: {}, factsConsumed };
+        return {
+          violations: result.violations ?? [],
+          facts: {},
+          factsConsumed,
+          ...(result.diagnostics && result.diagnostics.length > 0 && { diagnostics: result.diagnostics }),
+        };
       } catch {
         return { violations: [], facts: {} };
       }

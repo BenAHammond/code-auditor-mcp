@@ -36,7 +36,7 @@ import {
   type DeadCluster,
 } from './types.js';
 import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
-import { evaluateRuleApplicability, scopedWholeProgramApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
+import { evaluateRuleApplicability, evaluateHandledLanguagesApplicability, scopedWholeProgramApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
 import { resetRuleTiming, getRuleTimingSortedDesc } from './analyzers/ruleTiming.js';
 import { LanguageRegistry } from './languages/LanguageRegistry.js';
 import { discoverFiles, DEFAULT_EXCLUDED_DIRS } from './utils/fileDiscovery.js';
@@ -894,6 +894,34 @@ export async function runPipeline(
     if (app) ruleApplicability.set(ruleId, app);
   }
 
+  // Spec 64 R1 — a rule that declares `handledLanguages` reports `cannot-fire`
+  // (not `clean`) when the functions table holds rows in *only* languages its
+  // detector cannot classify (it evaluated none of them). A mixed corpus leaves
+  // the rule applicable — the unhandled rows are the analyzer's per-file
+  // diagnostics, not a reason to gate the handled majority. Runs after the
+  // Stage-2 index-fact flush so `functions` reflects the corpus just indexed.
+  //
+  // The read is scoped on a scoped (changed-file) run: a scoped audit is
+  // O(changed files), so a whole-table `SELECT DISTINCT language` would violate
+  // the `scoped-audit-no-whole-table-read` structural guard. On a full run the
+  // whole table *is* the corpus, so the unscoped read is correct.
+  if (indexHandle) {
+    const scopedFiles = config.isScoped ? (config.explicitFiles ?? []) : undefined;
+    let languageRows: Array<{ language: string | null }>;
+    if (scopedFiles === undefined) {
+      languageRows = indexHandle.query('SELECT DISTINCT language FROM functions') as Array<{ language: string | null }>;
+    } else if (scopedFiles.length === 0) {
+      languageRows = [];
+    } else {
+      languageRows = queryScopedLanguages(indexHandle, scopedFiles);
+    }
+    const corpusLanguages = new Set(languageRows.map((r) => r.language ?? 'typescript'));
+    for (const [ruleId, entry] of Object.entries(RULE_REGISTRY)) {
+      const app = evaluateHandledLanguagesApplicability(entry.handledLanguages, corpusLanguages);
+      if (app) ruleApplicability.set(ruleId, app);
+    }
+  }
+
   // Spec 52 R3 — whole-program rules are unsound on a scoped run. A partial
   // file set cannot support a global claim like "table X is never read" or
   // "table Y is unknown", so on a scoped/diff run each whole-program rule is
@@ -1124,6 +1152,31 @@ export function writeIndexFactsToDb(handle: IndexHandle, facts: IndexFactsEntry[
       );
     }
   }
+}
+
+/**
+ * Distinct `functions.language` values for the in-scope file set, chunked at the
+ * SQLite bind-parameter ceiling so a large changed-file list can't exceed the
+ * limit. Used by the Spec 64 R1 handled-languages gate on scoped runs, where a
+ * whole-table `SELECT DISTINCT language` would break the O(changed files) scope.
+ */
+function queryScopedLanguages(
+  indexHandle: IndexHandle,
+  files: string[],
+): Array<{ language: string | null }> {
+  const SQLITE_MAX_VARIABLES = 900;
+  const rows: Array<{ language: string | null }> = [];
+  for (let i = 0; i < files.length; i += SQLITE_MAX_VARIABLES) {
+    const chunk = files.slice(i, i + SQLITE_MAX_VARIABLES);
+    const placeholders = chunk.map(() => '?').join(', ');
+    rows.push(
+      ...(indexHandle.query(
+        `SELECT DISTINCT language FROM functions WHERE file_path IN (${placeholders})`,
+        chunk,
+      ) as Array<{ language: string | null }>),
+    );
+  }
+  return rows;
 }
 
 export async function runPipelineWithIndex(

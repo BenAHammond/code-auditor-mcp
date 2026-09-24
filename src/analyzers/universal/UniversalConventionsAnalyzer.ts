@@ -16,7 +16,7 @@
 import * as path from 'path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
-import type { AnalyzerResult, Violation, ConventionsAnalyzerConfig } from '../../types.js';
+import type { AnalyzerResult, Violation, ConventionsAnalyzerConfig, CoverageDiagnostic } from '../../types.js';
 import type { IndexHandle } from '../../types.js';
 import { makeVisitorStatus } from '../../pipeline.js';
 import {
@@ -70,7 +70,17 @@ interface FunctionRow {
   line_number: number;
   is_exported: number;
   body: string | null;
+  language?: string | null;
 }
+
+/**
+ * Languages whose error-handling shape {@link detectErrorHandlingShape} can
+ * classify. It wraps each body as `async function __ca() {…}` and parses it with
+ * the TypeScript grammar, so a body in any other language (Go's `if err != nil`,
+ * for example) is unclassifiable — the rule is TypeScript-shaped by construction.
+ * A row outside this set is reported unhandled, never silently "clean".
+ */
+const ERROR_HANDLING_HANDLED_LANGUAGES = new Set(['typescript', 'javascript']);
 
 interface FunctionCallRow {
   caller_id: number;
@@ -142,12 +152,13 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     // Detect violations per domain
     const byDomain = groupConventionsByDomain(conventions);
     const scanCtx: ConventionsScanContext = { projectRoot, readSource, exportsMap };
-    violations.push(...this.detectPerDomain(byDomain, indexHandle, scanCtx, scope));
+    const domainResult = this.detectPerDomain(byDomain, indexHandle, scanCtx, scope);
+    violations.push(...domainResult.violations);
 
     // Count unique files that conventions apply to (from the function index)
     const uniqueFiles = countUniqueFiles(indexHandle, projectRoot, scope);
 
-    return this.makeResult(violations, uniqueFiles, startTime);
+    return this.makeResult(violations, uniqueFiles, startTime, [], domainResult.diagnostics);
   }
 
   /** Build a standard AnalyzerResult with shared metrics and timing fields. */
@@ -156,10 +167,12 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     filesAnalyzed: number,
     startTime: number,
     errors: Array<{ file: string; error: string }> = [],
+    diagnostics: CoverageDiagnostic[] = [],
   ): AnalyzerResult {
     return {
       violations,
       errors,
+      ...(diagnostics.length > 0 && { diagnostics }),
       status: makeVisitorStatus(filesAnalyzed),
       executionTime: Date.now() - startTime,
       analyzerName: this.name,
@@ -184,9 +197,10 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     indexHandle: IndexHandle,
     scanCtx: ConventionsScanContext,
     scope: FileScope,
-  ): Violation[] {
+  ): { violations: Violation[]; diagnostics: CoverageDiagnostic[] } {
     const { projectRoot, readSource, exportsMap } = scanCtx;
     const violations: Violation[] = [];
+    const diagnostics: CoverageDiagnostic[] = [];
     for (const [domain, domainConventions] of byDomain) {
       switch (domain) {
         case 'usage-pair':
@@ -197,11 +211,12 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
             ...this.detectImportFormViolations(indexHandle, domainConventions, { projectRoot, readSource, scope }),
           );
           break;
-        case 'error-handling':
-          violations.push(
-            ...this.detectErrorHandlingViolations(indexHandle, domainConventions, scope),
-          );
+        case 'error-handling': {
+          const result = this.detectErrorHandlingViolations(indexHandle, domainConventions, scope);
+          violations.push(...result.violations);
+          diagnostics.push(...result.diagnostics);
           break;
+        }
         case 'export-shape':
           violations.push(
             ...this.detectExportShapeViolations(indexHandle, domainConventions, exportsMap, scope),
@@ -214,7 +229,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
           break;
       }
     }
-    return violations;
+    return { violations, diagnostics };
   }
 
   // ── Usage-Pair Detection ──────────────────────────────────────────────
@@ -321,31 +336,77 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
    * that have error handling but use a different shape.
    *
    * Functions with NO error handling are excluded — never flagged.
+   *
+   * `body IS NOT NULL` is NOT the row filter (Spec 64 R1). The detector is
+   * TypeScript-shaped, so a row in an unhandled language is reported (via a
+   * `cannot-fire` diagnostic) rather than silently skipped, and a handled-
+   * language row with a missing body (e.g. an overload signature) is reported as
+   * an index defect rather than folded into "no error handling".
    */
   private detectErrorHandlingViolations(
     indexHandle: IndexHandle,
     conventions: ConventionRow[],
     scope: FileScope,
-  ): Violation[] {
+  ): { violations: Violation[]; diagnostics: CoverageDiagnostic[] } {
     const violations: Violation[] = [];
+    const diagnostics: CoverageDiagnostic[] = [];
 
     // directory → dominantShape
     const dirShapes = buildDirShapes(conventions);
 
     const fileScope = scope.apply('file_path');
     const rows = indexHandle.query(
-        `SELECT id, name, file_path, line_number, body
-         FROM functions
-         WHERE body IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+        `SELECT id, name, file_path, line_number, body, language
+         FROM functions${fileScope ? ` WHERE ${fileScope.clause}` : ''}`,
         fileScope?.params,
       ) as FunctionRow[];
 
+    // Report once per file, not once per row — the coverage channel is per-file.
+    const unhandledByFile = new Map<string, { language: string; line: number }>();
+    const missingBodyByFile = new Map<string, number>();
+
     for (const row of rows) {
+      const language = row.language ?? 'typescript';
+      if (!ERROR_HANDLING_HANDLED_LANGUAGES.has(language)) {
+        if (!unhandledByFile.has(row.file_path)) {
+          unhandledByFile.set(row.file_path, { language, line: row.line_number });
+        }
+        continue;
+      }
+      if (row.body === null || row.body === undefined) {
+        if (!missingBodyByFile.has(row.file_path)) {
+          missingBodyByFile.set(row.file_path, row.line_number);
+        }
+        continue;
+      }
       const violation = detectErrorHandlingForRow(row, dirShapes, this.name);
       if (violation) violations.push(violation);
     }
 
-    return violations;
+    for (const [filePath, { language, line }] of unhandledByFile) {
+      diagnostics.push({
+        analyzerName: this.name,
+        kind: 'cannot-fire',
+        message:
+          `conventions/error-handling handles TypeScript/JavaScript functions only; ` +
+          `cannot classify a ${language} function here`,
+        file: filePath,
+        line,
+      });
+    }
+    for (const [filePath, line] of missingBodyByFile) {
+      diagnostics.push({
+        analyzerName: this.name,
+        kind: 'engine-error',
+        message:
+          `conventions/error-handling could not evaluate a function with no body ` +
+          `in the function index (overload signature or ambient declaration?)`,
+        file: filePath,
+        line,
+      });
+    }
+
+    return { violations, diagnostics };
   }
 
   // ── Export-Shape Detection ────────────────────────────────────────────

@@ -62,6 +62,23 @@ export interface RuleRegistryEntry {
    */
   input?: string[];
   /**
+   * The set of function languages this rule's detector can actually classify.
+   * When declared, a corpus that holds function rows in *only* unhandled
+   * languages reports the rule `cannot-fire` (with a reason naming the unhandled
+   * language) rather than `clean` — `clean` would assert the rule evaluated every
+   * function it saw, when it evaluated none of them. A mixed corpus (some handled,
+   * some unhandled) leaves the rule applicable: it evaluates the handled rows
+   * normally, and the unhandled rows are reported per-file by the analyzer's
+   * coverage diagnostics, not by gating the whole rule.
+   *
+   * Omitted for rules whose detection is language-agnostic (name matching,
+   * call-co-occurrence) or that consume non-function input. Only the
+   * `conventions/error-handling` detector is currently language-shaped: its
+   * body classifier hard-codes the TypeScript grammar (see
+   * `detectErrorHandlingShape`), so it handles TypeScript/JavaScript only.
+   */
+  handledLanguages?: readonly string[];
+  /**
    * Spec 37 R1 — whether this rule can produce a `resolution` (a specific next
    * action naming concrete symbols/files/lines) for every occurrence it emits.
    * A `resolvable` rule that emits without a resolution still gates (Spec 45
@@ -1900,6 +1917,11 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'conventions',
     field: 'rule',
     input: ['function-index'],
+    // The detector wraps each body as `async function __ca() {…}` and parses it
+    // with the TypeScript grammar (`detectErrorHandlingShape`), so only
+    // TypeScript/JavaScript bodies are classifiable. A Go (or other-language)
+    // function row makes the rule report `cannot-fire`, not `clean`.
+    handledLanguages: ['typescript', 'javascript'],
     resolvable: false,
     message: 'Error-handling convention mismatch: {detail}.',
     docs: 'conventions/error-handling',

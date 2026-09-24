@@ -173,6 +173,46 @@ export function evaluateRuleApplicability(
 export const CANNOT_FIRE_RULES: ReadonlyMap<string, string> = new Map([]);
 
 /**
+ * Spec 64 R1 — a rule whose detector is language-shaped reports `cannot-fire`
+ * when the corpus holds function rows in a language it cannot classify.
+ *
+ * The verdict is `cannot-fire` ONLY when *no* in-scope function is in a handled
+ * language — i.e. the detector could not fire anywhere. A mixed corpus (handled
+ * + unhandled rows) leaves the rule applicable: it evaluates the handled rows
+ * normally, and the unhandled rows are reported per-file by the analyzer's
+ * `cannot-fire` coverage diagnostics, not by suppressing the rule's findings on
+ * the handled majority. Gating the whole rule on a single stray `.go` file would
+ * trade a false clean for a false cannot-fire — dropping real TypeScript findings
+ * — which is the same over-reach "clean must mean could have fired" exists to
+ * prevent, from the other side.
+ *
+ * @param handledLanguages The rule's declared `handledLanguages` (registry). A
+ *   rule with no declaration runs language-agnostically and returns null.
+ * @param corpusLanguages The distinct `functions.language` values present this
+ *   run (null/undefined means "no function rows, nothing to gate on").
+ */
+export function evaluateHandledLanguagesApplicability(
+  handledLanguages: readonly string[] | undefined,
+  corpusLanguages: ReadonlySet<string> | undefined,
+): RuleApplicability | null {
+  if (!handledLanguages || handledLanguages.length === 0) return null;
+  if (!corpusLanguages || corpusLanguages.size === 0) return null;
+
+  // Applicable whenever at least one in-scope function is classifiable — the
+  // unhandled rows are the per-file diagnostics' job, not a reason to silence the
+  // handled majority.
+  const hasHandled = [...corpusLanguages].some((lang) => handledLanguages.includes(lang));
+  if (hasHandled) return null;
+
+  const unhandled = [...corpusLanguages].sort();
+  return {
+    applicable: false,
+    kind: 'cannot-fire',
+    reason: `handles ${handledLanguages.join('/')} functions only; found function rows only in unhandled language(s): ${unhandled.join(', ')}`,
+  };
+}
+
+/**
  * Spec 39/42 R3 + Spec 62 Amendment B — `missing-org-filter` is applicable when
  * the project declares tenancy in any tier. Applicability and firing read the
  * SAME tier set, built once by {@link buildOrgFilterTierSet}:
