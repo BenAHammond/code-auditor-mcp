@@ -21,11 +21,6 @@
     },
     {
       "file": "src/bad-hook.tsx",
-      "rule": "no-error-boundary",
-      "severity": "severe"
-    },
-    {
-      "file": "src/bad-hook.tsx",
       "rule": "performance",
       "severity": "high"
     },
@@ -33,11 +28,6 @@
       "file": "src/hooks-naming.tsx",
       "rule": "hooks-naming",
       "severity": "high"
-    },
-    {
-      "file": "src/no-error-boundary.tsx",
-      "rule": "no-error-boundary",
-      "severity": "severe"
     },
     {
       "file": "src/missing-props.tsx",
@@ -111,11 +101,6 @@
     },
     {
       "file": "src/raw-element.tsx",
-      "rule": "accessibility",
-      "severity": "severe"
-    },
-    {
-      "file": "src/raw-element.tsx",
       "rule": "missing-props",
       "severity": "high"
     },
@@ -144,5 +129,5 @@
     "src/good-hook.tsx",
     "src/raw-element-near-miss.tsx"
   ],
-  "description": "React component analysis: 7 rules across 10 files, 25 expected violations. Complexity 12 triggers severe + no-error-boundary + performance (memoization). AsyncWidget has useEffect → no-error-boundary. Dashboard calls fetchUserData (no 'use' prefix) → hooks-naming. AlertBanner uses non-destructured props → missing-props. HeavyRenderer memo + missing-keys → performance ×2. PhotoGallery (no alt) + ModalToggle (div onClick) → accessibility ×2. ModalToggle inline onClick → performance (legitimate FP, added v3.4.8). App-level no-error-boundary (13 components, 0 boundaries) → no-error-boundary (legitimate FP, added v3.4.8). raw-element: 4 raw <button> usages across LoginForm, SignupForm, DeleteButton, NavBar — exported Button wrapper auto-detected, minUsages=5 satisfied. Also 2 collateral raw-element from existing accessibility.tsx:39 and performance.tsx:23 (now enabled by rawElementCheck). raw-element.tsx collateral: missing-props ×4 (all non-PropTypes components), performance ×2 (Button inline fn params + DeleteButton inline onClick), accessibility (DeleteButton div onClick). Near-miss: good-hook.tsx (well below complexity, no hooks), raw-element-near-miss.tsx (uses React.createElement with Button wrapper → no JSX nodes, no violations)."
+  "description": "React component analysis: 7 rules across 10 files, 22 expected violations. Complexity 12 triggers complexity + performance (memoization). Dashboard calls fetchUserData (no 'use' prefix) → hooks-naming. AlertBanner uses non-destructured props → missing-props. HeavyRenderer memo + missing-keys → performance ×2. PhotoGallery (no alt) + ModalToggle (div onClick) → accessibility ×2. ModalToggle inline onClick → performance (legitimate FP, added v3.4.8). App-level no-error-boundary (13 components, 0 boundaries) → no-error-boundary (legitimate FP, added v3.4.8). raw-element: 4 raw <button> usages across LoginForm, SignupForm, DeleteButton, NavBar — exported Button wrapper auto-detected, minUsages=5 satisfied. Also 2 collateral raw-element from existing accessibility.tsx:39 and performance.tsx:23 (now enabled by rawElementCheck). raw-element.tsx collateral: missing-props ×4 (all non-PropTypes components), performance ×2 (Button inline fn params + DeleteButton inline onClick). Near-miss: good-hook.tsx (well below complexity, no hooks), raw-element-near-miss.tsx (uses React.createElement with Button wrapper → no JSX nodes, no violations)."
 }

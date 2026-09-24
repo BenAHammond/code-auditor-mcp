@@ -80,6 +80,7 @@ const EMIT_FILES = [
   'src/auditRunner.ts',
   'src/languages/go/analyzer-src/solid.go',
   'src/languages/go/analyzer-src/analyzer.go',
+  'src/languages/go/analyzer-src/dataaccess.go',
 ];
 
 /** Session 15 recorded the Go-subprocess rules under `analyzer/rule` notation;

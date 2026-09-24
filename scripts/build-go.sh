@@ -31,7 +31,7 @@ cp "$SRC_GO/go.mod" "$DIST_GO/go.mod"
 
 # The analyzer Go module — source only. `go build` compiles from these.
 mkdir -p "$DIST_GO/analyzer-src"
-for f in analyzer.go indexer.go parser.go solid.go types.go testconventions.go go.mod; do
+for f in analyzer.go indexer.go parser.go solid.go types.go testconventions.go dataaccess.go go.mod; do
   cp "$SRC_GO/analyzer-src/$f" "$DIST_GO/analyzer-src/$f"
 done
 

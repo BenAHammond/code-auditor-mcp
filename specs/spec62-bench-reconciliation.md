@@ -144,7 +144,8 @@ The same "DB-backed prerequisite" shape applies to the other bench corpora:
   run to compare clone similarity against; a single bench audit cannot diverge.
 
 **Full list of registered rules producing zero findings across every bench
-corpus** (the R2 sweep):
+corpus** (the R2 sweep — this is the *pre-A4/A6 snapshot*; every row below is
+disposed by A4/A5/A6, see §A5):
 
 | Rule ID | Analyzer | Why zero |
 |---------|----------|----------|
@@ -734,6 +735,12 @@ the absence of `bench` from `verify:close` is read as a deliberate sequencing
 decision, not an oversight — the gate comes back into the chain the moment the
 bench turns green.
 
+**Back in the chain (A6).** A2–A6 landed and `npm run bench` reports
+`Total drift lines: 0`, so `npm run bench` is restored to `verify:close` between
+`test:integration` and `verify:gate-budget` — the same position as the original R8
+wiring. The bench is now a *green* regression gate, not a red work-queue: its drift
+count is a defect signal again.
+
 ---
 
 ## R9 — Gate-liveness tests
@@ -824,42 +831,192 @@ import-form 5, error-handling 51, export-shape 1, naming 10; hhra-org: usage-pai
 naming 6). **No rule fires nowhere**, so none gets "fixed, not dispositioned" —
 the bench conventions zero is a fixture-size artifact (§R2, §Remaining).
 
+### A4 — styles fixture real content, and the bench's first live-defect catch
+
+`bench/corpus/styles/` was a placeholder (`fixture.tsx`, 3 declarations, below
+`minCorpus: 5`). A4 authored real content exercising all ten declared behaviors:
+color drift (20× `#111111` + 1× `#ff0000`), exact-value drift (20× `4px` + 1× `7px`),
+token-bypass, undefined-class, mechanism-mixing, mechanism-fragmentation,
+declaration-set-similarity, and z-index sprawl/singleton. The fixture now emits the
+9 findings in `expected.json` (off-scale stays a documented known miss).
+
+**This is the first time the bench caught a live product defect, not a stale
+fixture.** Authoring real color/length content surfaced a bug the placeholder could
+never reach: `isCategoricalByValues` classified on `normalized_value`, and the style
+indexer stores `normalized_value` as JSON-encoded NormalizedValue objects
+(`{"type":"color","hex":"111111"}`) — which never match the hex/rgb/length regexes, so
+every color/length property was misread as "categorical by values" and
+`detectValueDrift` `continue`d past it. `styles/value-drift` silently never fired on
+any color or length property — the rule's own primary input. The fix classifies on
+`raw_value` (the CSS spelling); the regression test
+(`UniversalStylesAnalyzer.spec.ts` "fires color drift when normalized_value is
+JSON-encoded (production format)") pins the production JSON format. The lesson is
+structural: a fixture can only exercise a rule when the rule actually reads the data
+the pipeline produces — the placeholder was masking a rule that could not fire.
+
+### A5 — conventions corpus enlarged; diverging-clones seeded; R2 zero list re-derived
+
+`bench/corpus/conventions/` was enlarged to 24 functions (≥ `minCorpus: 20`), so
+`mineAllConventions` now mines a convention and all five rules fire — the fixture
+emits `usage-pair`, `import-form`, `error-handling`, `export-shape`, and `naming`
+(one per domain, `src/fixture.ts`). `diverging-clones` gained a real two-file clone
+pair (`clone_a.ts` / `clone_b.ts`), and the bench runner seeds `dry_pair_history` with
+three declining-similarity rows (0.85 → 0.78 → 0.68), so `dry/diverging-clone` fires
+once in a single audit.
+
+**The R2 zero-firing sweep re-derived.** The §R2 table below was the pre-A4/A6
+snapshot; every rule it listed now fires. The post-A4/A6 zero list across the
+fixture-exercised registry is empty — no bench-declared rule is zero, and none fires
+nowhere. `go/unknown-table` (A6's fourth rule) is the one registered Go rule with no
+positive bench fixture: it fires only on a singular/plural table near-miss
+(`user` → `users`), which no bench corpus contains, and its true positive is asserted
+in `goRegistryIds.spec.ts` (the gin `SELECT * FROM user` sample) rather than the bench.
+
+**Re-run post-A6 (empirical, 2026-09-23) — not a forward claim.** The empty zero list
+above is a measured result, recorded after `verify:close` ran the full chain
+end-to-end with the bench re-wired in (§R8). Two artifacts carry it:
+
+- **Bench green** — `bench/verify.ts` reported `Total drift lines: 0` inside the
+  `verify:close` run. A rule firing outside its corpus's `expected.json`, or failing
+  to fire when expected, is a drift line; zero drift *is* the zero-firing assertion
+  for every bench-declared rule, so no bench-declared rule is zero and none fires
+  nowhere.
+- **Registry green** — `goRegistryIds.spec.ts` passed (2 tests, within the
+  157-file / 1883-test `vitest run`), asserting all 14 Go rule IDs fire, including the
+  four A6 data-access rules. `go/unknown-table` remains the single Go rule whose only
+  positive is that gin sample, not a bench fixture.
+
+The §R2 table is therefore confirmed historical: its four zero-rows — conventions
+(fixture-enlarged, A5), styles (real content, A4), `dry/diverging-clone` (seeded
+history, A5), and the Go data-access rules (implemented, A6) — now all fire on a
+fixture, and the TS data-access row is disposed per §R7 / Amendment A.
+
+### A6 — Go data-access rules (rule IDs matching the TS registry)
+
+The `go-data-access` corpus promised `sql-injection-risk`, `missing-org-filter`, and
+`unfiltered-query` for Go; R3 diagnosed the analyzer as never-implemented. A6
+implements all three **plus `unknown-table`**, in `src/languages/go/analyzer-src/dataaccess.go`.
+
+**The four rules, at their ledger severities** — each matching its TypeScript
+counterpart exactly, with the TS emission site cited:
+
+| rule | Go severity | TS counterpart (source) |
+|---|---|---|
+| `sql-injection-risk` | critical | critical — unescaped interpolation, `UniversalDataAccessAnalyzer.ts:573` |
+| `missing-org-filter` | critical | critical — `pipelineAdapters.ts:299` |
+| `unfiltered-query` | high | high — `UniversalDataAccessAnalyzer.ts:605` |
+| `unknown-table` | critical | critical — `schema/codeAnalysis.ts:928` |
+
+The four IDs are already rows in `specs/severity-assignment-ledger.md` at exactly
+these severities (`sql-injection-risk` critical, `missing-org-filter` critical,
+`unfiltered-query` high, `unknown-table` critical). The Go rules reuse the **bare**
+IDs with no namespace, so they inherit those ledger rows language-blind — no new
+ledger rows were added, and the severity-conformance tests
+(`severity-ledger-conformance.test.ts`, `bench-severity-conformance.test.ts`) assert
+the Go fixture's emitted severities equal the ledger, not a Go-specific copy.
+
+`sql-injection-risk` for Go **exists and is not an unmet fixture entry**: it is
+emitted at `dataaccess.go:95`, the bench fixture's `dynamic-sql.go` finding *is* it
+firing, and `goRegistryIds.spec.ts` pins `go/sql-injection-risk` in the "every
+canonical ID is emitted" assertion. The Go analyzer emits all four under
+`Analyzer: "go"`, bucketed by `convertPolyglotToAuditResult`; rule IDs are bare (no
+namespace), matching `RULE_REGISTRY` exactly — the same language-blind seam as the
+other Go rules. Because the Go subprocess has no config/DDL access,
+`tenantTables`/`knownTables` are hardcoded word lists standing in for declared
+tenancy and schema, the self-contained-heuristic shape the other Go rules use.
+
+**The fixture's three findings, hand-confirmed** (traced against the source, not just
+diff-matched):
+
+- `src/dynamic-sql.go:12` — `db.Query(fmt.Sprintf("SELECT * FROM %s", tableName))`.
+  `isDynamicSQL` (a `CallExpr`) → `containsSQLVerb("SELECT * FROM %s")` → fires
+  `sql-injection-risk` critical. Correct: `fmt.Sprintf`-built SQL on an unresolvable
+  table name is the unescaped-injection vector.
+- `src/parameterized.go:9` — `db.Query("SELECT id, name, email FROM users WHERE id = $1", userID)`.
+  Not dynamic (`$1` placeholder), so it does **not** fire `sql-injection-risk` — the
+  parameterized gate holds. `extractTable` → `users` (a tenant table), `verb = SELECT`,
+  no `organization_id`/`tenant_id`/`org_id` predicate → fires `missing-org-filter`
+  critical. Correct: scoped by primary key `id`, not by tenant.
+- `src/parameterized.go:14` — `db.Exec("INSERT INTO users (name, email) VALUES ($1, $2)", …)`.
+  `verb = INSERT` (excluded from `missing-org-filter`, correctly — an insert carries
+  the tenant column as a value, not a predicate), `isWriteVerb` with no WHERE → fires
+  `unfiltered-query` high. Correct: an unscoped mass-write shape.
+
+**Red-first.** Two independent guards fail if any of the four stops firing: the bench
+(`expected.json` asserts exactly these three findings — a removed rule becomes a drift
+line) and `goRegistryIds.spec.ts` ("emits every canonical ID", all 14).
+
+**Real-code run.** Because these are security rules, A6 was checked against real Go,
+not just the fixture. The sweep covers the app's own Go and every reachable read-only
+Go corpus; **0 data-access findings on any of it**, so the four rules have **not yet
+been observed firing on real code** — they are pinned by the synthetic fixture +
+`goRegistryIds` only (§Known surface-width limitation, below).
+
+- **The app's own Go — 17 non-fixture `.go` files** (10 under `src/languages/go`, 1
+  `tests/integration/test-sample.go`, 6 under `tests/samples/`), re-run this pass:
+  `0 violations, 307 entities`. None imports `database/sql` — the analyzer is itself
+  tree-sitter-based, and the test samples exercise SOLID/conventions, not data access.
+- **Vendored gin corpus — 59 non-test `.go` files** (`bench/real/gin`, 99 total incl.
+  `_test.go`) → 0 findings. Its `.Query(...)` calls are `gin.Context.Query` (HTTP query
+  params), not `*sql.DB.Query`.
+- **`felaria` (read-only) — 1 `.go` file** (`.sst/.../bridge/bridge.go`) → no
+  `database/sql`.
+- **`openstatus/apps/private-location` (read-only) — 17 handwritten non-test `.go`
+  files** (24 incl. generated protobuf) — the one real `database/sql` codebase reachable
+  here → **0 findings**, because it is `*sqlx.DB`: its DB calls are `Get`/`Select`/
+  `NamedExec`/`MustExec`/`PingContext`, none of which `dbMethodName` matches, and the
+  single `.Query(` is `net/url` (`requestURL.Query()`), not a DB call.
+
+**Known surface-width limitation (flagged, not silently widened).** `dbMethodName`
+(`dataaccess.go:187`) recognizes only `Query`/`QueryRow`/`Exec`/`Prepare` (+ Context
+variants). Two consequences, both real and both recorded:
+
+1. It **misses the `sqlx` idiom** (`Get`, `Select`, `NamedExec`, `Queryx`,
+   `QueryRowx`) — the dominant real-world `database/sql` wrapper — so the four rules
+   have zero firing surface on the reachable real Go. On this machine the rules are
+   therefore pinned by fixture + registry, not yet observed on production
+   `database/sql` code — **a `missing-org-filter` (or any of the four) that has never
+   fired on real code is a hypothesis, not a rule yet.** Stated, not softened: the
+   §Remaining follow-up (widen to `sqlx` + verify the receiver) is what turns the
+   hypothesis into an observed rule.
+2. It **does not verify the receiver** is `*sql.DB`/`*sqlx.DB` — any `.Query(...)`
+   selector is treated as a DB call. It stays quiet on `gin.Context.Query` only because
+   that call's argument is a non-SQL string literal; a `.Query("SELECT …")` on a
+   non-DB receiver would be a false positive.
+
+Both are the hollow-capability shape this release has been removing, but the A6
+directive scoped to ID/severity matching, not to widening the method surface. Widening
+to `sqlx` (and verifying the receiver type) is a follow-up, not part of A6 — recorded
+here so the rules are not claimed to fire on real code until they do.
+
+**Rule-count reconciliation (the pre-A6 "9" was wrong).** The Go analyzer emits
+**five** rules under `solid` (`function-size`, `struct-size`, `switch-size`,
+`liskov-substitution`, `interface-size`) and **five** under `go`
+(`channel-deadlock`, `error-handling`, `concurrency`, `import-organization`,
+`import-style`) = **10** before A6, **14** after (the four data-access rules above).
+The liveness pointer table's "Go (9)" omitted `interface-size` — it is the 10th, wired
+via `runSolid` for its TS sample and asserted for its Go emission in
+`goDependencyInversionBlock.spec.ts` + `goRegistryIds.spec.ts`. All 14 have covering
+tests in `goRegistryIds.spec.ts`; there are no dead Go rules.
+
 ---
 
-## Remaining work (not yet done)
+## Remaining work (post-A6)
 
-The bench is at **24 drift lines**, all in the harness-unreachable /
-never-implemented / fixture-stale buckets (no `regression` remains):
-
-- **conventions (5)** — **A2 landed** (`bench/verify.ts` runs the full pipeline, so
-  `mineAllConventions` now runs); **A3 reported** (all five rules fire on
-  recall-protocol, so none is "nowhere"). The bench still shows zero because
-  `mineAllConventions` hardcodes `minCorpus: 20` and the corpus has 12 functions.
-  Fix = enlarge `bench/corpus/conventions/` to meet `minCorpus: 20` (same
-  "write the fixture to the rules" move as A4), *not* edit `expected.json`.
-- **styles (10)** — **A4**. The style-index *does* run, but `fixture.tsx` is a
-  placeholder (3 declarations indexed, below `minCorpus: 5`, so every detector
-  early-returns). Fix = author real content exercising all ten declared behaviors.
-- **diverging-clones (1)** — needs a *prior* audit run to compare clone
-  similarity against; a single bench audit cannot diverge. Fix = a two-run
-  comparison with persisted state.
-- **go-data-access (3)** — never-implemented (R3). Decide: implement Go
-  data-access rules, or retire the aspirational fixture with the rationale recorded.
-- **react (3)** — `no-error-boundary` ×2 + `accessibility` ×1, fixture-stale
-  (R1 rows 77–79): the fixture expects the Spec-55-removed per-component
-  `no-error-boundary` emission and an `accessibility` pattern its source doesn't
-  contain. Fix = correct the fixture to the surviving semantics (R5b), not bypass.
-- **solid (2)** — `single-responsibility` retired → `function-length` (R1 rows
-  80–81): a rename, not a regression. Fix = record the rename in the fixture.
-
-And the non-bench items:
+The bench is **green** — `npm run bench` reports `Total drift lines: 0`, with every
+corpus OK (conventions 5, data-access 4, non-english 12, diverging-clones 1, go-data-access 3,
+react 22, solid 2, styles 9, …). A2–A6 disposed the 24 drift lines; the bench is back in
+`verify:close` (§R8). Remaining bench-adjacent and Spec-63/64 work:
 
 1. **R4 (second half)** — reporting-boundary assertion: a test that runs every
    analyzer and asserts every emitted violation `file` resolves inside the audit
    root (guards against a future `normalizeViolation`-class regression).
-2. **R9** — gate-liveness tests. **Done (2026-09-23)** — `gate-liveness.test.ts` (§R9).
-3. **Spec 61 stragglers** — §14/§15 re-validation under the fixed verify:self
-   predicate, and the HTML sink-set completion. **Done (2026-09-23).** The sink
-   set was completed and re-measured (spec61 §13); `verify:self` re-ran green
-   under the corrected `critical | severe` predicate (spec61 §15, "Re-validation
-   under the corrected predicate").
+2. **Seam-conformance (Spec 63)** — one line carries forward from A4: a test whose
+   fixture does not match producer output is a *drift signal*, not a fixture bug —
+   the bench found a real `styles/value-drift` defect precisely because the fixture
+   was written to the pipeline's actual output shape (§A4).
+3. **Spec 64** — the function index is language-blind (R1 first), following Spec 63.
+4. **Go data-access method surface (§A6 limitation)** — widen `dbMethodName` to the
+   `sqlx` idiom (`Get`/`Select`/`NamedExec`/`Queryx`/`QueryRowx`) and verify the
+   receiver is `*sql.DB`/`*sqlx.DB`, so the four Go data-access rules fire on real
+   `database/sql` code rather than only on the fixture. Recorded, not silently widened.

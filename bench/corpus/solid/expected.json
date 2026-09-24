@@ -12,13 +12,13 @@
     },
     {
       "file": "src/very-complex-method.ts",
-      "rule": "single-responsibility",
-      "severity": "severe"
+      "rule": "function-length",
+      "severity": "high"
     }
   ],
   "nearMissFiles": [
     "src/simple-method.ts",
     "src/complex-method.ts"
   ],
-  "description": "Tests for the SOLID analyzer — method cyclomatic complexity exceeding shipped-default threshold (50) and long method (~252 lines) exceeding maxLinesPerMethod (50)"
+  "description": "Tests for the SOLID analyzer — method cyclomatic complexity exceeding shipped-default threshold (50) and long method (~252 lines) exceeding the function-length threshold (50). The single-responsibility finding was renamed to function-length (severity severe → high) in the rule-replacement ledger."
 }

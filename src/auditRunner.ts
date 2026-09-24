@@ -95,6 +95,17 @@ const SCHEMA_SUB_VISITORS = ['schema-sql', 'schema-code', 'schema-prisma', 'sche
 
 
 /**
+ * CPU time consumed since `start` (a prior `process.cpuUsage()` snapshot), in
+ * milliseconds. Load-independent: wall clock measures how long the run took on
+ * the wall (inflated by co-tenant load), CPU time measures how much processor
+ * the run's rules actually burned. The gate-budget check asserts on this.
+ */
+function cpuDurationMs(start: NodeJS.CpuUsage): number {
+  const cpu = process.cpuUsage(start);
+  return (cpu.user + cpu.system) / 1000;
+}
+
+/**
  * Create an audit runner with the given options
  */
 export function createAuditRunner(options: AuditRunnerOptions = {}) {
@@ -203,6 +214,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     );
 
     const startTime = Date.now();
+    // CPU-time clock for the load-independent gate metric (Spec 38 R3 / Spec 43
+    // R2-R3): wall clock conflates a slow rule with a slow machine; CPU time
+    // isolates the rule cost. Captured alongside the wall clock so both stay in
+    // the same scope (everything from scope resolution through result creation).
+    const startCpu = process.cpuUsage();
 
     // ── Scope resolution ─────────────────────────────────────────────
     const scope = mergedOptions.scope ?? 'all';
@@ -1206,6 +1222,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       recommendations: [],
       metadata: {
         auditDuration: Date.now() - startTime,
+        auditCpuMs: cpuDurationMs(startCpu),
         filesAnalyzed: files.length,
         analyzersRun: enabledAnalyzers,
         ...(isScoped && { analyzedFiles: files }),

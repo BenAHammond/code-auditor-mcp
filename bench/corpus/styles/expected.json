@@ -37,12 +37,7 @@
       "severity": "severe"
     },
     {
-      "file": "",
-      "rule": "styles/undefined-class-disabled",
-      "severity": "high"
-    },
-    {
-      "file": "src/fixture.tsx",
+      "file": "app.css",
       "rule": "styles/mechanism-fragmentation",
       "severity": "high"
     },
@@ -52,7 +47,7 @@
       "severity": "high"
     },
     {
-      "file": "src/fixture.tsx",
+      "file": "app.css",
       "rule": "styles/declaration-set-similarity",
       "severity": "high"
     },

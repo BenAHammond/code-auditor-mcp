@@ -349,7 +349,13 @@ const SKIP_ANALYZERS: Record<string, string> = {
  * wired ∪ pointed, never silently skipped.
  */
 const LIVENESS_POINTERS: Record<string, string> = {
-  // ── Go (9) — true positive asserted through the Go analyzer binary ────────
+  // ── Go (10) — true positive asserted through the Go analyzer binary. ──────
+  //   Nine are pointer-covered here; `interface-size` (the 10th Go rule) is
+  //   wired via `runSolid` above because its registry entry carries TS samples —
+  //   its *Go* emission is asserted in goDependencyInversionBlock.spec.ts and
+  //   goRegistryIds.spec.ts. The old "Go (9)" under-counted: the Go subprocess
+  //   emits five solid rules (function/struct/switch-size, liskov-substitution,
+  //   interface-size) + five `go` rules = ten.
   'switch-size': 'goSwitchSize.spec.ts — flags a large switch/type-switch under switch-size',
   'function-size': 'goSingleResponsibilitySplit.spec.ts — flags a big function under function-size',
   'struct-size': 'goSingleResponsibilitySplit.spec.ts — flags a 16-field struct under struct-size',

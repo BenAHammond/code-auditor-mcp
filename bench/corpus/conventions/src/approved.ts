@@ -14,11 +14,12 @@ function approvedHandler() {
   logError();
 }
 
-// Follows error-handling convention: uses try/catch
+// Follows error-handling and usage-pair conventions: try/catch, calls both
 function approvedWithCatch() {
   try {
     doSomething();
   } catch (e) {
+    handleError(e);
     logError(e);
   }
 }

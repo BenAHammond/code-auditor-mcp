@@ -78,6 +78,8 @@ func (a *Analyzer) runEnabledAnalyzers(result *AnalysisResult) {
 			result.Violations = append(result.Violations, a.runGoroutineAnalysis()...)
 		case "channels":
 			result.Violations = append(result.Violations, a.runChannelAnalysis()...)
+		case "data-access":
+			result.Violations = append(result.Violations, a.runDataAccessAnalysis()...)
 		}
 	}
 }

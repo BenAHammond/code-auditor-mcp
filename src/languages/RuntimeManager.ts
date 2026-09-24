@@ -1101,7 +1101,7 @@ class GoAnalyzer implements LanguageAnalyzer {
 
       // Prepare analysis options
       const analysisOptions = {
-        analyzers: options?.analyzers || ['solid', 'imports', 'errors'],
+        analyzers: options?.analyzers || ['solid', 'imports', 'errors', 'data-access'],
         minSeverity: options?.minSeverity || 'high',
         timeout: options?.timeout || 30000,
         language: options?.language || 'go',

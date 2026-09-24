@@ -25,6 +25,7 @@ import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runAuditDispatch } from '../src/auditRouter.js';
 import { ALL_ANALYZERS } from '../src/analyzers/ruleRegistry.js';
+import { CodeIndexDB } from '../src/codeIndexDB.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORPUS_ROOT = join(__dirname, 'corpus');
@@ -74,6 +75,42 @@ function normalizeViolation(v: any, root: string): string {
   return `${file}|${rule}|${v.severity}`;
 }
 
+/**
+ * Seed corpus-specific pre-audit state that a single full-pipeline run cannot
+ * produce on its own. The diverging-clone detector needs ≥3 runs of history in
+ * `dry_pair_history` (declining similarity across `divergenceRuns` consecutive
+ * measurements) — a single bench run only writes one. The fixture files document
+ * this seed contract; a synthetic fingerprint keeps it isolated from any pair
+ * the DRY visitor re-detects this run.
+ */
+async function seedCorpusState(corpus: string, tmp: string): Promise<void> {
+  if (corpus !== 'diverging-clones') return;
+  const indexDb = CodeIndexDB.getInstance(undefined, tmp);
+  await indexDb.initialize();
+  const insert = indexDb.rawDb.prepare(`
+    INSERT INTO dry_pair_history
+      (pair_fingerprint, file1, symbol1, line1, content_hash1,
+       file2, symbol2, line2, content_hash2, similarity, timestamp, run_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const fp = 'bench-seed-diverging-clone';
+  const declining = [
+    { similarity: 0.85, ts: '2026-01-01 00:00:01', run: 'bench-seed-1' },
+    { similarity: 0.78, ts: '2026-01-01 00:00:02', run: 'bench-seed-2' },
+    { similarity: 0.68, ts: '2026-01-01 00:00:03', run: 'bench-seed-3' },
+  ];
+  const tx = indexDb.rawDb.transaction(() => {
+    for (const r of declining) {
+      insert.run(
+        fp, 'src/clone_a.ts', 'processOrder', 5, 'seed-a',
+        'src/clone_b.ts', 'handleInvoice', 5, 'seed-b',
+        r.similarity, r.ts, r.run,
+      );
+    }
+  });
+  tx();
+}
+
 async function auditCorpus(corpus: string): Promise<{ drift: string[]; actual: string[]; note?: string }> {
   const srcDir = join(CORPUS_ROOT, corpus);
   const expected = JSON.parse(await readFile(join(srcDir, 'expected.json'), 'utf8')) as ExpectedJson;
@@ -87,6 +124,7 @@ async function auditCorpus(corpus: string): Promise<{ drift: string[]; actual: s
   const tmp = await mkdtemp(join(tmpdir(), 'ca-bench-'));
   try {
     await cp(srcDir, tmp, { recursive: true });
+    await seedCorpusState(corpus, tmp);
     // Spec 62 A2 — full-pipeline fidelity. Run the same entry point, stage
     // sequence, hooks, and analyzer gating a real `code-audit audit` runs: no
     // single-analyzer `enabledAnalyzers` narrowing. Narrowing to `[target]` was

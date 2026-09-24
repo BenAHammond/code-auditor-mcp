@@ -341,6 +341,44 @@ describe('Detector 1 — Value Drift', () => {
     const drifts = findViolations(violations, 'styles/value-drift');
     expect(drifts.length).toBeGreaterThanOrEqual(1);
   });
+
+  // Spec 62 A4 regression: the style indexer stores `normalized_value` as
+  // JSON-encoded NormalizedValue objects (`{"type":"color","hex":"1e2327"}`),
+  // not the raw spelling. isCategoricalByValues must classify on `raw_value`,
+  // or every color/length property is misread as "categorical by values" and
+  // value-drift silently skips it.
+  it('fires color drift when normalized_value is JSON-encoded (production format)', async () => {
+    for (let i = 0; i < 47; i++) {
+      insertDecl({
+        property: 'background-color',
+        raw_value: '#1e2327',
+        normalized_value: JSON.stringify({ type: 'color', hex: '1e2327', alpha: 1 }),
+        mechanism: 'css',
+        file_path: `src/comp${i % 10}.css`,
+        line: i + 1,
+      });
+    }
+    for (let i = 0; i < 2; i++) {
+      insertDecl({
+        property: 'background-color',
+        raw_value: '#1e2328',
+        normalized_value: JSON.stringify({ type: 'color', hex: '1e2328', alpha: 1 }),
+        mechanism: 'css',
+        file_path: 'src/outlier.css',
+        line: 100 + i,
+      });
+    }
+
+    const violations = await runAnalyzer({
+      minCorpus: 3,
+      colorDeltaE: 0.5,
+      outlierMaxShare: 0.05,
+      modeMinCount: 3,
+    });
+
+    const drifts = findViolations(violations, 'styles/value-drift');
+    expect(drifts.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

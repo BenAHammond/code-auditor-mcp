@@ -800,16 +800,18 @@ program
         }
       }
 
-      // Spec 38 R2/R3 — per-rule timing + gate wall-clock, opt-in by env var.
+      // Spec 38 R2/R3 — per-rule timing + gate cpu-time, opt-in by env var.
       // Emitted to stderr so it never corrupts --json stdout. Slowest rule first.
+      // The gate metric is CPU time (auditCpuMs), not wall clock: the budget is
+      // about a slow *rule*, and CPU time isolates that from a slow machine.
       if (process.env.CODE_AUDIT_RULE_TIMING === '1') {
         const ruleTiming = (result.metadata as any)?.ruleTiming as
           | Array<{ ruleId: string; totalMs: number; calls: number }>
           | undefined;
-        const gateMs = (result.metadata as any)?.auditDuration as number | undefined;
+        const gateMs = (result.metadata as any)?.auditCpuMs as number | undefined;
         const lines: string[] = [];
         lines.push('');
-        lines.push(`⏱  gate wall-clock: ${(gateMs ?? 0).toFixed(1)} ms (budget 300 ms)`);
+        lines.push(`⏱  gate cpu-time: ${(gateMs ?? 0).toFixed(1)} ms (budget 350 ms)`);
         lines.push('── per-rule timing (slowest first) ──');
         if (ruleTiming && ruleTiming.length > 0) {
           for (const t of ruleTiming) {

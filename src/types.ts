@@ -714,6 +714,10 @@ export interface AuditResult {
   recommendations: Recommendation[];
   metadata: {
     auditDuration: number;
+    /** CPU time (user + system) the audit consumed, in ms — the load-independent
+     *  counterpart to `auditDuration` (wall clock). The gate-budget check asserts
+     *  on this so a slow *rule* is caught while a slow *machine* is not. */
+    auditCpuMs?: number;
     filesAnalyzed: number;
     analyzersRun: string[];
     /** Absolute paths of every file this run analyzed. Populated for scoped

@@ -1,6 +1,32 @@
-@import "tailwindcss";
-
-@theme {
+/* Design tokens — extracted by extractTokensFromCSSAst (style_tokens).
+ * Deliberately a plain-CSS stylesheet with no Tailwind directive markers and
+ * no theme block: with no installed tailwindcss, either would flip the probe's
+ * hasTailwindConfig flag and trip the fail-open diagnostic that disables
+ * undefined-class detection. A :root custom property gives the token-bypass
+ * detector a real token without that fail-open path. */
+:root {
   --color-primary: #1e2328;
-  --color-background: #ffffff;
+}
+
+/* Defined class — the undefined-class near-miss target. */
+.btn-primary {
+  display: inline-flex;
+  font-weight: 600;
+}
+
+/* Near-identical rule pair — declaration-set-similarity (Jaccard 1.0). */
+.card-a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: center;
+  font-weight: 600;
+}
+
+.card-b {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: center;
+  font-weight: 600;
 }

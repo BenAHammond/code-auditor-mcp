@@ -420,7 +420,13 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
    */
   protected isCategoricalByValues(decls: StyleDeclRow[]): boolean {
     for (const d of decls) {
-      const v = (d.normalized_value ?? d.raw_value).trim();
+      // Classify on the raw CSS spelling, not `normalized_value`. The index
+      // stores `normalized_value` as JSON-encoded NormalizedValue objects
+      // (`{"type":"color","hex":"111111"}`, `{"type":"length",...}`), which
+      // can never match the hex/rgb/numeric/length regexes below — so a color
+      // or length property would be misclassified as "categorical by values"
+      // and every value-drift detector would silently skip it.
+      const v = d.raw_value.trim();
       if (!v) continue;
       // Numeric: starts with a digit, or a sign followed by a digit
       if (/^-?\d/.test(v)) return false;

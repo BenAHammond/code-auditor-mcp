@@ -17,7 +17,7 @@
  *
  * Two assertions together make drift impossible to miss:
  *   1. every emitted `analyzer/rule` is in the canonical set (no unknown ID), and
- *   2. every canonical ID is emitted (the fixture hits all ten — a rename or a
+ *   2. every canonical ID is emitted (the fixture hits all fourteen — a rename or a
  *      dropped analyzer leaves a hole).
  */
 
@@ -59,6 +59,10 @@ const GO_REGISTRY_IDS = new Set([
   'go/error-handling',
   'go/concurrency',
   'go/channel-deadlock',
+  'go/sql-injection-risk',
+  'go/missing-org-filter',
+  'go/unfiltered-query',
+  'go/unknown-table',
 ]);
 
 // A Gin-style file that touches every Go analyzer: dot + mis-grouped imports,
@@ -70,6 +74,7 @@ const GIN_SOURCE = `package main
 import (
     "os"
     "net/http"
+    "database/sql"
     "github.com/gin-gonic/gin"
     . "fmt"
 )
@@ -169,6 +174,37 @@ func router() {
     r.GET("/ping", func(c *gin.Context) { c.JSON(200, gin.H{"m": "pong"}) })
     http.ListenAndServe(":8080", r)
 }
+
+func dynamicSQL(db *sql.DB, tableName string) {
+    rows, err := db.Query(Sprintf("SELECT * FROM %s", tableName))
+    if err != nil {
+        return
+    }
+    defer rows.Close()
+}
+
+func tenantRead(db *sql.DB, userID int) {
+    rows, err := db.Query("SELECT id, name FROM users WHERE id = $1", userID)
+    if err != nil {
+        return
+    }
+    defer rows.Close()
+}
+
+func unfilteredWrite(db *sql.DB, name string) {
+    _, err := db.Exec("INSERT INTO users (name) VALUES ($1)", name)
+    if err != nil {
+        return
+    }
+}
+
+func unknownTable(db *sql.DB) {
+    rows, err := db.Query("SELECT * FROM user")
+    if err != nil {
+        return
+    }
+    defer rows.Close()
+}
 `;
 
 /** Rebuild the analyzer binary from source so the test exercises current code.
@@ -213,7 +249,7 @@ function analyzeContent(content: string): Promise<GoViolation[]> {
         params: {
           file: 'gin.go',
           content,
-          options: { analyzers: ['solid', 'imports', 'errors', 'goroutines', 'channels'] },
+          options: { analyzers: ['solid', 'imports', 'errors', 'goroutines', 'channels', 'data-access'] },
         },
         id: 1,
       }) + '\n',
