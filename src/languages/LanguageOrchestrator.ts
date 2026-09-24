@@ -45,7 +45,6 @@ export interface PolyglotAnalysisResult {
   errors: any[];
   
   // Cross-language analysis
-  crossLanguageViolations: CrossLanguageViolation[];
   dependencyGraph?: DependencyGraph;
 
   // Metrics and statistics
@@ -216,15 +215,13 @@ export class LanguageOrchestrator {
     startTime: number,
   ): Promise<void> {
     // 5. Detect cross-language violations (API contracts + schema validation).
-    // This is the real cross-language work. Its results are merged into
-    // `violations` so they reach the report — the separate
-    // `crossLanguageViolations` field was never consumed downstream, so the
-    // findings silently evaporated. The field is kept for observability, but
-    // the findings now flow through the same `violations` bucket the report
-    // reads.
+    // This is the real cross-language work. Its results are pushed into
+    // `violations` so they reach the report — a separate
+    // `crossLanguageViolations` field used to sit alongside, was never consumed
+    // downstream, and has been removed (Spec 63 R3). The findings flow through
+    // the same `violations` bucket the report reads.
     if (options.enableCrossLanguageAnalysis) {
       const cross = await this.detectCrossLanguageViolations(analysisResults);
-      mergedResult.crossLanguageViolations = cross;
       mergedResult.violations.push(...cross);
       console.log(`[LanguageOrchestrator] Found ${cross.length} cross-language violations`);
 
@@ -377,7 +374,6 @@ export class LanguageOrchestrator {
     const merged: PolyglotAnalysisResult = {
       violations: [],
       errors: [],
-      crossLanguageViolations: [],
       metrics: {
         totalFiles: 0,
         totalViolations: 0,

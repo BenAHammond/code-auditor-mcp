@@ -24,6 +24,13 @@ being wrong.
 - Source collection + empirical `content_hash` test landed (#203).
 - R1 landed (reporter serialization table below) — R3's dead list is now settled
   against what reporters actually emit, not just what analyzers read back.
+- R3 disposition landed: the never-written / never-serialized seams were removed
+  (`AnalyzerResult.extras`, `AnalyzerResult.filesProcessed`,
+  `PolyglotAnalysisResult.crossLanguageViolations`, `getContentHashesForFiles`),
+  and the `@deprecated` notes on `Violation.analyzer` / `Violation.type` were
+  replaced with their real contracts (fingerprint bucket / SARIF rule-id
+  precedence 4). Fields emitted to users via JSON's verbatim spread
+  (`importSpecifier`, `caller`, `fix`, `sourceFormat`) stay.
   Remaining: R6 (`signature` populated or removed with the schema bump), then
   R2's conformance test class.
 
@@ -49,8 +56,8 @@ three are allowlisted, and their field coverage is narrower than JSON's.
 | `new` | ✓ | `properties.baseline` | — | — | — |
 | `snippet` | ✓ | — | — | ✓ | — |
 | `estimatedEffort` | ✓ | — | ✓ | — | — |
-| `analyzer` (@deprecated) | ✓ | via fingerprint only | ✓ | ✓ | ✓ (fingerprint) |
-| `type` (@deprecated) | ✓ | ruleId precedence 4 | — | — | — |
+| `analyzer` | ✓ | via fingerprint only | ✓ | ✓ | ✓ (fingerprint) |
+| `type` | ✓ | ruleId precedence 4 | — | — | — |
 | `principle` | ✓ | ruleId precedence 2 | — | — | — |
 | `schemaType` | ✓ | ruleId precedence 5 | — | — | — |
 | `violationType` | ✓ | ruleId precedence 6 | — | — | — |
@@ -59,15 +66,19 @@ three are allowlisted, and their field coverage is narrower than JSON's.
 
 Two consequences for R3, recorded below.
 
-### `analyzer` is deprecated-but-identity-bearing
+### `analyzer` and `type` are load-bearing, not deprecated
 
-`Violation.analyzer` carries `@deprecated Read from AnalyzerResult.analyzerName
-instead.` (`types.ts:114`), but it is the **first component of the fingerprint
-tuple** (`buildFingerprintInput`, `fingerprint.ts:56-67`), which keys SARIF
-`partialFingerprints`, every baseline entry, and every dismissal. The deprecation
-is contradicted twice over:
+`Violation.analyzer` and `Violation.type` each carried a `@deprecated` note, and
+both notes were wrong — a deprecation on a field that identity depends on is worse
+than no note, because it invites the next author to "finish" the cleanup and
+silently re-key every finding. The notes are removed (`types.ts`); the fields'
+real contracts are documented in place.
 
-- `auditRunner.ts:906-929` has a dedicated normalization block that stamps
+**`analyzer`** is the **first component of the fingerprint tuple**
+(`buildFingerprintInput`, `fingerprint.ts`), which keys SARIF
+`partialFingerprints`, every baseline entry, and every dismissal:
+
+- `auditRunner.ts` has a dedicated normalization block that stamps
   `violation.analyzer` from the result key — with a comment calling the result key
   "the single source of truth" — precisely so fingerprints and `analyzerCounts`
   are correct (the react analyzer omits the field; the schema sub-visitors
@@ -81,13 +92,10 @@ is contradicted twice over:
   "Finishing" the deprecation — reading `analyzerName` instead — would change the
   fingerprint of every `missing-org-filter` finding.
 
-Removing or renaming the field is therefore a migration with a user-visible blast
-radius (every GitHub alert closes and reopens, every baseline resets, every
-dismissal resurrects), not a cleanup — and nothing connects the `@deprecated`
-note to the fingerprint. The correct disposition is to **remove the
-`@deprecated` note** (the field is load-bearing), or, if the deprecation is kept,
-to extend the note to name the fingerprint as the reason it cannot be removed so
-the next author does not "finish" it.
+**`type`** is the **precedence-4 rule-id fallback** in SARIF `resolveRuleId`
+(`rule` → `principle` → `details.rule` → `type` → `schemaType` →
+`violationType` → `'unknown'`), carried by the DRY, Data Access, and Dependency
+Graph analyzers that predate the canonical `rule` field.
 
 ### `symbol` falls back to `''`, collapsing file-level findings to one identity
 
@@ -123,6 +131,35 @@ reverted or removed — not re-extended — the next time it is touched.
 | seam (write path → never-read terminal) | file | proof |
 | --- | --- | --- |
 | `importPatterns` → `mapDatabaseImports` → `classifyCallType` → `DatabaseCall.type` | `src/analyzers/universal/UniversalDataAccessAnalyzer.ts` | `importPatterns` is read only by `mapDatabaseImports` (`:299-317`); its `dbImports` map is read only by `classifyCallType` (`:413`, `:437-449`); the return is assigned to `DatabaseCall.type` (`:416`); `.type` is read by no consumer — not `checkViolations`, `analyzeQuery`, the loop-query path, nor the Stage-4 `missing-org-filter` reducer (`pipelineAdapters.ts:278-293`, which reads `file`/`line`/`column`/`tables`/`hasOrganizationFilter`/`method`/`enclosingFunction`). Widening `importPatterns` cannot move a finding. Reverted (Spec 62 §5 widening); the drivers named there are recognized through `DB_PACKAGES` + provenance instead. |
+
+### Disposition: emitted-to-users stay; never-written/never-serialized go
+
+R1 pins what each reporter emits, and the JSON reporter spreads each violation
+verbatim, so a field that JSON carries is *emitted to users* even when no internal
+reader reads it back. That is not a dead seam — the report is the field's terminal
+consumer. Four fields are in this bucket and stay, recorded here rather than as
+removal candidates:
+
+| field | written by | emitted via |
+| --- | --- | --- |
+| `importSpecifier` | invariant `import-ban` | JSON verbatim spread |
+| `caller` | `call-constraint` | JSON verbatim spread |
+| `fix` | resolvable rules | JSON verbatim spread |
+| `sourceFormat` | cross-domain `detectMeasuredUncovered` (`uncovered-risk`) | JSON verbatim spread |
+
+(`sourceFormat` was first mis-filed as "never-written"; it *is* written — by
+`CrossDomainAnalyzer.detectMeasuredUncovered` — and therefore emitted, which puts
+it in the same bucket as `importSpecifier`/`caller`/`fix`, not the delete bucket.)
+
+The seams that are genuinely dead — never written, never called in production, or
+written-but-never-serialized — are removed:
+
+| seam | proof |
+| --- | --- |
+| `AnalyzerResult.extras` | declared, never written nor read anywhere. |
+| `AnalyzerResult.filesProcessed` | written/read only by `UniversalSchemaAnalyzer` to aggregate its sub-results, and effectively always `0` because the sub-results populate `status.filesProcessed`, not this field; the JSON reporter reads `getFilesProcessed(result.status)` instead. Rewired to `getFilesProcessed(...status)`. |
+| `PolyglotAnalysisResult.crossLanguageViolations` | written (`LanguageOrchestrator`), never read downstream — the findings already flow through `violations`. Field removed; `CrossLanguageViolation` type kept (return type of the cross-language detectors). |
+| `getContentHashesForFiles` | no production caller — superseded by the single `computeContentHash` (R5); only a unit test exercised it. Method + test removed. |
 
 ## Fluent-chain provenance — a coincidence, not a capability
 

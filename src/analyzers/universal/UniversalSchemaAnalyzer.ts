@@ -19,7 +19,7 @@ import {
   type ProvenanceContext,
   type DetectionMode,
 } from '../provenance.js';
-import { makeVisitorStatus } from '../../pipeline.js';
+import { makeVisitorStatus, getFilesProcessed } from '../../pipeline.js';
 
 // Spec 34 — schema analyzer split (Step 0 reconciliation): shared types,
 // SQL-context constants, and migration/DDL helpers now live in schema/
@@ -141,10 +141,9 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     return {
       violations: [...codeResult.violations, ...jsonResult.violations],
       executionTime: (codeResult.executionTime || 0) + (jsonResult.executionTime || 0),
-      status: makeVisitorStatus((codeResult.filesProcessed ?? 0) + (jsonResult.filesProcessed ?? 0)),
+      status: makeVisitorStatus(getFilesProcessed(codeResult.status) + getFilesProcessed(jsonResult.status)),
       analyzerName: this.name,
       errors: [...(codeResult.errors || []), ...(jsonResult.errors || [])],
-      filesProcessed: (codeResult.filesProcessed ?? 0) + (jsonResult.filesProcessed ?? 0),
       ...(diagnostics.length > 0 && { diagnostics }),
     };
   }
@@ -328,7 +327,6 @@ function emptySchemaResult(analyzerName: string): AnalyzerResult {
     status: makeVisitorStatus(0),
     analyzerName,
     errors: [],
-    filesProcessed: 0,
   };
 }
 

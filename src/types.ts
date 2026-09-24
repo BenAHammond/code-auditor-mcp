@@ -110,10 +110,24 @@ export interface Violation {
    */
   reachability?: number;
 
-  // ── Transitional fields (previously leaked via [key: string]: any) ──────
-  /** @deprecated Read from AnalyzerResult.analyzerName instead. */
+  // ── Identity-bearing fields (previously leaked via [key: string]: any) ──
+  /**
+   * Analyzer bucket this finding belongs to. Component 1 of the fingerprint
+   * tuple (`buildFingerprintInput`, fingerprint.ts) — keys SARIF
+   * `partialFingerprints`, every baseline entry, and every dismissal. Stamped
+   * by the auditRunner normalization block from the result key, and
+   * intentionally diverges from `AnalyzerResult.analyzerName` via
+   * `analyzerFieldOverride` (`data-access-org-filter` → `'data-access'`).
+   * Load-bearing: do not rename, remove, or "finish" into `analyzerName` — it
+   * would re-key every finding.
+   */
   analyzer?: string;
-  /** @deprecated Use `rule` instead — rule-identity field. */
+  /**
+   * Rule-identity fallback for SARIF `resolveRuleId` — precedence 4, after
+   * `rule` → `principle` → `details.rule` and before `schemaType` →
+   * `violationType`. The legacy rule-identity field carried by the DRY, Data
+   * Access, and Dependency Graph analyzers (see `resolveRuleId`).
+   */
   type?: string;
   /** Symbol resolution — set by analyzers for symbol-level attribution. */
   functionName?: string;
@@ -330,12 +344,8 @@ export interface AnalyzerResult {
   errors?: Array<{ file: string; error: string }>;
   /** Per-occurrence coverage diagnostics (non-blocking). */
   diagnostics?: CoverageDiagnostic[];
-  /** Number of files processed by the analyzer. */
-  filesProcessed?: number;
   /** Arbitrary metrics bag — used by cross-domain, visualizations, etc. */
   metrics?: Record<string, unknown>;
-  /** Legacy extra payload from pre-pipeline analyzers. */
-  extras?: Record<string, unknown>;
 }
 
 /** A file with its parsed AST and language adapter — output of pipeline stage 1. */

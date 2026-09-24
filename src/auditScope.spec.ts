@@ -339,30 +339,6 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
     });
   });
 
-  // ── getContentHashesForFiles ────────────────────────────────────────
-
-  describe('getContentHashesForFiles', () => {
-    it('returns per-file, per-function content hashes', async () => {
-      const path1 = await writeTestFile(dir, 'src/a.ts', helloFunc('hi'));
-      const path2 = await writeTestFile(dir, 'src/b.ts', addFunc('add'));
-
-      await db.detectChangedFunctions([path1]);
-      await db.detectChangedFunctions([path2]);
-
-      const hashes = db.getContentHashesForFiles([path1, path2]);
-
-      expect(hashes.has(path1)).toBe(true);
-      expect(hashes.has(path2)).toBe(true);
-      expect(hashes.get(path1)!.has('hi')).toBe(true);
-      expect(hashes.get(path2)!.has('add')).toBe(true);
-    });
-
-    it('returns empty map for empty file list', () => {
-      const hashes = db.getContentHashesForFiles([]);
-      expect(hashes.size).toBe(0);
-    });
-  });
-
   // ── Scoped result isolation ─────────────────────────────────────────
 
   describe('scoped result isolation', () => {

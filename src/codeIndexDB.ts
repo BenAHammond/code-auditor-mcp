@@ -2641,32 +2641,6 @@ export class CodeIndexDB {
     return modifiedFiles;
   }
 
-  /**
-   * Get content hashes for a set of file paths. Returns a map:
-   * file_path → { name → content_hash }
-   */
-  getContentHashesForFiles(filePaths: string[]): Map<string, Map<string, string>> {
-    this.ensureInitialized();
-
-    const result = new Map<string, Map<string, string>>();
-
-    if (filePaths.length === 0) return result;
-
-    const placeholders = filePaths.map(() => '?').join(', ');
-    const rows = this.db.prepare(
-      `SELECT file_path, name, content_hash FROM functions WHERE file_path IN (${placeholders})`
-    ).all(...filePaths) as Array<{ file_path: string; name: string; content_hash: string | null }>;
-
-    for (const row of rows) {
-      if (!result.has(row.file_path)) {
-        result.set(row.file_path, new Map());
-      }
-      result.get(row.file_path)!.set(row.name, row.content_hash ?? '');
-    }
-
-    return result;
-  }
-
   // ── Legacy search helpers (for in-memory filtering) ─────────────────
 
   private mergeFilters(
