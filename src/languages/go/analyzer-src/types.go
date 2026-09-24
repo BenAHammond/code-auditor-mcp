@@ -7,6 +7,14 @@ type AnalysisOptions struct {
 	Timeout     int      `json:"timeout"`
 	Language    string   `json:"language"`
 	Verbose     bool     `json:"verbose"`
+
+	// Declared tenant-scoping inputs, resolved on the TypeScript side by
+	// buildOrgFilterTierSet (Tier 1 explicit orgFilterTables, Tier 2 configured
+	// schemas, Tier 3 DDL migrations) and handed to this syntax-only subprocess
+	// so it does not guess tenancy from a hardcoded word list.
+	OrgFilterTables  []string `json:"orgFilterTables"`
+	KnownTables      []string `json:"knownTables"`
+	OrgFilterColumns []string `json:"orgFilterColumns"`
 }
 
 // AnalysisResult represents the result of code analysis

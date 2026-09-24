@@ -13,40 +13,28 @@ import (
 // `UniversalDataAccessAnalyzer` + schema Stage-4 reducer, emitting the same
 // bare rule IDs at the same ledger severities.
 //
-// Provenance differs, and that difference is load-bearing. The TypeScript
-// analyzer derives "tenant table" and "known table" from *declared* sources —
-// `.codeauditor.json` (`orgFilterTables`, `schemas`) and DDL migrations — the
-// three-tier model Spec 62 Amendment B unified. The Go subprocess is
-// self-contained: it does not read the project config, and Go source carries no
-// DDL. It therefore substitutes hardcoded heuristics for the two declared
-// inputs:
+// Tenancy is declared, not guessed. The TypeScript pipeline resolves "which
+// tables require an org/tenant filter" from three tiers — explicit
+// `orgFilterTables` (config), configured `schemas` tables carrying a
+// tenant-scoping column, and DDL migrations (`CREATE TABLE` columns) — via
+// `buildOrgFilterTierSet`. This subprocess is syntax-only and does not read the
+// project config or DDL itself, so the resolved tiers are handed to it in
+// `AnalysisOptions`:
 //
-//   - `tenantTables` — the common multi-tenant table names — stands in for
-//     "declared tenancy".
-//   - `knownTables` — a small recognized-name list — stands in for a schema
-//     catalog.
+//   - `orgFilterTables` — the tenant-scoped tables (all three tiers, lowercased)
+//     that drive `missing-org-filter`.
+//   - `knownTables` — the known-table catalog (DDL tables + configured schemas +
+//     explicit tables) that drives `unknown-table`.
+//   - `orgFilterColumns` — the tenant-scoping column names that count as a
+//     tenant predicate, defaulting to org_id/tenant_id/organization_id/
+//     workspace_id (the same default as the TS pipeline).
 //
-// The rules remain honest *within* those substitutes: `missing-org-filter`
-// claims "no tenant predicate" (not "no filter") exactly as its TS counterpart,
-// and `unknown-table` fires only on a singular/plural near-miss of a recognized
-// name (the `user` vs `users` shape), never on a genuinely novel table the
-// subprocess cannot prove unknown.
-
-// tenantTables are the table names the self-contained Go analyzer treats as
-// tenant-scoped (the TS pipeline reads this from config or DDL; Go has neither).
-var tenantTables = map[string]bool{
-	"users": true, "projects": true, "orders": true, "customers": true,
-	"accounts": true, "teams": true,
-}
-
-// knownTables are the table names the self-contained Go analyzer recognizes.
-// A table outside this set is flagged `unknown-table` only when it is a
-// singular/plural near-miss of a known name — never merely for being novel.
-var knownTables = map[string]bool{
-	"users": true, "projects": true, "orders": true, "customers": true,
-	"accounts": true, "teams": true, "products": true, "sessions": true,
-	"payments": true, "invoices": true, "organizations": true,
-}
+// An earlier revision hardcoded `tenantTables`/`knownTables` word lists as a
+// substitute for declared tenancy — the Spec 44 English-name fallback the TS
+// side had already deleted on purpose. That made `missing-org-filter` fire on
+// `users`/`projects`/`orders` whether or not the project declared them
+// multi-tenant, and stay silent on a genuinely tenant-scoped table whose name
+// was absent from the list. Declared tenancy removes both errors.
 
 // tableExtractRe matches `FROM <table>` / `INTO <table>` / `UPDATE <table>`
 // (optionally backtick/double/single-quoted, optionally schema-prefixed).
@@ -55,11 +43,16 @@ var tableExtractRe = regexp.MustCompile(`(?i)\b(?:from|into|update)\s+[` + "`\"'
 // whereRe matches a row-limiting clause (WHERE/HAVING/LIMIT).
 var whereRe = regexp.MustCompile(`(?i)\b(where|having|limit)\b`)
 
-// tenantPredRe matches a tenant column referenced as a word anywhere in the SQL.
-var tenantPredRe = regexp.MustCompile(`(?i)\b(organization_id|organisation_id|org_id|tenant_id|team_id|account_id|customer_id|company_id|workspace_id)\b`)
+// defaultOrgFilterColumns are the tenant-scoping column names assumed when the
+// caller supplies none. Mirrors DEFAULT_ORG_FILTER_COLUMNS on the TS side.
+var defaultOrgFilterColumns = []string{"org_id", "tenant_id", "organization_id", "workspace_id"}
 
 func (a *Analyzer) runDataAccessAnalysis() []Violation {
 	var violations []Violation
+
+	tenantTables := a.declaredTenantTables()
+	knownTables := a.declaredKnownTables()
+	tenantPredRe := a.tenantPredicateRegex()
 
 	for filePath, file := range a.parser.files {
 		ast.Inspect(file, func(n ast.Node) bool {
@@ -111,7 +104,7 @@ func (a *Analyzer) runDataAccessAnalysis() []Violation {
 			}
 
 			// unknown-table: a recognized-name near-miss (`user` → `users`).
-			if near, known := nearMissTable(table); !known && near != "" {
+			if near, known := nearMissTable(knownTables, table); !known && near != "" {
 				pos := a.parser.fileSet.Position(call.Pos())
 				violations = append(violations, Violation{
 					File:     filePath,
@@ -317,10 +310,13 @@ func extractTable(sql string) string {
 	return strings.ToLower(table)
 }
 
-// nearMissTable reports whether a table name is known; when it is not, and it is
-// a singular/plural near-miss of a known name, it returns the corrected name.
-// The `user` vs `users` singular→plural direction is what fires `unknown-table`.
-func nearMissTable(table string) (near string, known bool) {
+// nearMissTable reports whether a table name is in the declared known-table
+// catalog; when it is not, and it is a singular/plural near-miss of a known
+// name, it returns the corrected name. The `user` vs `users` singular→plural
+// direction is what fires `unknown-table`. The catalog is empty when the caller
+// declared no known tables — then the rule cannot accuse (fail-open, matching
+// the TS schema reducer).
+func nearMissTable(knownTables map[string]bool, table string) (near string, known bool) {
 	if knownTables[table] {
 		return "", true
 	}
@@ -341,6 +337,49 @@ func nearMissTable(table string) (near string, known bool) {
 		}
 	}
 	return "", false
+}
+
+// declaredTenantTables builds the tenant-scoped table set from the resolved
+// tiers the caller passed in `orgFilterTables`. Empty when the caller declared
+// no tenancy — the honest result is "no tenant tables", not a guessed list.
+func (a *Analyzer) declaredTenantTables() map[string]bool {
+	set := make(map[string]bool, len(a.options.OrgFilterTables))
+	for _, t := range a.options.OrgFilterTables {
+		set[strings.ToLower(t)] = true
+	}
+	return set
+}
+
+// declaredKnownTables builds the known-table catalog from the caller's
+// `knownTables`. An empty catalog means `unknown-table` cannot accuse.
+func (a *Analyzer) declaredKnownTables() map[string]bool {
+	set := make(map[string]bool, len(a.options.KnownTables))
+	for _, t := range a.options.KnownTables {
+		set[strings.ToLower(t)] = true
+	}
+	return set
+}
+
+// tenantPredicateRegex builds the tenant-predicate matcher from the configured
+// tenant columns (or the default set when none were supplied). Each column name
+// is regex-escaped and word-boundary-matched so a tenant column referenced
+// anywhere in the SQL counts as a tenant predicate.
+func (a *Analyzer) tenantPredicateRegex() *regexp.Regexp {
+	cols := a.options.OrgFilterColumns
+	if len(cols) == 0 {
+		cols = defaultOrgFilterColumns
+	}
+	alts := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if c == "" {
+			continue
+		}
+		alts = append(alts, regexp.QuoteMeta(strings.ToLower(c)))
+	}
+	if len(alts) == 0 {
+		alts = append(alts, regexp.QuoteMeta(defaultOrgFilterColumns[0]))
+	}
+	return regexp.MustCompile(`(?i)\b(?:` + strings.Join(alts, "|") + `)\b`)
 }
 
 // isWriteVerb reports whether the verb mutates rows (INSERT/UPDATE/DELETE).

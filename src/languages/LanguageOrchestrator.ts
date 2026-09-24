@@ -7,17 +7,23 @@ import { RuntimeManager, AnalysisResult, AnalysisMetrics } from './RuntimeManage
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { discoverFiles } from '../utils/fileDiscovery.js';
 import { Violation } from '../types.js';
+import type { GoTenantInputs } from './go/tenantInputs.js';
 import * as path from 'path';
 
 export interface PolyglotAnalysisOptions {
   // Language selection
   languages?: string[];
   autoDetect?: boolean;
-  
+
   // Analysis options
   analyzers?: string[];
   minSeverity?: 'high' | 'severe' | 'critical';
-  
+
+  // Declared tenancy resolved on the TS side (config + DDL tiers) and handed to
+  // the Go subprocess so its data-access analyzer reads declared tenancy instead
+  // of guessing from a hardcoded word list.
+  goTenantInputs?: GoTenantInputs;
+
   // Cross-language features
   enableCrossLanguageAnalysis?: boolean;
 
@@ -346,7 +352,8 @@ export class LanguageOrchestrator {
       minSeverity: options.minSeverity,
       timeout: options.timeout,
       language: language, // Pass original language for context
-      projectRoot: projectRoot
+      projectRoot: projectRoot,
+      goTenantInputs: options.goTenantInputs
     });
 
     return {

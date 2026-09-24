@@ -26,6 +26,7 @@ import { CodeIndexDB } from './codeIndexDB.js';
 import { makeVisitorStatus } from './pipeline.js';
 import { applyDismissals } from './dismissals.js';
 import { DEFAULT_EXCLUDED_ANY_DEPTH_DIRS } from './utils/fileDiscovery.js';
+import { computeGoTenantInputs } from './languages/go/tenantInputs.js';
 
 /**
  * True when `target` (a file or directory) is, or contains, a file with the
@@ -180,10 +181,18 @@ export async function runAuditDispatch(options: AuditRunnerOptions): Promise<Aud
   await codeIndex.initialize();
   const orchestrator = new LanguageOrchestrator(runtimeManager, codeIndex);
 
+  // Resolve declared tenancy (config tiers + DDL) on the TS side and hand it to
+  // the Go subprocess, which is syntax-only and cannot read the project config
+  // or migrations itself. This is what replaces the subprocess's hardcoded
+  // `tenantTables`/`knownTables` word lists with the same three-tier picture the
+  // TS pipeline reads.
+  const goTenantInputs = await computeGoTenantInputs(projectRoot);
+
   const polyglotResult = await orchestrator.analyzePolyglotProject(projectRoot, {
     analyzers: options.enabledAnalyzers,
     minSeverity: options.minSeverity as PolyglotAnalysisOptions['minSeverity'],
     enableCrossLanguageAnalysis: true,
+    goTenantInputs,
   });
 
   const result = convertPolyglotToAuditResult(polyglotResult, projectRoot);

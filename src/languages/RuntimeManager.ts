@@ -1099,13 +1099,20 @@ class GoAnalyzer implements LanguageAnalyzer {
       const goAnalyzerDir = path.join(moduleDir, 'go');
       const binaryPath = await this.ensureGoAnalyzerBuilt(goAnalyzerDir);
 
-      // Prepare analysis options
+      // Prepare analysis options. Declared tenancy (resolved on the TS side) is
+      // threaded through as its own fields so the Go data-access analyzer reads
+      // `orgFilterTables`/`knownTables`/`orgFilterColumns` rather than a hardcoded
+      // word list (Spec 62/63 — the subprocess must not guess tenancy).
+      const tenantInputs = options?.goTenantInputs;
       const analysisOptions = {
         analyzers: options?.analyzers || ['solid', 'imports', 'errors', 'data-access'],
         minSeverity: options?.minSeverity || 'high',
         timeout: options?.timeout || 30000,
         language: options?.language || 'go',
-        verbose: options?.verbose || false
+        verbose: options?.verbose || false,
+        orgFilterTables: tenantInputs?.orgFilterTables || [],
+        knownTables: tenantInputs?.knownTables || [],
+        orgFilterColumns: tenantInputs?.orgFilterColumns || []
       };
 
       // Run the Go analyzer via JSON-RPC

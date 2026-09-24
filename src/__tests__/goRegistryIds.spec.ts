@@ -249,7 +249,17 @@ function analyzeContent(content: string): Promise<GoViolation[]> {
         params: {
           file: 'gin.go',
           content,
-          options: { analyzers: ['solid', 'imports', 'errors', 'goroutines', 'channels', 'data-access'] },
+          options: {
+            analyzers: ['solid', 'imports', 'errors', 'goroutines', 'channels', 'data-access'],
+            // Declared tenancy — the data-access analyzer reads tenant-scoped
+            // tables (`orgFilterTables`) and the known-table catalog
+            // (`knownTables`) from here, not from a hardcoded word list. `users`
+            // is both the tenant table (so `missing-org-filter` fires on the
+            // unfiltered read) and the known name (so `user` fires
+            // `unknown-table` as a singular near-miss).
+            orgFilterTables: ['users'],
+            knownTables: ['users'],
+          },
         },
         id: 1,
       }) + '\n',

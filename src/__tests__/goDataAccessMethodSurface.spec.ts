@@ -1,6 +1,7 @@
 /**
  * Go data-access method-surface guard — pin `dbMethodName`'s SQL-argument
- * index against the idioms it claims to cover.
+ * index against the idioms it claims to cover, and pin the *coverage* of that
+ * table: every selector name in `dbMethodName` must have a fixture that fires.
  *
  * `dbMethodName` (`src/languages/go/analyzer-src/dataaccess.go`) maps a method
  * selector name to the index of the SQL-string argument. The index is
@@ -18,8 +19,19 @@
  *      instead of arg[1], silently skipping the canonical parameterized form
  *      that dominates production Go since 1.8.
  *
- * Each finding is asserted by count per rule, so a regression to either bug
- * drops the count and fails red rather than shipping a silent skip.
+ * An earlier revision pinned only the findings *present that day* (9
+ * `missing-org-filter` + 3 `unfiltered-query`). That assertion could stay green
+ * while a method silently regressed: delete the fixture for `QueryRow` and the
+ * twelve-count still held, because `QueryRow` was never in the fixture to begin
+ * with. The coverage assertion below is the fix — it enumerates the full 23-name
+ * table and asserts that the union of methods observed in findings equals it, so
+ * a missing fixture, a removed case, or a wrong arg index all fail red.
+ *
+ * Tenancy is DECLARED here (`orgFilterTables: ['users']`), mirroring the TS
+ * three-tier model. The old analyzer hardcoded a `tenantTables` word list; the
+ * new one reads declared tenancy only, so this test passes it explicitly — a
+ * fixture that declared no tenancy would correctly report "no tenant tables"
+ * and fire nothing.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -42,13 +54,38 @@ interface GoViolation {
   analyzer?: string;
   rule?: string;
   severity?: string;
+  details?: Record<string, unknown>;
 }
 
-// Every data-access method shape the widened `dbMethodName` claims to cover,
-// each on a tenant table (`users`) with no tenant predicate — so each SHOULD
-// fire `missing-org-filter` (reads) and/or `unfiltered-query` (writes). The
-// single `cleanRead` at the bottom is the negative: a parameterized,
-// tenant-filtered query that MUST NOT fire.
+/**
+ * The full method surface `dbMethodName` claims to cover — the single source of
+ * truth the coverage assertion compares against. Kept in the same selector-name
+ * order as the Go switch for a readable diff when the two drift.
+ */
+const DB_METHOD_NAMES = [
+  // database/sql — SQL string is arg[0].
+  'Query', 'QueryRow', 'Exec', 'Prepare',
+  // database/sql Context — ctx first, SQL string is arg[1].
+  'QueryContext', 'QueryRowContext', 'ExecContext', 'PrepareContext',
+  // sqlx — SQL string is arg[0].
+  'Queryx', 'QueryRowx', 'NamedExec', 'NamedQuery', 'MustExec',
+  // sqlx Context — ctx first, SQL string is arg[1].
+  'QueryxContext', 'QueryRowxContext', 'NamedExecContext', 'NamedQueryContext', 'MustExecContext',
+  // sqlx — SQL string is arg[1] (after the destination pointer).
+  'Get', 'Select',
+  // sqlx — SQL string is arg[2] (after ctx + destination pointer).
+  'GetContext', 'SelectContext',
+  // GORM — `Raw(sql, values…)`, SQL string is arg[0].
+  'Raw',
+];
+
+// Every data-access method shape `dbMethodName` claims to cover, each on a
+// tenant table (`users`) with no tenant predicate — so each SHOULD fire
+// `missing-org-filter` (reads) and/or `unfiltered-query` (writes). The six
+// `DELETE FROM users` calls are the writes: each fires BOTH rules (DELETE is
+// not INSERT, so it needs a tenant predicate; and a DELETE with no WHERE is an
+// unfiltered write). The single `cleanRead` at the bottom is the negative: a
+// parameterized, tenant-filtered query that MUST NOT fire.
 const SOURCE = `package main
 
 import (
@@ -58,39 +95,60 @@ import (
 	"gorm.io/gorm"
 )
 
+// database/sql — bare forms take the SQL at arg[0].
+func dbBare(db *sql.DB) {
+	db.Query("SELECT id FROM users")
+	db.QueryRow("SELECT id FROM users")
+	db.Exec("DELETE FROM users")
+	db.Prepare("SELECT id FROM users")
+}
+
+// database/sql — Context forms put ctx first, SQL at arg[1].
+func dbContext(ctx context.Context, db *sql.DB) {
+	db.QueryContext(ctx, "SELECT id FROM users")
+	db.QueryRowContext(ctx, "SELECT id FROM users")
+	db.ExecContext(ctx, "DELETE FROM users")
+	db.PrepareContext(ctx, "SELECT id FROM users")
+}
+
+// sqlx — bare forms take the SQL at arg[0].
+func sqlxBare(db *sqlx.DB) {
+	db.Queryx("SELECT id FROM users")
+	db.QueryRowx("SELECT id FROM users")
+	db.NamedExec("DELETE FROM users", map[string]any{})
+	db.NamedQuery("SELECT id FROM users", map[string]any{})
+	db.MustExec("DELETE FROM users")
+}
+
+// sqlx — Context forms put ctx first, SQL at arg[1].
+func sqlxContext(ctx context.Context, db *sqlx.DB) {
+	db.QueryxContext(ctx, "SELECT id FROM users")
+	db.QueryRowxContext(ctx, "SELECT id FROM users")
+	db.NamedExecContext(ctx, "DELETE FROM users", map[string]any{})
+	db.NamedQueryContext(ctx, "SELECT id FROM users", map[string]any{})
+	db.MustExecContext(ctx, "DELETE FROM users")
+}
+
 // sqlx — Get/Select put the destination pointer before the SQL (arg[1]).
-func sqlxReads(db *sqlx.DB, id int) {
+func sqlxGetSelect(db *sqlx.DB) {
 	var u struct{ ID int }
-	db.Get(&u, "SELECT id, name FROM users WHERE id = ?", id)
+	db.Get(&u, "SELECT id, name FROM users")
 	var list []struct{ ID int }
 	db.Select(&list, "SELECT id FROM users")
 }
 
 // sqlx — Context Get/Select put ctx + destination before the SQL (arg[2]).
-func sqlxContextReads(ctx context.Context, db *sqlx.DB, id int) {
+func sqlxGetSelectContext(ctx context.Context, db *sqlx.DB) {
 	var u struct{ ID int }
-	db.GetContext(ctx, &u, "SELECT id, name FROM users WHERE id = ?", id)
+	db.GetContext(ctx, &u, "SELECT id, name FROM users")
 	var list []struct{ ID int }
 	db.SelectContext(ctx, &list, "SELECT id FROM users")
 }
 
-// sqlx — Queryx/QueryRowx and the Exec family take the SQL first (arg[0]).
-func sqlxWrites(db *sqlx.DB, name string) {
-	db.MustExec("DELETE FROM users")
-	db.NamedExec("INSERT INTO users (name) VALUES (:name)", map[string]any{})
-	db.Queryx("SELECT id FROM users")
-}
-
-// database/sql — the Context variants put ctx first, SQL at arg[1].
-func ctxReads(ctx context.Context, db *sql.DB, id int) {
-	db.QueryContext(ctx, "SELECT id, name FROM users WHERE id = $1", id)
-	db.ExecContext(ctx, "DELETE FROM users")
-}
-
 // GORM — Raw is the full-SQL literal method, SQL at arg[0].
-func gormReads(db *gorm.DB, id int) {
+func gormRaw(db *gorm.DB) {
 	var u struct{ ID int }
-	db.Raw("SELECT id, name FROM users WHERE id = ?", id).Scan(&u)
+	db.Raw("SELECT id, name FROM users").Scan(&u)
 }
 
 // Negative control — parameterized AND tenant-filtered: must produce nothing.
@@ -138,7 +196,18 @@ function analyzeContent(content: string): Promise<GoViolation[]> {
     child.stdin.write(
       JSON.stringify({
         method: 'analyzeContent',
-        params: { file: 'surface.go', content, options: { analyzers: ['data-access'] } },
+        params: {
+          file: 'surface.go',
+          content,
+          options: {
+            analyzers: ['data-access'],
+            // Declared tenancy — the same shape the TS three-tier model hands the
+            // subprocess. `users` is the tenant-scoped AND known table so
+            // `missing-org-filter` can fire and `unknown-table` stays quiet.
+            orgFilterTables: ['users'],
+            knownTables: ['users'],
+          },
+        },
         id: 1,
       }) + '\n',
     );
@@ -153,26 +222,37 @@ beforeAll(async () => {
 }, 60_000);
 
 describe('Go data-access method surface', () => {
-  it('fires on the sqlx, Context-variant, and GORM Raw idioms', async () => {
+  it('covers every dbMethodName selector and fires on each idiom', async () => {
     const violations = await analyzeContent(SOURCE);
     const da = violations.filter((v) => v.analyzer === 'go' && DATA_ACCESS_RULES.has(v.rule ?? ''));
 
     const count = (rule: string) => da.filter((v) => v.rule === rule).length;
 
-    // 9 reads on `users` with no tenant predicate: Get, Select, GetContext,
-    // SelectContext, Queryx, QueryContext, ExecContext (DELETE), MustExec
-    // (DELETE), Raw.
-    expect(count('missing-org-filter')).toBe(9);
-    // 3 writes with no WHERE/HAVING/LIMIT: MustExec, NamedExec, ExecContext.
-    expect(count('unfiltered-query')).toBe(3);
-    // No dynamic SQL in the fixture — the injection rule must stay quiet.
+    // Coverage assertion — the heart of this test. The union of method names
+    // observed across the tenant/write findings must equal the full 23-name
+    // table. A method whose arg index is wrong (or whose fixture was dropped)
+    // disappears from this set and fails the test even though the count below
+    // might still happen to hold.
+    const firedMethods = new Set(
+      da
+        .filter((v) => v.rule === 'missing-org-filter' || v.rule === 'unfiltered-query')
+        .map((v) => v.details?.method)
+        .filter((m): m is string => typeof m === 'string'),
+    );
+    expect([...firedMethods].sort()).toEqual([...DB_METHOD_NAMES].sort());
+
+    // 23 methods on `users` with no tenant predicate — all 23 fire
+    // missing-org-filter (the 17 reads) and the 6 DELETE writes each add an
+    // unfiltered-query. No dynamic SQL → injection stays quiet; every table is
+    // exactly `users` (known) → no near-miss.
+    expect(count('missing-org-filter')).toBe(23);
+    expect(count('unfiltered-query')).toBe(6);
     expect(count('sql-injection-risk')).toBe(0);
-    // `users` is a known table; nothing here is a singular/plural near-miss.
     expect(count('unknown-table')).toBe(0);
 
     // The negative control — a parameterized, tenant-filtered read — must not
     // contribute a single finding. If it does, the tenant-predicate gate
     // (`org_id`) regressed.
-    expect(da.length).toBe(12);
+    expect(da.length).toBe(29);
   });
 });
