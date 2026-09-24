@@ -22,7 +22,7 @@ stated. "The analyzer no longer emits this" is never the reason.
 | 7 | Recall question answered per rule (not net count) | **corrected** — the "no over-reach" verdict was wrong; Amendment A restored the tenant-scoped read case and declared tenancy, §R7 + §Amendment A |
 | 8 | `npm run bench` wired into `verify:close`, in red | **met** |
 | 9 | Gate-liveness tests (verify:self, verify:languages, verify:gate-budget, verify:dist, verify:clean-install, assert_compatible, bench) | **not run** (§R9) |
-| 10 | `conventions` classified (R2 buckets) | **met** (implemented-unreachable, §R2) |
+| 10 | `conventions` classified (R2 buckets) | **met** (fixture-inadequate, corrected post-A2 — §A2/A3) |
 | 11 | Full zero-finding registry sweep | **met** (§R2) |
 | 12 | No existing rule's count moves on any corpus except R7 restoring a lost true positive | **void** — the "zero analyzer regressions" claim was rejected; the A1.4 read case is a *new* emission, §Amendment A |
 
@@ -54,11 +54,11 @@ Disposition is the R1 binary (`regression` | `fixture-stale`); the
 
 | corpus | rule | expected | actual | disposition | class | evidence |
 |--------|------|----------|--------|-------------|-------|----------|
-| conventions | usage-pair | 1 | 0 | fixture-stale | implemented-unreachable | DB-backed; reads `conventions` table populated by the convention-mining pass, which the bench never runs (§R2) |
-| conventions | import-form | 1 | 0 | fixture-stale | implemented-unreachable | same |
-| conventions | error-handling | 1 | 0 | fixture-stale | implemented-unreachable | same |
-| conventions | export-shape | 1 | 0 | fixture-stale | implemented-unreachable | same |
-| conventions | naming | 1 | 0 | fixture-stale | implemented-unreachable | same |
+| conventions | usage-pair | 1 | 0 | fixture-stale | fixture-inadequate | DB-backed; reads `conventions` table populated by the convention-mining pass. A2 made the full pipeline run that pass, but `mineAllConventions` hardcodes `minCorpus: 20` and the corpus has 12 functions → 0 mined conventions (§A2/A3) |
+| conventions | import-form | 1 | 0 | fixture-stale | fixture-inadequate | same |
+| conventions | error-handling | 1 | 0 | fixture-stale | fixture-inadequate | same |
+| conventions | export-shape | 1 | 0 | fixture-stale | fixture-inadequate | same |
+| conventions | naming | 1 | 0 | fixture-stale | fixture-inadequate | same |
 | data-access | missing-org-filter (n-plus-one) | 1 | 0 | fixture-stale | implemented-but-fixture-inadequate | Spec 44 deleted Tier-3 hardcoded table fallback; rule now needs *declared* tenancy. Corpus `config` is `{}` — no `orgFilterTables`, no `schemas` → rule correctly declines (§R7) |
 | data-access | unfiltered-query (n-plus-one) | 1 | 0 | fixture-stale | implemented-but-fixture-inadequate | Spec 55 R5 re-scoped to *write-only* (DELETE/UPDATE). The query is `SELECT` → correctly declines (§R7) |
 | data-access | missing-org-filter (clean-queries ×2) | 2 | 0 | fixture-stale | implemented-but-fixture-inadequate | same as above; `clean-queries.ts` declares no tenancy |
@@ -102,23 +102,44 @@ proposed are semantic fixture corrections paired with source changes that
 
 ## R2 — Conventions classification + zero-finding registry sweep
 
-`conventions` is **implemented-unreachable** in the bench, not a regression and
-not never-implemented. `UniversalConventionsAnalyzer` (`src/analyzers/universal/UniversalConventionsAnalyzer.ts`)
-is a cross-file, DB-backed analyzer: it reads the `conventions` SQLite table
-populated by `conventions/conventionMiner.ts`, applying
-`minCorpus: 30`-gated statistical thresholds (co-occurrence, minority import
-form, error-handling shape, export shape, casing). The bench harness
-(`bench/verify.ts` → `runAuditDispatch`) invokes the analyzer in isolation and
-never runs the convention-mining pass, so the table is empty and all five rules
-correctly emit nothing.
+`conventions` is **fixture-inadequate** in the bench, not a regression and
+not never-implemented (corrected post-A2 — the original "implemented-unreachable"
+verdict is void, §A2/A3). `UniversalConventionsAnalyzer`
+(`src/analyzers/universal/UniversalConventionsAnalyzer.ts`) is a cross-file,
+DB-backed analyzer: it reads the `conventions` SQLite table populated by
+`conventions/conventionMiner.ts`. The pre-A2 draft claimed the bench "never runs
+the convention-mining pass"; **A2 disproved that** — with full-pipeline fidelity
+(`bench/verify.ts` no longer narrows to a single analyzer), the
+`onStage2Complete` hook runs `mineAllConventions`, which indexed the corpus's 12
+functions but mined **zero** conventions because `mineAllConventions` hardcodes
+`minCorpus: 20` and every domain needs ≥20 cases per directory. The 5 bench
+`missing` lines are therefore a *fixture-size* artifact, not a harness or rule
+defect.
 
-The same "implemented-unreachable" verdict applies to the other DB-backed
-analyzers, which is why their corpora also show zero findings:
+**A3 proved all five rules fire at scale** (no rule "fires nowhere"), so nothing
+to fix in the analyzer — the bench corpus is simply too small:
+
+| rule | recall-protocol | hhra-org |
+|------|-----------------|----------|
+| conventions/usage-pair | 60 | 5 |
+| conventions/import-form | 5 | 0 |
+| conventions/error-handling | 51 | 0 |
+| conventions/export-shape | 1 | 0 |
+| conventions/naming | 10 | 6 |
+
+`export-shape` and `naming` are additionally covered by
+`integration/fixture-conventions.test.ts`, whose fixture (`tests/fixtures/conventions/`)
+*does* reach `minCorpus` — `named-majority/utils.ts` carries 20 named exports —
+so the "both can't be true" tension (fixture covers them while the bench shows
+zero) resolves: the integration fixture meets `minCorpus`, the bench corpus does
+not. Fix = enlarge `bench/corpus/conventions/` to meet `minCorpus: 20`, the same
+"write the fixture to the rules" move as A4 (§Remaining).
+
+The same "DB-backed prerequisite" shape applies to the other bench corpora:
 
 - **styles** (10 rules) — reads `style_declarations`/`style_tokens`, seeded by
-  the style-index pass. Its `fixture.tsx` is a placeholder whose own comment
-  states the index is "seeded by the bench runner"; `verify.ts` has no such
-  seeding.
+  the style-index pass. The pass *does* run, but `fixture.tsx` is a placeholder
+  (3 declarations indexed, below `minCorpus: 5`). Fix = author real content (A4).
 - **diverging-clones** (1 rule, `dry/diverging-clone`) — needs a *prior* audit
   run to compare clone similarity against; a single bench audit cannot diverge.
 
@@ -127,7 +148,7 @@ corpus** (the R2 sweep):
 
 | Rule ID | Analyzer | Why zero |
 |---------|----------|----------|
-| conventions/usage-pair, import-form, error-handling, export-shape, naming | conventions | mining pass not run by bench |
+| conventions/usage-pair, import-form, error-handling, export-shape, naming | conventions | mining runs (A2), but `minCorpus: 20` > 12-function corpus → 0 mined |
 | styles/value-drift, token-bypass, undefined-class, mechanism-fragmentation, mechanism-mixing, declaration-set-similarity, z-index-sprawl, z-index-singleton | styles | style-index not seeded by bench |
 | dry/diverging-clone | dry | needs a prior run |
 | sql-injection-risk, missing-org-filter, unfiltered-query (Go) | go | never implemented (§R3) |
@@ -773,21 +794,52 @@ section was **stale and never a live count** — it summed conventions 5 + style
 diverging-clones 1 + go-data-access 3 = 19 and omitted react 3 + solid 2 = 5;
 19 + 5 = 24. The authoritative number is **24**, from the command above.
 
+## A2–A6 — the post-release rule track
+
+Post-4.1.0, the registry is **100 rules** (not 110 — the ten `cannot-fire` rows
+were removed in 4.1.0), and the bench is **out of `verify:close`** until it is
+green, at which point it rejoins. A2–A6 dispose the remaining 24 drift lines.
+
+### A2 — bench fidelity (landed)
+
+`bench/verify.ts` no longer narrows to a single `enabledAnalyzers: [target]`. It
+runs the **same full pipeline a real `code-audit audit` runs** — same entry point
+(`runAuditDispatch`), same stage sequence, same `onStage2Complete` convention-mining
+hook, same style-index sync, same `getEnabledAnalyzers` gating (`ALL_ANALYZERS`).
+The only concession is that a pipeline-only target (`invariants`, absent from
+`ALL_ANALYZERS` because it emits no registry rule) is added back so the invariants
+corpus still runs; the comparison below still filters to `target`, so the extra
+analyzers satisfy prerequisites without adding drift lines. Re-running the bench
+after A2 gives **24 drift lines, unchanged** — proving none of the 24 are
+single-analyzer shortcut artifacts.
+
+The pre-A2 R2 claim that conventions was "implemented-unreachable because the
+bench never runs the mining pass" is **void**: the mining pass now runs and still
+mines zero, because the corpus is 12 functions against a hardcoded `minCorpus: 20`.
+
+### A3 — conventions rules fire (reported)
+
+All five conventions rules fire on a real corpus (recall-protocol: usage-pair 60,
+import-form 5, error-handling 51, export-shape 1, naming 10; hhra-org: usage-pair 5,
+naming 6). **No rule fires nowhere**, so none gets "fixed, not dispositioned" —
+the bench conventions zero is a fixture-size artifact (§R2, §Remaining).
+
+---
+
 ## Remaining work (not yet done)
 
 The bench is at **24 drift lines**, all in the harness-unreachable /
 never-implemented / fixture-stale buckets (no `regression` remains):
 
-- **conventions (5)** — `runAuditDispatch` in `bench/verify.ts` does not run the
-  `mineAllConventions` prerequisite. The real pipeline (`auditRunner.ts`
-  `onStage2Complete`) mines conventions only when `conventions` is enabled; the
-  bench's dispatch path skips that hook. Fix = run convention mining (after the
-  function-index visitor) before the conventions analyzer.
-- **styles (10)** — the style-index *does* run (the bench log shows it), but
-  `fixture.tsx` is a placeholder whose own comment claims the index is "seeded by
-  the bench runner"; the current harness has no such seeding, so only 3
-  declarations are indexed, below `minCorpus: 5`, and every detector early-returns.
-  Fix = author real style content in the fixture (or seed the index).
+- **conventions (5)** — **A2 landed** (`bench/verify.ts` runs the full pipeline, so
+  `mineAllConventions` now runs); **A3 reported** (all five rules fire on
+  recall-protocol, so none is "nowhere"). The bench still shows zero because
+  `mineAllConventions` hardcodes `minCorpus: 20` and the corpus has 12 functions.
+  Fix = enlarge `bench/corpus/conventions/` to meet `minCorpus: 20` (same
+  "write the fixture to the rules" move as A4), *not* edit `expected.json`.
+- **styles (10)** — **A4**. The style-index *does* run, but `fixture.tsx` is a
+  placeholder (3 declarations indexed, below `minCorpus: 5`, so every detector
+  early-returns). Fix = author real content exercising all ten declared behaviors.
 - **diverging-clones (1)** — needs a *prior* audit run to compare clone
   similarity against; a single bench audit cannot diverge. Fix = a two-run
   comparison with persisted state.

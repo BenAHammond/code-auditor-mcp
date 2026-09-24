@@ -24,6 +24,7 @@ import { dirname } from 'node:path';
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runAuditDispatch } from '../src/auditRouter.js';
+import { ALL_ANALYZERS } from '../src/analyzers/ruleRegistry.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORPUS_ROOT = join(__dirname, 'corpus');
@@ -86,7 +87,24 @@ async function auditCorpus(corpus: string): Promise<{ drift: string[]; actual: s
   const tmp = await mkdtemp(join(tmpdir(), 'ca-bench-'));
   try {
     await cp(srcDir, tmp, { recursive: true });
-    const opts: any = { projectRoot: tmp, enabledAnalyzers: [target], writeToLedger: false };
+    // Spec 62 A2 — full-pipeline fidelity. Run the same entry point, stage
+    // sequence, hooks, and analyzer gating a real `code-audit audit` runs: no
+    // single-analyzer `enabledAnalyzers` narrowing. Narrowing to `[target]` was
+    // the shortcut that made DB-backed analyzers (conventions, styles) look
+    // unreachable — their prerequisite passes (convention mining, style-index
+    // sync) only run under the full gating. The comparison below still filters
+    // to `target`, so the extra analyzers only satisfy prerequisites; they do
+    // not add drift lines.
+    //
+    // A pipeline-only target (`invariants`) is absent from `ALL_ANALYZERS` (it
+    // emits no registry rule; its rules come from `.codeauditor.json`). The
+    // registry-derived full set would silently drop it, so add it back when it
+    // is the corpus under test.
+    const enabledAnalyzers = ALL_ANALYZERS.includes(target as any)
+      ? undefined
+      : [...ALL_ANALYZERS, target];
+    const opts: any = { projectRoot: tmp, writeToLedger: false };
+    if (enabledAnalyzers) opts.enabledAnalyzers = enabledAnalyzers;
     if (Object.keys(expected.config ?? {}).length) {
       opts.analyzerConfigs = { [target]: expected.config };
     }
