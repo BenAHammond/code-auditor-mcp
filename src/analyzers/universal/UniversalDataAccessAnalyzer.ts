@@ -1320,7 +1320,17 @@ function isOrmPattern(text: string): boolean {
     /\.createMany\s*\(/,
     /\.aggregate\s*\(/,
     /\.count\s*\(/,
-    /\.distinct\s*\(/
+    /\.distinct\s*\(/,
+    // Kysely builder verbs (camelCase SQL — not matched by the SQL-keyword path).
+    /\.selectFrom\s*\(/,
+    /\.selectAll\s*\(/,
+    /\.insertInto\s*\(/,
+    /\.updateTable\s*\(/,
+    /\.deleteFrom\s*\(/,
+    /\.executeTakeFirst\s*\(/,
+    /\.executeTakeFirstOrThrow\s*\(/,
+    /\.onConflict\s*\(/,
+    /\.returning\s*\(/
   ];
 
   return ormPatterns.some(pattern => pattern.test(scrubNonTableCalls(text)));
@@ -1364,6 +1374,15 @@ export function extractTables(text: string, config: DataAccessAnalyzerConfig): s
     if (match[1] && !match[1].includes('"') && !match[1].includes("'")) {
       tables.add(match[1]);
     }
+  }
+
+  // Kysely builder verbs carry the table as their first string arg:
+  // selectFrom('users') / deleteFrom('users') / insertInto('users') /
+  // updateTable('users'). The SQL-keyword path can't see camelCase verbs.
+  const kyselyTablePattern = /\.(?:selectFrom|deleteFrom|insertInto|updateTable)\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu;
+  const kyselyMatches = scrubbed.matchAll(kyselyTablePattern);
+  for (const match of kyselyMatches) {
+    if (match[1]) tables.add(match[1]);
   }
 
   // Handle patterns like db.users.find() or db.orders.findOne()
@@ -1463,7 +1482,10 @@ function whereClauseIsTautology(text: string): boolean {
 export function hasWriteVerb(text: string): boolean {
   const upper = text.toUpperCase();
   return /\bINSERT\b/.test(upper) || /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
-    || /\bREPLACE\s+INTO\b/.test(upper);
+    || /\bREPLACE\s+INTO\b/.test(upper)
+    // Kysely builder verbs are camelCase SQL — the word-boundary keyword test
+    // above cannot see `deleteFrom`/`updateTable`/`insertInto` as a write.
+    || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper) || /\bINSERTINTO\b/.test(upper);
 }
 
 /**
@@ -1474,7 +1496,10 @@ export function hasWriteVerb(text: string): boolean {
  */
 function hasMassWriteVerb(text: string): boolean {
   const upper = text.toUpperCase();
-  return /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper);
+  return /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
+    // Kysely `deleteFrom`/`updateTable` are mass writes with no SQL keyword word
+    // boundary — the camelCase form must be recognized explicitly.
+    || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
 }
 
 /**

@@ -132,6 +132,19 @@ export const ORM_METHODS: ReadonlySet<string> = new Set([
   'distinct',
   'execute',
   'query',
+  // Kysely builder verbs (camelCase SQL, absent from the SQL-keyword path).
+  'selectFrom',
+  'selectAll',
+  'insertInto',
+  'updateTable',
+  'deleteFrom',
+  'executeTakeFirst',
+  'executeTakeFirstOrThrow',
+  'values',
+  'set',
+  'onConflict',
+  'returning',
+  'whereRef',
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -532,6 +545,22 @@ function tryPropagateFromExpression(
   sourceCode: string,
   provenanceMap: Map<string, ProvenanceEvidence>,
 ): ProvenanceEvidence | null {
+  // ── Rule 0: await x — unwrap the await and propagate from its operand ──
+  // Mirrors getCallExpressionCallee, which already recurses through
+  // await_expression. `await` is a significant anonymous child (converter.ts
+  // SIGNIFICANT_ANONYMOUS_TYPES) and is skipped; the operand carries the
+  // provenance (e.g. `const x = await factory()`).
+  if (node.type === 'await_expression') {
+    for (const child of adapter.getChildren(node)) {
+      if (child.type === 'await') continue;
+      const result = tryPropagateFromExpression(
+        child, adapter, sourceCode, provenanceMap,
+      );
+      if (result) return result;
+    }
+    return null;
+  }
+
   // ── Rule 1: new Database(...) ──
   if (node.type === 'new_expression') {
     const constructorNode = findChildOfType(node, [
@@ -756,6 +785,13 @@ function collectChildren(
  * `env.DB.prepare` yields "env.DB", not "env"); a `this`/`super` child returns
  * `thisSuperResult` (null for the receiver walker, 'this' for the root walker);
  * any other child returns null.
+ *
+ * A `call_expression` child is the fluent/builder-chain case (`db.selectFrom(…)
+ * .selectAll().execute()` — the object of `.execute` is a call): descend into
+ * the call's *callee* and resolve that, so the root receiver is reached through
+ * the chain rather than dropped. Without this, every ORM whose queries are
+ * builder chains (kysely, drizzle, knex, prisma fluent API) resolves to `null`
+ * at the first call boundary.
  */
 function resolveReceiverText(
   firstChild: ASTNode,
@@ -763,6 +799,11 @@ function resolveReceiverText(
   sourceCode: string,
   thisSuperResult: string | null,
 ): string | null {
+  if (firstChild.type === 'call_expression') {
+    const callee = getCallExpressionCallee(firstChild, adapter);
+    if (!callee) return null;
+    return resolveReceiverText(callee, adapter, sourceCode, thisSuperResult);
+  }
   if (
     firstChild.type === 'identifier' ||
     firstChild.type === 'member_expression' ||

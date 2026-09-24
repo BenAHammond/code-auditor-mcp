@@ -115,6 +115,22 @@ export function mysqlUpsert(id: number, value: number) {
 }
 `;
 
+/** Kysely builder-chain unfiltered DELETE — `db.deleteFrom('users').execute()`. */
+const KYSELY_DELETE_ALL = `import { Kysely } from 'kysely';
+const db = new Kysely<{ users: { id: number } }>({} as any);
+export function nuke() {
+  return db.deleteFrom('users').execute();
+}
+`;
+
+/** Kysely builder-chain filtered DELETE — a WHERE predicate must NOT fire. */
+const KYSELY_DELETE_FILTERED = `import { Kysely } from 'kysely';
+const db = new Kysely<{ users: { id: number } }>({} as any);
+export function one(id: string) {
+  return db.deleteFrom('users').where('id', '=', id).execute();
+}
+`;
+
 describe('unfiltered-query — an unfiltered write (DELETE/UPDATE with no WHERE/HAVING/LIMIT)', () => {
   it('flags an unfiltered DELETE (positive)', async () => {
     const vs = await unfilteredViolations(DELETE_ALL, 'delete-all');
@@ -124,6 +140,16 @@ describe('unfiltered-query — an unfiltered write (DELETE/UPDATE with no WHERE/
   it('flags an unfiltered UPDATE (positive)', async () => {
     const vs = await unfilteredViolations(UPDATE_ALL, 'update-all');
     expect(vs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('flags a Kysely builder-chain unfiltered DELETE (deleteFrom + execute)', async () => {
+    const vs = await unfilteredViolations(KYSELY_DELETE_ALL, 'kysely-delete-all');
+    expect(vs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does NOT flag a Kysely builder-chain filtered DELETE (near-miss)', async () => {
+    const vs = await unfilteredViolations(KYSELY_DELETE_FILTERED, 'kysely-delete-filtered');
+    expect(vs).toHaveLength(0);
   });
 
   it('does NOT flag a filtered DELETE (near-miss)', async () => {
