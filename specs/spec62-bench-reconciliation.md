@@ -946,48 +946,84 @@ diff-matched):
 (`expected.json` asserts exactly these three findings — a removed rule becomes a drift
 line) and `goRegistryIds.spec.ts` ("emits every canonical ID", all 14).
 
-**Real-code run.** Because these are security rules, A6 was checked against real Go,
-not just the fixture. The sweep covers the app's own Go and every reachable read-only
-Go corpus; **0 data-access findings on any of it**, so the four rules have **not yet
-been observed firing on real code** — they are pinned by the synthetic fixture +
-`goRegistryIds` only (§Known surface-width limitation, below).
+**Real-code run (re-measured post-widening, 2026-09-24).** The original A6 pass
+reported "0 data-access findings on any of it." That number was **vacuous**: the probe
+passed `enabledAnalyzers: ['go']`, which sets the Go subprocess's `analyzers` to
+`['go']` — and `runEnabledAnalyzers` (`analyzer.go`) runs `data-access` only when the
+literal `"data-access"` is in that list, so the rules never ran. Every number below is
+from a full-pipeline run (`enabledAnalyzers: undefined`, the bench's own setting):
 
-- **The app's own Go — 17 non-fixture `.go` files** (10 under `src/languages/go`, 1
-  `tests/integration/test-sample.go`, 6 under `tests/samples/`), re-run this pass:
-  `0 violations, 307 entities`. None imports `database/sql` — the analyzer is itself
-  tree-sitter-based, and the test samples exercise SOLID/conventions, not data access.
-- **Vendored gin corpus — 59 non-test `.go` files** (`bench/real/gin`, 99 total incl.
-  `_test.go`) → 0 findings. Its `.Query(...)` calls are `gin.Context.Query` (HTTP query
-  params), not `*sql.DB.Query`.
-- **`felaria` (read-only) — 1 `.go` file** (`.sst/.../bridge/bridge.go`) → no
-  `database/sql`.
+- **The app's own Go source — 11 files** (10 under `src/languages/go`, 1
+  `tests/integration/test-sample.go`) → **0 data-access findings**. None imports
+  `database/sql`/`sqlx`; the analyzer is itself tree-sitter-based. Command:
+  `npx tsx /tmp/audit-app-go.mjs` → `DATA-ACCESS findings: 0` over these 11 files.
+- **The app's own sample fixture — `tests/samples/go-basic/example.go`** → **2
+  findings** (`missing-org-filter` critical + `unfiltered-query` high). This is the
+  observed-on-real-Go firing the original report said did not exist; the sample was in
+  the sweep all along, hidden by the vacuous run. Command: same run — both findings
+  land on this file.
+- **Vendored gin corpus — 59 non-test `.go` files** (`bench/real/gin`) → 0 findings.
+  Its `.Query(...)` calls are `gin.Context.Query` (HTTP params), not `*sql.DB.Query`.
+- **`felaria` (read-only) — 1 `.go` file** → no `database/sql`.
 - **`openstatus/apps/private-location` (read-only) — 17 handwritten non-test `.go`
-  files** (24 incl. generated protobuf) — the one real `database/sql` codebase reachable
-  here → **0 findings**, because it is `*sqlx.DB`: its DB calls are `Get`/`Select`/
-  `NamedExec`/`MustExec`/`PingContext`, none of which `dbMethodName` matches, and the
-  single `.Query(` is `net/url` (`requestURL.Query()`), not a DB call.
+  files**, the one real `*sqlx.DB` codebase reachable → **0 findings**, now for a real
+  reason, not a method-surface miss: its calls are `Get`/`Select`/`NamedExec` on
+  tables `private_location`/`monitor`/`private_location_to_monitor`, all parameterized
+  (`?`/`:named`) and WHERE-claused, and those tables are **not** in the hardcoded
+  `tenantTables`/`knownTables` word lists (§tenancy gap, below). Command:
+  `npx tsx /tmp/audit-openstatus.mjs` → `data-access findings: 0`.
 
-**Known surface-width limitation (flagged, not silently widened).** `dbMethodName`
-(`dataaccess.go:187`) recognizes only `Query`/`QueryRow`/`Exec`/`Prepare` (+ Context
-variants). Two consequences, both real and both recorded:
+**Method surface widened — done, not a §Remaining line.** `dbMethodName`
+(`dataaccess.go`) now covers three families beyond the original `Query`/`QueryRow`/
+`Exec`/`Prepare`, and the whole surface is pinned red-first by
+`src/__tests__/goDataAccessMethodSurface.spec.ts` (12 findings — 9
+`missing-org-filter` + 3 `unfiltered-query` — asserted by exact count; run:
+`npx vitest run src/__tests__/goDataAccessMethodSurface.spec.ts`):
 
-1. It **misses the `sqlx` idiom** (`Get`, `Select`, `NamedExec`, `Queryx`,
-   `QueryRowx`) — the dominant real-world `database/sql` wrapper — so the four rules
-   have zero firing surface on the reachable real Go. On this machine the rules are
-   therefore pinned by fixture + registry, not yet observed on production
-   `database/sql` code — **a `missing-org-filter` (or any of the four) that has never
-   fired on real code is a hypothesis, not a rule yet.** Stated, not softened: the
-   §Remaining follow-up (widen to `sqlx` + verify the receiver) is what turns the
-   hypothesis into an observed rule.
-2. It **does not verify the receiver** is `*sql.DB`/`*sqlx.DB` — any `.Query(...)`
-   selector is treated as a DB call. It stays quiet on `gin.Context.Query` only because
-   that call's argument is a non-SQL string literal; a `.Query("SELECT …")` on a
-   non-DB receiver would be a false positive.
+1. **`sqlx`** — `Get`/`Select` (SQL at arg[1], after the destination pointer),
+   `GetContext`/`SelectContext` (arg[2]), and `Queryx`/`QueryRowx`/`NamedExec`/
+   `NamedQuery`/`MustExec` (arg[0]). Probe: `npx tsx /tmp/audit-sqlx-fixture.mjs` →
+   5 findings.
+2. **`database/sql` Context variants — an off-by-one, fixed.** `QueryContext`/
+   `QueryRowContext`/`ExecContext`/`PrepareContext` were mapped to arg[0], but the
+   standard library puts `ctx context.Context` first — `go doc database/sql.DB.ExecContext`
+   shows `ExecContext(ctx context.Context, query string, …)`, SQL at arg[1]. The wrong
+   index extracted the `ctx` identifier, saw no string literal, and returned early —
+   silently skipping the canonical parameterized form that dominates production Go
+   since 1.8. Fixed to arg[1]; probe: `npx tsx /tmp/audit-ctx.mjs` → 3 findings (was 0).
+3. **GORM `Raw`** — arg[0]. GORM's `Exec` is already the `database/sql` case; GORM's
+   `Select` is deliberately **not** added (it takes a column list, not a statement).
 
-Both are the hollow-capability shape this release has been removing, but the A6
-directive scoped to ID/severity matching, not to widening the method surface. Widening
-to `sqlx` (and verifying the receiver type) is a follow-up, not part of A6 — recorded
-here so the rules are not claimed to fire on real code until they do.
+**The other ORMs — checked, not silently skipped** (`npx tsx /tmp/audit-orm-sweep.mjs`,
+synthetic fixtures per ORM, full pipeline):
+
+| surface | findings | why |
+|---|---|---|
+| `sqlx` | 5 | widened above |
+| GORM | 3 | `Exec` (already covered) + `Raw` (added) |
+| `pgx` | 0 | `Query`/`QueryRow`/`Exec` are ctx-first (SQL at arg[1]); the selector name collides with `database/sql`'s SQL-at-arg[0], indistinguishable without receiver-type verification |
+| `ent` | 0 | no SQL literal in user code — builder chain + generated code |
+| `sqlc` | 0 | SQL lives in generated package-level `const` declarations, called as `QueryRowContext(ctx, constIdent, …)`; the const identifier is not a literal the analyzer resolves |
+
+"Non-zero turns a hypothesis into a rule": `sqlx` (5) and GORM (3) are now rules,
+observed firing. `pgx`/`ent`/`sqlc` remain hypotheses for the structural reasons in
+the table — not for want of a method-name entry. `ent` in particular is a **correct
+0**: there is no SQL string in user code to inspect, so no data-access rule *can* fire
+on it.
+
+**The remaining real gap is tenancy, not method surface.** openstatus is the proof:
+the sqlx widening is necessary but not sufficient, because `private_location` and
+`monitor` are tenant-scoped — openstatus filters them by `token`/`workspace_id`, both
+visible in its queries — yet absent from the hardcoded `tenantTables`/`knownTables`/
+`tenantPredRe` word lists the self-contained Go subprocess substitutes for declared
+tenancy. The Go subprocess has no config/DDL access, so it cannot know these are
+tenant tables; the TypeScript side reads the same fact from `orgFilterTables`/
+`schemas`/DDL. That declared-vs-hardcoded asymmetry is Spec 63/64 territory, not a
+`dbMethodName` widening. Two receiver-verification caveats also remain, both recorded,
+neither silently widened: `dbMethodName` still does **not** verify the receiver is
+`*sql.DB`/`*sqlx.DB` (a `.Query("SELECT …")` on a non-DB receiver would be a false
+positive), and it stays quiet on `gin.Context.Query` only because that argument is a
+non-SQL literal.
 
 **Rule-count reconciliation (the pre-A6 "9" was wrong).** The Go analyzer emits
 **five** rules under `solid` (`function-size`, `struct-size`, `switch-size`,
@@ -1016,7 +1052,29 @@ react 22, solid 2, styles 9, …). A2–A6 disposed the 24 drift lines; the benc
    the bench found a real `styles/value-drift` defect precisely because the fixture
    was written to the pipeline's actual output shape (§A4).
 3. **Spec 64** — the function index is language-blind (R1 first), following Spec 63.
-4. **Go data-access method surface (§A6 limitation)** — widen `dbMethodName` to the
-   `sqlx` idiom (`Get`/`Select`/`NamedExec`/`Queryx`/`QueryRowx`) and verify the
-   receiver is `*sql.DB`/`*sqlx.DB`, so the four Go data-access rules fire on real
-   `database/sql` code rather than only on the fixture. Recorded, not silently widened.
+4. **Go data-access method surface (§A6)** — **done.** `dbMethodName` widened to the
+   `sqlx` idiom (`Get`/`Select`/`NamedExec`/`Queryx`/`QueryRowx` + Context), the
+   `database/sql` Context-variant off-by-one fixed, and GORM `Raw` added, all pinned
+   by `src/__tests__/goDataAccessMethodSurface.spec.ts`. What remains is the
+   **declared-vs-hardcoded tenancy** gap (openstatus's `private_location`/`monitor`
+   tables are tenant-scoped but absent from the hardcoded word lists — Spec 63/64)
+   and receiver-type verification, not a method-surface widening.
+5. **TS data-access ORM coverage (§A6 counterpart) — checked, gap recorded.** The
+   TypeScript analyzer's recognized surface is three lists — `importPatterns`
+   (`UniversalDataAccessAnalyzer.ts:138`: `drizzle`, `prisma`, `typeorm`, `knex`,
+   `sequelize` + `/database/` `/db/` `./db` `./schema`), `ORM_METHODS`
+   (`provenance.ts:107`, 28 builder verbs), and `EAGER_DB_METHODS`
+   (`UniversalDataAccessAnalyzer.ts:933`: `run`/`all`/`first`/`raw`/`exec`/`batch`/
+   `query`). Empirically the TS corpora exercise **only Drizzle + D1** — command:
+   `grep -rhoE "from '[^']+'" tests/fixtures/corpus bench | grep -iE 'db|sql|d1|drizzle|prisma|knex|kysely|mikro|sequelize|typeorm|pg|postgres|mysql|sqlite|libsql'`
+   → `drizzle-orm` (6) + `drizzle-orm/sqlite-core` (1) + `./db` (5), nothing else. So
+   Prisma/Knex/Sequelize/TypeORM are *nominal* coverage (names in the list, never
+   observed firing), and the drivers people actually use beyond Drizzle are **absent
+   from `importPatterns` entirely**: `kysely`, `@mikro-orm/*`, `pg`/`postgres`,
+   `mysql2`, `better-sqlite3`, `@libsql/client`. Method-level gaps even within a
+   recognized import: Knex `.del()` (its delete verb, not `delete`), TypeORM
+   QueryBuilder `.getMany()`/`.getOne()`, Sequelize `findAll`/`findByPk`/`destroy`,
+   Prisma `$queryRaw`/`$executeRaw`/`upsert`. Not widened here — the Go widening was
+   the work item; this is the "same question asked of the TS side" and the answer is
+   that the TS method set is *broader* than the Go one but still misses Kysely/Mikro/
+   raw drivers, and is unverified on everything but Drizzle.

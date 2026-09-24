@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// runDataAccessAnalysis analyzes database-access patterns on `database/sql`
-// method calls. It is the Go-subprocess counterpart of the TypeScript
+// runDataAccessAnalysis analyzes database-access patterns on `database/sql`,
+// `sqlx`, and GORM (`Raw`) method calls. It is the Go-subprocess counterpart of the TypeScript
 // `UniversalDataAccessAnalyzer` + schema Stage-4 reducer, emitting the same
 // bare rule IDs at the same ledger severities.
 //
@@ -67,11 +67,11 @@ func (a *Analyzer) runDataAccessAnalysis() []Violation {
 			if !ok {
 				return true
 			}
-			method, isDB := dbMethodName(call)
-			if !isDB || len(call.Args) == 0 {
+			method, sqlArgIndex, isDB := dbMethodName(call)
+			if !isDB || sqlArgIndex < 0 || sqlArgIndex >= len(call.Args) {
 				return true
 			}
-			sqlExpr := call.Args[0]
+			sqlExpr := call.Args[sqlArgIndex]
 
 			// sql-injection-risk: a dynamically-constructed SQL string is an
 			// injection surface; a raw string literal with `$1` placeholders is
@@ -180,21 +180,57 @@ func (a *Analyzer) runDataAccessAnalysis() []Violation {
 	return violations
 }
 
-// dbMethodName reports whether the call is a `database/sql` method invocation
-// and returns the selector name. The method set is the `database/sql` query/
-// exec/prepare surface (and its Context variants); it deliberately excludes
-// `Close`, `Commit`, `Rollback`, `Err`, and `Next`, which are not SQL-bearing.
-func dbMethodName(call *ast.CallExpr) (string, bool) {
+// dbMethodName reports whether the call is a `database/sql`, `sqlx`, or GORM
+// method invocation and returns the selector name plus the index of the
+// SQL-string argument within the call. The method set is the `database/sql`
+// query/exec/prepare surface, the `sqlx` wrapper surface, and GORM's `Raw`
+// (its one full-SQL literal method); it deliberately excludes `Close`,
+// `Commit`, `Rollback`, `Err`, and `Next`, which are not SQL-bearing.
+//
+// The SQL argument is not always arg[0], and getting the index wrong is a
+// silent no-op (the analyzer extracts the wrong expression, sees it is not a
+// string literal, and returns early). Two families carry the SQL later:
+//
+//   - **Context variants** (`QueryContext`, `ExecContext`, `QueryxContext`,
+//     `MustExecContext`, …) put `ctx context.Context` first, so the SQL is
+//     arg[1]. This is the canonical parameterized form since Go 1.8 — the
+//     overwhelmingly common shape in production code — so the index matters
+//     more here than for the bare forms.
+//   - **sqlx `Get`/`Select`** put the destination pointer before the SQL
+//     (`Get(dest, query, args…)`), so the SQL is arg[1]; with `ctx` it is
+//     arg[2] (`GetContext(ctx, dest, query, args…)`).
+func dbMethodName(call *ast.CallExpr) (string, int, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
-		return "", false
+		return "", -1, false
 	}
 	switch sel.Sel.Name {
-	case "Query", "QueryRow", "Exec", "Prepare",
-		"QueryContext", "QueryRowContext", "ExecContext", "PrepareContext":
-		return sel.Sel.Name, true
+	// database/sql — SQL string is arg[0].
+	case "Query", "QueryRow", "Exec", "Prepare":
+		return sel.Sel.Name, 0, true
+	// database/sql Context — ctx first, SQL string is arg[1].
+	case "QueryContext", "QueryRowContext", "ExecContext", "PrepareContext":
+		return sel.Sel.Name, 1, true
+	// sqlx — SQL string is arg[0].
+	case "Queryx", "QueryRowx", "NamedExec", "NamedQuery", "MustExec":
+		return sel.Sel.Name, 0, true
+	// sqlx Context — ctx first, SQL string is arg[1].
+	case "QueryxContext", "QueryRowxContext", "NamedExecContext", "NamedQueryContext", "MustExecContext":
+		return sel.Sel.Name, 1, true
+	// sqlx — SQL string is arg[1] (after the destination pointer).
+	case "Get", "Select":
+		return sel.Sel.Name, 1, true
+	// sqlx — SQL string is arg[2] (after ctx + destination pointer).
+	case "GetContext", "SelectContext":
+		return sel.Sel.Name, 2, true
+	// GORM — `Raw(sql, values…)` is GORM's full-SQL literal method; SQL is
+	// arg[0]. GORM's `Exec`/`Select` are intentionally NOT listed here: `Exec`
+	// is already the database/sql case above, and GORM's `Select` takes a
+	// column list (`Select("name, age")`), not a full statement.
+	case "Raw":
+		return sel.Sel.Name, 0, true
 	}
-	return "", false
+	return "", -1, false
 }
 
 // isDynamicSQL reports whether the SQL argument is constructed at runtime
