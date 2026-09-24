@@ -596,12 +596,13 @@ export async function scanFunctionsInDirectory(
 export class FunctionScanner {
   async scanFunctions(
     content: string,
-    filePath: string,
-    language: string
+    filePath: string
   ): Promise<FunctionMetadata[]> {
     // Delegate to the shared extraction logic — this ensures the index sync
     // path produces the same relational data (functionCalls, usedImports,
-    // complexity, etc.) as the audit runner path.
+    // complexity, etc.) as the audit runner path. Language is resolved inside
+    // extractFunctionsFromSource via getLanguageFromPath (the same selector
+    // the pipeline uses) — there is no separate language argument to drift.
     return extractFunctionsFromSource(content, filePath);
   }
 }

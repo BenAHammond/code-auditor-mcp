@@ -36,6 +36,7 @@ import type { SizeSample } from './analyzers/universal/UniversalSOLIDAnalyzer.js
 import type { AST, ASTNode, LanguageAdapter } from './languages/types.js';
 import type { MigrationOp } from './analyzers/universal/UniversalSchemaAnalyzer.js';
 import { TYPESCRIPT_EXTENSIONS, JAVASCRIPT_EXTENSIONS, getLanguageFromPath } from './utils/fileDiscovery.js';
+import { computeContentHash } from './utils/contentHash.js';
 import {
   walkAST,
   isExported,
@@ -405,11 +406,6 @@ export function createSecurityVisitor(): Stage2Visitor {
 // to mine — even on a cold run with no prior `index sync`.
 // The function_calls table is rebuilt post-pipeline after functions rows have
 // their auto-increment IDs assigned.
-
-function computeContentHash(body: string | undefined, signature: string | undefined): string {
-  const normalized = (body ?? '').replace(/\s+/g, ' ').trim() + '|' + (signature ?? '').trim();
-  return createHash('sha256').update(normalized).digest('hex');
-}
 
 /**
  * A single function/method/component row destined for the `functions` index

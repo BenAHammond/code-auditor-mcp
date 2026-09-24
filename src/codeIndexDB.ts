@@ -3,12 +3,12 @@
  * Replaces LokiJS + FlexSearch with durable, transactional storage.
  */
 
-import { createHash } from 'crypto';
 import { openSqlite } from './sqlite/driver.js';
 import type { SqliteDatabase, SqliteStatement } from './sqlite/types.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { discoverFiles, ALL_EXTENSIONS } from './utils/fileDiscovery.js';
+import { computeContentHash } from './utils/contentHash.js';
 import type {
   CompleteProjectTaskResult,
   CreateProjectTaskInput,
@@ -67,13 +67,6 @@ interface FunctionDocument extends EnhancedFunctionMetadata {
 // ("database is locked") instead of waiting. A generous timeout makes
 // contention block gracefully; the lease loop also retries SQLITE_BUSY.
 export const DB_BUSY_TIMEOUT_MS = 30_000;
-
-// ── Content hash ────────────────────────────────────────────────────────
-
-function computeContentHash(body: string | undefined, signature: string | undefined): string {
-  const normalized = (body ?? '').replace(/\s+/g, ' ').trim() + '|' + (signature ?? '').trim();
-  return createHash('sha256').update(normalized).digest('hex');
-}
 
 // ── Path containment ─────────────────────────────────────────────────────
 
@@ -2309,8 +2302,7 @@ export class CodeIndexDB {
       const { FunctionScanner } = await import('./functionScanner.js');
       const scanner = new FunctionScanner();
       const fileContent = await fs.readFile(filePath, 'utf-8');
-      const language = filePath.endsWith('.ts') || filePath.endsWith('.tsx') ? 'typescript' : 'javascript';
-      const parsedFunctions = await scanner.scanFunctions(fileContent, filePath, language);
+      const parsedFunctions = await scanner.scanFunctions(fileContent, filePath);
       return await this.syncFileIndex(filePath, parsedFunctions);
     } catch (error) {
       throw new Error(`Failed to sync file: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -2536,26 +2528,35 @@ export class CodeIndexDB {
       try {
         const scanner = new FunctionScanner();
         const fileContent = await fs.readFile(filePath, 'utf-8');
-        const language = (filePath.endsWith('.ts') || filePath.endsWith('.tsx'))
-          ? 'typescript' : 'javascript';
-        const currentFunctions = await scanner.scanFunctions(fileContent, filePath, language);
+        const currentFunctions = await scanner.scanFunctions(fileContent, filePath);
 
         // Get existing functions for this file from DB
         const existing = this.db.prepare(
           'SELECT * FROM functions WHERE file_path = ?'
         ).all(filePath) as any[];
 
-        // Build a name → existing-row map
+        // Key identity on (name, line_number) — the table's unique index —
+        // not name alone. Two same-named functions in one file (overloads, a
+        // method and a free function, the same name in two scopes) otherwise
+        // collapse to one map entry, and an edit to the shadowed one is
+        // reported against the wrong row or not at all. file_path is constant
+        // across the loop, so (name, line_number) is the distinguishing pair.
+        const keyOf = (name: unknown, lineNumber: unknown): string =>
+          `${name}:${lineNumber}`;
         const existingByName = new Map<string, any>();
         for (const e of existing) {
-          existingByName.set(e.name, e);
+          existingByName.set(keyOf(e.name, e.line_number), e);
         }
 
-        const currentNames = new Set(currentFunctions.map((f: any) => f.name));
+        const currentKeys = new Set(
+          currentFunctions.map((f: any) => keyOf(f.name, f.lineNumber))
+        );
         let fileChanged = false;
 
         for (const func of currentFunctions) {
-          const existingRow = existingByName.get(func.name);
+          const existingRow = existingByName.get(
+            keyOf(func.name, (func as any).lineNumber)
+          );
           // Convert scanner output to EnhancedFunctionMetadata shape
           const funcMeta: EnhancedFunctionMetadata = {
             ...func,
@@ -2580,7 +2581,7 @@ export class CodeIndexDB {
 
         // Detect deleted functions
         for (const e of existing) {
-          if (!currentNames.has(e.name)) {
+          if (!currentKeys.has(keyOf(e.name, e.line_number))) {
             deletedFunctions.push(this.rowToFunction(e));
             fileChanged = true;
           }

@@ -167,6 +167,85 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
     });
   });
 
+  // ── Spec 63 R4 — identity & language in the incremental path ──────────
+
+  describe('detectChangedFunctions (Spec 63 R4.1 — same-named functions)', () => {
+    it('reports an edit to one of two same-named functions in a file', async () => {
+      const twoOverloads = (firstBody: string, secondBody: string) =>
+        `export function process(input: string): string {\n  return ${firstBody};\n}\n` +
+        `export function process(input: number): number {\n  return ${secondBody};\n}\n`;
+
+      const filePath = await writeTestFile(
+        dir,
+        'src/overloads.ts',
+        twoOverloads('input.trim()', 'input + 1')
+      );
+
+      // First pass indexes both same-named declarations (two rows at distinct lines).
+      await db.detectChangedFunctions([filePath]);
+      const lines = (await db.getAllFunctions())
+        .map((f) => f.lineNumber)
+        .sort((a, b) => a - b);
+      expect(lines).toHaveLength(2);
+
+      // Edit only the SECOND function's body.
+      await writeFile(filePath, twoOverloads('input.trim()', 'input + 2'));
+
+      const result = await db.detectChangedFunctions([filePath]);
+
+      // Keyed on (name, line_number), exactly the edited function is reported.
+      // A name-only map collapses both to one entry and reports the wrong count.
+      expect(result.changedFunctions).toHaveLength(1);
+      expect(result.changedFunctions[0].name).toBe('process');
+      expect(result.changedFunctions[0].lineNumber).toBe(lines[1]);
+    });
+
+    it('detects deletion of one same-named function while the other remains', async () => {
+      const filePath = await writeTestFile(
+        dir,
+        'src/overloads.ts',
+        `export function process(input: string): string {\n  return input.trim();\n}\n` +
+        `export function process(input: number): number {\n  return input + 1;\n}\n`
+      );
+
+      await db.detectChangedFunctions([filePath]);
+      const lines = (await db.getAllFunctions())
+        .map((f) => f.lineNumber)
+        .sort((a, b) => a - b);
+      expect(lines).toHaveLength(2);
+
+      // Delete only the SECOND declaration; the first stays at line 1.
+      await writeFile(
+        filePath,
+        `export function process(input: string): string {\n  return input.trim();\n}\n`
+      );
+
+      const result = await db.detectChangedFunctions([filePath]);
+
+      // A name-only deletion set sees `process` still present and keeps both
+      // rows. Keyed on (name, line_number), the second row is the one that left.
+      expect(result.deletedFunctions).toHaveLength(1);
+      expect(result.deletedFunctions[0].name).toBe('process');
+      expect(result.deletedFunctions[0].lineNumber).toBe(lines[1]);
+    });
+  });
+
+  describe('detectChangedFunctions (Spec 63 R4.2 — language routing)', () => {
+    it('routes a .go file through the Go grammar, not a javascript fallback', async () => {
+      const filePath = await writeTestFile(
+        dir,
+        'main.go',
+        'package main\n\nfunc add(a, b int) int {\n\treturn a + b\n}\n'
+      );
+
+      await db.detectChangedFunctions([filePath]);
+
+      const addFn = (await db.getAllFunctions()).find((f) => f.name === 'add');
+      expect(addFn).toBeDefined();
+      expect(addFn?.language).toBe('go');
+    });
+  });
+
   // ── content_hash population ─────────────────────────────────────────
 
   describe('content_hash', () => {
