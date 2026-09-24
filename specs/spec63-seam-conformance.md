@@ -22,7 +22,92 @@ being wrong.
   `(name, line_number)`, the dead language ternary and ignored `scanFunctions`
   param removed, and a single `computeContentHash` imported by both consumers.
 - Source collection + empirical `content_hash` test landed (#203).
-- R1 (the identity question) is the next item, before R3.
+- R1 landed (reporter serialization table below) — R3's dead list is now settled
+  against what reporters actually emit, not just what analyzers read back.
+  Remaining: R6 (`signature` populated or removed with the schema bump), then
+  R2's conformance test class.
+
+## R1 — what each reporter actually serializes
+
+R3 classifies a seam as dead only when *no consumer* reads it, and the four
+reporters are consumers. A field that a reporter serializes is not dead even if
+no analyzer reads it back — it reaches the user. R1 pins that surface. The JSON
+reporter is the reference: it spreads each violation verbatim (`...violation`)
+plus a `fingerprint` field, so JSON carries every field on the record. The other
+three are allowlisted, and their field coverage is narrower than JSON's.
+
+| field | JSON | SARIF | CSV | HTML | identity-bearing |
+| --- | --- | --- | --- | --- | --- |
+| `file` | ✓ | `artifactLocation.uri` | ✓ | ✓ | ✓ (fingerprint) |
+| `rule` | ✓ | ruleId precedence 1 | ✓ | — | ✓ (fingerprint) |
+| `line` / `column` | ✓ | `region` | both | line only | — |
+| `severity` | ✓ | `level` | ✓ | ✓ | — |
+| `message` | ✓ | fullDescription + result text | ✓ | ✓ | — |
+| `suggestion` | ✓ | per-rule help + `properties.resolution` | — | — | — |
+| `recommendation` | ✓ | — | ✓ | ✓ | — |
+| `hotspot` | ✓ | `properties.hotspot` | ✓ | ✓ | — |
+| `new` | ✓ | `properties.baseline` | — | — | — |
+| `snippet` | ✓ | — | — | ✓ | — |
+| `estimatedEffort` | ✓ | — | ✓ | — | — |
+| `analyzer` (@deprecated) | ✓ | via fingerprint only | ✓ | ✓ | ✓ (fingerprint) |
+| `type` (@deprecated) | ✓ | ruleId precedence 4 | — | — | — |
+| `principle` | ✓ | ruleId precedence 2 | — | — | — |
+| `schemaType` | ✓ | ruleId precedence 5 | — | — | — |
+| `violationType` | ✓ | ruleId precedence 6 | — | — | — |
+| `details.rule` | ✓ | ruleId precedence 3 | — | — | — |
+| symbol fields (`symbol` → `functionName` → … → `enclosingSymbol`) | ✓ | via fingerprint only | — | — | ✓ (fingerprint) |
+
+Two consequences for R3, recorded below.
+
+### `analyzer` is deprecated-but-identity-bearing
+
+`Violation.analyzer` carries `@deprecated Read from AnalyzerResult.analyzerName
+instead.` (`types.ts:114`), but it is the **first component of the fingerprint
+tuple** (`buildFingerprintInput`, `fingerprint.ts:56-67`), which keys SARIF
+`partialFingerprints`, every baseline entry, and every dismissal. The deprecation
+is contradicted twice over:
+
+- `auditRunner.ts:906-929` has a dedicated normalization block that stamps
+  `violation.analyzer` from the result key — with a comment calling the result key
+  "the single source of truth" — precisely so fingerprints and `analyzerCounts`
+  are correct (the react analyzer omits the field; the schema sub-visitors
+  hardcode `'schema'` and the block re-buckets them). The field is actively
+  maintained, not transitional.
+- The fingerprint reads `violation.analyzer`, not `AnalyzerResult.analyzerName`.
+  The two already diverge intentionally: `data-access-org-filter` is stamped
+  `analyzer: 'data-access'` (`analyzerFieldOverride`) so the ledger group
+  `data-access/missing-org-filter` stays stable across the Stage-2 → Stage-4
+  move, while its `AnalyzerResult.analyzerName` remains `'data-access-org-filter'`.
+  "Finishing" the deprecation — reading `analyzerName` instead — would change the
+  fingerprint of every `missing-org-filter` finding.
+
+Removing or renaming the field is therefore a migration with a user-visible blast
+radius (every GitHub alert closes and reopens, every baseline resets, every
+dismissal resurrects), not a cleanup — and nothing connects the `@deprecated`
+note to the fingerprint. The correct disposition is to **remove the
+`@deprecated` note** (the field is load-bearing), or, if the deprecation is kept,
+to extend the note to name the fingerprint as the reason it cannot be removed so
+the next author does not "finish" it.
+
+### `symbol` falls back to `''`, collapsing file-level findings to one identity
+
+`extractSymbol` returns `''` when no symbol field is present, so the tuple becomes
+`[analyzer, rule, file, '']` and every unsymboled finding of a rule in a file
+shares one fingerprint — dismissing one dismisses all, and a baseline records one
+where there are N. Measured across the three corpora (3726 + 421 + 944 findings):
+
+| corpus | empty-symbol findings | colliding groups (≥2 in same analyzer+rule+file) |
+| --- | --- | --- |
+| recall-protocol | 131 | 0 |
+| hhra-org | 88 | 0 |
+| blitz | 212 | 1 (3× `secrets/hardcoded-secret` in `apps/toolkit-app-passportjs/src/pages/api/auth/[...auth].ts`) |
+
+Real but small: one group of three, in `hardcoded-secret`, a per-line rule with
+no extractable symbol by construction. Not a systemic problem today, but a latent
+one for any future symbol-less per-line rule — N firings per file that collapse
+to one identity are coarser than the users relying on dismissals/baselines
+believe. (Not gating R3; recorded here because it is an identity-seam property,
+not an analyzer one.)
 
 ## R3 — written-never-read seam table
 
