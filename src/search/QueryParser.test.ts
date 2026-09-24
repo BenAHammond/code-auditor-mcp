@@ -161,7 +161,7 @@ describe('QueryParser', () => {
   describe('Default Search Fields', () => {
     it('should set default search fields when not specified', () => {
       const result = parser.parse('user data');
-      expect(result.searchFields).toEqual(['name', 'signature', 'jsDoc', 'purpose', 'context']);
+      expect(result.searchFields).toEqual(['name', 'jsDoc', 'purpose', 'context']);
     });
   });
 

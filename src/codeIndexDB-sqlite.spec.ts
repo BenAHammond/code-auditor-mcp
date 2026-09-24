@@ -12,7 +12,6 @@ import type { EnhancedFunctionMetadata } from './types.js';
 
 function makeFunc(overrides: Partial<EnhancedFunctionMetadata> & { name: string; filePath: string }): EnhancedFunctionMetadata {
   return {
-    signature: `function ${overrides.name}()`,
     parameters: [],
     dependencies: [],
     purpose: '',
@@ -75,8 +74,8 @@ describe('CodeIndexDB SQLite — Schema', () => {
     const row = (db as any).functionToRow(func);
 
     // Insert
-    (db as any).db.prepare(`INSERT INTO functions (name, file_path, signature, body, purpose, context, language, complexity)
-      VALUES (@name, @file_path, @signature, @body, @purpose, @context, @language, @complexity)`).run(row);
+    (db as any).db.prepare(`INSERT INTO functions (name, file_path, body, purpose, context, language, complexity)
+      VALUES (@name, @file_path, @body, @purpose, @context, @language, @complexity)`).run(row);
     const ftsRow = rawDb.prepare('SELECT * FROM functions_fts WHERE name = ?').get('testFunc');
     expect(ftsRow).toBeTruthy();
     expect((ftsRow as any).body).toContain('console.log');
@@ -96,7 +95,7 @@ describe('CodeIndexDB SQLite — Schema', () => {
   it('enforces foreign key cascade from functions to function_calls', () => {
     const row = (db as any).functionToRow(makeFunc({ name: 'parent', filePath: 'src/parent.ts' }));
     const info = (db as any).db.prepare(
-      `INSERT INTO functions (name, file_path, signature, purpose, context, language, complexity) VALUES (@name, @file_path, @signature, @purpose, @context, @language, @complexity)`
+      `INSERT INTO functions (name, file_path, purpose, context, language, complexity) VALUES (@name, @file_path, @purpose, @context, @language, @complexity)`
     ).run(row);
     const funcId = Number(info.lastInsertRowid);
 
@@ -134,7 +133,6 @@ describe('CodeIndexDB SQLite — CRUD', () => {
       name: 'hashMe',
       filePath: 'src/hash.ts',
       body: 'function hashMe() { return 1 + 1; }',
-      signature: 'function hashMe(): number',
     }));
 
     const row = (db as any).db.prepare('SELECT * FROM functions WHERE name = ?').get('hashMe') as any;
@@ -542,7 +540,6 @@ describe('CodeIndexDB SQLite — searchFunctions', () => {
         language: 'typescript',
         body: 'function validateEmail(email: string) { return email.includes("@"); }',
         complexity: 5,
-        signature: 'function validateEmail(email: string): boolean',
       }),
       makeFunc({
         name: 'formatDate',
@@ -550,7 +547,6 @@ describe('CodeIndexDB SQLite — searchFunctions', () => {
         language: 'javascript',
         body: 'function formatDate(d) { return d.toISOString(); }',
         complexity: 2,
-        signature: 'function formatDate(d: Date): string',
       }),
       makeFunc({
         name: 'fetchUser',

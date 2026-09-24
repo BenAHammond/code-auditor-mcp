@@ -619,7 +619,7 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
           functionCalls: fn.functionCalls,
         };
 
-        const contentHash = computeContentHash(fn.body, '');
+        const contentHash = computeContentHash(fn.body);
         const now = new Date().toISOString();
 
         indexFacts.push({
@@ -633,7 +633,6 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
             language: lang,
             entity_type: fn.entityType,
             component_type: fn.componentType,
-            signature: '',
             return_type: null,
             complexity: fn.complexity,
             is_exported: fn.isExported ? 1 : 0,

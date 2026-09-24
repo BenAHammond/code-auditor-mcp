@@ -297,6 +297,39 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
     });
   });
 
+  // ── Spec 63 R6 — schema bump rebuilds a stale index ──────────────────
+
+  describe('stale-index rebuild (Spec 63 R6)', () => {
+    it('clears a pre-bump index on open instead of silently consuming it', async () => {
+      const filePath = await writeTestFile(dir, 'src/math.ts', addFunc('add'));
+      await db.detectChangedFunctions([filePath]);
+      expect((await db.getAllFunctions()).length).toBe(1);
+
+      // Simulate a pre-bump index on disk: an older build stamped
+      // schema_version=16 and stored a content_hash under the old
+      // body|signature formula. Stamp the version down and plant a stale hash
+      // — this is the state a silently-consumed index would hand to the next
+      // run, where an old stored hash no longer matches the freshly
+      // recomputed one and the diff is attributed to the code, not the index.
+      const raw = (db as any).db;
+      raw.prepare(`UPDATE meta SET value = '16' WHERE key = 'schema_version'`).run();
+      raw.prepare(`UPDATE functions SET content_hash = 'stale-hash-old-formula'`).run();
+      await db.close();
+
+      // Re-open: the 16→17 migration rebuilds the derived functions index
+      // rather than reading the stale rows.
+      db = new CodeIndexDB(join(dir, 'index.db'));
+      await db.initialize();
+
+      expect((await db.getAllFunctions()).length).toBe(0);
+
+      const version = (db as any).db
+        .prepare(`SELECT value FROM meta WHERE key = 'schema_version'`)
+        .get() as { value: string };
+      expect(version.value).toBe('17');
+    });
+  });
+
   // ── detectModifiedFiles ─────────────────────────────────────────────
 
   describe('detectModifiedFiles (R3 mtime)', () => {

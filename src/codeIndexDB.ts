@@ -326,7 +326,7 @@ export class CodeIndexDB {
   private stmts: Map<string, SqliteStatement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 16;
+  private static readonly SCHEMA_VERSION = 17;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -945,6 +945,75 @@ export class CodeIndexDB {
       }
     }
 
+    // Migration 16 → 17: Spec 63 R6 dropped the always-empty `signature` column
+    // and the `signature` term of `computeContentHash`. Two consequences for a
+    // pre-bump index:
+    //   1. Every stored `content_hash` was computed under the old `body|signature`
+    //      formula, so it no longer matches what `detectChangedFunctions`
+    //      recomputes — a stale index left in place would be *silently consumed*
+    //      (a no-edit `changed` run reports the whole file changed and attributes
+    //      it to the code, not the index).
+    //   2. The `functions.signature` column (always `''`) and its FTS mirror must
+    //      go. SQLite refuses `DROP COLUMN` while the FTS triggers reference the
+    //      column, so the triggers and FTS table are dropped first, the column is
+    //      dropped, and the FTS surface is rebuilt without `signature`.
+    if (currentVersion < 17) {
+      // Clear the derived index FIRST, while the existing FTS surface and its
+      // triggers are still the ones that match the current schema. `DELETE FROM
+      // functions` fires the live `functions_ad` trigger per row, keeping
+      // `functions_fts` in step, and cascades to `function_calls` /
+      // `function_dependencies`. It must precede the FTS drop: firing the
+      // `functions_ad` trigger against a freshly recreated (empty) external-content
+      // `functions_fts` while `functions` still holds rows yields
+      // SQLITE_CORRUPT, not a clean delete.
+      this.db.exec(`DELETE FROM functions`);
+
+      // Drop the FTS surface — SQLite refuses DROP COLUMN while the FTS triggers
+      // reference the column, and the FTS table's column list must shed
+      // `signature` too.
+      this.db.exec(`
+        DROP TRIGGER IF EXISTS functions_ai;
+        DROP TRIGGER IF EXISTS functions_ad;
+        DROP TRIGGER IF EXISTS functions_au;
+        DROP TABLE IF EXISTS functions_fts;
+      `);
+
+      // Drop the column only if it still exists. A fresh DB is created by
+      // `createSchema` *without* the column (it already reflects v17), and the
+      // migrations then run on top of it with `currentVersion` 0 — so this guard
+      // is what lets an old index be upgraded in place without breaking a brand
+      // new one (same idempotence as the 14→15 / 15→16 column guards).
+      const fnCols = this.db
+        .prepare(`PRAGMA table_info('functions')`)
+        .all() as Array<{ name: string }>;
+      if (fnCols.some((c) => c.name === 'signature')) {
+        this.db.exec(`ALTER TABLE functions DROP COLUMN signature`);
+      }
+
+      // Rebuild the FTS surface without `signature`.
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS functions_fts USING fts5(
+          name, jsdoc_description, purpose, context, body,
+          content='functions', content_rowid='id',
+          tokenize='porter unicode61'
+        );
+        CREATE TRIGGER IF NOT EXISTS functions_ai AFTER INSERT ON functions BEGIN
+          INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
+          VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS functions_ad AFTER DELETE ON functions BEGIN
+          INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
+          VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS functions_au AFTER UPDATE ON functions BEGIN
+          INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
+          VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
+          INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
+          VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
+        END;
+      `);
+    }
+
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -966,7 +1035,6 @@ export class CodeIndexDB {
         language          TEXT DEFAULT 'typescript',
         entity_type       TEXT DEFAULT 'function',
         component_type    TEXT,
-        signature         TEXT,
         return_type       TEXT,
         complexity        INTEGER DEFAULT 0,
         is_exported       INTEGER DEFAULT 0,
@@ -1002,24 +1070,24 @@ export class CodeIndexDB {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS functions_fts USING fts5(
-        name, signature, jsdoc_description, purpose, context, body,
+        name, jsdoc_description, purpose, context, body,
         content='functions', content_rowid='id',
         tokenize='porter unicode61'
       );
 
       CREATE TRIGGER IF NOT EXISTS functions_ai AFTER INSERT ON functions BEGIN
-        INSERT INTO functions_fts(rowid, name, signature, jsdoc_description, purpose, context, body)
-        VALUES (new.id, new.name, new.signature, new.jsdoc_description, new.purpose, new.context, new.body);
+        INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
+        VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
       END;
       CREATE TRIGGER IF NOT EXISTS functions_ad AFTER DELETE ON functions BEGIN
-        INSERT INTO functions_fts(functions_fts, rowid, name, signature, jsdoc_description, purpose, context, body)
-        VALUES ('delete', old.id, old.name, old.signature, old.jsdoc_description, old.purpose, old.context, old.body);
+        INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
+        VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
       END;
       CREATE TRIGGER IF NOT EXISTS functions_au AFTER UPDATE ON functions BEGIN
-        INSERT INTO functions_fts(functions_fts, rowid, name, signature, jsdoc_description, purpose, context, body)
-        VALUES ('delete', old.id, old.name, old.signature, old.jsdoc_description, old.purpose, old.context, old.body);
-        INSERT INTO functions_fts(rowid, name, signature, jsdoc_description, purpose, context, body)
-        VALUES (new.id, new.name, new.signature, new.jsdoc_description, new.purpose, new.context, new.body);
+        INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
+        VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
+        INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
+        VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
       END;
 
       CREATE TABLE IF NOT EXISTS function_calls (
@@ -1610,7 +1678,6 @@ export class CodeIndexDB {
       dependencies: [],
       purpose: row.purpose ?? '',
       context: row.context ?? '',
-      signature: row.signature ?? '',
       parameters: tryParseJson(row.parameters) ?? [],
       jsDoc: { description: row.jsdoc_description ?? '' },
       imports: [],
@@ -1640,7 +1707,6 @@ export class CodeIndexDB {
       language: func.language ?? 'typescript',
       entity_type: (func.metadata as any)?.entityType ?? 'function',
       component_type: (func.metadata as any)?.componentType ?? null,
-      signature: enhanced.signature ?? '',
       return_type: enhanced.returnType ?? null,
       complexity: enhanced.complexity ?? (func.metadata as any)?.complexity ?? 0,
       is_exported: (func.metadata as any)?.isExported ? 1 : 0,
@@ -1659,7 +1725,7 @@ export class CodeIndexDB {
       purpose: func.purpose ?? '',
       context: func.context ?? '',
       body: (func as any).body ?? null,
-      content_hash: enhanced.content_hash ?? computeContentHash((func as any).body, enhanced.signature),
+      content_hash: enhanced.content_hash ?? computeContentHash((func as any).body),
       last_modified: lastModified ?? new Date().toISOString(),
       // body lives only in the dedicated `body` column, never in metadata_json
       // (previously triple-stored). JSON.stringify omits the undefined value, so
@@ -1677,19 +1743,19 @@ export class CodeIndexDB {
     try {
       this.db.prepare(`
         INSERT INTO functions (name, file_path, line_number, start_line, end_line, language,
-          entity_type, component_type, signature, return_type, complexity, is_exported, has_jsdoc,
+          entity_type, component_type, return_type, complexity, is_exported, has_jsdoc,
           jsdoc_description, jsdoc_tags, parameters, type_info, hooks, props,
           used_imports, unused_imports, import_usage, has_unused_imports, dependency_depth,
           purpose, context, body, content_hash, last_modified, metadata_json)
         VALUES (@name, @file_path, @line_number, @start_line, @end_line, @language,
-          @entity_type, @component_type, @signature, @return_type, @complexity, @is_exported, @has_jsdoc,
+          @entity_type, @component_type, @return_type, @complexity, @is_exported, @has_jsdoc,
           @jsdoc_description, @jsdoc_tags, @parameters, @type_info, @hooks, @props,
           @used_imports, @unused_imports, @import_usage, @has_unused_imports, @dependency_depth,
           @purpose, @context, @body, @content_hash, @last_modified, @metadata_json)
         ON CONFLICT(name, file_path, line_number) DO UPDATE SET
           line_number=excluded.line_number, start_line=excluded.start_line, end_line=excluded.end_line,
           language=excluded.language, entity_type=excluded.entity_type, component_type=excluded.component_type,
-          signature=excluded.signature, return_type=excluded.return_type, complexity=excluded.complexity,
+          return_type=excluded.return_type, complexity=excluded.complexity,
           is_exported=excluded.is_exported, has_jsdoc=excluded.has_jsdoc,
           jsdoc_description=excluded.jsdoc_description, jsdoc_tags=excluded.jsdoc_tags,
           parameters=excluded.parameters, type_info=excluded.type_info, hooks=excluded.hooks, props=excluded.props,
@@ -2561,10 +2627,7 @@ export class CodeIndexDB {
           const funcMeta: EnhancedFunctionMetadata = {
             ...func,
             complexity: (func as any).complexity,
-            content_hash: computeContentHash(
-              (func as any).body,
-              (func as any).signature
-            ),
+            content_hash: computeContentHash((func as any).body),
           } as EnhancedFunctionMetadata;
           const newHash = funcMeta.content_hash!;
 
@@ -2768,7 +2831,7 @@ export class CodeIndexDB {
   ): FunctionDocument[] {
     return results.filter(doc => {
       const searchText = [
-        doc.name, doc.signature, doc.purpose, doc.context,
+        doc.name, doc.purpose, doc.context,
         doc.jsDoc?.description, doc.returnType,
         ...(doc.parameters || []).map((p: any) => `${p.name} ${p.description || ''}`),
         ...doc.dependencies

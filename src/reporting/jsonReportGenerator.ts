@@ -4,7 +4,7 @@
  */
 
 import { AuditResult } from '../types.js';
-import { getFilesProcessed } from '../pipeline.js';
+import { getFilesProcessed, getFactsConsumed, isReducerStatus } from '../pipeline.js';
 import { fingerprint, buildFingerprintInput } from '../fingerprint.js';
 
 export interface JSONReportConfig {
@@ -83,7 +83,14 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
       summary: {
         totalViolations: result.violations.length,
         bySeverity: countBySeverity(result.violations),
-        filesProcessed: getFilesProcessed(result.status),
+        // A reducer doesn't count files — it consumes facts. Emitting
+        // filesProcessed: 0 for it would read as "scanned nothing", a claim the
+        // reducer never made. Omit the field for reducers and carry factsConsumed
+        // instead, so presence (not the number) is what distinguishes "scanned
+        // nothing" from "doesn't count files".
+        ...(isReducerStatus(result.status)
+          ? { factsConsumed: getFactsConsumed(result.status) }
+          : { filesProcessed: getFilesProcessed(result.status) }),
         executionTime: result.executionTime
       },
       violations: result.violations.map(violation => ({

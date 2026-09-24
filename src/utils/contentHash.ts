@@ -1,8 +1,8 @@
 import { createHash } from 'crypto';
 
 /**
- * SHA-256 of a normalized body + signature pair — the identity used to detect
- * whether an indexed function changed since its last sync.
+ * SHA-256 of a normalized body — the identity used to detect whether an indexed
+ * function changed since its last sync.
  *
  * This is the single canonical definition. The pipeline writes this hash when
  * it indexes a function (`pipelineAdapters.createFunctionIndexVisitor`), and
@@ -13,15 +13,14 @@ import { createHash } from 'crypto';
  * report the whole file changed. One definition, imported by both, keeps them
  * in step by construction.
  *
- * `signature` normalizes through `(signature ?? '')` because the pipeline
- * writes `''` while `FunctionScanner` leaves the field `undefined`; both must
- * hash identically for the diff to stay quiet on a no-edit run.
+ * The `signature` second argument is gone (Spec 63 R6). Every producer fed it
+ * an empty value — the pipeline wrote the literal `''`, and `FunctionScanner`
+ * left the field `undefined` — so it contributed a constant `|` suffix to every
+ * hash and never distinguished one function from another. It was a dead seam:
+ * it looked like it identified the function's declaration while no producer
+ * populated it. Hashing the body alone is what change detection actually needs.
  */
-export function computeContentHash(
-  body: string | undefined,
-  signature: string | undefined
-): string {
-  const normalized =
-    (body ?? '').replace(/\s+/g, ' ').trim() + '|' + (signature ?? '').trim();
+export function computeContentHash(body: string | undefined): string {
+  const normalized = (body ?? '').replace(/\s+/g, ' ').trim();
   return createHash('sha256').update(normalized).digest('hex');
 }

@@ -31,8 +31,17 @@ being wrong.
   replaced with their real contracts (fingerprint bucket / SARIF rule-id
   precedence 4). Fields emitted to users via JSON's verbatim spread
   (`importSpecifier`, `caller`, `fix`, `sourceFormat`) stay.
-  Remaining: R6 (`signature` populated or removed with the schema bump), then
-  R2's conformance test class.
+- R6 landed: the always-empty `signature` argument was removed from
+  `computeContentHash` (body-only hashing) **and** the always-empty
+  `functions.signature` column was removed end-to-end (schema, FTS mirror,
+  triggers, `functionToRow`/`rowToFunction`/`registerFunction`, the search
+  surface, CLI display, `conventionMiner`, and every test fixture). `SCHEMA_VERSION`
+  bumped 16→17 with a migration that drops the column, rebuilds `functions_fts`
+  without it, and clears the index — a test demonstrates a pre-bump index is
+  rebuilt, not silently consumed, on open. The reducer `filesProcessed: 0`
+  residual in the JSON writer was also fixed (reducers omit `filesProcessed` and
+  carry `factsConsumed`).
+  Remaining: R2's conformance test class.
 
 ## R1 — what each reporter actually serializes
 
@@ -160,6 +169,69 @@ written-but-never-serialized — are removed:
 | `AnalyzerResult.filesProcessed` | written/read only by `UniversalSchemaAnalyzer` to aggregate its sub-results, and effectively always `0` because the sub-results populate `status.filesProcessed`, not this field; the JSON reporter reads `getFilesProcessed(result.status)` instead. Rewired to `getFilesProcessed(...status)`. |
 | `PolyglotAnalysisResult.crossLanguageViolations` | written (`LanguageOrchestrator`), never read downstream — the findings already flow through `violations`. Field removed; `CrossLanguageViolation` type kept (return type of the cross-language detectors). |
 | `getContentHashesForFiles` | no production caller — superseded by the single `computeContentHash` (R5); only a unit test exercised it. Method + test removed. |
+
+## R6 — the `signature` argument was a dead seam; removed, with a schema bump
+
+R5 unified `computeContentHash(body, signature)` as the single content-hash
+definition imported by both consumers. R6 resolves its second argument.
+
+**The `signature` argument was always empty.** Every producer fed it an empty
+value — the pipeline's function-index visitor wrote the literal `''`
+(`pipelineAdapters.ts:636`) and `FunctionScanner` left the field `undefined` —
+so it contributed a constant `|` suffix to every hash and never distinguished
+one function from another. It *looked* like it identified the function's
+declaration (a real, useful thing to hash) while no producer populated it — the
+same shape as the written-never-read seams above, but worse: it silently
+degraded the hash's precision rather than doing nothing.
+
+**Disposition: removed, not populated.** Populating it would be a new feature
+(signature extraction across TS/JS/Go) that no consumer has asked for; the body
+alone is what change detection needs. `computeContentHash(body)` now hashes only
+the normalized body. The three call sites dropped their empty second argument
+(`pipelineAdapters.ts:622`, `codeIndexDB.ts` `functionToRow` and
+`detectChangedFunctions`).
+
+**The `functions.signature` column goes too.** It was the second half of the
+dead seam: `functionToRow` wrote `''` into it on every row, and full-text search
+mirrored it in `functions_fts` — a column that has never held data, i.e. the
+same shape the previous two days spent deleting. It is removed end-to-end: the
+column, the `functions_fts` mirror, and its `functions_ai/ad/au` trigger terms
+all go, and the search surface drops the field (`searchFields` union,
+`signatureMatch` weight, `signature` highlight, the `'signature'` default in
+`QueryParser`, the CLI definition/search display, and `conventionMiner`'s read).
+`CrossLanguageEntity.signature` (populated, read by `APIContractAnalyzer`) and
+the telemetry structural signature are separate surfaces and stay.
+
+**`SCHEMA_VERSION` 16→17 + a rebuild migration.** Changing the hash formula
+invalidates every stored `content_hash` (each was computed under the old
+`body|signature` formula), and the column removal means a pre-bump schema no
+longer matches what `functionToRow` writes. The 16→17 migration drops the
+`signature` column and rebuilds the `functions_fts` surface without it (SQLite
+refuses `DROP COLUMN` while the FTS triggers reference it, so the triggers and
+FTS table are dropped first), then `DELETE FROM functions` to force the derived
+index to be re-derived from source on the next sync. Without it, a pre-bump index
+would be **silently consumed**: a no-edit `changed` run recomputes a body-only
+hash, compares it to the stored body|signature hash, and reports the whole file
+changed — attributing to the code what was actually the index's stale hash.
+
+**The rebuild is demonstrated, not just coded.** `auditScope.spec.ts`
+"stale-index rebuild (Spec 63 R6)" indexes a function, stamps the stored
+`schema_version` down to 16 and plants a stale hash, re-opens the DB, and
+asserts the row is gone (`getAllFunctions()` is empty) and the version is now 17
+— i.e. the stale index was rebuilt rather than read.
+
+### Reducer `filesProcessed: 0` residual (raised mid-R6)
+
+The R3 `filesProcessed` audit left one statement the reducer never made: the JSON
+writer emitted `filesProcessed: getFilesProcessed(result.status)`, which is `0`
+for a `reducer-ran` status because `getFilesProcessed` returns 0 for anything
+that is not `visitor-ran`. A CI script reading `summary.filesProcessed` to check
+whether the schema analyzer ran was told it processed nothing. Fixed in the JSON
+writer: a reducer summary **omits** `filesProcessed` and **carries**
+`factsConsumed` instead. Presence (not the number) is now the signal that
+distinguishes "scanned nothing" from "doesn't count files" — the same clean-vs-
+cannot-fire distinction enforced elsewhere. Pinned by
+`jsonReportGenerator.spec.ts`.
 
 ## Fluent-chain provenance — a coincidence, not a capability
 

@@ -199,7 +199,7 @@ export class QueryParser {
 
     // Set default search fields if not specified
     if (!result.searchFields || result.searchFields.length === 0) {
-      result.searchFields = ['name', 'signature', 'jsDoc', 'purpose', 'context'];
+      result.searchFields = ['name', 'jsDoc', 'purpose', 'context'];
     }
 
     return result;

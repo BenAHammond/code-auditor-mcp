@@ -147,7 +147,7 @@ export const tools: Tool[] = [
         name: 'filters',
         type: 'object',
         required: false,
-        description: 'Optional filters (language, filePath, dependencies, componentType, entityType, searchMode). Set searchMode to "content" to search within function bodies, "metadata" for names/signatures only, or "both" for combined search',
+        description: 'Optional filters (language, filePath, dependencies, componentType, entityType, searchMode). Set searchMode to "content" to search within function bodies, "metadata" for names/jsDoc/purpose only, or "both" for combined search',
       },
       {
         name: 'limit',

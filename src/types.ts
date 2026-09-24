@@ -1181,7 +1181,6 @@ export interface FunctionMetadata {
 
 // Enhanced function metadata with additional searchable fields
 export interface EnhancedFunctionMetadata extends FunctionMetadata {
-  signature: string;
   parameters: Array<{
     name: string;
     type?: string;
@@ -1205,7 +1204,7 @@ export interface EnhancedFunctionMetadata extends FunctionMetadata {
   tokenizedName?: string;
   lastModified?: Date;
   body?: string;  // Actual function body content for content search
-  content_hash?: string;  // SHA-256 of normalized body + signature for incremental re-audit
+  content_hash?: string;  // SHA-256 of normalized body for incremental re-audit
   metadata?: {
     // Existing metadata fields
     entityType?: 'function' | 'component';
@@ -1306,11 +1305,10 @@ export interface SearchOptions {
     };
   };
   searchStrategy?: 'exact' | 'fuzzy' | 'semantic';
-  searchFields?: Array<'name' | 'signature' | 'jsDoc' | 'parameters' | 'returnType' | 'purpose' | 'context'>;
+  searchFields?: Array<'name' | 'jsDoc' | 'parameters' | 'returnType' | 'purpose' | 'context'>;
   searchMode?: 'metadata' | 'content' | 'both';  // New field for content search
   scoringWeights?: {
     nameMatch?: number;
-    signatureMatch?: number;
     jsDocMatch?: number;
     parameterMatch?: number;
     purposeMatch?: number;
@@ -1334,7 +1332,6 @@ export interface SearchResult {
     score: number;  // Required for relevance ranking
     highlights?: {
       name?: string[];
-      signature?: string[];
       jsDoc?: string[];
       parameters?: string[];
       purpose?: string[];

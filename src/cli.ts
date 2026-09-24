@@ -4307,9 +4307,6 @@ async function runSearch(query: string, options: Record<string, any>): Promise<v
       console.log(chalk.blue(`\nDefinition: ${func.name}`));
       console.log(chalk.gray('──────────────────────────────────────────'));
       console.log(`${chalk.bold('File:')} ${func.filePath}${func.lineNumber ? `:${func.lineNumber}` : ''}`);
-      if (func.signature) {
-        console.log(`${chalk.bold('Signature:')} ${func.signature}`);
-      }
       if (func.purpose) {
         console.log(`${chalk.bold('Purpose:')} ${func.purpose}`);
       }
@@ -4369,9 +4366,6 @@ async function runSearch(query: string, options: Record<string, any>): Promise<v
         console.log(
           `${chalk.bold(func.name)}${lang} — ${chalk.green(func.filePath)}${lineInfo}`
         );
-        if (func.signature) {
-          console.log(chalk.dim(`  ${func.signature}`));
-        }
         if (func.purpose) {
           console.log(chalk.dim(`  ${func.purpose}`));
         }

@@ -1074,15 +1074,15 @@ export function computeMinerInputHash(
   // Hash actual content — not just counts — so two corpora with identical
   // counts but different functions produce different hashes and are mined.
   const rows = db.prepare(
-    'SELECT name, content_hash, COALESCE(body, \'\') as body, COALESCE(signature, \'\') as signature FROM functions ORDER BY name, content_hash'
-  ).all() as Array<{ name: string; content_hash: string; body: string; signature: string }>;
+    'SELECT name, content_hash, COALESCE(body, \'\') as body FROM functions ORDER BY name, content_hash'
+  ).all() as Array<{ name: string; content_hash: string; body: string }>;
   const callRows = db.prepare(
     'SELECT fc.callee_name FROM function_calls fc ORDER BY fc.callee_name'
   ).all() as Array<{ callee_name: string }>;
 
   return computeHash([
     MINER_VERSION,
-    rows.map(r => [r.name, r.content_hash, r.signature.length, r.body.length]),
+    rows.map(r => [r.name, r.content_hash, r.body.length]),
     callRows.map(r => r.callee_name),
     config,
   ]);

@@ -797,7 +797,6 @@ export function doUntrustedWork() {
       {
         name: 'dangerousFn',
         filePath: 'src/lib/secrets.ts',
-        signature: 'function dangerousFn()',
         parameters: [],
         dependencies: [],
         purpose: '',
@@ -813,7 +812,6 @@ export function doUntrustedWork() {
       {
         name: 'doUntrustedWork',
         filePath: 'src/untrusted/caller.ts',
-        signature: 'function doUntrustedWork()',
         parameters: [],
         dependencies: [],
         purpose: '',
@@ -867,7 +865,6 @@ export function doTrustedWork() {
       {
         name: 'dangerousFn',
         filePath: 'src/lib/secrets.ts',
-        signature: 'function dangerousFn()',
         parameters: [],
         dependencies: [],
         purpose: '',
@@ -881,7 +878,6 @@ export function doTrustedWork() {
       {
         name: 'doTrustedWork',
         filePath: 'src/trusted/caller.ts',
-        signature: 'function doTrustedWork()',
         parameters: [],
         dependencies: [],
         purpose: '',
@@ -930,7 +926,6 @@ export function renderPage() {
       {
         name: 'dangerAPI',
         filePath: 'src/api/unsafe.ts',
-        signature: 'function dangerAPI()',
         parameters: [],
         dependencies: [],
         purpose: '',
@@ -944,7 +939,6 @@ export function renderPage() {
       {
         name: 'renderPage',
         filePath: 'src/ui/component.ts',
-        signature: 'function renderPage()',
         parameters: [],
         dependencies: [],
         purpose: '',
