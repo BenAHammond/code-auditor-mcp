@@ -1906,9 +1906,19 @@ function checkLoopQueries(
     // R4.2: Nested-loop attribution.
     const depthMsg = loopInfo.depth > 1 ? ` (nested ${loopInfo.depth} levels deep)` : '';
 
+    // Anchor to the resolved callee, not the raw node. For `await db.prepare(…)
+    // .bind(…).all<T>(…)` tree-sitter emits an OUTER call_expression at the `await`
+    // keyword (its function is an await_expression wrapping the chain) alongside the
+    // inner call at `db`. Parent-before-child traversal hands the outer node to this
+    // loop first, so the caret would land on `await` instead of the query. Resolving
+    // the callee (which already recurses through await_expression) re-anchors to the
+    // `db` receiver; for every non-await shape the callee starts at the same column
+    // as the node, so nothing else moves.
+    const anchor = getCallExpressionCallee(node, adapter) ?? node;
+
     violations.push(makeViolation(
       ast.filePath,
-      node.location.start,
+      anchor.location.start,
       `Database query inside loop${depthMsg} ` +
       `(loop at line ${loopInfo.loopNode.location.start.line}). ` +
       `This may cause N+1 performance issues. Consider batching queries or using a join.`,
