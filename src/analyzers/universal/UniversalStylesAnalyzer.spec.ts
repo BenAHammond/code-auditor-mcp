@@ -168,43 +168,116 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe('Detector 1 — Value Drift', () => {
-  it('flags color drift when a rare color exists among a dominant cluster', async () => {
-    // Dominant cluster: 10 × #1e2328
-    for (let i = 0; i < 10; i++) {
-      insertDecl({
-        property: 'background-color',
-        raw_value: '#1e2328',
-        mechanism: 'css',
-        file_path: `src/comp${i % 3}.css`,
-        line: i + 1,
-      });
+  /** Expose the protected color helpers for direct unit assertion. */
+  class LabProbe extends UniversalStylesAnalyzer {
+    parse(raw: string): [number, number, number] | null {
+      return this.parseColorToRGB(raw);
     }
-    // Straggler: 1 × #ff0000 (very different from #1e2328)
-    insertDecl({
-      property: 'background-color',
-      raw_value: '#ff0000',
-      mechanism: 'css',
-      file_path: 'src/outlier.css',
-      line: 1,
-    });
+    distance(a: [number, number, number], b: [number, number, number]): number {
+      return this.deltaE(a, b);
+    }
+  }
 
-    const violations = await runAnalyzer({
-      minCorpus: 3,
-      colorDeltaE: 2.0,
-      outlierMaxShare: 0.2,
-      modeMinCount: 3,
-    });
+  // ── R1: CIELAB ΔE76 conversion ────────────────────────────────────────────
 
-    const drifts = findViolations(violations, 'styles/value-drift');
-    expect(drifts.length).toBeGreaterThanOrEqual(1);
-    const outlier = drifts.find((v: any) => v.file.includes('outlier'));
-    expect(outlier).toBeDefined();
-    expect(outlier.message).toContain('#ff0000');
-    expect(outlier.message).toContain('Color drift');
+  it('reproduces the known ΔE76 for #06121a ↔ #06131c (≈1.06)', () => {
+    const probe = new LabProbe();
+    const a = probe.parse('#06121a')!;
+    const b = probe.parse('#06131c')!;
+    expect(probe.distance(a, b)).toBeCloseTo(1.06, 1);
   });
 
-  it('flags exact-value drift for non-color properties', async () => {
-    // Dominant: 10 × 16px margin-top
+  it('places the genuine recall drift pairs under the 2.5 threshold', () => {
+    const probe = new LabProbe();
+    expect(probe.distance(probe.parse('#5f7488')!, probe.parse('#637688')!)).toBeCloseTo(1.59, 1);
+    expect(probe.distance(probe.parse('#cfe0ef')!, probe.parse('#cfe2ee')!)).toBeCloseTo(1.82, 1);
+  });
+
+  it('places the genuinely-distinct pairs over the 2.5 threshold', () => {
+    const probe = new LabProbe();
+    expect(probe.distance(probe.parse('#0f172a')!, probe.parse('#101b26')!)).toBeCloseTo(6.76, 1);
+    expect(probe.distance(probe.parse('#e0e8f0')!, probe.parse('#f1f5f9')!)).toBeCloseTo(5.34, 1);
+  });
+
+  // ── R4: keywords are not colors ───────────────────────────────────────────
+
+  it('returns null for color keywords', () => {
+    const probe = new LabProbe();
+    for (const kw of ['transparent', 'currentColor', 'inherit', 'initial', 'unset', 'none']) {
+      expect(probe.parse(kw)).toBeNull();
+    }
+  });
+
+  it('still parses named colors', () => {
+    const probe = new LabProbe();
+    expect(probe.parse('red')).toEqual([255, 0, 0]);
+    expect(probe.parse('white')).toEqual([255, 255, 255]);
+    expect(probe.parse('black')).toEqual([0, 0, 0]);
+  });
+
+  // ── R2/R3: pairwise drift, not scarcity ───────────────────────────────────
+
+  it('flags a near-identical pair, naming the canonical', async () => {
+    // #4a5568 (canonical, 2 uses) + #4e5568 (1 use) — ΔE76 1.505 < 2.5.
+    insertDecl({ property: 'background-color', raw_value: '#4a5568', file_path: 'src/a.css', line: 1 });
+    insertDecl({ property: 'background-color', raw_value: '#4a5568', file_path: 'src/b.css', line: 1 });
+    insertDecl({ property: 'background-color', raw_value: '#4e5568', file_path: 'src/c.css', line: 1 });
+
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+
+    const drifts = findViolations(violations, 'styles/value-drift');
+    expect(drifts.length).toBe(1);
+    expect(drifts[0].file).toBe('src/c.css');
+    expect(drifts[0].message).toContain('#4e5568');
+    expect(drifts[0].message).toContain('#4a5568');
+    expect(drifts[0].message).toContain('used 2 times');
+    expect(drifts[0].message).toContain('ΔE =');
+  });
+
+  it('does NOT fire for a pair of distinct colors (ΔE76 > 2.5)', async () => {
+    // #4a5568 ↔ #535568 — ΔE76 3.446 > 2.5.
+    insertDecl({ property: 'color', raw_value: '#4a5568', file_path: 'src/a.css', line: 1 });
+    insertDecl({ property: 'color', raw_value: '#535568', file_path: 'src/b.css', line: 1 });
+
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+
+    expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
+  });
+
+  it('does NOT fire for a singleton (one distinct value, however rare)', async () => {
+    insertDecl({ property: 'color', raw_value: '#ff0000', file_path: 'src/only.css', line: 1 });
+
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+
+    expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
+  });
+
+  it('does NOT fire for an identical-value cluster (one distinct value, many declarations)', async () => {
+    for (let i = 0; i < 5; i++) {
+      insertDecl({ property: 'color', raw_value: '#4a5568', file_path: `src/c${i}.css`, line: 1 });
+    }
+
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+
+    expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
+  });
+
+  it('skips color keywords so they do not dominate a cluster (R4 regression)', async () => {
+    // `transparent` used to parse as [0,0,0], making a keyword the dominant color
+    // and flagging every real color against it. It must be dropped instead, so
+    // the lone hex is a singleton — no drift.
+    insertDecl({ property: 'background', raw_value: 'transparent', file_path: 'src/a.css', line: 1 });
+    insertDecl({ property: 'background', raw_value: '#1e2328', file_path: 'src/b.css', line: 1 });
+
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+
+    expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
+  });
+
+  it('does NOT flag value drift for length-valued properties (off-scale domain)', async () => {
+    // A rare length value (99px) among a dominant length (16px) is not style
+    // *drift* — it is `off-scale`'s concern, judged against the project's
+    // declared scale. value-drift checks colors only (Spec 66 follow-up #253).
     for (let i = 0; i < 10; i++) {
       insertDecl({
         property: 'margin-top',
@@ -225,34 +298,15 @@ describe('Detector 1 — Value Drift', () => {
       line: 1,
     });
 
-    const violations = await runAnalyzer({
-      minCorpus: 3,
-      outlierMaxShare: 0.2,
-      modeMinCount: 3,
-    });
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
 
-    const drifts = findViolations(violations, 'styles/value-drift');
-    expect(drifts.length).toBeGreaterThanOrEqual(1);
-    const outlier = drifts.find((v: any) => v.file.includes('outlier'));
-    expect(outlier).toBeDefined();
-    expect(outlier.functionName).toBe('margin-top: 99px');
+    expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
   });
 
-  it('does NOT fire when corpus is below minCorpus', async () => {
-    // Only 2 declarations — below minCorpus: 3
-    insertDecl({ property: 'color', raw_value: '#aaa', file_path: 'src/a.css', line: 1 });
-    insertDecl({ property: 'color', raw_value: '#bbb', file_path: 'src/b.css', line: 1 });
-
-    const violations = await runAnalyzer({
-      minCorpus: 3,
-      modeMinCount: 3,
-    });
-
-    const drifts = findViolations(violations, 'styles/value-drift');
-    expect(drifts.length).toBe(0);
-  });
-
-  it('does NOT fire when all values belong to the same cluster', async () => {
+  it('does NOT fire for distinct colors regardless of declaration count', async () => {
+    // Ten gray shades, spaced ~17 sRGB units apart (adjacent ΔE76 ≥ 5) — no pair
+    // is perceptually near-identical, so each is its own singleton. The old
+    // predicate needed a corpus floor; the pairwise predicate does not.
     for (let i = 0; i < 10; i++) {
       insertDecl({
         property: 'color',
@@ -262,17 +316,9 @@ describe('Detector 1 — Value Drift', () => {
       });
     }
 
-    // All values are different — each creates its own cluster
-    // The largest cluster has 1 element, which is < modeMinCount (3)
-    const violations = await runAnalyzer({
-      minCorpus: 3,
-      colorDeltaE: 2.0,
-      outlierMaxShare: 0.05,
-      modeMinCount: 3,
-    });
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
 
-    const drifts = findViolations(violations, 'styles/value-drift');
-    expect(drifts.length).toBe(0);
+    expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
   });
 
   // Spec 22 R3.2: categorical property exclusion
@@ -298,18 +344,15 @@ describe('Detector 1 — Value Drift', () => {
       });
     }
 
-    const violations = await runAnalyzer({
-      minCorpus: 3,
-      outlierMaxShare: 0.05,
-      modeMinCount: 3,
-    });
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
 
     const drifts = findViolations(violations, 'styles/value-drift');
     expect(drifts.length).toBe(0);
   });
 
-  // Spec 22 R3.2: color drift still fires on continuous domains
-  it('still fires color drift on continuous values (original motivating case)', async () => {
+  // Spec 22 R3.2: color drift still fires on continuous domains — near-identical
+  // colors cluster at ΔE76 < 2.5 regardless of how rarely the straggler appears.
+  it('fires color drift on near-identical continuous values', async () => {
     for (let i = 0; i < 47; i++) {
       insertDecl({
         property: 'background-color',
@@ -331,15 +374,13 @@ describe('Detector 1 — Value Drift', () => {
       });
     }
 
-    const violations = await runAnalyzer({
-      minCorpus: 3,
-      colorDeltaE: 0.5,
-      outlierMaxShare: 0.05,
-      modeMinCount: 3,
-    });
+    // #1e2327 ↔ #1e2328 is ΔE76 0.723 < 2.5 → one cluster of two distinct values.
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
 
     const drifts = findViolations(violations, 'styles/value-drift');
-    expect(drifts.length).toBeGreaterThanOrEqual(1);
+    expect(drifts.length).toBe(1);
+    expect(drifts[0].message).toContain('#1e2328');
+    expect(drifts[0].message).toContain('#1e2327');
   });
 
   // Spec 62 A4 regression: the style indexer stores `normalized_value` as
@@ -369,15 +410,10 @@ describe('Detector 1 — Value Drift', () => {
       });
     }
 
-    const violations = await runAnalyzer({
-      minCorpus: 3,
-      colorDeltaE: 0.5,
-      outlierMaxShare: 0.05,
-      modeMinCount: 3,
-    });
+    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
 
     const drifts = findViolations(violations, 'styles/value-drift');
-    expect(drifts.length).toBeGreaterThanOrEqual(1);
+    expect(drifts.length).toBe(1);
   });
 });
 
@@ -425,7 +461,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     });
 
     const violations = await runAnalyzer({
-      minCorpus: 3,
+      offScaleMinDeclarations: 3,
       scaleProperties: ['margin-top'],
     });
 
@@ -455,7 +491,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     });
 
     const violations = await runAnalyzer({
-      minCorpus: 3,
+      offScaleMinDeclarations: 3,
       scaleProperties: ['margin-top'],
     });
 
@@ -485,7 +521,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     });
 
     const violations = await runAnalyzer({
-      minCorpus: 3,
+      offScaleMinDeclarations: 3,
       scaleProperties: ['margin-top'],
     });
 
@@ -515,7 +551,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     });
 
     const violations = await runAnalyzer({
-      minCorpus: 3,
+      offScaleMinDeclarations: 3,
       scaleProperties: ['font-size'],
     });
 
@@ -544,7 +580,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     });
 
     const violations = await runAnalyzer({
-      minCorpus: 3,
+      offScaleMinDeclarations: 3,
       scaleProperties: ['font-size'],
     });
 
@@ -589,7 +625,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     });
 
     const violations = await runAnalyzer({
-      minCorpus: 1,
+      offScaleMinDeclarations: 1,
       scaleProperties: ['margin-top', 'font-size'],
     });
 
@@ -619,7 +655,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     });
 
     const violations = await runAnalyzer({
-      minCorpus: 3,
+      offScaleMinDeclarations: 3,
       scaleProperties: ['padding'],
     });
 
@@ -641,7 +677,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     }
     insertDecl({ property: 'margin', raw_value: '0px', mechanism: 'css', file_path: 'src/reset-px.css', line: 1 });
 
-    const violations = await runAnalyzer({ minCorpus: 1, scaleProperties: ['margin'] });
+    const violations = await runAnalyzer({ offScaleMinDeclarations: 1, scaleProperties: ['margin'] });
 
     expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
   });
@@ -660,7 +696,7 @@ describe('Detector 2 — Off-Scale Values', () => {
     }
     insertDecl({ property: 'margin-top', raw_value: '13px', mechanism: 'scss', file_path: 'src/offscale.scss', line: 1 });
 
-    const violations = await runAnalyzer({ minCorpus: 3, scaleProperties: ['margin-top'] });
+    const violations = await runAnalyzer({ offScaleMinDeclarations: 3, scaleProperties: ['margin-top'] });
 
     expect(findViolations(violations, 'styles/off-scale')).toHaveLength(0);
   });
@@ -1445,8 +1481,7 @@ describe('Edge cases', () => {
 
   it('does not fire any detector when corpus is empty', async () => {
     const violations = await runAnalyzer({
-      minCorpus: 1,
-      modeMinCount: 1,
+      offScaleMinDeclarations: 1,
       zIndexMaxDistinct: 1,
       mechanismFragmentationMinMechanisms: 2,
       declarationSetMinDeclarations: 1,

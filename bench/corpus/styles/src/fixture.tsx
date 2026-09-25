@@ -13,30 +13,28 @@ const Layout = () => (
 // Token bypass: raw #1e2328 matches --color-primary token (app.css :root).
 const TokenBypass = () => <span style={{ color: "#1e2328" }}>x</span>;
 
-// Color drift: background-color, 20x dominant #111111 + 1 outlier #ff0000.
-const C0 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C1 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C2 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C3 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C4 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C5 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C6 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C7 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C8 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C9 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C10 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C11 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C12 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C13 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C14 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C15 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C16 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C17 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C18 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const C19 = () => <span style={{ backgroundColor: "#111111" }}>a</span>;
-const COutlier = () => <span style={{ backgroundColor: "#ff0000" }}>b</span>;
+// Color drift (Spec 67): `background-color` carries two near-identical slate
+// values. #4e5568 is ΔE76 = 1.51 from #4a5568 (under the 2.5 threshold) → one
+// value-drift finding naming #4a5568 (the most-used value) as the canonical.
+const D0 = () => <span style={{ backgroundColor: "#4a5568" }}>d</span>;
+const D1 = () => <span style={{ backgroundColor: "#4a5568" }}>d</span>;
+const D2 = () => <span style={{ backgroundColor: "#4a5568" }}>d</span>;
+const D3 = () => <span style={{ backgroundColor: "#4a5568" }}>d</span>;
+const D4 = () => <span style={{ backgroundColor: "#4a5568" }}>d</span>;
+const DDrift = () => <span style={{ backgroundColor: "#4e5568" }}>d</span>;
 
-// Exact-value drift: border-radius, 20x dominant 4px + 1 outlier 7px.
+// Negative guard: #535568 is ΔE76 = 3.45 from #4a5568 (over the 2.5 threshold)
+// — must NOT fire value-drift. It lives in `color` (not `background-color`) so
+// single-linkage cannot chain it to #4e5568 (#4e5568 ↔ #535568 = 1.94 would
+// otherwise bridge the two near-pairs into one cluster).
+const N0 = () => <span style={{ color: "#4a5568" }}>n</span>;
+const N1 = () => <span style={{ color: "#4a5568" }}>n</span>;
+const N2 = () => <span style={{ color: "#4a5568" }}>n</span>;
+const NNear = () => <span style={{ color: "#535568" }}>n</span>;
+
+// Length drift (border-radius 20x 4px + 1x 7px) is a NEGATIVE guard: value-drift
+// is color-only (Spec 66 follow-up #253), so this length sprawl must NOT fire
+// value-drift (nor off-scale — border-radius is not a scale-family property).
 const R0 = () => <span style={{ borderRadius: 4 }}>c</span>;
 const R1 = () => <span style={{ borderRadius: 4 }}>c</span>;
 const R2 = () => <span style={{ borderRadius: 4 }}>c</span>;
@@ -74,4 +72,4 @@ const Z6a = () => <span style={{ zIndex: 6 }}>z</span>;
 const Z6b = () => <span style={{ zIndex: 6 }}>z</span>;
 const Z7 = () => <span style={{ zIndex: 7 }}>z</span>;
 
-export { Save, Layout, TokenBypass, COutlier, ROutlier, Z7 };
+export { Save, Layout, TokenBypass, DDrift, NNear, ROutlier, Z7 };

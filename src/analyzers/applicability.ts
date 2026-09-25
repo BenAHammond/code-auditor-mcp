@@ -25,6 +25,11 @@ import {
   hasDeclaredTenancy,
   type OrgFilterConfig,
 } from './orgFilterTiers.js';
+import {
+  buildDeclaredScale,
+  hasDeclaredScale,
+  type StyleTokenLike,
+} from './universal/styleScale.js';
 
 export interface RuleApplicability {
   applicable: boolean;
@@ -139,6 +144,80 @@ export function evaluateRuleApplicability(
     return { applicable: false, reason: cannotFireReason, kind: 'cannot-fire' };
   }
   return null;
+}
+
+/**
+ * Spec 66 follow-up — the three security rules are *sink-scoped*: each inspects
+ * a specific construct (a shell/process invocation, a require/import, an HTML
+ * sink) and cannot fire when that construct is absent from the corpus. The
+ * UniversalSecurityAnalyzer reports, per file, which constructs it saw; those
+ * fold corpus-wide into `security` facts. A rule whose construct never appeared
+ * reads `notApplicable` ("no input to check") rather than `clean` ("input
+ * present, nothing wrong") — the same `clean`-must-mean-could-have-fired
+ * contract as `missing-org-filter`'s `hasDeclaredTenancy`, but keyed on AST
+ * presence instead of declared config.
+ *
+ * @param securityFacts The corpus-wide `security` fact object emitted by the
+ *   security visitor (`{ shellProcessSeen, dynamicRequireSeen, htmlSinkSeen }`,
+ *   each present only when ≥1 file contained the construct).
+ */
+export function securityInputApplicability(
+  securityFacts: Record<string, unknown> | undefined,
+): Map<string, RuleApplicability> {
+  const map = new Map<string, RuleApplicability>();
+  if (securityFacts?.shellProcessSeen !== true) {
+    map.set('command-injection-risk', {
+      applicable: false,
+      kind: 'notApplicable',
+      reason: 'no shell/process invocation (execSync/exec/spawn/fork) in corpus',
+    });
+  }
+  if (securityFacts?.dynamicRequireSeen !== true) {
+    map.set('dynamic-require-of-project-path', {
+      applicable: false,
+      kind: 'notApplicable',
+      reason: 'no require()/import()/createRequire() invocation in corpus',
+    });
+  }
+  if (securityFacts?.htmlSinkSeen !== true) {
+    map.set('unescaped-html-interpolation', {
+      applicable: false,
+      kind: 'notApplicable',
+      reason: 'no HTML sink (res.send/innerHTML/dangerouslySetInnerHTML/v-html) in corpus',
+    });
+  }
+  return map;
+}
+
+/**
+ * Spec 66 follow-up (#253) — `styles/off-scale` is scale-scoped: it judges
+ * spacing/font-size values against the project's *declared* design scale, and
+ * cannot fire when the project declares no scale. That reads `notApplicable`
+ * with a reason that names the fix ("declare a scale and this rule can check
+ * it"), rather than `clean` ("input present, nothing wrong") — the same
+ * `clean`-must-mean-could-have-fired contract as `missing-org-filter`, but keyed
+ * on declared token presence instead of declared config.
+ *
+ * The scale definition is {@link buildDeclaredScale} from `styleScale.ts`, the
+ * same function the analyzer uses to judge raw values — so "declares a scale"
+ * for applicability is byte-identical to "declares a scale" for firing, and the
+ * two consumers cannot drift.
+ *
+ * @param tokens The corpus-wide `style_tokens` rows (name/value/file_path). When
+ *   the index is unavailable the caller passes `[]`, and the rule reads
+ *   `notApplicable` (it had no evidence of a declared scale).
+ * @returns A `notApplicable` verdict when no scale family is declared, or `null`
+ *   when at least one is (the rule runs unconditionally, exactly as before).
+ */
+export function offScaleApplicability(
+  tokens: readonly StyleTokenLike[],
+): RuleApplicability | null {
+  if (hasDeclaredScale(buildDeclaredScale(tokens))) return null;
+  return {
+    applicable: false,
+    kind: 'notApplicable',
+    reason: 'no design tokens found; declare a scale and this rule can check it',
+  };
 }
 
 /**

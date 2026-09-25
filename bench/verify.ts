@@ -7,7 +7,9 @@
  * nothing in the repo read these files, so 78 stale severity values (the Spec
  * 54 `warning`/`suggestion` rename) sat undetected. This script makes that
  * comparison live again: it runs each corpus's analyzer for real and diffs the
- * produced finding set against the declared one, severity included.
+ * produced finding *multiset* against the declared one — a count per
+ * `{file, rule, severity}` key, so two same-rule findings in one file are two
+ * entries, not one — severity included.
  *
  * It is a release gate (Spec 62 R8): `verify:close` runs it after
  * `test:integration`, and exit code 1 means "drift present". A corpus whose
@@ -158,12 +160,27 @@ async function auditCorpus(corpus: string): Promise<{ drift: string[]; actual: s
     }
     actual.sort();
 
+    // Compare as a *multiset*, not a set. The old Set comparison collapsed every
+    // finding that shared a `(file, rule, severity)` key into one entry, so two
+    // same-rule findings in one file looked like one: a dead expectation stayed
+    // green (styles declared both a color- and an exact-drift value-drift, and
+    // the exact one silently dropped), and equally a *new* second finding of an
+    // already-declared rule would too. Counting per key makes the declared count
+    // and the produced count disagree the moment either changes, so the drift a
+    // Set could never see surfaces as `missing`/`extra` with the counts attached.
     const expectedKeys = expected.expectedViolations.map((e) => `${e.file}|${e.rule}|${e.severity}`);
-    const aSet = new Set(actual);
-    const eSet = new Set(expectedKeys);
+    const eCounts = new Map<string, number>();
+    const aCounts = new Map<string, number>();
+    for (const k of expectedKeys) eCounts.set(k, (eCounts.get(k) ?? 0) + 1);
+    for (const k of actual) aCounts.set(k, (aCounts.get(k) ?? 0) + 1);
     const drift: string[] = [];
-    for (const e of expectedKeys) if (!aSet.has(e)) drift.push(`missing  ${e}`);
-    for (const a of actual) if (!eSet.has(a)) drift.push(`extra    ${a}`);
+    const allKeys = new Set([...eCounts.keys(), ...aCounts.keys()]);
+    for (const k of allKeys) {
+      const e = eCounts.get(k) ?? 0;
+      const a = aCounts.get(k) ?? 0;
+      if (e > a) drift.push(`missing  ${k} (declared ${e}, produced ${a})`);
+      else if (a > e) drift.push(`extra    ${k} (declared ${e}, produced ${a})`);
+    }
 
     if (expected.nearMissFiles?.length) {
       const nm = new Set(expected.nearMissFiles.map((f) => f.replace(/^src\//, 'src/')));

@@ -8,7 +8,12 @@
  *      no tenant-scoping column anywhere → notApplicable, no config flag.
  */
 import { describe, it, expect } from 'vitest';
-import { evaluateRuleApplicability, CANNOT_FIRE_RULES } from './applicability.js';
+import {
+  evaluateRuleApplicability,
+  securityInputApplicability,
+  offScaleApplicability,
+  CANNOT_FIRE_RULES,
+} from './applicability.js';
 
 describe('evaluateRuleApplicability — styles/undefined-class (Spec 45 R5)', () => {
   it('returns null (runs unconditionally) — unread stylesheets never disable it', () => {
@@ -112,9 +117,103 @@ describe('evaluateRuleApplicability — cannot-fire rules (Spec 44 bucket 2)', (
   });
 });
 
+describe('securityInputApplicability — sink-scoped security rules (Spec 66 follow-up)', () => {
+  it('reports notApplicable for all three rules when no trigger construct is present', () => {
+    const map = securityInputApplicability({});
+    expect(map.get('command-injection-risk')).toMatchObject({
+      applicable: false,
+      kind: 'notApplicable',
+      reason: 'no shell/process invocation (execSync/exec/spawn/fork) in corpus',
+    });
+    expect(map.get('dynamic-require-of-project-path')).toMatchObject({
+      applicable: false,
+      kind: 'notApplicable',
+      reason: 'no require()/import()/createRequire() invocation in corpus',
+    });
+    expect(map.get('unescaped-html-interpolation')).toMatchObject({
+      applicable: false,
+      kind: 'notApplicable',
+      reason: 'no HTML sink (res.send/innerHTML/dangerouslySetInnerHTML/v-html) in corpus',
+    });
+  });
+
+  it('leaves a rule applicable when its trigger construct is present', () => {
+    const map = securityInputApplicability({
+      shellProcessSeen: true,
+      dynamicRequireSeen: true,
+      htmlSinkSeen: true,
+    });
+    expect(map.size).toBe(0);
+  });
+
+  it('returns all three notApplicable when the fact object is absent entirely', () => {
+    const map = securityInputApplicability(undefined);
+    expect([...map.keys()].sort()).toEqual([
+      'command-injection-risk',
+      'dynamic-require-of-project-path',
+      'unescaped-html-interpolation',
+    ]);
+  });
+
+  it('scopes per construct: only the absent sink reads notApplicable', () => {
+    const map = securityInputApplicability({ htmlSinkSeen: true });
+    expect(map.has('unescaped-html-interpolation')).toBe(false);
+    expect(map.get('command-injection-risk')?.applicable).toBe(false);
+    expect(map.get('dynamic-require-of-project-path')?.applicable).toBe(false);
+  });
+});
+
 describe('evaluateRuleApplicability — passthrough', () => {
   it('returns null for rules without an applicability predicate', () => {
     expect(evaluateRuleApplicability('solid/srp', undefined, undefined)).toBeNull();
     expect(evaluateRuleApplicability('react/keys', {}, ['id'])).toBeNull();
+  });
+});
+
+describe('offScaleApplicability — scale-scoped off-scale rule (Spec 66 follow-up #253)', () => {
+  it('returns null (runs unconditionally) when a spacing scale is declared', () => {
+    const app = offScaleApplicability([
+      { name: 'spacing.2', value: '8px', file_path: 'src/tokens.css' },
+      { name: 'spacing.4', value: '16px', file_path: 'src/tokens.css' },
+    ]);
+    expect(app).toBeNull();
+  });
+
+  it('returns null when only a font-size scale is declared', () => {
+    const app = offScaleApplicability([
+      { name: 'fontSize.base', value: '16px', file_path: 'src/tokens.css' },
+    ]);
+    expect(app).toBeNull();
+  });
+
+  it('returns null when a CSS custom-property scale is declared (--space-*)', () => {
+    const app = offScaleApplicability([
+      { name: '--space-2', value: '8px', file_path: 'src/tokens.css' },
+    ]);
+    expect(app).toBeNull();
+  });
+
+  it('reports notApplicable naming the fix when no scale family is declared', () => {
+    const app = offScaleApplicability([
+      // Color/radius/tap tokens only — no spacing or font-size scale.
+      { name: '--radius', value: '14px', file_path: 'src/tokens.css' },
+      { name: '--bg', value: '#0f0f14', file_path: 'src/tokens.css' },
+    ]);
+    expect(app).toEqual({
+      applicable: false,
+      kind: 'notApplicable',
+      reason: 'no design tokens found; declare a scale and this rule can check it',
+    });
+  });
+
+  it('reports notApplicable when the only scale tokens are the bundled defaults', () => {
+    const app = offScaleApplicability([
+      { name: 'spacing.4', value: '16px', file_path: 'built-in defaults' },
+    ]);
+    expect(app?.applicable).toBe(false);
+  });
+
+  it('reports notApplicable on an empty token set', () => {
+    expect(offScaleApplicability([])?.applicable).toBe(false);
   });
 });

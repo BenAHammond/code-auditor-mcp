@@ -159,6 +159,33 @@ No other registered rule is zero across *all* corpora. Rules that are zero on a
 *single* corpus are zero because that corpus's near-miss/source genuinely
 carries no signal for that rule (documented per-corpus).
 
+### The four-way "why zero" classification (Spec 66 follow-up)
+
+A rule that reads zero on a sweep is dead in one of four ways, and the sweep
+must separate them rather than lump them:
+
+1. **`fired`/`clean`** — the rule ran over its real input and found nothing.
+   Healthy; nothing to do.
+2. **`notApplicable`** — the input the rule reads was absent from this corpus
+   (no files, no facts, or the analyzer was not enabled). A per-corpus answer,
+   not a defect.
+3. **`cannot-fire`** — the rule is broken in the tool: its predicate reads a
+   field no extractor populates, so it reports the same verdict on every
+   project. A standing finding about the analyzer.
+4. **`off-by-default`** — the rule ships disabled and must be opted into. Its
+   registry entry carries `offByDefault: true` + a `configGate`, so a false gate
+   reads `off-by-default` with the key named in the reason — not `clean` (which
+   would falsely claim "could have fired") and not `cannot-fire` (which would
+   misclassify a healthy opt-in as broken). The only rules in this category are
+   `parameter-documentation` (`documentation.requireParamDocs`) and
+   `return-documentation` (`documentation.requireReturnDocs`), both off since
+   #135.
+
+The category is part of `RuleCoverageState` (`src/types.ts`) and is surfaced in
+the coverage panel, CLI coverage summary, and `--state` filter, so a zero-firing
+opt-in rule is self-identifying in every audit rather than discoverable only in
+`defaults.ts` source.
+
 ---
 
 ## R3 — go-data-access 3→0
@@ -835,10 +862,12 @@ the bench conventions zero is a fixture-size artifact (§R2, §Remaining).
 
 `bench/corpus/styles/` was a placeholder (`fixture.tsx`, 3 declarations, below
 `minCorpus: 5`). A4 authored real content exercising all ten declared behaviors:
-color drift (20× `#111111` + 1× `#ff0000`), exact-value drift (20× `4px` + 1× `7px`),
-token-bypass, undefined-class, mechanism-mixing, mechanism-fragmentation,
-declaration-set-similarity, and z-index sprawl/singleton. The fixture now emits the
-9 findings in `expected.json` (off-scale stays a documented known miss).
+color drift (20× `#111111` + 1× `#ff0000`), exact-value drift (20× `4px` + 1× `7px`,
+later removed by #253 — value-drift is color-only, so the border-radius section is
+now a negative guard), token-bypass, undefined-class, mechanism-mixing,
+mechanism-fragmentation, declaration-set-similarity, and z-index sprawl/singleton.
+The fixture now emits the 8 findings in `expected.json` (off-scale stays a
+documented known miss; the length-drift negative guard asserts nothing fires).
 
 **This is the first time the bench caught a live product defect, not a stale
 fixture.** Authoring real color/length content surfaced a bug the placeholder could

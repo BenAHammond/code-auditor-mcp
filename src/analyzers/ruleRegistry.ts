@@ -46,6 +46,16 @@ export interface RuleRegistryEntry {
    */
   configGate?: string;
   /**
+   * Spec 66 follow-up — when true, this rule's {@link configGate} defaults to
+   * `false` in the tool's own defaults (the rule ships off and must be opted
+   * into). A false gate then reads `off-by-default` (a named, discoverable
+   * fourth state) rather than `disabled by config` — the latter describes a rule
+   * the user turned off, the former a rule the tool ships off. The distinction
+   * keeps the zero-firing sweep from misclassifying a healthy opt-in rule as a
+   * broken one. Only meaningful alongside `configGate`.
+   */
+  offByDefault?: boolean;
+  /**
    * Spec 33 Item 14 — the input sources this rule consumes, used to promote a
    * zero-violation rule from `unassessed` to `clean` (≥1 input present) or
    * `notApplicable` (all inputs absent). Each entry is one of:
@@ -875,6 +885,8 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
+    configGate: 'requireParamDocs',
+    offByDefault: true,
     message: 'Parameter "{name}" in function "{func}" is missing a @param tag.',
     docs: 'parameter-documentation',
     thresholds: [],
@@ -892,6 +904,8 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
+    configGate: 'requireReturnDocs',
+    offByDefault: true,
     message: 'Function "{name}" is missing a @returns tag.',
     docs: 'return-documentation',
     thresholds: [],
@@ -1717,9 +1731,9 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['styles-css'],
     resolvable: false,
-    message: 'Color value "{value}" drifts from the dominant token.',
+    message: 'Color drift in "{property}": "{value}" is near-identical to "{canonical}" (ΔE = {d}). Consider using "{canonical}".',
     docs: 'styles/value-drift',
-    thresholds: ['colorDeltaE', 'outlierMaxShare'],
+    thresholds: ['colorDeltaE'],
     samples: {
       valid: [
         { code: '.btn { color: var(--brand); }', nearMiss: true },
@@ -1736,7 +1750,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     resolvable: false,
     message: 'Value "{value}" is off the Tailwind spacing scale.',
     docs: 'styles/off-scale',
-    thresholds: ['minCorpus'],
+    thresholds: ['offScaleMinDeclarations'],
     samples: {
       valid: [
         { code: '.x { padding: 8px; }', nearMiss: true },

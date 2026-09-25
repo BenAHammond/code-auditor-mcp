@@ -210,11 +210,12 @@ program
         const covUnassessed = coverage.filter(c => c.state === 'unassessed').length;
         const covNotApplicable = coverage.filter(c => c.state === 'notApplicable').length;
         const covCannotFire = coverage.filter(c => c.state === 'cannot-fire').length;
+        const covOffByDefault = coverage.filter(c => c.state === 'off-by-default').length;
         console.log(
           chalk.gray(
             `── Coverage panel ── ${covFired} fired · ${covClean} clean · ` +
             `${covUnassessed} unassessed · ${covNotApplicable} not-applicable · ` +
-            `${covCannotFire} cannot-fire`
+            `${covCannotFire} cannot-fire · ${covOffByDefault} off-by-default`
           )
         );
       }
@@ -463,6 +464,7 @@ program
           const unassessed = coverage.filter(c => c.state === 'unassessed');
           const notApplicable = coverage.filter(c => c.state === 'notApplicable');
           const cannotFire = coverage.filter(c => c.state === 'cannot-fire');
+          const offByDefault = coverage.filter(c => c.state === 'off-by-default');
           const firedCount = fired.reduce((s, c) => s + c.count, 0);
 
           console.log(chalk.gray(`\n── Coverage ─────────────────────────────────`));
@@ -471,13 +473,20 @@ program
             `${clean.length} clean, ` +
             `${unassessed.length} unassessed, ` +
             `${notApplicable.length} notApplicable, ` +
-            `${cannotFire.length} cannot-fire ` +
+            `${cannotFire.length} cannot-fire, ` +
+            `${offByDefault.length} off-by-default ` +
             `(${coverage.length} rules registered)`
           );
 
           if (cannotFire.length > 0) {
             console.log(chalk.yellow(`  ── Cannot Fire (broken in the tool) ──`));
             for (const c of cannotFire) {
+              console.log(`    ${c.ruleId}: ${c.reason ?? 'unknown'}`);
+            }
+          }
+          if (offByDefault.length > 0) {
+            console.log(chalk.gray(`  ── Off by Default (opt-in rules not enabled) ──`));
+            for (const c of offByDefault) {
               console.log(`    ${c.ruleId}: ${c.reason ?? 'unknown'}`);
             }
           }
@@ -2773,7 +2782,7 @@ program
   .option('--analyzer <analyzer>', 'Filter by analyzer')
   .option('--file <file>', 'Filter by file path (substring match)')
   .option('--severity <severity>', 'Filter by severity (critical|severe|high)')
-  .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|cannot-fire|unassessed); omit value for all')
+  .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|cannot-fire|unassessed|off-by-default); omit value for all')
   .option('--count', 'Group findings by analyzer/rule with counts')
   .option('--limit <n>', 'Max findings to return (0 = unbounded)', '50')
   .option('--offset <n>', 'Findings offset', '0')

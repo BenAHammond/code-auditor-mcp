@@ -687,9 +687,161 @@ acknowledged quote-doubling FP (`reconcile-migration-ledger.ts`
 `${table.replace(/'/g,"''")}` — documented `high` in the 4.0.1 pin, not cleared).
 No genuine injection lost — a clean narrowing, not a weakening to zero.
 
+Re-pinned 2026-09-24 (post-4.1.1, Spec 66 follow-up). Measured with
+`scripts/measure-corpus-counts.ts` on the Spec 66 follow-up tree
+(`CODE_AUDITOR_DATA_DIR=/tmp/ca-scratch-<corpus>-20260924-201906`, run 2026-09-24
+20:19). Three classes of delta are folded in: the Spec 66 follow-up
+dependency-graph fixes, the Spec 66 security-coverage fix, and drift that predates
+this batch (Spec 62/63) but had never been re-pinned. Every delta is attributed;
+one is a *defect*, not movement — flagged, not papered over.
+
+### Spec 66 follow-up — dependency-graph rule fixes
+
+**`dependency-graph::orphaned-nodes` — object-literal edge gap (fix #249).**
+`clCollectFileReferences` walked call sites, JSX tags, and bare identifiers in
+`arguments`/`array`, but not object-literal *values* — so a function wired up only
+through an object literal (`{ hostname: isValidHostname }`, or the shorthand
+`{ isValidHostname }` in a `FORMAT_VALIDATORS` table) had no reference edge and
+read orphaned. The walk now captures `shorthand_property_identifier` and the
+`value` field of a `pair` (not the key). Only orphaned-nodes moved; nothing else
+reproduced differently.
+
+- `dependency-graph::orphaned-nodes` 44 → 36 (blitz). **−8** — object-literal
+  validator/format maps.
+- `dependency-graph::orphaned-nodes` 7 → 2 (knex). **−5** — same cause.
+- recall-protocol (23), hhra-org (4), primer-css (0) unchanged.
+
+**`dependency-graph::circular-dependency` — same-file recursion vs module cycle
+(fix #250).** The graph models *function-call* references, but `circular-dependency`
+is a module-level concept (file A ⇄ file B). A cycle whose nodes all share one
+file — a `validateAgainstSchema` ⇄ `checkArrayConstraints`, or a bare `dfs` calling
+itself — is recursion, not a module cycle. `detectCycles` now drops a self-edge
+(`neighbor === nodeId`) and any cycle that does not `spansMultipleFiles`. Only
+circular-dependency moved:
+
+- `dependency-graph::circular-dependency` 1 → 0 (recall-protocol, hhra-org, knex).
+  **−1 each.** The recall finding (measured before the fix) aggregated 19 cycles
+  — 10 *same-file* and 9 *cross-file* — all false positives, of two kinds:
+  *same-file mutual recursion* (distinct functions in one file calling each other
+  in a loop: workers/discord.ts `fetch → handleInteraction → deliverAnswer →
+  callAnswer`, workers/stadium-monitor.ts `sendAlertEmail → fetch →
+  runMonitorChecks → maybeEmitAlert`, workers/telemetry-digest.ts `aeQuery →
+  fetch → runDigest → rollupDay`, manage.ts `GET → parseUserRef`, dev-log-bridge.ts
+  `scheduleFlush → flush`) and *cross-file name collisions* (`parse` ⇄ `parse`
+  between adherence.ts and judge.ts, `GET` ⇄ `GET` across unrelated API routes,
+  `collectUploadKeys` ⇄ `collectUploadKeys` between `scripts/` and `src/ops/`).
+  A bare `dfs` calling itself never produced a cycle: `clBuildReferences` already
+  excludes the caller's own entity (`t.id !== e.id`), so a *lone* self-recursive
+  function forms no edge. The cross-file collisions are the other case — a
+  *pair* of same-named self-recursive functions, each calling its own bare name,
+  resolved sideways to the sibling in the other file. `spansMultipleFiles` drops
+  the same-file mutual recursion; the self-name skip in `clBuildReferences`
+  drops the same-named cross-file collisions. Net −1 each.
+- blitz's single `circular-dependency` **survives** because its cycles cross a
+  file boundary with *differing* names, so neither fix drops them — but they are
+  the same name-resolution-collision class as #254, not genuine module cycles:
+  `build` ⇄ `buildCustomServer` (`next-commands.ts`'s `build` calls
+  `esbuild.build` bound to a local `build`, which resolves sideways to
+  `next-utils.ts`'s `buildCustomServer`), and the generator-template
+  `__ModelNames__Page → New__ModelName__Page → Show__ModelName__Page` triples.
+  The genuine same-file mutual recursion in auth-sessions.ts (`getSession` ⇄
+  `getSessionKernel`, `getSession → createAnonymousSession → createNewSession`)
+  is correctly dropped.
+
+**`dependency-graph::unreferenced-module` — UNCHANGED (measured, not asserted).**
+The pre-batch hypothesis was that the object-literal edge gap "inflated
+unreferenced-module" (which contributed +114 on recall and +205 on blitz at
+4.0.1). A before/after run — HEAD (edge gap present) vs. working tree (fix #249
+in) — reproduced `unreferenced-module` **byte-identical** on both corpora:
+recall-protocol 114 → 114, blitz 205 → 205. The reason is structural:
+`unreferenced-module` is computed from *file-level import edges* (`importersOf`,
+built from import/export/dynamic-import statements), not the function-call
+reference graph that `clCollectFileReferences` feeds. So the edge-gap fix (which
+only touches function-call edges) cannot move it. hhra-org 84, primer-css 1,
+knex 0 are likewise unchanged. The +114 recall / +205 blitz gains already
+attributed at 4.0.1 (Spec 58 alias resolution + package.json entry points) stand
+— they were never an artifact of this gap.
+
+### Spec 66 follow-up — security `clean` vs `notApplicable`
+
+The three security rules (`command-injection-risk`,
+`dynamic-require-of-project-path`, `unescaped-html-interpolation`) are
+sink-scoped: each inspects a specific construct (a shell/process invocation, a
+`require`/`import`, an HTML sink). Before, a corpus with no such construct read
+`clean` — the tool's strongest claim — when the truth was the input was never
+there. `securityInputApplicability` now folds per-file construct presence
+(`shellProcessSeen`/`dynamicRequireSeen`/`htmlSinkSeen`) into applicability, so an
+absent construct reads `notApplicable`, matching `missing-org-filter`'s
+`clean`-must-mean-could-have-fired contract (Spec 54 B4). This is a **coverage
+change, not a count change**: no `security::*` count moved on any corpus (the
+corpora that fire them — recall 24, knex 1, blitz 1, endless-guessing 3 — contain
+their construct).
+
+### Un-re-pinned drift since 4.0.3 (pre-existing, surfaced now)
+
+**`data-access::missing-org-filter` 0 → 9 (hhra-org).** The Spec 63 R3 provenance
+fix (`f29e7a1`) made fluent ORM builder chains (kysely/drizzle/knex) resolve
+their root receiver instead of dropping provenance at the first call boundary.
+hhra-org's Drizzle queries touch `organization_id`-scoped tables; the resolver now
+sees them, so the nine tenant-scoped queries without an org filter fire. Sampled:
+genuine — the `organization_id` column is declared across hhra's schema
+(`database/schema.ts`).
+
+**`styles::styles/value-drift` — length over-fire RESOLVED (fix #253): color-only
+routing.** The Spec 62 A4 fix (`41f39fa`) un-silenced value-drift by reading
+`raw_value` in `isCategoricalByValues` (the index's `normalized_value` is
+JSON-encoded, so the numeric/color regexes never matched and the rule skipped
+*everything*). That was needed for colors — but it also un-silenced the non-color
+exact-value path on *length* properties: `width`/`height`/`font-size`/`margin`/
+`padding`/`gap`/etc. have raw values that start with a digit, so they classify
+"not categorical" and `detectExactValueDrift` flagged every distinct length
+(share < 5%) as "rare drift". A design system legitimately has dozens of distinct
+widths; none of these is drift.
+
+Fix #253 routes value-drift to colors only: `detectValueDrift` calls
+`detectColorDrift` for color properties and leaves length-valued properties to
+`off-scale` (which judges them against the *declared* scale, and reads
+`notApplicable` when the project declares none — it must not guess a scale, Spec
+55 R6). `detectExactValueDrift` was deleted. Re-measured fresh-index:
+
+- `styles::styles/value-drift` 680 → 27 → **3** (recall). The 680 → 27 step (fix
+  #253, **−653** length false findings) routed the rule to colors; the 27 → 3 step
+  is Spec 67's pairwise ΔE76 rework. The remaining **3** are all genuine
+  near-identical pairs, sampled in full: `#06121a`↔`#06131c` (ΔE 1.06, dark),
+  `#637688`↔`#5f7488` (ΔE 1.59, mid-slate), `#cfe2ee`↔`#cfe0ef` (ΔE 1.82, light).
+  The ~22 deliberately-different palette colors dropped out. Reported as a
+  **range (2–3)** rather than a point: recall is one palette, and the light pair
+  (1.82) sits nearest the JND threshold, so the two darker pairs are the
+  unambiguous core and the third is the borderline member.
+- `styles::styles/value-drift` 397 → 0 (primer-css). **−397** — all length.
+- `styles::styles/value-drift` 5 → 0 (hhra-org). **−5** — all `font-size` length.
+- `styles::styles/value-drift` 2 → 0 (blitz). **−2** — all length.
+
+Net 1,081 false findings eliminated across the four corpora (1,057 length via #253,
+plus 24 scarcity via Spec 67). The three tokenized-color corpora (primer-css,
+hhra-org, blitz) now read 0 — correct, not dead: they reference colors through
+`var(--…)` design tokens, so there is no raw color drift to flag. The synthetic
+bench fixture (`bench/corpus/styles`) pins the pairwise boundary directly with raw
+hex pairs: `#4e5568`↔`#4a5568` (ΔE 1.505) fires; `#535568`↔`#4a5568` (ΔE 3.446)
+does not.
+
+**`styles::*` — index-state-dependence (latent, not yet fixed).** The styles
+analyzer queries the persistent `style_*` tables, and `insertSourceStyleFacts`
+skips re-inserting a file on a *full* run when its `content_hash` matches the
+stored row. That hash reflects the *source* extraction, not the *analyzer/collector
+code version* — so a warm `node_modules/.cache/code-auditor/index.db` written by an
+older build yields stale style data. (Pre-#253 this was measurable on hhra-org as
+a warm-cache value-drift 2 vs a fresh-index 5; value-drift is now color-only and
+reads 0 either way, so the example is historical. The staleness still applies to
+the rules that read these tables today — off-scale/token-bypass.) All styles rules
+(value-drift/off-scale/token-bypass), not just value-drift, read these tables. The
+tables above use the fresh-index measure script (`CODE_AUDITOR_DATA_DIR=/tmp`) —
+the only trustworthy number. The content-hash skip needs a code-version component,
+or full runs must refresh styles unconditionally. Tracked as a follow-up task.
+
 ---
 
-## recall-protocol — 3,022 advisory findings (2,099 files)
+## recall-protocol — 3,048 advisory findings (2,099 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -708,14 +860,15 @@ No genuine injection lost — a clean narrowing, not a weakening to zero.
 | conventions::conventions/error-handling | 51 |
 | solid::solid/method-complexity | 33 |
 | react::complexity | 29 |
+| security::command-injection-risk | 24 |
 | dependency-graph::orphaned-nodes | 23 |
 | dry::dry/similar-expression | 21 |
 | styles::styles/declaration-set-similarity | 21 |
 | cross-domain::cross-domain/written-never-read | 19 |
 | schema::stale-table-reference | 19 |
 | documentation::class-documentation | 16 |
-| data-access::sql-injection-risk | 12 |
 | cross-domain::cross-domain/read-never-written | 14 |
+| data-access::sql-injection-risk | 12 |
 | react::accessibility | 12 |
 | solid::parameter-count | 11 |
 | conventions::conventions/naming | 10 |
@@ -726,18 +879,18 @@ No genuine injection lost — a clean narrowing, not a weakening to zero.
 | dry::dry/duplicate | 6 |
 | conventions::conventions/import-form | 5 |
 | solid::solid/dependency-inversion | 3 |
+| styles::styles/value-drift | 3 (range 2–3 — all three genuine pairs; Spec 67) |
 | schema::unknown-table | 2 |
 | solid::solid/class-size | 2 |
 | solid::interface-size | 2 |
 | styles::styles/undefined-class | 2 |
 | conventions::conventions/export-shape | 1 |
 | data-access::complex-query | 1 |
-| dependency-graph::circular-dependency | 1 |
 | dependency-graph::tight-coupling | 1 |
 | dependency-graph::hub-nodes | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## hhra-org — 410 advisory findings (757 files)
+## hhra-org — 418 advisory findings (757 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -748,6 +901,7 @@ No genuine injection lost — a clean narrowing, not a weakening to zero.
 | documentation::class-documentation | 39 |
 | solid::function-length | 32 |
 | schema-code::too-many-queries | 21 |
+| data-access::missing-org-filter | 9 |
 | solid::solid/dependency-inversion | 8 |
 | data-access::loop-query | 7 |
 | solid::solid/method-complexity | 7 |
@@ -758,14 +912,13 @@ No genuine injection lost — a clean narrowing, not a weakening to zero.
 | dependency-graph::orphaned-nodes | 4 |
 | cross-domain::cross-domain/written-never-read | 2 |
 | cross-domain::cross-domain/read-never-written | 1 |
-| dependency-graph::circular-dependency | 1 |
 | dependency-graph::tight-coupling | 1 |
 | dependency-graph::hub-nodes | 1 |
 | react::accessibility | 1 |
 | schema::invalid-json | 1 |
 | schema-code::dynamic-sql-construction | 1 |
 
-## knex — 105 advisory findings (474 files)
+## knex — 100 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -775,30 +928,30 @@ No genuine injection lost — a clean narrowing, not a weakening to zero.
 | solid::solid/open-closed | 12 |
 | solid::solid/dependency-inversion | 12 |
 | solid::function-length | 9 |
-| dependency-graph::orphaned-nodes | 7 |
 | data-access::sql-injection-risk | 5 |
 | cross-domain::cross-domain/read-never-written | 4 |
 | solid::interface-size | 4 |
 | schema-code::too-many-queries | 3 |
-| dependency-graph::circular-dependency | 1 |
+| dependency-graph::orphaned-nodes | 2 |
 | dependency-graph::hub-nodes | 1 |
 | dependency-graph::tight-coupling | 1 |
 | dry::dry/similar-expression | 1 |
 | schema-code::table-naming-convention | 1 |
 | secrets::hardcoded-secret | 1 |
+| security::command-injection-risk | 1 |
 
 ## primer-css — 16 advisory findings (137 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | styles::styles/z-index-singleton | 11 |
-| dependency-graph::tight-coupling | 1 |
 | dependency-graph::unreferenced-module | 1 |
+| dependency-graph::tight-coupling | 1 |
 | documentation::function-documentation | 1 |
 | styles::styles/token-bypass | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## blitz — 941 advisory findings (788 files)
+## blitz — 934 advisory findings (788 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -807,8 +960,8 @@ No genuine injection lost — a clean narrowing, not a weakening to zero.
 | documentation::method-documentation | 161 |
 | styles::styles/declaration-set-similarity | 161 |
 | react::raw-element | 54 |
-| dependency-graph::orphaned-nodes | 44 |
 | react::performance | 37 |
+| dependency-graph::orphaned-nodes | 36 |
 | documentation::class-documentation | 34 |
 | styles::styles/token-bypass | 16 |
 | solid::solid/dependency-inversion | 11 |
@@ -824,14 +977,16 @@ No genuine injection lost — a clean narrowing, not a weakening to zero.
 | dependency-graph::circular-dependency | 1 |
 | dependency-graph::tight-coupling | 1 |
 | dependency-graph::hub-nodes | 1 |
+| security::dynamic-require-of-project-path | 1 |
 | solid::solid/method-complexity | 1 |
 
-## endless-guessing — 22 advisory findings (87 files)
+## endless-guessing — 25 advisory findings (89 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | react::performance | 12 |
 | data-access::loop-query | 5 |
+| security::unescaped-html-interpolation | 3 |
 | styles::styles/token-bypass | 3 |
 | dependency-graph::tight-coupling | 1 |
 | solid::function-length | 1 |
@@ -886,6 +1041,13 @@ one-corpus additive delta, not a reclassification of existing findings.
 
 A future baseline re-pin should treat these rows as a *new analyzer section*, never
 as a delta against the pre-Spec-61 advisory rows.
+
+**Folded 2026-09-24.** The post-4.1.1 re-pin (above) folds the `security::*` rows
+into the per-corpus tables, so each table's total now includes security. The counts
+are unchanged from this section — recall 24, knex 1, blitz 1, endless-guessing 3,
+hhra-org 0, primer-css 0 — and every corpus that fires a security rule contains
+its trigger construct, so the Spec 66 `clean`→`notApplicable` coverage fix moves
+no count.
 
 ---
 

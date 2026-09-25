@@ -392,7 +392,16 @@ export function createSecurityVisitor(): Stage2Visitor {
       const violations: Violation[] = await a.analyzeAST(
         ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
       );
-      return { violations, facts: {} };
+      // Emit a fact per trigger construct the file contained. These fold
+      // corpus-wide (only keys seen in ≥1 file survive the spread-merge) and
+      // feed securityInputApplicability, so a rule whose construct is absent
+      // reads `notApplicable` instead of `clean`.
+      const saw = a.inputPresence;
+      const facts: Record<string, unknown> = {};
+      if (saw.shellProcess) facts.shellProcessSeen = true;
+      if (saw.dynamicRequire) facts.dynamicRequireSeen = true;
+      if (saw.htmlSink) facts.htmlSinkSeen = true;
+      return { violations, facts };
     },
     defaultConfig: {},
     description: 'Detects command injection, dynamic require of project paths, and unescaped HTML interpolation',
@@ -1503,13 +1512,30 @@ function clCollectFileReferences(node: ASTNode, sourceCode: string): string[] {
       if (text && isIdentPath(text)) names.add(text);
     } else if (t === 'identifier') {
       // A bare identifier used as a value — an argument to a call
-      // (`arr.map(singularize)`) or an array element (`[missedClose, …]`) — is a
-      // function reference. Declaration names (`name` fields) and member
-      // accesses (`property_identifier`) are separate node types and are not
-      // captured here.
+      // (`arr.map(singularize)`), an array element (`[missedClose, …]`), or an
+      // object-literal value (`{ hostname: isValidHostname }`) — is a function
+      // reference. Declaration names (`name` fields) and member accesses
+      // (`property_identifier`) are separate node types and are not captured
+      // here.
       const parent = n.parent;
       if (parent && (parent.type === 'arguments' || parent.type === 'array')) {
         const text = getNodeText(n, sourceCode).trim();
+        if (text && /^[A-Za-z_$][\w$]*$/.test(text)) names.add(text);
+      }
+    } else if (t === 'shorthand_property_identifier') {
+      // `{ isValidHostname }` — the shorthand key doubles as a reference to the
+      // in-scope function of the same name. A function wired up only through an
+      // object literal (`FORMAT_VALIDATORS`) has no call edge, so without this
+      // it reads orphaned even though it is genuinely referenced.
+      const text = getNodeText(n, sourceCode).trim();
+      if (text && /^[A-Za-z_$][\w$]*$/.test(text)) names.add(text);
+    } else if (t === 'pair') {
+      // `{ key: value }` — the *value* may be a bare identifier referencing a
+      // function (`{ hostname: isValidHostname }`); the key is a property name,
+      // not a reference, and must not be added.
+      const value = getFieldNode(n, 'value');
+      if (value?.type === 'identifier') {
+        const text = getNodeText(value, sourceCode).trim();
         if (text && /^[A-Za-z_$][\w$]*$/.test(text)) names.add(text);
       }
     }
@@ -2199,6 +2225,14 @@ function clBuildReferences(entities: CrossLanguageEntity[]): CrossReference[] {
     const eDir = e.file.split('/').slice(0, -1).join('/');
     for (const callee of callees) {
       const name = (callee.split('.').pop() ?? callee).toLowerCase();
+      // A free function that calls itself by bare name is recursing. Resolving
+      // that name to a *different* same-named entity (a second `dfs` helper in
+      // the same file) fabricates a spurious mutual-recursion cycle between two
+      // unrelated functions and reports it as a circular dependency. Recursion
+      // is a self-reference, not a module cycle — drop it rather than resolve
+      // it sideways. (Methods are named `Class.method`, so a bare callee never
+      // matches their own name and this only affects free functions.)
+      if (name === e.name.toLowerCase()) continue;
       const others = (byName.get(name) ?? []).filter((t) => t.id !== e.id);
       if (others.length === 0) continue;
 

@@ -31,11 +31,6 @@
       "file": "src/unknown-table.ts",
       "rule": "unknown-table",
       "severity": "critical"
-    },
-    {
-      "file": "src/unknown-table.ts",
-      "rule": "unknown-table",
-      "severity": "critical"
     }
   ],
   "nearMissFiles": [
@@ -43,5 +38,5 @@
     "src/no-sql-signal.ts",
     "src/aliased-queries.ts"
   ],
-  "description": "Tests for the schema analyzer — reference to unknown tables in SQL queries. Expects 3 violations: inventory SELECT, widgets SELECT, widgets DELETE."
+  "description": "Tests for the schema analyzer — reference to unknown tables in SQL queries. Expects 2 violations: inventory SELECT, widgets DELETE."
 }

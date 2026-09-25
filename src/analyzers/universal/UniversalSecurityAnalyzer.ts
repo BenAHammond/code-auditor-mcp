@@ -211,6 +211,21 @@ export class UniversalSecurityAnalyzer extends UniversalAnalyzer {
   readonly description = 'Detects command injection, dynamic require of project paths, and unescaped HTML interpolation';
   readonly category = 'security';
 
+  /**
+   * Per-file presence of each rule's *trigger construct*, reset on every
+   * `analyzeAST` call. Coverage uses this to distinguish `clean` ("the construct
+   * the rule inspects is present, and nothing was wrong") from `notApplicable`
+   * ("no such construct anywhere in the corpus — nothing to check"). Without it,
+   * a repo with no shell invocation reads `clean` on `command-injection-risk`,
+   * the tool's strongest claim, when the truth is the input was never there.
+   */
+  private lastSawInput = { shellProcess: false, dynamicRequire: false, htmlSink: false };
+
+  /** Which trigger constructs the most recent `analyzeAST` call encountered. */
+  get inputPresence(): { shellProcess: boolean; dynamicRequire: boolean; htmlSink: boolean } {
+    return { ...this.lastSawInput };
+  }
+
   protected async analyzeAST(
     ast: AST,
     adapter: LanguageAdapter,
@@ -220,6 +235,7 @@ export class UniversalSecurityAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_SECURITY_CONFIG, ...config };
     if (isTestOrFixtureFile(ast.filePath)) return violations;
+    this.lastSawInput = { shellProcess: false, dynamicRequire: false, htmlSink: false };
 
     if (finalConfig.checkCommandInjection !== false) {
       withRuleTiming('command-injection-risk', () => {
@@ -269,6 +285,11 @@ export class UniversalSecurityAnalyzer extends UniversalAnalyzer {
     if (fn?.type !== 'identifier') return [];
     const fnName = getNodeText(fn, sourceCode);
     if (!SHELL_PROCESS_FUNCTIONS.has(fnName)) return [];
+
+    // The rule's input is present — a shell/process invocation exists in the
+    // corpus, whether or not this particular one is interpolated. Record it so
+    // coverage can report `clean` rather than `notApplicable`.
+    this.lastSawInput.shellProcess = true;
 
     const cmd = firstArgument(node);
     if (!cmd) return [];
@@ -321,6 +342,10 @@ export class UniversalSecurityAnalyzer extends UniversalAnalyzer {
       isForm = true; // createRequire(...)(x)
     }
     if (!isForm) return [];
+
+    // A require()/import()/createRequire(...)() invocation exists — the rule's
+    // input is present regardless of whether the specifier is computed.
+    this.lastSawInput.dynamicRequire = true;
 
     const arg = firstArgument(node);
     if (!arg) return [];
@@ -502,6 +527,10 @@ export class UniversalSecurityAnalyzer extends UniversalAnalyzer {
         if (isVHtml) sinkRoots.push(node);
       }
     });
+
+    // An HTML sink exists in the corpus — the rule's input is present whether or
+    // not any interpolation reaches it unescaped.
+    if (sinkRoots.length > 0) this.lastSawInput.htmlSink = true;
 
     return sinkRoots;
   }

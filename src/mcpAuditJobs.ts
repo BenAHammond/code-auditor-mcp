@@ -756,6 +756,21 @@ function mergeCoverage(
       });
       continue;
     }
+    // Spec 66 follow-up — `off-by-default` is a static config state (the tool
+    // ships the rule off), so like `cannot-fire` it outranks per-shard input
+    // states (`unassessed`/`notApplicable`); a shard that ran the rule while
+    // another did not must not surface a rule the tool ships off as `clean`.
+    const offByDefault = src.find((r) => r.state === 'off-by-default');
+    if (offByDefault) {
+      merged.push({
+        ruleId,
+        analyzer,
+        state: 'off-by-default',
+        count: 0,
+        reason: offByDefault.reason,
+      });
+      continue;
+    }
     const unassessed = src.find((r) => r.state === 'unassessed');
     if (unassessed) {
       merged.push({ ruleId, analyzer, state: 'unassessed', count: 0 });

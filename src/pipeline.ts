@@ -36,7 +36,7 @@ import {
   type DeadCluster,
 } from './types.js';
 import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
-import { evaluateRuleApplicability, evaluateHandledLanguagesApplicability, scopedWholeProgramApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
+import { evaluateRuleApplicability, evaluateHandledLanguagesApplicability, scopedWholeProgramApplicability, securityInputApplicability, offScaleApplicability, type RuleApplicability, type UnreadStyleSourceInfo } from './analyzers/applicability.js';
 import { resetRuleTiming, getRuleTimingSortedDesc } from './analyzers/ruleTiming.js';
 import { LanguageRegistry } from './languages/LanguageRegistry.js';
 import { discoverFiles, DEFAULT_EXCLUDED_DIRS } from './utils/fileDiscovery.js';
@@ -894,6 +894,39 @@ export async function runPipeline(
     if (app) ruleApplicability.set(ruleId, app);
   }
 
+  // Spec 66 follow-up — the three security rules are sink-scoped: when the
+  // corpus contains no instance of their trigger construct, they read
+  // `notApplicable` (no input) rather than `clean` (input present, nothing
+  // wrong). The security visitor emits per-file construct presence as facts;
+  // those fold corpus-wide into `combinedFacts['security']` above.
+  const securityFacts = combinedFacts['security'] as Record<string, unknown> | undefined;
+  for (const [ruleId, app] of securityInputApplicability(securityFacts)) {
+    if (!ruleApplicability.has(ruleId)) ruleApplicability.set(ruleId, app);
+  }
+
+  // Spec 66 follow-up (#253) — `styles/off-scale` is scale-scoped: when the
+  // project declares no spacing/font-size scale tokens, it reads `notApplicable`
+  // with a reason naming the fix, not `clean`. The token rows are read straight
+  // off the now-populated `style_tokens` table (the styles reducer inserted the
+  // `styles-css` facts into it above), mirroring the `style_unread_sources` read.
+  // `offScaleApplicability` derives the scale from the SAME `buildDeclaredScale`
+  // the analyzer uses, so applicability and firing cannot drift.
+  let offScaleApp: RuleApplicability | null = null;
+  if (indexHandle) {
+    try {
+      const styleTokens = indexHandle.query(
+        'SELECT name, value, file_path FROM style_tokens',
+      ) as Array<{ name: string; value: string; file_path: string }>;
+      offScaleApp = offScaleApplicability(styleTokens);
+    } catch {
+      // Table absent (pre-migration DB) — treated as "no declared scale".
+      offScaleApp = offScaleApplicability([]);
+    }
+  }
+  if (offScaleApp && !ruleApplicability.has('styles/off-scale')) {
+    ruleApplicability.set('styles/off-scale', offScaleApp);
+  }
+
   // Spec 64 R1 — a rule that declares `handledLanguages` reports `cannot-fire`
   // (not `clean`) when the functions table holds rows in *only* languages its
   // detector cannot classify (it evaluated none of them). A mixed corpus leaves
@@ -1323,6 +1356,8 @@ export function violationMatchesRule(v: Violation, ruleId: string, field: string
  * | analyzer ran with input, count > 0     | `fired`         | (none)                          |
  * | analyzer ran with input, count === 0   | `clean`/`notApplicable` | per-rule input mapping    |
  * | analyzer not enabled in `config`       | `notApplicable` | "analyzer \"X\" not enabled"       |
+ * | config gate false, rule ships off      | `off-by-default` | "off by default (set `<analyzer>.<key>: true to enable`)" |
+ * | config gate false, user disabled       | `notApplicable` | "disabled by config (`<analyzer>.<key>: false`)" |
  *
  * Spec 33 Item 14: zero-violation rules are promoted from `unassessed` to
  * `clean` (mapped input present) or `notApplicable` (mapped input absent). Only
@@ -1428,7 +1463,13 @@ export function buildCoverageReport(
       continue;
     }
 
-    // Check per-rule config gate (explicitly disabled by config)
+    // Check per-rule config gate. Two distinct reasons a gate can read false:
+    //   - off-by-default (entry.offByDefault) — the tool ships this rule off and
+    //     the user has not opted in. A named fourth state, distinct from
+    //     "disabled by config", so the zero-firing sweep separates a healthy
+    //     opt-in rule from a broken one.
+    //   - disabled by config — the user explicitly turned an on-by-default rule
+    //     off.
     if (entry.configGate) {
       const analyzerNs = (config.config ?? {})[analyzerName];
       const gateValue = (analyzerNs as Record<string, unknown> | undefined)?.[entry.configGate];
@@ -1436,9 +1477,11 @@ export function buildCoverageReport(
         coverage.push({
           ruleId,
           analyzer: analyzerName,
-          state: 'notApplicable',
+          state: entry.offByDefault ? 'off-by-default' : 'notApplicable',
           count: 0,
-          reason: `disabled by config (${analyzerName}.${entry.configGate}: false)`,
+          reason: entry.offByDefault
+            ? `off by default (set ${analyzerName}.${entry.configGate}: true to enable)`
+            : `disabled by config (${analyzerName}.${entry.configGate}: false)`,
         });
         continue;
       }

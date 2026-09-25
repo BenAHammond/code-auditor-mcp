@@ -208,6 +208,12 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     // #135 — tag completeness (parameter-documentation / return-documentation)
     // is opt-in strict mode; off by default so a documented function that omits
     // exhaustive @param/@returns tags is not flagged as a defect.
+    //
+    // These two defaults are NOT the discoverable pointer for "this rule ships
+    // off": the registry marks both rules `offByDefault: true` with their
+    // `configGate` (`requireParamDocs` / `requireReturnDocs`), so a false gate
+    // surfaces as the named `off-by-default` coverage state — with the key to
+    // enable in the reason — in every audit report, not silently as source here.
     requireParamDocs: false,
     requireReturnDocs: false,
     minDescriptionLength: 2,       // Spec 11 R3 sweep: 10 → 2 (precision-first)
@@ -278,10 +284,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
 
   // Spec 10 R3: style intelligence analyzer defaults
   styles: {
-    minCorpus: 20,
-    colorDeltaE: 2.0,
-    outlierMaxShare: 0.05,
-    modeMinCount: 10,
+    colorDeltaE: 2.5,
     scaleProperties: [
       'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
       'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
@@ -291,6 +294,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     mechanismFragmentationMinMechanisms: 3,
     declarationSetMinDeclarations: 5,
     declarationSetSimilarityThreshold: 0.9,
+    offScaleMinDeclarations: 20,
     categoricalPropertyExclusions: [
       'display', 'position', 'flex-direction', 'flex-wrap',
       'align-items', 'align-content', 'justify-content', 'justify-items',

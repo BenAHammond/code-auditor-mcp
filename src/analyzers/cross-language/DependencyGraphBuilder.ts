@@ -475,6 +475,7 @@ class DependencyGraphBuilderTraversal extends DependencyGraphBuilderCore {
     const visited = new Set<string>();
     const recursionStack = new Set<string>();
     const adjList = this.buildAdjacencyList(edges);
+    const fileById = new Map(nodes.map(n => [n.id, n.file] as const));
 
     // Shared mutable path (push/pop) + an index map for O(1) cycle-start lookup.
     // Avoids the previous `[...path]` snapshot on every recursion — that made a
@@ -490,12 +491,24 @@ class DependencyGraphBuilderTraversal extends DependencyGraphBuilderCore {
 
       const neighbors = adjList.get(nodeId) || [];
       for (const neighbor of neighbors) {
+        // A self-edge is a function calling itself — recursion, not a module
+        // cycle. The graph models function-call references, so a recursive
+        // function (`dfs` calling `dfs`) would otherwise be reported as a
+        // single-node "circular dependency", which mislabels the graph's
+        // granularity as module-level when it is function-level.
+        if (neighbor === nodeId) continue;
         if (!visited.has(neighbor)) {
           dfs(neighbor);
         } else if (recursionStack.has(neighbor)) {
           // Found a cycle
           const cycleStart = pathIndex.get(neighbor) ?? 0;
           const cycleNodes = path.slice(cycleStart);
+
+          // A cycle whose nodes all share one file is mutual recursion, not a
+          // module dependency cycle — see {@link spansMultipleFiles}. Only a
+          // cycle crossing a file (module) boundary is a reportable
+          // circular-dependency.
+          if (!spansMultipleFiles(cycleNodes, fileById)) continue;
 
           cycles.push({
             nodes: cycleNodes,
@@ -815,6 +828,22 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
 }
 
 // Supporting interfaces
+
+/**
+ * Whether a detected cycle crosses a file (module) boundary.
+ *
+ * The graph models function-call references, so a cycle whose nodes all live in
+ * one file is mutual recursion — a validator's `validateAgainstSchema` ⇄
+ * `checkArrayConstraints`, a parser's `evaluate` ⇄ `evalObject` — normal
+ * recursive-descent structure, not a module dependency cycle. `circular-dependency`
+ * is a module-level concept (file A imports file B imports file A); a same-file
+ * call cycle never crosses a module boundary, so it must not be reported as one.
+ * This is the N-node generalization of the self-edge skip in {@link detectCycles}
+ * (a self-edge is the 1-node case of the same phenomenon).
+ */
+function spansMultipleFiles(cycleNodes: string[], fileById: Map<string, string>): boolean {
+  return new Set(cycleNodes.map(id => fileById.get(id))).size > 1;
+}
 
 /**
  * Scope-aware name resolution for orphan detection, mirroring the reference

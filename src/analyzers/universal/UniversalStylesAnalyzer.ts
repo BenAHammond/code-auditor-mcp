@@ -27,16 +27,19 @@ import type {
 import type { StylesAnalyzerConfig } from '../../types.js';
 import { getTailwindExpander, type TailwindUtilityExpander } from '../../styles/tailwindUtilityExpander.js';
 import { normalizeValue } from '../../styles/normalizer.js';
+import {
+  buildDeclaredScale,
+  parseLengthToPx,
+  tokenScaleCategory,
+  type DeclaredScale,
+} from './styleScale.js';
 
 // ---------------------------------------------------------------------------
 // Default configuration
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_STYLES_CONFIG: StylesAnalyzerConfig = {
-  minCorpus: 20,
-  colorDeltaE: 2.0,
-  outlierMaxShare: 0.05,
-  modeMinCount: 10,
+  colorDeltaE: 2.5,
   scaleProperties: [
     'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
     'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
@@ -46,92 +49,13 @@ export const DEFAULT_STYLES_CONFIG: StylesAnalyzerConfig = {
   mechanismFragmentationMinMechanisms: 3,
   declarationSetMinDeclarations: 5,
   declarationSetSimilarityThreshold: 0.9,
+  offScaleMinDeclarations: 20,
 };
 
-// ---------------------------------------------------------------------------
-// Declared design scale — Spec 55 R6
-// ---------------------------------------------------------------------------
-//
-// The off-scale rule must not infer a scale. It reads the project's *declared*
-// tokens — Tailwind theme `spacing.*` / `fontSize.*`, or CSS custom properties
-// named by the conventions the Tailwind v4 `@theme` classifier parses — and
-// treats only those as authoritative. Where a project declares no scale for a
-// family, the rule is notApplicable: a plain-CSS project that never opted into
-// a token system must not have its raw values judged against a scale it did not
-// choose (the same "fabricated finding" the token-bypass rule guards against by
-// excluding `built-in defaults`).
-
-/** A declared design scale, derived from the project's own tokens. */
-interface DeclaredScale {
-  /** px values the project's spacing tokens declare (margin/padding/gap). */
-  spacing: Set<number>;
-  /** px values the project's font-size tokens declare (font-size). */
-  fontSize: Set<number>;
-}
-
-/** Parse a CSS length value to px-equivalent, or null if not parseable. */
-function parseLengthToPx(raw: string): number | null {
-  try {
-    const v = raw.trim().toLowerCase();
-    if (v === '0' || v === '0px') return 0;
-
-    const match = v.match(/^(-?\d+(?:\.\d+)?)\s*(px|rem|em|%|vh|vw|pt|cm|mm)?$/);
-    if (!match) return null;
-
-    const num = parseFloat(match[1]);
-    const unit = match[2] || 'px';
-
-    // Approximate conversions (assuming 16px base for rem/em)
-    switch (unit) {
-      case 'px': return num;
-      case 'rem': return num * 16;
-      case 'em': return num * 16;
-      case 'pt': return num * 1.333;
-      case 'cm': return num * 37.795;
-      case 'mm': return num * 3.7795;
-      default: return null; // can't convert %/vh/vw without context
-    }
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Classify a token name into the scale-family property it declares, or null if
- * the token does not belong to a scale family (colors, radii, tap targets).
- *
- * - Tailwind theme tokens carry explicit category names: `spacing.*`, `fontSize.*`.
- * - CSS custom properties use the Tailwind v4 `@theme` conventions: `--space-*`/
- *   `--spacing-*` → spacing, `--font-size-*`/`--text-*` → font-size. (`--font-*`
- *   is a font-*family* token, not a length, so it is deliberately excluded.)
- */
-function tokenScaleCategory(name: string): 'spacing' | 'font-size' | null {
-  if (name.startsWith('spacing.')) return 'spacing';
-  if (name.startsWith('fontSize.')) return 'font-size';
-  if (name.startsWith('--')) {
-    const bare = name.slice(2).toLowerCase();
-    if (bare.startsWith('space-') || bare.startsWith('spacing-')) return 'spacing';
-    if (bare === 'font-size' || bare.startsWith('font-size-') || bare.startsWith('text-')) return 'font-size';
-  }
-  return null;
-}
-
-/** Build the declared scale from the project's own token rows. */
-function buildDeclaredScale(tokens: StyleTokenRow[]): DeclaredScale {
-  const scale: DeclaredScale = { spacing: new Set(), fontSize: new Set() };
-  for (const t of tokens) {
-    // Exclude the bundled Tailwind default palette (see buildTokenValueMap) — a
-    // project that did not declare its own tokens has no declared scale.
-    if (t.file_path === 'built-in defaults') continue;
-    const category = tokenScaleCategory(t.name);
-    if (!category) continue;
-    const px = parseLengthToPx(t.value);
-    if (px === null) continue;
-    if (category === 'spacing') scale.spacing.add(px);
-    else scale.fontSize.add(px);
-  }
-  return scale;
-}
+// Declared design scale — Spec 55 R6. The scale definition (parseLengthToPx,
+// tokenScaleCategory, buildDeclaredScale, DeclaredScale) lives in
+// `./styleScale.js` so the analyzer and the derived-applicability predicate in
+// applicability.ts read one scale definition and cannot drift.
 
 /** The nearest scale values on either side of `px` (for the suggestion). */
 function nearestScaleValues(px: number, values: readonly number[]): [number, number] {
@@ -193,6 +117,40 @@ function declValueKey(d: StyleDeclRow): string {
   return val ? `${prop}: ${val}` : prop;
 }
 
+/**
+ * sRGB → CIELAB (D65) — the standard conversion chain behind ΔE76 (Spec 67 R1):
+ * sRGB → linear → XYZ(D65) → Lab. Reference white Xn=0.95047, Yn=1.0, Zn=1.08883;
+ * the sRGB transfer threshold is 0.04045 and Lab's f(t) knee is ε=0.008856 with
+ * κ=903.3.
+ */
+function rgbToLab([r, g, b]: [number, number, number]): [number, number, number] {
+  const linear = (c: number): number => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  const lr = linear(r);
+  const lg = linear(g);
+  const lb = linear(b);
+
+  // linear RGB → XYZ (D65), sRGB primaries.
+  const x = lr * 0.4124564 + lg * 0.3575761 + lb * 0.1804375;
+  const y = lr * 0.2126729 + lg * 0.7151522 + lb * 0.0721750;
+  const z = lr * 0.0193339 + lg * 0.1191920 + lb * 0.9503041;
+
+  const XN = 0.95047;
+  const YN = 1.0;
+  const ZN = 1.08883;
+  const EPSILON = 0.008856;
+  const KAPPA = 903.3;
+  const f = (t: number): number =>
+    t > EPSILON ? Math.cbrt(t) : (KAPPA * t + 16) / 116;
+  const fx = f(x / XN);
+  const fy = f(y / YN);
+  const fz = f(z / ZN);
+
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
 // ---------------------------------------------------------------------------
 // Analyzer — decomposed leaf-first into a three-class inheritance chain:
 //
@@ -241,6 +199,15 @@ const TRIVIAL_VALUES = new Set([
 ]);
 
 /**
+ * CSS-wide color keywords that name a *concept*, not a color. They must never
+ * enter color clustering — `transparent` is not "near black", `currentColor`
+ * is not a specific hue. (Spec 67 R4: `parseColorToRGB` returns null for these.)
+ */
+const COLOR_KEYWORDS = new Set([
+  'transparent', 'currentcolor', 'inherit', 'initial', 'unset', 'none',
+]);
+
+/**
  * Leaf layer: identity + stateless style helpers used by every detector.
  * Kept free of cross-method orchestration so it stays a small, stable base.
  */
@@ -280,6 +247,13 @@ abstract class UniversalStylesAnalyzerBase extends UniversalAnalyzer {
     try {
       let v = raw.toLowerCase().trim();
 
+      // Keywords are not colors (Spec 67 R4): `transparent`, `currentColor`,
+      // `inherit`, `initial`, `unset`, `none` name a concept, not a hue. Return
+      // null so they never enter clustering (the old `transparent → [0,0,0]`
+      // mapping made a keyword the dominant color and flagged every real color
+      // against it).
+      if (COLOR_KEYWORDS.has(v)) return null;
+
       // Hex
       if (v.startsWith('#')) {
         if (v.length === 4) {
@@ -316,7 +290,6 @@ abstract class UniversalStylesAnalyzerBase extends UniversalAnalyzer {
       const named: Record<string, [number, number, number]> = {
         'white': [255, 255, 255], 'black': [0, 0, 0],
         'red': [255, 0, 0], 'blue': [0, 0, 255], 'green': [0, 128, 0],
-        'transparent': [0, 0, 0],
       };
       if (named[v]) return named[v];
 
@@ -326,42 +299,20 @@ abstract class UniversalStylesAnalyzerBase extends UniversalAnalyzer {
     }
   }
 
-  /** Compute delta-E (CIE76) between two RGB colors. */
-  protected deltaE(a: [number, number, number], b: [number, number, number]): number {
-    const dr = a[0] - b[0];
-    const dg = a[1] - b[1];
-    const db = a[2] - b[2];
-    return Math.sqrt(dr * dr + dg * dg + db * db);
-  }
-
   /**
-   * Cluster colors by delta-E distance.
-   * Simple greedy algorithm: each item joins the first cluster it's close enough to,
-   * or starts a new cluster.
+   * CIELAB ΔE76 (CIE 1976 color difference) between two sRGB colors — what the
+   * `colorDeltaE` config key names. The prior implementation computed Euclidean
+   * RGB distance and mislabeled it "CIE76"; RGB is not perceptually uniform, so
+   * a fixed step means visibly different differences at different lightness and
+   * only exact matches clustered (Spec 67 R1).
    */
-  protected clusterByDeltaE(
-    items: Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>,
-    threshold: number,
-  ): Array<Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>> {
-    const clusters: Array<Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>> = [];
-
-    for (const item of items) {
-      let placed = false;
-      for (const cluster of clusters) {
-        // Use the first item's RGB as cluster centroid
-        const centroid = cluster[0].rgb;
-        if (this.deltaE(item.rgb, centroid) < threshold) {
-          cluster.push(item);
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) {
-        clusters.push([item]);
-      }
-    }
-
-    return clusters;
+  protected deltaE(a: [number, number, number], b: [number, number, number]): number {
+    const [la, aa, ba] = rgbToLab(a);
+    const [lb, ab, bb] = rgbToLab(b);
+    const dl = la - lb;
+    const da = aa - ab;
+    const db = ba - bb;
+    return Math.sqrt(dl * dl + da * da + db * db);
   }
 }
 
@@ -376,12 +327,13 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
   // -----------------------------------------------------------------------
 
   /**
-   * For each property with enough declarations, cluster values and flag
-   * low-share stragglers (outliers) as style drift.
+   * For each color property, cluster distinct values by ΔE76 distance
+   * (< colorDeltaE) and flag each non-canonical member of a ≥2-value cluster as
+   * style drift (Spec 67). How often a value is used plays no part.
    *
-   * - Colors: cluster by delta-E distance (< colorDeltaE).
-   * - Non-colors: exact-value histogram; flag share < outlierMaxShare
-   *   when the mode count ≥ modeMinCount.
+   * Length-valued properties are deliberately out of scope (Spec 66 follow-up
+   * #253): they are `off-scale`'s domain, judged against the project's declared
+   * scale, not an exact-value histogram. Keywords are skipped (R4).
    */
   protected detectValueDrift(
     byProperty: Map<string, StyleDeclRow[]>,
@@ -392,21 +344,19 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
     const exclusions = new Set(cfg.categoricalPropertyExclusions ?? []);
 
     for (const [property, decls] of byProperty) {
-      if (decls.length < cfg.minCorpus) continue;
-
       // Spec 22 R3.1: skip hardcoded categorical exclusions
       if (exclusions.has(property)) continue;
 
       // Spec 22 R3.1 structural rule: skip properties whose values are all keywords
       if (this.isCategoricalByValues(decls)) continue;
 
-      // Determine if this property holds color values
-      const isColorProp = this.isColorProperty(property);
-
-      if (isColorProp) {
+      // Spec 66 follow-up (#253) — value-drift checks colors only. Length-valued
+      // properties (margin/padding/gap/font-size) belong to `off-scale`, which
+      // judges them against the project's *declared* scale; exact-value drift on
+      // arbitrary lengths was the mode heuristic that produced 1,084 false
+      // findings on hhra-org. Non-color, non-scale properties are left alone.
+      if (this.isColorProperty(property)) {
         violations.push(...this.detectColorDrift(property, decls, cfg));
-      } else {
-        violations.push(...this.detectExactValueDrift(property, decls, cfg));
       }
     }
 
@@ -453,88 +403,39 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
   }
 
   /**
-   * Color drift: cluster values by delta-E, flag stragglers.
+   * Color drift (Spec 67): pairwise perceptual drift, not scarcity. Parse every
+   * color declaration to Lab, cluster *distinct* values by single-linkage at
+   * ΔE76 < `colorDeltaE`, and flag each non-canonical member of a ≥2-value
+   * cluster. A lone value — however rarely used — is not drift.
    */
   protected detectColorDrift(
     property: string,
     decls: StyleDeclRow[],
     cfg: StylesAnalyzerConfig,
   ): Violation[] {
-    const violations: Violation[] = [];
-
-    // Parse all color values
-    const colors: Array<{ decl: StyleDeclRow; rgb: [number, number, number] }> = [];
+    // Distinct values, keyed by their sRGB triple — a value is a color, not a
+    // spelling (`#4a5568` and `rgb(74,85,104)` are one value). The first
+    // occurrence supplies the anchor and the raw spelling for the message.
+    const byRgb = new Map<string, ColorValue>();
     for (const d of decls) {
       const rgb = this.parseColorToRGB(d.raw_value);
-      if (rgb) {
-        colors.push({ decl: d, rgb });
+      if (!rgb) continue;
+      const key = rgb.join(',');
+      const existing = byRgb.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        byRgb.set(key, { value: d.raw_value, rgb, decl: d, count: 1 });
       }
     }
+    const values = [...byRgb.values()];
 
-    if (colors.length < cfg.minCorpus) return violations;
+    const distance = (a: [number, number, number], b: [number, number, number]) => this.deltaE(a, b);
+    const clusters = clusterDistinctColors(values, cfg.colorDeltaE, distance);
+    const drift = clusters.filter((c) => c.length >= 2);
+    if (drift.length === 0) return [];
 
-    // Cluster by delta-E, then flag stragglers in non-dominant clusters.
-    const clusters = this.clusterByDeltaE(colors, cfg.colorDeltaE);
-    clusters.sort((a, b) => b.length - a.length);
-    const dominant = clusters[0];
-    if (!dominant || dominant.length < cfg.modeMinCount) return violations;
-
-    violations.push(...flagColorDriftStragglers(clusters, property, cfg, this.makeViolation.bind(this)));
-    return violations;
-  }
-
-  /**
-   * Exact-value drift for non-color properties.
-   */
-  protected detectExactValueDrift(
-    property: string,
-    decls: StyleDeclRow[],
-    cfg: StylesAnalyzerConfig,
-  ): Violation[] {
-    const violations: Violation[] = [];
-
-    // Build value histogram
-    const histogram = new Map<string, StyleDeclRow[]>();
-    for (const d of decls) {
-      const key = d.normalized_value ?? d.raw_value;
-      const list = histogram.get(key) || [];
-      list.push(d);
-      histogram.set(key, list);
-    }
-
-    // Find the mode (most frequent value) — the message displays the raw
-    // spelling, never the JSON `normalized_value` bucket key (Spec 45 R2).
-    let modeKey = '';
-    let modeList: StyleDeclRow[] = [];
-    for (const [key, list] of histogram) {
-      if (list.length > modeList.length) {
-        modeKey = key;
-        modeList = list;
-      }
-    }
-
-    if (modeList.length < cfg.modeMinCount) return violations;
-
-    // Flag low-share values
-    const total = decls.length;
-    for (const [key, list] of histogram) {
-      if (key === modeKey) continue;
-      const share = list.length / total;
-      if (share < cfg.outlierMaxShare) {
-        const sample = list[0];
-        violations.push(this.makeViolation(
-          sample.file_path,
-          sample.line,
-          `Value drift in "${property}": "${sample.raw_value}" is rare ` +
-          `(${list.length} of ${total} usages, ${(share * 100).toFixed(1)}%). ` +
-          `The dominant value "${modeList[0].raw_value}" is used ${modeList.length} times. ` +
-          `Consider using a consistent value or design token.`,
-          { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(sample) },
-        ));
-      }
-    }
-
-    return violations;
+    return flagColorDriftMembers(drift, property, this.makeViolation.bind(this), distance);
   }
 
   // -----------------------------------------------------------------------
@@ -545,7 +446,9 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
    * For scale-family properties (margin, padding, gap, font-size), flag values
    * that are not members of the project's declared design scale. Where the
    * project declares no scale for a family, the rule is notApplicable (Spec 55
-   * R6) — it must not guess a scale.
+   * R6) — it must not guess a scale. `offScaleMinDeclarations` is a *usage*
+   * floor: a property with a handful of declarations is not a meaningful
+   * population to judge against the design scale.
    */
   protected detectOffScaleValues(
     byProperty: Map<string, StyleDeclRow[]>,
@@ -556,7 +459,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
 
     for (const property of cfg.scaleProperties) {
       const decls = byProperty.get(property);
-      if (!decls || decls.length < cfg.minCorpus) continue;
+      if (!decls || decls.length < cfg.offScaleMinDeclarations) continue;
 
       // Which declared scale governs this property? Spacing properties are
       // judged against the spacing scale, `font-size` against the font-size
@@ -576,7 +479,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
         }
       }
 
-      if (parsed.length < cfg.minCorpus) continue;
+      if (parsed.length < cfg.offScaleMinDeclarations) continue;
 
       // Flag values that are not members of the project's declared scale.
       for (const { decl, px } of parsed) {
@@ -698,43 +601,91 @@ interface DeclarationBlock {
   valueSet: Set<string>;
 }
 
-type ColorCluster = Array<{ decl: StyleDeclRow; rgb: [number, number, number] }>;
+/** One distinct color value within a property's declaration set. */
+interface ColorValue {
+  /** Canonical raw spelling (first occurrence) — identity and message text. */
+  value: string;
+  /** sRGB triple, for ΔE comparison. */
+  rgb: [number, number, number];
+  /** First-occurrence declaration — the finding anchor (file, line). */
+  decl: StyleDeclRow;
+  /** How many declarations share this distinct value. */
+  count: number;
+}
 
-function flagColorDriftStragglers(
-  clusters: ColorCluster[],
+/**
+ * Single-linkage clustering of distinct color values (Spec 67 R2): an edge joins
+ * two values iff they are perceptually near-identical (ΔE76 < `threshold`), and
+ * connected components become clusters. Union-find over O(n²) pairwise
+ * distances — n is the number of *distinct* values for one property, small in
+ * practice. Unlike the old greedy centroid loop (first-item anchor), a chain of
+ * pairwise-near values lands in one component rather than being mis-partitioned.
+ */
+function clusterDistinctColors(
+  values: ColorValue[],
+  threshold: number,
+  distance: (a: [number, number, number], b: [number, number, number]) => number,
+): ColorValue[][] {
+  const n = values.length;
+  const parent = new Array<number>(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (distance(values[i].rgb, values[j].rgb) < threshold) {
+        const ri = find(i);
+        const rj = find(j);
+        if (ri !== rj) parent[ri] = rj;
+      }
+    }
+  }
+  const clusters = new Map<number, ColorValue[]>();
+  for (let i = 0; i < n; i++) {
+    const root = find(i);
+    const list = clusters.get(root) ?? [];
+    list.push(values[i]);
+    clusters.set(root, list);
+  }
+  return [...clusters.values()];
+}
+
+/**
+ * One finding per non-canonical distinct value in a drift cluster (Spec 67 R3).
+ * The canonical is the most-used value (tie-break: lexicographically first raw
+ * spelling, deterministic). Each member names the canonical, its count, and the
+ * distance — a cluster of three values yields two findings, because it needs two
+ * edits.
+ */
+function flagColorDriftMembers(
+  driftClusters: ColorValue[][],
   property: string,
-  cfg: StylesAnalyzerConfig,
   report: StylesViolationReporter,
+  distance: (a: [number, number, number], b: [number, number, number]) => number,
 ): Violation[] {
   const violations: Violation[] = [];
-  const dominant = clusters[0];
-  const dominantSize = dominant.length;
-  const total = clusters.reduce((sum, c) => sum + c.length, 0);
-
-  for (let i = 1; i < clusters.length; i++) {
-    const cluster = clusters[i];
-    const share = cluster.length / total;
-    if (share >= cfg.outlierMaxShare) continue;
-
-    // Report once per distinct color value in the straggler cluster
-    const seenValues = new Set<string>();
-    for (const item of cluster) {
-      const normVal = item.decl.raw_value.toLowerCase();
-      if (seenValues.has(normVal)) continue;
-      seenValues.add(normVal);
-
+  for (const cluster of driftClusters) {
+    const canonical = [...cluster].sort(
+      (a, b) => (b.count - a.count) || (a.value < b.value ? -1 : a.value > b.value ? 1 : 0),
+    )[0];
+    for (const member of cluster) {
+      if (member.value === canonical.value) continue;
+      const d = distance(member.rgb, canonical.rgb);
       violations.push(report(
-        item.decl.file_path,
-        item.decl.line,
-        `Color drift in "${property}": "${item.decl.raw_value}" is a rare value ` +
-        `(used ${cluster.length} time${cluster.length === 1 ? '' : 's'}, ` +
-        `${(share * 100).toFixed(1)}% of ${total} usages). ` +
-        `Dominant cluster has ${dominantSize} values. Consider using a design token.`,
-        { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(item.decl) },
+        member.decl.file_path,
+        member.decl.line,
+        `Color drift in "${property}": "${member.value}" is near-identical to "${canonical.value}" ` +
+        `(used ${canonical.count} time${canonical.count === 1 ? '' : 's'}, ΔE = ${d.toFixed(2)}). ` +
+        `Consider using "${canonical.value}".`,
+        { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(member.decl) },
       ));
     }
   }
-
   return violations;
 }
 

@@ -363,6 +363,75 @@ describe('buildCoverageReport', () => {
     expect(missingProps!.state).toBe('clean');
   });
 
+  it('reports off-by-default (not notApplicable) for rules whose gate ships off', () => {
+    const config: PipelineConfig = {
+      projectRoot: '/test',
+      config: {
+        documentation: {
+          // Both opt-in strict-mode gates are off by default (Spec 66 follow-up).
+          requireParamDocs: false,
+          requireReturnDocs: false,
+        },
+      },
+    };
+
+    const results: Record<string, AnalyzerResult> = {
+      documentation: {
+        violations: [],
+        executionTime: 0,
+        analyzerName: 'documentation',
+        status: makeVisitorStatus(10),
+      },
+    };
+
+    const coverage = buildCoverageReport(results, config);
+
+    // off-by-default — a named fourth state, not "disabled by config".
+    const paramDocs = coverage.find(c => c.ruleId === 'parameter-documentation');
+    expect(paramDocs!.state).toBe('off-by-default');
+    expect(paramDocs!.reason).toContain('requireParamDocs');
+
+    const returnDocs = coverage.find(c => c.ruleId === 'return-documentation');
+    expect(returnDocs!.state).toBe('off-by-default');
+    expect(returnDocs!.reason).toContain('requireReturnDocs');
+
+    // function-documentation is NOT gated → clean (files input present).
+    const funcDocs = coverage.find(c => c.ruleId === 'function-documentation');
+    expect(funcDocs!.state).toBe('clean');
+  });
+
+  it('reports a gated opt-in rule as clean once its gate is enabled', () => {
+    const config: PipelineConfig = {
+      projectRoot: '/test',
+      config: {
+        documentation: {
+          requireParamDocs: true,
+          // Simulate the merged config: the other opt-in gate still defaults off.
+          requireReturnDocs: false,
+        },
+      },
+    };
+
+    const results: Record<string, AnalyzerResult> = {
+      documentation: {
+        violations: [],
+        executionTime: 0,
+        analyzerName: 'documentation',
+        status: makeVisitorStatus(10),
+      },
+    };
+
+    const coverage = buildCoverageReport(results, config);
+
+    // gate true → not config-gated → clean (files input present, no violations).
+    const paramDocs = coverage.find(c => c.ruleId === 'parameter-documentation');
+    expect(paramDocs!.state).toBe('clean');
+
+    // return-documentation gate is still off → off-by-default.
+    const returnDocs = coverage.find(c => c.ruleId === 'return-documentation');
+    expect(returnDocs!.state).toBe('off-by-default');
+  });
+
   it('emits clean when a rule mapped to files input has zero violations', () => {
     const results: Record<string, AnalyzerResult> = {
       solid: {

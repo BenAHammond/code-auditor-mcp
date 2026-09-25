@@ -218,17 +218,18 @@ export interface CoverageDiagnostic {
  * Per-rule coverage classification — emitted on every audit.
  * @see buildCoverageReport() in pipeline.ts
  */
-export type RuleCoverageState = 'fired' | 'clean' | 'notApplicable' | 'cannot-fire' | 'unassessed';
+export type RuleCoverageState = 'fired' | 'clean' | 'notApplicable' | 'cannot-fire' | 'unassessed' | 'off-by-default';
 
 export interface RuleCoverage {
   ruleId: string;
   analyzer: string;
   state: RuleCoverageState;
-  /** Violation count for this rule (0 for notApplicable/unassessed/clean/cannot-fire). */
+  /** Violation count for this rule (0 for notApplicable/unassessed/clean/cannot-fire/off-by-default). */
   count: number;
   /** For notApplicable: what input was missing. For cannot-fire: why the rule is
    *  broken in the tool (the extractor/field that never emits). For unassessed:
-   *  why applicability couldn't be confirmed. */
+   *  why applicability couldn't be confirmed. For off-by-default: the config key
+   *  that must be enabled to opt into the rule. */
   reason?: string;
 }
 
@@ -1739,14 +1740,8 @@ export interface SchemaAwareFunctionMetadata extends EnhancedFunctionMetadata {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface StylesAnalyzerConfig {
-  /** Minimum declarations per property before histogram analysis runs. Default 20. */
-  minCorpus: number;
-  /** Delta-E threshold for color drift detection. Default 2.0. */
+  /** CIELAB ΔE76 threshold for color drift detection. Default 2.5. */
   colorDeltaE: number;
-  /** Maximum share for outlier values before flagging. Default 0.05. */
-  outlierMaxShare: number;
-  /** Minimum count for modal value before outliers are flagged. Default 10. */
-  modeMinCount: number;
   /** Properties that take scale-family values (margin, padding, gap, font-size). */
   scaleProperties: string[];
   /** Maximum distinct z-index values before flagging. Default 6. */
@@ -1757,6 +1752,11 @@ export interface StylesAnalyzerConfig {
   declarationSetMinDeclarations: number;
   /** Jaccard similarity threshold for declaration-set matching. Default 0.9. */
   declarationSetSimilarityThreshold: number;
+  /** Usage floor for `off-scale`: a property with fewer than this many
+   *  declarations is not a meaningful population to judge against the design
+   *  scale. Default 20. (Spec 67 renamed `minCorpus`; value-drift no longer
+   *  carries a corpus floor — drift is pairwise, not statistical.) */
+  offScaleMinDeclarations: number;
   /** CSS properties excluded from value-drift detection (categorical domains). Spec 22 R3. */
   categoricalPropertyExclusions?: string[];
   /** Known Tailwind utility class names for the undefined-class detector.

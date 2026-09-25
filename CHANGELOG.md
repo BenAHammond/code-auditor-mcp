@@ -2,6 +2,75 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [Unreleased]
+
+### Any repo with a Go file silently dropped eleven analyzers
+
+**v2.6.1 through v4.1.1 routed the *whole* repo through the polyglot
+orchestrator the moment a single `.go` file was present, and that path ran the
+TypeScript/JavaScript half with only four analyzers — `solid`, `dry`,
+`documentation`, `data-access` — dropping eleven analyzers' rules and
+`metadata.coverage` entirely.** Anyone who audited a mixed-language repo in that
+range got a clean-looking report for a fraction of its rules, with no coverage
+entry to say so. Re-running after upgrading surfaces findings the earlier run
+never looked for.
+
+- Dispatch now keys on the languages present, not on the presence of one
+  extension: TypeScript/JavaScript go through the full analyzer pipeline, Go
+  through the Go subprocess, and the two merge into one `AuditResult` whose
+  `metadata.coverage` accounts for every registry rule (Spec 66).
+- The `.go`-keyed routing shipped in v2.6.1 on the MCP audit surface and was
+  consolidated onto the CLI in v3.5.0; both carried the four-analyzer trim until
+  this fix.
+- A language group with no registered analyzer reads `notApplicable` in coverage
+  instead of silently analyzing nothing.
+- A mixed TS/Go corpus fixture pins the merged result end to end.
+
+### value-drift stops flagging length sprawl
+
+**`styles/value-drift` reported exact-value drift on any unit-bearing length —
+`width`/`font-size`/`margin`/`padding`/`gap` — as "rare drift", flagging a design
+system's legitimate scale as defects.** On the validation corpora that was 1,057
+false findings (recall 653, primer-css 397, hhra-org 5, blitz 2). value-drift now
+checks colors only; length-valued properties belong to `off-scale`, which judges
+them against the project's *declared* scale and reads `notApplicable` (with a
+reason that names the fix) when the project declares none. `detectExactValueDrift`
+was deleted.
+
+- `detectValueDrift` routes color properties to `detectColorDrift`; non-color
+  properties are left alone rather than histogrammed as exact-value drift.
+- `styles/off-scale` no longer guesses a scale when a project declares none —
+  it reports `notApplicable` with "no design tokens found; declare a scale and
+  this rule can check it".
+- `parameter-documentation`/`return-documentation` (opt-in strict mode) now read
+  as a named `off-by-default` coverage state, distinct from a rule the user
+  disabled, so a "ships off" rule is no longer mistaken for a broken one.
+
+### value-drift reworks its drift predicate to real ΔE76
+
+**`styles/value-drift` flagged *rare* colors, not *drifted* ones.** Its predicate
+was scarcity — a color used once (share < `outlierMaxShare`) fired regardless of
+whether it was near another color — and its `colorDeltaE` threshold was Euclidean
+RGB distance mislabeled "CIE76", so only *exact* matches ever clustered. Two
+near-identical colors used rarely never flagged as drift. Spec 67 reworks the rule
+around its name:
+
+- `deltaE` is now real CIELAB ΔE76 (sRGB → linear → XYZ(D65) → Lab), so the
+  `colorDeltaE` key (re-pinned to 2.5) means what it says.
+- The predicate is pairwise: distinct color values cluster by single-linkage at
+  ΔE76 < 2.5, and each non-canonical member of a ≥2-value cluster gets one finding
+  naming the most-used canonical. Scarcity plays no part — `outlierMaxShare` and
+  `modeMinCount` are gone.
+- `minCorpus` is dropped from the drift predicate; `off-scale`'s usage floor is
+  renamed to the named key `offScaleMinDeclarations` (default 20, unchanged).
+- Color keywords (`transparent`, `currentColor`, `inherit`, `initial`, `unset`,
+  `none`) no longer parse as colors, so `transparent → [0,0,0]` can no longer make
+  a keyword the dominant color against which every real color is flagged.
+- On recall-protocol this cut the 27 scarcity findings to 3 — all three genuine
+  near-identical pairs (ΔE 1.06/1.59/1.82) — and the bench fixture now pins the
+  boundary with two computed ΔE76 pairs (`#4e5568`↔`#4a5568` = 1.505 fires;
+  `#535568`↔`#4a5568` = 3.446 does not).
+
 ## [4.1.1] — 2026-09-23
 
 ### Report writes stop destroying files

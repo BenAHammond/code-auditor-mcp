@@ -295,6 +295,42 @@ describe('DependencyGraphBuilder cycle path — cycle not at the DFS root', () =
   });
 });
 
+describe('DependencyGraphBuilder circular-dependency — same-file recursion vs module cycle', () => {
+  it('does not report same-file mutual recursion as a circular dependency', async () => {
+    // alpha ⇄ beta live in the SAME file → mutual recursion, not a module cycle.
+    const entities = [
+      entity('a', 'alpha', { file: 'src/schema.ts' }),
+      entity('b', 'beta', { file: 'src/schema.ts' }),
+    ];
+    const references = [ref('a', 'b'), ref('b', 'a')];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    expect(health.issues.find(i => i.type === 'circular-dependency')).toBeUndefined();
+    // The recursion is still measured as one strongly connected component.
+    expect(graph.metrics.stronglyConnectedComponents).toBe(1);
+  });
+
+  it('reports a cycle that crosses a file boundary as a circular dependency', async () => {
+    // alpha (a.ts) ⇄ beta (b.ts) → a module-level cycle across two files.
+    const entities = [
+      entity('a', 'alpha', { file: 'src/a.ts' }),
+      entity('b', 'beta', { file: 'src/b.ts' }),
+    ];
+    const references = [ref('a', 'b'), ref('b', 'a')];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    const issue = health.issues.find(i => i.type === 'circular-dependency');
+    expect(issue).toBeDefined();
+    expect(issue!.description).toContain('alpha → beta');
+  });
+});
+
 describe('DependencyGraphBuilder orphan — metadata.isExported', () => {
   it('does not flag a metadata-exported entity as orphaned', async () => {
     // `visibility` is private, but `metadata.isExported` marks it an entry point.
