@@ -185,7 +185,6 @@ export class LanguageOrchestrator {
     logDiscoveredFiles(filesByLanguage);
     const languagesToAnalyze = this.selectLanguages(filesByLanguage, options);
     console.log(`[LanguageOrchestrator] Languages to analyze:`, languagesToAnalyze);
-    warnMissingRuntimes(this.runtimeManager, languagesToAnalyze);
 
     // 3. Run language-specific analyses in parallel.
     const analysisPromises = languagesToAnalyze.map(language =>
@@ -465,7 +464,7 @@ function mapLanguageToRuntime(): Record<string, string> {
 }
 
 /** Detect a programming language from a file extension. */
-function detectLanguageFromPath(filePath: string): string | null {
+export function detectLanguageFromPath(filePath: string): string | null {
   const ext = path.extname(filePath).toLowerCase();
   const languageMap: Record<string, string> = {
     '.ts': 'typescript',
@@ -492,15 +491,6 @@ function logDiscoveredFiles(filesByLanguage: Record<string, string[]>): void {
     Object.entries(filesByLanguage).map(([lang, files]) => [lang, files.length])
   );
   console.error(`[LanguageOrchestrator] Discovered files:`, counts);
-}
-
-/** Warn for each selected language that has no runtime, so a skip is stated. */
-function warnMissingRuntimes(runtimeManager: RuntimeManager, languagesToAnalyze: string[]): void {
-  for (const language of languagesToAnalyze) {
-    if (!runtimeManager.hasRuntime(language)) {
-      console.warn(`[LanguageOrchestrator] No runtime available for ${language}, skipping...`);
-    }
-  }
 }
 
 /** Flatten index entries across all analysis results into one list. */

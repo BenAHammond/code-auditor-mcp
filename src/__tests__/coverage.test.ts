@@ -30,12 +30,17 @@ function makeViolation(rule: string, overrides: Partial<Violation> = {}): Violat
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('buildCoverageReport', () => {
-  it('skips rules whose analyzer is not in config', () => {
+  it('reports notApplicable for rules whose analyzer is not in config', () => {
     const coverage = buildCoverageReport(
       {},
       makeConfigWith([]), // no analyzers configured
     );
-    expect(coverage).toHaveLength(0);
+    // Spec 66 R6 — un-enabled analyzers surface as notApplicable, not silence.
+    expect(coverage.length).toBe(Object.keys(RULE_REGISTRY).length);
+    for (const c of coverage) {
+      expect(c.state).toBe('notApplicable');
+      expect(c.reason).toContain('not enabled');
+    }
   });
 
   it('reports notApplicable when analyzer not in results', () => {
@@ -43,8 +48,9 @@ describe('buildCoverageReport', () => {
       {},
       makeConfigWith(['solid']),
     );
-    expect(coverage.length).toBeGreaterThan(0);
-    for (const c of coverage) {
+    const solidRules = coverage.filter((c) => c.analyzer === 'solid');
+    expect(solidRules.length).toBeGreaterThan(0);
+    for (const c of solidRules) {
       expect(c.state).toBe('notApplicable');
       expect(c.reason).toContain('not in results');
     }
@@ -374,7 +380,7 @@ describe('buildCoverageReport', () => {
 
     const cleanEntries = coverage.filter(c => c.state === 'clean');
     expect(cleanEntries.length).toBeGreaterThan(0);
-    for (const c of coverage) {
+    for (const c of coverage.filter(c => c.analyzer === 'solid')) {
       expect(c.state).toBe('clean');
     }
   });
@@ -448,7 +454,7 @@ describe('buildCoverageReport', () => {
       makeConfigWith(['schema-validator']),
       { factKeys: [], indexTables: [] },
     );
-    for (const c of absent) {
+    for (const c of absent.filter(c => c.analyzer === 'schema-validator')) {
       expect(c.state).toBe('notApplicable');
       expect(c.reason).toContain('cross-language-entities');
     }
@@ -459,7 +465,7 @@ describe('buildCoverageReport', () => {
       makeConfigWith(['schema-validator']),
       { factKeys: ['cross-language-entities'], indexTables: [] },
     );
-    for (const c of present) {
+    for (const c of present.filter(c => c.analyzer === 'schema-validator')) {
       expect(c.state).toBe('clean');
     }
   });

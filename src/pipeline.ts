@@ -1322,13 +1322,16 @@ export function violationMatchesRule(v: Violation, ruleId: string, field: string
  * | reducer-ran, factsConsumed === 0       | `notApplicable` | "no facts consumed from upstream visitors" |
  * | analyzer ran with input, count > 0     | `fired`         | (none)                          |
  * | analyzer ran with input, count === 0   | `clean`/`notApplicable` | per-rule input mapping    |
+ * | analyzer not enabled in `config`       | `notApplicable` | "analyzer \"X\" not enabled"       |
  *
  * Spec 33 Item 14: zero-violation rules are promoted from `unassessed` to
  * `clean` (mapped input present) or `notApplicable` (mapped input absent). Only
  * rules with no `input` mapping (non-pipeline analyzers) remain `unassessed`.
  *
- * Rules whose analyzer was not enabled in `config` are omitted entirely
- * (they were not part of this run — distinct from `notRun`).
+ * Every registry rule gets a row — including rules whose analyzer was not
+ * enabled in `config` (e.g. the MCP surface's reduced {@link MCP_DEFAULT_ANALYZERS}
+ * set). Those read `notApplicable` with an "analyzer not enabled" reason rather
+ * than being omitted: the reduced set is a stated skip, not silence (Spec 66 R6).
  */
 export function buildCoverageReport(
   analyzerResults: Record<string, AnalyzerResult>,
@@ -1341,8 +1344,18 @@ export function buildCoverageReport(
   for (const [ruleId, entry] of Object.entries(RULE_REGISTRY)) {
     const { analyzer: analyzerName, field } = entry;
 
-    // Skip rules whose analyzer wasn't configured for this run
+    // Rules whose analyzer wasn't enabled for this run read `notApplicable`, not
+    // silence. The reduced MCP analyzer set still gets a row per rule so the
+    // coverage panel reports what was *not* measured (Spec 66 R6) — same contract
+    // as `notRun`, with a reason naming the cause ("not enabled" vs "no files").
     if (!(analyzerName in (config.config ?? {}))) {
+      coverage.push({
+        ruleId,
+        analyzer: analyzerName,
+        state: 'notApplicable',
+        count: 0,
+        reason: `analyzer "${analyzerName}" not enabled`,
+      });
       continue;
     }
 

@@ -106,6 +106,14 @@ export interface AnalysisResult {
   indexEntries: any[];
   metrics: AnalysisMetrics;
   errors?: any[];
+  /**
+   * Canonical rule IDs this analyzer actually ran (Spec 66 R3). Lets the merge
+   * classify a rule generically — `fired` (in violations), `clean` (ran, no
+   * finding), or `notApplicable` (unclaimed) — without knowing which rules are
+   * "Go's". The Go analyzer fills this from its group→rule map; the TypeScript
+   * pipeline expresses the same via its `coverage`, so it does not set it.
+   */
+  ranRules?: string[];
 }
 
 export interface AnalysisMetrics {
@@ -966,11 +974,16 @@ class TypeScriptAnalyzer implements LanguageAnalyzer {
       // `runAudit` falls back to `process.cwd()`, which is the *tool's* cwd, not
       // the audited project, so discovery finds nothing and the TypeScript half
       // of a mixed-language project silently returns zero findings.
+      // No hardcoded analyzer set: `enabledAnalyzers` is passed through untouched,
+      // so an undefined value means "all analyzers" (the full pipeline), never a
+      // reduced four-analyzer slice. The defect this fixes: the polyglot path
+      // trimmed the TypeScript half to solid/dry/documentation/data-access
+      // whenever any .go file existed, dropping eleven analyzers' rules.
       const auditResult = await runAudit({
         projectRoot: options?.projectRoot,
         includePaths: files,
-        enabledAnalyzers: options?.analyzers || ['solid', 'dry', 'documentation', 'data-access'],
-        minSeverity: options?.minSeverity || 'high',
+        enabledAnalyzers: options?.analyzers,
+        minSeverity: options?.minSeverity,
         verbose: false
       });
 
@@ -1079,6 +1092,37 @@ class GoAnalyzerBuildError extends Error {
   }
 }
 
+/**
+ * The Go analyzer's full group set, and the canonical rule IDs each group runs.
+ * The subprocess's groups are its own namespace, not the TypeScript analyzer
+ * list, so this is never derived from `enabledAnalyzers`. The old four-group
+ * slice (`solid`, `imports`, `errors`, `data-access`) dropped `goroutines`
+ * (→ `concurrency`, severe) and `channels` (→ `channel-deadlock`, critical):
+ * both analyzers are fully implemented in the subprocess, but the TypeScript
+ * side stopped requesting them, so their rules never fired. Spec 66 R2 — dead
+ * by omission, not by absence of code.
+ *
+ * The group→rule map is the single source for both the group list sent to the
+ * subprocess AND the `ranRules` reported back for the generic merge (Spec 66
+ * R3) — one table, two consumers, so they cannot drift apart.
+ */
+const GO_GROUP_RULES: Record<string, string[]> = {
+  'solid': ['function-size', 'struct-size', 'switch-size', 'interface-size', 'liskov-substitution'],
+  'imports': ['import-organization', 'import-style'],
+  'errors': ['error-handling'],
+  'goroutines': ['concurrency'],
+  'channels': ['channel-deadlock'],
+  'data-access': ['sql-injection-risk', 'unknown-table', 'missing-org-filter', 'unfiltered-query'],
+};
+
+/** The full Go group set, derived from the group→rule map's keys. */
+const GO_ANALYZER_GROUPS = Object.keys(GO_GROUP_RULES);
+
+/** The canonical rule IDs the Go analyzer runs, flattened from its groups. */
+function goRanRules(): string[] {
+  return GO_ANALYZER_GROUPS.flatMap((g) => GO_GROUP_RULES[g]);
+}
+
 class GoAnalyzer implements LanguageAnalyzer {
   name = 'go';
   runtime = 'go';
@@ -1105,7 +1149,14 @@ class GoAnalyzer implements LanguageAnalyzer {
       // word list (Spec 62/63 — the subprocess must not guess tenancy).
       const tenantInputs = options?.goTenantInputs;
       const analysisOptions = {
-        analyzers: options?.analyzers || ['solid', 'imports', 'errors', 'data-access'],
+        // The full Go group set — fixed, never derived from `enabledAnalyzers`.
+        // The Go subprocess's groups are its own namespace, not the TS analyzer
+        // list; the old four-group slice dropped `goroutines` (→ `concurrency`,
+        // severe) and `channels` (→ `channel-deadlock`, critical) — dead by
+        // omission, not by absence of code (Spec 66 R2). The two analyzers are
+        // fully implemented in the subprocess; the TS side simply stopped asking
+        // for them.
+        analyzers: GO_ANALYZER_GROUPS,
         minSeverity: options?.minSeverity || 'high',
         timeout: options?.timeout || 30000,
         language: options?.language || 'go',
@@ -1120,6 +1171,9 @@ class GoAnalyzer implements LanguageAnalyzer {
 
       const executionTime = Date.now() - startTime;
       result.metrics.executionTime = executionTime;
+      // Report which rules this analyzer ran (Spec 66 R3), so the merge can
+      // classify a ran-but-clean rule as `clean` rather than `notApplicable`.
+      result.ranRules = goRanRules();
 
       console.log(`[GoAnalyzer] Analysis complete: ${result.violations.length} violations, ${result.indexEntries.length} entities`);
       return result;

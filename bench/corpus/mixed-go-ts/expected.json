@@ -1,0 +1,15 @@
+{
+  "analyzer": "security",
+  "config": {},
+  "expectedViolations": [
+    {
+      "file": "src/inject.ts",
+      "rule": "command-injection-risk",
+      "severity": "critical"
+    }
+  ],
+  "nearMissFiles": [
+    "src/safe.ts"
+  ],
+  "description": "Spec 66 R8 — mixed TS+Go corpus. The presence of src/deadlock.go routes the audit through the per-language dispatch: the Go half fires channel-deadlock (src/deadlock.go, critical — asserted by the spec66-r3 integration test, not this corpus), and the TypeScript half must still run the FULL analyzer set, not the four-analyzer trim the old polyglot path applied whenever a .go file existed. This corpus pins the security analyzer (command-injection-risk on src/inject.ts) as the canary: if the TS half is ever trimmed again, security never runs and this finding goes missing. The Go finding is deliberately not declared here because the bench filters a corpus to a single analyzer target; the mixed dispatch's Go-half firing is the integration test's job."
+}
