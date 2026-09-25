@@ -21,5 +21,5 @@
   "nearMissFiles": [
     "src/no-db.go"
   ],
-  "description": "Tests for the data-access analyzer on Go code — fmt.Sprintf SQL injection vs $1 parameterized queries"
+  "description": "Tests for the data-access analyzer on Go code — fmt.Sprintf SQL injection vs $1 parameterized queries. Tenancy is declared in .codeauditor.json (analyzerConfigs.data-access.orgFilterTables: [\"users\"]), so missing-org-filter has a declared tenant table to check: parameterized.go's SELECT on users fires missing-org-filter (critical), while its INSERT on users is excluded by design (an insert carries the tenant column as a value, not a predicate) and instead fires unfiltered-query (high). Without the declaration the rule's input is absent and the finding would silently read clean instead of firing."
 }

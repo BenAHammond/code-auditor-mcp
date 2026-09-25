@@ -1,0 +1,7 @@
+{
+  "analyzerConfigs": {
+    "data-access": {
+      "orgFilterTables": ["users"]
+    }
+  }
+}
