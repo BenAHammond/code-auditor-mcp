@@ -4,8 +4,12 @@
  * Three surfaces record rules, at three different granularities, and nothing
  * used to assert they agree:
  *
- *   - `RULE_REGISTRY` (`src/analyzers/ruleRegistry.ts`) — 100 entries, the
- *     authoritative set of rule IDs the tool can emit.
+ *   - `RULE_REGISTRY` (`src/analyzers/ruleRegistry.ts`) — 78 entries, the
+ *     authoritative set of rule IDs the tool can emit. 22 rules were removed in
+ *     Spec 68 (5 Go-subprocess, 17 schema) because they declared `facts: []` — a
+ *     false declaration for rules that still read their old AST paths. They stay
+ *     on the old analyzer path until their fact kinds exist and they are
+ *     actually migrated into `phase/rules/` (see the Spec 68 note below).
  *   - `specs/rule-authenticity-ledger.md` — 98 rows, one per rule/check, each
  *     classified `honest`/`crude`/`dishonest`/`blocked`/`cannot-fire`.
  *   - `specs/severity-assignment-ledger.md` — 106 rule/kinds = 102 live severity
@@ -31,7 +35,7 @@
  *
  * The pinned differences, in both directions:
  *
- *  1. Registry → authenticity: 17 ids have no authenticity row.
+ *  1. Registry → authenticity: 16 ids have no authenticity row.
  *     - 6 are *renames* whose old name's row is still present, so the new name
  *       has no row of its own:
  *         `cross-domain/multi-table-write`      (was `cross-domain/transaction-boundary`)
@@ -40,28 +44,36 @@
  *         `function-length`                     (was `solid/single-responsibility`)
  *         `interface-size`                      (was `solid/interface-segregation`)
  *         `parameter-count`                     (was `solid/single-responsibility`)
- *     - 11 are *never-audited*: live rules added after the authenticity pass
+ *     - 10 are *never-audited*: live rules added after the authenticity pass
  *       that still await a verdict (closing these is rule-track work, not this
  *       release):
  *         `dry/diverging-clone`, `dry/similar-expression`, `function-size`,
  *         `hardcoded-secret`, `liskov-substitution` (bare Go), `stale-table-reference`,
- *         `struct-size`, `switch-size`, `too-many-queries`, `type-mismatch`,
- *         `unreferenced-module`.
+ *         `struct-size`, `switch-size`, `too-many-queries`, `unreferenced-module`.
+ *     (`type-mismatch` was once in this gap; it left the registry in Spec 68 and
+ *     has no authenticity row of its own, so it is no longer a registry id here.)
  *
- *  2. Authenticity → registry: 7 rows map to no registry id.
+ *  2. Authenticity → registry: 28 rows map to no registry id.
  *     - 3 are *diagnostics* (off the ladder): `config-error`, `engine-error`,
  *       `styles/undefined-class-disabled`.
  *     - 4 are *renamed old names* whose new name is in the registry:
  *       `cross-domain/transaction-boundary`, `cross-domain/validation-bypass`,
  *       `solid/interface-segregation`, `sql-injection`.
+ *     - 21 are *unregistered-live*: the Spec 68 removals that still emit from
+ *       their old analyzer path (5 Go-subprocess + 16 schema). Their fact kinds
+ *       are not yet declared, so they were pulled from the registry but their
+ *       authenticity rows remain. (`type-mismatch` is absent: never-audited, so
+ *       it had no authenticity row to leave behind.)
  *
  *  3. Registry → severity: 0 — every registry id has a severity row.
  *
- *  4. Severity → registry: 5 rows map to no registry id.
+ *  4. Severity → registry: 27 rows map to no registry id.
  *     - 3 are *diagnostics* with a legacy severity row: `config-error`,
  *       `engine-error`, `styles/undefined-class-disabled`.
  *     - 2 are *unregistered live* emit sites: `missing-schemas`
  *       (`UniversalSchemaAnalyzer.ts`) and `reserved-word` (`schema/codeAnalysis.ts`).
+ *     - 22 are *unregistered-live*: the Spec 68 removals (5 Go-subprocess +
+ *       17 schema), all of which still have severity rows.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -138,8 +150,8 @@ describe('registry ↔ ledger membership', () => {
     return [...ledger].filter((id) => !registry.has(toRegistryId(id))).sort();
   }
 
-  it('parses the full registry (100) and both ledgers', () => {
-    expect(registry.size).toBe(100);
+  it('parses the full registry (78) and both ledgers', () => {
+    expect(registry.size).toBe(78);
     expect(auth.size).toBeGreaterThanOrEqual(90);
     expect(severity.size).toBeGreaterThanOrEqual(100);
   });
@@ -167,7 +179,6 @@ describe('registry ↔ ledger membership', () => {
       'struct-size',
       'switch-size',
       'too-many-queries',
-      'type-mismatch',
       'unreferenced-module',
     ].sort();
     expect(regNotIn(auth), 'a registry rule lost or gained an authenticity row — update AUTH_GAP').toEqual(AUTH_GAP);
@@ -184,6 +195,30 @@ describe('registry ↔ ledger membership', () => {
       'cross-domain/validation-bypass',
       'solid/interface-segregation',
       'sql-injection',
+      // unregistered-live — removed from the registry in Spec 68 (fact kinds not
+      // yet declared); the old analyzer path still emits them. type-mismatch is
+      // absent here: it was never-audited, so it had no authenticity row.
+      'above-maximum',
+      'below-minimum',
+      'channels/concurrency',
+      'enum-mismatch',
+      'errors/error-handling',
+      'goroutines/concurrency',
+      'imports/import-organization',
+      'imports/import-style',
+      'invalid-format',
+      'invalid-json',
+      'invalid-range',
+      'invalid-type',
+      'missing-required-field',
+      'missing-schema-declaration',
+      'pattern-mismatch',
+      'string-too-long',
+      'string-too-short',
+      'too-few-items',
+      'too-many-items',
+      'undefined-required-field',
+      'unexpected-property',
     ].sort();
     expect(ledgerNotInReg(auth)).toEqual(AUTH_EXTRANEOUS);
   });
@@ -197,6 +232,31 @@ describe('registry ↔ ledger membership', () => {
       // unregistered live emit sites
       'missing-schemas',
       'reserved-word',
+      // unregistered-live — removed from the registry in Spec 68 (fact kinds not
+      // yet declared); the old analyzer path still emits them, so their severity
+      // rows remain. All 22 have severity rows, including type-mismatch.
+      'above-maximum',
+      'below-minimum',
+      'channels/channel-deadlock',
+      'enum-mismatch',
+      'errors/error-handling',
+      'goroutines/concurrency',
+      'imports/import-organization',
+      'imports/import-style',
+      'invalid-format',
+      'invalid-json',
+      'invalid-range',
+      'invalid-type',
+      'missing-required-field',
+      'missing-schema-declaration',
+      'pattern-mismatch',
+      'string-too-long',
+      'string-too-short',
+      'too-few-items',
+      'too-many-items',
+      'type-mismatch',
+      'undefined-required-field',
+      'unexpected-property',
     ].sort();
     expect(ledgerNotInReg(severity)).toEqual(SEV_EXTRANEOUS);
   });

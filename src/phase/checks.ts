@@ -16,9 +16,12 @@
  *                                      type. (Lives in producers.ts; asserted
  *                                      again here as a named alias.)
  *
- * Each fails on a seeded defect (see checks.spec.ts and §16 guards 1–4): break
- * one and `tsc --noEmit` fails. The residue and serializability assertions are
- * type-only and erase to nothing at runtime.
+ * Each fails on a seeded defect (see seeded-defects.ts and §16 guards 1–4):
+ * break one and `tsc --noEmit` fails. The residue and serializability
+ * assertions are type-only and erase to nothing at runtime. The seeded defects
+ * live in `seeded-defects.ts` — four deliberately broken assignments under
+ * `@ts-expect-error`, so a check that regresses fails the build rather than
+ * waiting for a manual demonstration.
  */
 
 import type { FactShapes, FactKind, Serializable } from './types.js';

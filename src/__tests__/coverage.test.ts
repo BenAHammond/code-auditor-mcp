@@ -487,12 +487,10 @@ describe('buildCoverageReport', () => {
     const sqlInjection = coverage.find(c => c.ruleId === 'dynamic-sql-construction');
     expect(sqlInjection!.state).toBe('clean');
 
-    // JSON rules declare no facts yet (their producer is not migrated), so they
-    // resolve to unassessed — not notApplicable (an empty `needs.facts` is
-    // "input provenance unknown", not "input absent").
+    // invalid-json left the registry (its fact kind does not exist yet), so it
+    // has no coverage row at all — the honest state, not a false `unassessed`.
     const invalidJson = coverage.find(c => c.ruleId === 'invalid-json');
-    expect(invalidJson!.state).toBe('unassessed');
-    expect(invalidJson!.reason).toContain('no per-rule input mapping');
+    expect(invalidJson).toBeUndefined();
   });
 
   it('promotes a fact-key rule to clean only when its input facts are present', () => {
