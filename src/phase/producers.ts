@@ -30,6 +30,8 @@ import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
 import { extractStylesCss } from './stylesCss.js';
 import { extractDataAccessCalls } from './dataAccessCalls.js';
+import { extractSchemaUsage } from './schemaUsage.js';
+import { extractSchemaCode } from './schemaCode.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
 import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 
@@ -80,8 +82,22 @@ export const PRODUCERS = {
     },
   } satisfies FileProcessor<'function-index'>,
   'schema-json': fileProducer('schema-json', 'schema-json', ['typescript', 'tsx', 'javascript']),
-  'schema-code': fileProducer('schema-code', 'schema-code', ['typescript', 'tsx', 'javascript']),
-  'schema-usage': fileProducer('schema-usage', 'schema-usage', ['typescript', 'tsx', 'javascript']),
+  'schema-code': {
+    id: 'schema-code',
+    produces: 'schema-code',
+    formats: ['typescript', 'tsx', 'javascript'],
+    process(file: ParsedFile): FactFragment<'schema-code'> {
+      return extractSchemaCode(file);
+    },
+  } satisfies FileProcessor<'schema-code'>,
+  'schema-usage': {
+    id: 'schema-usage',
+    produces: 'schema-usage',
+    formats: ['typescript', 'tsx', 'javascript'],
+    process(file: ParsedFile): FactFragment<'schema-usage'> {
+      return extractSchemaUsage(file);
+    },
+  } satisfies FileProcessor<'schema-usage'>,
   'styles-css': {
     id: 'styles-css',
     produces: 'styles-css',
