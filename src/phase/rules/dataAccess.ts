@@ -224,6 +224,7 @@ const unfilteredQuery: RuleDefinition<DataAccessNeeds> = {
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
     const ordinals = new Map<string, number>();
+    const joinedTableCount = num(ctx.thresholds, 'joinedTableCount', 4);
 
     for (const call of ctx.facts['data-access-calls']) {
       // Spec 55 R3 — the query-shape rules skip test/spec files. The rule reads
@@ -231,6 +232,11 @@ const unfilteredQuery: RuleDefinition<DataAccessNeeds> = {
       // this stays a per-rule scope or moves to the directory scope of §13.1.
       const skipTest = ctx.thresholds.skipTestFiles !== false && isTestOrSpecPath(call.file);
       if (skipTest) continue;
+
+      // Spec 55 R5 — reproduce the old `analyzeQuery` priority: `complex-query`
+      // ('high', tables > joinedTableCount) wins over `unfiltered-query`
+      // ('medium'). A join-heavy unfiltered write is one finding, not two.
+      if (call.tables.length > joinedTableCount) continue;
 
       const isWrite = isUnfilteredWrite(call);
       const isRead = isUnfilteredRead(call, ctx.thresholds);
