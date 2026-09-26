@@ -669,7 +669,7 @@ const _RULE_REGISTRY = {
   'sql-injection-risk': {
     analyzer: 'data-access',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['file-symbols'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['data-access-calls'] as const },
     resolvable: true,
     message: 'Potential SQL injection risk in {method}. Use parameterized queries.',
     docs: 'sql-injection-risk',
@@ -689,7 +689,7 @@ const _RULE_REGISTRY = {
   'missing-org-filter': {
     analyzer: 'data-access-org-filter',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['data-access-calls', 'schema-json', 'schema-code'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['data-access-calls', 'table-catalog'] as const },
     resolvable: true,
     // The claim is "no organization/tenant *predicate*", NOT "no filter". A
     // query scoped by primary key (`WHERE id = $1`) still fires, because it is
@@ -718,7 +718,7 @@ const _RULE_REGISTRY = {
   'complex-query': {
     analyzer: 'data-access',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['data-access-calls'] as const },
     resolvable: false,
     message: 'Query references many tables (join-heavy).',
     docs: 'complex-query',
@@ -736,7 +736,7 @@ const _RULE_REGISTRY = {
   'unfiltered-query': {
     analyzer: 'data-access',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['file-symbols'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['data-access-calls'] as const },
     resolvable: false,
     message: 'Unfiltered write or tenant-scoped read on {tables} has no WHERE/HAVING/LIMIT.',
     docs: 'unfiltered-query',
@@ -754,7 +754,7 @@ const _RULE_REGISTRY = {
   'hardcoded-connection': {
     analyzer: 'data-access',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['data-access-calls'] as const },
     resolvable: false,
     message: 'Hardcoded database connection string detected.',
     docs: 'hardcoded-connection',
@@ -771,7 +771,7 @@ const _RULE_REGISTRY = {
   'loop-query': {
     analyzer: 'data-access',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['data-access-calls'] as const },
     resolvable: false,
     message: 'Database query inside a loop detected in {method}.',
     docs: 'loop-query',
