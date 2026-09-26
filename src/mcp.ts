@@ -70,10 +70,11 @@ import {
   ListToolsRequestSchema,
   InitializeRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { createWriteStream, mkdirSync } from 'node:fs';
+import { createWriteStream, mkdirSync, realpathSync } from 'node:fs';
 import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 
-import { createAuditRunner } from './auditRunner.js';
+import { runAuditDispatch } from './auditRouter.js';
 import type { AuditResult, AuditScope, FunctionMetadata, Severity } from './types.js';
 import { searchFunctions, findDefinition, syncFileIndex, getDatabase } from './codeIndexService.js';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
@@ -237,7 +238,7 @@ function registerProcessReliabilityHandlers(): void {
 
 const DEFAULT_ANALYZERS = [...MCP_DEFAULT_ANALYZERS];
 
-function registerAllTools(registry: ToolRegistry): void {
+export function registerAllTools(registry: ToolRegistry): void {
   // ── audit ──────────────────────────────────────────────────────────────────
   const auditActions: ActionDefinition[] = [
     {
@@ -304,7 +305,11 @@ function registerAllTools(registry: ToolRegistry): void {
           };
 
           const scope = (args.scope as string) || 'all';
-          const runner = createAuditRunner({
+          // Route through the single audit entry point shared with the CLI, so
+          // `.go` files dispatch to the Go subprocess instead of being silently
+          // skipped (task #255 — the stdio MCP server bypassed per-language
+          // dispatch and left every Go rule `notApplicable`).
+          const auditResult = await runAuditDispatch({
             projectRoot: auditPath,
             enabledAnalyzers: analyzers,
             minSeverity,
@@ -313,8 +318,6 @@ function registerAllTools(registry: ToolRegistry): void {
             scope: scope !== 'all' ? (scope as AuditScope) : undefined,
             ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
           });
-
-          const auditResult = await runner.run();
 
           if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
             try {
@@ -594,7 +597,7 @@ function registerAllTools(registry: ToolRegistry): void {
           ...((args.analyzerConfigs as Record<string, any>) || {}),
         };
 
-        const runner = createAuditRunner({
+        const auditResult = await runAuditDispatch({
           projectRoot: auditPath,
           enabledAnalyzers: DEFAULT_ANALYZERS,
           minSeverity: 'high' as Severity,
@@ -619,8 +622,6 @@ function registerAllTools(registry: ToolRegistry): void {
             });
           },
         });
-
-        const auditResult = await runner.run();
         const healthScore = calculateHealthScore(auditResult);
 
         let indexingResult: any = null;
@@ -1830,8 +1831,29 @@ async function main() {
   await startMcpServer();
 }
 
-main().catch((error) => {
-  console.error(chalk.red('[ERROR]'), 'Failed to start:', error);
-  console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);
-  process.exitCode = 1;
-});
+// Start the server only when this file is the entry point (mirrors mcp-ui-simple).
+// Guarding `main()` lets tests import `registerAllTools` without booting the stdio
+// server (Spec 66 follow-up R5 — the entry-point conformance test must enumerate
+// the real `audit.run` / `audit.health` handlers, not a fake).
+//
+// Compare realpaths, not string-built URLs: `import.meta.url` is symlink-resolved
+// by Node, while `process.argv[1]` under a pnpm/npm `.bin` shim is the shim path
+// (or a symlinked path) that Node does not resolve. The two string forms diverge
+// on a symlinked install, so the naive `file://${argv[1]}` comparison never matches
+// and the published `code-auditor-mcp` bin boots to an immediate silent exit.
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  main().catch((error) => {
+    console.error(chalk.red('[ERROR]'), 'Failed to start:', error);
+    console.error(chalk.red('[ERROR]'), 'Stack:', error.stack);
+    process.exitCode = 1;
+  });
+}

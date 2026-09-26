@@ -6,7 +6,7 @@
  * dropping `goroutines` (→ `concurrency`, severe) and `channels` (→
  * `channel-deadlock`, critical). Both analyzers were fully implemented in the
  * Go subprocess — they were dead by *omission from a list*, not by absence of
- * code. The dispatch must now request all six groups, so a mixed repo with a
+ * code. The dispatch now requests all six groups, so a mixed repo with a
  * same-goroutine deadlock and an unsynchronized goroutine surfaces both rules
  * at the severity the registry promises.
  */

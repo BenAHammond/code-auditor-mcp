@@ -43,6 +43,17 @@ import { PACKAGE_VERSION } from './constants.js';
 
 const TOOL_VERSION = PACKAGE_VERSION;
 
+/** Group a concrete file list by language (extension → language name). */
+function groupFilesByLanguage(files: string[]): Record<string, string[]> {
+  const byLanguage: Record<string, string[]> = {};
+  for (const file of files) {
+    const language = detectLanguageFromPath(file);
+    if (!language) continue;
+    (byLanguage[language] ??= []).push(file);
+  }
+  return byLanguage;
+}
+
 /**
  * Discover files once and group them by language (extension → language name).
  * Files with no known extension are dropped here — they are not a language group
@@ -52,13 +63,7 @@ export async function discoverAndGroupFiles(
   projectRoot: string,
 ): Promise<Record<string, string[]>> {
   const allFiles = await discoverFiles(projectRoot);
-  const byLanguage: Record<string, string[]> = {};
-  for (const file of allFiles) {
-    const language = detectLanguageFromPath(file);
-    if (!language) continue;
-    (byLanguage[language] ??= []).push(file);
-  }
-  return byLanguage;
+  return groupFilesByLanguage(allFiles);
 }
 
 /**
@@ -74,7 +79,14 @@ export async function runAuditDispatch(options: AuditRunnerOptions): Promise<Aud
   // whole audit would collapse to zero findings.
   const projectRoot = path.resolve(options.projectRoot || process.cwd());
 
-  const filesByLanguage = await discoverAndGroupFiles(projectRoot);
+  // A shard worker or diff-scoped caller supplies `explicitFiles`; the repo is
+  // rediscovered only when no explicit list is given. Grouping the explicit list
+  // (rather than rediscovering) preserves shard boundaries and still routes any
+  // `.go` files in the list to the subprocess — the worker's audit is per-language
+  // too (Spec 66 follow-up, third entry point).
+  const filesByLanguage = options.explicitFiles
+    ? groupFilesByLanguage(options.explicitFiles)
+    : await discoverAndGroupFiles(projectRoot);
   const tsJsFiles = [
     ...(filesByLanguage['typescript'] ?? []),
     ...(filesByLanguage['javascript'] ?? []),
