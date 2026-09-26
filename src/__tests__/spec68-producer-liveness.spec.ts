@@ -13,9 +13,11 @@
  * declared `FactShapes[K]` at the top level (an array for the seven array
  * facts, a `{ tables: [...] }` object for `table-catalog`) and round-trip
  * through JSON. A producer that throws, returns undefined, or returns the
- * wrong shape fails. It is written red-first: before any producer is migrated
- * in §3.2, all eight throw "declared but not yet migrated" and the test is
- * the meter that reads 0/8 until the vertical slice (§3.2) and §9 land.
+ * wrong shape fails. It was written red-first: before any producer was
+ * migrated in §3.2, all eight threw "declared but not yet migrated" and the
+ * test read 0/8. Today all eight producers are live, so the meter reads 8/8
+ * continuously — the reversal deleted the stubs, so there is no end-of-work
+ * moment where it flips green once.
  *
  * The corpus producer `table-catalog` is not a per-file producer: it is run
  * against complete (empty) upstream facts, not a parsed file.
