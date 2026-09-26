@@ -32,14 +32,14 @@ function code(path: string, source: string): SchemaDeclaration[] {
     adapter: adapter!,
   };
   try {
-    const producer = PRODUCERS['schema-code'] as { process(f: ParsedFile): SchemaDeclaration[] };
+    const producer = PRODUCERS['ddl-declarations'] as { process(f: ParsedFile): SchemaDeclaration[] };
     return producer.process(file);
   } finally {
     ast.dispose?.();
   }
 }
 
-describe('Spec 68 schema-code producer', () => {
+describe('Spec 68 ddl-declarations producer', () => {
   it('declares a CREATE TABLE from DDL in a template literal, with columns', () => {
     const out = code('/fixture/migration.ts', [
       'export const up = `',

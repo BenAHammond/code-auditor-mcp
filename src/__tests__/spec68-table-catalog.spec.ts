@@ -13,9 +13,9 @@ import type { SchemaDeclaration } from '../phase/types.js';
 
 function catalog(decls: SchemaDeclaration[]) {
   const producer = PRODUCERS['table-catalog'] as {
-    process(facts: { 'schema-json': SchemaDeclaration[]; 'schema-code': SchemaDeclaration[] }): unknown;
+    process(facts: { 'declared-schemas': SchemaDeclaration[]; 'ddl-declarations': SchemaDeclaration[] }): unknown;
   };
-  return producer.process({ 'schema-json': decls, 'schema-code': [] }) as { tables: { name: string; source: string }[] };
+  return producer.process({ 'declared-schemas': decls, 'ddl-declarations': [] }) as { tables: { name: string; source: string }[] };
 }
 
 describe('Spec 68 table-catalog corpus processor', () => {

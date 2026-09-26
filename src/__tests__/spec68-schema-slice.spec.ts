@@ -3,8 +3,8 @@
  * `table-catalog` → schema rules → findings.
  *
  * This proves the corpus-processor path once: `unknown-table` reads a fact
- * (`table-catalog`) that is itself *derived* from `schema-code` (DDL), so the
- * slice runs the full §5 chain — per-file schema-usage and schema-code
+ * (`table-catalog`) that is itself *derived* from `ddl-declarations` (DDL), so the
+ * slice runs the full §5 chain — per-file schema-usage and ddl-declarations
  * extraction, the table-catalog reduction, then the rule over both facts. A
  * `ghost_table` reference against a catalog that only declares `users` fires
  * `unknown-table`; a reference to the declared table does not.

@@ -18,6 +18,7 @@
 
 import type {
   FactKind,
+  FactShapes,
   FileProcessor,
   CorpusProcessor,
   Producer,
@@ -60,6 +61,22 @@ function fileProducer<K extends FactKind>(
   };
 }
 
+/** A corpus producer whose reduction body is migrated in §3.2 / §9. */
+function corpusProducer<K extends FactKind, N extends readonly FactKind[]>(
+  id: string,
+  produces: K,
+  needs: N,
+): CorpusProcessor<K, N> {
+  return {
+    id,
+    produces,
+    needs,
+    process(_facts: { readonly [J in N[number]]: FactShapes[J] }): FactShapes[K] {
+      throw new Error(`spec68 §3.2: producer "${id}" is declared but not yet migrated`);
+    },
+  };
+}
+
 export const PRODUCERS = {
   // ── §3.2: the six extraction visitors, re-registered as FileProcessors ────
   // `file-symbols` is the §3.2 vertical slice: the first producer whose body is
@@ -81,15 +98,21 @@ export const PRODUCERS = {
       return extractFunctionIndex(file);
     },
   } satisfies FileProcessor<'function-index'>,
-  'schema-json': fileProducer('schema-json', 'schema-json', ['json']),
-  'schema-code': {
-    id: 'schema-code',
-    produces: 'schema-code',
+  // `declared-schemas` was `schema-json`: the JSON schema declarations the
+  // table-catalog reduces (Spec 68 §2 — named for what it is, not its format).
+  'declared-schemas': fileProducer('declared-schemas', 'declared-schemas', ['json']),
+  // `ddl-declarations` was `schema-code`: DDL declarations parsed from code.
+  'ddl-declarations': {
+    id: 'ddl-declarations',
+    produces: 'ddl-declarations',
     formats: ['typescript', 'tsx', 'javascript'],
-    process(file: ParsedFile): FactFragment<'schema-code'> {
+    process(file: ParsedFile): FactFragment<'ddl-declarations'> {
       return extractSchemaCode(file);
     },
-  } satisfies FileProcessor<'schema-code'>,
+  } satisfies FileProcessor<'ddl-declarations'>,
+  // `schema-validations` is the *second* half of the old `schema-json`: the
+  // schema ↔ data validation pairs the 17 schema rules read (one kind, one shape).
+  'schema-validations': fileProducer('schema-validations', 'schema-validations', ['json']),
   'schema-usage': {
     id: 'schema-usage',
     produces: 'schema-usage',
@@ -98,14 +121,15 @@ export const PRODUCERS = {
       return extractSchemaUsage(file);
     },
   } satisfies FileProcessor<'schema-usage'>,
-  'styles-css': {
-    id: 'styles-css',
-    produces: 'styles-css',
+  // `style-declarations` was `styles-css` (named for the declaration, not the format).
+  'style-declarations': {
+    id: 'style-declarations',
+    produces: 'style-declarations',
     formats: ['css', 'scss'],
-    process(file: ParsedFile): FactFragment<'styles-css'> {
+    process(file: ParsedFile): FactFragment<'style-declarations'> {
       return [extractStylesCss(file)];
     },
-  } satisfies FileProcessor<'styles-css'>,
+  } satisfies FileProcessor<'style-declarations'>,
   'cross-language-entities': {
     id: 'cross-language-entities',
     produces: 'cross-language-entities',
@@ -133,26 +157,85 @@ export const PRODUCERS = {
   // schema config) into the flat known-table set the `missing-org-filter` and
   // `unknown-table` rules read. It is a pure reduction over complete upstream
   // facts — the §5 case that proves the corpus-processor path: `needs` forms the
-  // DAG edge schema-json/schema-code → table-catalog.
+  // DAG edge declared-schemas/ddl-declarations → table-catalog.
   'table-catalog': {
     id: 'table-catalog',
     produces: 'table-catalog',
-    needs: ['schema-json', 'schema-code'],
+    needs: ['declared-schemas', 'ddl-declarations'],
     process(facts): TableCatalog {
       const tables: { name: string; source: string }[] = [];
       const seen = new Set<string>();
-      for (const schema of [...facts['schema-json'], ...facts['schema-code']]) {
+      for (const schema of [...facts['declared-schemas'], ...facts['ddl-declarations']]) {
         if (!schema.name || seen.has(schema.name)) continue;
         seen.add(schema.name);
         tables.push({ name: schema.name, source: schema.file });
       }
       return { tables };
     },
-  } satisfies CorpusProcessor<'table-catalog', readonly ['schema-json', 'schema-code']>,
+  } satisfies CorpusProcessor<'table-catalog', readonly ['declared-schemas', 'ddl-declarations']>,
 
   // ── §9: the Go binary as an external-process FileProcessor ────────────────
   'go-imports': fileProducer('go-imports', 'go-imports', ['go']),
   'go-error-bindings': fileProducer('go-error-bindings', 'go-error-bindings', ['go']),
   'go-goroutines': fileProducer('go-goroutines', 'go-goroutines', ['go']),
   'go-channels': fileProducer('go-channels', 'go-channels', ['go']),
+
+  // ── Amendment 3: the vocabulary the 77 mis-declared rules actually read ───
+  // Stub producers (bodies land in §3.2 / §9 / §8); each is already consumed by
+  // at least one rule's re-declared `needs.facts` so residue check #2 holds.
+  'react-component': fileProducer('react-component', 'react-component', ['typescript', 'tsx', 'javascript']),
+  'string-literals': fileProducer('string-literals', 'string-literals', ['typescript', 'tsx', 'javascript']),
+  'imports': fileProducer('imports', 'imports', ['typescript', 'tsx', 'javascript']),
+  'code-block': fileProducer('code-block', 'code-block', ['typescript', 'tsx', 'javascript']),
+  'export-form': fileProducer('export-form', 'export-form', ['typescript', 'tsx', 'javascript']),
+  'file-imports': fileProducer('file-imports', 'file-imports', ['typescript', 'tsx', 'javascript']),
+  'file-header': fileProducer('file-header', 'file-header', ['typescript', 'tsx', 'javascript']),
+  'go-structures': fileProducer('go-structures', 'go-structures', ['go']),
+
+  // Corpus facts (cross-run DB history / coverage / conventions / call graph).
+  'clone-pair-history': corpusProducer('clone-pair-history', 'clone-pair-history', ['code-block']),
+  'mined-conventions': corpusProducer('mined-conventions', 'mined-conventions', ['function-index']),
+  'migration-history': corpusProducer('migration-history', 'migration-history', ['ddl-declarations']),
+  'call-graph': corpusProducer('call-graph', 'call-graph', ['function-index']),
+  'coverage-data': corpusProducer('coverage-data', 'coverage-data', ['function-index']),
+  'hotspot-scores': corpusProducer('hotspot-scores', 'hotspot-scores', ['function-index']),
 } satisfies ProducerMap;
+
+/**
+ * The fact-kind vocabulary as a runtime value, kept in lockstep with
+ * {@link FactShapes} by the `satisfies` check: a kind added to FactShapes but
+ * missing here — or present here but absent from FactShapes — fails to compile.
+ * The producer-liveness test derives its expected producer count from this
+ * instead of a hand-maintained literal, so the number can only change in the
+ * same edit that changes the vocabulary.
+ */
+export const FACT_KINDS = {
+  'file-symbols': true,
+  'function-index': true,
+  'declared-schemas': true,
+  'ddl-declarations': true,
+  'schema-validations': true,
+  'schema-usage': true,
+  'style-declarations': true,
+  'cross-language-entities': true,
+  'data-access-calls': true,
+  'table-catalog': true,
+  'go-imports': true,
+  'go-error-bindings': true,
+  'go-goroutines': true,
+  'go-channels': true,
+  'react-component': true,
+  'string-literals': true,
+  'imports': true,
+  'code-block': true,
+  'clone-pair-history': true,
+  'export-form': true,
+  'file-imports': true,
+  'file-header': true,
+  'go-structures': true,
+  'mined-conventions': true,
+  'migration-history': true,
+  'call-graph': true,
+  'coverage-data': true,
+  'hotspot-scores': true,
+} satisfies Record<FactKind, true>;

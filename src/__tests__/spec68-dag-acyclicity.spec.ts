@@ -54,14 +54,14 @@ describe('Spec 68 §5 — fact DAG', () => {
 
   it('detects a seeded two-node cycle and names both ends of the back edge', () => {
     const cycle: Record<string, FactProducer> = {
-      a: { produces: 'schema-json', needs: ['schema-code'] },
-      b: { produces: 'schema-code', needs: ['schema-json'] },
+      a: { produces: 'declared-schemas', needs: ['ddl-declarations'] },
+      b: { produces: 'ddl-declarations', needs: ['declared-schemas'] },
     };
     const path = detectFactCycle(cycle);
     expect(path).not.toBeNull();
     // The path repeats its first node at the end — both ends of the back edge.
     expect(path![0]).toBe(path![path!.length - 1]);
-    expect(new Set(path)).toEqual(new Set(['schema-json', 'schema-code']));
+    expect(new Set(path)).toEqual(new Set(['declared-schemas', 'ddl-declarations']));
   });
 
   it('detects a seeded self-loop (a fact depending on itself)', () => {
@@ -74,9 +74,9 @@ describe('Spec 68 §5 — fact DAG', () => {
 
   it('a longer seeded cycle is reported as the full path, not just a boolean', () => {
     const three: Record<string, FactProducer> = {
-      a: { produces: 'schema-json', needs: ['schema-code'] },
-      b: { produces: 'schema-code', needs: ['schema-usage'] },
-      c: { produces: 'schema-usage', needs: ['schema-json'] },
+      a: { produces: 'declared-schemas', needs: ['ddl-declarations'] },
+      b: { produces: 'ddl-declarations', needs: ['schema-usage'] },
+      c: { produces: 'schema-usage', needs: ['declared-schemas'] },
     };
     const path = detectFactCycle(three);
     expect(path).not.toBeNull();
@@ -86,8 +86,8 @@ describe('Spec 68 §5 — fact DAG', () => {
 
   it('topologicalLevels returns null on a cycle rather than looping forever', () => {
     const cycle: Record<string, FactProducer> = {
-      a: { produces: 'schema-json', needs: ['schema-code'] },
-      b: { produces: 'schema-code', needs: ['schema-json'] },
+      a: { produces: 'declared-schemas', needs: ['ddl-declarations'] },
+      b: { produces: 'ddl-declarations', needs: ['declared-schemas'] },
     };
     expect(topologicalLevels(cycle)).toBeNull();
   });

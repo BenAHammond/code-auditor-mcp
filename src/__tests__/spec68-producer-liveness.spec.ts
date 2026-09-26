@@ -25,7 +25,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../languages/index.js';
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { parseFile } from '../languages/adapterBridge.js';
-import { PRODUCERS } from '../phase/producers.js';
+import { PRODUCERS, FACT_KINDS } from '../phase/producers.js';
 import type { FactKind, FactShapes, ParsedFile, Format } from '../phase/types.js';
 
 /** One fixture: a file path and its source. Path extension drives the adapter. */
@@ -148,7 +148,11 @@ function assertShape(kind: FactKind, value: unknown): void {
 
 describe('Spec 68 §16 guard 1 — producer liveness (Amendment 1)', () => {
   it('every producer is declared for a known fact kind', () => {
-    expect(Object.keys(PRODUCERS).length).toBe(13);
+    // The count is derived from FACT_KINDS (compile-time-pinned to FactKind via
+    // `satisfies Record<FactKind, true>`), not a hand-maintained literal — it
+    // widens with the vocabulary instead of being edited by hand. PRODUCERS
+    // `satisfies ProducerMap`, so the producer count IS the fact-kind count.
+    expect(Object.keys(PRODUCERS).length).toBe(Object.keys(FACT_KINDS).length);
   });
 
   for (const [id, producer] of Object.entries(PRODUCERS)) {

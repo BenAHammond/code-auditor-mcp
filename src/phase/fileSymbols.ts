@@ -101,6 +101,8 @@ function extractClass(file: ParsedFile, cls: ClassInfo): FileClassSymbol {
       concernGroups: methodNode
         ? votingConcerns(detectFunctionConcerns(methodNode, (n) => adapter.getNodeText(n, source))).map((c) => CONCERN_LABELS[c])
         : [],
+      jsDoc: m.jsDoc ?? null,
+      visibility: methodNode ? methodVisibility(methodNode, source) : undefined,
     };
   });
 
@@ -119,7 +121,7 @@ function extractClass(file: ParsedFile, cls: ClassInfo): FileClassSymbol {
     hasInstanceofAgainstUserType: classNode ? hasTypeChecking(classNode, adapter, source) : false,
     hasHeldDirectInstantiation: classNode ? hasHeldInstantiation(cls.name, classNode, adapter, source) : false,
     methods,
-    hasJsDoc: Boolean(cls.jsDoc),
+    jsDoc: cls.jsDoc ?? null,
   };
 }
 
@@ -150,7 +152,8 @@ function extractFunction(
     lineCount: func.location.end.line - func.location.start.line + 1,
     complexity,
     concernGroups,
-    hasJsDoc: Boolean(func.jsDoc),
+    jsDoc: func.jsDoc ?? null,
+    returnType: func.returnType,
   };
 }
 
@@ -163,6 +166,15 @@ function nodeThrows(node: ASTNode): boolean {
     if (n.type === 'throw_statement') hasThrow = true;
   });
   return hasThrow;
+}
+
+/** The accessibility modifier on a method declaration, from its leading text. */
+function methodVisibility(node: ASTNode, source: string): 'public' | 'private' | 'protected' | undefined {
+  const head = getNodeText(node, source).split('\n')[0];
+  if (/\bprivate\b/.test(head)) return 'private';
+  if (/\bprotected\b/.test(head)) return 'protected';
+  if (/\bpublic\b/.test(head)) return 'public';
+  return undefined;
 }
 
 /** True when the class body uses `instanceof` against a user-defined type. */

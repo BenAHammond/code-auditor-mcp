@@ -13,14 +13,14 @@ import { initializeLanguages, initParsers } from '../languages/index.js';
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { parseFile } from '../languages/adapterBridge.js';
 import { PRODUCERS } from '../phase/producers.js';
-import type { ParsedFile, StylesCssFile } from '../phase/types.js';
+import type { ParsedFile, StyleDeclarationsFile } from '../phase/types.js';
 
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
 });
 
-function css(path: string, source: string): StylesCssFile {
+function css(path: string, source: string): StyleDeclarationsFile {
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(path);
   const ast = parseFile(path, source)!;
   const file: ParsedFile = {
@@ -31,14 +31,14 @@ function css(path: string, source: string): StylesCssFile {
     adapter: adapter!,
   };
   try {
-    const producer = PRODUCERS['styles-css'] as { process(f: ParsedFile): StylesCssFile[] };
+    const producer = PRODUCERS['style-declarations'] as { process(f: ParsedFile): StyleDeclarationsFile[] };
     return producer.process(file)[0];
   } finally {
     ast.dispose?.();
   }
 }
 
-describe('Spec 68 styles-css producer', () => {
+describe('Spec 68 style-declarations producer', () => {
   it('extracts a declaration with its selector context and css mechanism', () => {
     const fact = css('/fixture/a.css', '.button { color: red; }');
 

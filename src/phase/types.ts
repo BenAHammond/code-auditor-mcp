@@ -42,10 +42,19 @@ export interface FactShapes {
   ast: never;
   'file-symbols': FileSymbols[];
   'function-index': FunctionIndexFact[];
-  'schema-json': SchemaDeclaration[];
-  'schema-code': SchemaDeclaration[];
+  // Source-format names are gone (Spec 68 §2 — "a fact is named for what it
+  // is, never for where it came from"; `needs.formats` already says the format):
+  //   schema-json  → declared-schemas    (JSON schema declarations)
+  //   schema-code  → ddl-declarations    (DDL declarations in code)
+  //   styles-css   → style-declarations  (style declarations)
+  // schema-json additionally *split* into two kinds (§2 "one kind is one
+  // shape"): declared schemas (for table-catalog) and validation pairs
+  // (schema-validations, for the 17 schema-json rules).
+  'declared-schemas': SchemaDeclaration[];
+  'ddl-declarations': SchemaDeclaration[];
+  'schema-validations': SchemaValidationFact[];
   'schema-usage': SchemaUsageFact[];
-  'styles-css': StylesCssFile[];
+  'style-declarations': StyleDeclarationsFile[];
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
   'table-catalog': TableCatalog;
@@ -53,6 +62,24 @@ export interface FactShapes {
   'go-error-bindings': GoErrorBinding[];
   'go-goroutines': GoConcurrencyFacts[];
   'go-channels': GoChannelFacts[];
+  // New per-file facts (Amendment 3 — the vocabulary the 77 mis-declared rules
+  // actually read; producers land as stubs in §3.2 and are reported as "not yet
+  // migrated" until then).
+  'react-component': ReactComponentFact[];
+  'string-literals': StringLiteralFact[];
+  'imports': ImportFact[];
+  'code-block': CodeBlockFact[];
+  'clone-pair-history': ClonePairHistoryFact[];
+  'export-form': ExportFormFact[];
+  'file-imports': FileImportFact[];
+  'file-header': FileHeaderFact[];
+  'go-structures': GoStructureFact[];
+  // New corpus facts.
+  'mined-conventions': MinedConventionFact[];
+  'migration-history': MigrationHistoryFact[];
+  'call-graph': CallEdge[];
+  'coverage-data': CoverageRow[];
+  'hotspot-scores': HotspotScore[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -63,8 +90,9 @@ export type FactKind = Exclude<keyof FactShapes, 'ast'>;
  *
  * `'json'` was added in Amendment 1 of the fact-vocabulary pass: a JSON file is
  * a *format* like any other, parsed by a position-preserving JSON adapter, so
- * the `schema-json` rules go through the same per-file model as every other
- * rule instead of reading `.json` files off disk through a config callback.
+ * the `declared-schemas` / `schema-validations` rules go through the same
+ * per-file model as every other rule instead of reading `.json` files off disk
+ * through a config callback.
  */
 export type Format = 'typescript' | 'tsx' | 'javascript' | 'go' | 'css' | 'scss' | 'json';
 
@@ -93,10 +121,10 @@ export interface Needs {
  * rules onto the `function`/`class`/`interface` arms; `concernGroups`,
  * `hasInstanceofAgainstUserType`, `hasHeldDirectInstantiation`, `throws` and
  * `aggregateComplexity` are the pre-computed signals those rules used to walk
- * the AST to obtain. `hasJsDoc` is reserved for the documentation rules; the
- * DRY / security / react rules that currently declare `file-symbols` are
- * re-declared against their own facts in the "repeat for the other twelve"
- * step, not served by this shape.
+ * the AST to obtain. `jsDoc` (the comment *text*, not a boolean) and
+ * `returnType` serve the documentation rules; the DRY / security / react rules
+ * that currently declare `file-symbols` are re-declared against their own facts
+ * in the "repeat for the other twelve" step, not served by this shape.
  */
 export type FileSymbols = FileFunctionSymbol | FileClassSymbol | FileInterfaceSymbol;
 
@@ -113,6 +141,10 @@ export type FileMethodSymbol = {
   throws: boolean;
   /** Voting concern-group labels (empty = single-purpose); SRP reads these. */
   concernGroups: string[];
+  /** JSDoc comment text, or null when absent (method-documentation reads it). */
+  jsDoc: string | null;
+  /** Visibility (method-documentation's classify/skip decision). */
+  visibility?: 'public' | 'private' | 'protected';
 };
 
 /** A standalone function (or a method surfaced outside its class for size rules). */
@@ -133,7 +165,10 @@ export type FileFunctionSymbol = {
   complexity: number;
   /** Voting concern-group labels (empty = single-purpose); SRP reads these. */
   concernGroups: string[];
-  hasJsDoc: boolean;
+  /** JSDoc comment text, or null when absent (documentation rules read it). */
+  jsDoc: string | null;
+  /** Return-type annotation (return-documentation reads this). */
+  returnType?: string;
 };
 
 /** A class, with its methods and the class-level signals pre-computed. */
@@ -153,7 +188,8 @@ export type FileClassSymbol = {
   /** A held (non-escaping) `new Foo()` of a concrete type in the class body. */
   hasHeldDirectInstantiation: boolean;
   methods: FileMethodSymbol[];
-  hasJsDoc: boolean;
+  /** JSDoc comment text, or null when absent (class-documentation reads it). */
+  jsDoc: string | null;
 };
 
 /** An interface, with the member-count / method-member signals pre-computed. */
@@ -229,8 +265,8 @@ export type SchemaUsageFact = {
 };
 
 /**
- * The per-file `styles-css` fact — the serializable projection of the three
- * arrays the styles pipeline extracts from one CSS/SCSS file: normalized
+ * The per-file `style-declarations` fact — the serializable projection of the
+ * three arrays the styles pipeline extracts from one CSS/SCSS file: normalized
  * declarations, design tokens (custom properties), and class usage. §3.2
  * re-homes `createStylesCssVisitor` (pipelineAdapters.ts), which emits exactly
  * this trio; the styles rules read all three, so a single flat declaration
@@ -240,7 +276,7 @@ export type SchemaUsageFact = {
  * `type` aliases (not the `NormalizedDeclaration`/`StyleToken`/
  * `StyleClassUsage` interfaces they project) so §4's `Serializable` arm holds.
  */
-export type StylesCssFile = {
+export type StyleDeclarationsFile = {
   declarations: ReadonlyArray<StylesDeclaration>;
   tokens: ReadonlyArray<StylesToken>;
   classUsage: ReadonlyArray<StylesClassUsage>;
@@ -346,6 +382,8 @@ export type ResolvedQuery = {
   sqlEscaped: boolean;
   /** Enclosing function name for stable fingerprinting. */
   enclosingFunction?: string;
+  /** True when the call is inside a loop (loop-query reads this). */
+  insideLoop?: boolean;
 };
 
 /** The known-table catalog built by the corpus schema processor (§5). */
@@ -383,6 +421,163 @@ export type GoChannelFacts = {
   sendLine?: number;
   receiveLine?: number;
   sameGoroutine: boolean;
+};
+
+// ── New fact kinds (Amendment 3 — derived from the 100-rule body audit) ────
+// Each shape is the derived *thing* the rule body actually reads, never raw
+// source text (§2 "no fact kind is raw source text"): the processor computes
+// the normalized block / literal / component metadata, and the fact carries it.
+// Shapes are pinned precisely in §3.2; the initial declaration is a guess that
+// §4's serializability guardrail keeps honest.
+
+/** A schema ↔ data validation pair (Spec 68 §2 "one kind is one shape"). */
+export type SchemaValidationFact = {
+  file: string;
+  /** JSON path to the validated node, e.g. ['properties', 'users']. */
+  path: string[];
+  line: number;
+  column: number;
+  /** The schema constraint node at `path` (null for parse/meta errors). */
+  schemaNode: Serializable | null;
+  /** The data value node being checked (null when validating schema alone). */
+  dataNode: Serializable | null;
+  /** Parse/validation error text (invalid-json and friends). */
+  error?: string;
+};
+
+/** One React component's metadata (the seven react rules read this). */
+export type ReactComponentFact = {
+  name: string;
+  file: string;
+  line: number;
+  componentType: 'function' | 'class' | 'memo' | 'forwardRef';
+  complexity: number;
+  isExported: boolean;
+  hooks: ReadonlyArray<{ name: string; customHook: string | null; line: number }>;
+  props: ReadonlyArray<{ name: string; required: boolean; type?: string }>;
+  jsxElements: ReadonlyArray<{ tagName: string; line: number }>;
+  jsxElementDetails: ReadonlyArray<{
+    tagName: string;
+    attributes: ReadonlyArray<{ name: string; valueKind: string | null; line: number }>;
+  }>;
+  hasErrorBoundary: boolean;
+};
+
+/** A string-literal occurrence (hardcoded-secret, hardcoded-connection, …). */
+export type StringLiteralFact = {
+  file: string;
+  line: number;
+  column: number;
+  value: string;
+  length: number;
+};
+
+/** One import statement (duplicate-import, conventions/import-form). */
+export type ImportFact = {
+  file: string;
+  /** Module specifier, e.g. './mod'. */
+  source: string;
+  /** Import form. */
+  form: 'default' | 'named' | 'namespace' | 'side-effect';
+  line: number;
+  localNames: string[];
+};
+
+/** A normalized code block (DRY duplicate / structural-similarity / similar-expression). */
+export type CodeBlockFact = {
+  file: string;
+  startLine: number;
+  endLine: number;
+  lineCount: number;
+  /** Normalized token text (identifiers kept, per exact-match DRY). */
+  text: string;
+  hash: string;
+  /** Token-kind skeleton (identifiers/literals abstracted) for structural comparison. */
+  structuralSkeleton: string;
+  nodeType: string;
+};
+
+/** A persisted clone pair (dry/diverging-clone, cross-run). */
+export type ClonePairHistoryFact = {
+  file1: string;
+  line1: number;
+  file2: string;
+  line2: number;
+  previousSimilarity: number;
+  currentSimilarity: number;
+  runs: number;
+};
+
+/** A module's export form (conventions/export-shape). */
+export type ExportFormFact = {
+  file: string;
+  form: 'default' | 'named' | 'commonjs' | 'mixed';
+  line: number;
+};
+
+/** Per-file module import/export surface (unreferenced-module). */
+export type FileImportFact = {
+  file: string;
+  imports: string[];
+  hasExports: boolean;
+  unresolvedDynamicImports: string[];
+};
+
+/** A file's leading documentation comment (file-documentation); zero or one. */
+export type FileHeaderFact = {
+  file: string;
+  text: string;
+  line: number;
+};
+
+/** Go structural metrics the five Go SOLID rules read (switch/function/struct/
+ *  interface size and panic detection — Spec 68 §9). */
+export type GoStructureFact =
+  | { kind: 'function'; file: string; name: string; line: number; parameterCount: number; returnCount: number; complexity: number }
+  | { kind: 'struct'; file: string; name: string; line: number; fieldCount: number }
+  | { kind: 'interface'; file: string; name: string; line: number; methodCount: number }
+  | { kind: 'switch'; file: string; line: number; caseCount: number; typeSwitch: boolean }
+  | { kind: 'panic'; file: string; line: number; functionName: string };
+
+/** A mined convention pair (the conventions/* rules, corpus-wide). */
+export type MinedConventionFact = {
+  antecedent: string;
+  consequent: string;
+  directory: string;
+  pattern: string;
+  confidence: number;
+  exemplarFile: string;
+  line: number;
+  exportKind: string | null;
+};
+
+/** A dropped-table migration record (stale-table-reference). */
+export type MigrationHistoryFact = {
+  table: string;
+  migrationFile: string;
+  dropped: boolean;
+  createdInSameMigration: boolean;
+};
+
+/** One call-graph edge (cross-domain multi-table-write / no-validator-reachable). */
+export type CallEdge = {
+  caller: string;
+  callee: string;
+  file: string;
+};
+
+/** One coverage row (cross-domain uncovered-risk). */
+export type CoverageRow = {
+  file: string;
+  functionName: string;
+  covered: boolean;
+};
+
+/** One hotspot score (cross-domain uncovered-risk). */
+export type HotspotScore = {
+  file: string;
+  symbol: string;
+  score: number;
 };
 
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────

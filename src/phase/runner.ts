@@ -177,7 +177,7 @@ export async function buildSchemaUsage(files: readonly InputFile[]): Promise<Sch
  * catalog, which is the config-free half the corpus processor consumes.
  */
 export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
-  const producer = PRODUCERS['schema-code'];
+  const producer = PRODUCERS['ddl-declarations'];
   const declarations: SchemaDeclaration[] = [];
   for (const input of files) {
     const parsed = await parseOne(input);
@@ -189,8 +189,8 @@ export async function buildTableCatalog(files: readonly InputFile[]): Promise<Ta
     }
   }
   return PRODUCERS['table-catalog'].process({
-    'schema-json': [],
-    'schema-code': declarations,
+    'declared-schemas': [],
+    'ddl-declarations': declarations,
   }) as TableCatalog;
 }
 

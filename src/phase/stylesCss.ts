@@ -15,7 +15,7 @@
  * `sourceCode` re-derivation and no second parse — the AST lives only here.
  */
 
-import type { ParsedFile, StylesCssFile } from './types.js';
+import type { ParsedFile, StyleDeclarationsFile } from './types.js';
 import {
   extractDeclarationsFromCSSAst,
   extractTokensFromCSSAst,
@@ -23,7 +23,7 @@ import {
 } from '../styles/cssAstExtractor.js';
 
 /** Extract the per-file styles fact from one parsed CSS/SCSS file. */
-export function extractStylesCss(file: ParsedFile): StylesCssFile {
+export function extractStylesCss(file: ParsedFile): StyleDeclarationsFile {
   return {
     declarations: extractDeclarationsFromCSSAst(file.ast, file.adapter, file.file, file.source),
     tokens: extractTokensFromCSSAst(file.ast, file.adapter, file.file, file.source),
