@@ -24,6 +24,7 @@ import type {
   ParsedFile,
   FactFragment,
   Format,
+  TableCatalog,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 
@@ -52,22 +53,6 @@ function fileProducer<K extends FactKind>(
   };
 }
 
-/** A corpus producer whose reduction body is migrated in §3.2 / §5. */
-function corpusProducer<K extends FactKind, N extends readonly FactKind[]>(
-  id: string,
-  produces: K,
-  needs: N,
-): CorpusProcessor<K, N> {
-  return {
-    id,
-    produces,
-    needs,
-    process(): ReturnType<CorpusProcessor<K, N>['process']> {
-      throw new Error(`spec68 §3.2: producer "${id}" is declared but not yet migrated`);
-    },
-  };
-}
-
 export const PRODUCERS = {
   // ── §3.2: the six extraction visitors, re-registered as FileProcessors ────
   // `file-symbols` is the §3.2 vertical slice: the first producer whose body is
@@ -90,7 +75,26 @@ export const PRODUCERS = {
   'data-access-calls': fileProducer('data-access-calls', 'data-access-calls', ['typescript', 'tsx', 'javascript']),
 
   // ── §3.2: corpus processors producing derived facts ───────────────────────
-  'table-catalog': corpusProducer('table-catalog', 'table-catalog', ['schema-json', 'schema-code']),
+  // `table-catalog` reduces the schema facts (declared in code DDL and in JSON
+  // schema config) into the flat known-table set the `missing-org-filter` and
+  // `unknown-table` rules read. It is a pure reduction over complete upstream
+  // facts — the §5 case that proves the corpus-processor path: `needs` forms the
+  // DAG edge schema-json/schema-code → table-catalog.
+  'table-catalog': {
+    id: 'table-catalog',
+    produces: 'table-catalog',
+    needs: ['schema-json', 'schema-code'],
+    process(facts): TableCatalog {
+      const tables: { name: string; source: string }[] = [];
+      const seen = new Set<string>();
+      for (const schema of [...facts['schema-json'], ...facts['schema-code']]) {
+        if (!schema.name || seen.has(schema.name)) continue;
+        seen.add(schema.name);
+        tables.push({ name: schema.name, source: schema.file });
+      }
+      return { tables };
+    },
+  } satisfies CorpusProcessor<'table-catalog', readonly ['schema-json', 'schema-code']>,
 
   // ── §9: the Go binary as an external-process FileProcessor ────────────────
   'go-imports': fileProducer('go-imports', 'go-imports', ['go']),
