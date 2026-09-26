@@ -25,6 +25,7 @@ import type {
   FactFragment,
   Format,
 } from './types.js';
+import { extractFileSymbols } from './fileSymbols.js';
 
 /** Exhaustive map over every fact kind. `satisfies` is the single-producer check. */
 export type ProducerMap = { readonly [K in FactKind]: Producer<K> };
@@ -69,7 +70,17 @@ function corpusProducer<K extends FactKind, N extends readonly FactKind[]>(
 
 export const PRODUCERS = {
   // ── §3.2: the six extraction visitors, re-registered as FileProcessors ────
-  'file-symbols': fileProducer('file-symbols', 'file-symbols', ['typescript', 'tsx', 'javascript']),
+  // `file-symbols` is the §3.2 vertical slice: the first producer whose body is
+  // migrated (see fileSymbols.ts). It extracts per-file function/class/interface
+  // symbols with pre-computed metrics, so the SOLID rules read plain data.
+  'file-symbols': {
+    id: 'file-symbols',
+    produces: 'file-symbols',
+    formats: ['typescript', 'tsx', 'javascript'],
+    process(file: ParsedFile): FactFragment<'file-symbols'> {
+      return extractFileSymbols(file);
+    },
+  } satisfies FileProcessor<'file-symbols'>,
   'function-index': fileProducer('function-index', 'function-index', ['typescript', 'tsx', 'javascript']),
   'schema-json': fileProducer('schema-json', 'schema-json', ['typescript', 'tsx', 'javascript']),
   'schema-code': fileProducer('schema-code', 'schema-code', ['typescript', 'tsx', 'javascript']),

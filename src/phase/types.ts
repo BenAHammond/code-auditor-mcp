@@ -71,17 +71,94 @@ export interface Needs {
 
 /**
  * One symbol extracted from a parsed file by the per-file symbol processor.
- * The migration (§3.2) folds the six per-file AST visitors onto this; the
- * shape is the common serializable projection (name / kind / location), not
- * the full tree-sitter node.
+ *
+ * The shape is the *serializable projection* of the adapter's `FunctionInfo` /
+ * `ClassInfo` / `InterfaceInfo`, plus every metric a symbol-level rule needs —
+ * computed in the processor, where the AST lives, so that `analyze` is pure
+ * threshold comparison over plain data. No tree-sitter node survives here: a
+ * node carries methods and cannot satisfy §4's `Serializable` arm.
+ *
+ * The name is plural (inherited from the spec's `FactShapes` key) but each
+ * element is ONE symbol; `FactShapes['file-symbols']` is the corpus-wide array
+ * of them, and a per-file processor returns the subset for its one file.
+ *
+ * §3.2 vertical slice (this landing's first fact kind) migrates the SOLID
+ * rules onto the `function`/`class`/`interface` arms; `concernGroups`,
+ * `hasInstanceofAgainstUserType`, `hasHeldDirectInstantiation`, `throws` and
+ * `aggregateComplexity` are the pre-computed signals those rules used to walk
+ * the AST to obtain. `hasJsDoc` is reserved for the documentation rules; the
+ * DRY / security / react rules that currently declare `file-symbols` are
+ * re-declared against their own facts in the "repeat for the other twelve"
+ * step, not served by this shape.
  */
-export type FileSymbols = {
+export type FileSymbols = FileFunctionSymbol | FileClassSymbol | FileInterfaceSymbol;
+
+/** A method, as a class symbol carries it (metrics pre-computed at process time). */
+export type FileMethodSymbol = {
+  name: string;
+  line: number;
+  column?: number;
+  parameterCount: number;
+  parameterNames: string[];
+  lineCount: number;
+  complexity: number;
+  /** True when the method body contains a `throw` (LSP override signal). */
+  throws: boolean;
+  /** Voting concern-group labels (empty = single-purpose); SRP reads these. */
+  concernGroups: string[];
+};
+
+/** A standalone function (or a method surfaced outside its class for size rules). */
+export type FileFunctionSymbol = {
+  kind: 'function';
   file: string;
   name: string;
-  kind: 'function' | 'class' | 'interface' | 'component' | 'struct';
+  /** Set when this function is a method; empty/absent for a free function. */
+  className?: string;
+  line: number;
+  column?: number;
+  endLine: number;
+  isExported?: boolean;
+  isAsync?: boolean;
+  parameterCount: number;
+  parameterNames: string[];
+  lineCount: number;
+  complexity: number;
+  /** Voting concern-group labels (empty = single-purpose); SRP reads these. */
+  concernGroups: string[];
+  hasJsDoc: boolean;
+};
+
+/** A class, with its methods and the class-level signals pre-computed. */
+export type FileClassSymbol = {
+  kind: 'class';
+  file: string;
+  name: string;
   line: number;
   column?: number;
   isExported?: boolean;
+  extends?: string;
+  methodCount: number;
+  /** Σ of method cyclomatic complexity (class-size's second threshold). */
+  aggregateComplexity: number;
+  /** `instanceof` against a user-defined type anywhere in the class body. */
+  hasInstanceofAgainstUserType: boolean;
+  /** A held (non-escaping) `new Foo()` of a concrete type in the class body. */
+  hasHeldDirectInstantiation: boolean;
+  methods: FileMethodSymbol[];
+  hasJsDoc: boolean;
+};
+
+/** An interface, with the member-count / method-member signals pre-computed. */
+export type FileInterfaceSymbol = {
+  kind: 'interface';
+  file: string;
+  name: string;
+  line: number;
+  column?: number;
+  memberCount: number;
+  /** True when any member is a method signature (interface-size's discriminator). */
+  hasMethodMembers: boolean;
 };
 
 /**
