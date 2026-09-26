@@ -140,6 +140,46 @@ else
   fail "@ast-grep/napi did not load — wrong-platform optional dependency (check ~/.npmrc os=)"
 fi
 
+# ── Guard 4: the MCP server bin boots over stdio ─────────────────────────────
+# The `code-auditor-mcp` bin (dist/mcp.js) is guarded by an entry-point check
+# that decides whether the published server starts at all. A string-comparison
+# guard (`import.meta.url === file://${argv[1]}`) breaks under a *symlinked* bin
+# path — Node resolves `import.meta.url` through the symlink to the real file,
+# while `process.argv[1]` keeps the symlink path — so the server would exit
+# before reading stdin, silently. This gate boot is the only check that would
+# catch that: it compiles the source (tsc + WASM grammars only — the Go binaries
+# and downloaded natives are not needed to answer `initialize`), then boots the
+# built bin through a symlink and requires an `initialize` response back.
+echo ""
+echo "Building dist (tsc only) to boot the MCP server bin over stdio..."
+cp -R "$ROOT/src" "$SCRATCH/src"
+cp "$ROOT/tsconfig.json" "$SCRATCH/tsconfig.json"
+cp -R "$ROOT/grammars" "$SCRATCH/grammars"
+mkdir -p "$SCRATCH/scripts"
+cp "$ROOT/scripts/write-version.mjs" "$SCRATCH/scripts/write-version.mjs"
+if ! $PNPM run build:version >/dev/null 2>&1; then
+  fail "build:version failed in the clean install"
+fi
+if ! npx tsc 2>&1; then
+  fail "tsc failed in the clean install"
+fi
+if ! $PNPM run build:grammars >/dev/null 2>&1; then
+  fail "build:grammars failed in the clean install"
+fi
+
+# pnpm does not shim a package's *own* bin into .bin/, so reproduce the symlink
+# condition the published bin lives under explicitly.
+ln -sf "$SCRATCH/dist/mcp.js" "$SCRATCH/node_modules/.bin/code-auditor-mcp"
+
+echo "Booting code-auditor-mcp bin over stdio and reading the initialize response..."
+INIT_MSG='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify-clean-install","version":"0.0.0"}}}'
+MCP_INIT=$(printf '%s\n' "$INIT_MSG" | node "$SCRATCH/node_modules/.bin/code-auditor-mcp" 2>/dev/null | head -c 8192)
+if echo "$MCP_INIT" | grep -q '"result"'; then
+  pass "code-auditor-mcp bin answered initialize over stdio (symlinked bin boots)"
+else
+  fail "code-auditor-mcp bin did not answer initialize over stdio — the entry-point guard short-circuited the boot"
+fi
+
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Clean-room install check PASSED${NC}"

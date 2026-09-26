@@ -23,10 +23,13 @@ const D3 = () => <span style={{ backgroundColor: "#4a5568" }}>d</span>;
 const D4 = () => <span style={{ backgroundColor: "#4a5568" }}>d</span>;
 const DDrift = () => <span style={{ backgroundColor: "#4e5568" }}>d</span>;
 
-// Negative guard: #535568 is ΔE76 = 3.45 from #4a5568 (over the 2.5 threshold)
-// — must NOT fire value-drift. It lives in `color` (not `background-color`) so
-// single-linkage cannot chain it to #4e5568 (#4e5568 ↔ #535568 = 1.94 would
-// otherwise bridge the two near-pairs into one cluster).
+// Negative guard: #535568 is ΔE76 = 3.4462 from #4a5568 (over the 2.5
+// threshold) — must NOT fire value-drift. This guard rests on the *property
+// split*, not on the 3.4462 distance: single linkage chains #4a5568 → #4e5568
+// (ΔE76 1.5052) → #535568 (ΔE76 1.9410), and both bridges are under 2.5, so if
+// the three colors ever land on one property they merge into a single cluster
+// and the negative case fires. That is this fixture's own design, not a
+// clustering bug — consolidating onto one property re-bridges them.
 const N0 = () => <span style={{ color: "#4a5568" }}>n</span>;
 const N1 = () => <span style={{ color: "#4a5568" }}>n</span>;
 const N2 = () => <span style={{ color: "#4a5568" }}>n</span>;

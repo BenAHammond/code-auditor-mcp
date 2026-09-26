@@ -9,7 +9,7 @@
  * proves the *failure branch is live* (reachable and non-zero) against the
  * gate's own trigger.
  *
- * Four gates are tested here:
+ * Five gates are tested here:
  *
  *   - `verify:self`  — the blocking-severity predicate, the scope filter, and
  *     the correct-by-design exemption map, extracted to
@@ -21,6 +21,10 @@
  *     via its own env knob (`VERIFY_MIN_FREE_BYTES`), no build required.
  *   - `verify:gate-budget` — the `warm >= BUDGET_MS` branch, triggered via the
  *     `VERIFY_GATE_BUDGET_MS` knob added for this test.
+ *   - `verify:recall-value-drift` — the count/pair comparison in
+ *     `verify-recall-value-drift-core.mjs`, the pure half of the Spec 67
+ *     follow-up gate (the corpus is absent in CI, so its I/O half SKIPs there;
+ *     the failure branch is the comparison itself).
  *   - `assert_compatible` — the plugin↔CLI version pin in `hook-common.sh`,
  *     exercised against a fake bin reporting a wrong / missing / matching
  *     version.
@@ -45,6 +49,10 @@ import {
   scopedPath,
   staleExemptions,
 } from '../../scripts/verify-self-core.mjs';
+import {
+  extractDriftPairs,
+  compareToBaseline,
+} from '../../scripts/verify-recall-value-drift-core.mjs';
 
 const APP_ROOT = process.cwd();
 const DIST_CLI = join(APP_ROOT, 'dist', 'cli.js');
@@ -177,5 +185,53 @@ describe('assert_compatible — liveness', () => {
   it('accepts a CLI whose version matches the plugin (zero)', () => {
     const { status } = runAssertCompatible('9.9.9');
     expect(status).toBe(0);
+  });
+});
+
+describe('verify:recall-value-drift — liveness', () => {
+  // The recall-protocol value-drift gate reads its baseline from a JSON file and
+  // re-measures the corpus each run; the corpus is absent in CI, so the gate
+  // SKIPs there. The failure branch lives in the pure comparison, which is what
+  // this tests: a moved count or a changed pair must produce drift lines (and so
+  // a non-zero exit), never a silent green.
+  const baseline = {
+    corpus: 'recall-protocol',
+    rule: 'styles/value-drift',
+    expectedCount: 3,
+    pairs: [
+      { drift: '#cfe2ee', canonical: '#cfe0ef', deltaE76: '1.82' },
+      { drift: '#637688', canonical: '#5f7488', deltaE76: '1.59' },
+      { drift: '#06121a', canonical: '#06131c', deltaE76: '1.06' },
+    ],
+  };
+
+  it('extracts drift pairs from a real finding message and ignores other rules', () => {
+    const violations = [
+      {
+        rule: 'styles/value-drift',
+        message: 'Color drift in "color": "#cfe2ee" is near-identical to "#cfe0ef" (used 1 time, ΔE = 1.82). Consider using "#cfe0ef".',
+      },
+      { rule: 'styles/off-scale', message: 'Value "13px" is off the Tailwind spacing scale.' },
+    ];
+    expect(extractDriftPairs(violations)).toEqual([
+      { drift: '#cfe2ee', canonical: '#cfe0ef', deltaE76: '1.82' },
+    ]);
+  });
+
+  it('is green when count and pairs match the baseline exactly', () => {
+    const actual = baseline.pairs.map((p) => ({ ...p }));
+    expect(compareToBaseline(actual, baseline)).toEqual([]);
+  });
+
+  it('reports a moved count', () => {
+    const actual = baseline.pairs.map((p) => ({ ...p })).slice(0, 2); // 2, not 3
+    expect(compareToBaseline(actual, baseline)).toContain('value-drift count 2 != baseline 3');
+  });
+
+  it('reports a changed pair (drift color, canonical, or ΔE)', () => {
+    const actual = baseline.pairs.map((p) => ({ ...p }));
+    actual[0] = { drift: '#cfe2ee', canonical: '#cfe0ef', deltaE76: '2.50' }; // ΔE moved
+    const drift = compareToBaseline(actual, baseline);
+    expect(drift.some((d) => d.startsWith('missing pair') || d.startsWith('extra pair'))).toBe(true);
   });
 });

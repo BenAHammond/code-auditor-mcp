@@ -1,0 +1,11 @@
+{
+  "corpus": "recall-protocol",
+  "rule": "styles/value-drift",
+  "threshold": "colorDeltaE (default 2.5, pairwise ΔE76 single-linkage — Spec 67)",
+  "expectedCount": 3,
+  "pairs": [
+    { "drift": "#cfe2ee", "canonical": "#cfe0ef", "deltaE76": "1.82", "file": "src/styles/frosted-prism.css", "line": 162 },
+    { "drift": "#637688", "canonical": "#5f7488", "deltaE76": "1.59", "file": "src/components/frosted-prism/PrismFooter.astro", "line": 160 },
+    { "drift": "#06121a", "canonical": "#06131c", "deltaE76": "1.06", "file": "src/styles/frosted-prism.css", "line": 753 }
+  ]
+}
