@@ -25,6 +25,7 @@ import { solidRules } from './rules/solid.js';
 import { dataAccessRules } from './rules/dataAccess.js';
 import { schemaRules } from './rules/schema.js';
 import { dependencyGraphRules } from './rules/dependencyGraph.js';
+import { schemaValidatorRules } from './rules/schemaValidator.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -263,4 +264,31 @@ export async function analyzeDependencyGraph(entities: Entity[], thresholds: Thr
 export async function runDependencyGraphSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const entities = await buildCrossLanguageEntities(files);
   return analyzeDependencyGraph(entities, thresholds);
+}
+
+// ── schema-validator slice (same fact, different rules) ─────────────────────
+
+/**
+ * Analyze the assembled `cross-language-entities` fact with the schema-validator
+ * rules. The dependency-graph and schema-validator slices share one producer;
+ * they differ only in which rules reduce the fact. Like the dependency-graph
+ * rules, the schema-validator rules read the *whole* corpus at once.
+ */
+export async function analyzeSchemaValidator(entities: Entity[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'cross-language-entities': entities },
+    formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of schemaValidatorRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The schema-validator slice: parse → cross-language-entities → validator rules → findings. */
+export async function runSchemaValidatorSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const entities = await buildCrossLanguageEntities(files);
+  return analyzeSchemaValidator(entities, thresholds);
 }
