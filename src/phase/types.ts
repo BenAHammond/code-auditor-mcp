@@ -34,10 +34,13 @@
  * the serializability assertion is the guardrail that keeps any such narrowing
  * honest.
  */
+
+import type { AST, LanguageAdapter } from '../languages/types.js';
+
 export interface FactShapes {
   /** Reserved: an AST is not a fact and cannot be declared. */
   ast: never;
-  'file-symbols': FileSymbols;
+  'file-symbols': FileSymbols[];
   'function-index': FunctionRow[];
   'schema-json': SchemaDeclaration[];
   'schema-code': SchemaDeclaration[];
@@ -287,17 +290,18 @@ export interface ParsedFile {
   /** The source text, present so a processor may re-derive position/context. */
   readonly source: string;
   /** The parsed tree. Dies with the file — never crosses a phase boundary. */
-  readonly ast: unknown;
+  readonly ast: AST;
+  /** The language adapter that parsed this file — the processor's only handle
+   *  on the extraction API (`extractFunctions`, `extractClasses`, …). */
+  readonly adapter: LanguageAdapter;
 }
 
-/** The fragment a per-file processor returns for one file. */
-export type FactFragment<K extends FactKind> = {
-  readonly [k: string]: unknown;
-  // NOTE: the per-file processors return `FactShapes[K]`-shaped data keyed by
-  // file; the parent assembles fragments into the corpus fact. Kept loose here
-  // so a tree-sitter node can be present transiently *inside* a processor and
-  // still be stripped before the fragment crosses the worker boundary.
-};
+/** The fragment a per-file processor returns for one file. The fragment is the
+ *  fact for that file alone, keyed by file so the parent can assemble corpus
+ *  facts; the processor must have stripped any tree-sitter node before it
+ *  crosses this boundary (the type enforces it — a node cannot satisfy
+ *  {@link Serializable} and so cannot sit inside {@link FactShapes}[K]). */
+export type FactFragment<K extends FactKind> = FactShapes[K];
 
 /** A per-file processor: receives one parsed file, extracts one fact kind. */
 export interface FileProcessor<K extends FactKind> {
