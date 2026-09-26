@@ -28,6 +28,7 @@ import type {
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
+import { extractStylesCss } from './stylesCss.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
 import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 
@@ -80,7 +81,14 @@ export const PRODUCERS = {
   'schema-json': fileProducer('schema-json', 'schema-json', ['typescript', 'tsx', 'javascript']),
   'schema-code': fileProducer('schema-code', 'schema-code', ['typescript', 'tsx', 'javascript']),
   'schema-usage': fileProducer('schema-usage', 'schema-usage', ['typescript', 'tsx', 'javascript']),
-  'styles-css': fileProducer('styles-css', 'styles-css', ['css', 'scss']),
+  'styles-css': {
+    id: 'styles-css',
+    produces: 'styles-css',
+    formats: ['css', 'scss'],
+    process(file: ParsedFile): FactFragment<'styles-css'> {
+      return [extractStylesCss(file)];
+    },
+  } satisfies FileProcessor<'styles-css'>,
   'cross-language-entities': {
     id: 'cross-language-entities',
     produces: 'cross-language-entities',

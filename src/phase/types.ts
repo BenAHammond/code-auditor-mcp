@@ -45,7 +45,7 @@ export interface FactShapes {
   'schema-json': SchemaDeclaration[];
   'schema-code': SchemaDeclaration[];
   'schema-usage': SchemaUsageFact[];
-  'styles-css': StyleDeclaration[];
+  'styles-css': StylesCssFile[];
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
   'table-catalog': TableCatalog;
@@ -221,14 +221,62 @@ export type SchemaUsageFact = {
   origin?: 'query-builder';
 };
 
-/** One style declaration extracted from a CSS/SCSS source file. */
-export type StyleDeclaration = {
-  file: string;
-  selector: string;
-  property: string;
-  value: string;
-  line: number;
+/**
+ * The per-file `styles-css` fact — the serializable projection of the three
+ * arrays the styles pipeline extracts from one CSS/SCSS file: normalized
+ * declarations, design tokens (custom properties), and class usage. §3.2
+ * re-homes `createStylesCssVisitor` (pipelineAdapters.ts), which emits exactly
+ * this trio; the styles rules read all three, so a single flat declaration
+ * list was never the right shape. Each element carries its own `filePath`, so
+ * the corpus-wide fact is the concatenation of per-file fragments and the
+ * rules flatten the three sub-arrays. The element shapes are object-literal
+ * `type` aliases (not the `NormalizedDeclaration`/`StyleToken`/
+ * `StyleClassUsage` interfaces they project) so §4's `Serializable` arm holds.
+ */
+export type StylesCssFile = {
+  declarations: ReadonlyArray<StylesDeclaration>;
+  tokens: ReadonlyArray<StylesToken>;
+  classUsage: ReadonlyArray<StylesClassUsage>;
 };
+
+/** A normalized style declaration, as the CSS/SCSS extractor emits it. */
+export type StylesDeclaration = {
+  property: string;
+  rawValue: string;
+  /** Normalized value for cross-mechanism comparison; null when unresolvable. */
+  normalizedValue: StylesNormalizedValue | null;
+  mechanism: string;
+  filePath: string;
+  line: number;
+  context: string | null;
+  variantContext: string | null;
+  tokenRef: string | null;
+};
+
+/** A design token (CSS custom property) defined in a stylesheet. */
+export type StylesToken = {
+  name: string;
+  value: string;
+  filePath: string;
+  mechanism: 'css-custom-property' | 'tailwind-theme';
+  usageCount?: number;
+  bypassCount?: number;
+};
+
+/** One class name used in a stylesheet (a `.foo` selector occurrence). */
+export type StylesClassUsage = {
+  className: string;
+  filePath: string;
+  line: number;
+  mechanism: 'className' | 'class';
+  unresolvable: boolean;
+};
+
+/** The normalized-value union: a color (hex+alpha), a length, or a literal. */
+export type StylesNormalizedValue =
+  | { type: 'color'; hex: string; alpha: number }
+  | { type: 'length'; value: number; unit: string }
+  | { type: 'literal'; value: string };
 
 /**
  * A cross-language entity as a serializable fact — the projection of
