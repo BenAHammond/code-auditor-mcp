@@ -81,7 +81,7 @@ export const PRODUCERS = {
       return extractFunctionIndex(file);
     },
   } satisfies FileProcessor<'function-index'>,
-  'schema-json': fileProducer('schema-json', 'schema-json', ['typescript', 'tsx', 'javascript']),
+  'schema-json': fileProducer('schema-json', 'schema-json', ['json']),
   'schema-code': {
     id: 'schema-code',
     produces: 'schema-code',

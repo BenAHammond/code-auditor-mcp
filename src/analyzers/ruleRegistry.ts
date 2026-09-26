@@ -947,7 +947,7 @@ const _RULE_REGISTRY = {
   'invalid-json': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Invalid JSON: {error}.',
     docs: 'invalid-json',
@@ -964,7 +964,7 @@ const _RULE_REGISTRY = {
   'missing-schema-declaration': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Missing JSON schema declaration.',
     docs: 'missing-schema-declaration',
@@ -981,7 +981,7 @@ const _RULE_REGISTRY = {
   'undefined-required-field': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Undefined required field "{field}".',
     docs: 'undefined-required-field',
@@ -998,7 +998,7 @@ const _RULE_REGISTRY = {
   'invalid-type': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Invalid type for field "{field}".',
     docs: 'invalid-type',
@@ -1015,7 +1015,7 @@ const _RULE_REGISTRY = {
   'invalid-range': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Invalid range for field "{field}".',
     docs: 'invalid-range',
@@ -1032,7 +1032,7 @@ const _RULE_REGISTRY = {
   'type-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Type mismatch for field "{field}".',
     docs: 'type-mismatch',
@@ -1049,7 +1049,7 @@ const _RULE_REGISTRY = {
   'string-too-short': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'String value too short for field "{field}".',
     docs: 'string-too-short',
@@ -1066,7 +1066,7 @@ const _RULE_REGISTRY = {
   'string-too-long': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'String value too long for field "{field}".',
     docs: 'string-too-long',
@@ -1083,7 +1083,7 @@ const _RULE_REGISTRY = {
   'pattern-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Value does not match pattern for field "{field}".',
     docs: 'pattern-mismatch',
@@ -1100,7 +1100,7 @@ const _RULE_REGISTRY = {
   'invalid-format': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Invalid format for field "{field}".',
     docs: 'invalid-format',
@@ -1117,7 +1117,7 @@ const _RULE_REGISTRY = {
   'below-minimum': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Value below minimum for field "{field}".',
     docs: 'below-minimum',
@@ -1134,7 +1134,7 @@ const _RULE_REGISTRY = {
   'above-maximum': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Value above maximum for field "{field}".',
     docs: 'above-maximum',
@@ -1151,7 +1151,7 @@ const _RULE_REGISTRY = {
   'too-few-items': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Too few items for field "{field}".',
     docs: 'too-few-items',
@@ -1168,7 +1168,7 @@ const _RULE_REGISTRY = {
   'too-many-items': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Too many items for field "{field}".',
     docs: 'too-many-items',
@@ -1185,7 +1185,7 @@ const _RULE_REGISTRY = {
   'missing-required-field': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Missing required field "{field}".',
     docs: 'missing-required-field',
@@ -1202,7 +1202,7 @@ const _RULE_REGISTRY = {
   'unexpected-property': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Unexpected property "{property}".',
     docs: 'unexpected-property',
@@ -1219,7 +1219,7 @@ const _RULE_REGISTRY = {
   'enum-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
+    needs: { formats: ['json'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Value does not match any enum value for field "{field}".',
     docs: 'enum-mismatch',

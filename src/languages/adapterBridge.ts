@@ -16,6 +16,7 @@ import { LanguageRegistry } from './LanguageRegistry.js';
 import { toASTNode, isFunctionType, isClassType, isLoopType, isConditionalType } from './tree-sitter/converter.js';
 import { getRawNode } from './tree-sitter/rawNode.js';
 import { getParser, isInitialized } from './tree-sitter/parser.js';
+import { parseJsonSource } from './json/JsonAdapter.js';
 
 // ---------------------------------------------------------------------------
 // Guards
@@ -54,8 +55,17 @@ export function parseFile(filePath: string, content: string): AST | null {
 
 /**
  * Direct tree-sitter parse — bypasses the async adapter interface.
+ *
+ * `.json` is the one non-tree-sitter format (Spec 68 Amendment 1): it is parsed
+ * by the position-preserving {@link JsonAdapter}, so it routes to
+ * {@link parseJsonSource} rather than a tree-sitter grammar (no JSON grammar
+ * ships in this repository).
  */
 function parseWithTreeSitter(filePath: string, content: string): AST | null {
+  if (filePath.toLowerCase().endsWith('.json')) {
+    const { root, errors } = parseJsonSource(content);
+    return { root, language: 'json', filePath, errors, dispose: () => {} };
+  }
   const isTsx = filePath.endsWith('.tsx') || filePath.endsWith('.jsx');
   const isGo = filePath.endsWith('.go');
   const isCss = filePath.endsWith('.css');

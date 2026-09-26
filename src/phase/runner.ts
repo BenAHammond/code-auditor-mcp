@@ -46,6 +46,7 @@ export function formatFor(path: string): Format {
   if (path.endsWith('.go')) return 'go';
   if (path.endsWith('.css')) return 'css';
   if (path.endsWith('.scss')) return 'scss';
+  if (path.endsWith('.json')) return 'json';
   return 'typescript';
 }
 

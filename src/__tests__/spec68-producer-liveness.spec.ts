@@ -85,6 +85,12 @@ const FIXTURES: Record<Format, Fixture> = {
     path: '/fixture/sample.scss',
     source: ['$color: red;', '.button { color: $color; }', ''].join('\n'),
   },
+  json: {
+    path: '/fixture/sample.json',
+    source: ['{', '  "users": {', '    "type": "object",',
+      '    "properties": { "id": { "type": "integer" } }',
+      '  }', '}', ''].join('\n'),
+  },
 };
 
 /** The one fact kind whose top-level shape is an object, not an array. */
@@ -117,6 +123,7 @@ function formatFor(path: string): Format {
   if (path.endsWith('.go')) return 'go';
   if (path.endsWith('.css')) return 'css';
   if (path.endsWith('.scss')) return 'scss';
+  if (path.endsWith('.json')) return 'json';
   return 'typescript';
 }
 

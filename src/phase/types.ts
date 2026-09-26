@@ -58,8 +58,15 @@ export interface FactShapes {
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
 export type FactKind = Exclude<keyof FactShapes, 'ast'>;
 
-/** The file formats the adapter layer can parse and a rule can evaluate. */
-export type Format = 'typescript' | 'tsx' | 'javascript' | 'go' | 'css' | 'scss';
+/**
+ * The file formats the adapter layer can parse and a rule can evaluate.
+ *
+ * `'json'` was added in Amendment 1 of the fact-vocabulary pass: a JSON file is
+ * a *format* like any other, parsed by a position-preserving JSON adapter, so
+ * the `schema-json` rules go through the same per-file model as every other
+ * rule instead of reading `.json` files off disk through a config callback.
+ */
+export type Format = 'typescript' | 'tsx' | 'javascript' | 'go' | 'css' | 'scss' | 'json';
 
 /** A rule's declaration: the formats it can evaluate and the facts it reads. */
 export interface Needs {
