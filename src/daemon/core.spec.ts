@@ -234,7 +234,7 @@ describe('DaemonCore seed ETA (phase machine)', () => {
   it('throws loudly when a source file is reported after an orphan (ordering invariant)', () => {
     const core = makeCore();
     (core as any).seenOrphan = false;
-    (core as any).assertSourceBeforeOrphan({ current: 0, total: 1, analyzer: 'pipeline', phase: 'stage2', file: 'a.json' });
+    (core as any).assertSourceBeforeOrphan({ current: 0, total: 1, analyzer: 'pipeline', phase: 'stage2', file: 'a.txt' });
     expect((core as any).seenOrphan).toBe(true);
     expect(() =>
       (core as any).assertSourceBeforeOrphan({ current: 1, total: 1, analyzer: 'pipeline', phase: 'stage2', file: 'a.ts' }),

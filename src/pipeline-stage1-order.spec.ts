@@ -49,26 +49,26 @@ describe('stage 1 — source files yield before orphans (Spec 50 ordering invari
   it('yields a parsed source file before a raw orphan, regardless of input order', async () => {
     const dir = fixture({
       'source.ts': 'export const answer: number = 42;\n',
-      'orphan.json': '{ "a": 1 }\n',
+      'orphan.txt': 'not a parseable source file\n',
     });
     // Deliberately list the orphan first — grouping must reorder it behind the source.
-    const order = await yieldKinds(dir, [join(dir, 'orphan.json'), join(dir, 'source.ts')]);
+    const order = await yieldKinds(dir, [join(dir, 'orphan.txt'), join(dir, 'source.ts')]);
     expect(order.map((t) => t.kind)).toEqual(['parsed', 'raw']);
     expect(order[0].file).toBe('source.ts');
-    expect(order[1].file).toBe('orphan.json');
+    expect(order[1].file).toBe('orphan.txt');
   });
 
   it('yields every source file before every orphan when the input is interleaved', async () => {
     const dir = fixture({
       'a.ts': 'const a = 1;\n',
       'b.ts': 'const b = 2;\n',
-      'x.json': '{}',
-      'y.json': '{}',
+      'x.txt': 'raw orphan',
+      'y.txt': 'raw orphan',
     });
     const order = await yieldKinds(dir, [
-      join(dir, 'x.json'),
+      join(dir, 'x.txt'),
       join(dir, 'a.ts'),
-      join(dir, 'y.json'),
+      join(dir, 'y.txt'),
       join(dir, 'b.ts'),
     ]);
     expect(order.map((t) => t.kind)).toEqual(['parsed', 'parsed', 'raw', 'raw']);
@@ -78,9 +78,9 @@ describe('stage 1 — source files yield before orphans (Spec 50 ordering invari
     const dir = fixture({
       'a.ts': 'const a = 1;\n',
       'b.ts': 'const b = 2;\n',
-      'x.json': '{}',
+      'x.txt': 'raw orphan',
     });
-    const s1 = runStage1({ projectRoot: dir, explicitFiles: [join(dir, 'a.ts'), join(dir, 'b.ts'), join(dir, 'x.json')] });
+    const s1 = runStage1({ projectRoot: dir, explicitFiles: [join(dir, 'a.ts'), join(dir, 'b.ts'), join(dir, 'x.txt')] });
     // Consume the stream fully so the generator's eager grouping is exercised.
     const kinds: string[] = [];
     for await (const t of s1.generator) kinds.push(t.kind);
