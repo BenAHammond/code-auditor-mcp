@@ -1,5 +1,5 @@
 /**
- * Spec 68 §3.2 — the `styles-css` producer.
+ * Spec 68 §3.2 — the `style-declarations` producer.
  *
  * The liveness guard (§16.1) proves the producer returns a live, shaped array;
  * this test proves the extraction is *correct* against the three arrays the

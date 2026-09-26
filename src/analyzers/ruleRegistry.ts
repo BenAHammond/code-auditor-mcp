@@ -268,7 +268,7 @@ const _RULE_REGISTRY = {
   'interface-size': {
     analyzer: 'solid',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['file-symbols', 'go-structures'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Interface "{name}" has many members.',
     docs: 'interface-size',
@@ -292,7 +292,7 @@ const _RULE_REGISTRY = {
   'switch-size': {
     analyzer: 'solid',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-structures'] as const },
+    needs: { formats: ['go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Switch or type switch has many case clauses.',
     docs: 'switch-size',
@@ -313,7 +313,7 @@ const _RULE_REGISTRY = {
   'function-size': {
     analyzer: 'solid',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-structures'] as const },
+    needs: { formats: ['go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Function has many parameters, multiple returns, and high complexity.',
     docs: 'function-size',
@@ -334,7 +334,7 @@ const _RULE_REGISTRY = {
   'struct-size': {
     analyzer: 'solid',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-structures'] as const },
+    needs: { formats: ['go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Struct has many fields.',
     docs: 'struct-size',
@@ -355,7 +355,7 @@ const _RULE_REGISTRY = {
   'liskov-substitution': {
     analyzer: 'solid',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-structures'] as const },
+    needs: { formats: ['go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Method calls panic().',
     docs: 'liskov-substitution',
@@ -381,7 +381,7 @@ const _RULE_REGISTRY = {
   'channel-deadlock': {
     analyzer: 'go',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-channels'] as const },
+    needs: { formats: ['go'] as const, facts: [] as const },
     resolvable: false,
     message: 'Guaranteed deadlock: an unbuffered channel is both sent to and received from in the same goroutine.',
     docs: 'channel-deadlock',
@@ -402,7 +402,7 @@ const _RULE_REGISTRY = {
   'error-handling': {
     analyzer: 'go',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-error-bindings'] as const },
+    needs: { formats: ['go'] as const, facts: [] as const },
     resolvable: false,
     message: 'Function assigns an error that is never checked, returned, or propagated.',
     docs: 'error-handling',
@@ -423,7 +423,7 @@ const _RULE_REGISTRY = {
   'concurrency': {
     analyzer: 'go',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-goroutines', 'go-channels'] as const },
+    needs: { formats: ['go'] as const, facts: [] as const },
     resolvable: false,
     message: 'Function launches a goroutine without synchronization.',
     docs: 'concurrency',
@@ -444,7 +444,7 @@ const _RULE_REGISTRY = {
   'import-organization': {
     analyzer: 'go',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-imports'] as const },
+    needs: { formats: ['go'] as const, facts: [] as const },
     resolvable: false,
     message: 'Import block mixes standard library and third-party imports without grouping.',
     docs: 'import-organization',
@@ -465,7 +465,7 @@ const _RULE_REGISTRY = {
   'import-style': {
     analyzer: 'go',
     field: 'rule',
-    needs: { formats: ['go'] as const, facts: ['go-imports'] as const },
+    needs: { formats: ['go'] as const, facts: [] as const },
     resolvable: false,
     message: 'Dot import detected — can lead to namespace pollution.',
     docs: 'import-style',
@@ -522,7 +522,7 @@ const _RULE_REGISTRY = {
   'dry/duplicate': {
     analyzer: 'dry',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['code-block'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Duplicate code block detected ({lines} lines). First occurrence at {file}:{line}.',
     docs: 'dry/duplicate',
@@ -548,7 +548,7 @@ const _RULE_REGISTRY = {
     analyzer: 'dry',
     field: 'rule',
     configGate: 'checkStructuralSimilarity',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['code-block'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Structurally similar code block detected ({similarity}% similar to {file}:{line}).',
     docs: 'dry/structural-similarity',
@@ -573,7 +573,7 @@ const _RULE_REGISTRY = {
     analyzer: 'dry',
     field: 'rule',
     configGate: 'checkExpressionSimilarity',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['code-block'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Near-identical expression detected ({shared} shared {unit}: {names}). First occurrence at {file}:{line}.',
     docs: 'dry/similar-expression',
@@ -611,7 +611,7 @@ const _RULE_REGISTRY = {
   'dry/diverging-clone': {
     analyzer: 'dry',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['clone-pair-history'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Clone pair has diverged: similarity dropped {drop} (from {previous} to {current}) across {runs} consecutive runs. Review {file1}:{line1} and {file2}:{line2} for diverged logic.',
     docs: 'dry/diverging-clone',
@@ -632,7 +632,7 @@ const _RULE_REGISTRY = {
     analyzer: 'dry',
     field: 'rule',
     configGate: 'checkStrings',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['string-literals'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'String literal "{text}" is duplicated {count} times.',
     docs: 'duplicate-string-literal',
@@ -650,7 +650,7 @@ const _RULE_REGISTRY = {
     analyzer: 'dry',
     field: 'rule',
     configGate: 'checkImports',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['imports'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Duplicate import of "{module}".',
     docs: 'duplicate-import',
@@ -754,7 +754,7 @@ const _RULE_REGISTRY = {
   'hardcoded-connection': {
     analyzer: 'data-access',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['string-literals'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['data-access-calls'] as const },
     resolvable: false,
     message: 'Hardcoded database connection string detected.',
     docs: 'hardcoded-connection',
@@ -791,7 +791,7 @@ const _RULE_REGISTRY = {
     analyzer: 'secrets',
     field: 'rule',
     configGate: 'checkHardcodedSecrets',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['string-literals'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Hardcoded secret detected: a credential value is embedded in source. Move it to an environment variable or secret store.',
     docs: 'hardcoded-secret',
@@ -827,7 +827,7 @@ const _RULE_REGISTRY = {
   'file-documentation': {
     analyzer: 'documentation',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-header'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'File is missing a leading documentation comment.',
     docs: 'file-documentation',
@@ -947,7 +947,7 @@ const _RULE_REGISTRY = {
   'invalid-json': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Invalid JSON: {error}.',
     docs: 'invalid-json',
@@ -964,7 +964,7 @@ const _RULE_REGISTRY = {
   'missing-schema-declaration': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Missing JSON schema declaration.',
     docs: 'missing-schema-declaration',
@@ -981,7 +981,7 @@ const _RULE_REGISTRY = {
   'undefined-required-field': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Undefined required field "{field}".',
     docs: 'undefined-required-field',
@@ -998,7 +998,7 @@ const _RULE_REGISTRY = {
   'invalid-type': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Invalid type for field "{field}".',
     docs: 'invalid-type',
@@ -1015,7 +1015,7 @@ const _RULE_REGISTRY = {
   'invalid-range': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Invalid range for field "{field}".',
     docs: 'invalid-range',
@@ -1032,7 +1032,7 @@ const _RULE_REGISTRY = {
   'type-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Type mismatch for field "{field}".',
     docs: 'type-mismatch',
@@ -1049,7 +1049,7 @@ const _RULE_REGISTRY = {
   'string-too-short': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'String value too short for field "{field}".',
     docs: 'string-too-short',
@@ -1066,7 +1066,7 @@ const _RULE_REGISTRY = {
   'string-too-long': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'String value too long for field "{field}".',
     docs: 'string-too-long',
@@ -1083,7 +1083,7 @@ const _RULE_REGISTRY = {
   'pattern-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Value does not match pattern for field "{field}".',
     docs: 'pattern-mismatch',
@@ -1100,7 +1100,7 @@ const _RULE_REGISTRY = {
   'invalid-format': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Invalid format for field "{field}".',
     docs: 'invalid-format',
@@ -1117,7 +1117,7 @@ const _RULE_REGISTRY = {
   'below-minimum': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Value below minimum for field "{field}".',
     docs: 'below-minimum',
@@ -1134,7 +1134,7 @@ const _RULE_REGISTRY = {
   'above-maximum': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Value above maximum for field "{field}".',
     docs: 'above-maximum',
@@ -1151,7 +1151,7 @@ const _RULE_REGISTRY = {
   'too-few-items': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Too few items for field "{field}".',
     docs: 'too-few-items',
@@ -1168,7 +1168,7 @@ const _RULE_REGISTRY = {
   'too-many-items': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Too many items for field "{field}".',
     docs: 'too-many-items',
@@ -1185,7 +1185,7 @@ const _RULE_REGISTRY = {
   'missing-required-field': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Missing required field "{field}".',
     docs: 'missing-required-field',
@@ -1202,7 +1202,7 @@ const _RULE_REGISTRY = {
   'unexpected-property': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Unexpected property "{property}".',
     docs: 'unexpected-property',
@@ -1219,7 +1219,7 @@ const _RULE_REGISTRY = {
   'enum-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['json'] as const, facts: ['schema-validations'] as const },
+    needs: { formats: ['json'] as const, facts: [] as const },
     resolvable: false,
     message: 'Value does not match any enum value for field "{field}".',
     docs: 'enum-mismatch',
@@ -1237,7 +1237,7 @@ const _RULE_REGISTRY = {
   'dynamic-sql-construction': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['string-literals'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['ddl-declarations'] as const },
     resolvable: false,
     message: 'SQL query built via string interpolation or concatenation in {method}; use parameterized queries.',
     docs: 'dynamic-sql-construction',
@@ -1257,7 +1257,7 @@ const _RULE_REGISTRY = {
     analyzer: 'schema',
     field: 'rule',
     configGate: 'checkNamingConventions',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['ddl-declarations'] as const },
     resolvable: false,
     message: 'Table name "{table}" should use snake_case convention.',
     docs: 'table-naming-convention',
@@ -1275,7 +1275,7 @@ const _RULE_REGISTRY = {
   'unknown-table': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['schema-usage', 'table-catalog'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['ddl-declarations'] as const },
     resolvable: true,
     message: 'Reference to unknown table "{table}" ({type}). Did you mean: {suggestions}?',
     docs: 'unknown-table',
@@ -1300,7 +1300,7 @@ const _RULE_REGISTRY = {
   'stale-table-reference': {
     analyzer: 'schema',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['migration-history'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['ddl-declarations'] as const },
     resolvable: true,
     message: 'Reference to dropped table "{table}" — dropped in {migration}.',
     docs: 'stale-table-reference',
@@ -1325,7 +1325,7 @@ const _RULE_REGISTRY = {
     analyzer: 'schema',
     field: 'rule',
     configGate: 'validateQueryPatterns',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['ddl-declarations'] as const },
     resolvable: false,
     message: 'Function "{name}" has {count} queries, exceeding the maximum of {max}.',
     docs: 'too-many-queries',
@@ -1351,7 +1351,7 @@ const _RULE_REGISTRY = {
   'hooks-naming': {
     analyzer: 'react',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['react-component'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React hook "{name}" does not follow the "use*" naming convention.',
     docs: 'hooks-naming',
@@ -1368,7 +1368,7 @@ const _RULE_REGISTRY = {
   'complexity': {
     analyzer: 'react',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['react-component'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React component "{name}" has complexity {complexity}, exceeding the maximum.',
     docs: 'complexity',
@@ -1393,7 +1393,7 @@ const _RULE_REGISTRY = {
     analyzer: 'react',
     field: 'rule',
     configGate: 'requirePropTypes',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['react-component'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React component "{name}" is missing prop-types.',
     docs: 'missing-props',
@@ -1410,7 +1410,7 @@ const _RULE_REGISTRY = {
   'no-error-boundary': {
     analyzer: 'react',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['react-component'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React component tree is missing an error boundary.',
     docs: 'no-error-boundary',
@@ -1428,7 +1428,7 @@ const _RULE_REGISTRY = {
     analyzer: 'react',
     field: 'rule',
     configGate: 'requireMemoization',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['react-component'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React component "{name}" is missing memoization.',
     docs: 'performance',
@@ -1445,7 +1445,7 @@ const _RULE_REGISTRY = {
   'accessibility': {
     analyzer: 'react',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['react-component'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Accessibility issue in component "{name}": {issue}.',
     docs: 'accessibility',
@@ -1462,7 +1462,7 @@ const _RULE_REGISTRY = {
   'raw-element': {
     analyzer: 'react',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['react-component'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'raw `<{element}>` — this project uses `<{wrapper}>` ({file}).',
     docs: 'raw-element',
@@ -1683,7 +1683,7 @@ const _RULE_REGISTRY = {
   'unreferenced-module': {
     analyzer: 'dependency-graph',
     field: 'type',
-    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['file-imports'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
     docs: 'unreferenced-module',
@@ -1871,7 +1871,7 @@ const _RULE_REGISTRY = {
   'conventions/usage-pair': {
     analyzer: 'conventions',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['mined-conventions', 'function-index'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
     resolvable: true,
     message: '{pct}% of `{antecedent}` callers also call `{consequent}`.',
     docs: 'conventions/usage-pair',
@@ -1891,7 +1891,7 @@ const _RULE_REGISTRY = {
   'conventions/import-form': {
     analyzer: 'conventions',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['mined-conventions', 'imports'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
     resolvable: false,
     message: 'Import form mismatch: use {form} for "{source}".',
     docs: 'conventions/import-form',
@@ -1908,7 +1908,7 @@ const _RULE_REGISTRY = {
   'conventions/error-handling': {
     analyzer: 'conventions',
     field: 'rule',
-    needs: { formats: ['typescript', 'javascript'] as const, facts: ['mined-conventions', 'function-index'] as const },
+    needs: { formats: ['typescript', 'javascript'] as const, facts: ['function-index'] as const },
     // The detector wraps each body as `async function __ca() {…}` and parses it
     // with the TypeScript grammar (`detectErrorHandlingShape`), so only
     // TypeScript/JavaScript bodies are classifiable. A Go (or other-language)
@@ -1929,7 +1929,7 @@ const _RULE_REGISTRY = {
   'conventions/export-shape': {
     analyzer: 'conventions',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['mined-conventions', 'export-form'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
     resolvable: false,
     message: 'Export shape mismatch: {detail}.',
     docs: 'conventions/export-shape',
@@ -1946,7 +1946,7 @@ const _RULE_REGISTRY = {
   'conventions/naming': {
     analyzer: 'conventions',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['mined-conventions', 'function-index'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
     resolvable: false,
     message: 'Naming convention mismatch: {detail}.',
     docs: 'conventions/naming',
@@ -1965,7 +1965,7 @@ const _RULE_REGISTRY = {
   'cross-domain/written-never-read': {
     analyzer: 'cross-domain',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'Table "{table}" is written but never read.',
     docs: 'cross-domain/written-never-read',
@@ -1982,7 +1982,7 @@ const _RULE_REGISTRY = {
   'cross-domain/read-never-written': {
     analyzer: 'cross-domain',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'Table "{table}" is read but never written.',
     docs: 'cross-domain/read-never-written',
@@ -1999,7 +1999,7 @@ const _RULE_REGISTRY = {
   'cross-domain/multi-table-write': {
     analyzer: 'cross-domain',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['call-graph'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'Function writes to {count} distinct tables.',
     docs: 'cross-domain/multi-table-write',
@@ -2016,7 +2016,7 @@ const _RULE_REGISTRY = {
   'cross-domain/no-validator-reachable': {
     analyzer: 'cross-domain',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['call-graph'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'No validator reachable within BFS depth: {detail}.',
     docs: 'cross-domain/no-validator-reachable',
@@ -2033,7 +2033,7 @@ const _RULE_REGISTRY = {
   'cross-domain/uncovered-risk': {
     analyzer: 'cross-domain',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['coverage-data', 'hotspot-scores'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'Uncovered risk: {detail}.',
     docs: 'cross-domain/uncovered-risk',
@@ -2052,7 +2052,7 @@ const _RULE_REGISTRY = {
   'command-injection-risk': {
     analyzer: 'security',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Unsafe process invocation: {method} is passed a command built by interpolation/concatenation.',
     docs: 'command-injection-risk',
@@ -2069,7 +2069,7 @@ const _RULE_REGISTRY = {
   'dynamic-require-of-project-path': {
     analyzer: 'security',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Dynamic require/import of a project config path: {path}.',
     docs: 'dynamic-require-of-project-path',
@@ -2087,7 +2087,7 @@ const _RULE_REGISTRY = {
   'unescaped-html-interpolation': {
     analyzer: 'security',
     field: 'rule',
-    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Unescaped HTML interpolation: {field} is inserted into an HTML template without an escaping call.',
     docs: 'unescaped-html-interpolation',

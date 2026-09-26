@@ -44,42 +44,18 @@ export interface FactShapes {
   'function-index': FunctionIndexFact[];
   // Source-format names are gone (Spec 68 §2 — "a fact is named for what it
   // is, never for where it came from"; `needs.formats` already says the format):
-  //   schema-json  → declared-schemas    (JSON schema declarations)
-  //   schema-code  → ddl-declarations    (DDL declarations in code)
-  //   styles-css   → style-declarations  (style declarations)
-  // schema-json additionally *split* into two kinds (§2 "one kind is one
-  // shape"): declared schemas (for table-catalog) and validation pairs
-  // (schema-validations, for the 17 schema-json rules).
-  'declared-schemas': SchemaDeclaration[];
+  //   schema-code  → ddl-declarations   (DDL declarations in code)
+  //   styles-css   → style-declarations (style declarations)
+  // The JSON/Go/DRY/react/etc. fact kinds planned in spec68-rule-migration-map.md
+  // are deliberately absent here: a kind enters FactShapes only once it has a
+  // producer that returns real data. The migration map holds the plan; the type
+  // holds only what works.
   'ddl-declarations': SchemaDeclaration[];
-  'schema-validations': SchemaValidationFact[];
   'schema-usage': SchemaUsageFact[];
   'style-declarations': StyleDeclarationsFile[];
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
   'table-catalog': TableCatalog;
-  'go-imports': GoImportFacts[];
-  'go-error-bindings': GoErrorBinding[];
-  'go-goroutines': GoConcurrencyFacts[];
-  'go-channels': GoChannelFacts[];
-  // New per-file facts (Amendment 3 — the vocabulary the 77 mis-declared rules
-  // actually read; producers land as stubs in §3.2 and are reported as "not yet
-  // migrated" until then).
-  'react-component': ReactComponentFact[];
-  'string-literals': StringLiteralFact[];
-  'imports': ImportFact[];
-  'code-block': CodeBlockFact[];
-  'clone-pair-history': ClonePairHistoryFact[];
-  'export-form': ExportFormFact[];
-  'file-imports': FileImportFact[];
-  'file-header': FileHeaderFact[];
-  'go-structures': GoStructureFact[];
-  // New corpus facts.
-  'mined-conventions': MinedConventionFact[];
-  'migration-history': MigrationHistoryFact[];
-  'call-graph': CallEdge[];
-  'coverage-data': CoverageRow[];
-  'hotspot-scores': HotspotScore[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -234,8 +210,8 @@ export type SchemaDeclaration = {
   name: string;
   file: string;
   columns: SchemaColumn[];
-  /** `'json'` when from a config schema, `'code'` when from parsed DDL. */
-  origin: 'json' | 'code';
+  /** Always `'code'`: the only producer is the DDL extractor. */
+  origin: 'code';
   raw?: string;
 };
 
@@ -389,195 +365,6 @@ export type ResolvedQuery = {
 /** The known-table catalog built by the corpus schema processor (§5). */
 export type TableCatalog = {
   tables: ReadonlyArray<{ name: string; source: string }>;
-};
-
-/** Facts the Go binary emits about a file's imports (Spec 68 §9). */
-export type GoImportFacts = {
-  file: string;
-  imports: ReadonlyArray<{ path: string; line: number; grouped: boolean; dot?: boolean }>;
-};
-
-/** Facts the Go binary emits about a file's error bindings (Spec 68 §9). */
-export type GoErrorBinding = {
-  file: string;
-  line: number;
-  name: string;
-  checked: boolean;
-  propagated: boolean;
-};
-
-/** Facts the Go binary emits about a file's goroutine launches (Spec 68 §9). */
-export type GoConcurrencyFacts = {
-  file: string;
-  line: number;
-  synchronized: boolean;
-};
-
-/** Facts the Go binary emits about a file's channel operations (Spec 68 §9). */
-export type GoChannelFacts = {
-  file: string;
-  line: number;
-  buffered: boolean;
-  sendLine?: number;
-  receiveLine?: number;
-  sameGoroutine: boolean;
-};
-
-// ── New fact kinds (Amendment 3 — derived from the 100-rule body audit) ────
-// Each shape is the derived *thing* the rule body actually reads, never raw
-// source text (§2 "no fact kind is raw source text"): the processor computes
-// the normalized block / literal / component metadata, and the fact carries it.
-// Shapes are pinned precisely in §3.2; the initial declaration is a guess that
-// §4's serializability guardrail keeps honest.
-
-/** A schema ↔ data validation pair (Spec 68 §2 "one kind is one shape"). */
-export type SchemaValidationFact = {
-  file: string;
-  /** JSON path to the validated node, e.g. ['properties', 'users']. */
-  path: string[];
-  line: number;
-  column: number;
-  /** The schema constraint node at `path` (null for parse/meta errors). */
-  schemaNode: Serializable | null;
-  /** The data value node being checked (null when validating schema alone). */
-  dataNode: Serializable | null;
-  /** Parse/validation error text (invalid-json and friends). */
-  error?: string;
-};
-
-/** One React component's metadata (the seven react rules read this). */
-export type ReactComponentFact = {
-  name: string;
-  file: string;
-  line: number;
-  componentType: 'function' | 'class' | 'memo' | 'forwardRef';
-  complexity: number;
-  isExported: boolean;
-  hooks: ReadonlyArray<{ name: string; customHook: string | null; line: number }>;
-  props: ReadonlyArray<{ name: string; required: boolean; type?: string }>;
-  jsxElements: ReadonlyArray<{ tagName: string; line: number }>;
-  jsxElementDetails: ReadonlyArray<{
-    tagName: string;
-    attributes: ReadonlyArray<{ name: string; valueKind: string | null; line: number }>;
-  }>;
-  hasErrorBoundary: boolean;
-};
-
-/** A string-literal occurrence (hardcoded-secret, hardcoded-connection, …). */
-export type StringLiteralFact = {
-  file: string;
-  line: number;
-  column: number;
-  value: string;
-  length: number;
-};
-
-/** One import statement (duplicate-import, conventions/import-form). */
-export type ImportFact = {
-  file: string;
-  /** Module specifier, e.g. './mod'. */
-  source: string;
-  /** Import form. */
-  form: 'default' | 'named' | 'namespace' | 'side-effect';
-  line: number;
-  localNames: string[];
-};
-
-/** A normalized code block (DRY duplicate / structural-similarity / similar-expression). */
-export type CodeBlockFact = {
-  file: string;
-  startLine: number;
-  endLine: number;
-  lineCount: number;
-  /** Normalized token text (identifiers kept, per exact-match DRY). */
-  text: string;
-  hash: string;
-  /** Token-kind skeleton (identifiers/literals abstracted) for structural comparison. */
-  structuralSkeleton: string;
-  nodeType: string;
-};
-
-/** A persisted clone pair (dry/diverging-clone, cross-run). */
-export type ClonePairHistoryFact = {
-  file1: string;
-  line1: number;
-  file2: string;
-  line2: number;
-  previousSimilarity: number;
-  currentSimilarity: number;
-  runs: number;
-};
-
-/** A module's export form (conventions/export-shape). */
-export type ExportFormFact = {
-  file: string;
-  form: 'default' | 'named' | 'commonjs' | 'mixed';
-  line: number;
-};
-
-/** Per-file module import/export surface (unreferenced-module). */
-export type FileImportFact = {
-  file: string;
-  imports: string[];
-  hasExports: boolean;
-  unresolvedDynamicImports: string[];
-};
-
-/** A file's leading documentation comment (file-documentation); zero or one. */
-export type FileHeaderFact = {
-  file: string;
-  text: string;
-  line: number;
-};
-
-/** Go structural metrics the five Go SOLID rules read (switch/function/struct/
- *  interface size and panic detection — Spec 68 §9). */
-export type GoStructureFact =
-  | { kind: 'function'; file: string; name: string; line: number; parameterCount: number; returnCount: number; complexity: number }
-  | { kind: 'struct'; file: string; name: string; line: number; fieldCount: number }
-  | { kind: 'interface'; file: string; name: string; line: number; methodCount: number }
-  | { kind: 'switch'; file: string; line: number; caseCount: number; typeSwitch: boolean }
-  | { kind: 'panic'; file: string; line: number; functionName: string };
-
-/** A mined convention pair (the conventions/* rules, corpus-wide). */
-export type MinedConventionFact = {
-  antecedent: string;
-  consequent: string;
-  directory: string;
-  pattern: string;
-  confidence: number;
-  exemplarFile: string;
-  line: number;
-  exportKind: string | null;
-};
-
-/** A dropped-table migration record (stale-table-reference). */
-export type MigrationHistoryFact = {
-  table: string;
-  migrationFile: string;
-  dropped: boolean;
-  createdInSameMigration: boolean;
-};
-
-/** One call-graph edge (cross-domain multi-table-write / no-validator-reachable). */
-export type CallEdge = {
-  caller: string;
-  callee: string;
-  file: string;
-};
-
-/** One coverage row (cross-domain uncovered-risk). */
-export type CoverageRow = {
-  file: string;
-  functionName: string;
-  covered: boolean;
-};
-
-/** One hotspot score (cross-domain uncovered-risk). */
-export type HotspotScore = {
-  file: string;
-  symbol: string;
-  score: number;
 };
 
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────

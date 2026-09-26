@@ -1,5 +1,5 @@
 /**
- * Spec 68 §3.2 — the `schema-code` producer.
+ * Spec 68 §3.2 — the `ddl-declarations` producer.
  *
  * The liveness guard (§16.1) proves the producer returns a live, shaped array;
  * this test proves the extraction is *correct* against the fields the

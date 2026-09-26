@@ -10,12 +10,12 @@
  *
  * Every producer is run against a fixture of each format it declares; the
  * returned value must not throw, must not be `undefined`, and must match its
- * declared `FactShapes[K]` at the top level (an array for the twelve array
+ * declared `FactShapes[K]` at the top level (an array for the seven array
  * facts, a `{ tables: [...] }` object for `table-catalog`) and round-trip
  * through JSON. A producer that throws, returns undefined, or returns the
  * wrong shape fails. It is written red-first: before any producer is migrated
- * in §3.2, all thirteen throw "declared but not yet migrated" and the test is
- * the meter that reads 0/13 until the vertical slice (§3.2) and §9 land.
+ * in §3.2, all eight throw "declared but not yet migrated" and the test is
+ * the meter that reads 0/8 until the vertical slice (§3.2) and §9 land.
  *
  * The corpus producer `table-catalog` is not a per-file producer: it is run
  * against complete (empty) upstream facts, not a parsed file.

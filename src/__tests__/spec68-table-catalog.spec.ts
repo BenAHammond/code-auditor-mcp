@@ -13,26 +13,26 @@ import type { SchemaDeclaration } from '../phase/types.js';
 
 function catalog(decls: SchemaDeclaration[]) {
   const producer = PRODUCERS['table-catalog'] as {
-    process(facts: { 'declared-schemas': SchemaDeclaration[]; 'ddl-declarations': SchemaDeclaration[] }): unknown;
+    process(facts: { 'ddl-declarations': SchemaDeclaration[] }): unknown;
   };
-  return producer.process({ 'declared-schemas': decls, 'ddl-declarations': [] }) as { tables: { name: string; source: string }[] };
+  return producer.process({ 'ddl-declarations': decls }) as { tables: { name: string; source: string }[] };
 }
 
 describe('Spec 68 table-catalog corpus processor', () => {
   it('reduces schema declarations to a flat, de-duplicated table set', () => {
     const decls: SchemaDeclaration[] = [
-      { name: 'users', file: 'schemas/users.json', columns: [], origin: 'json' },
-      { name: 'orders', file: 'migrations/001.ts', columns: [], origin: 'code' },
-      // duplicate name across origins — first wins
-      { name: 'users', file: 'migrations/000.ts', columns: [], origin: 'code' },
+      { name: 'users', file: 'migrations/002_users.ts', columns: [], origin: 'code' },
+      { name: 'orders', file: 'migrations/001_orders.ts', columns: [], origin: 'code' },
+      // duplicate name across files — first wins
+      { name: 'users', file: 'migrations/000_legacy.ts', columns: [], origin: 'code' },
       // unnamed declaration — skipped
-      { name: '', file: 'schemas/empty.json', columns: [], origin: 'json' },
+      { name: '', file: 'migrations/000_empty.ts', columns: [], origin: 'code' },
     ];
 
     const out = catalog(decls);
     expect(out.tables).toEqual([
-      { name: 'users', source: 'schemas/users.json' },
-      { name: 'orders', source: 'migrations/001.ts' },
+      { name: 'users', source: 'migrations/002_users.ts' },
+      { name: 'orders', source: 'migrations/001_orders.ts' },
     ]);
   });
 

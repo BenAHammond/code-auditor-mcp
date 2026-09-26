@@ -175,7 +175,7 @@ describe('buildCoverageReport', () => {
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['solid']),
-      { factKeys: ['file-symbols', 'go-structures'], indexTables: [] },
+      { factKeys: ['file-symbols'], indexTables: [] },
     );
 
     const solidRules = coverage.filter(c => c.analyzer === 'solid');
@@ -211,7 +211,7 @@ describe('buildCoverageReport', () => {
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['solid', 'dry', 'react']),
-      { factKeys: ['file-symbols', 'code-block'], indexTables: [] },
+      { factKeys: ['file-symbols'], indexTables: [] },
     );
 
     // fired
@@ -342,7 +342,7 @@ describe('buildCoverageReport', () => {
     };
 
     const coverage = buildCoverageReport(results, config, {
-      factKeys: ['code-block', 'string-literals', 'react-component'],
+      factKeys: ['file-symbols'],
       indexTables: [],
     });
 
@@ -457,7 +457,7 @@ describe('buildCoverageReport', () => {
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['solid']),
-      { factKeys: ['file-symbols', 'go-structures'], indexTables: [] },
+      { factKeys: ['file-symbols'], indexTables: [] },
     );
 
     const cleanEntries = coverage.filter(c => c.state === 'clean');
@@ -477,20 +477,22 @@ describe('buildCoverageReport', () => {
       },
     };
 
-    // string-literals fact key present → dynamic-sql-construction should be clean
+    // ddl-declarations fact key present → dynamic-sql-construction should be clean
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['schema']),
-      { factKeys: ['string-literals'], indexTables: [] },
+      { factKeys: ['ddl-declarations'], indexTables: [] },
     );
 
     const sqlInjection = coverage.find(c => c.ruleId === 'dynamic-sql-construction');
     expect(sqlInjection!.state).toBe('clean');
 
-    // JSON rules have schema-validations input, which is absent → notApplicable
+    // JSON rules declare no facts yet (their producer is not migrated), so they
+    // resolve to unassessed — not notApplicable (an empty `needs.facts` is
+    // "input provenance unknown", not "input absent").
     const invalidJson = coverage.find(c => c.ruleId === 'invalid-json');
-    expect(invalidJson!.state).toBe('notApplicable');
-    expect(invalidJson!.reason).toContain('schema-validations');
+    expect(invalidJson!.state).toBe('unassessed');
+    expect(invalidJson!.reason).toContain('no per-rule input mapping');
   });
 
   it('promotes a fact-key rule to clean only when its input facts are present', () => {
@@ -514,7 +516,7 @@ describe('buildCoverageReport', () => {
     const present = buildCoverageReport(
       results,
       makeConfigWith(['cross-domain']),
-      { factKeys: ['coverage-data', 'hotspot-scores'], indexTables: [] },
+      { factKeys: ['schema-usage', 'function-index'], indexTables: [] },
     );
     const uncoveredPresent = present.find(c => c.ruleId === 'cross-domain/uncovered-risk');
     expect(uncoveredPresent!.state).toBe('clean');

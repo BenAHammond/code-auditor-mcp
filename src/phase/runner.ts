@@ -170,11 +170,11 @@ export async function buildSchemaUsage(files: readonly InputFile[]): Promise<Sch
 }
 
 /**
- * Parse → Process for the `schema-code` fact (DDL declarations), then reduce it
+ * Parse → Process for the `ddl-declarations` fact (DDL in code), then reduce it
  * through the `table-catalog` corpus processor into the known-table set. The
- * `schema-json` half of the catalog is config-driven (§10) and not reachable
- * from this simple runner, so it is passed empty — the DDL-only slice of the
- * catalog, which is the config-free half the corpus processor consumes.
+ * JSON-schema half of the old catalog is config-driven (§10) and not reachable
+ * from this simple runner, so it is dropped — this is the DDL-only slice of the
+ * catalog, the config-free half the corpus processor consumes.
  */
 export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
   const producer = PRODUCERS['ddl-declarations'];
@@ -189,7 +189,6 @@ export async function buildTableCatalog(files: readonly InputFile[]): Promise<Ta
     }
   }
   return PRODUCERS['table-catalog'].process({
-    'declared-schemas': [],
     'ddl-declarations': declarations,
   }) as TableCatalog;
 }
