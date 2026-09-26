@@ -85,6 +85,39 @@ describe('createDependencyGraphReducer — orphan + reachability', () => {
     expect(byName.get('unusedHelper')).toMatchObject({ file: 'src/other.ts', line: 25 });
   });
 
+  it('attributes each hub node to its own file/line with its own out-degree', async () => {
+    // hub has out-edges to 12 sinks; the sinks form a chain (out-degree 1 each),
+    // so hub's out-degree 12 clears the threshold (max(10, 3×mean)) and is the
+    // single hub. The pre-reshape form anchored the finding to the first node
+    // and listed every sink in one message; the reshape emits one finding per
+    // hub node, at that node, with that node's own out-degree.
+    const hub = entity('hub', 'hub', 'src/hub.ts', 5, {
+      metadata: { callees: Array.from({ length: 12 }, (_, i) => `sink${i}`) },
+    });
+    const sinks = Array.from({ length: 12 }, (_, i) =>
+      entity(`sink${i}`, `sink${i}`, 'src/sinks.ts', 10 + i, {
+        metadata: i < 11 ? { callees: [`sink${i + 1}`] } : undefined,
+      }),
+    );
+
+    const facts = {
+      'cross-language-entities': {
+        'src/hub.ts': { entities: [hub], imports: [], hasExports: false },
+        'src/sinks.ts': { entities: sinks, imports: [], hasExports: false },
+      },
+    };
+
+    const result = await run(facts);
+    const hubs = result.violations.filter((v) => v.type === 'hub-nodes');
+    expect(hubs).toHaveLength(1);
+    expect(hubs[0]).toMatchObject({
+      file: 'src/hub.ts',
+      line: 5,
+      message: 'Hub node "hub" has 12 dependencies.',
+      functionName: 'hub',
+    });
+  });
+
   it('flags an exported-but-unimported module as unreferenced-module', async () => {
     const facts = {
       'cross-language-entities': {

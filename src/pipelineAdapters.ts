@@ -2420,6 +2420,32 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             }
             continue;
           }
+          if (issue.type === 'hub-nodes') {
+            // Emit one violation per hub node so each is attributed to its own
+            // file/line and carries its own out-degree. The aggregated form
+            // anchored every hub to the first node's location while the message
+            // listed all of them — foreign symbols leaked into the wrong file.
+            const hubs = Array.isArray(issue.details?.hubs)
+              ? (issue.details.hubs as Array<{ id: string; name: string; outDegree: number }>)
+              : [];
+            for (const hub of hubs) {
+              const entity = idToEntity.get(hub.id);
+              if (!entity) continue;
+              violations.push({
+                file: entity.file,
+                line: entity.startLine,
+                severity: issue.severity,
+                message: `Hub node "${hub.name}" has ${hub.outDegree} dependencies.`,
+                rule: issue.type,
+                type: issue.type, // dependency-graph rules match on field: 'type'
+                analyzer: 'dependency-graph',
+                category: 'cross-language-dependency',
+                functionName: hub.name,
+                details: { hubId: hub.id, outDegree: hub.outDegree },
+              } as Violation);
+            }
+            continue;
+          }
           const anchor = issue.affectedNodes.map((id) => idToEntity.get(id)).find(Boolean);
           violations.push({
             file: anchor?.file ?? '(unknown)',
