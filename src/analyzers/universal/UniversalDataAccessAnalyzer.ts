@@ -2278,3 +2278,37 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     return { violations, calls };
   }
 }
+
+/**
+ * Spec 68 §3.2 — the `data-access-calls` FileProcessor extraction, factored out
+ * of `analyzeWithFacts` so the phase-model producer can obtain the per-file
+ * resolved calls synchronously (the analyzer method is `async` but does no real
+ * awaits — its body is entirely synchronous). Returns the `DatabaseCall[]` the
+ * missing-org-filter / unfiltered-query / sql-injection-risk rules read, with no
+ * violation production and no side effects. Config is the §10 tuning surface;
+ * omitted here, the extraction runs on {@link DEFAULT_DATA_ACCESS_CONFIG}.
+ */
+export function extractDataAccessCalls(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  config?: DataAccessAnalyzerConfig,
+): DatabaseCall[] {
+  const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
+  const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
+  const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
+    mode: detectionMode,
+    dbReceiverNames: finalConfig.dbReceiverNames,
+    dbBindingNames: finalConfig.dbBindingNames,
+    dbCallMethods: finalConfig.dbCallMethods,
+    dbWrapperNames: finalConfig.dbWrapperNames,
+  });
+  const scan: DataAccessScanContext = {
+    adapter,
+    sourceCode,
+    dbImports: mapDatabaseImports(adapter.extractImports(ast), finalConfig),
+    config: finalConfig,
+    provenanceContext,
+  };
+  return extractDatabaseCalls(ast, scan);
+}

@@ -29,6 +29,7 @@ import type {
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
 import { extractStylesCss } from './stylesCss.js';
+import { extractDataAccessCalls } from './dataAccessCalls.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
 import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 
@@ -102,7 +103,14 @@ export const PRODUCERS = {
       );
     },
   } satisfies FileProcessor<'cross-language-entities'>,
-  'data-access-calls': fileProducer('data-access-calls', 'data-access-calls', ['typescript', 'tsx', 'javascript']),
+  'data-access-calls': {
+    id: 'data-access-calls',
+    produces: 'data-access-calls',
+    formats: ['typescript', 'tsx', 'javascript'],
+    process(file: ParsedFile): FactFragment<'data-access-calls'> {
+      return extractDataAccessCalls(file);
+    },
+  } satisfies FileProcessor<'data-access-calls'>,
 
   // ── §3.2: corpus processors producing derived facts ───────────────────────
   // `table-catalog` reduces the schema facts (declared in code DDL and in JSON

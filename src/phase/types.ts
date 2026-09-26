@@ -312,15 +312,33 @@ export type Entity = {
   };
 };
 
-/** A DB query resolved to its tables/kind by the data-access processor. */
+/**
+ * A DB call resolved by the data-access processor — the serializable projection
+ * of `UniversalDataAccessAnalyzer`'s `DatabaseCall`. The initial `kind`/`raw`
+ * declaration was a guess; §3.2 pins it to what `extractDatabaseCalls` actually
+ * emits, because the data-access rules read the full set: `hasFilter`
+ * (`unfiltered-query`), `hasSqlInjectionRisk`/`sqlEscaped` (`sql-injection-risk`),
+ * `hasParameterizedQuery`, and `enclosingFunction` (stable fingerprinting).
+ * `type` is the call's kind label (`db.query` / `db.execute` / …), not a SQL
+ * verb — the write/read verb is derived at analysis time from `queryText`.
+ */
 export type ResolvedQuery = {
+  type: string;
+  method: string;
   file: string;
   line: number;
-  method: string;
+  column: number;
   tables: string[];
-  kind: 'select' | 'insert' | 'update' | 'delete' | 'create';
-  raw?: string;
-  hasOrganizationFilter?: boolean;
+  /** The query statement's own text (comments stripped), query-scoped. */
+  queryText: string;
+  hasOrganizationFilter: boolean;
+  hasFilter: boolean;
+  hasParameterizedQuery: boolean;
+  hasSqlInjectionRisk: boolean;
+  /** True when the injection risk is manually quote-escaped (downgrades severity). */
+  sqlEscaped: boolean;
+  /** Enclosing function name for stable fingerprinting. */
+  enclosingFunction?: string;
 };
 
 /** The known-table catalog built by the corpus schema processor (§5). */
