@@ -119,8 +119,10 @@ export type FileMethodSymbol = {
   concernGroups: string[];
   /** JSDoc comment text, or null when absent (method-documentation reads it). */
   jsDoc: string | null;
-  /** Visibility (method-documentation's classify/skip decision). */
-  visibility?: 'public' | 'private' | 'protected';
+  /** True when private/protected/#-named/_-prefixed (R1.2 non-public skip). */
+  isNonPublic: boolean;
+  /** Return-type annotation (return-documentation reads this). */
+  returnType?: string;
 };
 
 /** A standalone function (or a method surfaced outside its class for size rules). */
@@ -145,6 +147,9 @@ export type FileFunctionSymbol = {
   jsDoc: string | null;
   /** Return-type annotation (return-documentation reads this). */
   returnType?: string;
+  /** True when an anonymous/inline callable (arrow or function expression used
+   *  as a call argument, JSX value, or IIFE) — R1.1 skip. */
+  isAnonymousOrCallback: boolean;
 };
 
 /** A class, with its methods and the class-level signals pre-computed. */

@@ -102,7 +102,8 @@ function extractClass(file: ParsedFile, cls: ClassInfo): FileClassSymbol {
         ? votingConcerns(detectFunctionConcerns(methodNode, (n) => adapter.getNodeText(n, source))).map((c) => CONCERN_LABELS[c])
         : [],
       jsDoc: m.jsDoc ?? null,
-      visibility: methodNode ? methodVisibility(methodNode, source) : undefined,
+      isNonPublic: methodNode ? isNonPublicMethod(methodNode, adapter, source) : false,
+      returnType: m.returnType,
     };
   });
 
@@ -154,6 +155,7 @@ function extractFunction(
     concernGroups,
     jsDoc: func.jsDoc ?? null,
     returnType: func.returnType,
+    isAnonymousOrCallback: funcNode ? isAnonymousOrCallback(funcNode, file.adapter) : false,
   };
 }
 
@@ -168,13 +170,149 @@ function nodeThrows(node: ASTNode): boolean {
   return hasThrow;
 }
 
-/** The accessibility modifier on a method declaration, from its leading text. */
-function methodVisibility(node: ASTNode, source: string): 'public' | 'private' | 'protected' | undefined {
-  const head = getNodeText(node, source).split('\n')[0];
-  if (/\bprivate\b/.test(head)) return 'private';
-  if (/\bprotected\b/.test(head)) return 'protected';
-  if (/\bpublic\b/.test(head)) return 'public';
-  return undefined;
+// ── Documentation skip signals (re-homed from UniversalDocumentationAnalyzer) ─
+
+/**
+ * True when a method is non-public: an accessibility modifier of `private` /
+ * `protected`, or a `#`-prefixed (JS private) / `_`-prefixed (convention) name.
+ * This is the R1.2 signal `method-documentation` and the method arm of the
+ * function/param/return skip use. Re-homed verbatim — it reads the AST node's
+ * children and name, which the rule cannot reach once the tree is freed.
+ */
+function isNonPublicMethod(
+  node: ASTNode,
+  adapter: ParsedFile['adapter'],
+  sourceCode: string,
+): boolean {
+  const type = adapter.getNodeType(node);
+  if (type !== 'method_definition' && type !== 'public_field_definition') {
+    return false;
+  }
+
+  if (node.children) {
+    for (const child of node.children) {
+      const childType = adapter.getNodeType(child);
+      if (
+        childType === 'accessibility_modifier' ||
+        childType === 'private' ||
+        childType === 'protected'
+      ) {
+        const text = adapter.getNodeText(child, sourceCode).trim();
+        if (text === 'private' || text === 'protected') {
+          return true;
+        }
+      }
+    }
+  }
+
+  const propName = getMethodName(node, adapter, sourceCode);
+  if (propName && (propName.startsWith('#') || propName.startsWith('_'))) {
+    return true;
+  }
+
+  return false;
+}
+
+/** The name of a method-definition node (property_identifier or identifier). */
+function getMethodName(
+  node: ASTNode,
+  adapter: ParsedFile['adapter'],
+  sourceCode: string,
+): string | null {
+  if (node.children) {
+    for (const child of node.children) {
+      const type = adapter.getNodeType(child);
+      if (type === 'property_identifier' || type === 'identifier') {
+        return adapter.getNodeText(child, sourceCode).trim();
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * True when the node is an anonymous arrow/function expression used as a call
+ * argument, JSX attribute value, object/array literal passed as an argument, or
+ * an IIFE (R1.1 — inline callables are skipped, not downgraded). Re-homed
+ * verbatim; the rule cannot reach the parent chain once the tree is freed.
+ */
+function isAnonymousOrCallback(node: ASTNode, adapter: ParsedFile['adapter']): boolean {
+  const nodeType = adapter.getNodeType(node);
+  const parent = adapter.getParent(node);
+  if (!parent) return false;
+
+  const parentType = adapter.getNodeType(parent);
+
+  if (
+    nodeType === 'arrow_function' ||
+    nodeType === 'function_expression' ||
+    nodeType === 'generator_function_expression'
+  ) {
+    if (isInlineInCallArguments(parent, adapter)) return true;
+    if (isJsxAttributeValue(parentType)) return true;
+    if (parentType === 'call_expression' && isIifeCallee(node, parent, adapter)) return true;
+  }
+
+  return false;
+}
+
+/** (a)/(c) — true when `parent` positions the inline callable as a call argument. */
+function isInlineInCallArguments(parent: ASTNode, adapter: ParsedFile['adapter']): boolean {
+  const parentType = adapter.getNodeType(parent);
+  if (parentType === 'arguments') return true;
+
+  if (parentType === 'pair') {
+    const gp = adapter.getParent(parent);
+    if (gp && (adapter.getNodeType(gp) === 'object' || adapter.getNodeType(gp) === 'object_pattern')) {
+      const ggp = adapter.getParent(gp);
+      return !!(ggp && adapter.getNodeType(ggp) === 'arguments');
+    }
+  }
+
+  if (parentType === 'array') {
+    const gp = adapter.getParent(parent);
+    return !!(gp && adapter.getNodeType(gp) === 'arguments');
+  }
+
+  return false;
+}
+
+/** (b) — true when the parent type is a JSX attribute/expression value. */
+function isJsxAttributeValue(parentType: string): boolean {
+  return (
+    parentType === 'jsx_expression' ||
+    parentType === 'jsx_attribute' ||
+    parentType === 'jsx_self_closing_element' ||
+    parentType === 'jsx_opening_element'
+  );
+}
+
+/** (d) — true when `node` is the callee (not an argument) of the call expression. */
+function isIifeCallee(node: ASTNode, parent: ASTNode, adapter: ParsedFile['adapter']): boolean {
+  const fnChild = getFirstChildOfType(parent, [
+    'arrow_function',
+    'function_expression',
+    'function',
+    'identifier',
+    'member_expression',
+    'call_expression',
+  ]);
+  if (!fnChild) return false;
+  return (
+    fnChild.location.start.line === node.location.start.line &&
+    fnChild.location.start.column === node.location.start.column
+  );
+}
+
+/** The first child node matching one of the given types. */
+function getFirstChildOfType(node: ASTNode, types: string[]): ASTNode | null {
+  if (!node.children) return null;
+  for (const child of node.children) {
+    if (types.includes(child.type)) {
+      return child;
+    }
+  }
+  return null;
 }
 
 /** True when the class body uses `instanceof` against a user-defined type. */

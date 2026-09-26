@@ -26,6 +26,7 @@ import { dataAccessRules } from './rules/dataAccess.js';
 import { schemaRules } from './rules/schema.js';
 import { dependencyGraphRules } from './rules/dependencyGraph.js';
 import { schemaValidatorRules } from './rules/schemaValidator.js';
+import { documentationRules } from './rules/documentation.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -108,6 +109,28 @@ export async function analyzeFileSymbols(symbols: FileSymbols[], thresholds: Thr
 export async function runFileSymbolsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const symbols = await buildFileSymbols(files);
   return analyzeFileSymbols(symbols, thresholds);
+}
+
+// ── documentation slice (same fact, different rules) ─────────────────────────
+
+/** Analyze the assembled `file-symbols` fact with the documentation rules. */
+export async function analyzeDocumentation(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'file-symbols': symbols },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of documentationRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The documentation slice: parse → file-symbols → documentation rules → findings. */
+export async function runDocumentationSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const symbols = await buildFileSymbols(files);
+  return analyzeDocumentation(symbols, thresholds);
 }
 
 // ── data-access-calls slice (the "repeat" for a second fact kind) ──────────
