@@ -34,6 +34,7 @@
  */
 
 import type { FactShapes, FactKind, Serializable } from './types.js';
+import { PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
 import type { ProducedFactKind } from './producers.js';
 
 // ── 1. Residue #1 — every fact kind has a producer ──────────────────────────
@@ -51,6 +52,13 @@ const _allSerializable: _FactsSerializable[FactKind] = true as const;
 // producers.ts. Re-asserted here via ProducedFactKind so the checks live in one
 // place and the conformance test can import them as a single surface.
 
+// ── 4. Map disjointness — no kind produced by both maps ─────────────────────
+// Splitting file and corpus producers into two maps re-opened §3.1's invariant
+// across the boundary: a kind could sit in both, which is two producers for one
+// kind. The intersection of the two key sets must be empty.
+type _OverlappingKinds = keyof typeof PRODUCERS & keyof typeof CORPUS_PRODUCERS;
+const _mapsDisjoint: _OverlappingKinds extends never ? true : never = true;
+
 // The assertions above must be *referenced* (not just declared) so a build that
 // drops this file still fails: `export type` is enough for the residue aliases,
 // but the `const` values are what carry the failure at compile time. This
@@ -58,4 +66,5 @@ const _allSerializable: _FactsSerializable[FactKind] = true as const;
 export type Spec68Checks = [
   _Unproduced extends never ? true : never,
   _FactsSerializable[FactKind],
+  _OverlappingKinds extends never ? true : never,
 ];

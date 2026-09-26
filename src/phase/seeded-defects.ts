@@ -20,6 +20,7 @@
  */
 
 import type { FactKind, Serializable } from './types.js';
+import { PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
 import type { ProducedFactKind, ProducerMap } from './producers.js';
 
 // 1. Residue #1 — every fact kind has a producer. `Exclude<FactKind,
@@ -42,3 +43,13 @@ const _notSerializable: Serializable = () => {};
 //    `satisfies CorpusProducerMap` in producers.ts.
 // @ts-expect-error — {} lacks every file-kind key, so it cannot satisfy ProducerMap
 const _incompleteProducers: ProducerMap = {};
+
+// 5. Map disjointness — a fact kind must not be produced by both a file
+//    producer and a corpus producer (two producers for one kind). The
+//    intersection of the two maps' key sets is `never` only while they are
+//    disjoint; assigning a FactKind literal to it must not compile. If a kind
+//    were present in both, the intersection would widen to that kind's name and
+//    this assignment would compile — the `@ts-expect-error` goes unused and the
+//    build fails.
+// @ts-expect-error — an overlapping kind would make this a non-never type
+const _overlap: keyof typeof PRODUCERS & keyof typeof CORPUS_PRODUCERS = 'table-catalog';
