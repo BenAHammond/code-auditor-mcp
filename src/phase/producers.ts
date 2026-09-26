@@ -39,6 +39,7 @@ import type {
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
 import { extractStylesCss } from './stylesCss.js';
+import { extractStylesSource } from './stylesSource.js';
 import { extractDataAccessCalls } from './dataAccessCalls.js';
 import { extractSchemaUsage } from './schemaUsage.js';
 import { extractSchemaCode } from './schemaCode.js';
@@ -82,6 +83,7 @@ const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> 
 const ddlProcess = (file: ParsedFile): FactFragment<'ddl-declarations'> => extractSchemaCode(file);
 const schemaUsageProcess = (file: ParsedFile): FactFragment<'schema-usage'> => extractSchemaUsage(file);
 const styleProcess = (file: ParsedFile): FactFragment<'style-declarations'> => [extractStylesCss(file)];
+const styleSourceProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesSource(file);
 const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entities'> =>
   extractCrossLanguageEntities(file.ast, file.file, file.source, getLanguageFromPath(file.file));
 const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file);
@@ -112,6 +114,9 @@ export const PRODUCERS = {
   'style-declarations': {
     css: fileProducer('style-declarations', 'css', styleProcess),
     scss: fileProducer('style-declarations', 'scss', styleProcess),
+    typescript: fileProducer('style-declarations', 'typescript', styleSourceProcess),
+    tsx: fileProducer('style-declarations', 'tsx', styleSourceProcess),
+    javascript: fileProducer('style-declarations', 'javascript', styleSourceProcess),
   },
   'cross-language-entities': {
     typescript: fileProducer('cross-language-entities', 'typescript', crossLangProcess),

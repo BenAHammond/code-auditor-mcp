@@ -20,6 +20,7 @@ import { dataAccessRules } from './dataAccess.js';
 import { dependencyGraphRules } from './dependencyGraph.js';
 import { schemaValidatorRules } from './schemaValidator.js';
 import { documentationRules } from './documentation.js';
+import { stylesRules } from './styles.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -64,4 +65,5 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...dependencyGraphRules,
   ...schemaValidatorRules,
   ...documentationRules,
+  ...stylesRules,
 ];

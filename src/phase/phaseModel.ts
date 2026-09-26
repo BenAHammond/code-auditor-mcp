@@ -23,11 +23,13 @@ import { promises as fs } from 'fs';
 import { MIGRATED_RULES } from './rules/registry.js';
 import { fileProducerFor, PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
 import { formatFor, parseOne, type InputFile } from './runner.js';
+import { loadTailwindConfig, tokensToStyleTokens } from '../styles/tailwindConfigLoader.js';
 import type {
   FactKind,
   FileFactKind,
   Finding,
   ThresholdValues,
+  StyleDeclarationsFile,
 } from './types.js';
 
 /**
@@ -38,6 +40,7 @@ import type {
 export async function runPhaseModel(
   filePaths: readonly string[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
+  projectRoot?: string,
 ): Promise<Finding[]> {
   if (MIGRATED_RULES.length === 0) return [];
 
@@ -56,15 +59,16 @@ export async function runPhaseModel(
     }
   }
 
-  return runPhaseModelOverFiles(files, thresholdsByRule);
+  return runPhaseModelOverFiles(files, thresholdsByRule, projectRoot);
 }
 
 /** The file/corpus-pipeline half, exposed for the slice tests. */
 export async function runPhaseModelOverFiles(
   files: readonly InputFile[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
+  projectRoot?: string,
 ): Promise<Finding[]> {
-  const facts = await buildFacts(files);
+  const facts = await buildFacts(files, projectRoot);
   return analyzeAll(facts, thresholdsByRule);
 }
 
@@ -92,7 +96,7 @@ function neededFactKinds(): Set<FactKind> {
 }
 
 /** Process: build every needed fact kind (file facts, then corpus facts in order). */
-async function buildFacts(files: readonly InputFile[]): Promise<Map<FactKind, unknown>> {
+async function buildFacts(files: readonly InputFile[], projectRoot?: string): Promise<Map<FactKind, unknown>> {
   const needed = neededFactKinds();
   const facts = new Map<FactKind, unknown>();
 
@@ -111,7 +115,7 @@ async function buildFacts(files: readonly InputFile[]): Promise<Map<FactKind, un
   // Per-file facts: one parse per file, every matching producer runs over it,
   // the tree is freed before the next file (it never crosses the boundary).
   for (const input of files) {
-    const parsed = await parseOne(input);
+    const parsed = await parseOne(input, projectRoot);
     if (!parsed) continue;
     try {
       for (const kind of fileKinds) {
@@ -123,6 +127,23 @@ async function buildFacts(files: readonly InputFile[]): Promise<Map<FactKind, un
       }
     } finally {
       parsed.ast.dispose?.();
+    }
+  }
+
+  // Corpus-level Tailwind theme tokens (Spec 68 §3.2): the legacy pipeline
+  // stores these in `style_tokens` alongside the per-file CSS custom properties
+  // during index sync. The phase fact has no index, so merge them here as a
+  // synthetic declaration-free fragment. `tokensToStyleTokens` on a project with
+  // no Tailwind config yields `filePath: 'built-in defaults'`, which
+  // `buildTokenValueMap` / `buildDeclaredScale` both exclude — so the merge is a
+  // no-op for plain-CSS projects and load-bearing only when a real config
+  // declares a color/spacing/font-size scale.
+  if (projectRoot && needed.has('style-declarations')) {
+    const twTokens = tokensToStyleTokens(loadTailwindConfig(projectRoot), projectRoot);
+    if (twTokens.length > 0) {
+      const acc = (facts.get('style-declarations') as StyleDeclarationsFile[] | undefined) ?? [];
+      acc.push({ declarations: [], tokens: twTokens, classUsage: [] });
+      facts.set('style-declarations', acc);
     }
   }
 

@@ -27,6 +27,7 @@ import { schemaRules } from './rules/schema.js';
 import { dependencyGraphRules } from './rules/dependencyGraph.js';
 import { schemaValidatorRules } from './rules/schemaValidator.js';
 import { documentationRules } from './rules/documentation.js';
+import { stylesRules } from './rules/styles.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -38,6 +39,7 @@ import type {
   Format,
   ThresholdValues,
   Finding,
+  StyleDeclarationsFile,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -61,12 +63,19 @@ export function formatFor(path: string): Format {
  * adapter resolves the path or the parse fails; the caller records the drop
  * (§3.3 makes a per-file failure `incomplete`, which is §8's concern).
  */
-export async function parseOne(input: InputFile): Promise<ParsedFile | null> {
+export async function parseOne(input: InputFile, projectRoot?: string): Promise<ParsedFile | null> {
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(input.path);
   if (!adapter) return null;
   try {
     const ast = await adapter.parse(input.path, input.content);
-    return { file: input.path, format: formatFor(input.path), source: input.content, ast, adapter };
+    return {
+      file: input.path,
+      format: formatFor(input.path),
+      source: input.content,
+      ast,
+      adapter,
+      ...(projectRoot ? { projectRoot } : {}),
+    };
   } catch {
     return null;
   }
@@ -314,4 +323,57 @@ export async function analyzeSchemaValidator(entities: Entity[], thresholds: Thr
 export async function runSchemaValidatorSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const entities = await buildCrossLanguageEntities(files);
   return analyzeSchemaValidator(entities, thresholds);
+}
+
+// ── style-declarations slice (the eight style rules, undefined-class deferred) ──
+
+/**
+ * Parse → Process for the `style-declarations` fact. Returns the assembled
+ * corpus fact (every declaration/token/class-usage from every CSS/SCSS/TS/JS
+ * file, ASTs already freed). `projectRoot` threads through to the TS/JS producer
+ * so Tailwind utility expansion resolves the project's theme tokens.
+ */
+export async function buildStyleDeclarations(
+  files: readonly InputFile[],
+  projectRoot?: string,
+): Promise<StyleDeclarationsFile[]> {
+  const facts: StyleDeclarationsFile[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input, projectRoot);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('style-declarations', parsed.format);
+      if (producer) facts.push(...producer.process(parsed));
+    } finally {
+      parsed.ast.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `style-declarations` fact with the styles rules. */
+export async function analyzeStyles(
+  facts: StyleDeclarationsFile[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'style-declarations': facts },
+    formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of stylesRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The styles slice: parse → style-declarations → styles rules → findings. */
+export async function runStylesSlice(
+  files: readonly InputFile[],
+  projectRoot?: string,
+  thresholds?: ThresholdValues,
+): Promise<Finding[]> {
+  const facts = await buildStyleDeclarations(files, projectRoot);
+  return analyzeStyles(facts, thresholds);
 }

@@ -834,7 +834,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
           if (migrated.size > 0) {
             const thresholds = resolvePhaseThresholds(pipelineAnalyzerConfig);
-            const phaseFindings = await runPhaseModel(files, thresholds);
+            const phaseFindings = await runPhaseModel(files, thresholds, root);
 
             // Strip the migrated rules' legacy emission from every analyzer
             // result — the phase model is now their single source of truth.

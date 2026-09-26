@@ -458,6 +458,11 @@ export interface ParsedFile {
   /** The language adapter that parsed this file — the processor's only handle
    *  on the extraction API (`extractFunctions`, `extractClasses`, …). */
   readonly adapter: LanguageAdapter;
+  /** The project root this file was parsed under. Optional because the vertical
+   *  slice tests parse single fixtures without a project; present on the full
+   *  pipeline. Only the style producer reads it (to load the project's Tailwind
+   *  theme tokens for utility expansion — a corpus-level context, not per-file). */
+  readonly projectRoot?: string;
 }
 
 /** The fragment a per-file processor returns for one file. The fragment is the
@@ -485,7 +490,7 @@ export interface SupplyingFormats {
   'function-index': 'typescript' | 'tsx' | 'javascript';
   'ddl-declarations': 'typescript' | 'tsx' | 'javascript';
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
-  'style-declarations': 'css' | 'scss';
+  'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
   'data-access-calls': 'typescript' | 'tsx' | 'javascript';
 }
