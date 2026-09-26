@@ -23,10 +23,14 @@ import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { PRODUCERS } from './producers.js';
 import { solidRules } from './rules/solid.js';
 import { dataAccessRules } from './rules/dataAccess.js';
+import { schemaRules } from './rules/schema.js';
 import type {
   ParsedFile,
   FileSymbols,
   ResolvedQuery,
+  SchemaUsageFact,
+  SchemaDeclaration,
+  TableCatalog,
   Format,
   ThresholdValues,
   Finding,
@@ -141,4 +145,77 @@ export function analyzeDataAccessCalls(calls: ResolvedQuery[], thresholds: Thres
 export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const calls = await buildDataAccessCalls(files);
   return analyzeDataAccessCalls(calls, thresholds);
+}
+
+// ── schema slice (the "repeat" for a corpus-consuming fact kind) ────────────
+
+/**
+ * Parse → Process for the `schema-usage` fact. Returns the assembled corpus
+ * fact (every table reference from every file, ASTs already freed).
+ */
+export async function buildSchemaUsage(files: readonly InputFile[]): Promise<SchemaUsageFact[]> {
+  const producer = PRODUCERS['schema-usage'];
+  const usages: SchemaUsageFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      usages.push(...(producer.process(parsed) as SchemaUsageFact[]));
+    } finally {
+      parsed.ast.dispose?.();
+    }
+  }
+  return usages;
+}
+
+/**
+ * Parse → Process for the `schema-code` fact (DDL declarations), then reduce it
+ * through the `table-catalog` corpus processor into the known-table set. The
+ * `schema-json` half of the catalog is config-driven (§10) and not reachable
+ * from this simple runner, so it is passed empty — the DDL-only slice of the
+ * catalog, which is the config-free half the corpus processor consumes.
+ */
+export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
+  const producer = PRODUCERS['schema-code'];
+  const declarations: SchemaDeclaration[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      declarations.push(...(producer.process(parsed) as SchemaDeclaration[]));
+    } finally {
+      parsed.ast.dispose?.();
+    }
+  }
+  return PRODUCERS['table-catalog'].process({
+    'schema-json': [],
+    'schema-code': declarations,
+  }) as TableCatalog;
+}
+
+/** Analyze the `schema-usage` + `table-catalog` facts with the schema rules. */
+export function analyzeSchemaRules(
+  usages: SchemaUsageFact[],
+  catalog: TableCatalog,
+  thresholds: ThresholdValues = {},
+): Finding[] {
+  const ctx = {
+    facts: { 'schema-usage': usages, 'table-catalog': catalog },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of schemaRules) {
+    findings.push(...rule.analyze(ctx));
+  }
+  return findings;
+}
+
+/** The schema slice: parse → schema-usage + table-catalog → schema rules → findings. */
+export async function runSchemaSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const [usages, catalog] = await Promise.all([
+    buildSchemaUsage(files),
+    buildTableCatalog(files),
+  ]);
+  return analyzeSchemaRules(usages, catalog, thresholds);
 }
