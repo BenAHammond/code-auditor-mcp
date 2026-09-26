@@ -1,4 +1,5 @@
 import type { Resolution } from '../types.js';
+import type { Needs } from '../phase/types.js';
 
 /**
  * Rule Registry — canonical mapping of every emitted rule/violation-type ID
@@ -38,6 +39,16 @@ export interface RuleRegistryEntry {
   /** The field on the Violation object that holds this ID. */
   field: 'rule' | 'principle' | 'violationType' | 'type' | 'contractType' | 'ruleId' | 'special';
   /**
+   * Spec 68 §2 — the rule's declaration: the file formats it can evaluate and
+   * the fact kinds it reads. Required, no optional form, no default — a rule
+   * that does not declare `needs` fails to compile. This is the load-bearing
+   * replacement for `input`/`handledLanguages`: coverage is derived from it
+   * (§8), the schedule is built from it (§5), and a rule that reaches a fact
+   * it did not declare cannot even be written (AnalysisContext exposes only
+   * declared facts).
+   */
+  needs: Needs;
+  /**
    * Optional dot-separated path to a config boolean within the analyzer's namespace.
    * When the config value is `false`, the rule is `notApplicable` (explicitly disabled).
    *
@@ -55,39 +66,6 @@ export interface RuleRegistryEntry {
    * broken one. Only meaningful alongside `configGate`.
    */
   offByDefault?: boolean;
-  /**
-   * Spec 33 Item 14 — the input sources this rule consumes, used to promote a
-   * zero-violation rule from `unassessed` to `clean` (≥1 input present) or
-   * `notApplicable` (all inputs absent). Each entry is one of:
-   *   - `'files'` — the analyzer ran on ≥1 parsed source file (always present at
-   *     the zero-violation branch, since earlier checks already excluded the
-   *     empty-input cases);
-   *   - a fact-key — a visitor/reducer name (e.g. `'schema-json'`, `'function-index'`)
-   *     whose per-file facts were non-empty this run;
-   *   - an index table — a table name (e.g. `'schema_usage'`, `'functions'`) that
-   *     held ≥1 row at coverage-build time.
-   *
-   * Omitted for non-pipeline analyzers (schema-validator, api-contract,
-   * dependency-graph), whose rules stay `unassessed`.
-   */
-  input?: string[];
-  /**
-   * The set of function languages this rule's detector can actually classify.
-   * When declared, a corpus that holds function rows in *only* unhandled
-   * languages reports the rule `cannot-fire` (with a reason naming the unhandled
-   * language) rather than `clean` — `clean` would assert the rule evaluated every
-   * function it saw, when it evaluated none of them. A mixed corpus (some handled,
-   * some unhandled) leaves the rule applicable: it evaluates the handled rows
-   * normally, and the unhandled rows are reported per-file by the analyzer's
-   * coverage diagnostics, not by gating the whole rule.
-   *
-   * Omitted for rules whose detection is language-agnostic (name matching,
-   * call-co-occurrence) or that consume non-function input. Only the
-   * `conventions/error-handling` detector is currently language-shaped: its
-   * body classifier hard-codes the TypeScript grammar (see
-   * `detectErrorHandlingShape`), so it handles TypeScript/JavaScript only.
-   */
-  handledLanguages?: readonly string[];
   /**
    * Spec 37 R1 — whether this rule can produce a `resolution` (a specific next
    * action naming concrete symbols/files/lines) for every occurrence it emits.
@@ -165,12 +143,12 @@ export interface RuleSamples {
  * `engine-error`) are diagnostics (see `CoverageDiagnostic.kind`), not
  * violation rules, so they have no registry entry.
  */
-export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
+const _RULE_REGISTRY = {
   // ── solid (UniversalSOLIDAnalyzer) ──────────────────────────────────────
   'solid/class-size': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Class "{name}" has {methods} methods, exceeding the maximum of {max}. Consider splitting into smaller classes.',
     docs: 'solid/class-size',
@@ -191,7 +169,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'solid/method-complexity': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Method "{name}" has cyclomatic complexity {complexity}, exceeding the maximum of {max}.',
     docs: 'solid/method-complexity',
@@ -209,7 +187,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'solid/open-closed': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Class "{name}" uses instanceof against a user-defined type.',
     docs: 'solid/open-closed',
@@ -226,7 +204,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'solid/single-responsibility': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Function "{name}" mixes unrelated responsibilities. Split it into one function per concern.',
     docs: 'solid/single-responsibility',
@@ -248,7 +226,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'function-length': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Function "{name}" has {lines} lines, exceeding the maximum of {max}. Consider breaking it down.',
     docs: 'function-length',
@@ -269,7 +247,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'parameter-count': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Function "{name}" has {params} parameters, exceeding the maximum of {max}. Consider using an options object.',
     docs: 'parameter-count',
@@ -290,7 +268,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'interface-size': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Interface "{name}" has many members.',
     docs: 'interface-size',
@@ -314,7 +292,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'switch-size': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Switch or type switch has many case clauses.',
     docs: 'switch-size',
@@ -335,7 +313,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'function-size': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Function has many parameters, multiple returns, and high complexity.',
     docs: 'function-size',
@@ -356,7 +334,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'struct-size': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Struct has many fields.',
     docs: 'struct-size',
@@ -377,7 +355,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'liskov-substitution': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Method calls panic().',
     docs: 'liskov-substitution',
@@ -403,7 +381,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'channel-deadlock': {
     analyzer: 'go',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['go-channels'] as const },
     resolvable: false,
     message: 'Guaranteed deadlock: an unbuffered channel is both sent to and received from in the same goroutine.',
     docs: 'channel-deadlock',
@@ -424,7 +402,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'error-handling': {
     analyzer: 'go',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['go-error-bindings'] as const },
     resolvable: false,
     message: 'Function assigns an error that is never checked, returned, or propagated.',
     docs: 'error-handling',
@@ -445,7 +423,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'concurrency': {
     analyzer: 'go',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['go-goroutines'] as const },
     resolvable: false,
     message: 'Function launches a goroutine without synchronization.',
     docs: 'concurrency',
@@ -466,7 +444,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'import-organization': {
     analyzer: 'go',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['go-imports'] as const },
     resolvable: false,
     message: 'Import block mixes standard library and third-party imports without grouping.',
     docs: 'import-organization',
@@ -487,7 +465,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'import-style': {
     analyzer: 'go',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['go'] as const, facts: ['go-imports'] as const },
     resolvable: false,
     message: 'Dot import detected — can lead to namespace pollution.',
     docs: 'import-style',
@@ -508,7 +486,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'solid/liskov-substitution': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Method "{name}" overrides a parent method and throws where the parent does not.',
     docs: 'solid/liskov-substitution',
@@ -525,7 +503,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'solid/dependency-inversion': {
     analyzer: 'solid',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Module "{name}" violates the Dependency Inversion Principle.',
     docs: 'solid/dependency-inversion',
@@ -544,7 +522,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'dry/duplicate': {
     analyzer: 'dry',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Duplicate code block detected ({lines} lines). First occurrence at {file}:{line}.',
     docs: 'dry/duplicate',
@@ -570,7 +548,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'dry',
     field: 'rule',
     configGate: 'checkStructuralSimilarity',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Structurally similar code block detected ({similarity}% similar to {file}:{line}).',
     docs: 'dry/structural-similarity',
@@ -595,7 +573,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'dry',
     field: 'rule',
     configGate: 'checkExpressionSimilarity',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Near-identical expression detected ({shared} shared {unit}: {names}). First occurrence at {file}:{line}.',
     docs: 'dry/similar-expression',
@@ -633,7 +611,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'dry/diverging-clone': {
     analyzer: 'dry',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Clone pair has diverged: similarity dropped {drop} (from {previous} to {current}) across {runs} consecutive runs. Review {file1}:{line1} and {file2}:{line2} for diverged logic.',
     docs: 'dry/diverging-clone',
@@ -654,7 +632,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'dry',
     field: 'rule',
     configGate: 'checkStrings',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'String literal "{text}" is duplicated {count} times.',
     docs: 'duplicate-string-literal',
@@ -672,7 +650,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'dry',
     field: 'rule',
     configGate: 'checkImports',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Duplicate import of "{module}".',
     docs: 'duplicate-import',
@@ -691,7 +669,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'sql-injection-risk': {
     analyzer: 'data-access',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Potential SQL injection risk in {method}. Use parameterized queries.',
     docs: 'sql-injection-risk',
@@ -711,7 +689,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'missing-org-filter': {
     analyzer: 'data-access-org-filter',
     field: 'rule',
-    input: ['data-access', 'schema'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['data-access-calls', 'schema-json', 'schema-code'] as const },
     resolvable: true,
     // The claim is "no organization/tenant *predicate*", NOT "no filter". A
     // query scoped by primary key (`WHERE id = $1`) still fires, because it is
@@ -740,7 +718,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'complex-query': {
     analyzer: 'data-access',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Query references many tables (join-heavy).',
     docs: 'complex-query',
@@ -758,7 +736,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'unfiltered-query': {
     analyzer: 'data-access',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Unfiltered write or tenant-scoped read on {tables} has no WHERE/HAVING/LIMIT.',
     docs: 'unfiltered-query',
@@ -776,7 +754,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'hardcoded-connection': {
     analyzer: 'data-access',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Hardcoded database connection string detected.',
     docs: 'hardcoded-connection',
@@ -793,7 +771,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'loop-query': {
     analyzer: 'data-access',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Database query inside a loop detected in {method}.',
     docs: 'loop-query',
@@ -813,7 +791,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'secrets',
     field: 'rule',
     configGate: 'checkHardcodedSecrets',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Hardcoded secret detected: a credential value is embedded in source. Move it to an environment variable or secret store.',
     docs: 'hardcoded-secret',
@@ -849,7 +827,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'file-documentation': {
     analyzer: 'documentation',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'File is missing a leading documentation comment.',
     docs: 'file-documentation',
@@ -866,7 +844,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'function-documentation': {
     analyzer: 'documentation',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Function "{name}" is missing a doc comment.',
     docs: 'function-documentation',
@@ -883,7 +861,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'parameter-documentation': {
     analyzer: 'documentation',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     configGate: 'requireParamDocs',
     offByDefault: true,
@@ -902,7 +880,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'return-documentation': {
     analyzer: 'documentation',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     configGate: 'requireReturnDocs',
     offByDefault: true,
@@ -932,7 +910,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'class-documentation': {
     analyzer: 'documentation',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Class "{name}" is missing a doc comment.',
     docs: 'class-documentation',
@@ -949,7 +927,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'method-documentation': {
     analyzer: 'documentation',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Method "{name}" is missing a doc comment.',
     docs: 'method-documentation',
@@ -969,7 +947,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'invalid-json': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Invalid JSON: {error}.',
     docs: 'invalid-json',
@@ -986,7 +964,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'missing-schema-declaration': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Missing JSON schema declaration.',
     docs: 'missing-schema-declaration',
@@ -1003,7 +981,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'undefined-required-field': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Undefined required field "{field}".',
     docs: 'undefined-required-field',
@@ -1020,7 +998,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'invalid-type': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Invalid type for field "{field}".',
     docs: 'invalid-type',
@@ -1037,7 +1015,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'invalid-range': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Invalid range for field "{field}".',
     docs: 'invalid-range',
@@ -1054,7 +1032,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'type-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Type mismatch for field "{field}".',
     docs: 'type-mismatch',
@@ -1071,7 +1049,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'string-too-short': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'String value too short for field "{field}".',
     docs: 'string-too-short',
@@ -1088,7 +1066,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'string-too-long': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'String value too long for field "{field}".',
     docs: 'string-too-long',
@@ -1105,7 +1083,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'pattern-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Value does not match pattern for field "{field}".',
     docs: 'pattern-mismatch',
@@ -1122,7 +1100,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'invalid-format': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Invalid format for field "{field}".',
     docs: 'invalid-format',
@@ -1139,7 +1117,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'below-minimum': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Value below minimum for field "{field}".',
     docs: 'below-minimum',
@@ -1156,7 +1134,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'above-maximum': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Value above maximum for field "{field}".',
     docs: 'above-maximum',
@@ -1173,7 +1151,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'too-few-items': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Too few items for field "{field}".',
     docs: 'too-few-items',
@@ -1190,7 +1168,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'too-many-items': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Too many items for field "{field}".',
     docs: 'too-many-items',
@@ -1207,7 +1185,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'missing-required-field': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Missing required field "{field}".',
     docs: 'missing-required-field',
@@ -1224,7 +1202,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'unexpected-property': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Unexpected property "{property}".',
     docs: 'unexpected-property',
@@ -1241,7 +1219,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'enum-mismatch': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-json'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-json'] as const },
     resolvable: false,
     message: 'Value does not match any enum value for field "{field}".',
     docs: 'enum-mismatch',
@@ -1259,7 +1237,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'dynamic-sql-construction': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-code'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-code'] as const },
     resolvable: false,
     message: 'SQL query built via string interpolation or concatenation in {method}; use parameterized queries.',
     docs: 'dynamic-sql-construction',
@@ -1279,7 +1257,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'schema',
     field: 'rule',
     configGate: 'checkNamingConventions',
-    input: ['schema-code'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-code'] as const },
     resolvable: false,
     message: 'Table name "{table}" should use snake_case convention.',
     docs: 'table-naming-convention',
@@ -1297,7 +1275,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'unknown-table': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-code'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['schema-code'] as const },
     resolvable: true,
     message: 'Reference to unknown table "{table}" ({type}). Did you mean: {suggestions}?',
     docs: 'unknown-table',
@@ -1322,7 +1300,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'stale-table-reference': {
     analyzer: 'schema',
     field: 'rule',
-    input: ['schema-code'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-code'] as const },
     resolvable: true,
     message: 'Reference to dropped table "{table}" — dropped in {migration}.',
     docs: 'stale-table-reference',
@@ -1347,7 +1325,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'schema',
     field: 'rule',
     configGate: 'validateQueryPatterns',
-    input: ['schema-code'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-code'] as const },
     resolvable: false,
     message: 'Function "{name}" has {count} queries, exceeding the maximum of {max}.',
     docs: 'too-many-queries',
@@ -1373,7 +1351,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'hooks-naming': {
     analyzer: 'react',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React hook "{name}" does not follow the "use*" naming convention.',
     docs: 'hooks-naming',
@@ -1390,7 +1368,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'complexity': {
     analyzer: 'react',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React component "{name}" has complexity {complexity}, exceeding the maximum.',
     docs: 'complexity',
@@ -1415,7 +1393,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'react',
     field: 'rule',
     configGate: 'requirePropTypes',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React component "{name}" is missing prop-types.',
     docs: 'missing-props',
@@ -1432,7 +1410,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'no-error-boundary': {
     analyzer: 'react',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React component tree is missing an error boundary.',
     docs: 'no-error-boundary',
@@ -1450,7 +1428,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'react',
     field: 'rule',
     configGate: 'requireMemoization',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'React component "{name}" is missing memoization.',
     docs: 'performance',
@@ -1467,7 +1445,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'accessibility': {
     analyzer: 'react',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: false,
     message: 'Accessibility issue in component "{name}": {issue}.',
     docs: 'accessibility',
@@ -1484,7 +1462,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'raw-element': {
     analyzer: 'react',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'raw `<{element}>` — this project uses `<{wrapper}>` ({file}).',
     docs: 'raw-element',
@@ -1516,7 +1494,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'schema-field-mismatch': {
     analyzer: 'schema-validator',
     field: 'rule',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Schema field type-name strings differ: {detail}.',
     docs: 'schema-field-mismatch',
@@ -1533,7 +1511,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'missing-field': {
     analyzer: 'schema-validator',
     field: 'rule',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Missing field: {field}.',
     docs: 'missing-field',
@@ -1550,7 +1528,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'extra-field': {
     analyzer: 'schema-validator',
     field: 'rule',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Extra field: {field}.',
     docs: 'extra-field',
@@ -1568,7 +1546,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'circular-dependency': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Circular dependency detected: {cycle}.',
     docs: 'circular-dependency',
@@ -1585,7 +1563,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'break-cycles': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Break dependency cycle: {cycle}.',
     docs: 'break-cycles',
@@ -1602,7 +1580,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'tight-coupling': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Tight coupling detected between {a} and {b}.',
     docs: 'tight-coupling',
@@ -1620,7 +1598,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'reduce-coupling': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Reduce coupling between {a} and {b}.',
     docs: 'reduce-coupling',
@@ -1637,7 +1615,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'hub-nodes': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Hub node "{node}" has {count} dependencies.',
     docs: 'hub-nodes',
@@ -1654,7 +1632,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'split-responsibilities': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Split responsibilities of node "{node}".',
     docs: 'split-responsibilities',
@@ -1671,7 +1649,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'orphaned-nodes': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Orphaned node "{node}" has no connections.',
     docs: 'orphaned-nodes',
@@ -1688,7 +1666,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'review-orphans': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Review orphaned nodes: {nodes}.',
     docs: 'review-orphans',
@@ -1705,7 +1683,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'unreferenced-module': {
     analyzer: 'dependency-graph',
     field: 'type',
-    input: ['cross-language-entities'],
+    needs: { formats: ['typescript', 'tsx', 'javascript', 'go'] as const, facts: ['cross-language-entities'] as const },
     resolvable: false,
     message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
     docs: 'unreferenced-module',
@@ -1729,7 +1707,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/value-drift': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: false,
     message: 'Color drift in "{property}": "{value}" is near-identical to "{canonical}" (ΔE = {d}). Consider using "{canonical}".',
     docs: 'styles/value-drift',
@@ -1746,7 +1724,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/off-scale': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: false,
     message: 'Value "{value}" is off the Tailwind spacing scale.',
     docs: 'styles/off-scale',
@@ -1763,7 +1741,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/undefined-class': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: true,
     message: 'Class "{class}" was not found in any read stylesheet or utility set.',
     docs: 'styles/undefined-class',
@@ -1789,7 +1767,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/token-bypass': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: false,
     message: 'Token bypass: raw value "{value}" used instead of a design token.',
     docs: 'styles/token-bypass',
@@ -1806,7 +1784,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/mechanism-fragmentation': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: false,
     message: 'Styling mechanism fragmented across {count} mechanisms.',
     docs: 'styles/mechanism-fragmentation',
@@ -1823,7 +1801,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/mechanism-mixing': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: false,
     message: 'Mixing styling mechanisms in one file.',
     docs: 'styles/mechanism-mixing',
@@ -1840,7 +1818,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/declaration-set-similarity': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: false,
     message: 'Declaration set similar to another block ({similarity}%).',
     docs: 'styles/declaration-set-similarity',
@@ -1857,7 +1835,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/z-index-sprawl': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: false,
     message: 'Z-index sprawl: {count} distinct z-index values.',
     docs: 'styles/z-index-sprawl',
@@ -1874,7 +1852,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'styles/z-index-singleton': {
     analyzer: 'styles',
     field: 'rule',
-    input: ['styles-css'],
+    needs: { formats: ['css', 'scss'] as const, facts: ['styles-css'] as const },
     resolvable: false,
     message: 'Z-index value "{value}" appears only once.',
     docs: 'styles/z-index-singleton',
@@ -1893,7 +1871,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'conventions/usage-pair': {
     analyzer: 'conventions',
     field: 'rule',
-    input: ['function-index'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
     resolvable: true,
     message: '{pct}% of `{antecedent}` callers also call `{consequent}`.',
     docs: 'conventions/usage-pair',
@@ -1913,7 +1891,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'conventions/import-form': {
     analyzer: 'conventions',
     field: 'rule',
-    input: ['function-index'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
     resolvable: false,
     message: 'Import form mismatch: use {form} for "{source}".',
     docs: 'conventions/import-form',
@@ -1930,12 +1908,11 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'conventions/error-handling': {
     analyzer: 'conventions',
     field: 'rule',
-    input: ['function-index'],
+    needs: { formats: ['typescript', 'javascript'] as const, facts: ['function-index'] as const },
     // The detector wraps each body as `async function __ca() {…}` and parses it
     // with the TypeScript grammar (`detectErrorHandlingShape`), so only
     // TypeScript/JavaScript bodies are classifiable. A Go (or other-language)
     // function row makes the rule report `cannot-fire`, not `clean`.
-    handledLanguages: ['typescript', 'javascript'],
     resolvable: false,
     message: 'Error-handling convention mismatch: {detail}.',
     docs: 'conventions/error-handling',
@@ -1952,7 +1929,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'conventions/export-shape': {
     analyzer: 'conventions',
     field: 'rule',
-    input: ['function-index'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
     resolvable: false,
     message: 'Export shape mismatch: {detail}.',
     docs: 'conventions/export-shape',
@@ -1969,7 +1946,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'conventions/naming': {
     analyzer: 'conventions',
     field: 'rule',
-    input: ['function-index'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['function-index'] as const },
     resolvable: false,
     message: 'Naming convention mismatch: {detail}.',
     docs: 'conventions/naming',
@@ -1988,7 +1965,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'cross-domain/written-never-read': {
     analyzer: 'cross-domain',
     field: 'rule',
-    input: ['schema_usage', 'functions'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'Table "{table}" is written but never read.',
     docs: 'cross-domain/written-never-read',
@@ -2005,7 +1982,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'cross-domain/read-never-written': {
     analyzer: 'cross-domain',
     field: 'rule',
-    input: ['schema_usage', 'functions'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'Table "{table}" is read but never written.',
     docs: 'cross-domain/read-never-written',
@@ -2022,7 +1999,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'cross-domain/multi-table-write': {
     analyzer: 'cross-domain',
     field: 'rule',
-    input: ['schema_usage', 'functions'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'Function writes to {count} distinct tables.',
     docs: 'cross-domain/multi-table-write',
@@ -2039,7 +2016,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'cross-domain/no-validator-reachable': {
     analyzer: 'cross-domain',
     field: 'rule',
-    input: ['schema_usage', 'functions'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'No validator reachable within BFS depth: {detail}.',
     docs: 'cross-domain/no-validator-reachable',
@@ -2056,7 +2033,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'cross-domain/uncovered-risk': {
     analyzer: 'cross-domain',
     field: 'rule',
-    input: ['schema_usage', 'functions'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['schema-usage', 'function-index'] as const },
     resolvable: false,
     message: 'Uncovered risk: {detail}.',
     docs: 'cross-domain/uncovered-risk',
@@ -2075,7 +2052,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'command-injection-risk': {
     analyzer: 'security',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Unsafe process invocation: {method} is passed a command built by interpolation/concatenation.',
     docs: 'command-injection-risk',
@@ -2092,7 +2069,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'dynamic-require-of-project-path': {
     analyzer: 'security',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Dynamic require/import of a project config path: {path}.',
     docs: 'dynamic-require-of-project-path',
@@ -2110,7 +2087,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'unescaped-html-interpolation': {
     analyzer: 'security',
     field: 'rule',
-    input: ['files'],
+    needs: { formats: ['typescript', 'tsx', 'javascript'] as const, facts: ['file-symbols'] as const },
     resolvable: true,
     message: 'Unescaped HTML interpolation: {field} is inserted into an HTML template without an escaping call.',
     docs: 'unescaped-html-interpolation',
@@ -2137,7 +2114,10 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-};
+} satisfies Record<string, RuleRegistryEntry>;
+
+export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = _RULE_REGISTRY;
+export type RegistryLiteral = typeof _RULE_REGISTRY;
 
 /**
  * Canonical set of every analyzer ID that emits at least one rule in

@@ -950,7 +950,16 @@ export async function runPipeline(
     }
     const corpusLanguages = new Set(languageRows.map((r) => r.language ?? 'typescript'));
     for (const [ruleId, entry] of Object.entries(RULE_REGISTRY)) {
-      const app = evaluateHandledLanguagesApplicability(entry.handledLanguages, corpusLanguages);
+      // Spec 68 §2.1 — `handledLanguages` is subsumed by `needs.formats`. The
+      // cannot-fire fold is a *function-language* classification gate, so it
+      // applies only to rules that consume `function-index` facts; a format
+      // like `css`/`scss` (styles rules) is not a function language and must
+      // not be gated against `corpusLanguages`. §8 generalizes this into a
+      // format-based applicability derivation over the whole corpus.
+      const handledFormats = entry.needs.facts.includes('function-index')
+        ? entry.needs.formats
+        : undefined;
+      const app = evaluateHandledLanguagesApplicability(handledFormats, corpusLanguages);
       if (app) ruleApplicability.set(ruleId, app);
     }
   }
@@ -1312,8 +1321,8 @@ function computeInputPresence(
   if (indexHandle) {
     const candidates = new Set<string>();
     for (const entry of Object.values(RULE_REGISTRY)) {
-      for (const source of entry.input ?? []) {
-        if (source !== 'files') candidates.add(source);
+      for (const source of entry.needs.facts) {
+        candidates.add(source);
       }
     }
     for (const table of candidates) {
@@ -1523,7 +1532,7 @@ export function buildCoverageReport(
     // to `clean`/`notApplicable` based on whether the rule's mapped input was
     // present this run. Rules with no mapping (non-pipeline analyzers) stay
     // `unassessed`.
-    coverage.push(resolveZeroViolationState(ruleId, analyzerName, entry.input, inputPresence));
+    coverage.push(resolveZeroViolationState(ruleId, analyzerName, entry.needs.facts, inputPresence));
   }
 
   return coverage;

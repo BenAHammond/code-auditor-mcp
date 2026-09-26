@@ -88,7 +88,7 @@ function applicabilityForCorpus(corpusLanguages: string[]): Map<string, unknown>
   const map = new Map<string, unknown>();
   for (const [ruleId, entry] of Object.entries(RULE_REGISTRY)) {
     const app = evaluateHandledLanguagesApplicability(
-      entry.handledLanguages,
+      entry.needs.formats,
       new Set(corpusLanguages),
     );
     if (app) map.set(ruleId, app);
