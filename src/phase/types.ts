@@ -430,7 +430,12 @@ export interface RuleDefinition<N extends Needs> {
   readonly thresholds: readonly ThresholdKey[];
   readonly thresholdRationale?: string;
   readonly samples: RuleSamples;
-  analyze(ctx: AnalysisContext<N>): readonly Finding[];
+  /** A rule's evaluation over its declared facts. May be async: corpus-shaped
+   *  rules (dependency-graph, schema-validator, …) build derived structures the
+   *  legacy reducers computed over the index; the phase model awaits each. The
+   *  returned findings are still plain data — async does not let a rule reach
+   *  an AST, adapter, or source string. */
+  analyze(ctx: AnalysisContext<N>): readonly Finding[] | Promise<readonly Finding[]>;
 }
 
 // ── Processors (Spec 68 §3) ────────────────────────────────────────────────

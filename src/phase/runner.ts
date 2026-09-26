@@ -24,6 +24,7 @@ import { fileProducerFor, CORPUS_PRODUCERS } from './producers.js';
 import { solidRules } from './rules/solid.js';
 import { dataAccessRules } from './rules/dataAccess.js';
 import { schemaRules } from './rules/schema.js';
+import { dependencyGraphRules } from './rules/dependencyGraph.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -31,6 +32,7 @@ import type {
   SchemaUsageFact,
   SchemaDeclaration,
   TableCatalog,
+  Entity,
   Format,
   ThresholdValues,
   Finding,
@@ -88,7 +90,7 @@ export async function buildFileSymbols(files: readonly InputFile[]): Promise<Fil
 }
 
 /** Analyze the assembled `file-symbols` fact with the SOLID rules. */
-export function analyzeFileSymbols(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Finding[] {
+export async function analyzeFileSymbols(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
     facts: { 'file-symbols': symbols },
     formats: ['typescript', 'tsx', 'javascript'] as const,
@@ -96,7 +98,7 @@ export function analyzeFileSymbols(symbols: FileSymbols[], thresholds: Threshold
   };
   const findings: Finding[] = [];
   for (const rule of solidRules) {
-    findings.push(...rule.analyze(ctx));
+    findings.push(...(await rule.analyze(ctx)));
   }
   return findings;
 }
@@ -129,7 +131,7 @@ export async function buildDataAccessCalls(files: readonly InputFile[]): Promise
 }
 
 /** Analyze the assembled `data-access-calls` fact with the data-access rules. */
-export function analyzeDataAccessCalls(calls: ResolvedQuery[], thresholds: ThresholdValues = {}): Finding[] {
+export async function analyzeDataAccessCalls(calls: ResolvedQuery[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
     facts: { 'data-access-calls': calls },
     formats: ['typescript', 'tsx', 'javascript'] as const,
@@ -137,7 +139,7 @@ export function analyzeDataAccessCalls(calls: ResolvedQuery[], thresholds: Thres
   };
   const findings: Finding[] = [];
   for (const rule of dataAccessRules) {
-    findings.push(...rule.analyze(ctx));
+    findings.push(...(await rule.analyze(ctx)));
   }
   return findings;
 }
@@ -194,11 +196,11 @@ export async function buildTableCatalog(files: readonly InputFile[]): Promise<Ta
 }
 
 /** Analyze the `schema-usage` + `table-catalog` facts with the schema rules. */
-export function analyzeSchemaRules(
+export async function analyzeSchemaRules(
   usages: SchemaUsageFact[],
   catalog: TableCatalog,
   thresholds: ThresholdValues = {},
-): Finding[] {
+): Promise<Finding[]> {
   const ctx = {
     facts: { 'schema-usage': usages, 'table-catalog': catalog },
     formats: ['typescript', 'tsx', 'javascript'] as const,
@@ -206,7 +208,7 @@ export function analyzeSchemaRules(
   };
   const findings: Finding[] = [];
   for (const rule of schemaRules) {
-    findings.push(...rule.analyze(ctx));
+    findings.push(...(await rule.analyze(ctx)));
   }
   return findings;
 }
@@ -218,4 +220,47 @@ export async function runSchemaSlice(files: readonly InputFile[], thresholds?: T
     buildTableCatalog(files),
   ]);
   return analyzeSchemaRules(usages, catalog, thresholds);
+}
+
+// ── cross-language-entities slice (dependency-graph rules) ──────────────────
+
+/**
+ * Parse → Process for the `cross-language-entities` fact. Returns the assembled
+ * corpus fact (every entity from every file, ASTs already freed). The
+ * dependency-graph rules read the *whole* corpus at once, so unlike the SOLID /
+ * data-access slices there is no per-file analysis arm — the fact is the input.
+ */
+export async function buildCrossLanguageEntities(files: readonly InputFile[]): Promise<Entity[]> {
+  const entities: Entity[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('cross-language-entities', parsed.format);
+      if (producer) entities.push(...(producer.process(parsed) as Entity[]));
+    } finally {
+      parsed.ast.dispose?.();
+    }
+  }
+  return entities;
+}
+
+/** Analyze the assembled `cross-language-entities` fact with the dependency-graph rules. */
+export async function analyzeDependencyGraph(entities: Entity[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'cross-language-entities': entities },
+    formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of dependencyGraphRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The dependency-graph slice: parse → cross-language-entities → graph rules → findings. */
+export async function runDependencyGraphSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const entities = await buildCrossLanguageEntities(files);
+  return analyzeDependencyGraph(entities, thresholds);
 }

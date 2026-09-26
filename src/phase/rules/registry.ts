@@ -17,6 +17,7 @@
 import type { RuleDefinition } from '../types.js';
 import { solidRules } from './solid.js';
 import { dataAccessRules } from './dataAccess.js';
+import { dependencyGraphRules } from './dependencyGraph.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -36,10 +37,21 @@ import { dataAccessRules } from './dataAccess.js';
  * (composite-fixtures schema/schema-stale go red), so they stay on the legacy
  * path until the `.sql` DDL source and string-argument extraction land (§5/§9).
  *
- * The remaining 88 land one fact kind at a time (§11.3), and the size drives
+ * The 8 dependency-graph rules (`circular-dependency`, `break-cycles`,
+ * `tight-coupling`, `reduce-coupling`, `hub-nodes`, `split-responsibilities`,
+ * `orphaned-nodes`, `review-orphans`) read the `cross-language-entities` fact
+ * through `DependencyGraphBuilder` — the same class the legacy Stage-4 reducer
+ * ran — so their full-pipeline output is byte-for-byte the reducer's, minus the
+ * two halves the current producer does not yet emit: `unreferenced-module`
+ * (file-level imports/reachability — RENEW, §8) and the 3 schema-validator
+ * rules (reduce-time enriched `Entity` — ENRICH, §8). The 9th dependency-graph
+ * rule and the 3 schema-validator rules therefore stay on the legacy path.
+ *
+ * The remaining 80 land one fact kind at a time (§11.3), and the size drives
  * spec68-registry-size.spec.ts (0 → … → 100).
  */
 export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...solidRules,
   ...dataAccessRules,
+  ...dependencyGraphRules,
 ];

@@ -141,10 +141,10 @@ async function buildFacts(files: readonly InputFile[]): Promise<Map<FactKind, un
 }
 
 /** Analyze: run every migrated rule against exactly its declared facts. */
-function analyzeAll(
+async function analyzeAll(
   facts: Map<FactKind, unknown>,
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
-): Finding[] {
+): Promise<Finding[]> {
   const findings: Finding[] = [];
   for (const rule of MIGRATED_RULES) {
     const ruleFacts = Object.fromEntries(
@@ -155,7 +155,7 @@ function analyzeAll(
       formats: rule.needs.formats,
       thresholds: thresholdsByRule.get(rule.id) ?? {},
     };
-    findings.push(...(rule.analyze(ctx as never) as readonly Finding[]));
+    findings.push(...(await rule.analyze(ctx as never) as readonly Finding[]));
   }
   return findings;
 }
