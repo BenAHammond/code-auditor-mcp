@@ -27,7 +27,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../languages/index.js';
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { parseFile } from '../languages/adapterBridge.js';
-import { PRODUCERS, FACT_KINDS } from '../phase/producers.js';
+import { PRODUCERS, CORPUS_PRODUCERS, FACT_KINDS } from '../phase/producers.js';
 import type { FactKind, FactShapes, ParsedFile, Format } from '../phase/types.js';
 
 /** One fixture: a file path and its source. Path extension drives the adapter. */
@@ -152,32 +152,38 @@ describe('Spec 68 §16 guard 1 — producer liveness (Amendment 1)', () => {
   it('every producer is declared for a known fact kind', () => {
     // The count is derived from FACT_KINDS (compile-time-pinned to FactKind via
     // `satisfies Record<FactKind, true>`), not a hand-maintained literal — it
-    // widens with the vocabulary instead of being edited by hand. PRODUCERS
-    // `satisfies ProducerMap`, so the producer count IS the fact-kind count.
-    expect(Object.keys(PRODUCERS).length).toBe(Object.keys(FACT_KINDS).length);
+    // widens with the vocabulary instead of being edited by hand. The kind count
+    // is the file-kind count (PRODUCERS) plus the corpus-kind count
+    // (CORPUS_PRODUCERS), so it matches FACT_KINDS only when every kind is
+    // produced exactly once across the two maps.
+    expect(Object.keys(PRODUCERS).length + Object.keys(CORPUS_PRODUCERS).length).toBe(
+      Object.keys(FACT_KINDS).length,
+    );
   });
 
-  for (const [id, producer] of Object.entries(PRODUCERS)) {
-    const isCorpus = 'needs' in producer;
-    if (isCorpus) {
-      it(`corpus producer "${id}" produces a live ${producer.produces} from empty upstream facts`, () => {
-        const upstream = {} as Record<string, unknown>;
-        for (const need of producer.needs) upstream[need] = [];
-        const value = (producer as { process(f: Record<string, unknown>): unknown }).process(upstream);
-        assertShape(producer.produces, value);
+  // File producers: one (kind, format) entry each, run against its format's
+  // fixture. A format that cannot supply a kind is absent from the map, so the
+  // entry count is the supplied (kind, format) pairs, not kind × all formats.
+  for (const [kind, formatMap] of Object.entries(PRODUCERS)) {
+    for (const [format, producer] of Object.entries(formatMap)) {
+      it(`file producer "${producer.id}" produces a live ${producer.produces} from a ${format} file`, () => {
+        const parsed = parsedFileFor(FIXTURES[format as Format]);
+        try {
+          const value = (producer as { process(f: ParsedFile): unknown }).process(parsed);
+          assertShape(producer.produces, value);
+        } finally {
+          parsed.ast.dispose?.();
+        }
       });
-    } else {
-      for (const format of producer.formats) {
-        it(`file producer "${id}" produces a live ${producer.produces} from a ${format} file`, () => {
-          const parsed = parsedFileFor(FIXTURES[format]);
-          try {
-            const value = (producer as { process(f: ParsedFile): unknown }).process(parsed);
-            assertShape(producer.produces, value);
-          } finally {
-            parsed.ast.dispose?.();
-          }
-        });
-      }
     }
+  }
+
+  for (const [id, producer] of Object.entries(CORPUS_PRODUCERS)) {
+    it(`corpus producer "${id}" produces a live ${producer.produces} from empty upstream facts`, () => {
+      const upstream = {} as Record<string, unknown>;
+      for (const need of producer.needs) upstream[need] = [];
+      const value = (producer as { process(f: Record<string, unknown>): unknown }).process(upstream);
+      assertShape(producer.produces, value);
+    });
   }
 });

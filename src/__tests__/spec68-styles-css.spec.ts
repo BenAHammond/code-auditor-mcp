@@ -21,18 +21,12 @@ beforeAll(async () => {
 });
 
 function css(path: string, source: string): StyleDeclarationsFile {
+  const format = path.endsWith('.scss') ? 'scss' : 'css';
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(path);
   const ast = parseFile(path, source)!;
-  const file: ParsedFile = {
-    file: path,
-    format: path.endsWith('.scss') ? 'scss' : 'css',
-    source,
-    ast,
-    adapter: adapter!,
-  };
+  const file: ParsedFile = { file: path, format, source, ast, adapter: adapter! };
   try {
-    const producer = PRODUCERS['style-declarations'] as { process(f: ParsedFile): StyleDeclarationsFile[] };
-    return producer.process(file)[0];
+    return PRODUCERS['style-declarations'][format].process(file)[0];
   } finally {
     ast.dispose?.();
   }

@@ -10,7 +10,7 @@
  * kind is read by at least one migrated rule or corpus processor — the same
  * red-drives-the-migration shape as spec68-registry-size.spec.ts.
  *
- * The consumed set is derived from the two real sources (`PRODUCERS`'s corpus
+ * The consumed set is derived from the two real sources (`CORPUS_PRODUCERS`'s
  * `needs` and `MIGRATED_RULES`'s `needs.facts`), never a hand-written list — a
  * produced kind that nothing reads fails here rather than being found by hand a
  * week later (the Spec 63 class: `crossLanguageViolations`, `importersOf`,
@@ -18,21 +18,22 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { PRODUCERS } from '../phase/producers.js';
+import { PRODUCERS, CORPUS_PRODUCERS } from '../phase/producers.js';
 import { MIGRATED_RULES } from '../phase/rules/registry.js';
 import type { FactKind } from '../phase/types.js';
 
 describe('Spec 68 §2.3 residue #2 — every produced kind is consumed', () => {
   it('no fact kind is produced but never read by a migrated rule or corpus processor', () => {
-    const produced = new Set<FactKind>(Object.keys(PRODUCERS) as FactKind[]);
+    const produced = new Set<FactKind>([
+      ...(Object.keys(PRODUCERS) as FactKind[]),
+      ...(Object.keys(CORPUS_PRODUCERS) as FactKind[]),
+    ]);
     const consumed = new Set<FactKind>();
 
     // Corpus processors declare their upstream facts in `needs` (the DAG edge
     // ddl-declarations → table-catalog).
-    for (const producer of Object.values(PRODUCERS)) {
-      if ('needs' in producer) {
-        for (const need of producer.needs) consumed.add(need);
-      }
+    for (const producer of Object.values(CORPUS_PRODUCERS)) {
+      for (const need of producer.needs) consumed.add(need);
     }
 
     // Migrated rules declare the facts their `analyze(ctx)` reads.

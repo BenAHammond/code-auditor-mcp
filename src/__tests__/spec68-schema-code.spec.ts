@@ -32,8 +32,7 @@ function code(path: string, source: string): SchemaDeclaration[] {
     adapter: adapter!,
   };
   try {
-    const producer = PRODUCERS['ddl-declarations'] as { process(f: ParsedFile): SchemaDeclaration[] };
-    return producer.process(file);
+    return PRODUCERS['ddl-declarations']['typescript'].process(file);
   } finally {
     ast.dispose?.();
   }

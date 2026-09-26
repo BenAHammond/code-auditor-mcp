@@ -8,14 +8,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { PRODUCERS } from '../phase/producers.js';
+import { CORPUS_PRODUCERS } from '../phase/producers.js';
 import type { SchemaDeclaration } from '../phase/types.js';
 
 function catalog(decls: SchemaDeclaration[]) {
-  const producer = PRODUCERS['table-catalog'] as {
-    process(facts: { 'ddl-declarations': SchemaDeclaration[] }): unknown;
-  };
-  return producer.process({ 'ddl-declarations': decls }) as { tables: { name: string; source: string }[] };
+  return CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': decls });
 }
 
 describe('Spec 68 table-catalog corpus processor', () => {

@@ -31,8 +31,7 @@ function calls(path: string, source: string): ResolvedQuery[] {
     adapter: adapter!,
   };
   try {
-    const producer = PRODUCERS['data-access-calls'] as { process(f: ParsedFile): ResolvedQuery[] };
-    return producer.process(file);
+    return PRODUCERS['data-access-calls']['typescript'].process(file);
   } finally {
     ast.dispose?.();
   }

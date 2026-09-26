@@ -22,18 +22,12 @@ beforeAll(async () => {
 });
 
 function rows(path: string, source: string): FunctionIndexFact[] {
+  const format = path.endsWith('.tsx') ? 'tsx' : 'typescript';
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(path);
   const ast = parseFile(path, source)!;
-  const file: ParsedFile = {
-    file: path,
-    format: path.endsWith('.tsx') ? 'tsx' : 'typescript',
-    source,
-    ast,
-    adapter: adapter!,
-  };
+  const file: ParsedFile = { file: path, format, source, ast, adapter: adapter! };
   try {
-    const producer = PRODUCERS['function-index'] as { process(f: ParsedFile): FunctionIndexFact[] };
-    return producer.process(file);
+    return PRODUCERS['function-index'][format].process(file);
   } finally {
     ast.dispose?.();
   }

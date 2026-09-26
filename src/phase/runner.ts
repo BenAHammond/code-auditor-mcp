@@ -20,7 +20,7 @@
  */
 
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
-import { PRODUCERS } from './producers.js';
+import { fileProducerFor, CORPUS_PRODUCERS } from './producers.js';
 import { solidRules } from './rules/solid.js';
 import { dataAccessRules } from './rules/dataAccess.js';
 import { schemaRules } from './rules/schema.js';
@@ -73,13 +73,13 @@ export async function parseOne(input: InputFile): Promise<ParsedFile | null> {
  * fact (every symbol from every file, files' ASTs already freed).
  */
 export async function buildFileSymbols(files: readonly InputFile[]): Promise<FileSymbols[]> {
-  const producer = PRODUCERS['file-symbols'];
   const symbols: FileSymbols[] = [];
   for (const input of files) {
     const parsed = await parseOne(input);
     if (!parsed) continue;
     try {
-      symbols.push(...(producer.process(parsed) as FileSymbols[]));
+      const producer = fileProducerFor('file-symbols', parsed.format);
+      if (producer) symbols.push(...producer.process(parsed));
     } finally {
       parsed.ast.dispose?.();
     }
@@ -114,13 +114,13 @@ export async function runFileSymbolsSlice(files: readonly InputFile[], threshold
  * corpus fact (every resolved DB call from every file, ASTs already freed).
  */
 export async function buildDataAccessCalls(files: readonly InputFile[]): Promise<ResolvedQuery[]> {
-  const producer = PRODUCERS['data-access-calls'];
   const calls: ResolvedQuery[] = [];
   for (const input of files) {
     const parsed = await parseOne(input);
     if (!parsed) continue;
     try {
-      calls.push(...(producer.process(parsed) as ResolvedQuery[]));
+      const producer = fileProducerFor('data-access-calls', parsed.format);
+      if (producer) calls.push(...producer.process(parsed));
     } finally {
       parsed.ast.dispose?.();
     }
@@ -155,13 +155,13 @@ export async function runDataAccessSlice(files: readonly InputFile[], thresholds
  * fact (every table reference from every file, ASTs already freed).
  */
 export async function buildSchemaUsage(files: readonly InputFile[]): Promise<SchemaUsageFact[]> {
-  const producer = PRODUCERS['schema-usage'];
   const usages: SchemaUsageFact[] = [];
   for (const input of files) {
     const parsed = await parseOne(input);
     if (!parsed) continue;
     try {
-      usages.push(...(producer.process(parsed) as SchemaUsageFact[]));
+      const producer = fileProducerFor('schema-usage', parsed.format);
+      if (producer) usages.push(...producer.process(parsed));
     } finally {
       parsed.ast.dispose?.();
     }
@@ -177,20 +177,20 @@ export async function buildSchemaUsage(files: readonly InputFile[]): Promise<Sch
  * catalog, the config-free half the corpus processor consumes.
  */
 export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
-  const producer = PRODUCERS['ddl-declarations'];
   const declarations: SchemaDeclaration[] = [];
   for (const input of files) {
     const parsed = await parseOne(input);
     if (!parsed) continue;
     try {
-      declarations.push(...(producer.process(parsed) as SchemaDeclaration[]));
+      const producer = fileProducerFor('ddl-declarations', parsed.format);
+      if (producer) declarations.push(...producer.process(parsed));
     } finally {
       parsed.ast.dispose?.();
     }
   }
-  return PRODUCERS['table-catalog'].process({
+  return CORPUS_PRODUCERS['table-catalog'].process({
     'ddl-declarations': declarations,
-  }) as TableCatalog;
+  });
 }
 
 /** Analyze the `schema-usage` + `table-catalog` facts with the schema rules. */

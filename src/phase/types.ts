@@ -457,22 +457,52 @@ export interface ParsedFile {
  *  {@link Serializable} and so cannot sit inside {@link FactShapes}[K]). */
 export type FactFragment<K extends FactKind> = FactShapes[K];
 
-/** A per-file processor: receives one parsed file, extracts one fact kind. */
-export interface FileProcessor<K extends FactKind> {
+/**
+ * The formats that supply each *file* fact kind, declared per kind and never
+ * inferred. A kind absent from this interface is corpus-produced
+ * (`table-catalog`): it has no supplying format, only upstream facts (§5).
+ *
+ * This declaration is load-bearing, not documentation: a format named here
+ * without a producer in {@link PRODUCERS} fails the mapped type, and a format
+ * that cannot supply a concept is simply absent from the kind's set. This is
+ * the Spec 68 §2 fix for the naming rule in its second form — a fact is named
+ * for what it *is*, never for where it came from. `channel-operations` is
+ * supplied by a `go` producer, a `rust` producer and a `typescript` producer;
+ * there is no `go-channels` fact kind.
+ */
+export interface SupplyingFormats {
+  'file-symbols': 'typescript' | 'tsx' | 'javascript';
+  'function-index': 'typescript' | 'tsx' | 'javascript';
+  'ddl-declarations': 'typescript' | 'tsx' | 'javascript';
+  'schema-usage': 'typescript' | 'tsx' | 'javascript';
+  'style-declarations': 'css' | 'scss';
+  'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
+  'data-access-calls': 'typescript' | 'tsx' | 'javascript';
+}
+
+/** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */
+export type FileFactKind = keyof SupplyingFormats;
+
+/** A fact kind supplied by corpus reduction — every kind with no supplying format. */
+export type CorpusFactKind = Exclude<FactKind, FileFactKind>;
+
+/** A per-(kind, format) file processor: one producer per format, never one per
+ *  kind with a format list. Two producers for one (kind, format) is a duplicate
+ *  key; a (kind, format) with no producer is a type error against
+ *  {@link SupplyingFormats}. */
+export interface FileProcessor<K extends FileFactKind, F extends SupplyingFormats[K] = SupplyingFormats[K]> {
   readonly id: ProcessorId;
   readonly produces: K;
-  readonly formats: readonly Format[];
+  /** The one format this producer serves (the map key, mirrored for clarity). */
+  readonly format: F;
   /** The only place an AST is reachable. */
   process(file: ParsedFile): FactFragment<K>;
 }
 
-/** A corpus processor: receives complete upstream facts, no AST. */
-export interface CorpusProcessor<K extends FactKind, N extends readonly FactKind[]> {
+/** A corpus processor: receives complete upstream facts, no AST, no format. */
+export interface CorpusProcessor<K extends CorpusFactKind, N extends readonly FactKind[]> {
   readonly id: ProcessorId;
   readonly produces: K;
   readonly needs: N;
   process(facts: { readonly [J in N[number]]: FactShapes[J] }): FactShapes[K];
 }
-
-/** The union type of a producer: a per-file or corpus processor. */
-export type Producer<K extends FactKind> = FileProcessor<K> | CorpusProcessor<K, readonly FactKind[]>;

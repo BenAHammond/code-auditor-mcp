@@ -35,7 +35,10 @@ const _unproduced: Exclude<FactKind, ProducedFactKind> = 'file-symbols' as FactK
 const _notSerializable: Serializable = () => {};
 
 // 4. Single producer — `ProducerMap` is an exhaustive mapped type over
-//    `FactKind`. An object literal missing every fact-kind key must not satisfy
-//    it (a second producer is caught the same way, as a duplicate key).
-// @ts-expect-error — {} lacks every fact-kind key, so it cannot satisfy ProducerMap
+//    `FileFactKind` (each key a second mapped type over its `SupplyingFormats`).
+//    An object literal missing every file-kind key must not satisfy it (a
+//    second producer for one (kind, format) is caught the same way, as a
+//    duplicate key). `CORPUS_PRODUCERS` is checked the same way by its own
+//    `satisfies CorpusProducerMap` in producers.ts.
+// @ts-expect-error — {} lacks every file-kind key, so it cannot satisfy ProducerMap
 const _incompleteProducers: ProducerMap = {};

@@ -9,11 +9,14 @@
  *   1. Residue #1 (`_allProduced`)   — every fact kind has a producer.
  *   2. Serializability (`_allSerializable`) — no fact kind carries a method
  *                                      (a tree-sitter node cannot be a fact).
- *   3. Single producer (`PRODUCERS` `satisfies ProducerMap`) — a mapped type
- *                                      over FactKind; a second producer is a
- *                                      duplicate key, a missing kind fails the
+ *   3. Single producer (`PRODUCERS` `satisfies ProducerMap`,
+ *                                      `CORPUS_PRODUCERS` `satisfies
+ *                                      CorpusProducerMap`) — nested mapped types
+ *                                      over (kind, format); a second producer
+ *                                      for one (kind, format) is a duplicate
+ *                                      key, a missing kind or format fails the
  *                                      type. (Lives in producers.ts; asserted
- *                                      again here as a named alias.)
+ *                                      again here via `ProducedFactKind`.)
  *
  * Residue #2 (every produced kind is *consumed*) is deliberately NOT a compile
  * check. It is red for the whole migration — a produced kind stays unconsumed
@@ -43,10 +46,10 @@ type _FactsSerializable = {
 };
 const _allSerializable: _FactsSerializable[FactKind] = true as const;
 
-// ── 3. Single producer — PRODUCERS is exhaustive over FactKind ──────────────
-// Enforced by `satisfies ProducerMap` in producers.ts. Re-asserted here so the
-// checks live in one place and the conformance test can import them as a single
-// surface.
+// ── 3. Single producer — PRODUCERS + CORPUS_PRODUCERS are exhaustive ────────
+// Enforced by `satisfies ProducerMap` / `satisfies CorpusProducerMap` in
+// producers.ts. Re-asserted here via ProducedFactKind so the checks live in one
+// place and the conformance test can import them as a single surface.
 
 // The assertions above must be *referenced* (not just declared) so a build that
 // drops this file still fails: `export type` is enough for the residue aliases,

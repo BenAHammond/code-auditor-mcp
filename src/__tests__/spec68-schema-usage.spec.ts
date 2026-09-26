@@ -31,8 +31,7 @@ function usage(path: string, source: string): SchemaUsageFact[] {
     adapter: adapter!,
   };
   try {
-    const producer = PRODUCERS['schema-usage'] as { process(f: ParsedFile): SchemaUsageFact[] };
-    return producer.process(file);
+    return PRODUCERS['schema-usage']['typescript'].process(file);
   } finally {
     ast.dispose?.();
   }

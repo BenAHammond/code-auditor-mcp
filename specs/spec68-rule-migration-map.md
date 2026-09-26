@@ -64,26 +64,42 @@ producers land (a kind enters the type only then):
 
 1. `react-component` — name/file/line/componentType/complexity/hooks[]/props[]/jsxElements[]/jsxElementDetails[]/hasErrorBoundary/isExported (react 7).
 2. `string-literals` — value + file + line + column (hardcoded-secret, hardcoded-connection, duplicate-string-literal).
-3. `imports` (TS/JS) — source/form/line/localNames (duplicate-import, conventions/import-form).
+3. `imports` — source/form/line/localNames, supplied by TS/JS *and* Go producers (duplicate-import, conventions/import-form, import-organization, import-style). The concept, not the language.
 4. `code-block` — text + hash + structuralSkeleton + span + nodeType (DRY duplicate / structural-similarity / similar-expression).
 5. `export-form` — default/named/module.exports (conventions/export-shape).
 6. `mined-conventions` — antecedent/consequent/directory/pattern/confidence/exemplar_file/line/export_kind (conventions 5).
 7. `file-imports` (module facts) — imports/hasExports/unresolvedDynamicImports (unreferenced-module).
 8. `migration-history` — dropped table + migrationFile + createdInSameMigration (stale-table-reference).
 9. coverage / hotspot / call-graph facts (cross-domain multi-table-write, no-validator-reachable, uncovered-risk) — §8.
-10. Go facts — interface/struct/switch/panic + return-count (switch-size, function-size, struct-size, liskov-substitution, interface-size) — §9.
+10. Go concept facts — `type-declarations` (struct/interface; `struct-size` and `interface-size` collapse into one rule over it), `error-bindings` (error-handling), `concurrency-primitives` (concurrency), `channel-operations` (channel-deadlock) — §9. Each is a *concept* kind supplied by a Go producer plus (where the concept crosses languages) other formats. Remaining Go-specific facts: switch/panic + return-count (switch-size, function-size, liskov-substitution).
 11. file-level header-comment fact (file-documentation).
 
 Enrichments to existing shapes: `file-symbols` (jsDoc text, returnType, method
 visibility, shouldSkipFunction signals), `schema-json` → validation tuples,
-`go-*` (tier, dropped-error signals, channel identity, goroutine↔channel
-cross-ref), `style-declarations` (definedClasses catalog), `Entity` (drop the
+`imports` / `error-bindings` / `concurrency-primitives` / `channel-operations` /
+`type-declarations` (tier, dropped-error signals, channel identity,
+goroutine↔channel cross-ref, struct/interface member counts),
+`style-declarations` (definedClasses catalog), `Entity` (drop the
 dead `calls`/`calledBy` — `metadata.callees` is the load-bearing edge).
+
+## Fact-kind rename (concept, not language)
+
+The five fact kinds that were once prefixed `go-` are concepts, supplied by a
+Go producer plus — where the concept crosses languages — other formats (§3.1
+one-producer-per-(kind, format)):
+
+| old name | new name |
+|---|---|
+| `go-imports` | `imports` |
+| `go-error-bindings` | `error-bindings` |
+| `go-goroutines` | `concurrency-primitives` |
+| `go-channels` | `channel-operations` |
+| `go-structures` | `type-declarations` |
 
 ## Disposition by analyzer
 
-- **SOLID (13)**: 8 CLEAN (migrated) + 5 Go-arm RENEW (interface-size, switch-size, function-size, struct-size, liskov-substitution-go).
-- **Go binary (5)**: import-style CLEAN; import-organization / error-handling / concurrency / channel-deadlock ENRICH (§9).
+- **SOLID (13)**: 8 CLEAN (migrated) + 5 Go-arm RENEW (switch-size, function-size, liskov-substitution-go; `struct-size` + `interface-size` collapse into one rule over `type-declarations`).
+- **Go binary (5)**: all concept rules, not Go rules — `import-style` / `import-organization` over `imports`, `error-handling` over `error-bindings`, `concurrency` over `concurrency-primitives`, `channel-deadlock` over `channel-operations` (§9).
 - **DRY (6)**: all RENEW (code-block / structural-skeleton / expression-shape / clone-pair-history / string-literals / imports).
 - **data-access (6)**: sql-injection-risk, complex-query, unfiltered-query, missing-org-filter CLEAN; hardcoded-connection, loop-query RENEW.
 - **documentation (6) + secrets (1)**: 5 ENRICH (jsDoc text etc.) + file-documentation / hardcoded-secret RENEW.

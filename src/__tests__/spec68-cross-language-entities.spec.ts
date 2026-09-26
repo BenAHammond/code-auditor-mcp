@@ -22,18 +22,12 @@ beforeAll(async () => {
 });
 
 function entities(path: string, source: string): Entity[] {
+  const format = path.endsWith('.go') ? 'go' : path.endsWith('.tsx') ? 'tsx' : 'typescript';
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(path);
   const ast = parseFile(path, source)!;
-  const file: ParsedFile = {
-    file: path,
-    format: path.endsWith('.go') ? 'go' : path.endsWith('.tsx') ? 'tsx' : 'typescript',
-    source,
-    ast,
-    adapter: adapter!,
-  };
+  const file: ParsedFile = { file: path, format, source, ast, adapter: adapter! };
   try {
-    const producer = PRODUCERS['cross-language-entities'] as { process(f: ParsedFile): Entity[] };
-    return producer.process(file);
+    return PRODUCERS['cross-language-entities'][format].process(file);
   } finally {
     ast.dispose?.();
   }

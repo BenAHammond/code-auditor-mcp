@@ -12,16 +12,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { PRODUCERS } from '../phase/producers.js';
+import { PRODUCERS, CORPUS_PRODUCERS } from '../phase/producers.js';
 import { detectFactCycle, factEdges, topologicalLevels, type FactProducer } from '../phase/dag.js';
 import type { FactKind } from '../phase/types.js';
 
-/** The real producers are `FileProcessor | CorpusProcessor`; the DAG walks the
- *  projection every producer shares. */
+/** The DAG walks only the corpus producers — a `needs` edge exists only on a
+ *  corpus processor (file producers have no upstream facts). */
 function asFactProducers(): Record<string, FactProducer> {
   const out: Record<string, FactProducer> = {};
-  for (const [id, p] of Object.entries(PRODUCERS)) {
-    out[id] = { produces: p.produces, needs: 'needs' in p ? p.needs : undefined };
+  for (const [id, p] of Object.entries(CORPUS_PRODUCERS)) {
+    out[id] = { produces: p.produces, needs: p.needs };
   }
   return out;
 }
@@ -32,7 +32,10 @@ describe('Spec 68 §5 — fact DAG', () => {
   });
 
   it('every corpus processor edge points at a declared producer (no dangling needs)', () => {
-    const produced = new Set(Object.values(PRODUCERS).map((p) => p.produces));
+    const produced = new Set<FactKind>([
+      ...(Object.keys(PRODUCERS) as FactKind[]),
+      ...(Object.keys(CORPUS_PRODUCERS) as FactKind[]),
+    ]);
     for (const [from, to] of factEdges(asFactProducers())) {
       expect(produced.has(to)).toBe(true);
     }
@@ -41,13 +44,11 @@ describe('Spec 68 §5 — fact DAG', () => {
   it('assigns a topological level to every produced fact kind', () => {
     const levels = topologicalLevels(asFactProducers());
     expect(levels).not.toBeNull();
-    // Every producer's level is strictly after the deepest of its needs.
-    for (const p of Object.values(PRODUCERS)) {
-      if ('needs' in p) {
-        const self = levels!.get(p.produces)!;
-        for (const n of p.needs) {
-          expect(self).toBeGreaterThan(levels!.get(n)!);
-        }
+    // Every corpus producer's level is strictly after the deepest of its needs.
+    for (const p of Object.values(CORPUS_PRODUCERS)) {
+      const self = levels!.get(p.produces)!;
+      for (const n of p.needs) {
+        expect(self).toBeGreaterThan(levels!.get(n)!);
       }
     }
   });
