@@ -504,12 +504,27 @@ export function parseSqlTables(
 export function extractAliasIdentifiers(sqlText: string): Set<string> {
   const aliases = new Set<string>();
 
-  // CTE: WITH <name> AS ( — the CTE name is an alias, not a real table.
-  // Without this, "WITH fresh AS (SELECT ...)" causes 'fresh' to be
-  // captured by FROM/JOIN/subquery patterns and flagged as unknown-table.
-  const cteRe = /\bWITH\s+([\p{L}_][\p{L}\p{N}_]*)\s+AS\s*\(/giu;
+  // CTE: WITH [RECURSIVE] <name> [(cols)] AS ( — the CTE name is an alias, not
+  // a real table, so it must not be captured by FROM/JOIN/subquery patterns.
+  // The old shape `WITH name AS (` missed three real-world cases: the
+  // `RECURSIVE` keyword (WITH RECURSIVE deps…), a column list after the name
+  // (`deps(id, callee_name, depth)`), and every comma-separated sibling after
+  // the first (`WITH a AS (…), b AS (…)`). Each of those leaked the CTE name
+  // into a later `FROM <cte>` / `JOIN <cte>` and was flagged unknown-table.
+  // The `(?:WITH(?:RECURSIVE)?|,)` prefix anchors the name to a CTE position —
+  // the WITH head or a comma — so `, name AS (` is not read from a SELECT list.
+  const cteRe = /(?:WITH(?:\s+RECURSIVE)?|,)\s*([\p{L}_][\p{L}\p{N}_]*)\s*(?:\([^)]*\))?\s+AS\s*\(/giu;
   let m: RegExpExecArray | null;
   while ((m = cteRe.exec(sqlText)) !== null) {
+    aliases.add(m[1].toLowerCase());
+  }
+
+  // ALTER TABLE <t> RENAME TO <new> — the rename target is a transient name
+  // (the table under a temporary name, typically dropped in the same
+  // migration), not a persistent table. A later `FROM <new>` / `JOIN <new>`
+  // is the migration's own data-copy, not an unknown-table reference.
+  const renameRe = /\bRENAME\s+TO\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
+  while ((m = renameRe.exec(sqlText)) !== null) {
     aliases.add(m[1].toLowerCase());
   }
 
