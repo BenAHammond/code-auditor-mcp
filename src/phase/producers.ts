@@ -27,6 +27,7 @@ import type {
   TableCatalog,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
+import { extractFunctionIndex } from './functionIndex.js';
 
 /** Exhaustive map over every fact kind. `satisfies` is the single-producer check. */
 export type ProducerMap = { readonly [K in FactKind]: Producer<K> };
@@ -66,7 +67,14 @@ export const PRODUCERS = {
       return extractFileSymbols(file);
     },
   } satisfies FileProcessor<'file-symbols'>,
-  'function-index': fileProducer('function-index', 'function-index', ['typescript', 'tsx', 'javascript']),
+  'function-index': {
+    id: 'function-index',
+    produces: 'function-index',
+    formats: ['typescript', 'tsx', 'javascript'],
+    process(file: ParsedFile): FactFragment<'function-index'> {
+      return extractFunctionIndex(file);
+    },
+  } satisfies FileProcessor<'function-index'>,
   'schema-json': fileProducer('schema-json', 'schema-json', ['typescript', 'tsx', 'javascript']),
   'schema-code': fileProducer('schema-code', 'schema-code', ['typescript', 'tsx', 'javascript']),
   'schema-usage': fileProducer('schema-usage', 'schema-usage', ['typescript', 'tsx', 'javascript']),

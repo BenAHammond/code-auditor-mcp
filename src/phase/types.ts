@@ -41,7 +41,7 @@ export interface FactShapes {
   /** Reserved: an AST is not a fact and cannot be declared. */
   ast: never;
   'file-symbols': FileSymbols[];
-  'function-index': FunctionRow[];
+  'function-index': FunctionIndexFact[];
   'schema-json': SchemaDeclaration[];
   'schema-code': SchemaDeclaration[];
   'schema-usage': SchemaUsageFact[];
@@ -162,17 +162,28 @@ export type FileInterfaceSymbol = {
 };
 
 /**
- * One function row, as the index stores it and as the conventions rules read
- * it (`UniversalConventionsAnalyzer`'s `FunctionRow`, made load-bearing).
+ * One function/method/component row, as the `function-index` producer extracts
+ * it (§3.2 re-homes `createFunctionIndexVisitor`). This is the serializable
+ * projection of the visitor's `FunctionIndexEntry`, widened with the fields the
+ * conventions rules read that were previously fetched from the DB:
+ * `entityType`/`componentType` (naming's `NamingFunctionRow`) and
+ * `functionCalls` (usage-pair's `FunctionCallRow`). The DB-assigned `id` is
+ * dropped — a function's identity is `(file, name, line)`, which is what the
+ * diff-scoped content hash keys on. `is_exported` is a boolean here, not the
+ * DB's 0/1.
  */
-export type FunctionRow = {
-  id: number;
+export type FunctionIndexFact = {
+  file: string;
   name: string;
-  file_path: string;
-  line_number: number;
-  is_exported: number;
+  line: number;
+  endLine: number;
+  entityType: 'function' | 'method' | 'component';
+  componentType: string | null;
+  isExported: boolean;
+  complexity: number;
   body: string | null;
-  language?: string | null;
+  functionCalls: string[];
+  language: string;
 };
 
 /** A schema declared in JSON (`.codeauditor.json` schemas) or in code (DDL). */
