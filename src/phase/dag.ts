@@ -112,7 +112,7 @@ function findProducerFor(node: FactKind, producers: Readonly<Record<string, Fact
     if (p.produces === node) return id;
   }
   // A `needs` target with no producer is a residue defect caught elsewhere
-  // (checks.ts `_allConsumed` / `_allProduced`); here it just has no deeper
-  // dependencies, so it resolves at level 0.
+  // (checks.ts `_allProduced`); here it just has no deeper dependencies, so it
+  // resolves at level 0.
   return '';
 }

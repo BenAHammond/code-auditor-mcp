@@ -143,7 +143,6 @@ describe('buildCoverageReport', () => {
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['solid']),
-      { factKeys: ['file-symbols'], indexTables: [] },
     );
 
     const classSize = coverage.find(c => c.ruleId === 'solid/class-size');
@@ -162,7 +161,7 @@ describe('buildCoverageReport', () => {
     expect(ocp!.state).toBe('clean');
   });
 
-  it('reports clean when analyzer ran with its fact input but zero violations', () => {
+  it('reports clean when analyzer ran with files input but zero violations', () => {
     const results: Record<string, AnalyzerResult> = {
       solid: {
         violations: [],
@@ -175,7 +174,6 @@ describe('buildCoverageReport', () => {
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['solid']),
-      { factKeys: ['file-symbols'], indexTables: [] },
     );
 
     const solidRules = coverage.filter(c => c.analyzer === 'solid');
@@ -211,7 +209,6 @@ describe('buildCoverageReport', () => {
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['solid', 'dry', 'react']),
-      { factKeys: ['file-symbols'], indexTables: [] },
     );
 
     // fired
@@ -341,10 +338,7 @@ describe('buildCoverageReport', () => {
       },
     };
 
-    const coverage = buildCoverageReport(results, config, {
-      factKeys: ['file-symbols'],
-      indexTables: [],
-    });
+    const coverage = buildCoverageReport(results, config);
 
     // checkStructuralSimilarity: false → notApplicable
     const structSim = coverage.find(c => c.ruleId === 'dry/structural-similarity');
@@ -390,10 +384,7 @@ describe('buildCoverageReport', () => {
       },
     };
 
-    const coverage = buildCoverageReport(results, config, {
-      factKeys: ['file-symbols'],
-      indexTables: [],
-    });
+    const coverage = buildCoverageReport(results, config);
 
     // off-by-default — a named fourth state, not "disabled by config".
     const paramDocs = coverage.find(c => c.ruleId === 'parameter-documentation');
@@ -430,12 +421,9 @@ describe('buildCoverageReport', () => {
       },
     };
 
-    const coverage = buildCoverageReport(results, config, {
-      factKeys: ['file-symbols'],
-      indexTables: [],
-    });
+    const coverage = buildCoverageReport(results, config);
 
-    // gate true → not config-gated → clean (fact input present, no violations).
+    // gate true → not config-gated → clean (files input present, no violations).
     const paramDocs = coverage.find(c => c.ruleId === 'parameter-documentation');
     expect(paramDocs!.state).toBe('clean');
 
@@ -444,7 +432,7 @@ describe('buildCoverageReport', () => {
     expect(returnDocs!.state).toBe('off-by-default');
   });
 
-  it('emits clean when a rule mapped to a fact input has zero violations', () => {
+  it('emits clean when a rule mapped to files input has zero violations', () => {
     const results: Record<string, AnalyzerResult> = {
       solid: {
         violations: [],
@@ -457,7 +445,6 @@ describe('buildCoverageReport', () => {
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['solid']),
-      { factKeys: ['file-symbols'], indexTables: [] },
     );
 
     const cleanEntries = coverage.filter(c => c.state === 'clean');
@@ -477,23 +464,23 @@ describe('buildCoverageReport', () => {
       },
     };
 
-    // ddl-declarations fact key present → dynamic-sql-construction should be clean
+    // schema-code fact key present → sql-injection rule should be clean
     const coverage = buildCoverageReport(
       results,
       makeConfigWith(['schema']),
-      { factKeys: ['ddl-declarations'], indexTables: [] },
+      { factKeys: ['schema-code'], indexTables: [] },
     );
 
     const sqlInjection = coverage.find(c => c.ruleId === 'dynamic-sql-construction');
     expect(sqlInjection!.state).toBe('clean');
 
-    // invalid-json left the registry (its fact kind does not exist yet), so it
-    // has no coverage row at all — the honest state, not a false `unassessed`.
+    // JSON rules have schema-json input, which is absent → notApplicable
     const invalidJson = coverage.find(c => c.ruleId === 'invalid-json');
-    expect(invalidJson).toBeUndefined();
+    expect(invalidJson!.state).toBe('notApplicable');
+    expect(invalidJson!.reason).toContain('schema-json');
   });
 
-  it('promotes a fact-key rule to clean only when its input facts are present', () => {
+  it('promotes an index-table rule to clean only when its table has rows', () => {
     const results: Record<string, AnalyzerResult> = {
       'cross-domain': {
         violations: [],
@@ -514,7 +501,7 @@ describe('buildCoverageReport', () => {
     const present = buildCoverageReport(
       results,
       makeConfigWith(['cross-domain']),
-      { factKeys: ['schema-usage', 'function-index'], indexTables: [] },
+      { factKeys: [], indexTables: ['schema_usage'] },
     );
     const uncoveredPresent = present.find(c => c.ruleId === 'cross-domain/uncovered-risk');
     expect(uncoveredPresent!.state).toBe('clean');

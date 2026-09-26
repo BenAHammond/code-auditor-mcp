@@ -7,10 +7,12 @@ producer that returns real data.
 
 Reversal (post-Amendment-3 correction): a fact kind with no working producer is
 **absent** from `FactShapes` and from `PRODUCERS`, not represented by a stub
-producer that throws "not yet migrated". Residue check #2 (every produced kind
-is consumed) is therefore satisfied by reality, and the producer-liveness meter
-is green continuously — not once at the end. This file is where the not-yet-real
-kinds live until their producer lands.
+producer that throws "not yet migrated". The producer-liveness meter is green
+continuously — not once at the end — because every declared producer returns real
+data. Residue check #2 (every produced kind is consumed) is the one red meter:
+it stays red until the rules that read each kind land in `MIGRATED_RULES`
+(spec68-consumed-coverage.spec.ts). This file is where the not-yet-real kinds
+live until their producer lands.
 
 ## Live vocabulary (8 kinds, all with real producers)
 
@@ -54,29 +56,6 @@ pinned. The authoritative registry is `MIGRATED_RULES`
 every rule satisfies all four. The single failing assertion that drives the
 migration is `spec68-registry-size.spec.ts` (expects `MIGRATED_RULES.length` to
 reach 100).
-
-## Legacy registry now holds 78 (22 `facts: []` rules removed)
-
-The 22 rules that declared `needs.facts: []` — a false declaration that satisfied
-the type while the rule still read its old AST path — left the legacy registry
-(`src/analyzers/ruleRegistry.ts`) entirely. They stay on the old analyzer path
-until their fact kind exists, then migrate into `MIGRATED_RULES` on the same
-edit that deletes the old path and pins the parity test.
-
-The 22, by analyzer: Go-subprocess 5 (`channel-deadlock`, `error-handling`,
-`concurrency`, `import-organization`, `import-style`); schema-json 17
-(`invalid-json`, `missing-schema-declaration`, `undefined-required-field`,
-`invalid-type`, `invalid-range`, `type-mismatch`, `string-too-short`,
-`string-too-long`, `pattern-mismatch`, `invalid-format`, `below-minimum`,
-`above-maximum`, `too-few-items`, `too-many-items`, `missing-required-field`,
-`unexpected-property`, `enum-mismatch`).
-
-They are now *unregistered-live*: still emitted by their old analyzers, so their
-authenticity/severity ledger rows remain, but they have no registry entry — the
-`registry-ledger-membership` test pins this as the deliberate `AUTH_EXTRANEOUS` /
-`SEV_EXTRANEOUS` drift. `type-mismatch` is the one asymmetry: it was never-audited
-(no authenticity row), so it leaves the authenticity ledger silently while its
-severity row stays.
 
 ## Planned vocabulary (not yet in `FactShapes`)
 

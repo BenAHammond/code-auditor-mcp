@@ -64,7 +64,7 @@ function applicabilityFor(
 }
 
 /** Coverage over the `data-access-org-filter` reducer alone, with the
- *  `data-access-calls` fact-key present (the Stage-4 reducer consumed query facts).
+ *  `data-access` fact-key present (the Stage-4 reducer consumed query facts).
  *  Mirrors the post-B1 pipeline shape where `missing-org-filter` is the sole
  *  registry rule under the `data-access-org-filter` analyzer. */
 function orgFilterCoverage(
@@ -95,7 +95,7 @@ describe('Spec 62 B4 — clean means "could have fired"', () => {
     const tierSet = buildOrgFilterTierSet(undefined, undefined);
     expect(hasDeclaredTenancy(tierSet)).toBe(false);
 
-    const row = orgFilterCoverage(undefined, ['data-access-calls'])
+    const row = orgFilterCoverage(undefined, ['data-access'])
       .find((c) => c.ruleId === 'missing-org-filter');
 
     expect(row).toBeDefined();
@@ -112,7 +112,7 @@ describe('Spec 62 B4 — clean means "could have fired"', () => {
     expect(hasDeclaredTenancy(tierSet)).toBe(true);
     expect(tableRequiresOrgFilter(['accounts'], tierSet)).toBe(true);
 
-    const row = orgFilterCoverage(DDL_ONLY_TENANCY, ['data-access-calls'])
+    const row = orgFilterCoverage(DDL_ONLY_TENANCY, ['data-access'])
       .find((c) => c.ruleId === 'missing-org-filter');
 
     expect(row).toBeDefined();
@@ -151,7 +151,7 @@ describe('Spec 62 B4 — clean means "could have fired"', () => {
             },
           },
           { projectRoot: '/test', config: { 'data-access': {}, 'data-access-org-filter': {} } },
-          { factKeys: ['data-access-calls'], indexTables: [] },
+          { factKeys: ['data-access'], indexTables: [] },
           applicabilityFor(config, ddl),
         );
         const row = coverage.find((c) => c.ruleId === 'missing-org-filter');

@@ -299,9 +299,10 @@ export interface SizeDistribution {
 /**
  * Spec 33 Item 14 — per-rule input presence, computed once per pipeline run.
  *
- * A rule's declared fact needs (see {@link RuleRegistryEntry.needs}) name one or
- * more input sources: a fact-key (a producer whose per-file facts were non-empty
- * this run) or an index table (a table that held ≥1 row when coverage was built).
+ * A rule's `input` (see {@link RuleRegistryEntry.input}) names one or more input
+ * sources: the literal `'files'` (the analyzer ran on ≥1 parsed source file), a
+ * fact-key (a visitor/reducer name whose per-file facts were non-empty this run),
+ * or an index table (a table that held ≥1 row when coverage was built).
  *
  * `buildCoverageReport` uses this to promote a zero-violation rule from
  * `unassessed` to `clean` (input present) or `notApplicable` (all inputs absent).

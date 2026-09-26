@@ -1,5 +1,5 @@
 /**
- * Spec 68 §16 — the four compile-time checks, seeded permanently.
+ * Spec 68 §16 — the compile-time checks, seeded permanently.
  *
  * Each block below is deliberately broken and sits under `@ts-expect-error`.
  * The `@ts-expect-error` is what turns criterion 4's seeded demonstration into
@@ -10,6 +10,10 @@
  * directive and `tsc --noEmit` fails — the regression is caught at build time,
  * not found by hand.
  *
+ * Residue #2 (every produced kind is consumed) has no seed here: it is a runtime
+ * assertion over `MIGRATED_RULES`, not a compile check, because it is red for
+ * the whole migration (see spec68-consumed-coverage.spec.ts).
+ *
  * This file is intentionally NOT a `*.spec.ts` / `*.test.ts`: those suffixes
  * are excluded from the tsconfig, and this file's entire job is to be seen by
  * the type-checker. It is never imported and emits nothing at runtime.
@@ -17,19 +21,12 @@
 
 import type { FactKind, Serializable } from './types.js';
 import type { ProducedFactKind, ProducerMap } from './producers.js';
-import type { ConsumedFactKind } from './consumed.js';
 
 // 1. Residue #1 — every fact kind has a producer. `Exclude<FactKind,
 //    ProducedFactKind>` is `never` only when every kind is produced; assigning a
 //    FactKind value to `never` must not compile.
 // @ts-expect-error — an unproduced fact kind would make this a non-never type
 const _unproduced: Exclude<FactKind, ProducedFactKind> = 'file-symbols' as FactKind;
-
-// 2. Residue #2 — every produced fact kind is consumed by a rule or a corpus
-//    processor. `Exclude<ProducedFactKind, ConsumedFactKind>` is `never` only
-//    when nothing is produced-and-never-read.
-// @ts-expect-error — an unconsumed produced kind would make this a non-never type
-const _unconsumed: Exclude<ProducedFactKind, ConsumedFactKind> = 'file-symbols' as ProducedFactKind;
 
 // 3. Serializability — no fact kind carries a method. A function is not
 //    `Serializable`, so a fact shaped like this could never cross the
