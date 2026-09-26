@@ -28,7 +28,7 @@ import { mergePathProfiles } from './config/defaults.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
 import { readProjectLintThresholds, thresholdsToAnalyzerConfig } from './config/lintConfigReader.js';
 import { computeThresholdSources } from './config/effectiveConfig.js';
-import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
+import { ALL_ANALYZERS, RULE_REGISTRY } from './analyzers/ruleRegistry.js';
 import { applyPresets, getPreset, type Preset } from './presets/presets.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
@@ -78,6 +78,10 @@ import {
 import type { DryVisitorBundle, ReactVisitorBundle, SolidVisitorBundle } from './pipelineAdapters.js';
 import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer, TestCoverageReport, DeadCluster, SizeDistribution } from './types.js';
 import { computeSizeDistributions } from './reporting/sizeDistribution.js';
+import { splitRoutes, attributeRoutes } from './phase/routing.js';
+import { runPhaseModel } from './phase/phaseModel.js';
+import { resolvePhaseThresholds } from './phase/config.js';
+import type { Finding } from './phase/types.js';
 
 // Package version — stamped into the build (see constants.ts), not read from
 // package.json at runtime, so a stale binary reports the version it was built as.
@@ -494,6 +498,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let pipelineTestCoverage: TestCoverageReport | undefined;
     let pipelineDeadClusters: DeadCluster[] | undefined;
     let pipelineSizeDistributions: SizeDistribution[] | undefined;
+    // Spec 68 §11.1 — per-rule route attribution (phase model vs legacy pipeline),
+    // derived from MIGRATED_RULES and surfaced in result metadata for the
+    // conformance test. Always populated (an empty MIGRATED_RULES means every
+    // rule is `legacy`), so the split is observable even mid-migration.
+    let routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
       names: enabledAnalyzers,
       fileCount: files.length,
@@ -806,6 +815,73 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           } catch (err) {
             logMcpInfo('analysis', 'react finalization failed (non-fatal)', {
               error: err instanceof Error ? err.message : String(err)
+            });
+          }
+        }
+
+        // ── Spec 68 §11.1 — the both-paths split ─────────────────────────
+        // Migrated rules are served by the phase model (Parse → Process →
+        // Analyze); their legacy emission is stripped and re-emitted from the
+        // phase findings. Unmigrated rules stay on the legacy pipeline. The
+        // split derives from MIGRATED_RULES; while it is empty the phase model
+        // is a no-op and the pipeline serves everything — the tool is
+        // functionally unchanged mid-migration. Attribution is recorded in
+        // result metadata so the conformance tests can pin disjointness and
+        // per-rule routing.
+        {
+          const { migrated } = splitRoutes();
+          routeAttribution = Object.fromEntries(attributeRoutes());
+
+          if (migrated.size > 0) {
+            const thresholds = resolvePhaseThresholds(pipelineAnalyzerConfig);
+            const phaseFindings = await runPhaseModel(files, thresholds);
+
+            // Strip the migrated rules' legacy emission from every analyzer
+            // result — the phase model is now their single source of truth.
+            let strippedCount = 0;
+            for (const result of Object.values(analyzerResults)) {
+              const before = result.violations.length;
+              result.violations = result.violations.filter((v) => !migrated.has(v.rule));
+              strippedCount += before - result.violations.length;
+            }
+
+            // Re-emit phase findings as violations, bucketed by the rule's
+            // analyzer namespace (the result key stamping below owns the
+            // `analyzer` field — the source of truth is the bucket).
+            const byAnalyzer = new Map<string, Violation[]>();
+            for (const f of phaseFindings) {
+              const analyzer = RULE_REGISTRY[f.ruleId]?.analyzer ?? 'phase';
+              const bucket = byAnalyzer.get(analyzer) ?? [];
+              bucket.push({
+                file: f.file,
+                rule: f.ruleId,
+                severity: f.severity,
+                message: f.message,
+                line: f.line,
+                column: f.column,
+                symbol: f.symbol,
+                resolution: f.resolution,
+                analyzer,
+              });
+              byAnalyzer.set(analyzer, bucket);
+            }
+            for (const [analyzer, violations] of byAnalyzer) {
+              if (analyzerResults[analyzer]) {
+                analyzerResults[analyzer].violations.push(...violations);
+              } else {
+                analyzerResults[analyzer] = {
+                  violations,
+                  status: makeVisitorStatus(0),
+                  executionTime: 0,
+                  analyzerName: analyzer,
+                };
+              }
+            }
+
+            logMcpInfo('analysis', 'phase model (both paths)', {
+              migrated: migrated.size,
+              stripped: strippedCount,
+              reemitted: phaseFindings.length,
             });
           }
         }
@@ -1246,6 +1322,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         }),
         ...(baselineMetadata && { baseline: baselineMetadata }),
         ...(pipelineCoverage && { coverage: pipelineCoverage }),
+        ...(routeAttribution && { routeAttribution }),
         ...(pipelineTableCatalog && { tableCatalog: pipelineTableCatalog }),
         ...(pipelineStageTiming && { stageTiming: pipelineStageTiming }),
         ...(thresholdChanges.length > 0 && { thresholdChanges }),

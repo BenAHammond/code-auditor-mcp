@@ -754,6 +754,10 @@ export interface AuditResult {
       previousKnownCount?: number;
     };
     coverage?: RuleCoverage[];
+    /** Spec 68 §11.1 — per-rule route attribution during the phase migration:
+     *  `'phase'` for a rule served by the phase model, `'legacy'` for a rule
+     *  still served by the pipeline analyzers. Keyed by rule id. */
+    routeAttribution?: Record<string, 'phase' | 'legacy'>;
     /** Spec 29: Per-table provenance catalog from schema reducer */
     tableCatalog?: Array<{ table: string; sources: Array<{ table: string; tier: string; sourceFile?: string; description?: string }> }>;
     /** Spec 31: oversized orphan files skipped by stage-1 streaming. */
