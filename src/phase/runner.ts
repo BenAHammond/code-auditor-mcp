@@ -22,9 +22,11 @@
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { PRODUCERS } from './producers.js';
 import { solidRules } from './rules/solid.js';
+import { dataAccessRules } from './rules/dataAccess.js';
 import type {
   ParsedFile,
   FileSymbols,
+  ResolvedQuery,
   Format,
   ThresholdValues,
   Finding,
@@ -98,4 +100,45 @@ export function analyzeFileSymbols(symbols: FileSymbols[], thresholds: Threshold
 export async function runFileSymbolsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const symbols = await buildFileSymbols(files);
   return analyzeFileSymbols(symbols, thresholds);
+}
+
+// ── data-access-calls slice (the "repeat" for a second fact kind) ──────────
+
+/**
+ * Parse → Process for the `data-access-calls` fact. Returns the assembled
+ * corpus fact (every resolved DB call from every file, ASTs already freed).
+ */
+export async function buildDataAccessCalls(files: readonly InputFile[]): Promise<ResolvedQuery[]> {
+  const producer = PRODUCERS['data-access-calls'];
+  const calls: ResolvedQuery[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      calls.push(...(producer.process(parsed) as ResolvedQuery[]));
+    } finally {
+      parsed.ast.dispose?.();
+    }
+  }
+  return calls;
+}
+
+/** Analyze the assembled `data-access-calls` fact with the data-access rules. */
+export function analyzeDataAccessCalls(calls: ResolvedQuery[], thresholds: ThresholdValues = {}): Finding[] {
+  const ctx = {
+    facts: { 'data-access-calls': calls },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of dataAccessRules) {
+    findings.push(...rule.analyze(ctx));
+  }
+  return findings;
+}
+
+/** The data-access slice: parse → data-access-calls → data-access rules → findings. */
+export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const calls = await buildDataAccessCalls(files);
+  return analyzeDataAccessCalls(calls, thresholds);
 }
