@@ -100,6 +100,14 @@ async function buildFacts(files: readonly InputFile[]): Promise<Map<FactKind, un
     (k): k is FileFactKind => Object.prototype.hasOwnProperty.call(PRODUCERS, k),
   );
 
+  // Every needed file fact starts empty so a corpus producer whose upstream
+  // no file produced sees `[]`, not `undefined` (table-catalog's
+  // ddl-declarations edge on a corpus with no code DDL — e.g. a styles-only
+  // audit, or DDL declared in .sql migrations the code parser never sees).
+  for (const kind of fileKinds) {
+    facts.set(kind, []);
+  }
+
   // Per-file facts: one parse per file, every matching producer runs over it,
   // the tree is freed before the next file (it never crosses the boundary).
   for (const input of files) {
@@ -140,7 +148,7 @@ function analyzeAll(
   const findings: Finding[] = [];
   for (const rule of MIGRATED_RULES) {
     const ruleFacts = Object.fromEntries(
-      rule.needs.facts.map((f) => [f, facts.get(f)]),
+      rule.needs.facts.map((f: FactKind) => [f, facts.get(f)]),
     );
     const ctx = {
       facts: ruleFacts,
