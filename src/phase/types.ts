@@ -232,8 +232,11 @@ export type StyleDeclaration = {
 
 /**
  * A cross-language entity as a serializable fact — the projection of
- * `CrossLanguageEntity` that strips the non-serializable `Date` timestamps.
- * The migration (§3.2) is what makes the processor emit exactly this shape.
+ * `CrossLanguageEntity` that strips the non-serializable `Date` timestamps and
+ * pins `metadata` to the keys the cross-language analyzers actually read
+ * (`callees`, `isMethod`, `isExported`, `fileReferences`, `fields`). §3.2's
+ * processor emits exactly this shape via `extractCrossLanguageEntities`
+ * (pipelineAdapters.ts), which never sets the `Date` fields.
  */
 export type Entity = {
   id: string;
@@ -242,15 +245,23 @@ export type Entity = {
   file: string;
   type: string;
   signature: string;
-  parameters: ReadonlyArray<{ name: string; type?: string; language: string }>;
+  parameters: ReadonlyArray<{ name: string; type?: string; optional?: boolean; language: string }>;
   calls: ReadonlyArray<{ sourceId: string; targetId: string; type: string }>;
   calledBy: ReadonlyArray<{ sourceId: string; targetId: string; type: string }>;
   visibility?: string;
   startLine?: number;
   endLine?: number;
+  complexity?: number;
   purpose: string;
   context: string;
   searchTokens: string[];
+  metadata?: {
+    callees?: string[];
+    isMethod?: boolean;
+    isExported?: boolean;
+    fileReferences?: string[];
+    fields?: ReadonlyArray<{ name: string; type?: string; isExported?: boolean; tag?: string }>;
+  };
 };
 
 /** A DB query resolved to its tables/kind by the data-access processor. */

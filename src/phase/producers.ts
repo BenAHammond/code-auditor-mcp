@@ -28,6 +28,8 @@ import type {
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
+import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
+import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 
 /** Exhaustive map over every fact kind. `satisfies` is the single-producer check. */
 export type ProducerMap = { readonly [K in FactKind]: Producer<K> };
@@ -79,7 +81,19 @@ export const PRODUCERS = {
   'schema-code': fileProducer('schema-code', 'schema-code', ['typescript', 'tsx', 'javascript']),
   'schema-usage': fileProducer('schema-usage', 'schema-usage', ['typescript', 'tsx', 'javascript']),
   'styles-css': fileProducer('styles-css', 'styles-css', ['css', 'scss']),
-  'cross-language-entities': fileProducer('cross-language-entities', 'cross-language-entities', ['typescript', 'tsx', 'javascript', 'go']),
+  'cross-language-entities': {
+    id: 'cross-language-entities',
+    produces: 'cross-language-entities',
+    formats: ['typescript', 'tsx', 'javascript', 'go'],
+    process(file: ParsedFile): FactFragment<'cross-language-entities'> {
+      return extractCrossLanguageEntities(
+        file.ast,
+        file.file,
+        file.source,
+        getLanguageFromPath(file.file),
+      );
+    },
+  } satisfies FileProcessor<'cross-language-entities'>,
   'data-access-calls': fileProducer('data-access-calls', 'data-access-calls', ['typescript', 'tsx', 'javascript']),
 
   // ── §3.2: corpus processors producing derived facts ───────────────────────

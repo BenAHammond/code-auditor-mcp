@@ -1841,16 +1841,22 @@ function clExtractGoParams(node: ASTNode, sourceCode: string): any[] {
 
 function clExtractGoStructFields(structNode: ASTNode, sourceCode: string): any[] {
   const fields: any[] = [];
-  for (const f of structNode.children ?? []) {
-    if (f.type !== 'field_declaration') continue;
-    const nameNode = getFieldNode(f, 'name');
-    const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
-    if (!name) continue;
-    const typeNode = getFieldNode(f, 'type');
-    const type = typeNode ? getNodeText(typeNode, sourceCode).trim() : undefined;
-    const tagNode = getFieldNode(f, 'tag');
-    const tag = tagNode ? getNodeText(tagNode, sourceCode) : undefined;
-    fields.push({ name, type, isExported: clIsExportedGo(name), tag });
+  // A struct's fields are not direct children of `struct_type` — tree-sitter-go
+  // wraps them in a `field_declaration_list`. Iterate one level in so the
+  // per-field name/type/tag extraction actually sees them.
+  for (const child of structNode.children ?? []) {
+    const decls = child.type === 'field_declaration_list' ? (child.children ?? []) : [child];
+    for (const f of decls) {
+      if (f.type !== 'field_declaration') continue;
+      const nameNode = getFieldNode(f, 'name');
+      const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
+      if (!name) continue;
+      const typeNode = getFieldNode(f, 'type');
+      const type = typeNode ? getNodeText(typeNode, sourceCode).trim() : undefined;
+      const tagNode = getFieldNode(f, 'tag');
+      const tag = tagNode ? getNodeText(tagNode, sourceCode) : undefined;
+      fields.push({ name, type, isExported: clIsExportedGo(name), tag });
+    }
   }
   return fields;
 }
@@ -1936,6 +1942,31 @@ function clExtractGoEntities(
 }
 
 // ── Shared entity visitor (Stage 2) ──────────────────────────────────────────
+
+/**
+ * Spec 68 §3.2 — the `cross-language-entities` FileProcessor extraction.
+ *
+ * The entity half of {@link createCrossLanguageEntityVisitor}, factored out so
+ * the phase-model producer can call it directly without the Stage-2 `visit`
+ * plumbing (violations/facts/indexFacts). Emits the same `CrossLanguageEntity[]`
+ * the visitor feeds the cross-language analyzers; the per-file imports/exports
+ * half of the visitor is the reachability/coverage concern (§8), not this fact.
+ */
+export function extractCrossLanguageEntities(
+  ast: AST,
+  filePath: string,
+  sourceCode: string,
+  lang: string,
+): CrossLanguageEntity[] {
+  const root = ast.root;
+  const entities: CrossLanguageEntity[] = [];
+  if (lang === 'go') {
+    clExtractGoEntities(root, filePath, sourceCode, entities);
+  } else {
+    clExtractTSEntities(root, filePath, sourceCode, lang, entities);
+  }
+  return entities;
+}
 
 export function createCrossLanguageEntityVisitor(): Stage2Visitor {
   return {
