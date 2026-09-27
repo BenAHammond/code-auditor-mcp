@@ -12,7 +12,7 @@
     "code-auditor-daemon": "dist/daemon/main.js"
   },
   "scripts": {
-    "build": "pnpm run build:version && tsc && pnpm run build:go && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
+    "build": "pnpm run build:version && tsc && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills",
     "build:version": "node scripts/write-version.mjs",
     "download:natives": "bash scripts/download-natives.sh",
     "build:grammars": "mkdir -p dist/grammars && cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm node_modules/tree-sitter-css/tree-sitter-css.wasm grammars/tree-sitter-scss.wasm dist/grammars/",
@@ -41,8 +41,7 @@
     "verify:languages": "node scripts/verify-languages.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
     "verify:recall-value-drift": "tsx scripts/verify-recall-value-drift.ts",
-    "verify:close": "npm run verify:disk-space && npm run verify:types && npm run verify:dist-fresh && npm run test && npm run test:integration && npm run bench && npm run verify:recall-value-drift && npm run verify:gate-budget && npm run verify:clean-install && npm run verify:dist && npm run verify:self",
-    "build:go": "bash scripts/build-go.sh"
+    "verify:close": "npm run verify:disk-space && npm run verify:types && npm run verify:dist-fresh && npm run test && npm run test:integration && npm run bench && npm run verify:recall-value-drift && npm run verify:gate-budget && npm run verify:clean-install && npm run verify:dist && npm run verify:self"
   },
   "keywords": [
     "mcp",
