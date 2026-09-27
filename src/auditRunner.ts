@@ -16,7 +16,6 @@ import {
   FunctionMetadata,
   AuditResultScope,
   AuditAbortedError,
-  AuditHandoffError,
   type RuleCoverage,
   type InputPresence,
   type FileAccountingSummary,
@@ -346,13 +345,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           error: err instanceof Error ? err.message : String(err)
         });
       }
-    }
-
-    const handoffRemaining: string[] = [];
-    const maxPerRun = mergedOptions.maxFilesPerRun;
-    if (typeof maxPerRun === 'number' && maxPerRun > 0 && files.length > maxPerRun) {
-      handoffRemaining.push(...files.slice(maxPerRun));
-      files = files.slice(0, maxPerRun);
     }
 
     const root = path.resolve(mergedOptions.projectRoot || process.cwd());
@@ -1038,7 +1030,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           pipelineSizeDistributions = computeSizeDistributions(samples);
         }
       } catch (error) {
-        if (error instanceof AuditAbortedError || error instanceof AuditHandoffError) {
+        if (error instanceof AuditAbortedError) {
           throw error;
         }
         // Pipeline failure — populate error results for all pipeline analyzers.
@@ -1331,14 +1323,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       phase: 'reporting',
       message: 'Generating reports...'
     });
-
-    if (handoffRemaining.length > 0) {
-      throw new AuditHandoffError(
-        `${handoffRemaining.length} file(s) deferred to the next worker chunk`,
-        result,
-        handoffRemaining
-      );
-    }
 
     // Spec 57 — apply committed dismissals: mark matching findings dismissed
     // (they never gate) and record the dismissed count in the summary (never

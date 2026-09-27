@@ -794,21 +794,6 @@ export class AuditAbortedError extends Error {
   }
 }
 
-/**
- * Thrown when a shard processed a file chunk and more files remain.
- * Parent should queue a new worker task (e.g. with explicitFiles) to continue.
- */
-export class AuditHandoffError extends Error {
-  override readonly name = 'AuditHandoffError';
-  readonly partialResult: AuditResult;
-  readonly remainingFiles: string[];
-  constructor(message: string, partialResult: AuditResult, remainingFiles: string[]) {
-    super(message);
-    this.partialResult = partialResult;
-    this.remainingFiles = remainingFiles;
-  }
-}
-
 export interface ComponentAnalysis {
   filePath: string;
   renderType: RenderType;
@@ -1146,13 +1131,6 @@ export interface AuditRunnerOptions extends AuditOptions {
   abortSignal?: AbortSignal;
   /** Skip glob discovery; analyze exactly these absolute paths. */
   explicitFiles?: string[];
-  /**
-   * If more files match than this limit, the runner completes one chunk and throws AuditHandoffError
-   * with partialResult and remainingFiles so another worker can continue.
-   */
-  maxFilesPerRun?: number;
-  /** Worker IPC only: soft wall-clock budget for a forked shard (not used by in-process runs). */
-  shardSoftBudgetMs?: number;
   /** Audit scope: controls which files are analyzed. Default: 'all'. */
   scope?: AuditScope;
   /** Path profiles from config (Spec-20). */

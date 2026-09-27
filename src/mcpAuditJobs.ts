@@ -1,8 +1,5 @@
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
-import { fork, ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { cpus, hostname } from 'node:os';
+import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type {
   AnalyzerResult,
@@ -10,7 +7,6 @@ import type {
   AuditRunnerOptions,
   AuditScope,
   FunctionMetadata,
-  RuleCoverage,
   Severity,
   Violation,
 } from './types.js';
@@ -31,13 +27,7 @@ import {
 import { PACKAGE_VERSION } from './constants.js';
 import { mcpDebugStderr } from './mcpDiagnostics.js';
 import { findFiles } from './utils/fileDiscovery.js';
-import { makeVisitorStatus, getFilesProcessed, violationMatchesRule } from './pipeline.js';
-import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
-import type {
-  ParentToWorkerMessage,
-  SerializableAuditRunConfig,
-  WorkerToParentMessage,
-} from './workers/auditWorkerProtocol.js';
+import { runAudit } from './auditRunner.js';
 import chalk from 'chalk';
 
 type StartAuditDefaults = {
@@ -46,45 +36,6 @@ type StartAuditDefaults = {
   defaultGenerateCodeMap: boolean;
 };
 
-type PartitionStrategy = 'none' | 'auto' | 'top-level';
-
-export type PartitionPlan = {
-  mode: 'none' | 'top-level';
-  partitionPaths: string[];
-  globalAnalyzers: string[];
-  shardedAnalyzers: string[];
-};
-
-const SOURCE_FOLDERS = ['app', 'src'];
-// Cross-file reducers run once over the FULL scope, never inside partition
-// shards. A shard sees only its partition's files and (worse) reads shared
-// index tables that other shards are still writing, so any reducer that reads
-// accumulated state must be global. The set is every reducer/derived-reducer
-// in the pipeline stage model:
-//   dry         — cross-file duplicate detection over the function index
-//   data-access — per-file, but kept global so its coverage/status is a single
-//                 full-scope row (harmless to shard, but global is uniform)
-//   schema      — schema_usage reducers (unknown-table, JSON validation)
-//   styles      — reads style_declarations/tokens/class_usage written by the
-//                 styles-css visitor + syncStyleIndex (same analyzer gate)
-//   conventions — reads function_calls/conventions via updateDependencyGraph +
-//                 mineAllConventions (same analyzer gate)
-//   invariants  — call-constraint/module-boundary need the full file list
-//   cross-domain— reads schema_usage/indexed_functions/graph_cache (stage 4)
-const GLOBAL_ONLY_ANALYZERS = new Set([
-  'dry',
-  'data-access',
-  'data-access-org-filter',
-  'schema',
-  'styles',
-  'conventions',
-  'invariants',
-  'cross-domain',
-]);
-const RETRYABLE_ERROR_PATTERNS = [/timed out/i, /timeout/i, /econnreset/i, /eagain/i, /emfile/i];
-
-/** Hard cap so pathological configs cannot fork unbounded processes. */
-const MAX_AUDIT_WORKERS = 8;
 const DEFAULT_JOB_TIMEOUT_MS = 30 * 60 * 1000;
 const ABSOLUTE_MAX_JOB_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const MIN_JOB_TIMEOUT_MS = 60 * 1000;
@@ -195,20 +146,6 @@ async function acquireLease(db: SqliteDatabase, projectRoot: string, jobId: stri
   }
 }
 
-type WorkerShardTask = {
-  shardId: string;
-  config: SerializableAuditRunConfig;
-  attempts: number;
-};
-
-function resolveWorkerEntrypoint(): string {
-  const current = fileURLToPath(import.meta.url);
-  const ext = path.extname(current);
-  const dir = path.dirname(current);
-  const filename = ext === '.ts' ? 'auditWorker.ts' : 'auditWorker.js';
-  return path.join(dir, 'workers', filename);
-}
-
 /** Entrypoint for the detached CLI runner (Spec 41 `--detach`). */
 export function resolveJobRunnerEntrypoint(): string {
   const current = fileURLToPath(import.meta.url);
@@ -216,378 +153,6 @@ export function resolveJobRunnerEntrypoint(): string {
   const dir = path.dirname(current);
   const filename = ext === '.ts' ? 'auditJobRunner.ts' : 'auditJobRunner.js';
   return path.join(dir, 'workers', filename);
-}
-
-function asSerializableConfig(options: AuditRunnerOptions): SerializableAuditRunConfig {
-  return {
-    projectRoot: options.projectRoot || process.cwd(),
-    includePaths: options.includePaths,
-    excludePaths: options.excludePaths,
-    fileExtensions: options.fileExtensions,
-    minSeverity: options.minSeverity as Severity | undefined,
-    enabledAnalyzers: options.enabledAnalyzers,
-    indexFunctions: options.indexFunctions,
-    analyzerConfigs: options.analyzerConfigs,
-    explicitFiles: options.explicitFiles,
-    maxFilesPerRun: options.maxFilesPerRun,
-    shardSoftBudgetMs: options.shardSoftBudgetMs,
-  };
-}
-
-function isRetryableShardError(error: string): boolean {
-  return RETRYABLE_ERROR_PATTERNS.some((p) => p.test(error));
-}
-
-async function runShardTasksWithWorkerPool(
-  getDb: () => SqliteDatabase,
-  jobId: string,
-  tasks: WorkerShardTask[],
-  options: {
-    maxWorkers: number;
-    maxRetries: number;
-    shardTimeoutMs: number;
-    retryBackoffMs: number;
-    signal?: AbortSignal;
-  }
-): Promise<AuditResult[]> {
-  if (tasks.length === 0) return [];
-
-  const queue: WorkerShardTask[] = [...tasks];
-  const completedResults: AuditResult[] = [];
-  const pending = new Map<string, { worker: ChildProcess; task: WorkerShardTask; timer: NodeJS.Timeout }>();
-  const workers = new Set<ChildProcess>();
-  let runningShards = 0;
-  let retryCount = 0;
-  let aborted = false;
-  let settled = false;
-
-  const spawnCount = Math.max(1, Math.min(options.maxWorkers, tasks.length));
-  const workerEntry = resolveWorkerEntrypoint();
-
-  const cleanupWorker = (worker: ChildProcess): void => {
-    workers.delete(worker);
-    try {
-      worker.removeAllListeners();
-    } catch {
-      // ignore
-    }
-    try {
-      if (worker.connected) worker.disconnect();
-    } catch {
-      // ignore
-    }
-    const safeKill = (signal?: NodeJS.Signals): void => {
-      try {
-        if (signal) worker.kill(signal);
-        else worker.kill();
-      } catch {
-        // ignore
-      }
-    };
-    if (!worker.killed) {
-      safeKill('SIGTERM');
-      setTimeout(() => {
-        if (!worker.killed) {
-          safeKill('SIGKILL');
-          safeKill();
-        }
-      }, 750);
-    }
-  };
-
-  const post = (worker: ChildProcess, message: ParentToWorkerMessage): void => {
-    try {
-      if (worker.connected && !worker.killed) {
-        worker.send(message);
-      }
-    } catch (e) {
-      mcpDebugStderr(chalk.yellow('[WARN]'), 'Failed to send to audit worker (IPC):', e);
-    }
-  };
-
-  const disposeAllWorkers = (): void => {
-    for (const [rid, { worker, timer }] of [...pending.entries()]) {
-      clearTimeout(timer);
-      post(worker, { kind: 'cancel-request', requestId: rid });
-    }
-    pending.clear();
-    for (const w of [...workers]) {
-      cleanupWorker(w);
-    }
-    workers.clear();
-  };
-
-  return await new Promise<AuditResult[]>((resolve, reject) => {
-    const finish = (ok: boolean, value: AuditResult[] | Error): void => {
-      if (settled) return;
-      settled = true;
-      if (options.signal) {
-        options.signal.removeEventListener('abort', onAbort);
-      }
-      disposeAllWorkers();
-      if (ok) resolve(value as AuditResult[]);
-      else reject(value);
-    };
-
-    const onAbort = (): void => {
-      if (aborted) return;
-      aborted = true;
-      const reason = options.signal?.reason;
-      const msg =
-        reason instanceof Error
-          ? reason.message
-          : typeof reason === 'string'
-            ? reason
-            : 'Audit job was cancelled or exceeded the maximum duration';
-      finish(false, new Error(msg));
-    };
-
-    if (options.signal?.aborted) {
-      onAbort();
-      return;
-    }
-    options.signal?.addEventListener('abort', onAbort, { once: true });
-
-    const progressTotal = (): number =>
-      Math.max(tasks.length, completedResults.length + queue.length + runningShards);
-
-    const maybeDispatch = (): void => {
-      if (aborted || settled) return;
-      if (queue.length === 0 && runningShards === 0 && pending.size === 0) {
-        finish(true, completedResults);
-        return;
-      }
-
-      for (const worker of [...workers]) {
-        const hasAssigned = [...pending.values()].some((p) => p.worker === worker);
-        if (hasAssigned) continue;
-        const next = queue.shift();
-        if (!next) continue;
-        runningShards++;
-        const requestId = randomUUID();
-        const timer = setTimeout(() => {
-          if (settled || aborted) return;
-          const entry = pending.get(requestId);
-          if (!entry) return;
-          clearTimeout(entry.timer);
-          pending.delete(requestId);
-          runningShards--;
-
-          const timedOutWorker = entry.worker;
-          post(timedOutWorker, { kind: 'cancel-request', requestId });
-          cleanupWorker(timedOutWorker);
-          if (!spawnOneWorker()) {
-            aborted = true;
-            finish(
-              false,
-              new Error(
-                `Shard '${next.shardId}' timed out after ${options.shardTimeoutMs}ms and a replacement worker could not be started.`
-              )
-            );
-            return;
-          }
-
-          const msg = `Shard '${next.shardId}' timed out after ${options.shardTimeoutMs}ms`;
-          if (next.attempts < options.maxRetries) {
-            next.attempts += 1;
-            retryCount++;
-            setTimeout(() => {
-              queue.push(next);
-              setAuditJobProgress(getDb(), jobId, {
-                phase: 'analysis',
-                message: `Retrying shard ${next.shardId} (${next.attempts}/${options.maxRetries}) after worker recycle`,
-                current: completedResults.length,
-                total: progressTotal(),
-              });
-              maybeDispatch();
-            }, options.retryBackoffMs * next.attempts);
-            maybeDispatch();
-            return;
-          }
-          aborted = true;
-          finish(false, new Error(`${msg}. Retries exhausted (${options.maxRetries}).`));
-        }, options.shardTimeoutMs);
-
-        pending.set(requestId, { worker, task: next, timer });
-        post(worker, {
-          kind: 'run-audit-shard',
-          requestId,
-          shardId: next.shardId,
-          config: next.config,
-        });
-      }
-    };
-
-    const workerEndHandled = new WeakSet<ChildProcess>();
-
-    const handleWorkerProcessEnd = (
-      proc: ChildProcess,
-      code: number | null,
-      signal: NodeJS.Signals | null,
-      procErr?: Error
-    ): void => {
-      if (settled || aborted) return;
-      if (workerEndHandled.has(proc)) return;
-      workerEndHandled.add(proc);
-
-      const wasTracked = workers.has(proc);
-      if (wasTracked) {
-        workers.delete(proc);
-      }
-      try {
-        proc.removeAllListeners();
-      } catch {
-        // ignore
-      }
-
-      const detail = procErr
-        ? `Worker process error: ${procErr.message}`
-        : `Worker exited (code=${code}, signal=${signal ?? 'none'})`;
-
-      const orphaned = [...pending.entries()].find(([, v]) => v.worker === proc);
-      if (orphaned) {
-        clearTimeout(orphaned[1].timer);
-        pending.delete(orphaned[0]);
-        runningShards--;
-        if (!spawnOneWorker()) {
-          aborted = true;
-          finish(false, new Error(`${detail}; could not spawn replacement worker`));
-          return;
-        }
-        const task = orphaned[1].task;
-        if (task.attempts < options.maxRetries) {
-          task.attempts += 1;
-          retryCount++;
-          setTimeout(() => {
-            queue.push(task);
-            maybeDispatch();
-          }, options.retryBackoffMs * task.attempts);
-          maybeDispatch();
-          return;
-        }
-        aborted = true;
-        finish(false, new Error(`${detail} while running shard '${task.shardId}'`));
-        return;
-      }
-
-      if (wasTracked && (code !== 0 || signal || procErr)) {
-        if (!spawnOneWorker()) {
-          mcpDebugStderr(chalk.yellow('[WARN]'), 'Could not replenish audit worker after unexpected exit');
-        } else {
-          maybeDispatch();
-        }
-      }
-    };
-
-    const handleWorkerMessage = (worker: ChildProcess, raw: unknown): void => {
-      if (aborted || settled) return;
-      const message = raw as WorkerToParentMessage;
-      if (!message || typeof message !== 'object' || !('kind' in message)) return;
-
-      if (message.kind === 'worker-progress') {
-        const entry = pending.get(message.requestId);
-        if (!entry) return;
-        const overallCurrent =
-          completedResults.length +
-          Math.min(1, (message.progress.current ?? 0) / Math.max(1, message.progress.total ?? 1));
-        setAuditJobProgress(getDb(), jobId, {
-          phase: message.progress.phase ?? 'analysis',
-          message: `${message.shardId}: ${message.progress.message ?? 'running'} (retries=${retryCount})`,
-          current: Math.floor(overallCurrent),
-          total: progressTotal(),
-        });
-        return;
-      }
-
-      if (message.kind === 'worker-handoff') {
-        const entry = pending.get(message.requestId);
-        if (!entry) return;
-        clearTimeout(entry.timer);
-        pending.delete(message.requestId);
-        runningShards--;
-        completedResults.push(message.partialResult);
-        queue.push({
-          shardId: `${entry.task.shardId}>cont`,
-          attempts: 0,
-          config: message.continuation,
-        });
-        setAuditJobProgress(getDb(), jobId, {
-          phase: 'analysis',
-          message: `Chunk done for ${entry.task.shardId}; queued ${message.remainingFiles.length} remaining file(s) (retries=${retryCount})`,
-          current: completedResults.length,
-          total: progressTotal(),
-        });
-        maybeDispatch();
-        return;
-      }
-
-      if (message.kind === 'worker-result' || message.kind === 'worker-error') {
-        const entry = pending.get(message.requestId);
-        if (!entry) return;
-        clearTimeout(entry.timer);
-        pending.delete(message.requestId);
-        runningShards--;
-
-        if (message.kind === 'worker-result') {
-          completedResults.push(message.result);
-          setAuditJobProgress(getDb(), jobId, {
-            phase: 'analysis',
-            message: `Completed shard ${entry.task.shardId} (${completedResults.length} chunk(s), retries=${retryCount})`,
-            current: completedResults.length,
-            total: progressTotal(),
-          });
-          maybeDispatch();
-          return;
-        }
-
-        const errText = message.error || `Shard '${entry.task.shardId}' failed`;
-        if (entry.task.attempts < options.maxRetries && isRetryableShardError(errText)) {
-          entry.task.attempts += 1;
-          retryCount++;
-          setTimeout(() => {
-            queue.push(entry.task);
-            maybeDispatch();
-          }, options.retryBackoffMs * entry.task.attempts);
-          maybeDispatch();
-          return;
-        }
-
-        aborted = true;
-        finish(false, new Error(`${errText}${message.stack ? `\n${message.stack}` : ''}`));
-      }
-    };
-
-    const spawnOneWorker = (): boolean => {
-      try {
-        const proc = fork(workerEntry, [], {
-          stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-        });
-        workers.add(proc);
-        proc.on('message', (msg) => handleWorkerMessage(proc, msg));
-        proc.on('error', (err) => {
-          mcpDebugStderr(chalk.yellow('[WARN]'), 'Audit worker process error:', err);
-          handleWorkerProcessEnd(proc, null, null, err instanceof Error ? err : new Error(String(err)));
-        });
-        proc.on('exit', (code, signal) => {
-          handleWorkerProcessEnd(proc, code, signal);
-        });
-        return true;
-      } catch (e) {
-        mcpDebugStderr(chalk.red('[ERROR]'), 'fork() failed for audit worker:', e);
-        return false;
-      }
-    };
-
-    for (let i = 0; i < spawnCount; i++) {
-      if (!spawnOneWorker()) {
-        aborted = true;
-        finish(false, new Error('Failed to start audit worker processes'));
-        return;
-      }
-    }
-
-    maybeDispatch();
-  });
 }
 
 function getAllViolations(result: { analyzerResults?: Record<string, { violations: Violation[] }> }): Violation[] {
@@ -649,263 +214,6 @@ function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult
     high,
     violationsByCategory,
     topIssues,
-  };
-}
-
-function mergeAnalyzerResult(base: AnalyzerResult | undefined, next: AnalyzerResult): AnalyzerResult {
-  if (!base) return { ...next, violations: [...next.violations], errors: [...(next.errors || [])] };
-  const dedupeKey = (v: Violation): string =>
-    `${v.file ?? ''}:${v.line ?? ''}:${v.column ?? ''}:${v.rule ?? ''}:${v.message ?? ''}:${v.severity ?? ''}`;
-  const seen = new Set(base.violations.map(dedupeKey));
-  const mergedViolations = [...base.violations];
-  for (const v of next.violations) {
-    const key = dedupeKey(v);
-    if (!seen.has(key)) {
-      seen.add(key);
-      mergedViolations.push(v);
-    }
-  }
-  const baseFP = getFilesProcessed(base.status);
-  const nextFP = getFilesProcessed(next.status);
-  return {
-    ...base,
-    violations: mergedViolations,
-    status: makeVisitorStatus(baseFP + nextFP),
-    executionTime: (base.executionTime || 0) + (next.executionTime || 0),
-    errors: [...(base.errors || []), ...(next.errors || [])],
-  };
-}
-
-/**
- * Merge per-shard coverage rows into the project-wide coverage a synchronous
- * (non-sharded) run would have produced. Every shard's `buildCoverageReport`
- * iterates the full rule registry and emits, for rules whose analyzer that
- * shard did not run, a placeholder `notApplicable` row with reason
- * `analyzer "<name>" not in results`. Those placeholders are filtered out so a
- * rule's real state comes only from the shards that actually ran its analyzer.
- *
- * Precedence across the remaining rows: `fired` wins (its count re-derived from
- * the merged deduped violations — never the summed per-shard counts, which
- * over-count DB-based analyzers that emit full-project findings in every
- * shard), then `clean` (ran somewhere with input present and found nothing)
- * over `incomplete`, over `notApplicable` (only when every shard that ran the
- * rule reported no input). Global-only analyzers (GLOBAL_ONLY_ANALYZERS) run
- * in a single shard over the full scope, so their rows — including Spec 39
- * applicability predicates like `missing-org-filter` — pass through untouched.
- */
-function mergeCoverage(
-  results: AuditResult[],
-  ordered: Record<string, AnalyzerResult>,
-): RuleCoverage[] | undefined {
-  const rows = results.flatMap((r) => r.metadata?.coverage ?? []);
-  if (rows.length === 0) return undefined;
-
-  const byRule = new Map<string, RuleCoverage[]>();
-  for (const row of rows) {
-    const key = JSON.stringify([row.analyzer, row.ruleId]);
-    const group = byRule.get(key);
-    if (group) group.push(row);
-    else byRule.set(key, [row]);
-  }
-
-  const merged: RuleCoverage[] = [];
-  for (const [key, group] of byRule) {
-    const [analyzer, ruleId] = JSON.parse(key) as [string, string];
-    // Rows from shards that did not run this analyzer are placeholders, not a
-    // real state. Prefer the shards that ran it; fall back to placeholders only
-    // if the analyzer ran nowhere (then the placeholder's reason is truthful).
-    const real = group.filter((r) => r.reason !== `analyzer "${analyzer}" not in results`);
-    const src = real.length > 0 ? real : group;
-
-    const fired = src.filter((r) => r.state === 'fired');
-    if (fired.length > 0) {
-      // Derive the fired count from the merged (deduped) violations, exactly as
-      // the synchronous path's buildCoverageReport does. Summing per-shard
-      // counts would over-count if a DB-based analyzer ever ran in multiple
-      // shards (it no longer does — reducers are global-only), but deduping
-      // from the merged set stays correct regardless and keeps coverage.count
-      // in agreement with the ledger findings count.
-      const field = RULE_REGISTRY[ruleId]?.field;
-      const dedupedCount = (ordered[analyzer]?.violations ?? []).filter((v) =>
-        violationMatchesRule(v, ruleId, field),
-      ).length;
-      merged.push({
-        ruleId,
-        analyzer,
-        state: 'fired',
-        count: dedupedCount,
-      });
-      continue;
-    }
-    const clean = src.find((r) => r.state === 'clean');
-    if (clean) {
-      merged.push({ ruleId, analyzer, state: 'clean', count: 0 });
-      continue;
-    }
-    // Spec 44 bucket 2 — a `cannot-fire` rule is broken in the tool (same verdict
-    // every shard), so it outranks a per-shard `incomplete`/`notApplicable`.
-    const cannotFire = src.find((r) => r.state === 'cannot-fire');
-    if (cannotFire) {
-      merged.push({
-        ruleId,
-        analyzer,
-        state: 'cannot-fire',
-        count: 0,
-        reason: cannotFire.reason,
-      });
-      continue;
-    }
-    const incomplete = src.find((r) => r.state === 'incomplete');
-    if (incomplete) {
-      merged.push({ ruleId, analyzer, state: 'incomplete', count: 0 });
-      continue;
-    }
-    const notApplicable = src.find((r) => r.state === 'notApplicable');
-    if (notApplicable) {
-      merged.push({
-        ruleId,
-        analyzer,
-        state: 'notApplicable',
-        count: 0,
-        reason: notApplicable.reason,
-      });
-      continue;
-    }
-    merged.push({ ruleId, analyzer, state: src[0].state, count: src[0].count, reason: src[0].reason });
-  }
-
-  return merged;
-}
-
-function mergeAuditResults(results: AuditResult[], orderedAnalyzers: string[]): AuditResult {
-  const analyzerResults: Record<string, AnalyzerResult> = {};
-  const fileToFunctionsMap: Record<string, FunctionMetadata[]> = {};
-  const collectedFunctions: FunctionMetadata[] = [];
-  const recommendations: any[] = [];
-  const skippedFiles: NonNullable<AuditResult['metadata']['skippedFiles']> = [];
-  const unparsedFiles: NonNullable<AuditResult['metadata']['unparsedFiles']> = [];
-  const diagnostics: NonNullable<AuditResult['metadata']['diagnostics']> = [];
-  let filesAnalyzed = 0;
-  let auditDuration = 0;
-  let provenanceResolutionMs = 0;
-  let tableCatalog: NonNullable<AuditResult['metadata']['tableCatalog']> | undefined;
-
-  for (const result of results) {
-    for (const [analyzerName, analyzerResult] of Object.entries(result.analyzerResults || {})) {
-      analyzerResults[analyzerName] = mergeAnalyzerResult(analyzerResults[analyzerName], analyzerResult);
-    }
-    for (const [fp, funcs] of Object.entries(result.metadata?.fileToFunctionsMap || {})) {
-      fileToFunctionsMap[fp] = funcs;
-    }
-    if (result.metadata?.collectedFunctions) {
-      collectedFunctions.push(...result.metadata.collectedFunctions);
-    }
-    if (result.metadata?.skippedFiles) skippedFiles.push(...result.metadata.skippedFiles);
-    if (result.metadata?.unparsedFiles) unparsedFiles.push(...result.metadata.unparsedFiles);
-    if (result.metadata?.diagnostics) diagnostics.push(...result.metadata.diagnostics);
-    // tableCatalog is produced by the schema analyzer, which is global-only and
-    // therefore runs in a single shard over the full scope — first non-undefined
-    // is the whole catalog, never a fragment.
-    if (result.metadata?.tableCatalog && tableCatalog === undefined) {
-      tableCatalog = result.metadata.tableCatalog;
-    }
-    filesAnalyzed += result.metadata?.filesAnalyzed || 0;
-    auditDuration += result.metadata?.auditDuration || 0;
-    provenanceResolutionMs += result.metadata?.provenanceResolutionMs || 0;
-    if (result.recommendations?.length) recommendations.push(...result.recommendations);
-  }
-
-  const ordered: Record<string, AnalyzerResult> = {};
-  for (const name of orderedAnalyzers) {
-    if (analyzerResults[name]) ordered[name] = analyzerResults[name];
-  }
-
-  const coverage = mergeCoverage(results, ordered);
-
-  return {
-    timestamp: new Date(),
-    summary: summarizeAnalyzerResults(ordered, filesAnalyzed),
-    analyzerResults: ordered,
-    recommendations,
-    metadata: {
-      auditDuration,
-      filesAnalyzed,
-      analyzersRun: orderedAnalyzers,
-      provenanceResolutionMs,
-      ...(collectedFunctions.length > 0 && { collectedFunctions }),
-      ...(Object.keys(fileToFunctionsMap).length > 0 && { fileToFunctionsMap }),
-      ...(coverage !== undefined && { coverage }),
-      ...(tableCatalog !== undefined && { tableCatalog }),
-      ...(skippedFiles.length > 0 && { skippedFiles }),
-      ...(unparsedFiles.length > 0 && { unparsedFiles }),
-      ...(diagnostics.length > 0 && { diagnostics }),
-    },
-  };
-}
-
-export async function derivePartitionPlan(
-  args: any,
-  projectRoot: string,
-  isFile: boolean,
-  enabledAnalyzers: string[]
-): Promise<PartitionPlan> {
-  const strategy = ((args.partitionStrategy as string) || 'auto') as PartitionStrategy;
-  if (isFile || strategy === 'none') {
-    return { mode: 'none', partitionPaths: [], globalAnalyzers: enabledAnalyzers, shardedAnalyzers: [] };
-  }
-
-  const allFiles = await findFiles(projectRoot);
-  const threshold = Math.max(1, Number(args.partitionThresholdFiles) || 250);
-  if (strategy === 'auto' && allFiles.length < threshold) {
-    return { mode: 'none', partitionPaths: [], globalAnalyzers: enabledAnalyzers, shardedAnalyzers: [] };
-  }
-
-  const byTop = new Map<string, number>();
-  for (const file of allFiles) {
-    const rel = path.relative(projectRoot, file);
-    if (!rel || rel.startsWith('..')) continue;
-    const seg = rel.split(path.sep)[0];
-    byTop.set(seg, (byTop.get(seg) || 0) + 1);
-  }
-
-  const preferred = SOURCE_FOLDERS.filter((name) => byTop.has(name));
-  const others = [...byTop.entries()]
-    .filter(([name]) => !preferred.includes(name))
-    .sort((a, b) => b[1] - a[1])
-    .map(([name]) => name);
-
-  const maxPartitions = Math.max(1, Number(args.maxPartitions) || 4);
-  let selected = [...preferred, ...others].slice(0, maxPartitions);
-
-  if (selected.length < 2 && preferred.length > 0) {
-    const focus = preferred[0];
-    const focusDir = path.join(projectRoot, focus);
-    try {
-      const entries = await fs.readdir(focusDir, { withFileTypes: true });
-      const subdirs = entries
-        .filter((e) => e.isDirectory())
-        .map((e) => path.join(focus, e.name))
-        .slice(0, maxPartitions);
-      if (subdirs.length >= 2) {
-        selected = subdirs;
-      }
-    } catch {
-      // Ignore fallback partitioning errors
-    }
-  }
-
-  const shardedAnalyzers = enabledAnalyzers.filter((a) => !GLOBAL_ONLY_ANALYZERS.has(a));
-  const globalAnalyzers = enabledAnalyzers.filter((a) => GLOBAL_ONLY_ANALYZERS.has(a));
-
-  if (selected.length < 2 || shardedAnalyzers.length === 0) {
-    return { mode: 'none', partitionPaths: [], globalAnalyzers: enabledAnalyzers, shardedAnalyzers: [] };
-  }
-
-  return {
-    mode: 'top-level',
-    partitionPaths: selected.map((seg) => path.join(projectRoot, seg)),
-    globalAnalyzers,
-    shardedAnalyzers,
   };
 }
 
@@ -1013,26 +321,6 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
     };
 
     const enabledAnalyzers = (args.analyzers as string[]) || defaults.defaultAnalyzers;
-    const maxWorkers = Math.max(
-      1,
-      Math.min(
-        MAX_AUDIT_WORKERS,
-        Number(args.workerCount) || Math.max(1, Math.min(4, cpus().length - 1 || 1)),
-        Number(args.maxPartitions) || 4
-      )
-    );
-    const maxRetries = Math.max(0, Number(args.maxRetries) || 1);
-    const shardTimeoutMs = Math.max(5_000, Number(args.shardTimeoutMs) || 180_000);
-    const retryBackoffMs = Math.max(100, Number(args.retryBackoffMs) || 500);
-
-    const maxFilesPerRun =
-      typeof args.maxFilesPerRun === 'number' && args.maxFilesPerRun > 0
-        ? Math.floor(args.maxFilesPerRun)
-        : undefined;
-    const shardSoftBudgetMs =
-      typeof args.shardSoftBudgetMs === 'number' && args.shardSoftBudgetMs > 0
-        ? Math.max(1_000, Math.floor(args.shardSoftBudgetMs))
-        : undefined;
 
     const baseOptions: AuditRunnerOptions = {
       projectRoot,
@@ -1040,8 +328,7 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
       minSeverity: ((args.minSeverity as string) || defaults.defaultMinSeverity) as Severity,
       verbose: false,
       indexFunctions,
-      ...(maxFilesPerRun !== undefined && { maxFilesPerRun }),
-      ...(shardSoftBudgetMs !== undefined && { shardSoftBudgetMs }),
+      abortSignal: ac.signal,
       ...(isFile && { includePaths: [auditPath] }),
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
       ...(args.scope && args.scope !== 'all' && { scope: args.scope as AuditScope }),
@@ -1055,8 +342,6 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
       },
     };
 
-    const plan = await derivePartitionPlan(args, projectRoot, isFile, enabledAnalyzers);
-
     // Spec 41 R3 — provenance: capture an aggregate content hash + per-file
     // manifest so `result`/`status` can report staleness cheaply.
     const fileHash = hashFileSet(await findFiles(projectRoot), projectRoot);
@@ -1066,84 +351,20 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
       fileManifestJson: JSON.stringify(fileHash.manifest),
     });
 
-    const partitionTasks: WorkerShardTask[] = [];
-    const globalTasks: WorkerShardTask[] = [];
-    if (plan.mode === 'none') {
-      partitionTasks.push({
-        shardId: 'full-scope',
-        attempts: 0,
-        config: asSerializableConfig(baseOptions),
-      });
-    } else {
-      setAuditJobProgress(getJobDb(), jobId, {
-        phase: 'partitioning',
-        message: `Planning ${plan.partitionPaths.length} shard(s) + ${plan.globalAnalyzers.length > 0 ? 'global' : 'no-global'} analyzers`,
-      });
-      if (plan.globalAnalyzers.length > 0) {
-        globalTasks.push({
-          shardId: 'global-analyzers',
-          attempts: 0,
-          config: asSerializableConfig({
-            ...baseOptions,
-            enabledAnalyzers: plan.globalAnalyzers,
-            includePaths: undefined,
-          }),
-        });
-      }
-      for (const partitionPath of plan.partitionPaths) {
-        partitionTasks.push({
-          shardId: `shard:${path.basename(partitionPath)}`,
-          attempts: 0,
-          config: asSerializableConfig({
-            ...baseOptions,
-            enabledAnalyzers: plan.shardedAnalyzers,
-            includePaths: [`${partitionPath}/**/*`],
-          }),
-        });
-      }
-    }
-
-    const totalTasks = partitionTasks.length + globalTasks.length;
     setAuditJobProgress(getJobDb(), jobId, {
       phase: 'analysis',
-      message: `Running ${totalTasks} shard task(s) with ${maxWorkers} worker(s)`,
+      message: 'Running audit',
       current: 0,
-      total: totalTasks,
+      total: 1,
     });
 
-    const poolOptions = {
-      maxWorkers,
-      maxRetries,
-      shardTimeoutMs,
-      retryBackoffMs,
-      signal: ac.signal,
-    };
-
-    // Partition shards run first; the global-analyzers shard is scheduled only
-    // after every partition shard has completed. The global shard's full-scope
-    // reducers (conventions, cross-domain, styles) read cross-file index tables
-    // (`functions`, `function_calls`, `style_*`) that the always-on function-index
-    // visitor writes from *every* shard. Running it concurrently — even pushed
-    // "first" — left a `functions`-table write/read race in principle. Serializing
-    // it after the partitions closes that last multi-writer window structurally.
-    const resultParts: AuditResult[] = [];
-    resultParts.push(
-      ...(await runShardTasksWithWorkerPool(getJobDb, jobId, partitionTasks, poolOptions))
-    );
-    if (globalTasks.length > 0) {
-      resultParts.push(
-        ...(await runShardTasksWithWorkerPool(getJobDb, jobId, globalTasks, poolOptions))
-      );
-    }
+    const auditResult = await runAudit(baseOptions);
 
     if (ac.signal.aborted) {
       throw ac.signal.reason instanceof Error
         ? ac.signal.reason
         : new Error(String(ac.signal.reason || 'Audit job was cancelled or timed out'));
     }
-
-    const auditResult =
-      resultParts.length === 1 ? resultParts[0] : mergeAuditResults(resultParts, enabledAnalyzers);
 
     let indexingResult: any = null;
     if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
@@ -1407,8 +628,4 @@ export async function getAuditResultsPage(args: any): Promise<Record<string, unk
   };
 }
 
-export const __testables = {
-  isRetryableShardError,
-  mergeAnalyzerResult,
-  mergeCoverage,
-};
+export const __testables = {};
