@@ -36,6 +36,18 @@ import type {
 import type { IndexHandle } from '../types.js';
 
 /**
+ * The result of a phase-model run: the migrated rules' findings plus the
+ * per-file fact completeness map that feeds §8's fifth coverage state
+ * (`incomplete`). A file is recorded against a fact kind when its parse failed
+ * (no producer for that kind could run on it) or a producer threw on it (§3.3).
+ */
+export interface PhaseModelResult {
+  findings: Finding[];
+  /** Fact kind → files whose fact is incomplete (parse dropped or producer threw). */
+  incompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>>;
+}
+
+/**
  * The corpus-level inputs the phase model needs beyond the file list. §8's
  * `reachability` processor reads the discovery list, virtual-module list,
  * tsconfig aliases and package.json entry points — all derived from the
@@ -66,6 +78,13 @@ export interface PhaseInfra {
    *  facts (e.g. cross-domain's `call-graph` whole-table `functions` read) are
    *  never built. */
   enabledRules?: ReadonlySet<string>;
+  /** §16.8 fault injection — a hook invoked before each (kind, file) producer
+   *  runs. If it throws, the run treats it as that producer throwing: the file
+   *  is recorded `incomplete` for `kind` and the run continues. Real runs pass
+   *  none; the per-file-failure-isolation test passes a hook that throws for one
+   *  file to prove a single failure does not abort the run or poison its
+   *  neighbors. */
+  beforeProcess?: (kind: FactKind, file: string) => void;
 }
 
 /**
@@ -77,11 +96,11 @@ export async function runPhaseModel(
   filePaths: readonly string[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra?: PhaseInfra,
-): Promise<Finding[]> {
-  if (MIGRATED_RULES.length === 0) return [];
+): Promise<PhaseModelResult> {
+  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map() };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return [];
+  if (active.length === 0) return { findings: [], incompleteFacts: new Map() };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -115,9 +134,12 @@ export async function runPhaseModelOverFiles(
   files: readonly InputFile[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra?: PhaseInfra,
-): Promise<Finding[]> {
-  const facts = await buildFacts(files, infra);
-  return analyzeAll(facts, thresholdsByRule, infra?.enabledRules);
+): Promise<PhaseModelResult> {
+  const { facts, incompleteFacts } = await buildFacts(files, infra);
+  return {
+    findings: await analyzeAll(facts, thresholdsByRule, infra?.enabledRules),
+    incompleteFacts,
+  };
 }
 
 /** The migrated rules this run should serve: all, or the enabled subset. */
@@ -150,11 +172,15 @@ function neededFactKinds(active: readonly RuleDefinition<any>[] = MIGRATED_RULES
 }
 
 /** Process: build every needed fact kind (file facts, then corpus facts in order). */
-async function buildFacts(files: readonly InputFile[], infra?: PhaseInfra): Promise<Map<FactKind, unknown>> {
+async function buildFacts(
+  files: readonly InputFile[],
+  infra?: PhaseInfra,
+): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>> }> {
   const projectRoot = infra?.projectRoot;
   const active = activeRules(infra?.enabledRules);
   const needed = neededFactKinds(active);
   const facts = new Map<FactKind, unknown>();
+  const incompleteFacts = new Map<FactKind, Set<string>>();
 
   const fileKinds = [...needed].filter(
     (k): k is FileFactKind => Object.prototype.hasOwnProperty.call(PRODUCERS, k),
@@ -168,18 +194,45 @@ async function buildFacts(files: readonly InputFile[], infra?: PhaseInfra): Prom
     facts.set(kind, []);
   }
 
+  /** Record `file` against `kind` in the per-file completeness map (§3.3). */
+  const markIncomplete = (kind: FactKind, file: string) => {
+    let set = incompleteFacts.get(kind);
+    if (!set) {
+      set = new Set();
+      incompleteFacts.set(kind, set);
+    }
+    set.add(file);
+  };
+
   // Per-file facts: one parse per file, every matching producer runs over it,
   // the tree is freed before the next file (it never crosses the boundary).
+  //
+  // §3.3 per-file failure isolation: a failed parse marks every file fact kind
+  // that would have been produced from this file's format `incomplete`; a
+  // throwing producer marks just that (kind, file) pair. Either way the run
+  // continues — the failure is observable in §8's coverage, not a dropped file
+  // (which would read `clean`, a false negative) and not an aborted run.
   for (const input of files) {
     const parsed = await parseOne(input, projectRoot);
-    if (!parsed) continue;
+    if (!parsed) {
+      const format = formatFor(input.path);
+      for (const kind of fileKinds) {
+        if (fileProducerFor(kind, format)) markIncomplete(kind, input.path);
+      }
+      continue;
+    }
     try {
       for (const kind of fileKinds) {
         const producer = fileProducerFor(kind, parsed.format);
         if (!producer) continue;
-        const acc = (facts.get(kind) as unknown[] | undefined) ?? [];
-        acc.push(...(producer.process(parsed) as unknown[]));
-        facts.set(kind, acc);
+        try {
+          infra?.beforeProcess?.(kind, input.path);
+          const acc = (facts.get(kind) as unknown[] | undefined) ?? [];
+          acc.push(...(producer.process(parsed) as unknown[]));
+          facts.set(kind, acc);
+        } catch {
+          markIncomplete(kind, input.path);
+        }
       }
     } finally {
       parsed.ast?.dispose?.();
@@ -222,7 +275,7 @@ async function buildFacts(files: readonly InputFile[], infra?: PhaseInfra): Prom
     facts.set(kind, producer.process(upstream as never, corpusCtx));
   }
 
-  return facts;
+  return { facts, incompleteFacts };
 }
 
 /** Analyze: run every active migrated rule against exactly its declared facts. */

@@ -83,7 +83,7 @@ import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';
 import { resolvePhaseThresholds } from './phase/config.js';
 import { deriveCoverage, presentFormatsOf } from './phase/coverage.js';
 import { MIGRATED_RULES } from './phase/rules/registry.js';
-import type { Finding } from './phase/types.js';
+import type { Finding, FactKind } from './phase/types.js';
 
 // Package version — stamped into the build (see constants.ts), not read from
 // package.json at runtime, so a stale binary reports the version it was built as.
@@ -494,6 +494,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Spec 68 §8 — the migrated rules' findings, hoisted out of the both-paths
     // block so derived coverage (computed after the split) can read them.
     let phaseFindings: Finding[] = [];
+    // §3.3/§8 — per-file fact completeness (parse dropped / producer threw),
+    // fed into derived coverage so the fifth state (`incomplete`) is reachable
+    // from a real run, not only the synthetic coverage unit test.
+    let phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>> = new Map();
     let pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
     let pipelineStageTiming: Record<string, number> | undefined;
     let pipelineSkippedFiles: Array<{ filePath: string; bytes: number; reason: string }> | undefined;
@@ -910,7 +914,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             // virtual-module list, tsconfig aliases and package entry points the
             // legacy reducer read from `_infra`.
             const infraConfig = (pipelineAnalyzerConfig['_infra'] ?? {}) as Record<string, unknown>;
-            phaseFindings = await runPhaseModel(phaseFiles, thresholds, {
+            const phaseResult = await runPhaseModel(phaseFiles, thresholds, {
               projectRoot: root,
               corpusFiles: infraConfig.corpusFiles as string[] | undefined,
               importVirtualModules: infraConfig.importVirtualModules as string[] | undefined,
@@ -919,6 +923,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               indexHandle: pipelineIndexHandle,
               enabledRules: enabledMigratedRules(),
             });
+            phaseFindings = phaseResult.findings;
+            phaseIncompleteFacts = phaseResult.incompleteFacts;
 
             // Strip the migrated rules' legacy emission from every analyzer
             // result — the phase model is now their single source of truth.
@@ -1016,6 +1022,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           findings: phaseFindings,
           presentFormats: presentFormatsOf(files),
           enabledRules: enabledMigratedRules(),
+          incompleteFacts: phaseIncompleteFacts,
           groupOf: (ruleId) => RULE_REGISTRY[ruleId]?.analyzer ?? ruleId,
         });
 
