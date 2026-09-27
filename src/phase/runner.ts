@@ -36,6 +36,7 @@ import { secretsRules } from './rules/secrets.js';
 import { securityDefectRules } from './rules/securityDefects.js';
 import { functionBodyRules } from './rules/functionBodies.js';
 import { reactRules } from './rules/react.js';
+import { fileDocumentationRules } from './rules/fileDocumentation.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -56,6 +57,7 @@ import type {
   SecurityCandidate,
   FunctionBodyFact,
   ReactComponentScan,
+  FileHeaderFact,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -762,4 +764,48 @@ export async function analyzeReactComponents(
 export async function runReactComponentsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const facts = await buildReactComponents(files);
   return analyzeReactComponents(facts, thresholds);
+}
+
+// ── file-header slice (file-header → file-documentation) ─────────────────────
+
+/**
+ * Parse → Process for the `file-header` fact. Returns the assembled corpus
+ * fact (one leading comment projection per file, ASTs already freed).
+ */
+export async function buildFileHeaders(files: readonly InputFile[]): Promise<FileHeaderFact[]> {
+  const facts: FileHeaderFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('file-header', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as FileHeaderFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `file-header` fact with the file-documentation rule. */
+export async function analyzeFileHeaders(
+  facts: FileHeaderFact[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'file-header': facts },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of fileDocumentationRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The file-header slice: parse → file-header → file-documentation → findings. */
+export async function runFileHeadersSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const facts = await buildFileHeaders(files);
+  return analyzeFileHeaders(facts, thresholds);
 }

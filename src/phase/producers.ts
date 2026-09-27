@@ -42,6 +42,7 @@ import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
 import { extractFunctionBodies } from './functionBodies.js';
 import { extractReactComponents } from './reactComponents.js';
+import { extractFileHeader } from './fileHeader.js';
 import { extractImports } from './imports.js';
 import { extractStringLiterals } from './stringLiterals.js';
 import { extractSecretCandidates } from './secretCandidates.js';
@@ -107,6 +108,7 @@ const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entiti
   extractCrossLanguageEntities((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file));
 const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file as AstFile);
 const reactComponentProcess = (file: ParsedFile): FactFragment<'react-component'> => [extractReactComponents(file as AstFile)];
+const fileHeaderProcess = (file: ParsedFile): FactFragment<'file-header'> => extractFileHeader(file as AstFile);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -181,6 +183,11 @@ export const PRODUCERS = {
     typescript: fileProducer('react-component', 'typescript', reactComponentProcess),
     tsx: fileProducer('react-component', 'tsx', reactComponentProcess),
     javascript: fileProducer('react-component', 'javascript', reactComponentProcess),
+  },
+  'file-header': {
+    typescript: fileProducer('file-header', 'typescript', fileHeaderProcess),
+    tsx: fileProducer('file-header', 'tsx', fileHeaderProcess),
+    javascript: fileProducer('file-header', 'javascript', fileHeaderProcess),
   },
 } satisfies ProducerMap;
 
@@ -260,4 +267,5 @@ export const FACT_KINDS = {
   'table-catalog': true,
   'mined-conventions': true,
   'react-component': true,
+  'file-header': true,
 } satisfies Record<FactKind, true>;

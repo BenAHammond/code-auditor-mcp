@@ -63,6 +63,7 @@ export interface FactShapes {
   'table-catalog': TableCatalog;
   'mined-conventions': MinedConvention[];
   'react-component': ReactComponentScan[];
+  'file-header': FileHeaderFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -626,6 +627,21 @@ export type ReactJsxElementDetail = {
   attributes: ReactJsxAttributeDetail[];
 };
 
+/**
+ * The per-file `file-header` fact — the leading documentation comment a file
+ * carries (or `null` when there is none). The producer runs the legacy
+ * `getFileDocumentation` walk (the AST root's first child, or the comment
+ * preceding it) and projects just the trimmed text; the `file-documentation`
+ * rule re-applies `isFileHeaderDoc` (a `@fileoverview`/`@file`/`@module`/
+ * `@overview`/`@purpose` marker) so the *classification* — "is this comment a
+ * file header, or a license block?" — stays the rule's, not the producer's.
+ */
+export type FileHeaderFact = {
+  file: string;
+  /** The trimmed leading comment text, or null when the file has none. */
+  headerDoc: string | null;
+};
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -770,6 +786,7 @@ export interface SupplyingFormats {
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
   'data-access-calls': 'typescript' | 'tsx' | 'javascript';
   'react-component': 'typescript' | 'tsx' | 'javascript';
+  'file-header': 'typescript' | 'tsx' | 'javascript';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */

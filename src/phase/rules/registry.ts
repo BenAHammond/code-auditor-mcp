@@ -30,6 +30,7 @@ import { secretsRules } from './secrets.js';
 import { securityDefectRules } from './securityDefects.js';
 import { functionBodyRules } from './functionBodies.js';
 import { reactRules } from './react.js';
+import { fileDocumentationRules } from './fileDocumentation.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -83,4 +84,5 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...securityDefectRules,
   ...functionBodyRules,
   ...reactRules,
+  ...fileDocumentationRules,
 ];
