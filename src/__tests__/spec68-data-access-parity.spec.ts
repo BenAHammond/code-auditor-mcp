@@ -61,12 +61,14 @@ async function parity(ruleId: string, source: string) {
   return { old, nu };
 }
 
-/** The three TypeScript data-access rules, in registry order — the slice under test. */
+/** The TypeScript data-access rules, in registry order — the slice under test.
+ *  `missing-org-filter` (the fourth) has its old path in the Stage-4 reducer, not
+ *  `analyzeWithFacts`, so it is parity-tested separately against that reducer. */
 const RULE_IDS = dataAccessRules.map((r) => r.id);
 
 describe('Spec 68 data-access parity (new analyze(ctx) === old UniversalDataAccessAnalyzer)', () => {
-  it('covers exactly the three migrated data-access rules', () => {
-    expect(RULE_IDS).toEqual(['sql-injection-risk', 'complex-query', 'unfiltered-query']);
+  it('covers exactly the four migrated data-access rules', () => {
+    expect(RULE_IDS).toEqual(['sql-injection-risk', 'complex-query', 'unfiltered-query', 'missing-org-filter']);
   });
 
   it('sql-injection-risk (raw string-concatenated input)', async () => {

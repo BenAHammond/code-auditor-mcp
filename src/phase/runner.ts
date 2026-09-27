@@ -171,10 +171,17 @@ export async function buildDataAccessCalls(files: readonly InputFile[]): Promise
   return calls;
 }
 
-/** Analyze the assembled `data-access-calls` fact with the data-access rules. */
-export async function analyzeDataAccessCalls(calls: ResolvedQuery[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
+/** Analyze the assembled `data-access-calls` + `table-catalog` facts with the
+ *  data-access rules. `missing-org-filter` reads the catalog for Tier 3 (DDL)
+ *  tenancy; the other three rules ignore it (their `needs` declare only
+ *  `data-access-calls`, and the union context carries both). */
+export async function analyzeDataAccessCalls(
+  calls: ResolvedQuery[],
+  catalog: TableCatalog,
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
   const ctx = {
-    facts: { 'data-access-calls': calls },
+    facts: { 'data-access-calls': calls, 'table-catalog': catalog },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
   };
@@ -185,10 +192,13 @@ export async function analyzeDataAccessCalls(calls: ResolvedQuery[], thresholds:
   return findings;
 }
 
-/** The data-access slice: parse → data-access-calls → data-access rules → findings. */
+/** The data-access slice: parse → data-access-calls + table-catalog → rules → findings. */
 export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const calls = await buildDataAccessCalls(files);
-  return analyzeDataAccessCalls(calls, thresholds);
+  const [calls, catalog] = await Promise.all([
+    buildDataAccessCalls(files),
+    buildTableCatalog(files),
+  ]);
+  return analyzeDataAccessCalls(calls, catalog, thresholds);
 }
 
 // ── schema slice (the "repeat" for a corpus-consuming fact kind) ────────────

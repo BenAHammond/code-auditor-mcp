@@ -151,12 +151,16 @@ export const CORPUS_PRODUCERS = {
     produces: 'table-catalog',
     needs: ['ddl-declarations'],
     process(facts): TableCatalog {
-      const tables: { name: string; source: string }[] = [];
+      const tables: { name: string; source: string; columns: string[] }[] = [];
       const seen = new Set<string>();
       for (const schema of facts['ddl-declarations']) {
         if (!schema.name || seen.has(schema.name)) continue;
         seen.add(schema.name);
-        tables.push({ name: schema.name, source: schema.file });
+        tables.push({
+          name: schema.name,
+          source: schema.file,
+          columns: (schema.columns ?? []).map((c) => c.name),
+        });
       }
       return { tables };
     },

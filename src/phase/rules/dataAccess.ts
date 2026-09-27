@@ -16,8 +16,6 @@
  * free of analyzer/pipeline imports that §15 keeps.
  *
  * Not here, by design:
- *   - `missing-org-filter` — declares `data-access-calls` + `table-catalog`;
- *     lands with the §5 corpus reduction and the §10 config surface.
  *   - `hardcoded-connection` — walks string literals, a different extraction
  *     than resolved queries; not a `data-access-calls` fact.
  *   - `loop-query` — walks loop structure (N+1), not a resolved-call fact.
@@ -46,6 +44,13 @@ import { isTestOrSpecPath } from '../../languages/testConventions.js';
 type DataAccessNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
   readonly facts: readonly ['data-access-calls'];
+};
+
+/** `missing-org-filter` additionally reads the `table-catalog` corpus fact for
+ *  Tier 3 (DDL-discovered) tenancy. */
+type MissingOrgFilterNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['data-access-calls', 'table-catalog'];
 };
 
 const META = RULE_REGISTRY;
@@ -267,9 +272,72 @@ function num(t: ThresholdValues, key: string, fallback: number): number {
   return typeof v === 'number' ? v : fallback;
 }
 
-/** The three TypeScript data-access rules this slice migrates, in registry order. */
-export const dataAccessRules: readonly RuleDefinition<DataAccessNeeds>[] = [
+// ── missing-org-filter ──────────────────────────────────────────────────────
+
+const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
+  id: 'missing-org-filter',
+  needs: {
+    formats: ['typescript', 'tsx', 'javascript'],
+    facts: ['data-access-calls', 'table-catalog'],
+  },
+  severity: 'critical',
+  message: META['missing-org-filter'].message,
+  docs: META['missing-org-filter'].docs,
+  thresholds: META['missing-org-filter'].thresholds,
+  samples: META['missing-org-filter'].samples,
+  analyze(ctx): Finding[] {
+    const out: Finding[] = [];
+
+    // Tier 3 (DDL discovery) comes from the corpus reduction of the schema facts
+    // into `table-catalog`; Tiers 1–2 come from the config thresholds. The one
+    // `buildOrgFilterTierSet` is shared with the applicability predicate, so
+    // firing and applicability cannot drift to different tier sets (Spec 62 B).
+    const ddlTableColumns: Record<string, string[]> = {};
+    for (const table of ctx.facts['table-catalog'].tables) {
+      ddlTableColumns[table.name] = [...table.columns];
+    }
+    const tierSet = buildOrgFilterTierSet(
+      {
+        orgFilterTables: asStringArray(ctx.thresholds.orgFilterTables),
+        orgFilterColumns: asStringArray(ctx.thresholds.orgFilterColumns),
+        schemas: (ctx.thresholds.schemas as OrgFilterConfig['schemas']) ?? [],
+      },
+      ddlTableColumns,
+    );
+
+    for (const call of ctx.facts['data-access-calls']) {
+      // The claim is "no organization/tenant *predicate*", not "no filter": a
+      // query scoped by primary key still fires (it is scoped by id, not by
+      // tenant). `hasOrganizationFilter` is false for the PK-scoped case, so
+      // this predicate reproduces the legacy reducer's firing exactly.
+      if (call.hasOrganizationFilter) continue;
+      if (call.tables.length === 0) continue;
+      if (!tableRequiresOrgFilter(call.tables, tierSet)) continue;
+
+      const symbol = `${call.enclosingFunction ?? 'top-level'}:${call.method}`;
+      out.push({
+        ruleId: 'missing-org-filter',
+        severity: 'critical',
+        message: `Query on ${call.tables.join(', ')} has no organization/tenant predicate`,
+        file: call.file,
+        line: call.line,
+        column: call.column,
+        symbol,
+        resolution: {
+          action: 'add-tenant-predicate',
+          summary: `Add the tenant column (organization_id / org_id) to the WHERE predicate on ${call.tables.join(', ')} so this query is scoped to the current organization, not just by primary key.`,
+          symbols: call.tables,
+        },
+      });
+    }
+    return out;
+  },
+};
+
+/** The TypeScript data-access rules this slice migrates, in registry order. */
+export const dataAccessRules: readonly RuleDefinition<DataAccessNeeds | MissingOrgFilterNeeds>[] = [
   sqlInjectionRisk,
   complexQuery,
   unfilteredQuery,
+  missingOrgFilter,
 ];

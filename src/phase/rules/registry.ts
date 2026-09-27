@@ -57,7 +57,7 @@ import { schemaRules } from './schema.js';
  * imports/reachability — RENEW, §8), stays on the legacy path: the current
  * producer does not emit the `file-imports` fact it reads.
  *
- * The remaining 75 land one fact kind at a time (§11.3), and the size drives
+ * The remaining 74 land one fact kind at a time (§11.3), and the size drives
  * spec68-registry-size.spec.ts (0 → … → 100).
  */
 export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [

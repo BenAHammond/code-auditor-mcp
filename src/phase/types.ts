@@ -373,9 +373,11 @@ export type ResolvedQuery = {
   insideLoop?: boolean;
 };
 
-/** The known-table catalog built by the corpus schema processor (§5). */
+/** The known-table catalog built by the corpus schema processor (§5). Each
+ *  table carries its DDL-declared column names so Tier 3 tenant discovery
+ *  (`missing-org-filter`) can read tenancy from the corpus, not just config. */
 export type TableCatalog = {
-  tables: ReadonlyArray<{ name: string; source: string }>;
+  tables: ReadonlyArray<{ name: string; source: string; columns: ReadonlyArray<string> }>;
 };
 
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────

@@ -28,8 +28,26 @@ describe('Spec 68 table-catalog corpus processor', () => {
 
     const out = catalog(decls);
     expect(out.tables).toEqual([
-      { name: 'users', source: 'migrations/002_users.ts' },
-      { name: 'orders', source: 'migrations/001_orders.ts' },
+      { name: 'users', source: 'migrations/002_users.ts', columns: [] },
+      { name: 'orders', source: 'migrations/001_orders.ts', columns: [] },
+    ]);
+  });
+
+  it('carries per-table columns through for Tier 3 DDL tenant discovery', () => {
+    const decls: SchemaDeclaration[] = [
+      {
+        name: 'projects',
+        file: 'migrations/003_projects.ts',
+        columns: [
+          { name: 'id', type: 'int' },
+          { name: 'org_id', type: 'int' },
+        ],
+        origin: 'code',
+      },
+    ];
+
+    expect(catalog(decls).tables).toEqual([
+      { name: 'projects', source: 'migrations/003_projects.ts', columns: ['id', 'org_id'] },
     ]);
   });
 
