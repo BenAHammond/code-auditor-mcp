@@ -27,11 +27,27 @@ import {
   findEnclosingFunctionIdentity,
 } from '../analyzers/universal/schema/codeAnalysis.js';
 import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
+import { buildProvenanceContext } from '../analyzers/provenance.js';
 
 /** Extract the per-file table usages from one parsed file. */
 export function extractSchemaUsage(file: ParsedFile): SchemaUsageFact[] {
+  // Build the provenance context exactly as `UniversalSchemaAnalyzer.analyzeAST`
+  // does (hybrid detection), so the DB-call extraction sees the same `db.query` /
+  // `db.raw` methods the legacy pipeline recorded. The name-based fallback in
+  // `extractDbCallRefs` only knows the 6 trimmed D1 methods and would drop
+  // `db.query('SELECT …')` reads (and `db.raw`) — silently diverging on the
+  // composite schema fixture, whose SELECTs go through `db.query`.
+  const provenanceContext = buildProvenanceContext(file.ast, file.adapter, file.source, {
+    mode: 'hybrid',
+    dbReceiverNames: DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
+    dbBindingNames: DEFAULT_SCHEMA_CONFIG.dbBindingNames,
+    dbCallMethods: DEFAULT_SCHEMA_CONFIG.dbCallMethods,
+    dbWrapperNames: DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
+  });
+
   const { references } = findTableReferences(file.ast, file.adapter, file.source, {
     config: DEFAULT_SCHEMA_CONFIG,
+    provenanceContext,
   });
 
   const usages: SchemaUsageFact[] = [];

@@ -28,6 +28,7 @@ import { dependencyGraphRules } from './rules/dependencyGraph.js';
 import { schemaValidatorRules } from './rules/schemaValidator.js';
 import { documentationRules } from './rules/documentation.js';
 import { stylesRules } from './rules/styles.js';
+import { crossDomainRules } from './rules/crossDomain.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -253,6 +254,33 @@ export async function runSchemaSlice(files: readonly InputFile[], thresholds?: T
     buildTableCatalog(files),
   ]);
   return analyzeSchemaRules(usages, catalog, thresholds);
+}
+
+// ── cross-domain lifecycle slice (same `schema-usage` fact, different rules) ─
+
+/**
+ * Analyze the assembled `schema-usage` fact with the cross-domain lifecycle
+ * rules (`written-never-read`, `read-never-written`). Like the schema rules,
+ * these reduce the whole corpus at once; the two detectors are pure set
+ * differences over the flat usage list.
+ */
+export async function analyzeCrossDomain(usages: SchemaUsageFact[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'schema-usage': usages },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of crossDomainRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The cross-domain slice: parse → schema-usage → lifecycle rules → findings. */
+export async function runCrossDomainSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const usages = await buildSchemaUsage(files);
+  return analyzeCrossDomain(usages, thresholds);
 }
 
 // ── cross-language-entities slice (dependency-graph rules) ──────────────────

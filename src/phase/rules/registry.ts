@@ -21,6 +21,7 @@ import { dependencyGraphRules } from './dependencyGraph.js';
 import { schemaValidatorRules } from './schemaValidator.js';
 import { documentationRules } from './documentation.js';
 import { stylesRules } from './styles.js';
+import { crossDomainRules } from './crossDomain.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -66,4 +67,5 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...schemaValidatorRules,
   ...documentationRules,
   ...stylesRules,
+  ...crossDomainRules,
 ];
