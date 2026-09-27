@@ -45,6 +45,7 @@ export interface FactShapes {
   'function-bodies': FunctionBodyFact[];
   'imports': ImportFact[];
   'export-form': ExportFormFact[];
+  'import-form': ImportFormFact[];
   'string-literals': StringLiteralFact[];
   'secret-candidates': SecretCandidate[];
   'security-candidates': SecurityCandidate[];
@@ -263,6 +264,26 @@ export type ImportFact = {
   source: string;
   line: number;
   column: number;
+};
+
+/**
+ * One import statement's *form*, the serializable projection of
+ * `parseFileImports` (conventionMiner.ts) that `conventions/import-form` reads:
+ * the module source plus the classified import shape (`default` / `named` /
+ * `namespace` / `side-effect` / `require`) and the 1-based line the finding
+ * anchors to. This is deliberately NOT derivable from the AST `imports` fact —
+ * `conventions/import-form`'s legacy detector ran the regex `parseFileImports`
+ * over raw source text (which classifies forms like `default`-plus-`named` and
+ * `require` destructuring the AST extractor does not), so the producer re-runs
+ * that same regex over `file.source` to stay byte-identical. `localNames` is
+ * dropped: the legacy finding carried it only in `details`, which the unified
+ * `Finding` shape has no field for.
+ */
+export type ImportFormFact = {
+  file: string;
+  source: string;
+  form: 'default' | 'named' | 'namespace' | 'side-effect' | 'require';
+  line: number;
 };
 
 /**
@@ -921,6 +942,7 @@ export interface SupplyingFormats {
   'function-bodies': 'typescript' | 'tsx' | 'javascript';
   'imports': 'typescript' | 'tsx' | 'javascript';
   'export-form': 'typescript' | 'tsx' | 'javascript';
+  'import-form': 'typescript' | 'tsx' | 'javascript';
   'string-literals': 'typescript' | 'tsx' | 'javascript';
   'secret-candidates': 'typescript' | 'tsx' | 'javascript';
   'security-candidates': 'typescript' | 'tsx' | 'javascript';

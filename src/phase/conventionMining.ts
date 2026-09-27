@@ -8,13 +8,16 @@
  * through the three pure miners that also back the SQLite path.
  *
  * The pure miners (`mineUsagePairsFromFacts` / `mineErrorHandlingFromFacts` /
- * `mineNamingFromFacts` / `mineExportShapeFromFacts` in conventionMiner.ts) are
- * byte-identical to the DB miners the legacy pipeline ran; the DB miners are now
- * thin wrappers that project `functions`/`function_calls` rows into the same row
- * types and call the pure function. So the corpus fact produced here is, for the
- * four domains the `function-index` (+ `export-form`) facts can serve, the same
- * set the SQLite `conventions` table held. `import-form` stays on the DB path —
- * it reads the `imports` fact (a later fact kind), not `function-index`.
+ * `mineNamingFromFacts` / `mineExportShapeFromFacts` /
+ * `mineImportFormFromFacts` in conventionMiner.ts) are byte-identical to the DB
+ * miners the legacy pipeline ran; the DB miners are now thin wrappers that
+ * project `functions`/`function_calls` rows into the same row types and call the
+ * pure function. So the corpus fact produced here is, for the five domains the
+ * `function-index` (+ `export-form` + `import-form`) facts can serve, the same
+ * set the SQLite `conventions` table held. `import-form` reads the `import-form`
+ * fact — a distinct per-file fact (regex-parsed source, not the AST `imports`
+ * fact) — but is still driven off the `function-index` distinct-file set, so a
+ * file with imports but no indexed function contributes nothing on either path.
  *
  * The DB-assigned `id` is dropped (a function's identity is `(file, name, line)`),
  * so the array index stands in for it here; the miner uses `id` only to key the
@@ -24,12 +27,13 @@
  */
 
 import type { Convention, ConventionMiningConfig } from '../types.js';
-import type { ExportFormFact, FunctionIndexFact, MinedConvention } from './types.js';
+import type { ExportFormFact, FunctionIndexFact, ImportFormFact, MinedConvention } from './types.js';
 import {
   mineUsagePairsFromFacts,
   mineErrorHandlingFromFacts,
   mineNamingFromFacts,
   mineExportShapeFromFacts,
+  mineImportFormFromFacts,
   capPerDomain,
   type UsagePairFuncRow,
   type ErrorHandlingFuncRow,
@@ -80,13 +84,16 @@ function toMinedConvention(c: Convention): MinedConvention {
  * `usage-pair` / `error-handling` / `naming` are servable from `function-index`
  * alone. `export-shape` additionally needs the `export-form` fact (the
  * AST-extracted `(name, isDefault)` exports the legacy reducer read as
- * `exportsMap`), so it is mined only when `exportForms` is provided — a caller
- * that has not assembled that fact (the three-domain parity seed) simply gets
- * the three domains, never a half-formed export-shape convention.
+ * `exportsMap`), so it is mined only when `exportForms` is provided. `import-form`
+ * additionally needs the `import-form` fact (regex-parsed source), so it is mined
+ * only when `importForms` is provided — a caller that has not assembled those
+ * facts (the three-domain parity seed) simply gets the three domains, never a
+ * half-formed export-shape or import-form convention.
  */
 export function mineConventionsFromFunctionIndex(
   facts: readonly FunctionIndexFact[],
   exportForms: readonly ExportFormFact[] = [],
+  importForms: readonly ImportFormFact[] = [],
   config: ConventionMiningConfig = DEFAULT_MINING_CONFIG,
 ): MinedConvention[] {
   const usageFuncs: UsagePairFuncRow[] = [];
@@ -143,6 +150,23 @@ export function mineConventionsFromFunctionIndex(
 
   if (exportForms.length > 0) {
     mined.push(...mineExportShapeFromFacts(exportShapeFuncs, config, (fp) => exportFormByFile.get(fp)));
+  }
+
+  if (importForms.length > 0) {
+    // The legacy import-form miner read `SELECT DISTINCT file_path FROM functions`
+    // — the *distinct* file set in first-appearance order. The `function-index`
+    // fact is flat (one element per function), so derive that same distinct set
+    // here and drive the pure miner off it. A file with imports but no indexed
+    // function contributes nothing on either path (its imports are dropped by
+    // the distinct-file filter, matching the DB miner's source read).
+    const distinctFiles = [...new Set(facts.map((f) => f.file))];
+    const importFormByFile = new Map<string, Array<{ source: string; form: ImportFormFact['form']; line: number }>>();
+    for (const imp of importForms) {
+      const list = importFormByFile.get(imp.file);
+      if (list) list.push({ source: imp.source, form: imp.form, line: imp.line });
+      else importFormByFile.set(imp.file, [{ source: imp.source, form: imp.form, line: imp.line }]);
+    }
+    mined.push(...mineImportFormFromFacts(distinctFiles, (fp) => importFormByFile.get(fp), config));
   }
 
   return capPerDomain(mined, config.maxConventionsPerDomain).map(toMinedConvention);

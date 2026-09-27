@@ -24,15 +24,16 @@
  * finding anchors to `(file, line)` and never to the id, so the numbering is a
  * key only.
  *
- * `import-form` stays on the legacy path: it reads the `imports` fact (a later
- * fact kind) the `function-index` producer does not carry (§9). The
- * error-handling `cannot-fire` diagnostic (a non-TS/JS body) has no `analyze`
- * channel — §8 derives coverage states, so the diagnostic folds into that, not
- * into findings.
+ * `import-form` reads the `import-form` fact (regex-parsed source, not the AST
+ * `imports` fact) plus the `function-index` file set: the legacy detector read
+ * `SELECT DISTINCT file_path FROM functions`, so a file with imports but no
+ * indexed function is never checked. The error-handling `cannot-fire` diagnostic
+ * (a non-TS/JS body) has no `analyze` channel — §8 derives coverage states, so
+ * the diagnostic folds into that, not into findings.
  */
 
 import * as path from 'path';
-import type { RuleDefinition, Finding, FunctionIndexFact, MinedConvention, ExportFormFact } from '../types.js';
+import type { RuleDefinition, Finding, FunctionIndexFact, MinedConvention, ExportFormFact, ImportFormFact } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 import {
   detectCase,
@@ -296,6 +297,60 @@ function detectExportShape(
   }
 }
 
+// ── import-form ─────────────────────────────────────────────────────────────
+
+/** Build directory → Map<source, convention> from import-form rows (re-homes the
+ *  analyzer's `buildDirImports`). The convention's `consequent` is the dominant
+ *  form; `antecedent` is the module source. */
+function buildDirImportsForForm(conventions: readonly MinedConvention[]): Map<string, Map<string, MinedConvention>> {
+  const dirImports = new Map<string, Map<string, MinedConvention>>();
+  for (const conv of conventionsOf(conventions, 'import-form')) {
+    const dir = conv.directory ?? '.';
+    const source = conv.antecedent;
+    if (!source) continue;
+    const form = conv.consequent;
+    if (!form) continue;
+
+    if (!dirImports.has(dir)) dirImports.set(dir, new Map());
+    dirImports.get(dir)!.set(source, conv);
+  }
+  return dirImports;
+}
+
+/** Detect an import-form deviation for each import in a function-indexed file
+ *  (re-homes the analyzer's `detectImportFormForFile`). The legacy detector read
+ *  files from `functions`, so only imports whose file is in the `function-index`
+ *  fact are checked — a file with imports but no indexed function is skipped on
+ *  both paths. */
+function detectImportForm(
+  findings: Finding[],
+  facts: readonly FunctionIndexFact[],
+  importForms: readonly ImportFormFact[],
+  conventions: readonly MinedConvention[],
+): void {
+  const dirImports = buildDirImportsForForm(conventions);
+  const funcFiles = new Set(facts.map((f) => f.file));
+
+  for (const imp of importForms) {
+    if (!funcFiles.has(imp.file)) continue;
+    const directory = path.dirname(imp.file) || '.';
+    const conv = dirImports.get(directory)?.get(imp.source);
+    if (!conv || imp.form === conv.consequent) continue;
+
+    const pct = Math.round(conv.confidence * 100);
+    findings.push({
+      ruleId: 'conventions/import-form',
+      severity: 'high',
+      message:
+        `${pct}% of imports of \`${imp.source}\` in \`${directory}/\` ` +
+        `use ${conv.consequent} import — this file uses ${imp.form}${exemplarRef(conv)}`,
+      file: imp.file,
+      line: imp.line,
+      column: 1,
+    });
+  }
+}
+
 // ── Rule definitions ────────────────────────────────────────────────────────
 
 const usagePair: RuleDefinition<ConventionNeeds> = {
@@ -375,4 +430,33 @@ const exportShape: RuleDefinition<ExportShapeNeeds> = {
 /** The export-shape conventions rule, in registry order. */
 export const conventionsExportShapeRules: readonly RuleDefinition<ExportShapeNeeds>[] = [
   exportShape,
+];
+
+/** The import-form rule reads the `import-form` fact plus the `function-index`
+ *  file set (to skip imports in files with no indexed function) and the
+ *  `mined-conventions` corpus fact. Its own `Needs` tuple reflects that third
+ *  fact, so it lives in its own array alongside export-shape. */
+type ImportFormNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['function-index', 'import-form', 'mined-conventions'];
+};
+
+const importForm: RuleDefinition<ImportFormNeeds> = {
+  id: 'conventions/import-form',
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['function-index', 'import-form', 'mined-conventions'] },
+  severity: 'high',
+  message: META['conventions/import-form'].message,
+  docs: META['conventions/import-form'].docs,
+  thresholds: META['conventions/import-form'].thresholds,
+  samples: META['conventions/import-form'].samples,
+  analyze(ctx): Finding[] {
+    const out: Finding[] = [];
+    detectImportForm(out, ctx.facts['function-index'], ctx.facts['import-form'], ctx.facts['mined-conventions']);
+    return out;
+  },
+};
+
+/** The import-form conventions rule, in registry order. */
+export const conventionsImportFormRules: readonly RuleDefinition<ImportFormNeeds>[] = [
+  importForm,
 ];

@@ -29,7 +29,7 @@ import { schemaValidatorRules } from './rules/schemaValidator.js';
 import { documentationRules } from './rules/documentation.js';
 import { stylesRules } from './rules/styles.js';
 import { crossDomainRules } from './rules/crossDomain.js';
-import { conventionsRules, conventionsExportShapeRules } from './rules/conventions.js';
+import { conventionsRules, conventionsExportShapeRules, conventionsImportFormRules } from './rules/conventions.js';
 import { dryRules } from './rules/dry.js';
 import { securityRules } from './rules/security.js';
 import { secretsRules } from './rules/secrets.js';
@@ -55,6 +55,7 @@ import type {
   FunctionIndexFact,
   MinedConvention,
   ExportFormFact,
+  ImportFormFact,
   ImportFact,
   StringLiteralFact,
   SecretCandidate,
@@ -565,7 +566,7 @@ export async function runStylesSlice(
   return analyzeStyles(facts, thresholds);
 }
 
-// ── conventions slice (function-index + export-form → mined-conventions → 4 rules) ──
+// ── conventions slice (function-index + export-form + import-form → mined-conventions → 5 rules) ──
 
 /**
  * Parse → Process for the `function-index` fact. Returns the assembled corpus
@@ -607,18 +608,40 @@ export async function buildExportForms(files: readonly InputFile[]): Promise<Exp
   return facts;
 }
 
-/** Analyze the assembled `function-index` + `mined-conventions` + `export-form`
- *  facts with the four function-index-servable conventions rules (three
- *  `function-index`+`mined-conventions` rules plus the `export-form`-reading
- *  export-shape rule). */
+/**
+ * Parse → Process for the `import-form` fact. Returns the assembled corpus fact
+ * (every import's classified form from every file). The producer reads
+ * `.source` (not the AST) via `parseFileImports`, so the AST is freed without
+ * being consumed by this producer — but the parse still validates the file.
+ */
+export async function buildImportForms(files: readonly InputFile[]): Promise<ImportFormFact[]> {
+  const facts: ImportFormFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('import-form', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as ImportFormFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `function-index` + `mined-conventions` + `export-form` +
+ *  `import-form` facts with the five function-index-servable conventions rules
+ *  (three `function-index`+`mined-conventions` rules plus the `export-form`-
+ *  reading export-shape rule and the `import-form`-reading import-form rule). */
 export async function analyzeConventions(
   facts: FunctionIndexFact[],
   conventions: MinedConvention[],
   exportForms: ExportFormFact[],
+  importForms: ImportFormFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
   const ctx = {
-    facts: { 'function-index': facts, 'mined-conventions': conventions, 'export-form': exportForms },
+    facts: { 'function-index': facts, 'mined-conventions': conventions, 'export-form': exportForms, 'import-form': importForms },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
   };
@@ -629,20 +652,25 @@ export async function analyzeConventions(
   for (const rule of conventionsExportShapeRules) {
     findings.push(...(await rule.analyze(ctx)));
   }
+  for (const rule of conventionsImportFormRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
   return findings;
 }
 
-/** The conventions slice: parse → function-index + export-form → mined-conventions → rules → findings. */
+/** The conventions slice: parse → function-index + export-form + import-form → mined-conventions → rules → findings. */
 export async function runConventionsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const [facts, exportForms] = await Promise.all([
+  const [facts, exportForms, importForms] = await Promise.all([
     buildFunctionIndex(files),
     buildExportForms(files),
+    buildImportForms(files),
   ]);
   const conventions = CORPUS_PRODUCERS['mined-conventions'].process({
     'function-index': facts,
     'export-form': exportForms,
+    'import-form': importForms,
   });
-  return analyzeConventions(facts, conventions, exportForms, thresholds);
+  return analyzeConventions(facts, conventions, exportForms, importForms, thresholds);
 }
 
 // ── dry slice (imports + string-literals + code-block → the five DRY rules) ──

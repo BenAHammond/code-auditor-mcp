@@ -47,6 +47,7 @@ import { extractFileHeader } from './fileHeader.js';
 import { extractCodeBlocks } from './codeBlocks.js';
 import { extractImports } from './imports.js';
 import { extractExportForm } from './exportForm.js';
+import { extractImportForm } from './importForm.js';
 import { extractStringLiterals } from './stringLiterals.js';
 import { extractSecretCandidates } from './secretCandidates.js';
 import { extractSecurityCandidates } from './securityCandidates.js';
@@ -104,6 +105,7 @@ const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> 
 const functionBodiesProcess = (file: ParsedFile): FactFragment<'function-bodies'> => extractFunctionBodies(file as AstFile);
 const importsProcess = (file: ParsedFile): FactFragment<'imports'> => extractImports(file as AstFile);
 const exportFormProcess = (file: ParsedFile): FactFragment<'export-form'> => extractExportForm(file as AstFile);
+const importFormProcess = (file: ParsedFile): FactFragment<'import-form'> => extractImportForm(file);
 const stringLiteralsProcess = (file: ParsedFile): FactFragment<'string-literals'> => extractStringLiterals(file as AstFile);
 const secretCandidatesProcess = (file: ParsedFile): FactFragment<'secret-candidates'> => extractSecretCandidates(file as AstFile);
 const securityCandidatesProcess = (file: ParsedFile): FactFragment<'security-candidates'> => extractSecurityCandidates(file as AstFile);
@@ -145,6 +147,11 @@ export const PRODUCERS = {
     typescript: fileProducer('export-form', 'typescript', exportFormProcess),
     tsx: fileProducer('export-form', 'tsx', exportFormProcess),
     javascript: fileProducer('export-form', 'javascript', exportFormProcess),
+  },
+  'import-form': {
+    typescript: fileProducer('import-form', 'typescript', importFormProcess),
+    tsx: fileProducer('import-form', 'tsx', importFormProcess),
+    javascript: fileProducer('import-form', 'javascript', importFormProcess),
   },
   'string-literals': {
     typescript: fileProducer('string-literals', 'typescript', stringLiteralsProcess),
@@ -284,11 +291,11 @@ export const CORPUS_PRODUCERS = {
   'mined-conventions': {
     id: 'mined-conventions',
     produces: 'mined-conventions',
-    needs: ['function-index', 'export-form'],
+    needs: ['function-index', 'export-form', 'import-form'],
     process(facts): MinedConvention[] {
-      return mineConventionsFromFunctionIndex(facts['function-index'], facts['export-form']);
+      return mineConventionsFromFunctionIndex(facts['function-index'], facts['export-form'], facts['import-form']);
     },
-  } satisfies CorpusProcessor<'mined-conventions', readonly ['function-index', 'export-form']>,
+  } satisfies CorpusProcessor<'mined-conventions', readonly ['function-index', 'export-form', 'import-form']>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -319,6 +326,7 @@ export const FACT_KINDS = {
   'function-bodies': true,
   'imports': true,
   'export-form': true,
+  'import-form': true,
   'string-literals': true,
   'secret-candidates': true,
   'security-candidates': true,

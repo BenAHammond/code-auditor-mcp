@@ -280,14 +280,14 @@ async function parity(result: SeedResult): Promise<void> {
     facts[idToIndex.get(cr.caller_id)!].functionCalls.push(cr.callee_name);
   }
 
-  const newConventions = mineConventionsFromFunctionIndex(facts, exportForms, CONFIG);
+  const newConventions = mineConventionsFromFunctionIndex(facts, exportForms, [], CONFIG);
 
   // Producer parity: the two miners produce the same convention set.
   const legacyProjected = legacyConventions.map(toMinedConvention).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const newProjected = newConventions.map((c) => ({ ...c })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   expect(newProjected).toEqual(legacyProjected);
 
-  const fresh = await analyzeConventions(facts, newConventions, exportForms);
+  const fresh = await analyzeConventions(facts, newConventions, exportForms, []);
 
   for (const ruleId of ['conventions/usage-pair', 'conventions/error-handling', 'conventions/naming', 'conventions/export-shape']) {
     const old = legacy.violations

@@ -23,7 +23,7 @@ import { documentationRules } from './documentation.js';
 import { stylesRules } from './styles.js';
 import { crossDomainRules } from './crossDomain.js';
 import { schemaRules, dynamicSqlRules } from './schema.js';
-import { conventionsRules, conventionsExportShapeRules } from './conventions.js';
+import { conventionsRules, conventionsExportShapeRules, conventionsImportFormRules } from './conventions.js';
 import { dryRules } from './dry.js';
 import { securityRules } from './security.js';
 import { secretsRules } from './secrets.js';
@@ -81,6 +81,7 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...dynamicSqlRules,
   ...conventionsRules,
   ...conventionsExportShapeRules,
+  ...conventionsImportFormRules,
   ...dryRules,
   ...securityRules,
   ...secretsRules,

@@ -490,61 +490,38 @@ function mineUsagePairs(db: SqliteDatabase, config: ConventionMiningConfig): Con
   return mineUsagePairsFromFacts(funcs, calls, config);
 }
 
+/** The import form a parsed import statement was classified as (regex, not AST). */
+type ImportFormShape = 'default' | 'named' | 'namespace' | 'side-effect' | 'require';
+
 /**
- * Mine `import-form` conventions.
+ * The pure import-form miner — byte-identical logic to the legacy `mineImportForm`
+ * DB miner, over a per-file import projection.
  *
- * Per (source, directory) pair, compute the dominant import form. Reads source
- * files from disk to parse import statements, since import form data is not
- * persisted in the functions table.
+ * The legacy miner read `SELECT DISTINCT file_path FROM functions` (files that
+ * *have indexed functions*), parsed each file's source with `parseFileImports`,
+ * and reduced the `(source, directory)` histogram to a dominant-form convention.
+ * This pure miner drives off the same distinct file set (the caller derives it
+ * from the `function-index` fact, preserving first-appearance order) and reads
+ * each file's imports from the projection — so a file with imports but no
+ * indexed functions contributes nothing on either path.
  */
-function mineImportForm(
-  db: SqliteDatabase,
+export function mineImportFormFromFacts(
+  files: readonly string[],
+  getImports: (filePath: string) => ReadonlyArray<{ source: string; form: ImportFormShape; line: number }> | undefined,
   config: ConventionMiningConfig,
-  projectRoot?: string,
-  getSource?: (filePath: string) => string | undefined,
 ): Convention[] {
   const conventions: Convention[] = [];
 
-  // Get unique (file_path, directory) pairs
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT file_path,
-              substr(file_path, 1, length(file_path) - length(replace(file_path, '/', '')) - 1) as dir_part
-       FROM functions
-       WHERE file_path IS NOT NULL`,
-    )
-    .all() as Array<{ file_path: string; dir_part?: string }>;
-
-  // Deduplicate files
-  const seen = new Set<string>();
   // (source, directory) -> Map<form, count>
   const formCounts = new Map<string, Map<string, number>>();
   // (source, directory) -> exemplar
   const exemplars = new Map<string, { file: string; line: number; form: string }>();
 
-  for (const row of rows) {
-    if (seen.has(row.file_path)) continue;
-    seen.add(row.file_path);
+  for (const file of files) {
+    const imports = getImports(file);
+    if (!imports) continue;
 
-    const fullPath =
-      projectRoot && !path.isAbsolute(row.file_path)
-        ? path.join(projectRoot, row.file_path)
-        : row.file_path;
-    let content: string;
-    const provided = getSource?.(row.file_path) ?? getSource?.(fullPath);
-    if (provided !== undefined) {
-      content = provided;
-    } else {
-      try {
-        content = fs.readFileSync(fullPath, 'utf-8');
-      } catch {
-        continue;
-      }
-    }
-
-    const directory = row.dir_part ? path.dirname(row.file_path) : '.';
-    const imports = parseFileImports(content);
-
+    const directory = path.dirname(file) || '.';
     for (const imp of imports) {
       const source = imp.source;
       const form = imp.form;
@@ -554,9 +531,9 @@ function mineImportForm(
       const fc = formCounts.get(key)!;
       fc.set(form, (fc.get(form) ?? 0) + 1);
 
-      // Track exemplar (first one wins)
+      // Track exemplar (first one wins; line 0 mirrors the legacy miner)
       if (!exemplars.has(key)) {
-        exemplars.set(key, { file: row.file_path, line: 0, form });
+        exemplars.set(key, { file, line: 0, form });
       }
     }
   }
@@ -607,6 +584,62 @@ function mineImportForm(
   }
 
   return conventions;
+}
+
+/**
+ * Mine `import-form` conventions.
+ *
+ * Per (source, directory) pair, compute the dominant import form. Reads source
+ * files from disk to parse import statements, since import form data is not
+ * persisted in the functions table. Thin wrapper over
+ * {@link mineImportFormFromFacts} — it reads the same distinct-file set the pure
+ * miner drives off, parses each source with `parseFileImports`, and projects to
+ * the `{source, form, line}` shape the pure miner consumes.
+ */
+function mineImportForm(
+  db: SqliteDatabase,
+  config: ConventionMiningConfig,
+  projectRoot?: string,
+  getSource?: (filePath: string) => string | undefined,
+): Convention[] {
+  // Get unique file paths (the directory is derived from the path, not queried —
+  // `path.dirname(file) || '.'` is equivalent to the old `dir_part` discriminator).
+  const rows = db
+    .prepare(`SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL`)
+    .all() as Array<{ file_path: string }>;
+
+  const files: string[] = [];
+  const importsByFile = new Map<string, Array<{ source: string; form: ImportFormShape; line: number }>>();
+  const seen = new Set<string>();
+
+  for (const row of rows) {
+    if (seen.has(row.file_path)) continue;
+    seen.add(row.file_path);
+    files.push(row.file_path);
+
+    const fullPath =
+      projectRoot && !path.isAbsolute(row.file_path)
+        ? path.join(projectRoot, row.file_path)
+        : row.file_path;
+    let content: string;
+    const provided = getSource?.(row.file_path) ?? getSource?.(fullPath);
+    if (provided !== undefined) {
+      content = provided;
+    } else {
+      try {
+        content = fs.readFileSync(fullPath, 'utf-8');
+      } catch {
+        continue;
+      }
+    }
+
+    importsByFile.set(
+      row.file_path,
+      parseFileImports(content).map((imp) => ({ source: imp.source, form: imp.form, line: imp.line })),
+    );
+  }
+
+  return mineImportFormFromFacts(files, (fp) => importsByFile.get(fp), config);
 }
 
 /**
