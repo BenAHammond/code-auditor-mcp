@@ -1,10 +1,16 @@
 /**
  * Spec 68 §11.1 — the general phase-model runner behind the both-paths split.
  *
- * `runPhaseModel` drives Parse → Process → Analyze over `MIGRATED_RULES`. It is
- * the in-process precursor to the §6 distributed runner: the three-phase
- * ordering and the "rules read facts, never ASTs" property are fixed here; the
- * bounded work queue, parent/worker split and index-backed facts land in §6.
+ * `runPhaseModel` drives Parse → Process → Analyze over `MIGRATED_RULES`. The
+ * three-phase ordering and the "rules read facts, never ASTs" property are
+ * fixed here; §6's fan-out is realized as a bounded in-process work queue over
+ * one task per file (`workerCount` on {@link PhaseInfra}), with a deterministic
+ * file-sorted fact merge so `workerCount` is a tuning threshold, never a source
+ * of output reordering (§6.4). Tree-sitter `parse()` is synchronous CPU-bound
+ * work in one JS thread, so the queue is a structural unit rather than a
+ * wall-clock parallelizer; the guarantees §6 exists to deliver — per-file
+ * isolation (§3.3), byte-identical output across worker counts (§6.4), and a
+ * bounded in-flight window (§6.5) — are what land here.
  *
  * The fact set is *derived* from the migrated rules' `needs`: the union of every
  * declared fact kind, transitively widened by corpus processors' upstream
@@ -96,6 +102,11 @@ export interface PhaseInfra {
    *  `schemas`), threaded to the `table-catalog` corpus producer so its
    *  known-table set matches the legacy reducer (see {@link ExternalTableDecl}). */
   externalTables?: ReadonlyArray<ExternalTableDecl>;
+  /** §6.6 — the bounded work queue's width: how many files parse/process
+   *  concurrently. Defaults to 1 (serial) at this seam; the entry point sizes
+   *  the pool to `max(1, cpus - 1)`. A threshold, not a selection gate: the
+   *  fact merge is file-sorted, so the value never reorders findings (§6.4). */
+  workerCount?: number;
 }
 
 /**
@@ -215,39 +226,35 @@ async function buildFacts(
     set.add(file);
   };
 
-  // Per-file facts: one parse per file, every matching producer runs over it,
-  // the tree is freed before the next file (it never crosses the boundary).
+  // §6.1 — one parse + per-file process is a single task per file. Each task
+  // returns that file's fact fragments (and its incomplete (kind) list); the
+  // parent merges them in file order. A bounded queue runs at most `workerCount`
+  // files in flight (§6.5). `workerCount` is a threshold, not a selection gate:
+  // the merge is file-sorted, so the fact arrays — and every finding derived
+  // from them — are byte-identical regardless of how wide the queue is (§6.4).
   //
   // §3.3 per-file failure isolation: a failed parse marks every file fact kind
   // that would have been produced from this file's format `incomplete`; a
   // throwing producer marks just that (kind, file) pair. Either way the run
   // continues — the failure is observable in §8's coverage, not a dropped file
   // (which would read `clean`, a false negative) and not an aborted run.
-  for (const input of files) {
-    const parsed = await parseOne(input, projectRoot);
-    if (!parsed) {
-      const format = formatFor(input.path);
-      for (const kind of fileKinds) {
-        if (fileProducerFor(kind, format)) markIncomplete(kind, input.path);
-      }
-      continue;
+  const workerCount = Math.max(1, infra?.workerCount ?? 1);
+  const perFile = await mapWithConcurrency(
+    files,
+    (input) => processFile(input, fileKinds, projectRoot, infra),
+    workerCount,
+  );
+
+  // Deterministic merge: file-sorted so the parent's write order (and thus every
+  // rule's input and output) never depends on completion order.
+  const ordered = [...perFile].sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  for (const r of ordered) {
+    for (const [kind, items] of r.fragments) {
+      const acc = (facts.get(kind) as unknown[] | undefined) ?? [];
+      acc.push(...items);
+      facts.set(kind, acc);
     }
-    try {
-      for (const kind of fileKinds) {
-        const producer = fileProducerFor(kind, parsed.format);
-        if (!producer) continue;
-        try {
-          await infra?.beforeProcess?.(kind, input.path);
-          const acc = (facts.get(kind) as unknown[] | undefined) ?? [];
-          acc.push(...(producer.process(parsed) as unknown[]));
-          facts.set(kind, acc);
-        } catch {
-          markIncomplete(kind, input.path);
-        }
-      }
-    } finally {
-      parsed.ast?.dispose?.();
-    }
+    for (const kind of r.incomplete) markIncomplete(kind, r.file);
   }
 
   // Corpus-level Tailwind theme tokens (Spec 68 §3.2): the legacy pipeline
@@ -288,6 +295,71 @@ async function buildFacts(
   }
 
   return { facts, incompleteFacts };
+}
+
+/** §6.5 — bounded work queue: run `fn` over `items` with at most `limit` in
+ *  flight, returning results in input order. With `limit === 1` this is exactly
+ *  a serial loop; with `limit > 1` the queue never holds more than `limit`
+ *  in-flight tasks, so a huge repository does not materialize a wall of
+ *  concurrent parses. Input order is preserved in the result array, so the
+ *  caller's file-sorted merge is the single determinism anchor. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  fn: (item: T) => Promise<R>,
+  limit: number,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/** §6.1 — one task per file: parse once, run every matching per-(kind, format)
+ *  producer, free the tree, and return the file's fact fragments plus its
+ *  incomplete (kind) list. The tree never leaves this function (Fact 8), and a
+ *  parse failure or throwing producer is scoped to this file — the parent
+ *  records `incomplete` rather than aborting (§3.3). */
+async function processFile(
+  input: InputFile,
+  fileKinds: readonly FileFactKind[],
+  projectRoot: string | undefined,
+  infra?: PhaseInfra,
+): Promise<{ file: string; fragments: Map<FileFactKind, unknown[]>; incomplete: FileFactKind[] }> {
+  const parsed = await parseOne(input, projectRoot);
+  const fragments = new Map<FileFactKind, unknown[]>();
+  const incomplete: FileFactKind[] = [];
+
+  if (!parsed) {
+    const format = formatFor(input.path);
+    for (const kind of fileKinds) {
+      if (fileProducerFor(kind, format)) incomplete.push(kind);
+    }
+    return { file: input.path, fragments, incomplete };
+  }
+
+  try {
+    for (const kind of fileKinds) {
+      const producer = fileProducerFor(kind, parsed.format);
+      if (!producer) continue;
+      try {
+        await infra?.beforeProcess?.(kind, input.path);
+        const acc = fragments.get(kind) ?? [];
+        acc.push(...(producer.process(parsed) as unknown[]));
+        fragments.set(kind, acc);
+      } catch {
+        incomplete.push(kind);
+      }
+    }
+  } finally {
+    parsed.ast?.dispose?.();
+  }
+  return { file: input.path, fragments, incomplete };
 }
 
 /** Analyze: run every active migrated rule against exactly its declared facts.

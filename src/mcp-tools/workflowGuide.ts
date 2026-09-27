@@ -288,7 +288,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       'audit.start is non-blocking; heavy work runs in the background',
       'audit.status returns resultId only when the run is completed',
       'audit.results is read-only and never starts a new audit',
-      'Tune workerCount and maxRetries for large audits'
+      'Large audits fan out per file; CODE_AUDITOR_WORKERS sizes the pool'
     ]
   },
 
@@ -558,8 +558,8 @@ export function getWorkflowTips(): Record<string, string[]> {
       'Use specific paths in audit to analyze only changed code',
       'search.query is fast even on large codebases',
       'search.definition is optimized for exact name lookup',
-      'For partitioned runs, workerCount scales shard execution across CPU cores',
-      'Use shardTimeoutMs and maxRetries to balance resilience vs. latency'
+      'Per-file fan-out scales with CODE_AUDITOR_WORKERS (default: one per core)',
+      'The parent is the only index writer — facts merge in file order, so reports are byte-identical at any pool size'
     ],
     'pagination': [
       'Default limit is 50 violations per request (max 100)',

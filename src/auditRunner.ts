@@ -7,6 +7,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import {
   AuditResult,
   AuditRunnerOptions,
@@ -122,6 +123,19 @@ const RUN_ANALYZERS: string[] = [
   ...new Set(MIGRATED_RULES.map((r) => r.analyzer)),
   'invariants',
 ].sort();
+
+/**
+ * §6.6 — the phase-model pool size. Defaults to `max(1, cpus - 1)` and is a
+ * config threshold (env `CODE_AUDITOR_WORKERS`), never a selection gate: the
+ * fact merge is file-sorted, so the value never reorders findings (§6.4).
+ * `CODE_AUDITOR_WORKERS=1` is the determinism-test escape hatch that forces the
+ * serial path for byte-identical-report comparisons.
+ */
+function resolveWorkerCount(): number {
+  const env = Number(process.env.CODE_AUDITOR_WORKERS);
+  if (Number.isInteger(env) && env > 0) return env;
+  return Math.max(1, os.cpus().length - 1);
+}
 
 /**
  * Create an audit runner with the given options
@@ -986,6 +1000,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               indexHandle: pipelineIndexHandle,
               enabledRules: enabledMigratedRules(),
               externalTables,
+              workerCount: resolveWorkerCount(),
             });
             phaseFindings = phaseResult.findings;
             phaseIncompleteFacts = phaseResult.incompleteFacts;
