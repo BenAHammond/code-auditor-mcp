@@ -820,6 +820,49 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           }
         }
 
+        // ── Spec 13 R5 Phase 1: Persist seeded DRY pairs ──────────────────
+        // Store pairs from DRY analysis in dry_pair_history for divergence
+        // tracking. Pair identity is fingerprint-based (file + nodeType + line),
+        // NOT content-hash-based — so a diverging clone stays the same pair.
+        //
+        // Runs BEFORE the phase model below: the migrated `dry/diverging-clone`
+        // rule reads `clone-pair-history` (this table) through the index handle,
+        // so the freshly-seeded rows must be committed before `runPhaseModel`.
+        let dryPersistRunId: string | null = null;
+        try {
+          const dryPairs = dryBundle?.getDryPairs() as Array<{
+            pairFingerprint: string;
+            file1: string; symbol1: string; line1: number; contentHash1: string;
+            file2: string; symbol2: string; line2: number; contentHash2: string;
+            similarity: number;
+          }> | undefined;
+          if (dryPairs && dryPairs.length > 0) {
+            const indexDb = CodeIndexDB.getInstance(undefined, root);
+            await indexDb.initialize();
+            dryPersistRunId = randomUUID();
+            const insertStmt = indexDb.rawDb.prepare(`
+              INSERT OR IGNORE INTO dry_pair_history
+                (pair_fingerprint, file1, symbol1, line1, content_hash1,
+                 file2, symbol2, line2, content_hash2, similarity, timestamp, run_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+            `);
+            const tx = indexDb.rawDb.transaction(() => {
+              for (const pair of dryPairs) {
+                insertStmt.run(
+                  pair.pairFingerprint,
+                  pair.file1, pair.symbol1, pair.line1, pair.contentHash1,
+                  pair.file2, pair.symbol2, pair.line2, pair.contentHash2,
+                  pair.similarity,
+                  dryPersistRunId,
+                );
+              }
+            });
+            tx();
+          }
+        } catch {
+          // dry_pair_history persistence is advisory — non-fatal
+        }
+
         // ── Spec 68 §11.1 — the both-paths split ─────────────────────────
         // Migrated rules are served by the phase model (Parse → Process →
         // Analyze); their legacy emission is stripped and re-emitted from the
@@ -834,6 +877,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           routeAttribution = Object.fromEntries(attributeRoutes());
 
           if (migrated.size > 0) {
+            // The `dry/diverging-clone` rule reads its knobs from
+            // `dry.divergence`. The legacy Phase 2 read
+            // `analyzerConfigs.dry.divergence ?? top-level divergence ?? fallback`;
+            // thread the top-level `divergence` config into the dry namespace so
+            // the phase rule sees the same effective value (lower precedence than
+            // an explicit `analyzerConfigs.dry.divergence`).
+            const topLevelDivergence = (mergedOptions as { divergence?: Record<string, unknown> }).divergence;
+            if (topLevelDivergence && !pipelineAnalyzerConfig['dry']?.divergence) {
+              pipelineAnalyzerConfig['dry'] = { ...(pipelineAnalyzerConfig['dry'] ?? {}), divergence: topLevelDivergence };
+            }
             const thresholds = resolvePhaseThresholds(pipelineAnalyzerConfig);
             // The phase model must honor path-profile attribution exactly as the
             // pipeline does: `excludeFromAnalysis` (Spec 44 reason 7) removes a
@@ -1072,45 +1125,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       }
     }
 
-    // ── Spec 13 R5 Phase 1: Persist seeded DRY pairs ──────────────────
-    // Store pairs from DRY analysis in dry_pair_history for divergence tracking.
-    // Pair identity is fingerprint-based (file + nodeType + line),
-    // NOT content-hash-based — so a diverging clone stays the same pair.
-    let dryPersistRunId: string | null = null;
-    try {
-      const dryPairs = dryBundle?.getDryPairs() as Array<{
-        pairFingerprint: string;
-        file1: string; symbol1: string; line1: number; contentHash1: string;
-        file2: string; symbol2: string; line2: number; contentHash2: string;
-        similarity: number;
-      }> | undefined;
-      if (dryPairs && dryPairs.length > 0) {
-        const indexDb = CodeIndexDB.getInstance(undefined, root);
-        await indexDb.initialize();
-        dryPersistRunId = randomUUID();
-        const insertStmt = indexDb.rawDb.prepare(`
-          INSERT OR IGNORE INTO dry_pair_history
-            (pair_fingerprint, file1, symbol1, line1, content_hash1,
-             file2, symbol2, line2, content_hash2, similarity, timestamp, run_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
-        `);
-        const tx = indexDb.rawDb.transaction(() => {
-          for (const pair of dryPairs) {
-            insertStmt.run(
-              pair.pairFingerprint,
-              pair.file1, pair.symbol1, pair.line1, pair.contentHash1,
-              pair.file2, pair.symbol2, pair.line2, pair.contentHash2,
-              pair.similarity,
-              dryPersistRunId,
-            );
-          }
-        });
-        tx();
-      }
-    } catch {
-      // dry_pair_history persistence is advisory — non-fatal
-    }
-
     // ── Spec 13 R2 — Hotspot scoring & finding reordering ──────────────
     // Attach hotspot scores to violations and reorder within severity tiers.
     // Falls back gracefully when no churn/hotspot data exists.
@@ -1196,101 +1210,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       }
     } catch {
       // Hotspot/reachability reordering is advisory — failure is non-fatal
-    }
-
-    // ── Spec 13 R5 Phase 2: Divergence tracking pass ──────────────────
-    // For every pair in dry_pair_history, compare the last 2 similarity
-    // measurements. If similarity has declined by ≥ divergenceThreshold
-    // for divergenceRuns consecutive runs, emit dry/diverging-clone.
-    //
-    // New rows are inserted by Phase 1 for pairs the DRY analyzer re-detects
-    // this run. Pairs that weren't re-detected don't get a new measurement
-    // this pass — full source re-read is deferred to the 20% case.
-    try {
-      const divergenceCfg: {
-        divergenceThreshold?: number;
-        divergenceRuns?: number;
-        minPairSimilarity?: number;
-      } = (mergedOptions.analyzerConfigs as any)?.dry?.divergence
-        ?? (mergedOptions as any).divergence
-        ?? { divergenceThreshold: 0.05, divergenceRuns: 2, minPairSimilarity: 0.5 };
-
-      const threshold = divergenceCfg.divergenceThreshold ?? 0.05;
-      const requiredDeclines = divergenceCfg.divergenceRuns ?? 2;
-
-      if (threshold > 0) {
-        const indexDb = CodeIndexDB.getInstance(undefined, root);
-        await indexDb.initialize();
-
-        // Get all distinct pair fingerprints
-        const fingerprints = indexDb.rawDb
-          .prepare('SELECT DISTINCT pair_fingerprint FROM dry_pair_history')
-          .all() as Array<{ pair_fingerprint: string }>;
-
-        if (fingerprints.length > 0) {
-          const getRows = indexDb.rawDb.prepare(`
-            SELECT similarity, timestamp
-            FROM dry_pair_history
-            WHERE pair_fingerprint = ?
-            ORDER BY timestamp ASC
-          `);
-
-          const divergingViolations: Violation[] = [];
-
-          for (const { pair_fingerprint: fp } of fingerprints) {
-            const rows = getRows.all(fp) as Array<{ similarity: number; timestamp: string }>;
-            if (rows.length < requiredDeclines + 1) continue;
-
-            // Check last `requiredDeclines` consecutive pairs for decline
-            let consecutiveDeclines = 0;
-            for (let i = rows.length - requiredDeclines; i < rows.length; i++) {
-              if (rows[i].similarity < rows[i - 1].similarity - threshold) {
-                consecutiveDeclines++;
-              }
-            }
-
-            if (consecutiveDeclines >= requiredDeclines) {
-              // Get file/line info from the last row
-              const lastRow = indexDb.rawDb.prepare(`
-                SELECT file1, file2, line1, line2 FROM dry_pair_history
-                WHERE pair_fingerprint = ?
-                ORDER BY timestamp DESC LIMIT 1
-              `).get(fp) as { file1: string; file2: string; line1: number; line2: number } | undefined;
-
-              if (lastRow) {
-                const currentSim = rows[rows.length - 1].similarity;
-                const prevSim = rows[rows.length - 2].similarity;
-                const drop = Math.round((prevSim - currentSim) * 1000) / 1000;
-
-                divergingViolations.push({
-                  file: lastRow.file1,
-                  line: lastRow.line1,
-                  severity: 'severe',
-                  message: `Clone pair has diverged: similarity dropped ${drop} (from ${prevSim.toFixed(3)} to ${currentSim.toFixed(3)}) across ${requiredDeclines} consecutive runs (pair: ${fp.slice(0, 12)}…). Review ${lastRow.file1}:${lastRow.line1} and ${lastRow.file2}:${lastRow.line2} for diverged logic.`,
-                  analyzer: 'dry',
-                  rule: 'dry/diverging-clone',
-                });
-              }
-            }
-          }
-
-          if (divergingViolations.length > 0) {
-            // Append to the dry analyzer result, or create one if none exists
-            if (orderedAnalyzerResults['dry']) {
-              orderedAnalyzerResults['dry'].violations.push(...divergingViolations);
-            } else {
-              orderedAnalyzerResults['dry'] = {
-                violations: divergingViolations,
-                status: makeVisitorStatus(0),
-                executionTime: 0,
-                analyzerName: 'dry',
-              };
-            }
-          }
-        }
-      }
-    } catch {
-      // Divergence tracking is advisory — non-fatal
     }
 
     // Hook-contract guard: no violation may carry an empty file path, line 0, or

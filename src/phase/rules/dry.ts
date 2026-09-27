@@ -25,10 +25,13 @@
  * `reportExpressionSimilarities` over the projected data. The legacy
  * `analyzeAST` ran **once per file**, so each rule partitions the corpus fact by
  * `file` and runs its filter → dedupe → compare within one file (a block in file
- * A is never compared against a block in file B). `dry/diverging-clone` stays
- * on the legacy path: it is a cross-run pair-tracking pass (Spec 13 R5), not a
- * per-file block comparison, and reads clone-pair history the `code-block` fact
- * cannot carry.
+ * A is never compared against a block in file B).
+ *
+ * `dry/diverging-clone` is the cross-run pair-tracking pass (Spec 13 R5): it
+ * reads the `clone-pair-history` fact — the `dry_pair_history` similarity series
+ * the DRY bundle seeds each run — and flags a pair whose similarity has fallen by
+ * `divergenceThreshold` for `divergenceRuns` consecutive runs. It re-homes the
+ * legacy auditRunner Phase 2 divergence pass verbatim, over the grouped fact.
  */
 
 import type {
@@ -39,6 +42,7 @@ import type {
   CodeBlockFact,
   CodeBlockBlock,
   CodeBlockFragment,
+  ClonePairHistoryFact,
   ThresholdValues,
 } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
@@ -48,6 +52,7 @@ const STRING_META = RULE_REGISTRY['duplicate-string-literal'];
 const DUP_META = RULE_REGISTRY['dry/duplicate'];
 const STRUCT_META = RULE_REGISTRY['dry/structural-similarity'];
 const EXPR_META = RULE_REGISTRY['dry/similar-expression'];
+const DIVERGING_META = RULE_REGISTRY['dry/diverging-clone'];
 
 /** The shared declaration for the one import-servable DRY rule. */
 type DryNeeds = {
@@ -65,6 +70,12 @@ type StringLiteralNeeds = {
 type CodeBlockNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
   readonly facts: readonly ['code-block'];
+};
+
+/** The declaration for the clone-pair-history-servable DRY rule. */
+type ClonePairNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['clone-pair-history'];
 };
 
 /** Re-homes `checkDuplicateImports`, grouping per file. */
@@ -527,6 +538,64 @@ function detectExpressionSimilarities(fragments: CodeBlockFragment[], cfg: DryBl
   return findings;
 }
 
+// ── diverging-clone (cross-run pair tracking, Spec 13 R5) ─────────────────────
+
+/** Config surface the diverging-clone rule reads (subset of `DivergenceConfig`).
+ *  `minPairSimilarity` is declared but the loop never reads it — matching the
+ *  legacy Phase 2, which only consumed `divergenceThreshold`/`divergenceRuns`. */
+interface DivergenceCfg {
+  divergenceThreshold?: number;
+  divergenceRuns?: number;
+  minPairSimilarity?: number;
+}
+
+/** The fallback the legacy auditRunner Phase 2 hardcoded when no divergence
+ *  config was set (mirrors `DEFAULT_ANALYZER_CONFIGS.dry.divergence`). */
+const DIVERGENCE_DEFAULTS: DivergenceCfg = {
+  divergenceThreshold: 0.05,
+  divergenceRuns: 2,
+  minPairSimilarity: 0.5,
+};
+
+/** Re-homes auditRunner Phase 2 verbatim: flag a pair whose similarity fell by
+ *  `divergenceThreshold` for `divergenceRuns` consecutive runs. The
+ *  `clone-pair-history` fact is grouped by fingerprint with its series already
+ *  in timestamp order, so the anchor (file/line) is the group's most recent row. */
+function detectDivergingClone(facts: ClonePairHistoryFact, cfg: DivergenceCfg): Finding[] {
+  const threshold = cfg.divergenceThreshold ?? 0.05;
+  const requiredDeclines = cfg.divergenceRuns ?? 2;
+  if (threshold <= 0) return [];
+
+  const findings: Finding[] = [];
+  for (const group of facts) {
+    const rows = group.rows;
+    if (rows.length < requiredDeclines + 1) continue;
+
+    // Check the last `requiredDeclines` consecutive pairs for a decline.
+    let consecutiveDeclines = 0;
+    for (let i = rows.length - requiredDeclines; i < rows.length; i++) {
+      if (rows[i].similarity < rows[i - 1].similarity - threshold) {
+        consecutiveDeclines++;
+      }
+    }
+
+    if (consecutiveDeclines >= requiredDeclines) {
+      const currentSim = rows[rows.length - 1].similarity;
+      const prevSim = rows[rows.length - 2].similarity;
+      const drop = Math.round((prevSim - currentSim) * 1000) / 1000;
+      const fp = group.fingerprint;
+      findings.push({
+        ruleId: 'dry/diverging-clone',
+        severity: 'severe',
+        message: `Clone pair has diverged: similarity dropped ${drop} (from ${prevSim.toFixed(3)} to ${currentSim.toFixed(3)}) across ${requiredDeclines} consecutive runs (pair: ${fp.slice(0, 12)}…). Review ${group.file1}:${group.line1} and ${group.file2}:${group.line2} for diverged logic.`,
+        file: group.file1,
+        line: group.line1,
+      });
+    }
+  }
+  return findings;
+}
+
 // ── The rules ─────────────────────────────────────────────────────────────────
 
 const duplicateImport: RuleDefinition<DryNeeds> = {
@@ -611,11 +680,30 @@ const drySimilarExpression: RuleDefinition<CodeBlockNeeds> = {
   },
 };
 
-/** The string/import/code-block-servable DRY rules, in registry order. */
-export const dryRules: readonly RuleDefinition<DryNeeds | StringLiteralNeeds | CodeBlockNeeds>[] = [
+const divergingClone: RuleDefinition<ClonePairNeeds> = {
+  id: 'dry/diverging-clone',
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['clone-pair-history'] },
+  severity: 'severe',
+  message: DIVERGING_META.message,
+  docs: DIVERGING_META.docs,
+  thresholds: DIVERGING_META.thresholds,
+  samples: DIVERGING_META.samples,
+  analyze(ctx): Finding[] {
+    // The divergence knobs resolve the same way the legacy Phase 2 did: the
+    // dry namespace's `divergence` object, or the hardcoded fallback. The
+    // top-level `divergence` config is threaded into `dry.divergence` by the
+    // caller (§11.1), so `ctx.thresholds['divergence']` is the effective value.
+    const divergence = (ctx.thresholds['divergence'] as DivergenceCfg | undefined) ?? DIVERGENCE_DEFAULTS;
+    return detectDivergingClone(ctx.facts['clone-pair-history'], divergence);
+  },
+};
+
+/** The DRY rules, in registry order. */
+export const dryRules: readonly RuleDefinition<DryNeeds | StringLiteralNeeds | CodeBlockNeeds | ClonePairNeeds>[] = [
   duplicateImport,
   duplicateStringLiteral,
   dryDuplicate,
   dryStructuralSimilarity,
   drySimilarExpression,
+  divergingClone,
 ];

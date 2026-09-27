@@ -753,11 +753,12 @@ export async function buildCodeBlocks(files: readonly InputFile[]): Promise<Code
 
 /**
  * Analyze the assembled `imports` + `string-literals` + `code-block` facts with
- * the five DRY rules. Each rule reads only the fact its `needs` declares; the
- * union context carries all three. The three block rules partition `code-block`
+ * the six DRY rules. Each rule reads only the fact its `needs` declares; the
+ * union context carries all four. The three block rules partition `code-block`
  * by file before their filter → dedupe → compare, because the legacy
  * `analyzeAST` ran once per file (a block in file A is never compared against a
- * block in file B).
+ * block in file B). `diverging-clone` reads `clone-pair-history`, empty here
+ * (the slice test has no index), so it emits nothing.
  */
 export async function analyzeDry(
   imports: ImportFact[],
@@ -766,7 +767,7 @@ export async function analyzeDry(
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
   const ctx = {
-    facts: { 'imports': imports, 'string-literals': stringLiterals, 'code-block': codeBlocks },
+    facts: { 'imports': imports, 'string-literals': stringLiterals, 'code-block': codeBlocks, 'clone-pair-history': [] },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
   };

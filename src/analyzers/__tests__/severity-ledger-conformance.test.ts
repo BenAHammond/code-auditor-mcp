@@ -78,6 +78,11 @@ const EMIT_FILES = [
   'src/analyzers/invariantsAnalyzer.ts',
   'src/pipelineAdapters.ts',
   'src/auditRunner.ts',
+  // Phase-model rule bodies — the migrated rules' `Finding` emit sites. Only
+  // `dry.ts` has lost its legacy emit site so far (`dry/diverging-clone` lived in
+  // auditRunner, not an analyzer); the rest join here wholesale at §15 when the
+  // legacy analyzer emit sites are deleted.
+  'src/phase/rules/dry.ts',
   'src/languages/go/analyzer-src/solid.go',
   'src/languages/go/analyzer-src/analyzer.go',
   'src/languages/go/analyzer-src/dataaccess.go',
@@ -155,7 +160,12 @@ function extractFieldPairs(src: string): Array<{ rule: string; severity: Severit
   for (let m; (m = sevRe.exec(src)); ) sevs.push({ pos: m.index, severity: m[1] as Severity });
 
   const rules: Array<{ pos: number; rule: string }> = [];
-  const ruleRe = /(?:rule|violationType|issueType):\s*['"]([a-z][\w/-]*)['"]/g;
+  // `ruleId` is the phase-model `Finding` emit shape (`src/phase/rules/*.ts`):
+  // the migrated rules' findings carry `ruleId` + `severity` instead of the
+  // legacy `rule`/`violationType`/`issueType` + `severity` object literal. The
+  // first rule to move its *only* emit site there is `dry/diverging-clone`
+  // (its legacy pass lived in `auditRunner.ts`, not an analyzer).
+  const ruleRe = /(?:rule|violationType|issueType|ruleId):\s*['"]([a-z][\w/-]*)['"]/g;
   for (let m; (m = ruleRe.exec(src)); ) rules.push({ pos: m.index, rule: m[1] });
 
   const out: Array<{ rule: string; severity: Severity }> = [];

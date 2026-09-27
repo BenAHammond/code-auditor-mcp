@@ -85,6 +85,7 @@ export interface FactShapes {
   'batch-functions': BatchFunctionFact[];
   'hotspot': HotspotFact[];
   'coverage': CoverageFact;
+  'clone-pair-history': ClonePairHistoryFact;
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -1130,6 +1131,23 @@ export type CoverageFact = {
     covered: boolean;
   }>;
 };
+
+/**
+ * The index-backed clone-pair-history fact — the `dry_pair_history` rows the
+ * `dry/diverging-clone` rule's cross-run divergence pass reads. Grouped by
+ * fingerprint (the pair identity `getDryPairs` seeds, stable across runs), each
+ * group carries the per-run similarity series plus the file/line anchors from
+ * its most recent row — the location the legacy Phase 2 read via
+ * `ORDER BY timestamp DESC LIMIT 1`. Plain data only: no AST, no handle.
+ */
+export type ClonePairHistoryFact = ReadonlyArray<{
+  fingerprint: string;
+  file1: string;
+  file2: string;
+  line1: number;
+  line2: number;
+  rows: ReadonlyArray<{ similarity: number; timestamp: string }>;
+}>;
 
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 

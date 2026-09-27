@@ -68,10 +68,12 @@ describe('config-key guards (Spec 22 Item 3)', () => {
       expect(dryDefaults).toEqual(DEFAULT_DRY_CONFIG);
     });
 
-    it('DEFAULT_ANALYZER_CONFIGS.dry.divergence mirrors the auditRunner fallback', () => {
-      // auditRunner.ts:949-951 reads divergence from analyzerConfigs.dry.divergence
-      // with a hardcoded fallback of { 0.05, 2, 0.5 }. The exported namespace must
-      // not advertise a different divergence default than the one actually applied.
+    it('DEFAULT_ANALYZER_CONFIGS.dry.divergence mirrors the diverging-clone fallback', () => {
+      // The migrated `dry/diverging-clone` rule (phase/rules/dry.ts) reads
+      // divergence from `dry.divergence` with a hardcoded fallback of
+      // { 0.05, 2, 0.5 } — the same precedence the legacy auditRunner Phase 2
+      // used. The exported namespace must not advertise a different divergence
+      // default than the one actually applied.
       expect(DEFAULT_ANALYZER_CONFIGS.dry.divergence).toEqual({
         divergenceThreshold: 0.05,
         divergenceRuns: 2,

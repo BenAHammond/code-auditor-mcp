@@ -43,6 +43,7 @@ import type {
   CallGraphFact,
   HotspotFact,
   CoverageFact,
+  ClonePairHistoryFact,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
@@ -494,6 +495,46 @@ export const CORPUS_PRODUCERS = {
       }
     },
   } satisfies CorpusProcessor<'coverage', readonly []>,
+  // `clone-pair-history` (R5 diverging-clone) — the `dry_pair_history` rows the
+  // diverging-clone rule's cross-run pass reads, grouped by fingerprint. The
+  // file/line anchors are the most recent row's (ORDER BY timestamp ASC, last
+  // wins). Degrades to an empty fact with no handle or an absent table.
+  'clone-pair-history': {
+    id: 'clone-pair-history',
+    produces: 'clone-pair-history',
+    needs: [],
+    process(_facts, ctx): ClonePairHistoryFact {
+      const ih = ctx?.indexHandle;
+      if (!ih) return [];
+      let rows: Array<{ pair_fingerprint: string; file1: string; file2: string; line1: number; line2: number; similarity: number; timestamp: string }> = [];
+      try {
+        rows = ih.query(
+          'SELECT pair_fingerprint, file1, file2, line1, line2, similarity, timestamp FROM dry_pair_history ORDER BY pair_fingerprint, timestamp ASC',
+        ) as Array<{ pair_fingerprint: string; file1: string; file2: string; line1: number; line2: number; similarity: number; timestamp: string }>;
+      } catch {
+        // `dry_pair_history` may not exist — degrade to an empty fact.
+      }
+      const byFingerprint = new Map<string, { file1: string; file2: string; line1: number; line2: number; rows: Array<{ similarity: number; timestamp: string }> }>();
+      for (const r of rows) {
+        const g = byFingerprint.get(r.pair_fingerprint) ?? { file1: r.file1, file2: r.file2, line1: r.line1, line2: r.line2, rows: [] };
+        // Last row in the ASC ordering wins — the most recent measurement's anchors.
+        g.file1 = r.file1;
+        g.file2 = r.file2;
+        g.line1 = r.line1;
+        g.line2 = r.line2;
+        g.rows.push({ similarity: r.similarity, timestamp: r.timestamp });
+        byFingerprint.set(r.pair_fingerprint, g);
+      }
+      return [...byFingerprint.entries()].map(([fingerprint, g]) => ({
+        fingerprint,
+        file1: g.file1,
+        file2: g.file2,
+        line1: g.line1,
+        line2: g.line2,
+        rows: g.rows,
+      }));
+    },
+  } satisfies CorpusProcessor<'clone-pair-history', readonly []>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -555,4 +596,5 @@ export const FACT_KINDS = {
   'batch-functions': true,
   'hotspot': true,
   'coverage': true,
+  'clone-pair-history': true,
 } satisfies Record<FactKind, true>;
