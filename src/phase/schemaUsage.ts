@@ -26,6 +26,7 @@ import {
   findClosestNodeAt,
   findEnclosingFunctionIdentity,
 } from '../analyzers/universal/schema/codeAnalysis.js';
+import { passesFileGate } from '../analyzers/universal/schema/discovery.js';
 import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 import { buildProvenanceContext } from '../analyzers/provenance.js';
 
@@ -44,6 +45,17 @@ export function extractSchemaUsage(file: AstFile): SchemaUsageFact[] {
     dbCallMethods: DEFAULT_SCHEMA_CONFIG.dbCallMethods,
     dbWrapperNames: DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
   });
+
+  // R2.2 — the file gate that `analyzeAST` applied before extracting references.
+  // A Prisma/Kysely ORM call (`prisma.user.create`) is a real table reference
+  // but its `from "./index"` import carries no `prisma` source string, so the
+  // name-based gate (and `hasSqlTag`) fail it — legacy skipped the whole file
+  // and emitted no `unknown-table`. Without the gate here, the producer would
+  // extract those ORM references from files legacy never scanned, over-firing
+  // `unknown-table` on ORM-driven corpora (blitz `integration-tests/*/db/seed.ts`).
+  if (!passesFileGate(file.file, file.source, DEFAULT_SCHEMA_CONFIG, provenanceContext)) {
+    return [];
+  }
 
   const { references } = findTableReferences(file.ast, file.adapter, file.source, {
     config: DEFAULT_SCHEMA_CONFIG,

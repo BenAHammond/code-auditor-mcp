@@ -34,7 +34,6 @@ import type {
 } from '../types.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
-import { isTestFile } from '../reachability.js';
 
 /** The shared declaration for every TS SOLID rule in this slice. */
 type SolidNeeds = {
@@ -72,6 +71,22 @@ type GoSwitchNeeds = {
 function num(t: ThresholdValues, key: string, fallback: number): number {
   const v = t[key];
   return typeof v === 'number' ? v : fallback;
+}
+
+/** The SOLID analyzer's test-file detector — mirrors `UniversalSOLIDAnalyzer`
+ *  `isTestFile` exactly. This is deliberately NOT `reachability.isTestFile`:
+ *  the SOLID analyzer matched `/test\//` and `/tests\//` as *substrings*, so
+ *  `integration-tests/` is a test file here (it contains `tests/`) even though
+ *  `reachability.isTestFile` (leading-slash `includes('/tests/')`) does not. */
+function isTestFile(filePath: string): boolean {
+  const testPatterns = [
+    /\.test\.[jt]sx?$/,
+    /\.spec\.[jt]sx?$/,
+    /__tests__\//,
+    /test\//,
+    /tests\//,
+  ];
+  return testPatterns.some((pattern) => pattern.test(filePath));
 }
 
 /** Honor the legacy `skipTestFiles` gate (default true): the whole file is
