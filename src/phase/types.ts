@@ -61,6 +61,7 @@ export interface FactShapes {
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
   'loop-queries': LoopQueryFact[];
+  'dynamic-sql': DynamicSqlFact[];
   'table-catalog': TableCatalog;
   'mined-conventions': MinedConvention[];
   'react-component': ReactComponentScan[];
@@ -305,6 +306,29 @@ export type LoopQueryFact = {
   loopLine: number;
   /** Nesting depth of the enclosing loop (1 = top-level, 2 = nested once, …). */
   depth: number;
+};
+
+/**
+ * One dynamic-SQL construction candidate: a `query(`/`execute(` call site whose
+ * string argument is built by interpolation or concatenation and is not provably
+ * taint-safe. The producer runs the full legacy `checkSQLInjection` extraction —
+ * the regex scan, the parameterized-query skip (`query(sql, params)`), the
+ * enclosing-call + dynamic-parts safety analysis, and the per-function symbol
+ * ordinal — so `analyze` is a pure projection. `enclosingFn` is the bare
+ * function label the message interpolates; `symbol` is the full
+ * `<enclosingFn>:dynamic-sql-construction[:ordinal]` key the legacy finding
+ * carried as `functionName`.
+ */
+export type DynamicSqlFact = {
+  file: string;
+  /** 1-based line of the matched query/execute string argument. */
+  line: number;
+  /** 1-based column of the matched query/execute string argument. */
+  column: number;
+  /** The enclosing function/method label (`functionIdentityLabel`), or 'top-level'. */
+  enclosingFn: string;
+  /** The stable per-file symbol key the legacy finding carried as `functionName`. */
+  symbol: string;
 };
 
 /**
@@ -861,6 +885,7 @@ export interface SupplyingFormats {
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
   'data-access-calls': 'typescript' | 'tsx' | 'javascript';
   'loop-queries': 'typescript' | 'tsx' | 'javascript';
+  'dynamic-sql': 'typescript' | 'tsx' | 'javascript';
   'react-component': 'typescript' | 'tsx' | 'javascript';
   'file-header': 'typescript' | 'tsx' | 'javascript';
   'code-block': 'typescript' | 'tsx' | 'javascript';

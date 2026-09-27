@@ -741,21 +741,36 @@ const DANGEROUS_SQL_PATTERNS: RegExp[] = [
   /execute\s*\(\s*['"][^'"]*['"]?\s*\+/g,
 ];
 
+/**
+ * One dynamic-SQL-construction candidate: a dangerous query/execute call site
+ * that survived the parameterized-query and taint-safety filters. The
+ * serializable projection the `dynamic-sql` fact carries and the
+ * `dynamic-sql-construction` rule reads — `symbol` is the stable per-file key
+ * (the legacy finding's `functionName`), `enclosingFn` the bare function label
+ * the message interpolates.
+ */
+export interface DynamicSqlCandidate {
+  file: string;
+  line: number;
+  column: number;
+  enclosingFn: string;
+  symbol: string;
+}
+
 /** Bundled inputs for the per-match injection check. */
 interface InjectionCheckContext {
   ast: AST;
   adapter: LanguageAdapter;
   sourceCode: string;
   symbolOrdinals: Map<string, number>;
-  violations: Violation[];
 }
 
 /**
  * Evaluate a single dangerous-pattern match: skip parameterized queries and
- * taint-safe dynamic strings, else emit a dynamic-sql-construction violation.
+ * taint-safe dynamic strings, else produce a dynamic-sql-construction candidate.
  */
-function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray): void {
-  const { ast, adapter, sourceCode, symbolOrdinals, violations } = ctx;
+function collectInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray): DynamicSqlCandidate | null {
+  const { ast, adapter, sourceCode, symbolOrdinals } = ctx;
 
   // Parameterized queries pass a bound-params argument (`query(sql, params)`).
   // When the matched literal is followed by `, params` the interpolated
@@ -763,7 +778,7 @@ function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray)
   // bound by that argument — not an injection vector. The data-access
   // analyzer's checkQuerySecurity applies the same signal.
   const afterMatch = sourceCode.slice(match.index + match[0].length);
-  if (/^\s*,/.test(afterMatch)) return;
+  if (/^\s*,/.test(afterMatch)) return null;
 
   const location = offsetToLocation(sourceCode, match.index, { line: 1, column: 1 });
 
@@ -779,7 +794,7 @@ function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray)
   // data-access analyzer already trusts for sql-injection-risk.
   const callNode = findEnclosingCallExpression(node, adapter);
   if (callNode && isAllDynamicPartsSafe(callNode, ast, adapter, sourceCode)) {
-    return;
+    return null;
   }
 
   const enclosingFn = node ? functionIdentityLabel(findEnclosingFunctionIdentity(node, adapter, ast.filePath)) : 'top-level';
@@ -789,17 +804,49 @@ function checkInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray)
   symbolOrdinals.set(baseSymbol, ordinal);
   const symbol = ordinal > 1 ? `${baseSymbol}:${ordinal}` : baseSymbol;
 
-  violations.push(createSchemaViolation(
-    ast.filePath,
-    location,
-    `SQL query built via string interpolation or concatenation in ${enclosingFn}; use parameterized queries.`,
-    // User-controlled SQL built by interpolation is injectable now — critical.
-    { severity: 'critical', rule: 'dynamic-sql-construction', symbol }
-  ));
+  return { file: ast.filePath, line: location.line, column: location.column, enclosingFn, symbol };
 }
 
 /**
  * Detect potential SQL injection in query/execute calls.
+ *
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @returns SQL-injection violations.
+ */
+export function collectDynamicSqlCandidates(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string
+): DynamicSqlCandidate[] {
+  const candidates: DynamicSqlCandidate[] = [];
+  const ctx: InjectionCheckContext = {
+    ast,
+    adapter,
+    sourceCode,
+    symbolOrdinals: new Map<string, number>(),
+  };
+
+  for (const pattern of DANGEROUS_SQL_PATTERNS) {
+    // Clone regex to reset state (global regexes track lastIndex)
+    const re = new RegExp(pattern.source, pattern.flags);
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(sourceCode)) !== null) {
+      const candidate = collectInjectionMatch(ctx, match);
+      if (candidate) candidates.push(candidate);
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Detect potential SQL injection in query/execute calls (legacy emission form).
+ *
+ * Maps the collected candidates — the exact set `collectDynamicSqlCandidates`
+ * returns — to schema violations, so the legacy path and the phase path cannot
+ * diverge (parity by construction).
  *
  * @param ast The parsed file AST.
  * @param adapter The language adapter for the file's syntax.
@@ -811,25 +858,15 @@ export function checkSQLInjection(
   adapter: LanguageAdapter,
   sourceCode: string
 ): Violation[] {
-  const violations: Violation[] = [];
-  const ctx: InjectionCheckContext = {
-    ast,
-    adapter,
-    sourceCode,
-    symbolOrdinals: new Map<string, number>(),
-    violations,
-  };
-
-  for (const pattern of DANGEROUS_SQL_PATTERNS) {
-    // Clone regex to reset state (global regexes track lastIndex)
-    const re = new RegExp(pattern.source, pattern.flags);
-    let match: RegExpExecArray | null;
-    while ((match = re.exec(sourceCode)) !== null) {
-      checkInjectionMatch(ctx, match);
-    }
-  }
-
-  return violations;
+  return collectDynamicSqlCandidates(ast, adapter, sourceCode).map((c) =>
+    createSchemaViolation(
+      c.file,
+      { line: c.line, column: c.column },
+      `SQL query built via string interpolation or concatenation in ${c.enclosingFn}; use parameterized queries.`,
+      // User-controlled SQL built by interpolation is injectable now — critical.
+      { severity: 'critical', rule: 'dynamic-sql-construction', symbol: c.symbol }
+    )
+  );
 }
 
 /**

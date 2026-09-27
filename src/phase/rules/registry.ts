@@ -22,7 +22,7 @@ import { schemaValidatorRules } from './schemaValidator.js';
 import { documentationRules } from './documentation.js';
 import { stylesRules } from './styles.js';
 import { crossDomainRules } from './crossDomain.js';
-import { schemaRules } from './schema.js';
+import { schemaRules, dynamicSqlRules } from './schema.js';
 import { conventionsRules } from './conventions.js';
 import { dryRules } from './dry.js';
 import { securityRules } from './security.js';
@@ -78,6 +78,7 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...stylesRules,
   ...crossDomainRules,
   ...schemaRules,
+  ...dynamicSqlRules,
   ...conventionsRules,
   ...dryRules,
   ...securityRules,

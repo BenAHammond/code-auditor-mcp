@@ -52,6 +52,7 @@ import { extractStylesCss } from './stylesCss.js';
 import { extractStylesSource } from './stylesSource.js';
 import { extractDataAccessCalls } from './dataAccessCalls.js';
 import { extractLoopQueries } from './loopQueries.js';
+import { extractDynamicSql } from './dynamicSql.js';
 import { extractSchemaUsage } from './schemaUsage.js';
 import { extractSchemaCode } from './schemaCode.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
@@ -110,6 +111,7 @@ const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entiti
   extractCrossLanguageEntities((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file));
 const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file as AstFile);
 const loopQueriesProcess = (file: ParsedFile): FactFragment<'loop-queries'> => extractLoopQueries(file as AstFile);
+const dynamicSqlProcess = (file: ParsedFile): FactFragment<'dynamic-sql'> => extractDynamicSql(file as AstFile);
 const reactComponentProcess = (file: ParsedFile): FactFragment<'react-component'> => [extractReactComponents(file as AstFile)];
 const fileHeaderProcess = (file: ParsedFile): FactFragment<'file-header'> => extractFileHeader(file as AstFile);
 const codeBlockProcess = (file: ParsedFile): FactFragment<'code-block'> => extractCodeBlocks(file as AstFile);
@@ -187,6 +189,11 @@ export const PRODUCERS = {
     typescript: fileProducer('loop-queries', 'typescript', loopQueriesProcess),
     tsx: fileProducer('loop-queries', 'tsx', loopQueriesProcess),
     javascript: fileProducer('loop-queries', 'javascript', loopQueriesProcess),
+  },
+  'dynamic-sql': {
+    typescript: fileProducer('dynamic-sql', 'typescript', dynamicSqlProcess),
+    tsx: fileProducer('dynamic-sql', 'tsx', dynamicSqlProcess),
+    javascript: fileProducer('dynamic-sql', 'javascript', dynamicSqlProcess),
   },
   'react-component': {
     typescript: fileProducer('react-component', 'typescript', reactComponentProcess),
@@ -279,6 +286,7 @@ export const FACT_KINDS = {
   'cross-language-entities': true,
   'data-access-calls': true,
   'loop-queries': true,
+  'dynamic-sql': true,
   'table-catalog': true,
   'mined-conventions': true,
   'react-component': true,

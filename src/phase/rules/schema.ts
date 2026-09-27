@@ -28,13 +28,16 @@
  *     that no current producer emits; it lands with the §5 corpus reduction.
  *   - `too-many-queries` — walks function *bodies* to count raw `query(`/
  *     `execute(` call sites, a per-function signal `schema-usage` doesn't carry.
- *   - `dynamic-sql-construction` — walks string-literal/concatenation call
- *     sites, a different extraction than resolved table references.
  *   - The unregistered `reserved-word` emission inside the old
  *     `checkNamingConventions` is dropped: it has no registry entry (no
  *     message/docs/thresholds/samples), so it is an emission with no rule
  *     definition — the inverse of §0's "no emission site", to be disposed in
  *     §13 rather than silently re-homed into the unified `ruleId` model.
+ *
+ * `dynamic-sql-construction` lives below in a *separate* array: it reads the
+ * `dynamic-sql` fact (dangerous query/execute call sites), not `schema-usage`,
+ * so its context carries `dynamic-sql` alone — the same producer-before-rule
+ * split as `loop-query` next to `data-access`.
  */
 
 import type {
@@ -177,3 +180,46 @@ const tableNamingConvention: RuleDefinition<SchemaUsageNeeds> = {
 export const schemaRules: readonly RuleDefinition<
   SchemaUsageNeeds | UnknownTableNeeds
 >[] = [unknownTable, tableNamingConvention];
+
+// ── dynamic-sql-construction ────────────────────────────────────────────────
+
+/**
+ * `dynamic-sql-construction` reads the `dynamic-sql` fact (a flat array of
+ * `DynamicSqlFact`, one per dangerous query/execute call site) — not
+ * `schema-usage`. It is exported in a *separate* array from `schemaRules`
+ * because the two fact kinds are distinct: the schema slice context carries
+ * `schema-usage` + `table-catalog`, while this rule's context carries
+ * `dynamic-sql` alone.
+ *
+ * Detection is the producer's — `collectDynamicSqlCandidates` in `codeAnalysis.ts`,
+ * shared with the legacy `checkSQLInjection` — so `analyze` is a pure projection
+ * of the pre-computed anchor/enclosingFn/symbol, and parity holds by construction.
+ */
+type DynamicSqlNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['dynamic-sql'];
+};
+
+const dynamicSqlConstruction: RuleDefinition<DynamicSqlNeeds> = {
+  id: 'dynamic-sql-construction',
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['dynamic-sql'] },
+  severity: 'critical',
+  message: META['dynamic-sql-construction'].message,
+  docs: META['dynamic-sql-construction'].docs,
+  thresholds: META['dynamic-sql-construction'].thresholds,
+  samples: META['dynamic-sql-construction'].samples,
+  analyze(ctx): Finding[] {
+    return ctx.facts['dynamic-sql'].map((c) => ({
+      ruleId: 'dynamic-sql-construction',
+      severity: 'critical',
+      message: `SQL query built via string interpolation or concatenation in ${c.enclosingFn}; use parameterized queries.`,
+      file: c.file,
+      line: c.line,
+      column: c.column,
+      symbol: c.symbol,
+    }));
+  },
+};
+
+/** The dynamic-sql-construction rule this slice migrates (reads `dynamic-sql`). */
+export const dynamicSqlRules: readonly RuleDefinition<DynamicSqlNeeds>[] = [dynamicSqlConstruction];

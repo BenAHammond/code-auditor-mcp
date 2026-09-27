@@ -23,7 +23,7 @@ import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { fileProducerFor, CORPUS_PRODUCERS } from './producers.js';
 import { solidRules } from './rules/solid.js';
 import { dataAccessRules, loopQueryRules } from './rules/dataAccess.js';
-import { schemaRules } from './rules/schema.js';
+import { schemaRules, dynamicSqlRules } from './rules/schema.js';
 import { dependencyGraphRules } from './rules/dependencyGraph.js';
 import { schemaValidatorRules } from './rules/schemaValidator.js';
 import { documentationRules } from './rules/documentation.js';
@@ -42,6 +42,7 @@ import type {
   FileSymbols,
   ResolvedQuery,
   LoopQueryFact,
+  DynamicSqlFact,
   SchemaUsageFact,
   SchemaDeclaration,
   TableCatalog,
@@ -264,6 +265,53 @@ export async function analyzeLoopQueries(
 export async function runLoopQueriesSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const facts = await buildLoopQueries(files);
   return analyzeLoopQueries(facts, thresholds);
+}
+
+// ── dynamic-sql slice (dynamic-sql → dynamic-sql-construction) ──────────────
+
+/**
+ * Parse → Process for the `dynamic-sql` fact. Returns the assembled corpus
+ * fact (every dangerous query/execute call site, ASTs already freed). The fact
+ * carries no cross-file structure — the `dynamic-sql-construction` rule reduces
+ * each element in isolation, exactly as the legacy `checkSQLInjection` ran once
+ * per AST.
+ */
+export async function buildDynamicSql(files: readonly InputFile[]): Promise<DynamicSqlFact[]> {
+  const facts: DynamicSqlFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('dynamic-sql', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as DynamicSqlFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `dynamic-sql` fact with the dynamic-sql-construction rule. */
+export async function analyzeDynamicSql(
+  facts: DynamicSqlFact[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'dynamic-sql': facts },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of dynamicSqlRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The dynamic-sql slice: parse → dynamic-sql → dynamic-sql-construction → findings. */
+export async function runDynamicSqlSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const facts = await buildDynamicSql(files);
+  return analyzeDynamicSql(facts, thresholds);
 }
 
 // ── schema slice (the "repeat" for a corpus-consuming fact kind) ────────────
