@@ -770,7 +770,13 @@ export async function runPipeline(
   // drop conventions and cross-domain results because the post-pipeline
   // writeIndexFactsToDb call at auditRunner.ts:545 happens too late.
   if (indexHandle && stage2.indexFacts.length > 0) {
+    const writeT0 = performance.now();
     writeIndexFactsToDb(indexHandle, stage2.indexFacts);
+    // §6.3 — the parent is the only writer; time the serial write so the
+    // parent-serial-vs-concurrent throughput question is a measured number,
+    // not a claim. Wall-clock, not CPU: SQLite upserts are I/O-bound.
+    stageTiming['index-fact-write'] = performance.now() - writeT0;
+    stageTiming['index-fact-write-count'] = stage2.indexFacts.length;
     // Clear flushed facts so the post-pipeline flush (auditRunner.ts:545)
     // doesn't double-insert them.
     stage2.indexFacts = [];
@@ -1009,37 +1015,61 @@ export async function runPipeline(
  *
  * Spec 25 B4 — moved from analyzer-side CodeIndexDB calls to a post-pipeline
  * write step so visitors never open the database directly.
+ *
+ * Spec 68 §6.3 — the parent is the only writer and it writes in *batched
+ * transactions*. Per-fact `handle.run` issues one implicit transaction per
+ * statement (a WAL fsync each), so a full-repo flush of thousands of facts
+ * costs ~0.15–0.22 ms/fact. Wrapping the flush in a single better-sqlite3
+ * transaction amortizes the commit to one fsync; a handle with no `rawDb`
+ * (in-memory overlay) falls back to the per-fact path unchanged.
  */
 export function writeIndexFactsToDb(handle: IndexHandle, facts: IndexFactsEntry[]): void {
-  for (const fact of facts) {
-    const data = fact.data as Record<string, unknown>;
+  if (facts.length === 0) return;
+  withBatchWrite(handle, () => {
+    for (const fact of facts) {
+      const data = fact.data as Record<string, unknown>;
 
-    // Special action: clear rows by file path
-    if (data._action === 'clear-by-file') {
-      handle.run(`DELETE FROM ${fact.table} WHERE file_path = ?`, [data.file_path as string]);
-      continue;
+      // Special action: clear rows by file path
+      if (data._action === 'clear-by-file') {
+        handle.run(`DELETE FROM ${fact.table} WHERE file_path = ?`, [data.file_path as string]);
+        continue;
+      }
+
+      // Normal upsert
+      const columns = Object.keys(data).filter(k => !k.startsWith('_'));
+      const values = columns.map(k => data[k]);
+      const placeholders = columns.map(() => '?').join(', ');
+
+      if (fact.conflictKey) {
+        const keyCols = fact.conflictKey.split(',').map(s => s.trim());
+        const updateCols = columns.filter(c => !keyCols.includes(c));
+        const updates = updateCols.map(c => `"${c}" = excluded."${c}"`).join(', ');
+        handle.run(
+          `INSERT INTO ${fact.table} ("${columns.join('", "')}") VALUES (${placeholders}) ON CONFLICT (${keyCols.join(', ')}) DO UPDATE SET ${updates}`,
+          values,
+        );
+      } else {
+        // Normal insert — no conflictKey (caller handles dedup via clear-by-file or similar)
+        handle.run(
+          `INSERT INTO ${fact.table} ("${columns.join('", "')}") VALUES (${placeholders})`,
+          values,
+        );
+      }
     }
+  });
+}
 
-    // Normal upsert
-    const columns = Object.keys(data).filter(k => !k.startsWith('_'));
-    const values = columns.map(k => data[k]);
-    const placeholders = columns.map(() => '?').join(', ');
-
-    if (fact.conflictKey) {
-      const keyCols = fact.conflictKey.split(',').map(s => s.trim());
-      const updateCols = columns.filter(c => !keyCols.includes(c));
-      const updates = updateCols.map(c => `"${c}" = excluded."${c}"`).join(', ');
-      handle.run(
-        `INSERT INTO ${fact.table} ("${columns.join('", "')}") VALUES (${placeholders}) ON CONFLICT (${keyCols.join(', ')}) DO UPDATE SET ${updates}`,
-        values,
-      );
-    } else {
-      // Normal insert — no conflictKey (caller handles dedup via clear-by-file or similar)
-      handle.run(
-        `INSERT INTO ${fact.table} ("${columns.join('", "')}") VALUES (${placeholders})`,
-        values,
-      );
-    }
+/**
+ * Run a fact-flush body inside a single SQLite transaction when the handle
+ * exposes a better-sqlite3 `rawDb` (its `.transaction` auto-rolls back on a
+ * throw), and otherwise run it directly. §6.3's "batched transactions".
+ */
+function withBatchWrite(handle: IndexHandle, write: () => void): void {
+  const db = handle.rawDb as { transaction?: <T>(fn: () => T) => () => T } | undefined;
+  if (db && typeof db.transaction === 'function') {
+    db.transaction(write)();
+  } else {
+    write();
   }
 }
 

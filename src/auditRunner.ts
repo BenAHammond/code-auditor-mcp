@@ -48,7 +48,7 @@ import { CodeIndexDB } from './codeIndexDB.js';
 import { writeAuditToLedger, detectRunInput } from './ledger.js';
 
 // Pipeline imports (Spec 25 — pipeline replaces hand-rolled analyzer loop)
-import { runPipeline, writeIndexFactsToDb, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
+import { runPipeline, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
 import {
   createSolidVisitor,
   createDryVisitor,
@@ -247,6 +247,13 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // isolates the rule cost. Captured alongside the wall clock so both stay in
     // the same scope (everything from scope resolution through result creation).
     const startCpu = process.cpuUsage();
+    // §6.3 write-path measurement — the parent is the only index writer. The
+    // write itself happens inside `runPipeline` (pipeline.ts flushes stage2
+    // facts before the reducers need them); its count and wall-clock surface via
+    // `stageTiming['index-fact-write' / 'index-fact-write-count']`, threaded here
+    // into report metadata so serial-write throughput is a reported number.
+    let indexFactsWritten = 0;
+    let writeIndexFactsMs = 0;
 
     // ── Scope resolution ─────────────────────────────────────────────
     const scope = mergedOptions.scope ?? 'all';
@@ -838,10 +845,14 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         logMcpInfo('analysis', 'running pipeline', { visitorCount: pipelineVisitors.length, reducerCount: pipelineReducers.length, derivedReducerCount: pipelineDerivedReducers.length, fileCount: files.length });
         const pipelineResult = await runPipeline(pipelineConfig, pipelineIndexHandle);
 
-        // Write index facts (schema_usage from schema visitor, etc.)
-        if (pipelineIndexHandle && pipelineResult.indexFacts && pipelineResult.indexFacts.length > 0) {
-          writeIndexFactsToDb(pipelineIndexHandle, pipelineResult.indexFacts);
-        }
+        // §6.3 — the parent is the only index writer; the write happened inside
+        // runPipeline (pipeline.ts flushes stage2 facts before the reducers need
+        // them), so its timing and count surface via stageTiming. Thread them
+        // into the report metadata here.
+        const stageWriteCount = pipelineResult.metadata.stageTiming?.['index-fact-write-count'];
+        const stageWriteMs = pipelineResult.metadata.stageTiming?.['index-fact-write'];
+        if (typeof stageWriteCount === 'number') indexFactsWritten = stageWriteCount;
+        if (typeof stageWriteMs === 'number') writeIndexFactsMs = stageWriteMs;
 
         // Pull in pipeline results
         for (const [name, ar] of Object.entries(pipelineResult.analyzerResults)) {
@@ -1372,6 +1383,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         auditDuration: Date.now() - startTime,
         auditCpuMs: cpuDurationMs(startCpu),
         filesAnalyzed: files.length,
+        ...(indexFactsWritten > 0 && { indexFactsWritten, writeIndexFactsMs }),
         analyzersRun: analyzers,
         ...(isScoped && { analyzedFiles: files }),
         configUsed: mergedOptions,
