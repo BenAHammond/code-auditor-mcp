@@ -31,6 +31,7 @@ import { stylesRules } from './rules/styles.js';
 import { crossDomainRules } from './rules/crossDomain.js';
 import { conventionsRules } from './rules/conventions.js';
 import { dryRules } from './rules/dry.js';
+import { securityRules } from './rules/security.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -543,4 +544,33 @@ export async function runDrySlice(files: readonly InputFile[], thresholds?: Thre
     buildStringLiterals(files),
   ]);
   return analyzeDry(imports, stringLiterals, thresholds);
+}
+
+// ── security slice (string-literals → hardcoded-connection) ─────────────────
+
+/**
+ * Analyze the assembled `string-literals` fact with the hardcoded-credential
+ * rules. Each rule reads only the fact its `needs` declares; the union context
+ * carries `string-literals` today (`secret-candidates` joins later).
+ */
+export async function analyzeSecurity(
+  stringLiterals: StringLiteralFact[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'string-literals': stringLiterals },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of securityRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The security slice: parse → string-literals → hardcoded-credential rules → findings. */
+export async function runSecuritySlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const stringLiterals = await buildStringLiterals(files);
+  return analyzeSecurity(stringLiterals, thresholds);
 }

@@ -241,12 +241,18 @@ export type ImportFact = {
  * grouping key matches the legacy `checkDuplicateStrings` exactly) plus the
  * 1-based start position. The `duplicate-string-literal` rule groups by
  * `(file, value)`.
+ *
+ * `enclosingFunction` is the enclosing identity label
+ * (`functionIdentityLabel(findEnclosingFunctionIdentity(...))`) the producer
+ * computes where the AST still lived; `hardcoded-connection` uses it for its
+ * symbol. Top-level literals carry `'top-level'`.
  */
 export type StringLiteralFact = {
   file: string;
   value: string;
   line: number;
   column: number;
+  enclosingFunction: string;
 };
 
 /** A schema declared in JSON (`.codeauditor.json` schemas) or in code (DDL). */

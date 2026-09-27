@@ -6,9 +6,19 @@
  * included) plus the 1-based start position. The raw text is the grouping key,
  * matching `UniversalDRYAnalyzer.checkDuplicateStrings` which read `getNodeText`
  * and compared the quoted string verbatim.
+ *
+ * `enclosingFunction` is the enclosing-identity label computed here (where the
+ * AST still lives) via the shared `findEnclosingFunctionIdentity` +
+ * `functionIdentityLabel` — the same pair `UniversalDataAccessAnalyzer`'s
+ * `enclosingIdentity` used for `hardcoded-connection`'s symbol. The rule only
+ * reads the label; the tree is gone before it runs.
  */
 
 import type { AstFile, StringLiteralFact } from './types.js';
+import {
+  findEnclosingFunctionIdentity,
+  functionIdentityLabel,
+} from '../analyzers/universal/schema/codeAnalysis.js';
 
 /** One file's string/template-string literals as `StringLiteralFact[]`. */
 export function extractStringLiterals(file: AstFile): StringLiteralFact[] {
@@ -20,5 +30,8 @@ export function extractStringLiterals(file: AstFile): StringLiteralFact[] {
     value: file.adapter.getNodeText(node, file.source),
     line: node.location.start.line,
     column: node.location.start.column,
+    enclosingFunction: functionIdentityLabel(
+      findEnclosingFunctionIdentity(node, file.adapter, file.file),
+    ),
   }));
 }
