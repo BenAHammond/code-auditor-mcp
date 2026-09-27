@@ -36,15 +36,24 @@
  * `expandWrittenTables` / `flagTransactionBoundaryWrites` verbatim over those
  * facts.
  *
+ * Also here: `no-validator-reachable` (validation bypass) — migrated on top of
+ * the `call-graph` fact (widened with the `functions` table's `used_imports` /
+ * `is_exported` columns for validator provenance) plus `schema-usage`. Its
+ * `analyze(ctx)` reproduces the legacy `detectValidationBypass` /
+ * `buildValidatorIds` / `bfsReachesValidator` / `computeWriterCoverage` /
+ * `groupWritersByDirectory` / `flagUnvalidatedWriters` verbatim over those
+ * facts, reading the opt-in `validatorBypass` thresholds (validators, modeShare,
+ * minCorpus, depth) from `ctx.thresholds`.
+ *
  * Not here, by design:
- *   - `no-validator-reachable` — BFS over the call graph + validator provenance.
- *   - `uncovered-risk` — coverage data + hotspot ranking.
- * These two stay on the legacy path (their validator/coverage inputs have no
- * phase-model producer yet).
+ *   - `uncovered-risk` — coverage data + hotspot ranking. Stays on the legacy
+ *     path (its coverage/hotspot inputs have no phase-model producer yet).
  */
 
+import * as path from 'node:path';
 import type { RuleDefinition, Finding, SchemaUsageFact, CallGraphFact, BatchFunctionFact } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
+import { VALIDATOR_PACKAGES } from '../../analyzers/provenance.js';
 
 /** The shared declaration for the TS cross-domain rules in this slice. */
 type CrossDomainNeeds = {
@@ -57,6 +66,13 @@ type CrossDomainNeeds = {
 type MultiTableWriteNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
   readonly facts: readonly ['schema-usage', 'call-graph', 'batch-functions'];
+};
+
+/** The declared inputs of `no-validator-reachable`: schema writes + the
+ *  (widened) call graph for validator provenance + BFS reach. */
+type ValidatorReachNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['schema-usage', 'call-graph'];
 };
 
 const META = RULE_REGISTRY;
@@ -381,6 +397,247 @@ function detectTransactionBoundaryRisk(
   return flagTransactionBoundaryWrites(funcWrites, usages, graph, fnIdLookup, batches, txnTableMax);
 }
 
+// ── No-validator-reachable (validation bypass) ──────────────────────────────
+
+/** One writer row — the schema_usage ⋈ functions join the legacy SQL built. */
+interface WriterRow {
+  function_name: string;
+  file_path: string;
+  line: number;
+  function_id: number;
+}
+
+/** A writer bucketed into a directory group, with its reach verdict. */
+interface DirWriter {
+  key: string;
+  covered: boolean;
+  line: number;
+  funcName: string;
+  filePath: string;
+}
+
+/**
+ * Re-home the legacy writer query: the schema_usage write rows INNER-JOINed to
+ * `functions` on (name, file_path) — a write whose function has no index row is
+ * dropped by the join — then DISTINCT on (name, file, line) and ORDER BY
+ * (file_path, function_name). The `function_id` resolves through the call-graph
+ * fact's `functions` catalog.
+ */
+function collectWriters(usages: SchemaUsageFact[], graph: CallGraphFact): WriterRow[] {
+  const fnIdByNamePath = new Map<string, number>();
+  for (const f of graph.functions) {
+    const k = `${f.filePath}::${f.name}`;
+    if (!fnIdByNamePath.has(k)) fnIdByNamePath.set(k, f.id);
+  }
+  const seen = new Set<string>();
+  const writers: WriterRow[] = [];
+  for (const u of usages) {
+    if (!WRITE_TYPES.has(u.usageType)) continue;
+    if (u.functionName == null) continue;
+    const fnId = fnIdByNamePath.get(`${u.filePath}::${u.functionName}`);
+    if (fnId === undefined) continue; // inner JOIN drops rows with no function row
+    const dkey = `${u.functionName}::${u.filePath}::${u.line}`;
+    if (seen.has(dkey)) continue;
+    seen.add(dkey);
+    writers.push({ function_name: u.functionName, file_path: u.filePath, line: u.line, function_id: fnId });
+  }
+  writers.sort(
+    (a, b) => cmpNullableString(a.file_path, b.file_path) || cmpNullableString(a.function_name, b.function_name),
+  );
+  return writers;
+}
+
+/**
+ * Build the validator function-ID set in priority order (re-homed from
+ * `buildValidatorIds`): user-configured validators, then provenanced validators
+ * (exported functions whose own `used_imports` JSON includes a validator
+ * package), then a name-based heuristic fallback only when both prior sources
+ * are silent. The provenance LIKE test runs over the raw `used_imports` JSON
+ * string — `used_imports LIKE '%"zod"%'` — so the widened call-graph fact
+ * carries it verbatim rather than re-parsed.
+ */
+function buildValidatorIdsFact(graph: CallGraphFact, userValidators: string[]): Set<number> {
+  const validatorIds = new Set<number>();
+  const byName = new Map<string, number[]>();
+  const byPathName = new Map<string, number[]>();
+  for (const f of graph.functions) {
+    const names = byName.get(f.name);
+    if (names) names.push(f.id);
+    else byName.set(f.name, [f.id]);
+    const k = `${f.filePath}#${f.name}`;
+    const pathNames = byPathName.get(k);
+    if (pathNames) pathNames.push(f.id);
+    else byPathName.set(k, [f.id]);
+  }
+
+  // 1a. User-configured validators (format: "funcName" or "path#funcName").
+  for (const v of userValidators) {
+    const hashIdx = v.indexOf('#');
+    if (hashIdx >= 0) {
+      const vPath = v.substring(0, hashIdx);
+      const vName = v.substring(hashIdx + 1);
+      for (const id of byPathName.get(`${vPath}#${vName}`) ?? []) validatorIds.add(id);
+    } else {
+      for (const id of byName.get(v) ?? []) validatorIds.add(id);
+    }
+  }
+
+  // 1b. Provenanced validators.
+  if (validatorIds.size === 0) {
+    for (const f of graph.functions) {
+      if (f.usedImports == null || !f.isExported) continue;
+      for (const pkg of VALIDATOR_PACKAGES) {
+        if (f.usedImports.includes(`"${pkg}"`)) {
+          validatorIds.add(f.id);
+          break;
+        }
+      }
+    }
+  }
+
+  // 1c. Heuristic fallback (only when provenance found nothing AND no
+  //     user-configured validators exist).
+  if (validatorIds.size === 0 && userValidators.length === 0) {
+    for (const f of graph.functions) {
+      if (!f.isExported) continue;
+      if (f.name.startsWith('validate') || f.name.startsWith('assert')) validatorIds.add(f.id);
+    }
+  }
+
+  return validatorIds;
+}
+
+/**
+ * BFS through the call graph up to maxDepth, checking whether any path from
+ * `startFuncId` reaches a validator id (re-homed from `bfsReachesValidator`).
+ */
+function bfsReachesValidatorFact(
+  graph: CallGraphFact,
+  startFuncId: number,
+  validatorIds: Set<number>,
+  maxDepth: number,
+): boolean {
+  const visited = new Set<number>();
+  let currentLevel = [startFuncId];
+
+  for (let d = 0; d < maxDepth; d++) {
+    const nextLevel: number[] = [];
+    for (const funcId of currentLevel) {
+      if (validatorIds.has(funcId)) return true;
+      if (visited.has(funcId)) continue;
+      visited.add(funcId);
+      for (const edge of graph.callEdges) {
+        if (edge.fromId !== funcId) continue;
+        if (!visited.has(edge.toId)) nextLevel.push(edge.toId);
+      }
+    }
+    currentLevel = nextLevel;
+  }
+  for (const funcId of currentLevel) {
+    if (validatorIds.has(funcId)) return true;
+  }
+  return false;
+}
+
+/** BFS from each writer to check validator reach, deduplicated by key. */
+function computeWriterCoverageFact(
+  writers: WriterRow[],
+  validatorIds: Set<number>,
+  graph: CallGraphFact,
+  depth: number,
+): Map<string, { covered: boolean; line: number; funcName: string }> {
+  const writerCoverage = new Map<string, { covered: boolean; line: number; funcName: string }>();
+  for (const w of writers) {
+    const key = `${w.file_path}::${w.function_name}`;
+    if (writerCoverage.has(key)) continue; // deduplicate
+    const covered = bfsReachesValidatorFact(graph, w.function_id, validatorIds, depth);
+    writerCoverage.set(key, { covered, line: w.line, funcName: w.function_name });
+  }
+  return writerCoverage;
+}
+
+/** Group writers by directory, deduplicating multi-row schema_usage entries. */
+function groupWritersByDirectoryFact(
+  writers: WriterRow[],
+  writerCoverage: Map<string, { covered: boolean; line: number; funcName: string }>,
+): Map<string, DirWriter[]> {
+  const dirWriters = new Map<string, DirWriter[]>();
+  const dirSeen = new Set<string>();
+  for (const w of writers) {
+    const dir = path.dirname(w.file_path);
+    const key = `${w.file_path}::${w.function_name}`;
+    const dirKey = `${dir}::${key}`;
+    if (dirSeen.has(dirKey)) continue;
+    dirSeen.add(dirKey);
+    const cov = writerCoverage.get(key);
+    if (!cov) continue;
+    if (!dirWriters.has(dir)) dirWriters.set(dir, []);
+    dirWriters.get(dir)!.push({
+      key,
+      covered: cov.covered,
+      line: cov.line,
+      funcName: cov.funcName,
+      filePath: w.file_path,
+    });
+  }
+  return dirWriters;
+}
+
+/** Flag uncovered writers in validator-dense directories (re-homed verbatim). */
+function flagUnvalidatedWritersFact(
+  dirWriters: Map<string, DirWriter[]>,
+  minCorpus: number,
+  modeShare: number,
+  depth: number,
+): Finding[] {
+  const violations: Finding[] = [];
+  for (const [dir, dirWriterList] of dirWriters) {
+    if (dirWriterList.length < minCorpus) continue;
+
+    const coveredCount = dirWriterList.filter((w) => w.covered).length;
+    const ratio = coveredCount / dirWriterList.length;
+
+    if (ratio >= modeShare) {
+      for (const w of dirWriterList) {
+        if (w.covered) continue;
+        violations.push({
+          ruleId: 'cross-domain/no-validator-reachable',
+          severity: 'severe',
+          message:
+            `Function '${w.funcName}' does not reach a validator within BFS depth ≤ ${depth}. ` +
+            `${coveredCount}/${dirWriterList.length} peer writers in '${dir}' do. ` +
+            `Consider adding input validation.`,
+          file: w.filePath,
+          line: w.line,
+          column: 0,
+          symbol: w.funcName,
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+/** The fact-based validation-bypass detector (re-homes `detectValidationBypass`). */
+function detectValidationBypass(
+  usages: SchemaUsageFact[],
+  graph: CallGraphFact,
+  userValidators: string[],
+  modeShare: number,
+  minCorpus: number,
+  depth: number,
+): Finding[] {
+  const validatorIds = buildValidatorIdsFact(graph, userValidators);
+  if (validatorIds.size === 0) return [];
+
+  const writers = collectWriters(usages, graph);
+  if (writers.length === 0) return [];
+
+  const writerCoverage = computeWriterCoverageFact(writers, validatorIds, graph, depth);
+  const dirWriters = groupWritersByDirectoryFact(writers, writerCoverage);
+  return flagUnvalidatedWritersFact(dirWriters, minCorpus, modeShare, depth);
+}
+
 // ── Rule definitions ────────────────────────────────────────────────────────
 
 const writtenNeverRead: RuleDefinition<CrossDomainNeeds> = {
@@ -429,6 +686,33 @@ const multiTableWrite: RuleDefinition<MultiTableWriteNeeds> = {
   },
 };
 
+const noValidatorReachable: RuleDefinition<ValidatorReachNeeds> = {
+  id: 'cross-domain/no-validator-reachable',
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'call-graph'] },
+  severity: 'severe',
+  message: META['cross-domain/no-validator-reachable'].message,
+  docs: META['cross-domain/no-validator-reachable'].docs,
+  thresholds: META['cross-domain/no-validator-reachable'].thresholds,
+  samples: META['cross-domain/no-validator-reachable'].samples,
+  analyze(ctx): Finding[] {
+    const vb = ctx.thresholds['validatorBypass'] as
+      | { validators?: string[]; modeShare?: number; minCorpus?: number; depth?: number }
+      | undefined;
+    const userValidators = vb?.validators ?? [];
+    const modeShare = vb?.modeShare ?? 0.8;
+    const minCorpus = vb?.minCorpus ?? 20;
+    const depth = vb?.depth ?? 3;
+    return detectValidationBypass(
+      ctx.facts['schema-usage'],
+      ctx.facts['call-graph'],
+      userValidators,
+      modeShare,
+      minCorpus,
+      depth,
+    );
+  },
+};
+
 /** The two TypeScript cross-domain rules this slice migrates, in registry order. */
 export const crossDomainRules: readonly RuleDefinition<CrossDomainNeeds>[] = [
   writtenNeverRead,
@@ -438,3 +722,8 @@ export const crossDomainRules: readonly RuleDefinition<CrossDomainNeeds>[] = [
 /** `multi-table-write` — the index-backed sibling (call-graph + batch-functions
  *  facts) registered alongside `crossDomainRules` but typed separately. */
 export const multiTableWriteRule: RuleDefinition<MultiTableWriteNeeds> = multiTableWrite;
+
+/** `no-validator-reachable` — the validation-bypass sibling (call-graph
+ *  validator provenance + BFS reach) registered alongside the other
+ *  cross-domain rules but typed separately. */
+export const noValidatorReachableRule: RuleDefinition<ValidatorReachNeeds> = noValidatorReachable;

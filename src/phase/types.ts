@@ -1053,12 +1053,25 @@ export type ChannelOperationsFact = {
  * function→function call edges the legacy `graph_cache` carried, read by the
  * corpus `call-graph` producer from the code index. Plain-data projection: no
  * handle survives the corpus boundary. `functions` is the `functions` table's
- * identity projection (id → {name, filePath}) the depth-1 callee expansion
- * maps a `filePath::name` key through; `callEdges` is `graph_cache`'s `call`
+ * identity projection (id → {name, filePath, usedImports, isExported}) the
+ * depth-1 callee expansion maps a `filePath::name` key through and the
+ * validation-bypass provenance (`buildValidatorIds`) reads its
+ * `usedImports`/`isExported` through; `callEdges` is `graph_cache`'s `call`
  * edges (fromId → toId), parsed from its string node/neighbor keys.
+ *
+ * `usedImports` is the raw `used_imports` JSON-array string (or null) — the
+ * provenance check `used_imports LIKE '%"zod"%'` runs over that exact string,
+ * so the fact carries it verbatim rather than re-parsing. `isExported` is the
+ * boolean projection of the `is_exported` 0/1 column.
  */
 export type CallGraphFact = {
-  functions: ReadonlyArray<{ id: number; name: string; filePath: string }>;
+  functions: ReadonlyArray<{
+    id: number;
+    name: string;
+    filePath: string;
+    usedImports: string | null;
+    isExported: boolean;
+  }>;
   callEdges: ReadonlyArray<{ fromId: number; toId: number }>;
 };
 

@@ -27,7 +27,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { CrossDomainAnalyzer } from '../analyzers/crossDomain/CrossDomainAnalyzer.js';
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { analyzeCrossDomain } from '../phase/runner.js';
-import { multiTableWriteRule } from '../phase/rules/crossDomain.js';
+import { multiTableWriteRule, noValidatorReachableRule } from '../phase/rules/crossDomain.js';
 import type { SchemaUsageFact, CallGraphFact, BatchFunctionFact, Finding } from '../phase/types.js';
 import type { Violation } from '../types.js';
 
@@ -224,11 +224,19 @@ describe('Spec 68 cross-domain parity (new analyze(ctx) === old CrossDomainAnaly
 
 // ── multi-table-write (transaction-boundary risk) ───────────────────────────
 
-/** Insert one `functions` row (id is explicit so call-graph edges resolve). */
-function insertFunction(id: number, name: string, filePath: string): void {
+/** Insert one `functions` row (id is explicit so call-graph edges resolve).
+ *  `usedImports` (raw JSON string) and `isExported` (0/1) feed the
+ *  `no-validator-reachable` provenance check. */
+function insertFunction(
+  id: number,
+  name: string,
+  filePath: string,
+  usedImports: string | null = null,
+  isExported: number = 0,
+): void {
   db.run(
-    'INSERT INTO functions (id, name, file_path) VALUES (?, ?, ?)',
-    [id, name, filePath],
+    'INSERT INTO functions (id, name, file_path, used_imports, is_exported) VALUES (?, ?, ?, ?, ?)',
+    [id, name, filePath, usedImports, isExported],
   );
 }
 
@@ -244,7 +252,7 @@ function insertCallEdge(fromId: number, toId: number): void {
  *  rule reads — the same two tables the legacy `resolveCallGraphContext` +
  *  `expandWrittenTables` queried. */
 function readCallGraph(): CallGraphFact {
-  const funcs = db.query('SELECT id, name, file_path FROM functions') as Array<{ id: number; name: string; file_path: string }>;
+  const funcs = db.query('SELECT id, name, file_path, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; used_imports: string | null; is_exported: number }>;
   const edges = db.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
   const callEdges: Array<{ fromId: number; toId: number }> = [];
   for (const e of edges) {
@@ -253,7 +261,13 @@ function readCallGraph(): CallGraphFact {
     if (!isNaN(fromId) && !isNaN(toId)) callEdges.push({ fromId, toId });
   }
   return {
-    functions: funcs.map((f) => ({ id: f.id, name: f.name, filePath: f.file_path })),
+    functions: funcs.map((f) => ({
+      id: f.id,
+      name: f.name,
+      filePath: f.file_path,
+      usedImports: f.used_imports ?? null,
+      isExported: f.is_exported === 1,
+    })),
     callEdges,
   };
 }
@@ -404,5 +418,192 @@ describe('Spec 68 cross-domain parity — multi-table-write', () => {
       thresholds: { schemaLifecycle: { txnTableMax: 4 } },
     }) as Finding[];
     expect(fresh.map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))).toEqual([]);
+  });
+});
+
+// ── no-validator-reachable (validation bypass) ──────────────────────────────
+
+/** A `functions` seed for the no-validator-reachable parity tests — carries
+ *  `used_imports` (raw JSON string) and `is_exported` for validator provenance. */
+interface FuncSeed {
+  id: number;
+  name: string;
+  filePath: string;
+  usedImports?: string | null;
+  isExported?: number;
+}
+
+/** Run the legacy validation-bypass detector and the new rule over the same
+ *  seed (schema_usage + functions + call edges), assert the
+ *  `(file, line, column, rule, severity)` multiset matches, and return it. */
+async function parityNoValidatorReachable(
+  seeds: Seed[],
+  vb: { validators?: string[]; modeShare?: number; minCorpus?: number; depth?: number },
+  funcs: FuncSeed[],
+  edges: Array<[number, number]>,
+): Promise<string[]> {
+  for (const s of seeds) insertUsage(s);
+  for (const f of funcs) insertFunction(f.id, f.name, f.filePath, f.usedImports ?? null, f.isExported ?? 0);
+  for (const [a, b] of edges) insertCallEdge(a, b);
+
+  const analyzer = new CrossDomainAnalyzer();
+  const legacy = await analyzer.analyze(['a.ts'], {
+    indexHandle: db,
+    schemaLifecycle: {
+      enableWrittenNeverRead: false,
+      enableReadNeverWritten: false,
+      enableTransactionBoundaryRisk: false,
+    },
+    validatorBypass: vb,
+  });
+
+  const rows = db.query(
+    'SELECT table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, origin FROM schema_usage',
+  ) as Array<{
+    table_name: string;
+    file_path: string;
+    function_name: string | null;
+    function_start_line: number | null;
+    function_start_column: number | null;
+    usage_type: string;
+    line: number;
+    origin: string | null;
+  }>;
+  const facts: SchemaUsageFact[] = rows.map((r) => ({
+    tableName: r.table_name,
+    filePath: r.file_path,
+    functionName: r.function_name,
+    functionStartLine: r.function_start_line,
+    functionStartColumn: r.function_start_column,
+    usageType: r.usage_type as SchemaUsageFact['usageType'],
+    line: r.line,
+    origin: r.origin === 'query-builder' ? 'query-builder' : undefined,
+  }));
+
+  const fresh = noValidatorReachableRule.analyze({
+    facts: { 'schema-usage': facts, 'call-graph': readCallGraph() },
+    formats: ['typescript', 'tsx', 'javascript'],
+    thresholds: { validatorBypass: vb },
+  }) as Finding[];
+
+  const old = legacy.violations
+    .filter((v: Violation) => v.rule === 'cross-domain/no-validator-reachable')
+    .map((v: Violation) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
+    .sort();
+  const nu = fresh
+    .map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))
+    .sort();
+  expect(nu).toEqual(old);
+  return nu;
+}
+
+describe('Spec 68 cross-domain parity — no-validator-reachable', () => {
+  // Shared seed: two writers in one directory, one validated (saveUser reaches
+  // validateInput), one not (saveOrder). validateInput is provenanced via its
+  // own `used_imports` (zod) + export.
+  const funcs: FuncSeed[] = [
+    { id: 1, name: 'saveUser', filePath: '/p/src/users.ts' },
+    { id: 2, name: 'saveOrder', filePath: '/p/src/orders.ts' },
+    { id: 3, name: 'validateInput', filePath: '/p/src/validators.ts', usedImports: '["zod"]', isExported: 1 },
+  ];
+  const writes: Seed[] = [
+    { tableName: 'users', filePath: '/p/src/users.ts', functionName: 'saveUser', functionStartLine: 1, functionStartColumn: 1, usageType: 'insert', line: 10 },
+    { tableName: 'orders', filePath: '/p/src/orders.ts', functionName: 'saveOrder', functionStartLine: 1, functionStartColumn: 1, usageType: 'insert', line: 20 },
+  ];
+
+  it('fires when a writer does not reach a validator in a validator-dense directory', async () => {
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: [], modeShare: 0.5, minCorpus: 2, depth: 3 },
+      funcs,
+      [[1, 3]],
+    );
+    expect(nu).toEqual(['/p/src/orders.ts:20:0:cross-domain/no-validator-reachable:severe']);
+  });
+
+  it('does not fire when every writer reaches a validator', async () => {
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: [], modeShare: 0.5, minCorpus: 2, depth: 3 },
+      funcs,
+      [[1, 3], [2, 3]],
+    );
+    expect(nu).toEqual([]);
+  });
+
+  it('does not fire below minCorpus', async () => {
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: [], modeShare: 0.5, minCorpus: 3, depth: 3 },
+      funcs,
+      [[1, 3]],
+    );
+    expect(nu).toEqual([]);
+  });
+
+  it('honors user-configured validators by name (provenance silent)', async () => {
+    // validateInput is not exported and imports nothing, so provenance finds
+    // nothing — the user-configured name is the only validator source.
+    const plainFuncs: FuncSeed[] = [
+      { id: 1, name: 'saveUser', filePath: '/p/src/users.ts' },
+      { id: 2, name: 'saveOrder', filePath: '/p/src/orders.ts' },
+      { id: 3, name: 'validateInput', filePath: '/p/src/validators.ts' },
+    ];
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: ['validateInput'], modeShare: 0.5, minCorpus: 2, depth: 3 },
+      plainFuncs,
+      [[1, 3]],
+    );
+    expect(nu).toEqual(['/p/src/orders.ts:20:0:cross-domain/no-validator-reachable:severe']);
+  });
+
+  it('falls back to the name heuristic when provenance is silent', async () => {
+    // validateInput is exported but imports no validator package: the `validate*`
+    // name heuristic is the fallback.
+    const heuristicFuncs: FuncSeed[] = [
+      { id: 1, name: 'saveUser', filePath: '/p/src/users.ts' },
+      { id: 2, name: 'saveOrder', filePath: '/p/src/orders.ts' },
+      { id: 3, name: 'validateInput', filePath: '/p/src/validators.ts', isExported: 1 },
+    ];
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: [], modeShare: 0.5, minCorpus: 2, depth: 3 },
+      heuristicFuncs,
+      [[1, 3]],
+    );
+    expect(nu).toEqual(['/p/src/orders.ts:20:0:cross-domain/no-validator-reachable:severe']);
+  });
+
+  it('drops a write whose function has no index row (inner join)', async () => {
+    // saveOrder has no `functions` row, so the INNER JOIN drops it: only saveUser
+    // is a writer, and it is covered — nothing fires even at minCorpus 1.
+    const partialFuncs: FuncSeed[] = [
+      { id: 1, name: 'saveUser', filePath: '/p/src/users.ts' },
+      { id: 3, name: 'validateInput', filePath: '/p/src/validators.ts', usedImports: '["zod"]', isExported: 1 },
+    ];
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: [], modeShare: 0.5, minCorpus: 1, depth: 3 },
+      partialFuncs,
+      [[1, 3]],
+    );
+    expect(nu).toEqual([]);
+  });
+
+  it('returns nothing when no validator exists at all', async () => {
+    // No user validators, no provenance, no heuristic match → empty validator
+    // set → the detector short-circuits before touching writers.
+    const noValidatorFuncs: FuncSeed[] = [
+      { id: 1, name: 'saveUser', filePath: '/p/src/users.ts' },
+      { id: 2, name: 'saveOrder', filePath: '/p/src/orders.ts' },
+    ];
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: [], modeShare: 0.5, minCorpus: 1, depth: 3 },
+      noValidatorFuncs,
+      [],
+    );
+    expect(nu).toEqual([]);
   });
 });

@@ -418,10 +418,10 @@ export const CORPUS_PRODUCERS = {
     process(_facts, ctx): CallGraphFact {
       const ih = ctx?.indexHandle;
       if (!ih) return { functions: [], callEdges: [] };
-      let funcs: Array<{ id: number; name: string; file_path: string }> = [];
+      let funcs: Array<{ id: number; name: string; file_path: string; used_imports: string | null; is_exported: number }> = [];
       let edges: Array<{ node_key: string; neighbor_key: string }> = [];
       try {
-        funcs = ih.query('SELECT id, name, file_path FROM functions') as Array<{ id: number; name: string; file_path: string }>;
+        funcs = ih.query('SELECT id, name, file_path, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; used_imports: string | null; is_exported: number }>;
         edges = ih.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
       } catch {
         // `functions`/`graph_cache` may not exist or be unpopulated — degrade.
@@ -433,7 +433,13 @@ export const CORPUS_PRODUCERS = {
         if (!isNaN(fromId) && !isNaN(toId)) callEdges.push({ fromId, toId });
       }
       return {
-        functions: funcs.map((f) => ({ id: f.id, name: f.name, filePath: f.file_path })),
+        functions: funcs.map((f) => ({
+          id: f.id,
+          name: f.name,
+          filePath: f.file_path,
+          usedImports: f.used_imports ?? null,
+          isExported: f.is_exported === 1,
+        })),
         callEdges,
       };
     },
