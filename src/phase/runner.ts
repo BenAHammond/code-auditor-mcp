@@ -22,7 +22,7 @@
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { fileProducerFor, CORPUS_PRODUCERS } from './producers.js';
 import { solidRules } from './rules/solid.js';
-import { dataAccessRules } from './rules/dataAccess.js';
+import { dataAccessRules, loopQueryRules } from './rules/dataAccess.js';
 import { schemaRules } from './rules/schema.js';
 import { dependencyGraphRules } from './rules/dependencyGraph.js';
 import { schemaValidatorRules } from './rules/schemaValidator.js';
@@ -41,6 +41,7 @@ import type {
   ParsedFile,
   FileSymbols,
   ResolvedQuery,
+  LoopQueryFact,
   SchemaUsageFact,
   SchemaDeclaration,
   TableCatalog,
@@ -217,6 +218,52 @@ export async function runDataAccessSlice(files: readonly InputFile[], thresholds
     buildTableCatalog(files),
   ]);
   return analyzeDataAccessCalls(calls, catalog, thresholds);
+}
+
+// ── loop-queries slice (loop-queries → loop-query) ──────────────────────────
+
+/**
+ * Parse → Process for the `loop-queries` fact. Returns the assembled corpus
+ * fact (every loop whose body issues a DB call, ASTs already freed). The fact
+ * carries no cross-file structure — the `loop-query` rule reduces each element
+ * in isolation, exactly as the legacy `checkLoopQueries` ran once per AST.
+ */
+export async function buildLoopQueries(files: readonly InputFile[]): Promise<LoopQueryFact[]> {
+  const facts: LoopQueryFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('loop-queries', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as LoopQueryFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `loop-queries` fact with the loop-query rule. */
+export async function analyzeLoopQueries(
+  facts: LoopQueryFact[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'loop-queries': facts },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of loopQueryRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The loop-queries slice: parse → loop-queries → loop-query → findings. */
+export async function runLoopQueriesSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const facts = await buildLoopQueries(files);
+  return analyzeLoopQueries(facts, thresholds);
 }
 
 // ── schema slice (the "repeat" for a corpus-consuming fact kind) ────────────

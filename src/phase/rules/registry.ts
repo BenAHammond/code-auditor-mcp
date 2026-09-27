@@ -16,7 +16,7 @@
 
 import type { RuleDefinition } from '../types.js';
 import { solidRules } from './solid.js';
-import { dataAccessRules } from './dataAccess.js';
+import { dataAccessRules, loopQueryRules } from './dataAccess.js';
 import { dependencyGraphRules } from './dependencyGraph.js';
 import { schemaValidatorRules } from './schemaValidator.js';
 import { documentationRules } from './documentation.js';
@@ -71,6 +71,7 @@ import { fileDocumentationRules } from './fileDocumentation.js';
 export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...solidRules,
   ...dataAccessRules,
+  ...loopQueryRules,
   ...dependencyGraphRules,
   ...schemaValidatorRules,
   ...documentationRules,

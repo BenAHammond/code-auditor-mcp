@@ -51,6 +51,7 @@ import { extractSecurityCandidates } from './securityCandidates.js';
 import { extractStylesCss } from './stylesCss.js';
 import { extractStylesSource } from './stylesSource.js';
 import { extractDataAccessCalls } from './dataAccessCalls.js';
+import { extractLoopQueries } from './loopQueries.js';
 import { extractSchemaUsage } from './schemaUsage.js';
 import { extractSchemaCode } from './schemaCode.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
@@ -108,6 +109,7 @@ const styleSourceProcess = (file: ParsedFile): FactFragment<'style-declarations'
 const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entities'> =>
   extractCrossLanguageEntities((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file));
 const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file as AstFile);
+const loopQueriesProcess = (file: ParsedFile): FactFragment<'loop-queries'> => extractLoopQueries(file as AstFile);
 const reactComponentProcess = (file: ParsedFile): FactFragment<'react-component'> => [extractReactComponents(file as AstFile)];
 const fileHeaderProcess = (file: ParsedFile): FactFragment<'file-header'> => extractFileHeader(file as AstFile);
 const codeBlockProcess = (file: ParsedFile): FactFragment<'code-block'> => extractCodeBlocks(file as AstFile);
@@ -180,6 +182,11 @@ export const PRODUCERS = {
     typescript: fileProducer('data-access-calls', 'typescript', dataAccessProcess),
     tsx: fileProducer('data-access-calls', 'tsx', dataAccessProcess),
     javascript: fileProducer('data-access-calls', 'javascript', dataAccessProcess),
+  },
+  'loop-queries': {
+    typescript: fileProducer('loop-queries', 'typescript', loopQueriesProcess),
+    tsx: fileProducer('loop-queries', 'tsx', loopQueriesProcess),
+    javascript: fileProducer('loop-queries', 'javascript', loopQueriesProcess),
   },
   'react-component': {
     typescript: fileProducer('react-component', 'typescript', reactComponentProcess),
@@ -271,6 +278,7 @@ export const FACT_KINDS = {
   'style-declarations': true,
   'cross-language-entities': true,
   'data-access-calls': true,
+  'loop-queries': true,
   'table-catalog': true,
   'mined-conventions': true,
   'react-component': true,

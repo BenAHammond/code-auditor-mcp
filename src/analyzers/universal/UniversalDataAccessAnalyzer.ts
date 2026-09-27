@@ -1836,6 +1836,20 @@ const LLM_CLIENT_ARG_NAMES = new Set([
 const MESSAGE_LIFECYCLE_METHODS = new Set(['ack', 'nack', 'acknowledge', 'deleteMessage', 'retry']);
 
 /**
+ * One loop-query candidate: a loop whose body issues a DB call, with every
+ * signal the finding needs pre-computed. The `loop-queries` producer projects
+ * this into its fact; the legacy `checkLoopQueries` maps it to a violation.
+ */
+export interface LoopQueryCandidate {
+  file: string;
+  line: number;
+  column: number;
+  symbol: string;
+  loopLine: number;
+  depth: number;
+}
+
+/**
  * R4.1: Find database queries inside loops and flag them as N+1 risks.
  * Each finding carries the query call location (never line 1).
  */
@@ -1843,8 +1857,31 @@ function checkLoopQueries(
   ast: AST,
   scan: DataAccessScanContext,
 ): Violation[] {
+  return collectLoopQueryCandidates(ast, scan).map((c) => {
+    const depthMsg = c.depth > 1 ? ` (nested ${c.depth} levels deep)` : '';
+    return makeViolation(
+      c.file,
+      { line: c.line, column: c.column },
+      `Database query inside loop${depthMsg} ` +
+      `(loop at line ${c.loopLine}). ` +
+      `This may cause N+1 performance issues. Consider batching queries or using a join.`,
+      { severity: 'severe', rule: 'loop-query', symbol: c.symbol },
+    );
+  });
+}
+
+/**
+ * R4.1: the candidate-collection half of `checkLoopQueries`, factored out so the
+ * `loop-queries` producer projects the same loop→query candidates without
+ * producing violations. Dedup (one candidate per loop, anchored at the first
+ * query) and the LLM/queue suppression live here — they need the AST.
+ */
+function collectLoopQueryCandidates(
+  ast: AST,
+  scan: DataAccessScanContext,
+): LoopQueryCandidate[] {
   const { adapter, sourceCode, provenanceContext } = scan;
-  const violations: Violation[] = [];
+  const candidates: LoopQueryCandidate[] = [];
 
   // Spec 21: provenance-gated detection of database calls.
   const dbNodes = adapter.findNodes(ast, {
@@ -1903,8 +1940,6 @@ function checkLoopQueries(
     reported.add(dedupKey);
 
     const sym = nextSymbol(enclosingIdentity(node, adapter, ast.filePath), 'loop-query', loopOrdinals);
-    // R4.2: Nested-loop attribution.
-    const depthMsg = loopInfo.depth > 1 ? ` (nested ${loopInfo.depth} levels deep)` : '';
 
     // Anchor to the resolved callee, not the raw node. For `await db.prepare(…)
     // .bind(…).all<T>(…)` tree-sitter emits an OUTER call_expression at the `await`
@@ -1916,17 +1951,17 @@ function checkLoopQueries(
     // as the node, so nothing else moves.
     const anchor = getCallExpressionCallee(node, adapter) ?? node;
 
-    violations.push(makeViolation(
-      ast.filePath,
-      anchor.location.start,
-      `Database query inside loop${depthMsg} ` +
-      `(loop at line ${loopInfo.loopNode.location.start.line}). ` +
-      `This may cause N+1 performance issues. Consider batching queries or using a join.`,
-      { severity: 'severe', rule: 'loop-query', symbol: sym },
-    ));
+    candidates.push({
+      file: ast.filePath,
+      line: anchor.location.start.line,
+      column: anchor.location.start.column,
+      symbol: sym,
+      loopLine: loopInfo.loopNode.location.start.line,
+      depth: loopInfo.depth,
+    });
   }
 
-  return violations;
+  return candidates;
 }
 
 /**
@@ -2311,4 +2346,37 @@ export function extractDataAccessCalls(
     provenanceContext,
   };
   return extractDatabaseCalls(ast, scan);
+}
+
+/**
+ * Extract the loop-query candidates (loops whose body issues a DB call) as the
+ * serializable `LoopQueryCandidate[]` the `loop-queries` producer projects. The
+ * candidate set is exactly what `checkLoopQueries` reduces to findings, computed
+ * on the same provenance context — so detection parity holds by construction,
+ * not by re-implementation. Config is the §10 tuning surface; omitted here, the
+ * extraction runs on {@link DEFAULT_DATA_ACCESS_CONFIG}.
+ */
+export function extractLoopQueries(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  config?: DataAccessAnalyzerConfig,
+): LoopQueryCandidate[] {
+  const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
+  const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
+  const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
+    mode: detectionMode,
+    dbReceiverNames: finalConfig.dbReceiverNames,
+    dbBindingNames: finalConfig.dbBindingNames,
+    dbCallMethods: finalConfig.dbCallMethods,
+    dbWrapperNames: finalConfig.dbWrapperNames,
+  });
+  const scan: DataAccessScanContext = {
+    adapter,
+    sourceCode,
+    dbImports: mapDatabaseImports(adapter.extractImports(ast), finalConfig),
+    config: finalConfig,
+    provenanceContext,
+  };
+  return collectLoopQueryCandidates(ast, scan);
 }

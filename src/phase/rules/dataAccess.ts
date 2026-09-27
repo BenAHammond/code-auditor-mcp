@@ -341,3 +341,52 @@ export const dataAccessRules: readonly RuleDefinition<DataAccessNeeds | MissingO
   unfilteredQuery,
   missingOrgFilter,
 ];
+
+// ── loop-query ──────────────────────────────────────────────────────────────
+
+/**
+ * `loop-query` reads the `loop-queries` fact (a flat array of `LoopQueryFact`,
+ * one per loop whose body issues a DB call) — not `data-access-calls`. It is
+ * exported in a *separate* array from `dataAccessRules` because the two fact
+ * kinds are distinct: the data-access slice context carries `data-access-calls`
+ * + `table-catalog`, while this rule's context carries `loop-queries` alone.
+ *
+ * Detection is the producer's — `collectLoopQueryCandidates` in the analyzer,
+ * shared with the legacy `checkLoopQueries` — so `analyze` is a pure projection
+ * of the pre-computed anchor/symbol/depth, and parity holds by construction.
+ */
+type LoopQueryNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['loop-queries'];
+};
+
+const loopQuery: RuleDefinition<LoopQueryNeeds> = {
+  id: 'loop-query',
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['loop-queries'] },
+  severity: 'severe',
+  message: META['loop-query'].message,
+  docs: META['loop-query'].docs,
+  thresholds: META['loop-query'].thresholds,
+  samples: META['loop-query'].samples,
+  analyze(ctx): Finding[] {
+    const out: Finding[] = [];
+    for (const q of ctx.facts['loop-queries']) {
+      const depthMsg = q.depth > 1 ? ` (nested ${q.depth} levels deep)` : '';
+      out.push({
+        ruleId: 'loop-query',
+        severity: 'severe',
+        message: `Database query inside loop${depthMsg} ` +
+          `(loop at line ${q.loopLine}). ` +
+          `This may cause N+1 performance issues. Consider batching queries or using a join.`,
+        file: q.file,
+        line: q.line,
+        column: q.column,
+        symbol: q.symbol,
+      });
+    }
+    return out;
+  },
+};
+
+/** The loop-query rule this slice migrates (reads `loop-queries`). */
+export const loopQueryRules: readonly RuleDefinition<LoopQueryNeeds>[] = [loopQuery];

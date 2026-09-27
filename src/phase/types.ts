@@ -60,6 +60,7 @@ export interface FactShapes {
   'style-declarations': StyleDeclarationsFile[];
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
+  'loop-queries': LoopQueryFact[];
   'table-catalog': TableCatalog;
   'mined-conventions': MinedConvention[];
   'react-component': ReactComponentScan[];
@@ -279,6 +280,31 @@ export type StringLiteralFact = {
   line: number;
   column: number;
   enclosingFunction: string;
+};
+
+/**
+ * One loop-query candidate: a loop (including a nested loop) whose body issues a
+ * DB call, the serializable projection the `loop-query` rule reads. The producer
+ * computes everything the legacy `checkLoopQueries` needed from the AST — the
+ * anchor line/column (the resolved query-call callee), the enclosing loop's line
+ * and nesting depth, and the stable per-file symbol (`nextSymbol(enclosingIdentity(…),
+ * 'loop-query', …)`) — so `analyze` is a pure projection. Dedup (one fact element
+ * per *loop*, not per query) and the LLM/queue suppression both ran in the
+ * producer where the AST lived, matching the legacy one-finding-per-loop contract
+ * (defect #51).
+ */
+export type LoopQueryFact = {
+  file: string;
+  /** 1-based line of the resolved query-call anchor (the `db` receiver). */
+  line: number;
+  /** 1-based column of the resolved query-call anchor. */
+  column: number;
+  /** The stable per-file symbol key the legacy finding carried as `functionName`. */
+  symbol: string;
+  /** 1-based line of the enclosing loop's opening token. */
+  loopLine: number;
+  /** Nesting depth of the enclosing loop (1 = top-level, 2 = nested once, …). */
+  depth: number;
 };
 
 /**
@@ -834,6 +860,7 @@ export interface SupplyingFormats {
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
   'data-access-calls': 'typescript' | 'tsx' | 'javascript';
+  'loop-queries': 'typescript' | 'tsx' | 'javascript';
   'react-component': 'typescript' | 'tsx' | 'javascript';
   'file-header': 'typescript' | 'tsx' | 'javascript';
   'code-block': 'typescript' | 'tsx' | 'javascript';
