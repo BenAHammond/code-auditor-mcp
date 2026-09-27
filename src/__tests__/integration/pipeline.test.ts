@@ -151,7 +151,12 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
   });
 
   vitestTest('known findings stay known, new findings surface as new', { timeout: 30_000 }, async () => {
-    // Step 1: Baseline the tree — one undocumented function → one violation.
+    // Step 1: Baseline the tree. The fixture produces two findings — the
+    // undocumented `calculateTotal` (documentation) and the single-file module
+    // being unreferenced (dependency-graph). Spec 68 §15 removed the analyzer
+    // selection model (`enabledAnalyzers`), so the full pipeline always runs and
+    // the baseline must capture every finding the run emits, not just the
+    // documentation analyzer's.
     await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
     await writeConfig(testDir);
 
@@ -162,18 +167,19 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
       scope: 'all',
     });
 
-    const violations1 = result1.analyzerResults['documentation']?.violations ?? [];
-    expect(violations1.length, 'Step 1: one undocumented function → one violation').toBe(1);
+    const documentationViolations = result1.analyzerResults['documentation']?.violations ?? [];
+    expect(documentationViolations.length, 'Step 1: one undocumented function → one documentation violation').toBe(1);
 
-    const baseline = createBaselineFromFindings(violations1, {
+    const allViolations1 = Object.values(result1.analyzerResults).flatMap((r) => r.violations);
+    const baseline = createBaselineFromFindings(allViolations1, {
       toolVersion: '3.4.8',
-      totalFindings: violations1.length,
-      analyzerCounts: { documentation: violations1.length },
+      totalFindings: allViolations1.length,
+      analyzerCounts: { documentation: documentationViolations.length },
       corpusStats: { files: 1, functions: 1 },
     });
     saveBaseline(testDir, baseline);
 
-    // Step 2: Re-audit unchanged tree — known = 1, new = 0.
+    // Step 2: Re-audit unchanged tree — every finding known, nothing new.
     const result2 = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
@@ -183,7 +189,7 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
 
     expect(result2.metadata.baseline, 'Step 2: baseline block must exist').toBeDefined();
     expect(result2.metadata.baseline!.present, 'Step 2: baseline should be present').toBe(true);
-    expect(result2.metadata.baseline!.knownCount, 'Step 2: knownCount').toBe(1);
+    expect(result2.metadata.baseline!.knownCount, 'Step 2: knownCount').toBe(allViolations1.length);
     expect(result2.metadata.baseline!.newCount, 'Step 2: newCount — unchanged tree, nothing new').toBe(0);
 
     // Step 3: Add a second undocumented function — old is still known, new is new.
@@ -197,7 +203,7 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
     });
 
     expect(result3.metadata.baseline!.present, 'Step 3: baseline should still be present').toBe(true);
-    expect(result3.metadata.baseline!.knownCount, 'Step 3: knownCount — old finding still known').toBe(1);
+    expect(result3.metadata.baseline!.knownCount, 'Step 3: knownCount — old findings still known').toBe(allViolations1.length);
     expect(result3.metadata.baseline!.newCount, 'Step 3: newCount — one new function, one new violation').toBe(1);
   });
 });

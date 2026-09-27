@@ -914,6 +914,26 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             // virtual-module list, tsconfig aliases and package entry points the
             // legacy reducer read from `_infra`.
             const infraConfig = (pipelineAnalyzerConfig['_infra'] ?? {}) as Record<string, unknown>;
+            // Config-declared external tables (schema analyzer's `knownTables` +
+            // `schemas`) → the phase `table-catalog` producer, mirroring the legacy
+            // reducer's known-table merge (pipelineAdapters.ts) so `unknown-table`'s
+            // fail-open guard fires on a config-only schema.
+            const schemaPhaseConfig = (pipelineAnalyzerConfig['schema'] ?? {}) as {
+              knownTables?: readonly string[];
+              schemas?: ReadonlyArray<{
+                name: string;
+                tables: ReadonlyArray<{ name: string; columns: ReadonlyArray<{ name: string; type: string }> }>;
+              }>;
+            };
+            const externalTables: Array<{ name: string; source: string; columns: readonly string[] }> = [];
+            for (const t of schemaPhaseConfig.knownTables ?? []) {
+              externalTables.push({ name: t, source: 'external-config', columns: [] });
+            }
+            for (const s of schemaPhaseConfig.schemas ?? []) {
+              for (const t of s.tables) {
+                externalTables.push({ name: t.name, source: `Schema: ${s.name}`, columns: t.columns.map((c) => c.name) });
+              }
+            }
             const phaseResult = await runPhaseModel(phaseFiles, thresholds, {
               projectRoot: root,
               corpusFiles: infraConfig.corpusFiles as string[] | undefined,
@@ -922,6 +942,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               packageEntryPoints: infraConfig.packageEntryPoints as string[] | undefined,
               indexHandle: pipelineIndexHandle,
               enabledRules: enabledMigratedRules(),
+              externalTables,
             });
             phaseFindings = phaseResult.findings;
             phaseIncompleteFacts = phaseResult.incompleteFacts;
@@ -955,8 +976,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             // `Finding.symbol`; bridge it back so JSON/SARIF consumers that read
             // `functionName` keep the pre-migration contract (Spec 62 Amendment B
             // provenance — pinned by the d1Exec integration test). SOLID /
-            // dependency-graph / schema-validator / cross-domain / conventions
-            // never set `functionName`, so they stay off this list.
+            // dependency-graph / schema-validator / cross-domain never set
+            // `functionName`, so they stay off this list.
             const functionNameAnalyzers = new Set([
               'data-access',
               'data-access-org-filter',
@@ -965,6 +986,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               'schema',
               'schema-code',
               'dry',
+              'conventions',
             ]);
             for (const f of phaseFindings) {
               const analyzer = ruleAnalyzerOverride[f.ruleId] ?? RULE_ANALYZER.get(f.ruleId) ?? 'phase';
@@ -984,6 +1006,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
                 resolution: f.resolution,
                 analyzer,
                 ...(f.fix ? { fix: f.fix } : {}),
+                ...(f.details !== undefined ? { details: f.details } : {}),
                 ...(f.symbol && functionNameAnalyzers.has(analyzer) ? { functionName: f.symbol } : {}),
                 ...(profile ? { profile } : {}),
                 ...(resolved.excludeFromGate ? { gateExcluded: true } : {}),

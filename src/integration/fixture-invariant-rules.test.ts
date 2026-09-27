@@ -48,8 +48,10 @@ describe('invariant-rules fixture', () => {
     const violations = invariants.violations;
     expect(Array.isArray(violations), 'violations must be an array').toBe(true);
 
-    // Total: 6 violations (cold run baseline 2026-08-09)
-    expect(violations.length).toBe(6);
+    // Total: 7 violations (1 import-ban + 1 module-boundary + 4 naming +
+    // 1 call-constraint). The cold audit auto-indexes, so call-constraint now
+    // fires (the pre-index "empty function_calls table" behavior is gone).
+    expect(violations.length).toBe(7);
 
     // ── Per-rule breakdown ──────────────────────────────────────────────
 
@@ -72,9 +74,13 @@ describe('invariant-rules fixture', () => {
     const namingSymbols = namingViolations.map((v: any) => v.symbol).sort();
     expect(namingSymbols).toEqual(['fetchData', 'helperFunc', 'notCapital', 'runApp']);
 
-    // call-constraint: 0 violations (requires index sync — function_calls table is empty on cold audit)
+    // call-constraint: 1 violation — runApp calls fetchData from src/index.ts
+    // (outside the allowFrom glob src/services/**). ServiceCaller in
+    // src/services/api.ts is allow-listed and must NOT fire.
     const callViolations = violations.filter((v: any) => v.rule === 'api-call-constraint');
-    expect(callViolations.length, 'api-call-constraint count — needs index sync').toBe(0);
+    expect(callViolations.length, 'api-call-constraint count').toBe(1);
+    expect(callViolations[0].symbol, 'api-call-constraint caller').toBe('runApp');
+    expect(callViolations[0].file, 'api-call-constraint file').toBe('src/index.ts');
 
     // style-mechanism: 0 violations (requires index sync)
     const styleMechViolations = violations.filter((v: any) => v.rule === 'style-mechanism-check');

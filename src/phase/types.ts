@@ -87,6 +87,7 @@ export interface FactShapes {
   'coverage': CoverageFact;
   'clone-pair-history': ClonePairHistoryFact;
   'defined-classes': DefinedClassesFact[];
+  'unread-style-sources': UnreadStyleSourceFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -586,6 +587,17 @@ export type DefinedClassesFact = {
   filePath: string;
 };
 
+/** One stylesheet source the style indexer could not read (Spec 45 R5). The
+ *  `styles/undefined-class` rule carries the full list as
+ *  `details.incompleteDefinitions` so "undefined" reads as "not defined in any
+ *  *read* stylesheet" rather than a definitive assertion. Read from the
+ *  `style_unread_sources` index table by the `unread-style-sources` corpus
+ *  producer — the same source the legacy reducer threaded as `unreadStyleSources`. */
+export type UnreadStyleSourceFact = {
+  filePath: string;
+  reason: string;
+};
+
 /** The normalized-value union: a color (hex+alpha), a length, or a literal. */
 export type StylesNormalizedValue =
   | { type: 'color'; hex: string; alpha: number }
@@ -662,6 +674,22 @@ export type ResolvedQuery = {
  *  (`missing-org-filter`) can read tenancy from the corpus, not just config. */
 export type TableCatalog = {
   tables: ReadonlyArray<{ name: string; source: string; columns: ReadonlyArray<string> }>;
+};
+
+/**
+ * A config-declared table the phase `table-catalog` producer merges alongside
+ * the DDL-derived tables. §5 parity: the legacy schema reducer added the
+ * schema analyzer's `knownTables` string list and structured `schemas` to the
+ * known-table set (the "external authority" the `unknown-table` fail-open guard
+ * requires). The corpus producer must add them too or a config-only schema
+ * silently triggers fail-open and `unknown-table` never fires.
+ */
+export type ExternalTableDecl = {
+  name: string;
+  /** Provenance label (`'external-config'` or `Schema: <name>`). */
+  source: string;
+  /** Declared column names (empty for a `knownTables` string entry). */
+  columns: ReadonlyArray<string>;
 };
 
 /**
@@ -1223,6 +1251,10 @@ export type Finding = {
   /** Structured text-replacement patch (DRY `duplicate-string-literal`), carried
    *  verbatim so the phase re-emission preserves the pre-migration `fix` surface. */
   fix?: string | { oldText: string; newText: string };
+  /** Free-form structured detail carried verbatim into the re-emitted
+   *  `Violation.details` (e.g. `styles/undefined-class`'s
+   *  `incompleteDefinitions` unread-source list, Spec 45 R5). */
+  details?: string | Record<string, unknown>;
 };
 
 /** A rule definition. `needs` has no optional form and no default. */
@@ -1319,7 +1351,7 @@ export interface SupplyingFormats {
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript' | 'markup';
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
-  'data-access-calls': 'typescript' | 'tsx' | 'javascript';
+  'data-access-calls': 'typescript' | 'tsx' | 'javascript' | 'go';
   'loop-queries': 'typescript' | 'tsx' | 'javascript';
   'dynamic-sql': 'typescript' | 'tsx' | 'javascript';
   'react-component': 'typescript' | 'tsx' | 'javascript';
@@ -1382,6 +1414,10 @@ export interface CorpusContext {
    *  slice tests run a single fixture with no index (the producer degrades to an
    *  empty fact, matching the legacy graceful-degradation). */
   indexHandle?: IndexHandle;
+  /** Config-declared external tables (schema analyzer's `knownTables` +
+   *  `schemas`), merged into the `table-catalog` corpus fact. See
+   *  {@link ExternalTableDecl}. */
+  externalTables?: ReadonlyArray<ExternalTableDecl>;
 }
 
 /** A corpus processor: receives complete upstream facts, no AST, no format. */

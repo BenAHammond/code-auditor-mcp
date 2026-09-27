@@ -1156,17 +1156,19 @@ function resolveUndefinedClassConfig(t: ThresholdValues): UndefinedClassConfig {
 }
 
 /** `styles/undefined-class` reads the class-usage half of `style-declarations`
- *  plus the corpus `defined-classes` catalog — a different fact set than the
- *  eight rules above, so it carries its own `Needs` tuple. */
+ *  plus the corpus `defined-classes` catalog and the `unread-style-sources`
+ *  list — a different fact set than the eight rules above, so it carries its
+ *  own `Needs` tuple. The unread-source list is carried on each finding as
+ *  `details.incompleteDefinitions` (Spec 45 R5). */
 type UndefinedClassNeeds = {
   readonly formats: readonly ['css', 'scss', 'typescript', 'tsx', 'javascript'];
-  readonly facts: readonly ['style-declarations', 'defined-classes'];
+  readonly facts: readonly ['style-declarations', 'defined-classes', 'unread-style-sources'];
 };
 
 export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
   id: 'styles/undefined-class',
   analyzer: 'styles',
-  needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations', 'defined-classes'] },
+  needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations', 'defined-classes', 'unread-style-sources'] },
   severity: 'severe',
   message: META['styles/undefined-class'].message,
   docs: META['styles/undefined-class'].docs,
@@ -1175,6 +1177,9 @@ export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
   async analyze(ctx): Promise<Finding[]> {
     const classUsage = flattenClassUsage(ctx.facts['style-declarations']);
     const definedClasses = ctx.facts['defined-classes'];
+    // The parity test drives the rule with a raw ctx that omits the corpus fact;
+    // default it so the rule degrades to a plain undefined-class result there.
+    const unread = ctx.facts['unread-style-sources'] ?? [];
 
     const { usageEntries } = collectUndefinedClassCandidates(classUsage, new Set());
     const definedSet = new Set(definedClasses.map((d) => d.className));
@@ -1188,7 +1193,20 @@ export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
       customClasses: cfg.tailwindClasses ? new Set(cfg.tailwindClasses) : undefined,
     });
 
-    return flagUnresolvedClasses(unresolved, expander, makeFinding, suggestDefinedClass(definedClasses));
+    const findings = flagUnresolvedClasses(unresolved, expander, makeFinding, suggestDefinedClass(definedClasses));
+
+    // Spec 45 R5 — "undefined" reads as "not defined in any *read* stylesheet":
+    // attach the unread-source list so a near-miss typo names the dialect(s) the
+    // indexer could not parse, rather than asserting the class truly absent.
+    if (unread.length > 0) {
+      const incompleteDefinitions = unread.map((s) =>
+        s.reason ? `${s.filePath} (${s.reason})` : s.filePath,
+      );
+      for (const f of findings) {
+        f.details = { incompleteDefinitions };
+      }
+    }
+    return findings;
   },
 };
 

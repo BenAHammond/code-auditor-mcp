@@ -226,7 +226,8 @@ function resolveImportPath(fromFile: string, specifier: string, projectDir?: str
 
 function checkCallConstraint(
   rule: CallConstraintRule,
-  scopedCallers: Array<{ filePath: string; callerName: string; calleeName: string }>
+  scopedCallers: Array<{ filePath: string; callerName: string; calleeName: string }>,
+  projectDir: string
 ): RuleViolation[] {
   const violations: RuleViolation[] = [];
 
@@ -235,10 +236,19 @@ function checkCallConstraint(
   const calleeGlob = calleeParts.pathGlob;
   const calleeName = calleeParts.functionName;
 
+  // The call-graph `file_path` is stored absolute, but every invariant glob
+  // (`allowFrom`/`denyFrom`/`callee#path`) is authored against repo-relative
+  // paths — the same contract the per-file rules follow after `checkRules`
+  // normalizes `files`. Normalize once so an absolute DB path never silently
+  // fails the glob (a caller in `src/services/**` would otherwise be flagged
+  // against `allowFrom: ["src/services/**"]`).
+  const normalize = (fp: string): string =>
+    path.isAbsolute(fp) ? path.relative(projectDir, fp) : fp.replace(/^\.\//, '');
+
   // Filter callers that target this callee
   const matchingCallers = scopedCallers.filter(c => {
     if (calleeName && c.calleeName !== calleeName) return false;
-    if (calleeGlob && !matchesPattern(calleeGlob, c.filePath)) return false;
+    if (calleeGlob && !matchesPattern(calleeGlob, normalize(c.filePath))) return false;
     return true;
   });
 
@@ -247,14 +257,15 @@ function checkCallConstraint(
   if (rule.allowFrom) {
     // Only allowFrom files may call — all others are violations
     for (const call of matchingCallers) {
-      if (matchesNone(rule.allowFrom, call.filePath)) {
+      const filePath = normalize(call.filePath);
+      if (matchesNone(rule.allowFrom, filePath)) {
         violations.push({
           ruleId: rule.id,
           kind: 'call-constraint',
           severity: rule.severity,
           message: rule.message ||
-            `Caller "${call.callerName}" in "${call.filePath}" is not in the allow-list for callee "${call.calleeName}"`,
-          file: call.filePath,
+            `Caller "${call.callerName}" in "${filePath}" is not in the allow-list for callee "${call.calleeName}"`,
+          file: filePath,
           symbol: call.callerName,
           callee: call.calleeName,
           caller: call.callerName,
@@ -264,14 +275,15 @@ function checkCallConstraint(
   } else if (rule.denyFrom) {
     // denyFrom files may NOT call — any match is a violation
     for (const call of matchingCallers) {
-      if (matchesAny(rule.denyFrom, call.filePath)) {
+      const filePath = normalize(call.filePath);
+      if (matchesAny(rule.denyFrom, filePath)) {
         violations.push({
           ruleId: rule.id,
           kind: 'call-constraint',
           severity: rule.severity,
           message: rule.message ||
-            `Caller "${call.callerName}" in "${call.filePath}" is denied from calling "${call.calleeName}"`,
-          file: call.filePath,
+            `Caller "${call.callerName}" in "${filePath}" is denied from calling "${call.calleeName}"`,
+          file: filePath,
           symbol: call.callerName,
           callee: call.calleeName,
           caller: call.callerName,
@@ -643,7 +655,7 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
     try {
       const scopedCallers = getScopedCallers(indexHandle, files, isScoped);
       for (const rule of callConstraints) {
-        violations.push(...checkCallConstraint(rule, scopedCallers));
+        violations.push(...checkCallConstraint(rule, scopedCallers, projectDir));
       }
     } catch (err: any) {
       errors.push(`Error checking call-constraints: ${err.message}`);

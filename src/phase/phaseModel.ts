@@ -26,6 +26,7 @@ import { formatFor, parseOne, type InputFile } from './runner.js';
 import { loadTailwindConfig, tokensToStyleTokens } from '../styles/tailwindConfigLoader.js';
 import type {
   CorpusContext,
+  ExternalTableDecl,
   FactKind,
   FileFactKind,
   Finding,
@@ -91,6 +92,10 @@ export interface PhaseInfra {
    *  begin until every file has been parsed and every processor level has
    *  completed: a slow `beforeProcess` must finish before this fires. */
   beforeAnalyze?: () => void | Promise<void>;
+  /** Config-declared external tables (schema analyzer's `knownTables` +
+   *  `schemas`), threaded to the `table-catalog` corpus producer so its
+   *  known-table set matches the legacy reducer (see {@link ExternalTableDecl}). */
+  externalTables?: ReadonlyArray<ExternalTableDecl>;
 }
 
 /**
@@ -274,6 +279,7 @@ async function buildFacts(
     tsconfigAliases: infra?.tsconfigAliases,
     packageEntryPoints: infra?.packageEntryPoints,
     indexHandle: infra?.indexHandle,
+    externalTables: infra?.externalTables,
   };
   for (const kind of corpusKinds) {
     const producer = CORPUS_PRODUCERS[kind];

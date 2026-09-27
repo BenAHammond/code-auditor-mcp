@@ -19,10 +19,10 @@
  *   - `hardcoded-connection` — walks string literals, a different extraction
  *     than resolved queries; not a `data-access-calls` fact.
  *   - `loop-query` — walks loop structure (N+1), not a resolved-call fact.
- *   - The Go arm — `sql-injection-risk` and `unfiltered-query` declare `go`
- *     in the registry; §9 wires the Node pipeline to the Go grammar, so these
- *     rules declare `formats` without `'go'` here and report the honest
- *     `notApplicable` rather than `clean` on a Go corpus until then.
+ *   - The Go arm — `sql-injection-risk` / `unfiltered-query` / `complex-query` /
+ *     `missing-org-filter` declare `go` (§9): the Node extraction is
+ *     adapter-agnostic, so the same four rules evaluate a Go AST via the
+ *     tree-sitter Go grammar rather than reporting a dishonest `notApplicable`.
  */
 
 import type {
@@ -40,16 +40,19 @@ import {
 } from '../../analyzers/orgFilterTiers.js';
 import { isTestOrSpecPath } from '../../languages/testConventions.js';
 
-/** The shared declaration for the TS data-access rules in this slice. */
+/** The shared declaration for the data-access rules in this slice. The
+ *  Node extraction is adapter-agnostic (`findNodes` + provenance), so the same
+ *  four rules evaluate a Go AST (§9): `go` is declared alongside the
+ *  TypeScript family rather than reporting a dishonest `notApplicable`. */
 type DataAccessNeeds = {
-  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly formats: readonly ['typescript', 'tsx', 'javascript', 'go'];
   readonly facts: readonly ['data-access-calls'];
 };
 
 /** `missing-org-filter` additionally reads the `table-catalog` corpus fact for
  *  Tier 3 (DDL-discovered) tenancy. */
 type MissingOrgFilterNeeds = {
-  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly formats: readonly ['typescript', 'tsx', 'javascript', 'go'];
   readonly facts: readonly ['data-access-calls', 'table-catalog'];
 };
 
@@ -133,7 +136,7 @@ function nextSymbol(
 const sqlInjectionRisk: RuleDefinition<DataAccessNeeds> = {
   id: 'sql-injection-risk',
   analyzer: 'data-access',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['data-access-calls'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['data-access-calls'] },
   severity: 'critical',
   message: META['sql-injection-risk'].message,
   docs: META['sql-injection-risk'].docs,
@@ -192,7 +195,7 @@ const sqlInjectionRisk: RuleDefinition<DataAccessNeeds> = {
 const complexQuery: RuleDefinition<DataAccessNeeds> = {
   id: 'complex-query',
   analyzer: 'data-access',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['data-access-calls'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['data-access-calls'] },
   severity: 'high',
   message: META['complex-query'].message,
   docs: META['complex-query'].docs,
@@ -223,7 +226,7 @@ const complexQuery: RuleDefinition<DataAccessNeeds> = {
 const unfilteredQuery: RuleDefinition<DataAccessNeeds> = {
   id: 'unfiltered-query',
   analyzer: 'data-access',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['data-access-calls'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['data-access-calls'] },
   severity: 'high',
   message: META['unfiltered-query'].message,
   docs: META['unfiltered-query'].docs,
@@ -281,7 +284,7 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
   id: 'missing-org-filter',
   analyzer: 'data-access-org-filter',
   needs: {
-    formats: ['typescript', 'tsx', 'javascript'],
+    formats: ['typescript', 'tsx', 'javascript', 'go'],
     facts: ['data-access-calls', 'table-catalog'],
   },
   severity: 'critical',

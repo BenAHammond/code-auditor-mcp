@@ -226,7 +226,7 @@ export async function analyzeDataAccessCalls(
 ): Promise<Finding[]> {
   const ctx = {
     facts: { 'data-access-calls': calls, 'table-catalog': catalog },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
+    formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
     thresholds,
   };
   const findings: Finding[] = [];

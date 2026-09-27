@@ -45,6 +45,7 @@ import type {
   CoverageFact,
   ClonePairHistoryFact,
   DefinedClassesFact,
+  UnreadStyleSourceFact,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
@@ -233,6 +234,7 @@ export const PRODUCERS = {
     typescript: fileProducer('data-access-calls', 'typescript', dataAccessProcess),
     tsx: fileProducer('data-access-calls', 'tsx', dataAccessProcess),
     javascript: fileProducer('data-access-calls', 'javascript', dataAccessProcess),
+    go: fileProducer('data-access-calls', 'go', dataAccessProcess),
   },
   'loop-queries': {
     typescript: fileProducer('loop-queries', 'typescript', loopQueriesProcess),
@@ -324,7 +326,7 @@ export const CORPUS_PRODUCERS = {
     id: 'table-catalog',
     produces: 'table-catalog',
     needs: ['ddl-declarations'],
-    process(facts): TableCatalog {
+    process(facts, ctx?): TableCatalog {
       // The known-table set is the *net* set after replaying DDL across files
       // in migration order — a table dropped in a later migration is a stale
       // reference, not a known table. `replayDdlDeclarations` returns that net
@@ -337,7 +339,15 @@ export const CORPUS_PRODUCERS = {
           tableColumns: d.tableColumns,
         })),
       );
-      return { tables: netTables.map((t) => ({ name: t.name, source: t.source, columns: t.columns })) };
+      const tables = netTables.map((t) => ({ name: t.name, source: t.source, columns: t.columns }));
+      // §5 parity: merge the config-declared external tables the legacy schema
+      // reducer added to the known-table set (`knownTables` + `schemas`). Without
+      // them a config-only schema is a 0-table catalog and `unknown-table`'s
+      // fail-open guard silently never fires — exactly the sql-cte regression.
+      for (const t of ctx?.externalTables ?? []) {
+        tables.push({ name: t.name, source: t.source, columns: [...t.columns] });
+      }
+      return { tables };
     },
   } satisfies CorpusProcessor<'table-catalog', readonly ['ddl-declarations']>,
   // `migration-history` reduces the DDL declarations into the cross-file drop
@@ -562,6 +572,29 @@ export const CORPUS_PRODUCERS = {
       return rows.map((r) => ({ className: r.class_name, filePath: r.file_path }));
     },
   } satisfies CorpusProcessor<'defined-classes', readonly []>,
+  // `unread-style-sources` (styles/undefined-class) — the `style_unread_sources`
+  // catalog, one row per stylesheet the indexer could not read (Spec 45 R5). The
+  // rule carries the list as `details.incompleteDefinitions` so "undefined" reads
+  // as "not defined in any *read* stylesheet". Degrades to an empty fact with no
+  // handle or an absent table — mirroring the legacy `unreadStyleSources` [].
+  'unread-style-sources': {
+    id: 'unread-style-sources',
+    produces: 'unread-style-sources',
+    needs: [],
+    process(_facts, ctx): UnreadStyleSourceFact[] {
+      const ih = ctx?.indexHandle;
+      if (!ih) return [];
+      let rows: Array<{ file_path: string; reason: string }> = [];
+      try {
+        rows = ih.query(
+          'SELECT file_path, reason FROM style_unread_sources',
+        ) as Array<{ file_path: string; reason: string }>;
+      } catch {
+        // `style_unread_sources` may not exist — degrade to an empty fact.
+      }
+      return rows.map((r) => ({ filePath: r.file_path, reason: r.reason }));
+    },
+  } satisfies CorpusProcessor<'unread-style-sources', readonly []>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -625,4 +658,5 @@ export const FACT_KINDS = {
   'coverage': true,
   'clone-pair-history': true,
   'defined-classes': true,
+  'unread-style-sources': true,
 } satisfies Record<FactKind, true>;
