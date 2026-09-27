@@ -33,6 +33,7 @@ import { functionBodyRules } from './functionBodies.js';
 import { reactRules } from './react.js';
 import { fileDocumentationRules } from './fileDocumentation.js';
 import { unreferencedModuleRule } from './unreferencedModule.js';
+import { goRules } from './goRules.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -93,4 +94,5 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...reactRules,
   ...fileDocumentationRules,
   unreferencedModuleRule,
+  ...goRules,
 ];

@@ -77,6 +77,9 @@ export interface FactShapes {
   'type-declarations': TypeDeclarationsFact[];
   'go-functions': GoFunctionFact[];
   'go-switches': GoSwitchFact[];
+  'error-bindings': ErrorBindingsFact[];
+  'concurrency-primitives': ConcurrencyPrimitivesFact[];
+  'channel-operations': ChannelOperationsFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -265,12 +268,19 @@ export type FunctionBodyFact = {
  * once are NOT duplicates — only repeats within one file are. `specifiers` is
  * not projected (no migrated rule reads it; `conventions/import-form`, which
  * does, stays on the legacy path and reads source text via `parseFileImports`).
+ *
+ * `alias` is the Go local import name (`import f "os"` → `f`, `import . "x"` →
+ * `.`, `import _ "embed"` → `_`), `null`/absent for an unnamed import. The
+ * Go `import-style` rule reads `alias === '.'` (dot-import detection); the
+ * TypeScript producers leave it absent (TS has no Go-style local name — its
+ * import shape is `import-form`'s concern).
  */
 export type ImportFact = {
   file: string;
   source: string;
   line: number;
   column: number;
+  alias?: string | null;
 };
 
 /**
@@ -966,6 +976,75 @@ export type GoSwitchFact = {
   kind: 'switch' | 'type-switch';
 };
 
+/**
+ * One Go function's error-binding positions, as the `error-bindings` producer
+ * projects them (§9). The serializable projection of the Go binary's
+ * `functionDropsError` inputs — the per-function source positions of every
+ * `err` binding-from-a-call and every "checking" use, plus the named-return
+ * signal the bare-`return` arm needs. The `error-handling` rule re-applies the
+ * position-ordering verdict (an assign is dropped iff no check falls strictly
+ * after it and before the next assign) over plain data.
+ *
+ * Positions are byte offsets (`ASTNode.range[0]`), so they carry the same total
+ * order the Go binary's `token.Pos` byte offsets did. `line` is the `func`
+ * keyword's 1-based line (`funcDecl.Pos().Line`). Test functions
+ * (`Test`/`Benchmark`/`Example`/`Fuzz`) are excluded — the Go binary's walk
+ * skips them. `hasNamedErr` is the `funcDeclHasNamedErr` result: the function
+ * names an `err` result, so a bare `return` counts as a check.
+ */
+export type ErrorBindingsFact = {
+  file: string;
+  name: string;
+  line: number;
+  hasNamedErr: boolean;
+  /** Byte offsets of `err` identifiers bound from a call-bearing assignment. */
+  assignPositions: number[];
+  /** Byte offsets of `err` checking uses (compare / return / pass / ignore). */
+  checkPositions: number[];
+};
+
+/**
+ * One Go function's goroutine-synchronization signal, as the
+ * `concurrency-primitives` producer projects it (§9). The serializable
+ * projection of the Go binary's `analyzeConcurrency` — whether the body has a
+ * `go` statement and whether it carries any synchronization signal (a
+ * sync.Add/Done/Wait/Lock/Unlock/RLock/RUnlock selector call, or a channel
+ * send/receive). The `concurrency` rule re-applies the `hasGo && !hasSync`
+ * verdict. `line` is the `func` keyword's 1-based line; test functions are
+ * excluded.
+ */
+export type ConcurrencyPrimitivesFact = {
+  file: string;
+  name: string;
+  line: number;
+  /** A `go` statement anywhere in the body. */
+  hasGo: boolean;
+  /** Any sync primitive or channel send/receive in the body. */
+  hasSync: boolean;
+};
+
+/**
+ * One Go function's channel-operation counts, as the `channel-operations`
+ * producer projects it (§9). The serializable projection of the Go binary's
+ * `deadlockChannel` inputs — the unbuffered-channel names (`make(chan T)` with
+ * one argument) and the send/receive counts per bare-identifier channel name,
+ * plus the `go`-statement signal that clears the verdict. The
+ * `channel-deadlock` rule re-applies the `hasGo → ""`, `ops[name] >= 2` verdict
+ * over plain data. `line` is the `func` keyword's 1-based line; test functions
+ * are excluded.
+ */
+export type ChannelOperationsFact = {
+  file: string;
+  name: string;
+  line: number;
+  /** A `go` statement anywhere in the body (makes the deadlock unprovable). */
+  hasGo: boolean;
+  /** Channel names assigned `make(chan T)` (unbuffered). */
+  unbuffered: string[];
+  /** Send/receive counts per bare-identifier channel name. */
+  ops: Record<string, number>;
+};
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -1100,7 +1179,7 @@ export interface SupplyingFormats {
   'file-symbols': 'typescript' | 'tsx' | 'javascript';
   'function-index': 'typescript' | 'tsx' | 'javascript';
   'function-bodies': 'typescript' | 'tsx' | 'javascript';
-  'imports': 'typescript' | 'tsx' | 'javascript';
+  'imports': 'typescript' | 'tsx' | 'javascript' | 'go';
   'export-form': 'typescript' | 'tsx' | 'javascript';
   'import-form': 'typescript' | 'tsx' | 'javascript';
   'string-literals': 'typescript' | 'tsx' | 'javascript';
@@ -1121,6 +1200,9 @@ export interface SupplyingFormats {
   'type-declarations': 'go';
   'go-functions': 'go';
   'go-switches': 'go';
+  'error-bindings': 'go';
+  'concurrency-primitives': 'go';
+  'channel-operations': 'go';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */

@@ -70,6 +70,8 @@ import { extractFileImports } from './fileImports.js';
 import { extractTypeDeclarations } from './typeDeclarations.js';
 import { extractGoFunctions } from './goFunctions.js';
 import { extractGoSwitches } from './goSwitches.js';
+import { extractGoImports } from './goImports.js';
+import { extractErrorBindings, extractConcurrencyPrimitives, extractChannelOperations } from './goFunctionAnalysis.js';
 import { computeReachability } from './reachability.js';
 import { DEFAULT_VIRTUAL_MODULES } from '../graph/importClassification.js';
 
@@ -137,6 +139,10 @@ const fileImportsProcess = (file: ParsedFile): FactFragment<'file-imports'> =>
 const typeDeclarationsProcess = (file: ParsedFile): FactFragment<'type-declarations'> => extractTypeDeclarations(file as AstFile);
 const goFunctionsProcess = (file: ParsedFile): FactFragment<'go-functions'> => extractGoFunctions(file as AstFile);
 const goSwitchesProcess = (file: ParsedFile): FactFragment<'go-switches'> => extractGoSwitches(file as AstFile);
+const goImportsProcess = (file: ParsedFile): FactFragment<'imports'> => extractGoImports(file as AstFile);
+const errorBindingsProcess = (file: ParsedFile): FactFragment<'error-bindings'> => extractErrorBindings(file as AstFile);
+const concurrencyPrimitivesProcess = (file: ParsedFile): FactFragment<'concurrency-primitives'> => extractConcurrencyPrimitives(file as AstFile);
+const channelOperationsProcess = (file: ParsedFile): FactFragment<'channel-operations'> => extractChannelOperations(file as AstFile);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -158,6 +164,7 @@ export const PRODUCERS = {
     typescript: fileProducer('imports', 'typescript', importsProcess),
     tsx: fileProducer('imports', 'tsx', importsProcess),
     javascript: fileProducer('imports', 'javascript', importsProcess),
+    go: fileProducer('imports', 'go', goImportsProcess),
   },
   'export-form': {
     typescript: fileProducer('export-form', 'typescript', exportFormProcess),
@@ -269,6 +276,19 @@ export const PRODUCERS = {
   },
   'go-switches': {
     go: fileProducer('go-switches', 'go', goSwitchesProcess),
+  },
+  // §9 — the three function-level Go producers (error-binding positions,
+  // goroutine-synchronization signal, channel-operation counts). `error-handling`
+  // reads `error-bindings`; `concurrency` reads `concurrency-primitives`;
+  // `channel-deadlock` reads `channel-operations`.
+  'error-bindings': {
+    go: fileProducer('error-bindings', 'go', errorBindingsProcess),
+  },
+  'concurrency-primitives': {
+    go: fileProducer('concurrency-primitives', 'go', concurrencyPrimitivesProcess),
+  },
+  'channel-operations': {
+    go: fileProducer('channel-operations', 'go', channelOperationsProcess),
   },
 } satisfies ProducerMap;
 
@@ -427,4 +447,7 @@ export const FACT_KINDS = {
   'type-declarations': true,
   'go-functions': true,
   'go-switches': true,
+  'error-bindings': true,
+  'concurrency-primitives': true,
+  'channel-operations': true,
 } satisfies Record<FactKind, true>;

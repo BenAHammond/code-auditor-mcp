@@ -71,6 +71,12 @@ type CodeBlockNeeds = {
 function detectDuplicateImport(facts: readonly ImportFact[]): Finding[] {
   const byFile = new Map<string, Map<string, { line: number; column: number }[]>>();
   for (const imp of facts) {
+    // The `imports` fact is shared with the Go `import-organization`/`import-style`
+    // rules (a mixed corpus concatenates both producers' output). This rule is
+    // TS/JS-only: the Go producer always sets `alias` (null for an unnamed
+    // import), the TS producer leaves it absent, so `alias !== undefined` marks
+    // a Go import and it is skipped here.
+    if (imp.alias !== undefined) continue;
     let fileMap = byFile.get(imp.file);
     if (!fileMap) {
       fileMap = new Map();
