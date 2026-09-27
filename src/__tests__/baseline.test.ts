@@ -1161,9 +1161,10 @@ describe('Spec-18 — CLI end-to-end', () => {
   it('R6.7b — changed --json carries the unresolved-query coverage diagnostic (file+line) without gating', async () => {
     // Spec 58 follow-up: `unresolved-query` moved from a high-severity finding to a
     // coverage diagnostic. This pins the agent-facing surface — `changed --json` (the
-    // hook gate) must carry the diagnostic with file + line, and it must NOT block
-    // (exit 0, not 2). The prior assertions only checked `Array.isArray(diagnostics)`;
-    // this one asserts the coverage diagnostic actually flows through with its anchor.
+    // hook gate) must carry the diagnostic with file + line, and the diagnostic itself
+    // must never gate (it is a coverage diagnostic, not a violation). The prior
+    // assertions only checked `Array.isArray(diagnostics)`; this one asserts the
+    // coverage diagnostic actually flows through with its anchor.
     await writeFile(join(testDir, 'src', 'queries.ts'), 'export const UPSERT_SQL = `INSERT INTO metrics (hour_key, a) VALUES (?, ?)`;\n');
     await writeFile(
       join(testDir, 'src', 'lib.ts'),
@@ -1175,12 +1176,9 @@ describe('Spec-18 — CLI end-to-end', () => {
     runCli(`baseline -p "${testDir}" --json`, testDir);
 
     const r = runCli(`changed "${join(testDir, 'src', 'lib.ts')}" -p "${testDir}" --json`, testDir);
-    // Coverage diagnostics never gate — no violation, so exit 0, not 2.
-    expect(r.exitCode).toBe(0);
 
     const parsed = JSON.parse(r.stdout);
     expect(Array.isArray(parsed.violations)).toBe(true);
-    expect(parsed.violations).toHaveLength(0);
     expect(Array.isArray(parsed.diagnostics)).toBe(true);
 
     const unresolved = parsed.diagnostics.filter((d: any) => d.kind === 'unresolved-query');
@@ -1188,6 +1186,14 @@ describe('Spec-18 — CLI end-to-end', () => {
     expect(unresolved[0].file).toContain('lib.ts');
     expect(typeof unresolved[0].line).toBe('number');
     expect(unresolved[0].details).toMatchObject({ identifier: 'UPSERT_SQL' });
+
+    // The unresolved-query diagnostic must never gate: it is emitted in the
+    // `diagnostics` channel, never in `violations`. (The standalone `lib.ts` may
+    // additionally carry real corpus-level findings — §15 removed the
+    // `GLOBAL_ONLY_ANALYZERS` split, so dependency-graph rules now run in the
+    // `changed` scope — but that is orthogonal to what this test pins.)
+    const unresolvedAsViolation = parsed.violations.some((v: any) => v.rule === 'unresolved-query');
+    expect(unresolvedAsViolation).toBe(false);
   });
 
   it('R6.8 — CLI: --fail-on-regression exits 2 when debt increases', async () => {
@@ -1306,7 +1312,14 @@ describe('Spec-18 — Report formats include baseline data', () => {
       scope: 'all',
     });
 
-    const violations1 = result1.analyzerResults['documentation']?.violations ?? [];
+    // Baseline every advisory finding, not just documentation. §15 removed
+    // `enabledAnalyzers`, so the standalone `lib.ts` fixture also fires
+    // `unreferenced-module` (dependency-graph) — a real finding that must be
+    // baselined for `newCount` to stay 0 on re-audit. The report's baseline
+    // block classifies against the full advisory set, so the snapshot must too.
+    const violations1 = Object.values(result1.analyzerResults).flatMap(
+      (r: any) => r.violations ?? []
+    );
     const baseline = createBaselineFromFindings(violations1, {
       toolVersion: '3.2.0',
       totalFindings: violations1.length,

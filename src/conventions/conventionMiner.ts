@@ -1188,16 +1188,21 @@ export function computeMinerInputHash(
 ): string {
   // Hash actual content — not just counts — so two corpora with identical
   // counts but different functions produce different hashes and are mined.
+  // Read the body LENGTH via SQL, not the full body text: the hash only needs
+  // the length (content identity is already carried by `content_hash`), and
+  // loading the whole `body` column here would be an O(total-source) read on
+  // the single-file `changed` hook path — the same cost scoped-DRY introduced
+  // and the whole-table-read guard forbids.
   const rows = db.prepare(
-    'SELECT name, content_hash, COALESCE(body, \'\') as body FROM functions ORDER BY name, content_hash'
-  ).all() as Array<{ name: string; content_hash: string; body: string }>;
+    'SELECT name, content_hash, LENGTH(COALESCE(body, \'\')) as body_len FROM functions ORDER BY name, content_hash'
+  ).all() as Array<{ name: string; content_hash: string; body_len: number }>;
   const callRows = db.prepare(
     'SELECT fc.callee_name FROM function_calls fc ORDER BY fc.callee_name'
   ).all() as Array<{ callee_name: string }>;
 
   return computeHash([
     MINER_VERSION,
-    rows.map(r => [r.name, r.content_hash, r.body.length]),
+    rows.map(r => [r.name, r.content_hash, r.body_len]),
     callRows.map(r => r.callee_name),
     config,
   ]);

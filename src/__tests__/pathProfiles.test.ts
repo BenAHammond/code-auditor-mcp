@@ -336,8 +336,12 @@ describe('pathProfiles — integration', () => {
       showProgress: false,
     });
 
-    const srcV = violationsFor(result, 'src/module.ts');
-    const scriptsV = violationsFor(result, 'scripts/deploy.ts');
+    // Scope to documentation: the profile test is about doc severity + gate
+    // exclusion. §15 removed `enabledAnalyzers`, so dependency-graph now also
+    // fires `unreferenced-module` (severe) on the standalone fixture — a
+    // legitimate finding, but not what this test measures.
+    const srcV = violationsFor(result, 'src/module.ts').filter((v: any) => v.analyzer === 'documentation');
+    const scriptsV = violationsFor(result, 'scripts/deploy.ts').filter((v: any) => v.analyzer === 'documentation');
 
     expect(srcV.length).toBeGreaterThan(0);
     expect(scriptsV.length).toBeGreaterThan(0);
@@ -418,7 +422,7 @@ export function foo() { return something(); }
       showProgress: false,
     });
 
-    const docsV = violationsFor(result, 'src/module.ts');
+    const docsV = violationsFor(result, 'src/module.ts').filter((v: any) => v.analyzer === 'documentation');
     expect(docsV.length).toBeGreaterThan(0);
 
     // Exclusion must NOT soften — severity stays high, only gateExcluded set
@@ -444,7 +448,7 @@ export function foo() { return something(); }
       projectRoot: testDir,
       showProgress: false,
     });
-    const v1 = violationsFor(result1, 'src/module.ts');
+    const v1 = violationsFor(result1, 'src/module.ts').filter((v: any) => v.analyzer === 'documentation');
     expect(v1.length).toBeGreaterThan(0);
     expect(v1[0].severity).toBe('high');
     expect(v1[0].gateExcluded).toBeUndefined();
@@ -457,7 +461,7 @@ export function foo() { return something(); }
       ],
       showProgress: false,
     });
-    const v2 = violationsFor(result2, 'src/module.ts');
+    const v2 = violationsFor(result2, 'src/module.ts').filter((v: any) => v.analyzer === 'documentation');
     expect(v2.length).toBeGreaterThan(0);
     expect(v2[0].severity).toBe('high');
     expect(v2[0].gateExcluded).toBe(true);

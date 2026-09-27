@@ -203,13 +203,22 @@ describe('CLI integration — foreign CWD with -p', () => {
       exitCode = err.status ?? 1;
     }
 
-    // An high finding blocks (Spec 45 R2), but the audit still ran against the
-    // right project: the finding path is project-relative, not resolved from the CWD.
+    // The finding path is project-relative, not resolved from the CWD — the audit
+    // ran against the project -p named. §15 deleted GLOBAL_ONLY_ANALYZERS, so the
+    // exported helper also produces a severe `unreferenced-module` finding (no
+    // in-scope importer), which sorts ahead of the high `function-documentation`
+    // finding. Both are anchored at `src/helper.ts`, so `violations[0].file` still
+    // proves -p forwarding; assert the high finding is present rather than first.
     expect(exitCode).toBe(2);
     const parsed = JSON.parse(stdout.trim());
     expect(Array.isArray(parsed.violations)).toBe(true);
     expect(parsed.violations[0].file).toBe('src/helper.ts');
-    expect(parsed.violations[0].severity).toBe('high');
+    expect(
+      parsed.violations.some(
+        (v: any) => v.rule === 'function-documentation' && v.severity === 'high',
+      ),
+    ).toBe(true);
+    expect(parsed.violations.every((v: any) => v.file.startsWith('src/'))).toBe(true);
   });
 
   it('changed with -p from foreign CWD finds project-specific config', async () => {
@@ -236,27 +245,37 @@ describe('CLI integration — foreign CWD with -p', () => {
       '}',
     ].join('\n'));
 
-    // Run from foreign CWD with -p
-    const result = execSync(
-      cliCommand(`changed --stdin --json -p "${projectDir}"`),
-      {
-        cwd: foreignCwd,
-        encoding: 'utf-8',
-        input: `${srcFile}\n`,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 30_000,
-        env: { ...process.env, CODE_AUDITOR_DATA_DIR: projectDir },
-      }
-    );
-
-    // Exit code 0 means the command ran successfully from the foreign CWD
-    // (documentation analyzer found no issues on the documented function)
-    const trimmed = result.trim();
-    if (trimmed) {
-      const parsed = JSON.parse(trimmed);
-      expect(Array.isArray(parsed.violations)).toBe(true);
-      expect(Array.isArray(parsed.diagnostics)).toBe(true);
+    // Run from foreign CWD with -p. §15 deleted analyzer selection, so the empty
+    // `.codeauditor.json` no longer gates analyzers — but the command must still
+    // resolve the project via -p and emit parseable JSON on stdout. The function
+    // is fully documented (no documentation finding), but corpus-level rules now
+    // fire in changed scope: the exported module has no in-scope importer, so
+    // `unreferenced-module` (severe) fires and the command exits 2.
+    let stdout = '';
+    let exitCode = 0;
+    try {
+      stdout = execSync(
+        cliCommand(`changed --stdin --json -p "${projectDir}"`),
+        {
+          cwd: foreignCwd,
+          encoding: 'utf-8',
+          input: `${srcFile}\n`,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 30_000,
+          env: { ...process.env, CODE_AUDITOR_DATA_DIR: projectDir },
+        }
+      );
+    } catch (err: any) {
+      stdout = err.stdout || '';
+      exitCode = err.status ?? 1;
     }
+
+    expect(exitCode).toBe(2);
+    const parsed = JSON.parse(stdout.trim());
+    expect(Array.isArray(parsed.violations)).toBe(true);
+    expect(Array.isArray(parsed.diagnostics)).toBe(true);
+    // -p forwarded the project root: the finding path is project-relative.
+    expect(parsed.violations.some((v: any) => v.file === 'src/lib.ts')).toBe(true);
   });
 });
 

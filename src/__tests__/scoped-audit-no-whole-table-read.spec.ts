@@ -1,20 +1,23 @@
 /**
- * Structural guard — a scoped (changed-file) audit never reads the whole
- * `functions` table.
+ * Structural guard — a scoped (changed-file) audit never reads the full
+ * function `body` text from a whole-table `functions` read.
  *
- * The single-file `changed` hook path (`code-audit changed --stdin`) is meant to
- * be O(changed files), not O(project). The one caller that broke that contract
- * was scoped-DRY: `getAllFunctionsForDry()` loaded every function body on every
- * single-file run to power a cross-file `dry/duplicate` comparison that could
- * never match (the index stored `statement_block` while the analyzer hashed the
- * full function node — a producer/consumer mismatch). The load was deleted; this
- * test is the guard that keeps it deleted.
+ * §14 changed the contract: `changed` scope now analyzes the whole repository,
+ * so the corpus processors (call-graph, coverage, hotspot, conventions mining)
+ * legitimately read whole *metadata* tables in the single-file hook path. The
+ * one read that must not return is the full `body` column — that was scoped-DRY:
+ * `getAllFunctionsForDry()` loaded every function body on every single-file run
+ * to power a cross-file `dry/duplicate` comparison that could never match (the
+ * index stored `statement_block` while the analyzer hashed the full function
+ * node — a producer/consumer mismatch). The load was deleted; this test is the
+ * guard that keeps it deleted, while allowing the §14 corpus-processor metadata
+ * reads (and the `LENGTH(body)`-style length-only reads) that replaced it.
  *
  * The assertion is on the SQL, not the clock. We spy on the SQLite `prepare` /
  * `exec` seam, run a real scoped audit against the in-memory singleton, and
- * assert no SELECT over `functions` lacks a WHERE clause. A reintroduced
- * whole-table load fails this test deterministically, where a latency budget
- * would only wobble.
+ * assert no whole-table SELECT over `functions` selects the bare `body` column.
+ * A reintroduced full-body load fails this test deterministically, where a
+ * latency budget would only wobble.
  */
 
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
@@ -62,6 +65,24 @@ function isWholeTableFunctionsRead(sql: string): boolean {
   if (!/FROM\s+FUNCTIONS(?:\s|$)/.test(normalized)) return false;
   if (/\bLIMIT\s+1\b/.test(normalized)) return false;
   return !/\bWHERE\b/.test(normalized);
+}
+
+/**
+ * True when a whole-table `functions` read selects the bare `body` column —
+ * i.e. loads the full function text. That is the scoped-DRY cost driver: an
+ * O(total-source) read on the single-file hook path. `LENGTH(COALESCE(body, ''))`
+ * (a length-only read, as in `computeMinerInputHash`) is allowed; a bare `body`
+ * or `COALESCE(body, '')` in the SELECT list is not.
+ */
+function isFullBodyTextRead(sql: string): boolean {
+  const normalized = sql.replace(/\s+/g, ' ').trim().toUpperCase();
+  if (!normalized.startsWith('SELECT')) return false;
+  if (!/FROM\s+FUNCTIONS(?:\s|$)/.test(normalized)) return false;
+  if (/\bWHERE\b/.test(normalized)) return false;
+  const selectClause = normalized.slice(0, normalized.indexOf(' FROM '));
+  const anyBody = /\bBODY\b/.test(selectClause);
+  const bodyInLength = /LENGTH\s*\([^)]*\bBODY\b/.test(selectClause);
+  return anyBody && !bodyInLength;
 }
 
 /** Wrap the DB's prepare/exec seam to record every SQL string it sees. */
@@ -114,11 +135,16 @@ describe('scoped audit issues no whole-table functions read', () => {
     restore();
 
     // Sanity — the spy actually saw the scoped path touch the functions table
-    // (detectChangedFunctions reads it by file_path), so a green assertion is a
-    // real observation, not an empty capture.
+    // (detectChangedFunctions reads it by file_path, and the §14 corpus
+    // processors read whole metadata tables), so a green assertion is a real
+    // observation, not an empty capture.
     expect(sql.some((s) => /FROM\s+FUNCTIONS/i.test(s))).toBe(true);
 
-    const wholeTableReads = sql.filter(isWholeTableFunctionsRead);
-    expect(wholeTableReads).toEqual([]);
+    // §14 allows the whole-table *metadata* reads (id/name/file_path/line_number
+    // /content_hash/metadata_json/used_imports/is_exported) and length-only reads
+    // (LENGTH(body)); what must not recur is a whole-table read of the bare
+    // `body` column — the scoped-DRY full-text load this guard keeps deleted.
+    const fullBodyReads = sql.filter(isFullBodyTextRead);
+    expect(fullBodyReads).toEqual([]);
   });
 });
