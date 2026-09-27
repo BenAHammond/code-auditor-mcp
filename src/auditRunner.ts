@@ -25,6 +25,7 @@ import { discoverFiles, discoverFilesDetailed } from './utils/fileDiscovery.js';
 import { FileAccounting } from './services/fileAccounting.js';
 import { loadConfig, findConfigFileUp, type RejectedConfigEntry } from './config/configLoader.js';
 import { mergePathProfiles } from './config/defaults.js';
+import { resolvePathProfile } from './config/pathProfiles.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
 import { readProjectLintThresholds, thresholdsToAnalyzerConfig } from './config/lintConfigReader.js';
 import { computeThresholdSources } from './config/effectiveConfig.js';
@@ -834,7 +835,26 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
           if (migrated.size > 0) {
             const thresholds = resolvePhaseThresholds(pipelineAnalyzerConfig);
-            const phaseFindings = await runPhaseModel(files, thresholds, root);
+            // The phase model must honor path-profile attribution exactly as the
+            // pipeline does: `excludeFromAnalysis` (Spec 44 reason 7) removes a
+            // file's facts entirely, and `profile`/`excludeFromGate` (Spec 36 R4)
+            // are stamped on each finding by the last matched profile. Resolve
+            // once per file — both the exclusion filter and the re-emission
+            // attribution below read the same `ResolvedProfile`.
+            const profiles = mergedOptions.pathProfiles;
+            const profileByFile = new Map<string, ReturnType<typeof resolvePathProfile>>();
+            const resolveFileProfile = (file: string) => {
+              let resolved = profileByFile.get(file);
+              if (!resolved) {
+                resolved = profiles?.length
+                  ? resolvePathProfile(file, root, profiles)
+                  : { overrides: {}, excludeFromGate: false, excludeFromAnalysis: false, matchedProfileNames: [] };
+                profileByFile.set(file, resolved);
+              }
+              return resolved;
+            };
+            const phaseFiles = files.filter((f) => !resolveFileProfile(f).excludeFromAnalysis);
+            const phaseFindings = await runPhaseModel(phaseFiles, thresholds, root);
 
             // Strip the migrated rules' legacy emission from every analyzer
             // result — the phase model is now their single source of truth.
@@ -847,10 +867,16 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
             // Re-emit phase findings as violations, bucketed by the rule's
             // analyzer namespace (the result key stamping below owns the
-            // `analyzer` field — the source of truth is the bucket).
+            // `analyzer` field — the source of truth is the bucket). Each
+            // finding carries the same `profile`/`gateExcluded` the pipeline's
+            // stage-2 loop would have stamped on it.
             const byAnalyzer = new Map<string, Violation[]>();
             for (const f of phaseFindings) {
               const analyzer = RULE_REGISTRY[f.ruleId]?.analyzer ?? 'phase';
+              const resolved = resolveFileProfile(f.file);
+              const profile = resolved.matchedProfileNames.length > 0
+                ? resolved.matchedProfileNames[resolved.matchedProfileNames.length - 1]
+                : undefined;
               const bucket = byAnalyzer.get(analyzer) ?? [];
               bucket.push({
                 file: f.file,
@@ -862,6 +888,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
                 symbol: f.symbol,
                 resolution: f.resolution,
                 analyzer,
+                ...(profile ? { profile } : {}),
+                ...(resolved.excludeFromGate ? { gateExcluded: true } : {}),
               });
               byAnalyzer.set(analyzer, bucket);
             }
