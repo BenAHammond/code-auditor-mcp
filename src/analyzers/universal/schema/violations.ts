@@ -45,7 +45,7 @@ export function createSchemaViolation(
     analyzer: 'schema'
   };
   if (classification.symbol) {
-    v.functionName = classification.symbol;
+    v.symbol = classification.symbol;
   }
   return v;
 }

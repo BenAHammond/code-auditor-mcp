@@ -669,7 +669,7 @@ describe('INSERT/DELETE table patterns + provenance fixture', () => {
     expect(allText).toContain('migration_log');
   });
 
-  it('sanity: d1Exec provenance fix — locally-defined wrapper appears in violation functionName', () => {
+  it('sanity: d1Exec provenance fix — locally-defined wrapper appears in violation symbol', () => {
     const runResult = runCli(
       `audit --path "${testDir}" -f json -o "${testDir}"`,
       testDir
@@ -690,16 +690,16 @@ describe('INSERT/DELETE table patterns + provenance fixture', () => {
     // Without the dbWrapperNames provenance fix in pipelineAdapters.ts,
     // addNameListFallbacks would never find d1Exec in the source and the
     // call sites at lines 45-46 would not be attributed as DB operations.
-    // The presence of violations with functionName containing d1Exec proves
+    // The presence of violations with symbol containing d1Exec proves
     // the provenance fix works end-to-end.
     const d1ExecViolations = violations.filter((v: any) =>
-      v.functionName?.includes('d1Exec')
+      v.symbol?.includes('d1Exec')
     );
     expect(d1ExecViolations.length).toBeGreaterThanOrEqual(2);
 
     // Both violations should originate from runMigration (the caller)
     for (const v of d1ExecViolations) {
-      expect(v.functionName).toContain('runMigration');
+      expect(v.symbol).toContain('runMigration');
     }
   });
 });

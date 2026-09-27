@@ -96,6 +96,10 @@ function checkImportBan(
         message: rule.message || `Import of banned module "${imp.moduleSpecifier}"`,
         file: filePath,
         line: imp.line,
+        // §7 — one symbol: the banned module specifier is what located this
+        // finding, so two import-bans in one file do not collapse to one
+        // fingerprint. `importSpecifier` stays for the emitted JSON contract.
+        symbol: imp.moduleSpecifier,
         importSpecifier: imp.moduleSpecifier,
       });
     }
@@ -131,6 +135,8 @@ function checkModuleBoundary(
           `File "${filePath}" imports "${imp.moduleSpecifier}" which matches forbidden boundary "${rule.to}"`,
         file: filePath,
         line: imp.line,
+        // §7 — one symbol: the banned module specifier locates this finding.
+        symbol: imp.moduleSpecifier,
         importSpecifier: imp.moduleSpecifier,
       });
     }

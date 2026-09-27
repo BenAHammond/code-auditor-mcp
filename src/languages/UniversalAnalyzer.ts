@@ -266,7 +266,7 @@ export abstract class UniversalAnalyzer {
       analyzer: this.name
     };
     if (symbol) {
-      v.functionName = symbol;
+      v.symbol = symbol;
     }
     if (classification.resolution) {
       v.resolution = classification.resolution;

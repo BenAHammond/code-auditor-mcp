@@ -206,7 +206,7 @@ function makeViolation(
     rule: classification.rule,
     analyzer: 'documentation'
   };
-  if (classification.symbol) v.functionName = classification.symbol;
+  if (classification.symbol) v.symbol = classification.symbol;
   return v;
 }
 

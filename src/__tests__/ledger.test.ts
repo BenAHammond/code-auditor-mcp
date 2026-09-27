@@ -147,14 +147,14 @@ describe('Findings Ledger — write and status', () => {
     expect(findings[0].fingerprint).not.toBe(findings[1].fingerprint);
   });
 
-  it('uses extractSymbol priority chain for fingerprint symbol', () => {
+  it('uses the single `symbol` field for fingerprint symbol (§7)', () => {
     const runId = writeAuditToLedger(
       db,
       { gitDirty: false, toolVersion: '1.0', command: 'audit', surface: 'cli', scope: 'full', target: '.' },
       [
         // symbol field explicitly set
         { file: 'src/a.ts', line: 1, severity: 'high', message: 'test', analyzer: 'test', rule: 'test', symbol: 'MyClass' },
-        // functionName fallback
+        // legacy `functionName` is no longer a fallback — it must not resolve
         { file: 'src/b.ts', line: 2, severity: 'high', message: 'test', analyzer: 'test', rule: 'test', functionName: 'myFunction' },
         // neither — should produce empty symbol but different fingerprint
         { file: 'src/c.ts', line: 3, severity: 'high', message: 'test', analyzer: 'test', rule: 'test' },
@@ -164,7 +164,7 @@ describe('Findings Ledger — write and status', () => {
 
     const findings = db.prepare('SELECT * FROM findings_ledger_findings WHERE run_id = ? ORDER BY id').all(runId) as any[];
     expect(findings[0].symbol).toBe('MyClass');
-    expect(findings[1].symbol).toBe('myFunction');
+    expect(findings[1].symbol).toBe('');
     expect(findings[2].symbol).toBe('');
     // Different symbols produce different fingerprints even on same file
     expect(findings[0].fingerprint).not.toBe(findings[2].fingerprint);
@@ -575,7 +575,7 @@ describe('Findings Ledger — corruption resilience', () => {
       message: 'Component is too complex',
       analyzer: 'react',
       violationType: 'complexity',
-      functionName: 'Dashboard',
+      symbol: 'Dashboard',
     };
 
     const accessibilityViolation: Violation = {
@@ -586,7 +586,7 @@ describe('Findings Ledger — corruption resilience', () => {
       message: 'Missing aria-label',
       analyzer: 'react',
       violationType: 'accessibility',
-      functionName: 'Dashboard',
+      symbol: 'Dashboard',
     };
 
     const fp1 = fingerprint(buildFingerprintInput(complexityViolation));

@@ -409,7 +409,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(1);
-      expect(violations[0].functionName).toBe('migrateAll');
+      expect(violations[0].symbol).toBe('migrateAll');
       expect(violations[0].message).toContain('4 distinct tables');
       expect(violations[0].severity).toBe('high');
     });
@@ -488,7 +488,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(1);
-      expect(violations[0].functionName).toBe('orchestrator');
+      expect(violations[0].symbol).toBe('orchestrator');
       // All 4 tables should appear in sorted order
       expect(violations[0].message).toContain('logs, order_items, orders, sessions');
     });
@@ -612,7 +612,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         v => v.rule === 'cross-domain/multi-table-write',
       );
       expect(violations).toHaveLength(1);
-      expect(violations[0].functionName).toBe('flush');
+      expect(violations[0].symbol).toBe('flush');
 
       rmSync(dir, { recursive: true, force: true });
     });
@@ -719,7 +719,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       );
       expect(violations).toHaveLength(1);
       expect(violations[0].file).toContain('writer.ts');
-      expect(violations[0].functionName).toBe('writeStale');
+      expect(violations[0].symbol).toBe('writeStale');
       expect(violations[0].line).toBe(42);
     });
   });
@@ -901,7 +901,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         // 1/2 = 0.5 ≥ 0.5 modeShare → flag createOrder
         const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
-        expect(bypass[0].functionName).toBe('createOrder');
+        expect(bypass[0].symbol).toBe('createOrder');
       });
 
       it('does NOT use heuristic when provenance finds validators', async () => {
@@ -946,7 +946,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         // 1/2 = 0.5 ≥ 0.5 modeShare → flag Writer 1
         const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
-        expect(bypass[0].functionName).toBe('createOrder');
+        expect(bypass[0].symbol).toBe('createOrder');
       });
 
       it('detects user-configured validators by path#functionName', async () => {
@@ -1011,7 +1011,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
-        expect(bypass[0].functionName).toBe('createOrder');
+        expect(bypass[0].symbol).toBe('createOrder');
         expect(bypass[0].severity).toBe('severe');
       });
 
@@ -1137,7 +1137,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         // saveOrder reaches validator, createOrder does not (beyond depth 3)
         expect(bypass).toHaveLength(1);
-        expect(bypass[0].functionName).toBe('createOrder');
+        expect(bypass[0].symbol).toBe('createOrder');
       });
 
       it('handles cycles in call graph without infinite loop', async () => {
@@ -1232,7 +1232,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
-        expect(bypass[0].functionName).toBe('deleteOrder');
+        expect(bypass[0].symbol).toBe('deleteOrder');
       });
 
       it('does NOT flag anyone when modeShare threshold is NOT met', async () => {
@@ -1402,7 +1402,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(1);
-        expect(bypass[0].functionName).toBe('createOrder');
+        expect(bypass[0].symbol).toBe('createOrder');
       });
 
       it('deduplicates writers that appear in multiple schema_usage rows', async () => {
@@ -1502,7 +1502,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         expect(bypass).toHaveLength(1);
         expect(bypass[0].rule).toBe('cross-domain/no-validator-reachable');
         expect(bypass[0].analyzer).toBe('cross-domain');
-        expect(bypass[0].functionName).toBe('createOrder');
+        expect(bypass[0].symbol).toBe('createOrder');
         expect(bypass[0].line).toBe(42);
       });
 

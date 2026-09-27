@@ -114,7 +114,7 @@ describe('cross-domain/no-validator-reachable (reachability, honest name)', () =
 
     const v = result.violations.filter(x => x.rule === 'cross-domain/no-validator-reachable');
     expect(v).toHaveLength(1);
-    expect(v[0].functionName).toBe('createOrder');
+    expect(v[0].symbol).toBe('createOrder');
     expect(v[0].message).toContain('does not reach a validator');
     expect(v[0].message).not.toContain('is not validated');
     expect(v[0].message).not.toMatch(/bypass/i);

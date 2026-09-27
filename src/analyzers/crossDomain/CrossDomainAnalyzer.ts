@@ -468,7 +468,7 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
       message: `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
       rule: 'cross-domain/written-never-read',
       analyzer: ANALYZER_NAME,
-      functionName: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
+      symbol: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
     });
   }
 
@@ -513,7 +513,7 @@ function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Vio
       message: `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
       rule: 'cross-domain/read-never-written',
       analyzer: ANALYZER_NAME,
-      functionName: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
+      symbol: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
     });
   }
 
@@ -680,7 +680,7 @@ function flagTransactionBoundaryWrites(
         message: `Function writes to ${allTables.size} distinct tables (threshold: ${txnTableMax}): ${tableList}. This may indicate transaction-boundary risk — consider splitting writes across smaller transactional scopes.`,
         rule: 'cross-domain/multi-table-write',
         analyzer: ANALYZER_NAME,
-        functionName: key.split('::')[1],
+        symbol: key.split('::')[1],
       });
     }
   }
@@ -920,7 +920,7 @@ function flagUnvalidatedWriters(
             `Consider adding input validation.`,
           rule: 'cross-domain/no-validator-reachable',
           analyzer: ANALYZER_NAME,
-          functionName: w.funcName,
+          symbol: w.funcName,
         });
       }
     }
@@ -1001,7 +1001,7 @@ function detectMeasuredUncovered(indexHandle: IndexHandle, topRiskDecile: number
         (staleWarning ?? ''),
       rule: 'cross-domain/uncovered-risk',
       analyzer: ANALYZER_NAME,
-      functionName: fn.functionName,
+      symbol: fn.functionName,
       basis: fn.basis,
       sourceFormat,
       ...(staleWarning ? { staleImport: true } : {}),
@@ -1076,7 +1076,7 @@ function flagUnreachedHighRisk(highRiskFns: HighRiskFn[], reachableIds: Set<numb
         `Add test coverage or import measured coverage with 'code-audit coverage --import <path>'.`,
       rule: 'cross-domain/uncovered-risk',
       analyzer: ANALYZER_NAME,
-      functionName: fn.name,
+      symbol: fn.name,
       basis: 'static-reach',
     });
   }

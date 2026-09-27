@@ -1,33 +1,26 @@
 /**
  * Shared symbol extractor for fingerprint construction.
  *
- * One canonical priority chain — used by baseline matching, tasks.from_audit
- * dedupe, and SARIF partial fingerprints. If these surfaces drift, the same
- * violation fingerprints differently across surfaces, silently breaking
- * baseline matching and task deduplication.
+ * One canonical source — used by baseline matching, tasks.from_audit dedupe,
+ * and SARIF partial fingerprints. If these surfaces drift, the same violation
+ * fingerprints differently across surfaces, silently breaking baseline
+ * matching and task deduplication.
  *
- * Priority: `symbol` first (explicit canonical marker), then entity-name
- * fields in descending specificity, then context fallbacks.
+ * Spec 68 §7 — one finding identity: the symbol is a single field, `symbol`,
+ * populated by the processor (phase rule `analyze`) or legacy analyzer that
+ * located the finding. The nine pre-§7 symbol-bearing fields
+ * (`functionName`/`className`/`componentName`/`methodName`/`hookName`/
+ * `interfaceName`/`name`/`enclosingSymbol`) are gone; there is no fallback
+ * chain to resurrect.
  */
 
 import type { Violation } from './types.js';
 
 /**
- * Extract the canonical symbol from a violation record.
- *
- * The priority chain covers all known symbol-carrying fields across the
- * analyzer surface area. New fields should be added here — never copied
- * inline to a caller.
+ * Extract the canonical symbol from a violation record — the single `symbol`
+ * field, or `''` when the finding is not symbol-anchored (a file-level or
+ * corpus-level finding whose identity is the file/rule itself).
  */
 export function extractSymbol(violation: Violation): string {
-  return (violation.symbol
-    ?? violation.functionName
-    ?? violation.className
-    ?? violation.componentName
-    ?? violation.methodName
-    ?? violation.hookName
-    ?? violation.interfaceName
-    ?? violation.name
-    ?? violation.enclosingSymbol
-    ?? '') as string;
+  return violation.symbol ?? '';
 }

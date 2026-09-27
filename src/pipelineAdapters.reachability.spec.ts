@@ -80,7 +80,7 @@ describe('createDependencyGraphReducer — orphan + reachability', () => {
     const orphans = result.violations.filter((v) => v.type === 'orphaned-nodes');
     expect(orphans).toHaveLength(2);
 
-    const byName = new Map(orphans.map((v) => [v.functionName, v]));
+    const byName = new Map(orphans.map((v) => [v.symbol, v]));
     expect(byName.get('neverUsed')).toMatchObject({ file: 'src/dead.ts', line: 10 });
     expect(byName.get('unusedHelper')).toMatchObject({ file: 'src/other.ts', line: 25 });
   });
@@ -114,7 +114,7 @@ describe('createDependencyGraphReducer — orphan + reachability', () => {
       file: 'src/hub.ts',
       line: 5,
       message: 'Hub node "hub" has 12 dependencies.',
-      functionName: 'hub',
+      symbol: 'hub',
     });
   });
 

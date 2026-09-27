@@ -24,7 +24,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             severity: 'critical',
             message: 'Class "GiantManager" has 25 public methods',
             principle: 'single-responsibility',
-            className: 'GiantManager',
+            symbol: 'GiantManager',
             type: 'solid'
           },
           {
@@ -35,7 +35,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             severity: 'severe',
             message: 'Class "Helper" appears to have multiple responsibilities',
             principle: 'single-responsibility',
-            className: 'Helper',
+            symbol: 'Helper',
             type: 'solid'
           }
         ],
@@ -52,7 +52,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             severity: 'high',
             message: 'Similar code found in 3 locations',
             type: 'similar-code',
-            functionName: 'parseConfig',
+            symbol: 'parseConfig',
             similarity: 0.85
           }
         ],
@@ -69,7 +69,7 @@ function fixtureAuditResult(overrides: Record<string, any> = {}): any {
             severity: 'critical',
             message: 'Potential SQL injection vulnerability detected',
             type: 'data-access',
-            functionName: 'getUserById'
+            symbol: 'getUserById'
           }
         ],
         status: makeVisitorStatus(2),
@@ -325,7 +325,7 @@ describe('handleProjectTasks from_audit', () => {
               severity: 'critical',
               message: 'Second audit only',
               principle: 'open-closed',
-              className: 'SecondClass',
+              symbol: 'SecondClass',
               type: 'solid'
             }
           ],

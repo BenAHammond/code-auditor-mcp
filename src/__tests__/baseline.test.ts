@@ -241,7 +241,7 @@ describe('Spec-18 — Baseline module', () => {
 
   it('createBaselineFromFindings excludes invariant violations', () => {
     const violations: Violation[] = [
-      { file: 'src/a.ts', line: 1, column: 1, severity: 'high', message: 'doc', rule: 'function-documentation', analyzer: 'documentation', functionName: 'myFn' },
+      { file: 'src/a.ts', line: 1, column: 1, severity: 'high', message: 'doc', rule: 'function-documentation', analyzer: 'documentation', symbol: 'myFn' },
       { file: 'src/b.ts', line: 1, column: 1, severity: 'critical', message: 'ban', rule: 'import-ban', analyzer: 'invariants' },
     ];
     const baseline = createBaselineFromFindings(violations, {
@@ -255,7 +255,7 @@ describe('Spec-18 — Baseline module', () => {
   });
 
   it('createBaselineFromFindings deduplicates by fingerprint', () => {
-    const v: Violation = { file: 'src/a.ts', line: 1, column: 1, severity: 'high', message: 'undocumented', rule: 'function-documentation', analyzer: 'documentation', functionName: 'myFn' };
+    const v: Violation = { file: 'src/a.ts', line: 1, column: 1, severity: 'high', message: 'undocumented', rule: 'function-documentation', analyzer: 'documentation', symbol: 'myFn' };
     const violations: Violation[] = [
       { ...v, line: 1 },
       { ...v, line: 42 },  // different line, same fingerprint
@@ -280,16 +280,13 @@ describe('Spec-18 — Baseline module', () => {
     expect(fp1).not.toBe(fp3);
   });
 
-  it('R6.6 — extractSymbol produces stable output regardless of which entity field is populated', () => {
-    expect(extractSymbol({ symbol: 's', functionName: 'f' } as any)).toBe('s');
-    expect(extractSymbol({ functionName: 'f', className: 'c' } as any)).toBe('f');
-    expect(extractSymbol({ className: 'c' } as any)).toBe('c');
-    expect(extractSymbol({ componentName: 'cmp' } as any)).toBe('cmp');
-    expect(extractSymbol({ methodName: 'm' } as any)).toBe('m');
-    expect(extractSymbol({ hookName: 'useX' } as any)).toBe('useX');
-    expect(extractSymbol({ interfaceName: 'I' } as any)).toBe('I');
-    expect(extractSymbol({ name: 'n' } as any)).toBe('n');
-    expect(extractSymbol({ enclosingSymbol: 'es' } as any)).toBe('es');
+  it('R6.6 — extractSymbol reads the single `symbol` field (§7)', () => {
+    expect(extractSymbol({ symbol: 's' } as any)).toBe('s');
+    // The pre-§7 symbol-bearing fields are gone — none is a fallback.
+    expect(extractSymbol({ functionName: 'f', className: 'c' } as any)).toBe('');
+    expect(extractSymbol({ componentName: 'cmp' } as any)).toBe('');
+    expect(extractSymbol({ hookName: 'useX' } as any)).toBe('');
+    expect(extractSymbol({ enclosingSymbol: 'es' } as any)).toBe('');
     expect(extractSymbol({} as any)).toBe('');
   });
 
@@ -308,7 +305,7 @@ describe('Spec-18 — Baseline module', () => {
 
     const violation: Violation = {
       file: 'src/a.ts', line: 1, column: 1, severity: 'high', message: 'no doc',
-      rule: 'function-documentation', analyzer: 'documentation', functionName: 'myFn',
+      rule: 'function-documentation', analyzer: 'documentation', symbol: 'myFn',
     };
 
     const classified = matchFindings([violation], baseline);
@@ -333,7 +330,7 @@ describe('Spec-18 — Baseline module', () => {
     // Violation in a different file → different fingerprint → new
     const violation: Violation = {
       file: 'src/b.ts', line: 1, column: 1, severity: 'high', message: 'no doc',
-      rule: 'function-documentation', analyzer: 'documentation', functionName: 'otherFn',
+      rule: 'function-documentation', analyzer: 'documentation', symbol: 'otherFn',
     };
 
     const classified = matchFindings([violation], baseline);
@@ -425,7 +422,7 @@ describe('Spec-18 — Baseline module', () => {
     // untouchedEntry should NOT appear as "fixed" because it's out of scope.
     const violation: Violation = {
       file: 'src/touched.ts', line: 1, column: 1, severity: 'high', message: 'no doc',
-      rule: 'function-documentation', analyzer: 'documentation', functionName: 'touchedFn',
+      rule: 'function-documentation', analyzer: 'documentation', symbol: 'touchedFn',
     };
 
     const classified = matchFindings([violation], baseline, ['src/touched.ts']);
@@ -641,7 +638,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
       message: 'Missing JSDoc on exported function calculateTotal',
       analyzer: 'documentation',
       rule: 'function-documentation',
-      functionName: 'calculateTotal',
+      symbol: 'calculateTotal',
       ...overrides,
     };
   }
@@ -780,10 +777,9 @@ describe('Spec-18 — Audit pipeline integration', () => {
   // changes its symbol-resolution path.
 
   it('cross-surface: same violation fingerprints identically through baseline, from_audit, and SARIF pathways', () => {
-    // Create violations with various symbol-field configurations.
-    // All surfaces use extractSymbol(violation) — the priority chain is:
-    // symbol ?? functionName ?? className ?? componentName ?? methodName ??
-    //   hookName ?? interfaceName ?? name ?? enclosingSymbol ?? ''
+    // Spec 68 §7 — one finding identity: every surface resolves the symbol
+    // through the single `symbol` field (extractSymbol). The pre-§7 nine-field
+    // chain is gone; a violation with no `symbol` resolves to ''.
     const violationCases: Array<{ label: string; violation: Violation; expectedSymbol: string }> = [
       {
         label: 'symbol field set directly',
@@ -800,65 +796,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         expectedSymbol: 'myFunction',
       },
       {
-        label: 'only functionName (no symbol)',
-        violation: {
-          file: 'src/b.ts',
-          line: 20,
-          column: 1,
-          severity: 'severe',
-          message: 'too many params',
-          analyzer: 'solid',
-          rule: 'solid/method-complexity',
-          functionName: 'process',
-        } as any,
-        expectedSymbol: 'process',
-      },
-      {
-        label: 'functionName takes priority over className (per extractSymbol chain)',
-        violation: {
-          file: 'src/c.ts',
-          line: 30,
-          column: 1,
-          severity: 'severe',
-          message: 'class method too long',
-          analyzer: 'solid',
-          rule: 'solid/method-complexity',
-          className: 'MyService',
-          functionName: 'handle',
-        } as any,
-        expectedSymbol: 'handle',
-      },
-      {
-        label: 'componentName + methodName',
-        violation: {
-          file: 'src/Component.tsx',
-          line: 40,
-          column: 1,
-          severity: 'high',
-          message: 'effect missing deps',
-          analyzer: 'react',
-          rule: 'react/missing-deps',
-          componentName: 'Dashboard',
-          methodName: 'handleClick',
-        } as any,
-        expectedSymbol: 'Dashboard',
-      },
-      {
-        label: 'enclosingSymbol fallback',
-        violation: {
-          file: 'src/d.ts',
-          line: 50,
-          column: 1,
-          severity: 'severe',
-          message: 'SQL injection',
-          analyzer: 'schema',
-          rule: 'dynamic-sql-construction',
-          enclosingSymbol: 'buildQuery:dynamic-sql-construction',
-        } as any,
-        expectedSymbol: 'buildQuery:dynamic-sql-construction',
-      },
-      {
-        label: 'no symbol fields at all → empty string',
+        label: 'no symbol field → empty string',
         violation: {
           file: 'src/e.ts',
           line: 60,
@@ -936,7 +874,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/a.ts', line: 1, column: 1, severity: 'high',
           message: 'undocumented', analyzer: 'documentation',
-          rule: 'file-documentation', functionName: 'myFn',
+          rule: 'file-documentation', symbol: 'myFn',
         },
         expectedRule: 'file-documentation',
       },
@@ -945,7 +883,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/b.ts', line: 5, column: 1, severity: 'critical',
           message: 'type mismatch', analyzer: 'universal-schema',
-          rule: 'type-mismatch', functionName: 'buildQuery',
+          rule: 'type-mismatch', symbol: 'buildQuery',
         } as any,
         expectedRule: 'type-mismatch',
       },
@@ -954,7 +892,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/c.ts', line: 10, column: 1, severity: 'severe',
           message: 'class too large', analyzer: 'solid',
-          rule: 'solid/class-size', className: 'BigClass',
+          rule: 'solid/class-size', symbol: 'BigClass',
         } as any,
         expectedRule: 'solid/class-size',
       },
@@ -963,7 +901,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/d.ts', line: 15, column: 1, severity: 'high',
           message: 'duplicate code', analyzer: 'dry',
-          rule: 'dry/duplicate', functionName: 'helperFn',
+          rule: 'dry/duplicate', symbol: 'helperFn',
         } as any,
         expectedRule: 'dry/duplicate',
       },
@@ -972,7 +910,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/e.ts', line: 20, column: 1, severity: 'critical',
           message: 'SQL injection risk', analyzer: 'data-access',
-          rule: 'sql-injection-risk', functionName: 'runQuery',
+          rule: 'sql-injection-risk', symbol: 'runQuery',
         } as any,
         expectedRule: 'sql-injection-risk',
       },
@@ -982,7 +920,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/g.proto', line: 30, column: 1, severity: 'severe',
           message: 'field mismatch', analyzer: 'schema-validator',
-          rule: 'schema-field-mismatch', functionName: 'validateSchema',
+          rule: 'schema-field-mismatch', symbol: 'validateSchema',
         } as any,
         expectedRule: 'schema-field-mismatch',
       },
@@ -992,7 +930,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/App.tsx', line: 35, column: 1, severity: 'high',
           message: 'component too complex', analyzer: 'react',
-          rule: 'complexity', componentName: 'App',
+          rule: 'complexity', symbol: 'App',
         } as any,
         expectedRule: 'complexity',
       },
@@ -1002,7 +940,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/App.tsx', line: 40, column: 1, severity: 'severe',
           message: 'hook naming violation', analyzer: 'react',
-          rule: 'hooks-naming', hookName: 'useBadHook',
+          rule: 'hooks-naming', symbol: 'useBadHook',
         } as any,
         expectedRule: 'hooks-naming',
       },
@@ -1012,7 +950,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/api.ts', line: 50, column: 1, severity: 'severe',
           message: 'dual field violation', analyzer: 'schema-validator',
-          rule: 'schema-field-mismatch', functionName: 'validate',
+          rule: 'schema-field-mismatch', symbol: 'validate',
         } as any,
         expectedRule: 'schema-field-mismatch',
       },
@@ -1022,7 +960,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/h.ts', line: 50, column: 1, severity: 'high',
           message: 'some issue', analyzer: 'unknown-analyzer',
-          rule: 'structural-issue', functionName: 'someFn',
+          rule: 'structural-issue', symbol: 'someFn',
         } as any,
         expectedRule: 'structural-issue',
       },
@@ -1032,7 +970,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/i.ts', line: 55, column: 1, severity: 'high',
           message: 'nested rule violation', analyzer: 'react',
-          rule: 'react/nested-rule', functionName: 'renderView',
+          rule: 'react/nested-rule', symbol: 'renderView',
         } as any,
         expectedRule: 'react/nested-rule',
       },
@@ -1042,7 +980,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
         violation: {
           file: 'src/j.ts', line: 60, column: 1, severity: 'high',
           message: 'unknown issue', analyzer: 'unknown',
-          functionName: 'unlabeledFn',
+          symbol: 'unlabeledFn',
         } as any,
         expectedRule: '',
       },

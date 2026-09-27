@@ -129,14 +129,13 @@ export interface Violation {
    * Access, and Dependency Graph analyzers (see `resolveRuleId`).
    */
   type?: string;
-  /** Symbol resolution — set by analyzers for symbol-level attribution. */
-  functionName?: string;
-  componentName?: string;
-  name?: string;
-  methodName?: string;
-  hookName?: string;
-  interfaceName?: string;
-  enclosingSymbol?: string;
+  /**
+   * Spec 68 §7 — one symbol. The single identity-bearing symbol field, set by
+   * the processor/analyzer that located the finding. The pre-§7 symbol-bearing
+   * fields (`functionName`, `className`, `componentName`, `methodName`,
+   * `hookName`, `interfaceName`, `name`, `enclosingSymbol`) are consolidated
+   * here. See `symbol` below and `extractSymbol` (symbols.ts).
+   */
   /** Alternate suggestion field — prefer `suggestion`. */
   recommendation?: string;
   /** Scratch flag for diff/new detection. */
@@ -164,8 +163,6 @@ export interface Violation {
   basis?: string;
   /** Invariant rule: banned import specifier. */
   importSpecifier?: string;
-  /** Class name for SOLID violations (also used via base Violation in symbols.ts). */
-  className?: string;
   /** Schema violation type (also on SchemaViolation, read via base in SARIF). */
   schemaType?: string;
   /** Violation category (e.g. "security", "architecture", "style"). */

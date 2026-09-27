@@ -288,7 +288,7 @@ function makeViolation(
     rule: classification.rule,
     analyzer: 'data-access'
   };
-  if (classification.symbol) v.functionName = classification.symbol;
+  if (classification.symbol) v.symbol = classification.symbol;
   if (classification.resolution) v.resolution = classification.resolution;
   return v;
 }

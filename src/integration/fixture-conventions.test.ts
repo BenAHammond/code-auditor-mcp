@@ -74,7 +74,7 @@ describe('conventions fixture', () => {
       expect(exportShape[0].file).toBe('src/named-majority/outlier.tsx');
       expect(exportShape[0].line).toBe(8);
       expect(exportShape[0].severity).toBe('high');
-      expect(exportShape[0].functionName).toBe('OutlierComponent');
+      expect(exportShape[0].symbol).toBe('OutlierComponent');
     });
 
     it('near-miss negative: all-named directory has no export-shape violations', () => {
@@ -98,7 +98,7 @@ describe('conventions fixture', () => {
       expect(naming[0].file).toBe('src/named-majority/outlier.tsx');
       expect(naming[0].line).toBe(8);
       expect(naming[0].severity).toBe('high');
-      expect(naming[0].functionName).toBe('OutlierComponent');
+      expect(naming[0].symbol).toBe('OutlierComponent');
     });
 
     it('near-miss negative: all-named directory has no naming violations', () => {

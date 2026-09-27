@@ -234,7 +234,7 @@ abstract class UniversalStylesAnalyzerBase extends UniversalAnalyzer {
       analyzer: this.name,
     };
     if (classification.symbol) {
-      v.functionName = classification.symbol;
+      v.symbol = classification.symbol;
     }
     if (classification.resolution) {
       v.resolution = classification.resolution;

@@ -87,7 +87,7 @@ describe('SARIF Report Generator', () => {
               severity: 'critical',
               message: 'Function doEverything has too many responsibilities',
               principle: 'single-responsibility',
-              functionName: 'doEverything',
+              symbol: 'doEverything',
             }),
           ],
           status: makeVisitorStatus(3),
@@ -113,7 +113,7 @@ describe('SARIF Report Generator', () => {
               severity: 'critical',
               message: 'SRP violation',
               principle: 'single-responsibility',
-              functionName: 'fn1',
+              symbol: 'fn1',
             }),
           ],
           status: makeVisitorStatus(3),
@@ -127,7 +127,7 @@ describe('SARIF Report Generator', () => {
               severity: 'severe',
               message: 'Code appears to be duplicated',
               type: 'exact-duplicate',
-              functionName: 'fn2',
+              symbol: 'fn2',
               similarity: 0.85,
             }),
           ],
@@ -155,7 +155,7 @@ describe('SARIF Report Generator', () => {
               severity: 'critical',
               message: 'Do not import lokijs — use better-sqlite3 instead',
               rule: 'no-lokijs',
-              functionName: 'featureInit',
+              symbol: 'featureInit',
             }),
           ],
           status: makeVisitorStatus(5),
@@ -266,7 +266,7 @@ describe('SARIF Report Generator', () => {
             makeViolation({
               severity: 'high',
               message: 'Function lacks documentation',
-              functionName: 'foo',
+              symbol: 'foo',
             }),
           ],
           status: makeVisitorStatus(1),
@@ -289,12 +289,12 @@ describe('SARIF Report Generator', () => {
             makeViolation({
               severity: 'critical',
               principle: 'single-responsibility',
-              functionName: 'fn1',
+              symbol: 'fn1',
             }),
             makeViolation({
               severity: 'severe',
               principle: 'open-closed',
-              functionName: 'fn2',
+              symbol: 'fn2',
             }),
           ],
           status: makeVisitorStatus(3),
@@ -321,13 +321,13 @@ describe('SARIF Report Generator', () => {
               file: 'src/a.ts',
               severity: 'critical',
               principle: 'single-responsibility',
-              functionName: 'fnA',
+              symbol: 'fnA',
             }),
             makeViolation({
               file: 'src/b.ts',
               severity: 'severe',
               principle: 'single-responsibility',
-              functionName: 'fnB',
+              symbol: 'fnB',
             }),
           ],
           status: makeVisitorStatus(2),
@@ -348,9 +348,9 @@ describe('SARIF Report Generator', () => {
       const result = makeAuditResult({
         'solid-analyzer': {
           violations: [
-            makeViolation({ principle: 'single-responsibility', functionName: 'fn1' }),
-            makeViolation({ principle: 'single-responsibility', functionName: 'fn2' }),
-            makeViolation({ principle: 'open-closed', functionName: 'fn3' }),
+            makeViolation({ principle: 'single-responsibility', symbol: 'fn1' }),
+            makeViolation({ principle: 'single-responsibility', symbol: 'fn2' }),
+            makeViolation({ principle: 'open-closed', symbol: 'fn3' }),
           ],
           status: makeVisitorStatus(3),
           executionTime: 100,
@@ -376,7 +376,7 @@ describe('SARIF Report Generator', () => {
               severity: 'critical',
               message: 'No lokijs allowed',
               rule: 'no-lokijs',
-              functionName: 'init',
+              symbol: 'init',
             }),
           ],
           status: makeVisitorStatus(1),
@@ -400,7 +400,7 @@ describe('SARIF Report Generator', () => {
               severity: 'critical',
               message: userMessage,
               rule: 'no-lokijs',
-              functionName: 'init',
+              symbol: 'init',
             }),
           ],
           status: makeVisitorStatus(1),
@@ -419,7 +419,7 @@ describe('SARIF Report Generator', () => {
       const result = makeAuditResult({
         'solid-analyzer': {
           violations: [
-            makeViolation({ principle: 'single-responsibility', functionName: 'fn1' }),
+            makeViolation({ principle: 'single-responsibility', symbol: 'fn1' }),
           ],
           status: makeVisitorStatus(1),
           executionTime: 10,
@@ -429,7 +429,7 @@ describe('SARIF Report Generator', () => {
             makeViolation({
               file: 'src/other.ts',
               type: 'exact-duplicate',
-              functionName: 'dupFn',
+              symbol: 'dupFn',
               message: 'Exact duplicate detected',
             }),
           ],
@@ -460,7 +460,7 @@ describe('SARIF Report Generator', () => {
               line: 42,
               column: 5,
               principle: 'single-responsibility',
-              functionName: 'authenticate',
+              symbol: 'authenticate',
             }),
           ],
           status: makeVisitorStatus(1),
@@ -516,7 +516,7 @@ describe('SARIF Report Generator', () => {
               severity: 'high',
               message: 'Function lacks documentation',
               suggestion,
-              functionName: 'doWork',
+              symbol: 'doWork',
             }),
           ],
           status: makeVisitorStatus(1),
@@ -562,7 +562,7 @@ describe('SARIF Report Generator', () => {
       const result = makeAuditResult({
         'solid-analyzer': {
           violations: [
-            makeViolation({ column: 0, principle: 'single-responsibility', functionName: 'fn' }),
+            makeViolation({ column: 0, principle: 'single-responsibility', symbol: 'fn' }),
           ],
           status: makeVisitorStatus(1),
           executionTime: 10,
@@ -592,7 +592,7 @@ describe('SARIF Report Generator', () => {
               line: 42,
               column: 5,
               principle: 'single-responsibility',
-              functionName: 'authenticate',
+              symbol: 'authenticate',
             }),
           ],
           status: makeVisitorStatus(1),
@@ -622,7 +622,7 @@ describe('SARIF Report Generator', () => {
     it('emits versionControlProvenance when repository and revision are supplied', () => {
       const result = makeAuditResult({
         'solid-analyzer': {
-          violations: [makeViolation({ principle: 'single-responsibility', functionName: 'fn' })],
+          violations: [makeViolation({ principle: 'single-responsibility', symbol: 'fn' })],
           status: makeVisitorStatus(1),
           executionTime: 10,
         },
@@ -653,7 +653,7 @@ describe('SARIF Report Generator', () => {
         severity: 'critical' as const,
         message: 'SRP violation',
         rule: 'single-responsibility',
-        functionName: 'fn',
+        symbol: 'fn',
       };
       const fpFor = (file: string, rootDir: string) => {
         const result = makeAuditResult({
@@ -756,7 +756,7 @@ describe('buildFullRuleId', () => {
             severity: 'critical',
             message: 'Function doEverything violates SRP',
             principle: 'single-responsibility',
-            functionName: 'doEverything',
+            symbol: 'doEverything',
           }),
         ],
         status: makeVisitorStatus(3),
@@ -771,7 +771,7 @@ describe('buildFullRuleId', () => {
             severity: 'severe',
             message: 'Pattern duplication detected',
             type: 'pattern-duplication',
-            functionName: 'formatDate',
+            symbol: 'formatDate',
           }),
         ],
         status: makeVisitorStatus(3),
@@ -786,7 +786,7 @@ describe('buildFullRuleId', () => {
             severity: 'critical',
             message: 'Do not import lokijs',
             rule: 'no-lokijs',
-            functionName: 'appBootstrap',
+            symbol: 'appBootstrap',
           }),
         ],
         status: makeVisitorStatus(5),

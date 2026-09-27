@@ -646,7 +646,7 @@ function detectUsagePairForConvention(
           `this function calls \`${antecedent}\` without \`${consequent}\`${exemplarRef(conv)}`,
         rule: 'conventions/usage-pair',
         analyzer: ctx.analyzerName,
-        functionName: func.name,
+        symbol: func.name,
         resolution: {
           action: 'call-companion',
           summary: `Add a call to the companion function \`${consequent}\` in \`${func.name}\` — ${pct}% of \`${antecedent}\` callers also call it.`,
@@ -765,7 +765,7 @@ function detectErrorHandlingForRow(
       `\`${conv.shape}\` — this function uses \`${shape}\`${exemplarRef(conv)}`,
     rule: 'conventions/error-handling',
     analyzer: analyzerName,
-    functionName: row.name,
+    symbol: row.name,
   };
 }
 
@@ -814,7 +814,7 @@ function detectExportShapeForRow(
       `\`${row.name}\` uses ${form}${exemplarRef(conv)}`,
     rule: 'conventions/export-shape',
     analyzer: analyzerName,
-    functionName: row.name,
+    symbol: row.name,
   };
 }
 
@@ -881,6 +881,6 @@ function detectNamingForRow(
       `\`${row.name}\` uses ${casing}${exemplarRef(conv)}`,
     rule: 'conventions/naming',
     analyzer: analyzerName,
-    functionName: row.name,
+    symbol: row.name,
   };
 }

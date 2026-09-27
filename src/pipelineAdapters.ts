@@ -306,7 +306,7 @@ export function createOrgFilterReducer(): Stage4Reducer {
             },
             rule: 'missing-org-filter',
             analyzer: 'data-access',
-            functionName: symbol,
+            symbol,
           } as Violation);
         }
       }
@@ -2438,7 +2438,7 @@ export function createDependencyGraphReducer(): Stage4Reducer {
                 type: issue.type, // dependency-graph rules match on field: 'type'
                 analyzer: 'dependency-graph',
                 category: 'cross-language-dependency',
-                functionName: orphan.name,
+                symbol: orphan.name,
                 details: { orphanId: id },
               } as Violation);
             }
@@ -2464,7 +2464,7 @@ export function createDependencyGraphReducer(): Stage4Reducer {
                 type: issue.type, // dependency-graph rules match on field: 'type'
                 analyzer: 'dependency-graph',
                 category: 'cross-language-dependency',
-                functionName: hub.name,
+                symbol: hub.name,
                 details: { hubId: hub.id, outDegree: hub.outDegree },
               } as Violation);
             }
