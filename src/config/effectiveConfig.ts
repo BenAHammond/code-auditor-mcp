@@ -67,10 +67,13 @@ export interface EffectiveConfigResult {
 
 /**
  * Cross-domain has no flat `DEFAULT_*_CONFIG` export; its runtime defaults are
- * inline `??` fallbacks in CrossDomainAnalyzer. `schemaLifecycle` is always on;
- * `validatorBypass` and `coverage` are opt-in (only active when the config key
- * is truthy), so their "default in effect" is the object the analyzer would use
- * once enabled.
+ * inline `??` fallbacks in CrossDomainAnalyzer. `schemaLifecycle` is always on.
+ * `validatorBypass` and `coverage` are opt-in and intentionally absent here: the
+ * legacy `runDetectors` gates each on `if (bypass)` / `if (coverage)`, and the
+ * migrated rules reproduce that gate on `ctx.thresholds[...]`. Including them
+ * here would make the always-merged phase thresholds flip the opt-in on, so a
+ * full-pipeline audit would emit `no-validator-reachable`/`uncovered-risk`
+ * findings the legacy path never produces.
  */
 const CROSS_DOMAIN_DEFAULT: Record<string, unknown> = {
   schemaLifecycle: {
@@ -78,17 +81,6 @@ const CROSS_DOMAIN_DEFAULT: Record<string, unknown> = {
     enableReadNeverWritten: true,
     enableTransactionBoundaryRisk: true,
     txnTableMax: 4,
-  },
-  validatorBypass: {
-    validators: [],
-    modeShare: 0.8,
-    minCorpus: 20,
-    depth: 3,
-  },
-  coverage: {
-    testGlobs: ['**/*.test.*', '**/*.spec.*', '**/__tests__/**'],
-    staticReachDepth: 2,
-    topRiskDecile: 0.1,
   },
 };
 

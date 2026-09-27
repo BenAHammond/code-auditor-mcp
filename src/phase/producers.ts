@@ -41,6 +41,8 @@ import type {
   SchemaValidationFact,
   ReachabilityFact,
   CallGraphFact,
+  HotspotFact,
+  CoverageFact,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
@@ -418,10 +420,10 @@ export const CORPUS_PRODUCERS = {
     process(_facts, ctx): CallGraphFact {
       const ih = ctx?.indexHandle;
       if (!ih) return { functions: [], callEdges: [] };
-      let funcs: Array<{ id: number; name: string; file_path: string; used_imports: string | null; is_exported: number }> = [];
+      let funcs: Array<{ id: number; name: string; file_path: string; line_number: number | null; used_imports: string | null; is_exported: number }> = [];
       let edges: Array<{ node_key: string; neighbor_key: string }> = [];
       try {
-        funcs = ih.query('SELECT id, name, file_path, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; used_imports: string | null; is_exported: number }>;
+        funcs = ih.query('SELECT id, name, file_path, line_number, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; line_number: number | null; used_imports: string | null; is_exported: number }>;
         edges = ih.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
       } catch {
         // `functions`/`graph_cache` may not exist or be unpopulated — degrade.
@@ -437,6 +439,7 @@ export const CORPUS_PRODUCERS = {
           id: f.id,
           name: f.name,
           filePath: f.file_path,
+          lineNumber: f.line_number ?? null,
           usedImports: f.used_imports ?? null,
           isExported: f.is_exported === 1,
         })),
@@ -444,6 +447,53 @@ export const CORPUS_PRODUCERS = {
       };
     },
   } satisfies CorpusProcessor<'call-graph', readonly []>,
+  // `hotspot` (R4 uncovered-risk) — the `hotspot_scores` rows the uncovered-risk
+  // ranking LEFT-JOINs on (target = file_path || ':' || name, type = 'function').
+  'hotspot': {
+    id: 'hotspot',
+    produces: 'hotspot',
+    needs: [],
+    process(_facts, ctx): HotspotFact[] {
+      const ih = ctx?.indexHandle;
+      if (!ih) return [];
+      let rows: Array<{ target: string; type: string; score: number }> = [];
+      try {
+        rows = ih.query('SELECT target, type, score FROM hotspot_scores') as Array<{ target: string; type: string; score: number }>;
+      } catch {
+        // `hotspot_scores` may not exist — degrade to an empty fact.
+      }
+      return rows.map((r) => ({ target: r.target, type: r.type, score: r.score }));
+    },
+  } satisfies CorpusProcessor<'hotspot', readonly []>,
+  // `coverage` (R4 uncovered-risk) — the `coverage_data` identity projection plus
+  // the two measured-path metadata reads the legacy `detectMeasuredUncovered`
+  // made (source/imported_at LIMIT 1, and `last_full_sync_timestamp` for stale
+  // detection). Degrades to an empty fact with no handle.
+  'coverage': {
+    id: 'coverage',
+    produces: 'coverage',
+    needs: [],
+    process(_facts, ctx): CoverageFact {
+      const ih = ctx?.indexHandle;
+      if (!ih) return { measuredCount: 0, source: null, importedAt: null, lastFullSync: null, entries: [] };
+      try {
+        const measuredRow = ih.query("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")[0] as { cnt: number } | undefined;
+        const measuredCount = measuredRow?.cnt ?? 0;
+        const sourceRow = ih.query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1")[0] as { source: string | null; imported_at: string | null } | undefined;
+        const lastFullSync = (ih.getMeta?.('last_full_sync_timestamp') as string | null) ?? null;
+        const entries = ih.query('SELECT function_name, file_path, covered FROM coverage_data') as Array<{ function_name: string; file_path: string; covered: number }>;
+        return {
+          measuredCount,
+          source: sourceRow?.source ?? null,
+          importedAt: sourceRow?.imported_at ?? null,
+          lastFullSync,
+          entries: entries.map((e) => ({ functionName: e.function_name, filePath: e.file_path, covered: e.covered === 1 })),
+        };
+      } catch {
+        return { measuredCount: 0, source: null, importedAt: null, lastFullSync: null, entries: [] };
+      }
+    },
+  } satisfies CorpusProcessor<'coverage', readonly []>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -503,4 +553,6 @@ export const FACT_KINDS = {
   'channel-operations': true,
   'call-graph': true,
   'batch-functions': true,
+  'hotspot': true,
+  'coverage': true,
 } satisfies Record<FactKind, true>;

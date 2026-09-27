@@ -45,13 +45,20 @@
  * facts, reading the opt-in `validatorBypass` thresholds (validators, modeShare,
  * minCorpus, depth) from `ctx.thresholds`.
  *
- * Not here, by design:
- *   - `uncovered-risk` — coverage data + hotspot ranking. Stays on the legacy
- *     path (its coverage/hotspot inputs have no phase-model producer yet).
+ * Also here: `uncovered-risk` (coverage by importance) — migrated on top of the
+ * widened `call-graph` (now carrying `lineNumber`), the `hotspot` fact, and the
+ * `coverage` fact. Its `analyze(ctx)` reproduces the legacy `detectUncoveredRisk`
+ * / `detectMeasuredUncovered` / `detectStaticReachUncovered` /
+ * `queryHighRiskFunctions` / `getUntestedTopDecile` / `computeTestReachableIds`
+ * verbatim over those facts, reading the opt-in `coverage` thresholds
+ * (topRiskDecile, testGlobs, staticReachDepth) from `ctx.thresholds`. Both
+ * `no-validator-reachable` and `uncovered-risk` gate on the opt-in config key
+ * being present, exactly as the legacy `runDetectors` did (`if (bypass)` /
+ * `if (coverage)`).
  */
 
 import * as path from 'node:path';
-import type { RuleDefinition, Finding, SchemaUsageFact, CallGraphFact, BatchFunctionFact } from '../types.js';
+import type { RuleDefinition, Finding, SchemaUsageFact, CallGraphFact, BatchFunctionFact, HotspotFact, CoverageFact } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 import { VALIDATOR_PACKAGES } from '../../analyzers/provenance.js';
 
@@ -73,6 +80,13 @@ type MultiTableWriteNeeds = {
 type ValidatorReachNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
   readonly facts: readonly ['schema-usage', 'call-graph'];
+};
+
+/** The declared inputs of `uncovered-risk`: the (widened) call graph + hotspot
+ *  scores + coverage data — the ranking and both coverage paths' inputs. */
+type UncoveredRiskNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['call-graph', 'hotspot', 'coverage'];
 };
 
 const META = RULE_REGISTRY;
@@ -638,6 +652,280 @@ function detectValidationBypass(
   return flagUnvalidatedWritersFact(dirWriters, minCorpus, modeShare, depth);
 }
 
+// ── R4: Coverage by importance (re-homes detectUncoveredRisk) ──────────────
+
+/** The opt-in `coverage` config surface the rule reads from `ctx.thresholds`. */
+type CoverageThresholds = {
+  testGlobs?: string[];
+  staticReachDepth?: number;
+  topRiskDecile?: number;
+};
+
+/** A high-risk function from the ranked hotspot query (legacy `HighRiskFn`). */
+interface HighRiskFn {
+  id: number;
+  name: string;
+  file_path: string;
+  line_number: number | null;
+  risk_score: number;
+}
+
+/** The untested-top-decile row `getUntestedTopDecile` returns. */
+interface UntestedFn {
+  functionName: string;
+  filePath: string;
+  lineNumber: number;
+  riskScore: number;
+  basis: string;
+}
+
+/** SQLite `PERCENT_RANK` over a DESC-sorted score list. Ranks use RANK() semantics
+ *  (ties share a rank — the rank is `1 + count of strictly-greater`), so the
+ *  result is independent of tie order; `pct = (rank-1)/(n-1)` for n > 1, else 0. */
+function percentRanks(scores: readonly number[]): number[] {
+  const n = scores.length;
+  const pcts = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    let rank = 1;
+    for (let j = 0; j < n; j++) {
+      if (scores[j] > scores[i]) rank++;
+    }
+    pcts[i] = n <= 1 ? 0 : (rank - 1) / (n - 1);
+  }
+  return pcts;
+}
+
+/** The `COALESCE(hs.score, 0.0)` risk-score map over the `call-graph` identity,
+ *  for `hs.type = 'function'` (legacy LEFT JOIN key `file_path || ':' || name`). */
+function functionRiskScores(graph: CallGraphFact, hotspot: readonly HotspotFact[]): Map<string, number> {
+  const byTarget = new Map<string, number>();
+  for (const h of hotspot) {
+    if (h.type === 'function') byTarget.set(h.target, h.score);
+  }
+  return byTarget;
+}
+
+/** Rank the exported functions by hotspot score and take the top decile
+ *  (re-homes `queryHighRiskFunctions`, unscoped — the scope filter is a §12
+ *  corpus-scope concern, not a rule input). */
+function queryHighRiskFunctionsFact(
+  graph: CallGraphFact,
+  hotspot: readonly HotspotFact[],
+  topRiskDecile: number,
+): HighRiskFn[] {
+  const byTarget = functionRiskScores(graph, hotspot);
+  const exported = graph.functions.filter((f) => f.isExported);
+  const riskScores = exported.map((f) => byTarget.get(`${f.filePath}:${f.name}`) ?? 0.0);
+  const pcts = percentRanks(riskScores);
+  const ranked: HighRiskFn[] = [];
+  for (let i = 0; i < exported.length; i++) {
+    if (pcts[i] <= topRiskDecile) {
+      ranked.push({
+        id: exported[i].id,
+        name: exported[i].name,
+        file_path: exported[i].filePath,
+        line_number: exported[i].lineNumber,
+        risk_score: riskScores[i],
+      });
+    }
+  }
+  ranked.sort((a, b) => b.risk_score - a.risk_score);
+  return ranked;
+}
+
+/** The measured path's `getUntestedTopDecile`: exported top-decile functions with
+ *  no `covered=1` coverage row. `basis` is always `'static-reach'` — the legacy
+ *  SQL's `COALESCE(bc.basis, 'static-reach')` is filtered by `bc.basis IS NULL`,
+ *  so the measured path inherits the static-reach label. */
+function getUntestedTopDecileFact(
+  graph: CallGraphFact,
+  hotspot: readonly HotspotFact[],
+  coverage: CoverageFact,
+  topRiskDecile: number,
+): UntestedFn[] {
+  const byTarget = functionRiskScores(graph, hotspot);
+  const exported = graph.functions.filter((f) => f.isExported);
+  const riskScores = exported.map((f) => byTarget.get(`${f.filePath}:${f.name}`) ?? 0.0);
+  const pcts = percentRanks(riskScores);
+  const covered = new Set<string>();
+  for (const e of coverage.entries) {
+    if (e.covered) covered.add(`${e.functionName} ${e.filePath}`);
+  }
+  const out: UntestedFn[] = [];
+  for (let i = 0; i < exported.length; i++) {
+    if (pcts[i] > topRiskDecile) continue;
+    if (covered.has(`${exported[i].name} ${exported[i].filePath}`)) continue;
+    out.push({
+      functionName: exported[i].name,
+      filePath: exported[i].filePath,
+      lineNumber: exported[i].lineNumber ?? 1,
+      riskScore: riskScores[i],
+      basis: 'static-reach',
+    });
+  }
+  out.sort((a, b) => b.riskScore - a.riskScore);
+  return out;
+}
+
+/** SQLite `LIKE` matcher (default case-insensitive, `%`/`_` wildcards) — the test
+ *  globs are translated to `%`-patterns and matched with `LIKE` in the legacy. */
+function sqlLike(value: string, pattern: string): boolean {
+  let re = '';
+  for (const ch of pattern) {
+    if (ch === '%') re += '.*';
+    else if (ch === '_') re += '.';
+    else re += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`, 'i').test(value);
+}
+
+/** Function IDs in test files (re-homes `collectTestFuncIds`). */
+function collectTestFuncIdsFact(graph: CallGraphFact, testGlobs: readonly string[]): Set<number> {
+  const patterns = testGlobs.map((g) => g.replace(/\*\*/g, '%').replace(/\*/g, '%'));
+  if (patterns.length === 0) return new Set<number>();
+  const ids = new Set<number>();
+  for (const f of graph.functions) {
+    for (const p of patterns) {
+      if (sqlLike(f.filePath, p)) {
+        ids.add(f.id);
+        break;
+      }
+    }
+  }
+  return ids;
+}
+
+/** BFS outward from test-file function IDs through the call graph (re-homes
+ *  `collectReachableIds`). */
+function collectReachableIdsFact(
+  graph: CallGraphFact,
+  startIds: Set<number>,
+  maxDepth: number,
+): Set<number> {
+  const adjacency = new Map<number, number[]>();
+  for (const e of graph.callEdges) {
+    const list = adjacency.get(e.fromId) ?? [];
+    list.push(e.toId);
+    adjacency.set(e.fromId, list);
+  }
+  const reachableIds = new Set<number>();
+  for (const startId of startIds) {
+    const visited = new Set<number>();
+    let currentLevel = [startId];
+    for (let d = 0; d < maxDepth; d++) {
+      const nextLevel: number[] = [];
+      for (const funcId of currentLevel) {
+        if (visited.has(funcId)) continue;
+        visited.add(funcId);
+        reachableIds.add(funcId);
+        for (const toId of adjacency.get(funcId) ?? []) {
+          if (!visited.has(toId)) nextLevel.push(toId);
+        }
+      }
+      currentLevel = nextLevel;
+    }
+    for (const funcId of currentLevel) {
+      if (!reachableIds.has(funcId)) reachableIds.add(funcId);
+    }
+  }
+  return reachableIds;
+}
+
+/** Flag high-risk functions not in the reachable set (re-homes
+ *  `flagUnreachedHighRisk`). */
+function flagUnreachedHighRiskFact(highRiskFns: readonly HighRiskFn[], reachableIds: Set<number>): Finding[] {
+  const findings: Finding[] = [];
+  for (const fn of highRiskFns) {
+    if (reachableIds.has(fn.id)) continue;
+    findings.push({
+      file: fn.file_path,
+      line: fn.line_number ?? 1,
+      column: 0,
+      severity: 'high',
+      message:
+        `Exported function '${fn.name}' (risk ${fn.risk_score.toFixed(3)}) is not reachable from known test files. ` +
+        `Add test coverage or import measured coverage with 'code-audit coverage --import <path>'.`,
+      ruleId: 'cross-domain/uncovered-risk',
+      symbol: fn.name,
+    });
+  }
+  return findings;
+}
+
+/** The measured path (re-homes `detectMeasuredUncovered`): flag exported top-decile
+ *  functions with no measured coverage, with stale-import detection. */
+function detectMeasuredUncoveredFact(
+  graph: CallGraphFact,
+  hotspot: readonly HotspotFact[],
+  coverage: CoverageFact,
+  topRiskDecile: number,
+): Finding[] {
+  const untested = getUntestedTopDecileFact(graph, hotspot, coverage, topRiskDecile);
+  const sourceFormat = coverage.source ?? 'unknown';
+  const importedAt = coverage.importedAt;
+  let staleWarning: string | null = null;
+  if (importedAt) {
+    const lastSync = coverage.lastFullSync;
+    if (lastSync && importedAt < lastSync) {
+      staleWarning =
+        ` — WARNING: this coverage data may be stale (imported ${importedAt}, ` +
+        `last index sync was ${lastSync}). ` +
+        `Re-import with 'code-audit coverage --import <path>' for accurate results.`;
+    }
+  }
+  const findings: Finding[] = [];
+  for (const fn of untested) {
+    findings.push({
+      file: fn.filePath,
+      line: fn.lineNumber,
+      column: 0,
+      severity: 'high',
+      message:
+        `Exported function '${fn.functionName}' (risk ${fn.riskScore.toFixed(3)}) has no measured test coverage. ` +
+        `Top imported functions should have test coverage. Import coverage data with 'code-audit coverage --import <path>'.` +
+        (staleWarning ?? ''),
+      ruleId: 'cross-domain/uncovered-risk',
+      symbol: fn.functionName,
+    });
+  }
+  return findings;
+}
+
+/** The static-reach fallback (re-homes `detectStaticReachUncovered`). */
+function detectStaticReachUncoveredFact(
+  graph: CallGraphFact,
+  hotspot: readonly HotspotFact[],
+  coverage: CoverageFact,
+  topRiskDecile: number,
+  testGlobs: readonly string[],
+  staticReachDepth: number,
+): Finding[] {
+  const highRiskFns = queryHighRiskFunctionsFact(graph, hotspot, topRiskDecile);
+  if (highRiskFns.length === 0) return [];
+  const reachableIds = collectReachableIdsFact(
+    graph,
+    collectTestFuncIdsFact(graph, testGlobs),
+    staticReachDepth,
+  );
+  return flagUnreachedHighRiskFact(highRiskFns, reachableIds);
+}
+
+/** The fact-based uncovered-risk detector (re-homes `detectUncoveredRisk`). */
+function detectUncoveredRiskFact(
+  graph: CallGraphFact,
+  hotspot: readonly HotspotFact[],
+  coverage: CoverageFact,
+  c: CoverageThresholds,
+): Finding[] {
+  const topRiskDecile = c.topRiskDecile ?? 0.1;
+  if (coverage.measuredCount > 0) {
+    return detectMeasuredUncoveredFact(graph, hotspot, coverage, topRiskDecile);
+  }
+  const testGlobs = c.testGlobs ?? ['**/*.test.*', '**/*.spec.*', '**/__tests__/**'];
+  const staticReachDepth = c.staticReachDepth ?? 2;
+  return detectStaticReachUncoveredFact(graph, hotspot, coverage, topRiskDecile, testGlobs, staticReachDepth);
+}
+
 // ── Rule definitions ────────────────────────────────────────────────────────
 
 const writtenNeverRead: RuleDefinition<CrossDomainNeeds> = {
@@ -698,10 +986,11 @@ const noValidatorReachable: RuleDefinition<ValidatorReachNeeds> = {
     const vb = ctx.thresholds['validatorBypass'] as
       | { validators?: string[]; modeShare?: number; minCorpus?: number; depth?: number }
       | undefined;
-    const userValidators = vb?.validators ?? [];
-    const modeShare = vb?.modeShare ?? 0.8;
-    const minCorpus = vb?.minCorpus ?? 20;
-    const depth = vb?.depth ?? 3;
+    if (!vb) return [];
+    const userValidators = vb.validators ?? [];
+    const modeShare = vb.modeShare ?? 0.8;
+    const minCorpus = vb.minCorpus ?? 20;
+    const depth = vb.depth ?? 3;
     return detectValidationBypass(
       ctx.facts['schema-usage'],
       ctx.facts['call-graph'],
@@ -709,6 +998,26 @@ const noValidatorReachable: RuleDefinition<ValidatorReachNeeds> = {
       modeShare,
       minCorpus,
       depth,
+    );
+  },
+};
+
+const uncoveredRisk: RuleDefinition<UncoveredRiskNeeds> = {
+  id: 'cross-domain/uncovered-risk',
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['call-graph', 'hotspot', 'coverage'] },
+  severity: 'high',
+  message: META['cross-domain/uncovered-risk'].message,
+  docs: META['cross-domain/uncovered-risk'].docs,
+  thresholds: META['cross-domain/uncovered-risk'].thresholds,
+  samples: META['cross-domain/uncovered-risk'].samples,
+  analyze(ctx): Finding[] {
+    const c = ctx.thresholds['coverage'] as CoverageThresholds | undefined;
+    if (!c) return [];
+    return detectUncoveredRiskFact(
+      ctx.facts['call-graph'],
+      ctx.facts['hotspot'],
+      ctx.facts['coverage'],
+      c,
     );
   },
 };
@@ -727,3 +1036,8 @@ export const multiTableWriteRule: RuleDefinition<MultiTableWriteNeeds> = multiTa
  *  validator provenance + BFS reach) registered alongside the other
  *  cross-domain rules but typed separately. */
 export const noValidatorReachableRule: RuleDefinition<ValidatorReachNeeds> = noValidatorReachable;
+
+/** `uncovered-risk` — the coverage-by-importance sibling (call-graph + hotspot +
+ *  coverage facts) registered alongside the other cross-domain rules but typed
+ *  separately. */
+export const uncoveredRiskRule: RuleDefinition<UncoveredRiskNeeds> = uncoveredRisk;

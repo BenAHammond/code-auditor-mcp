@@ -27,8 +27,8 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { CrossDomainAnalyzer } from '../analyzers/crossDomain/CrossDomainAnalyzer.js';
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { analyzeCrossDomain } from '../phase/runner.js';
-import { multiTableWriteRule, noValidatorReachableRule } from '../phase/rules/crossDomain.js';
-import type { SchemaUsageFact, CallGraphFact, BatchFunctionFact, Finding } from '../phase/types.js';
+import { multiTableWriteRule, noValidatorReachableRule, uncoveredRiskRule } from '../phase/rules/crossDomain.js';
+import type { SchemaUsageFact, CallGraphFact, BatchFunctionFact, HotspotFact, CoverageFact, Finding } from '../phase/types.js';
 import type { Violation } from '../types.js';
 
 let db: CodeIndexDB;
@@ -42,6 +42,8 @@ beforeEach(() => {
   db.exec('DELETE FROM schema_usage');
   db.exec('DELETE FROM graph_cache');
   db.exec('DELETE FROM functions');
+  db.exec('DELETE FROM hotspot_scores');
+  db.exec('DELETE FROM coverage_data');
 });
 
 afterAll(async () => {
@@ -252,7 +254,7 @@ function insertCallEdge(fromId: number, toId: number): void {
  *  rule reads — the same two tables the legacy `resolveCallGraphContext` +
  *  `expandWrittenTables` queried. */
 function readCallGraph(): CallGraphFact {
-  const funcs = db.query('SELECT id, name, file_path, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; used_imports: string | null; is_exported: number }>;
+  const funcs = db.query('SELECT id, name, file_path, line_number, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; line_number: number | null; used_imports: string | null; is_exported: number }>;
   const edges = db.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
   const callEdges: Array<{ fromId: number; toId: number }> = [];
   for (const e of edges) {
@@ -265,6 +267,7 @@ function readCallGraph(): CallGraphFact {
       id: f.id,
       name: f.name,
       filePath: f.file_path,
+      lineNumber: f.line_number ?? null,
       usedImports: f.used_imports ?? null,
       isExported: f.is_exported === 1,
     })),
@@ -605,5 +608,172 @@ describe('Spec 68 cross-domain parity — no-validator-reachable', () => {
       [],
     );
     expect(nu).toEqual([]);
+  });
+});
+
+// ── uncovered-risk (coverage by importance) ────────────────────────────────
+
+/** Insert one `functions` row with an explicit `line_number` — the static-reach
+ *  and measured paths both anchor the finding on it. */
+function insertFunctionWithLine(
+  id: number,
+  name: string,
+  filePath: string,
+  lineNumber: number,
+  usedImports: string | null = null,
+  isExported: number = 0,
+): void {
+  db.run(
+    'INSERT INTO functions (id, name, file_path, line_number, used_imports, is_exported) VALUES (?, ?, ?, ?, ?, ?)',
+    [id, name, filePath, lineNumber, usedImports, isExported],
+  );
+}
+
+/** Insert one `hotspot_scores` row (the `target` is the legacy join key
+ *  `file_path || ':' || name`). */
+function insertHotspot(target: string, type: string, score: number): void {
+  db.run('INSERT INTO hotspot_scores (target, type, score) VALUES (?, ?, ?)', [target, type, score]);
+}
+
+/** Insert one `coverage_data` row (line_number required by the UNIQUE key). */
+function insertCoverage(
+  functionName: string,
+  filePath: string,
+  lineNumber: number,
+  basis: string,
+  covered: number,
+  source: string | null = null,
+  importedAt: string | null = null,
+): void {
+  db.run(
+    'INSERT INTO coverage_data (function_name, file_path, line_number, basis, covered, source, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [functionName, filePath, lineNumber, basis, covered, source, importedAt],
+  );
+}
+
+/** Re-read the `hotspot_scores` rows into the `hotspot` fact the rule reads. */
+function readHotspot(): HotspotFact[] {
+  const rows = db.query('SELECT target, type, score FROM hotspot_scores') as Array<{ target: string; type: string; score: number }>;
+  return rows.map((r) => ({ target: r.target, type: r.type, score: r.score }));
+}
+
+/** Re-read the `coverage_data` rows (plus the measured-count/source metadata the
+ *  legacy `detectUncoveredRisk` read) into the `coverage` fact the rule reads. */
+function readCoverage(): CoverageFact {
+  const measuredRow = db.query("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")[0] as { cnt: number } | undefined;
+  const sourceRow = db.query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1")[0] as { source: string | null; imported_at: string | null } | undefined;
+  const entries = db.query('SELECT function_name, file_path, covered FROM coverage_data') as Array<{ function_name: string; file_path: string; covered: number }>;
+  return {
+    measuredCount: measuredRow?.cnt ?? 0,
+    source: sourceRow?.source ?? null,
+    importedAt: sourceRow?.imported_at ?? null,
+    lastFullSync: db.getMeta('last_full_sync_timestamp'),
+    entries: entries.map((e) => ({ functionName: e.function_name, filePath: e.file_path, covered: e.covered === 1 })),
+  };
+}
+
+/** Run the legacy uncovered-risk detector and the new rule over the same seed,
+ *  assert the `(file, line, column, rule, severity)` multiset matches, and
+ *  return it. The `coverage` config is the rule's opt-in key — it is passed to
+ *  the legacy `analyze` AND as the rule's `thresholds.coverage`. */
+async function parityUncoveredRisk(
+  coverage: { topRiskDecile?: number; testGlobs?: string[]; staticReachDepth?: number },
+): Promise<string[]> {
+  const analyzer = new CrossDomainAnalyzer();
+  const legacy = await analyzer.analyze(['a.ts'], {
+    indexHandle: db,
+    schemaLifecycle: {
+      enableWrittenNeverRead: false,
+      enableReadNeverWritten: false,
+      enableTransactionBoundaryRisk: false,
+    },
+    coverage,
+  });
+
+  const fresh = uncoveredRiskRule.analyze({
+    facts: { 'call-graph': readCallGraph(), 'hotspot': readHotspot(), 'coverage': readCoverage() },
+    formats: ['typescript', 'tsx', 'javascript'],
+    thresholds: { coverage },
+  }) as Finding[];
+
+  const old = legacy.violations
+    .filter((v: Violation) => v.rule === 'cross-domain/uncovered-risk')
+    .map((v: Violation) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
+    .sort();
+  const nu = fresh
+    .map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))
+    .sort();
+  expect(nu).toEqual(old);
+  return nu;
+}
+
+describe('Spec 68 cross-domain parity — uncovered-risk', () => {
+  it('measured path: flags top-decile exported functions with no measured coverage', async () => {
+    // Four exported functions, scores 300/200/100/50. PERCENT_RANK over the
+    // DESC list gives pct 0 / 0.333 / 0.667 / 1.0, so topRiskDecile 0.5 keeps
+    // `a` (300) and `b` (200). `b` has a covered=1 measured row, so only `a`
+    // is untested and flagged.
+    insertFunctionWithLine(1, 'a', '/p/a.ts', 10, null, 1);
+    insertFunctionWithLine(2, 'b', '/p/b.ts', 20, null, 1);
+    insertFunctionWithLine(3, 'c', '/p/c.ts', 30, null, 1);
+    insertFunctionWithLine(4, 'd', '/p/d.ts', 40, null, 1);
+    insertHotspot('/p/a.ts:a', 'function', 300);
+    insertHotspot('/p/b.ts:b', 'function', 200);
+    insertHotspot('/p/c.ts:c', 'function', 100);
+    insertHotspot('/p/d.ts:d', 'function', 50);
+    // The one measured row both drives measuredCount > 0 and covers `b`.
+    insertCoverage('b', '/p/b.ts', 20, 'measured', 1, 'lcov', '2026-01-01T00:00:00Z');
+
+    const nu = await parityUncoveredRisk({ topRiskDecile: 0.5 });
+    expect(nu).toEqual(['/p/a.ts:10:0:cross-domain/uncovered-risk:high']);
+  });
+
+  it('measured path: a covered top-decile function is not flagged', async () => {
+    // Every exported function is covered → the untested set is empty.
+    insertFunctionWithLine(1, 'a', '/p/a.ts', 10, null, 1);
+    insertHotspot('/p/a.ts:a', 'function', 300);
+    insertCoverage('a', '/p/a.ts', 10, 'measured', 1, 'lcov', '2026-01-01T00:00:00Z');
+
+    const nu = await parityUncoveredRisk({ topRiskDecile: 0.5 });
+    expect(nu).toEqual([]);
+  });
+
+  it('static-reach path: flags top-decile functions unreachable from test files', async () => {
+    // Two exported functions (risk 100 / 1): topRiskDecile 0.1 keeps only
+    // `highRisk` (pct 0). `testFn` lives in `*.test.ts`, so BFS starts from it;
+    // with no edges, `highRisk` is unreachable → flagged.
+    insertFunctionWithLine(1, 'highRisk', '/p/src/impl.ts', 10, null, 1);
+    insertFunctionWithLine(2, 'lowRisk', '/p/src/impl2.ts', 20, null, 1);
+    insertFunctionWithLine(3, 'testFn', '/p/src/impl.test.ts', 5, null, 0);
+    insertHotspot('/p/src/impl.ts:highRisk', 'function', 100);
+    insertHotspot('/p/src/impl2.ts:lowRisk', 'function', 1);
+    // No coverage_data → measuredCount 0 → the static-reach fallback runs.
+
+    const nu = await parityUncoveredRisk({ topRiskDecile: 0.1, testGlobs: ['**/*.test.*', '**/*.spec.*'], staticReachDepth: 2 });
+    expect(nu).toEqual(['/p/src/impl.ts:10:0:cross-domain/uncovered-risk:high']);
+  });
+
+  it('static-reach path: a top-decile function reachable from a test file is not flagged', async () => {
+    // `highRisk` is called from `testFn` (edge 3 → 1), so BFS reaches it.
+    insertFunctionWithLine(1, 'highRisk', '/p/src/impl.ts', 10, null, 1);
+    insertFunctionWithLine(2, 'lowRisk', '/p/src/impl2.ts', 20, null, 1);
+    insertFunctionWithLine(3, 'testFn', '/p/src/impl.test.ts', 5, null, 0);
+    insertHotspot('/p/src/impl.ts:highRisk', 'function', 100);
+    insertHotspot('/p/src/impl2.ts:lowRisk', 'function', 1);
+    insertCallEdge(3, 1);
+
+    const nu = await parityUncoveredRisk({ topRiskDecile: 0.1, testGlobs: ['**/*.test.*', '**/*.spec.*'], staticReachDepth: 2 });
+    expect(nu).toEqual([]);
+  });
+
+  it('returns nothing when the opt-in coverage key is absent', () => {
+    // The opt-in gate: with no `coverage` threshold the rule short-circuits,
+    // matching the legacy `if (coverage)` in `runDetectors`.
+    const fresh = uncoveredRiskRule.analyze({
+      facts: { 'call-graph': readCallGraph(), 'hotspot': readHotspot(), 'coverage': readCoverage() },
+      formats: ['typescript', 'tsx', 'javascript'],
+      thresholds: {},
+    }) as Finding[];
+    expect(fresh).toEqual([]);
   });
 });

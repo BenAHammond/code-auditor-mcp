@@ -100,17 +100,18 @@ const FIXTURES: Record<Format, Fixture> = {
 };
 
 /**
- * The fact kinds whose top-level shape is an object, not an array: the four
+ * The fact kinds whose top-level shape is an object, not an array: the five
  * corpus-derived facts each reduce to a single per-corpus value (`table-catalog`
  * → `{ tables }`, `migration-history` → `{ dropped }`, `reachability` →
  * `{ importersOf, packageEntryPoints }`, `call-graph` →
- * `{ functions, callEdges }`).
+ * `{ functions, callEdges }`, `coverage` → `{ measuredCount, entries }`).
  */
 const OBJECT_FACTS: ReadonlySet<FactKind> = new Set<FactKind>([
   'table-catalog',
   'migration-history',
   'reachability',
   'call-graph',
+  'coverage',
 ]);
 
 beforeAll(async () => {
@@ -165,6 +166,10 @@ function assertShape(kind: FactKind, value: unknown): void {
       const graph = value as FactShapes['call-graph'];
       expect(Array.isArray(graph.functions), `producer for ${kind} must expose .functions array`).toBe(true);
       expect(Array.isArray(graph.callEdges), `producer for ${kind} must expose .callEdges array`).toBe(true);
+    } else if (kind === 'coverage') {
+      const coverage = value as FactShapes['coverage'];
+      expect(typeof coverage.measuredCount, `producer for ${kind} must expose a numeric .measuredCount`).toBe('number');
+      expect(Array.isArray(coverage.entries), `producer for ${kind} must expose .entries array`).toBe(true);
     }
   } else {
     expect(Array.isArray(value), `producer for ${kind} must return an array`).toBe(true);

@@ -83,6 +83,8 @@ export interface FactShapes {
   'channel-operations': ChannelOperationsFact[];
   'call-graph': CallGraphFact;
   'batch-functions': BatchFunctionFact[];
+  'hotspot': HotspotFact[];
+  'coverage': CoverageFact;
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -1053,22 +1055,25 @@ export type ChannelOperationsFact = {
  * function→function call edges the legacy `graph_cache` carried, read by the
  * corpus `call-graph` producer from the code index. Plain-data projection: no
  * handle survives the corpus boundary. `functions` is the `functions` table's
- * identity projection (id → {name, filePath, usedImports, isExported}) the
- * depth-1 callee expansion maps a `filePath::name` key through and the
- * validation-bypass provenance (`buildValidatorIds`) reads its
+ * identity projection (id → {name, filePath, lineNumber, usedImports,
+ * isExported}) the depth-1 callee expansion maps a `filePath::name` key through
+ * and the validation-bypass provenance (`buildValidatorIds`) reads its
  * `usedImports`/`isExported` through; `callEdges` is `graph_cache`'s `call`
  * edges (fromId → toId), parsed from its string node/neighbor keys.
  *
- * `usedImports` is the raw `used_imports` JSON-array string (or null) — the
- * provenance check `used_imports LIKE '%"zod"%'` runs over that exact string,
- * so the fact carries it verbatim rather than re-parsing. `isExported` is the
- * boolean projection of the `is_exported` 0/1 column.
+ * `lineNumber` is the raw `line_number` column (nullable) — the uncovered-risk
+ * ranking reads `f.line_number` as the finding anchor, so the fact carries it
+ * verbatim. `usedImports` is the raw `used_imports` JSON-array string (or null)
+ * — the provenance check `used_imports LIKE '%"zod"%'` runs over that exact
+ * string, so the fact carries it verbatim rather than re-parsing. `isExported`
+ * is the boolean projection of the `is_exported` 0/1 column.
  */
 export type CallGraphFact = {
   functions: ReadonlyArray<{
     id: number;
     name: string;
     filePath: string;
+    lineNumber: number | null;
     usedImports: string | null;
     isExported: boolean;
   }>;
@@ -1089,6 +1094,41 @@ export type BatchFunctionFact = {
   file: string;
   startLine: number;
   endLine: number;
+};
+
+/**
+ * One `hotspot_scores` row, read by the corpus `hotspot` producer — the
+ * risk-score side of the uncovered-risk ranking. `target` is the
+ * `file_path || ':' || name` composite key the legacy `queryHighRiskFunctions`
+ * LEFT-JOINed on (`hs.type = 'function'`); the rule re-joins it over the
+ * `call-graph` fact's function identity. Plain data: target, type, score only.
+ */
+export type HotspotFact = {
+  target: string;
+  type: string;
+  score: number;
+};
+
+/**
+ * The index-backed coverage fact — the `coverage_data` table plus the two
+ * measured-path metadata reads (`source`/`imported_at` LIMIT 1 and the
+ * `last_full_sync_timestamp` meta key for stale-import detection). `entries`
+ * carries the (functionName, filePath, covered) identity projection the legacy
+ * `getUntestedTopDecile`'s `best_coverage` CTE read (covered=1 rows mark a
+ * function as "tested"); `measuredCount` is `COUNT(*) WHERE basis='measured'`
+ * — the dispatcher between the measured and static-reach paths. `lastFullSync`
+ * is `getMeta('last_full_sync_timestamp')` (or null when absent).
+ */
+export type CoverageFact = {
+  measuredCount: number;
+  source: string | null;
+  importedAt: string | null;
+  lastFullSync: string | null;
+  entries: ReadonlyArray<{
+    functionName: string;
+    filePath: string;
+    covered: boolean;
+  }>;
 };
 
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
