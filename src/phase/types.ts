@@ -44,6 +44,7 @@ export interface FactShapes {
   'function-index': FunctionIndexFact[];
   'imports': ImportFact[];
   'string-literals': StringLiteralFact[];
+  'secret-candidates': SecretCandidate[];
   // Source-format names are gone (Spec 68 §2 — "a fact is named for what it
   // is, never for where it came from"; `needs.formats` already says the format):
   //   schema-code  → ddl-declarations   (DDL declarations in code)
@@ -254,6 +255,39 @@ export type StringLiteralFact = {
   column: number;
   enclosingFunction: string;
 };
+
+/**
+ * One hardcoded-credential *candidate*: a string in a credential position, as
+ * the `secret-candidates` producer extracts it from a variable/assignment/pair
+ * or a call's sibling string arguments. The producer computes only what the AST
+ * makes reachable — the name/key/args plus the enclosing node's start position
+ * (the legacy analyzer anchored at the enclosing node, not the string). The
+ * `isSecretName` / `looksLikeRealSecret` / `isCredentialSelector` classification
+ * is the rule's: the producer never decides "is this a secret", it only projects
+ * the positional context. A `call` candidate carries the *sibling* string-arg
+ * values so the rule can re-run the selector/secret split the legacy
+ * `checkCredentialCall` did.
+ */
+export type SecretCandidate =
+  | {
+      /** The credential position: a variable, an assignment, or an object pair. */
+      position: 'declarator' | 'assignment' | 'pair';
+      /** The credential name/key (`password`, `apiKey`, …). */
+      name: string;
+      /** The candidate value (quotes/backticks stripped). */
+      value: string;
+      file: string;
+      line: number;
+      column: number;
+    }
+  | {
+      position: 'call';
+      /** The call's sibling string-argument values (selector + secret), in order. */
+      args: readonly string[];
+      file: string;
+      line: number;
+      column: number;
+    };
 
 /** A schema declared in JSON (`.codeauditor.json` schemas) or in code (DDL). */
 export type SchemaDeclaration = {
@@ -584,6 +618,7 @@ export interface SupplyingFormats {
   'function-index': 'typescript' | 'tsx' | 'javascript';
   'imports': 'typescript' | 'tsx' | 'javascript';
   'string-literals': 'typescript' | 'tsx' | 'javascript';
+  'secret-candidates': 'typescript' | 'tsx' | 'javascript';
   'ddl-declarations': 'typescript' | 'tsx' | 'javascript' | 'sql';
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';

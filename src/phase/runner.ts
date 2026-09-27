@@ -32,6 +32,7 @@ import { crossDomainRules } from './rules/crossDomain.js';
 import { conventionsRules } from './rules/conventions.js';
 import { dryRules } from './rules/dry.js';
 import { securityRules } from './rules/security.js';
+import { secretsRules } from './rules/secrets.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -48,6 +49,7 @@ import type {
   MinedConvention,
   ImportFact,
   StringLiteralFact,
+  SecretCandidate,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -549,9 +551,9 @@ export async function runDrySlice(files: readonly InputFile[], thresholds?: Thre
 // ── security slice (string-literals → hardcoded-connection) ─────────────────
 
 /**
- * Analyze the assembled `string-literals` fact with the hardcoded-credential
- * rules. Each rule reads only the fact its `needs` declares; the union context
- * carries `string-literals` today (`secret-candidates` joins later).
+ * Analyze the assembled `string-literals` fact with the hardcoded-connection
+ * rule. `hardcoded-secret` reads a different fact (`secret-candidates`) and is
+ * served by `analyzeSecrets` below, not this slice.
  */
 export async function analyzeSecurity(
   stringLiterals: StringLiteralFact[],
@@ -573,4 +575,48 @@ export async function analyzeSecurity(
 export async function runSecuritySlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const stringLiterals = await buildStringLiterals(files);
   return analyzeSecurity(stringLiterals, thresholds);
+}
+
+// ── secret-candidates slice (secret-candidates → hardcoded-secret) ──────────
+
+/**
+ * Parse → Process for the `secret-candidates` fact. Returns the assembled corpus
+ * fact (every credential-position string from every file, ASTs already freed).
+ */
+export async function buildSecretCandidates(files: readonly InputFile[]): Promise<SecretCandidate[]> {
+  const facts: SecretCandidate[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('secret-candidates', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as SecretCandidate[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `secret-candidates` fact with the hardcoded-secret rule. */
+export async function analyzeSecrets(
+  candidates: SecretCandidate[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'secret-candidates': candidates },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of secretsRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The secret-candidates slice: parse → secret-candidates → hardcoded-secret → findings. */
+export async function runSecretsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const candidates = await buildSecretCandidates(files);
+  return analyzeSecrets(candidates, thresholds);
 }

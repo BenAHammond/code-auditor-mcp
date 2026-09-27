@@ -9,10 +9,10 @@
  * is byte-identical to the pre-migration output. The message is the full legacy
  * literal, not the registry's shortened template.
  *
- * `hardcoded-secret` (UniversalSecretsAnalyzer) is *not* here: it anchors at the
- * enclosing `variable_declarator` / `assignment_expression` / `pair` /
- * `call_expression`, not at the string node, so it reads a `secret-candidates`
- * fact carrying that positional context — a later fact kind.
+ * `hardcoded-secret` (UniversalSecretsAnalyzer) lives in `secrets.ts`: it
+ * anchors at the enclosing `variable_declarator` / `assignment_expression` /
+ * `pair` / `call_expression`, not at the string node, so it reads the
+ * `secret-candidates` fact carrying that positional context.
  *
  * The other three security rules (`command-injection-risk`,
  * `dynamic-require-of-project-path`, `unescaped-html-interpolation`) read
