@@ -228,7 +228,6 @@ function asSerializableConfig(options: AuditRunnerOptions): SerializableAuditRun
     enabledAnalyzers: options.enabledAnalyzers,
     indexFunctions: options.indexFunctions,
     analyzerConfigs: options.analyzerConfigs,
-    analyzerConcurrency: options.analyzerConcurrency,
     explicitFiles: options.explicitFiles,
     maxFilesPerRun: options.maxFilesPerRun,
     shardSoftBudgetMs: options.shardSoftBudgetMs,
@@ -1041,10 +1040,6 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
       minSeverity: ((args.minSeverity as string) || defaults.defaultMinSeverity) as Severity,
       verbose: false,
       indexFunctions,
-      analyzerConcurrency:
-        typeof args.analyzerConcurrency === 'number'
-          ? Math.max(1, Math.floor(args.analyzerConcurrency))
-          : undefined,
       ...(maxFilesPerRun !== undefined && { maxFilesPerRun }),
       ...(shardSoftBudgetMs !== undefined && { shardSoftBudgetMs }),
       ...(isFile && { includePaths: [auditPath] }),

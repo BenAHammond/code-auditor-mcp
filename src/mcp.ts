@@ -390,13 +390,6 @@ export function registerAllTools(registry: ToolRegistry): void {
           default: 'all',
         },
         {
-          name: 'analyzerConcurrency',
-          type: 'number',
-          required: false,
-          description: 'Max analyzers to run in parallel (default: 1).',
-          default: 1,
-        },
-        {
           name: 'partitionStrategy',
           type: 'string',
           required: false,

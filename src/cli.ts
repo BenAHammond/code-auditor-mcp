@@ -692,7 +692,6 @@ program
         const runner = createAuditRunner({
           projectRoot: options.path,
           scope,
-          analyzerConcurrency: 4
         });
         result = await runner.run();
       }
@@ -1000,7 +999,6 @@ program
       const runner = createAuditRunner({
         projectRoot: options.path,
         scope,
-        analyzerConcurrency: 4
       });
       const result = await runner.run();
 

@@ -12,7 +12,6 @@ describe('audit worker protocol', () => {
       enabledAnalyzers: ['solid', 'react'],
       indexFunctions: true,
       analyzerConfigs: { solid: { maxMethodsPerClass: 20 } },
-      analyzerConcurrency: 3,
     });
 
     expect(options.projectRoot).toBe('/tmp/project');
@@ -23,7 +22,6 @@ describe('audit worker protocol', () => {
     expect(options.enabledAnalyzers).toEqual(['solid', 'react']);
     expect(options.indexFunctions).toBe(true);
     expect(options.analyzerConfigs).toEqual({ solid: { maxMethodsPerClass: 20 } });
-    expect(options.analyzerConcurrency).toBe(3);
   });
 
   it('handoff continuation uses explicitFiles and drops includePaths', () => {

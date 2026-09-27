@@ -511,13 +511,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     });
     logMcpDebug('analysis', 'registry keys', { keys: Object.keys(analyzerRegistry) });
 
-    const requestedConcurrency = Number(mergedOptions.analyzerConcurrency);
-    const analyzerConcurrency =
-      Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
-        ? Math.min(Math.floor(requestedConcurrency), enabledAnalyzers.length || 1)
-        : 1;
-    logMcpInfo('analysis', 'analyzer concurrency', { analyzerConcurrency });
-
     // ── Initialize CodeIndexDB for analyzer DB access ────────────────────
     // Styles, conventions, and cross-domain analyzers read config.indexHandle
     // for DB access. The singleton is shared — initialize once before the

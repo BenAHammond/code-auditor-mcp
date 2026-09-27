@@ -144,7 +144,6 @@ export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutp
   const runner = createAuditRunner({
     projectRoot: input.projectRoot,
     scope: resolvedPaths as unknown as AuditScope,
-    analyzerConcurrency: 4,
   });
 
   const result = await runner.run();

@@ -259,7 +259,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit',
-        parameters: { action: 'start', path: '.', analyzers: ['solid'], minSeverity: 'high', analyzerConcurrency: 2 },
+        parameters: { action: 'start', path: '.', analyzers: ['solid'], minSeverity: 'high' },
         description: 'Start a background audit and get a jobId immediately'
       },
       {
@@ -288,8 +288,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       'audit.start is non-blocking; heavy work runs in the background',
       'audit.status returns resultId only when the run is completed',
       'audit.results is read-only and never starts a new audit',
-      'Use analyzerConcurrency:2 or 3 for faster runs on large projects',
-      'Tune workerCount and maxRetries for large shard-heavy audits'
+      'Tune workerCount and maxRetries for large audits'
     ]
   },
 

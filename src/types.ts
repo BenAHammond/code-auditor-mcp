@@ -1142,7 +1142,6 @@ export interface AuditRunnerOptions extends AuditOptions {
   /** Spec 60.1 — virtual-module specifiers (exact match), default `['.blitz']`. */
   importVirtualModules?: string[];
   indexFunctions?: boolean; // Whether to index functions during audit
-  analyzerConcurrency?: number; // Number of analyzers to run in parallel
   /** Cooperative cancel (MCP parent or worker soft budget). Checked between analyzers and on progress. */
   abortSignal?: AbortSignal;
   /** Skip glob discovery; analyze exactly these absolute paths. */

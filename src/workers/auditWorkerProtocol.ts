@@ -13,7 +13,6 @@ export interface SerializableAuditRunConfig {
   enabledAnalyzers?: string[];
   indexFunctions?: boolean;
   analyzerConfigs?: Record<string, any>;
-  analyzerConcurrency?: number;
   /** Absolute file paths; when set, glob discovery is skipped. */
   explicitFiles?: string[];
   /**
@@ -108,7 +107,6 @@ export function toAuditRunnerOptions(config: SerializableAuditRunConfig): AuditR
     enabledAnalyzers: config.enabledAnalyzers,
     indexFunctions: config.indexFunctions,
     analyzerConfigs: config.analyzerConfigs,
-    analyzerConcurrency: config.analyzerConcurrency,
     explicitFiles: config.explicitFiles,
     maxFilesPerRun: config.maxFilesPerRun,
   };
@@ -127,7 +125,6 @@ export function continuationConfigAfterHandoff(
     enabledAnalyzers: base.enabledAnalyzers,
     indexFunctions: base.indexFunctions,
     analyzerConfigs: base.analyzerConfigs,
-    analyzerConcurrency: base.analyzerConcurrency,
     maxFilesPerRun: base.maxFilesPerRun,
     shardSoftBudgetMs: base.shardSoftBudgetMs,
     explicitFiles: remainingFiles,
