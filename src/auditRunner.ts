@@ -49,7 +49,7 @@ import { CodeIndexDB } from './codeIndexDB.js';
 import { writeAuditToLedger, detectRunInput } from './ledger.js';
 
 // Pipeline imports (Spec 25 — pipeline replaces hand-rolled analyzer loop)
-import { runPipeline, writeIndexFactsToDb, makeVisitorStatus, getFilesProcessed, isVisitorStatus, buildCoverageReport } from './pipeline.js';
+import { runPipeline, writeIndexFactsToDb, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
 import {
   createSolidVisitor,
   createDryVisitor,
@@ -82,6 +82,8 @@ import { computeSizeDistributions } from './reporting/sizeDistribution.js';
 import { splitRoutes, attributeRoutes, enabledMigratedRules } from './phase/routing.js';
 import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';
 import { resolvePhaseThresholds } from './phase/config.js';
+import { deriveCoverage, presentFormatsOf } from './phase/coverage.js';
+import { MIGRATED_RULES } from './phase/rules/registry.js';
 import type { Finding } from './phase/types.js';
 
 // Package version — stamped into the build (see constants.ts), not read from
@@ -488,6 +490,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // per-file buildProvenanceContext() wall time (hook-latency measurement).
     const provenanceTiming = { totalMs: 0 };
     let pipelineCoverage: RuleCoverage[] | undefined;
+    // Spec 68 §8 — the migrated rules' findings, hoisted out of the both-paths
+    // block so derived coverage (computed after the split) can read them.
+    let phaseFindings: Finding[] = [];
     let pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
     let pipelineStageTiming: Record<string, number> | undefined;
     let pipelineSkippedFiles: Array<{ filePath: string; bytes: number; reason: string }> | undefined;
@@ -905,7 +910,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             // virtual-module list, tsconfig aliases and package entry points the
             // legacy reducer read from `_infra`.
             const infraConfig = (pipelineAnalyzerConfig['_infra'] ?? {}) as Record<string, unknown>;
-            const phaseFindings = await runPhaseModel(phaseFiles, thresholds, {
+            phaseFindings = await runPhaseModel(phaseFiles, thresholds, {
               projectRoot: root,
               corpusFiles: infraConfig.corpusFiles as string[] | undefined,
               importVirtualModules: infraConfig.importVirtualModules as string[] | undefined,
@@ -1000,21 +1005,19 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           }
         }
 
-        // Spec 27 — build per-rule coverage from final analyzer results
-        // (computed AFTER react finalization so cross-component checks are included).
-        // Spec 33 Item 14 — thread the pipeline's input-presence snapshot so
-        // zero-violation rules promote from `unassessed` to `clean`/`notApplicable`.
-        pipelineCoverage = buildCoverageReport(
-          analyzerResults,
-          pipelineConfig,
-          pipelineResult.metadata?.inputPresence,
-          new Map(
-            (pipelineResult.metadata?.ruleApplicability ?? []).map((a) => [
-              a.ruleId,
-              { applicable: a.applicable, reason: a.reason, kind: a.kind },
-            ]),
-          ),
-        );
+        // Spec 68 §8 — derived coverage. Every migrated rule declares its
+        // `needs` (formats + facts), so its coverage state is a pure function of
+        // the run's findings, the corpus's present formats, and producer
+        // availability — no registry cross-reference, status machine, or per-rule
+        // `input` list. (Computed AFTER the both-paths split so `phaseFindings`
+        // holds the migrated rules' re-emitted findings.)
+        pipelineCoverage = deriveCoverage({
+          rules: MIGRATED_RULES,
+          findings: phaseFindings,
+          presentFormats: presentFormatsOf(files),
+          enabledRules: enabledMigratedRules(enabledAnalyzers),
+          groupOf: (ruleId) => RULE_REGISTRY[ruleId]?.analyzer ?? ruleId,
+        });
 
         // Spec 29: extract table catalog from pipeline metadata for audit report
         pipelineTableCatalog = pipelineResult.metadata?.tableCatalog as Array<{ table: string; sources: any[] }> | undefined;
