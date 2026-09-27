@@ -8,7 +8,7 @@
  */
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../src/auditRouter.js';
+import { runAudit } from '../src/auditRunner.js';
 import { CodeIndexDB } from '../src/codeIndexDB.js';
 import path from 'node:path';
 
@@ -17,7 +17,7 @@ const projectRoot = path.resolve('src/languages');
 async function main() {
   initializeLanguages();
   await initParsers();
-  const result = await runAuditDispatch({ projectRoot, indexFunctions: true } as any);
+  const result = await runAudit({ projectRoot, indexFunctions: true } as any);
 
   const db = CodeIndexDB.getInstance(undefined, projectRoot);
   await db.initialize();

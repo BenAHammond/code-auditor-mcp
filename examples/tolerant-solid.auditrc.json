@@ -14,11 +14,6 @@
     "**/*.spec.{ts,tsx,js,jsx}"
   ],
   
-  "enabledAnalyzers": [
-    "solid",
-    "dry"
-  ],
-  
   "analyzerConfigs": {
     "solid": {
       "componentResponsibilityThresholds": {

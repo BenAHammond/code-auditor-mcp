@@ -30,17 +30,6 @@
     "**/*.min.js"
   ],
   
-  "// Analyzers": "",
-  "// Enable or disable specific analyzers": "",
-  "// Available: solid, dry, security, component, data-access": "",
-  "enabledAnalyzers": [
-    "solid",
-    "dry",
-    "security",
-    "react",
-    "data-access"
-  ],
-  
   "// Analyzer-specific configuration": "",
   "analyzerConfig": {
     "solid": {

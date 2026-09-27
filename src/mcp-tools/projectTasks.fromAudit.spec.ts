@@ -182,35 +182,6 @@ describe('handleProjectTasks from_audit', () => {
     expect(priorities.filter((p: string) => p === 'low')).toHaveLength(1); // high → low
   });
 
-  it('filters by analyzer', async () => {
-    await storeFixtureAudit();
-
-    const result = await handleProjectTasks({
-      action: 'from_audit',
-      projectPath,
-      analyzers: ['dry']
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.created).toBe(1); // dry violation is severity 'high', included by default
-    expect(result.skipped).toBe(0);
-  });
-
-  it('filters by analyzer with explicit severities', async () => {
-    await storeFixtureAudit();
-
-    const result = await handleProjectTasks({
-      action: 'from_audit',
-      projectPath,
-      analyzers: ['dry'],
-      severities: ['high']
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.created).toBe(1);
-    expect(result.tasks[0].relatedFiles).toEqual(['src/utils.ts']);
-  });
-
   it('filters by path glob', async () => {
     await storeFixtureAudit();
 

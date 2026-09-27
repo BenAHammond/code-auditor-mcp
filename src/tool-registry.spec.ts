@@ -49,7 +49,7 @@ describe('ToolRegistry', () => {
             name: 'run',
             params: [
               { name: 'path', type: 'string', required: false, description: 'Path to audit' },
-              { name: 'analyzers', type: 'array', required: false, description: 'Analyzers to run' },
+              { name: 'formats', type: 'array', required: false, description: 'Output formats' },
             ],
           },
           {
@@ -74,7 +74,7 @@ describe('ToolRegistry', () => {
       expect(auditSchema.inputSchema.required).toContain('action');
       expect(auditSchema.inputSchema.required).toContain('jobId'); // required param
       expect(auditSchema.inputSchema.required).not.toContain('path'); // optional param
-      expect(auditSchema.inputSchema.required).not.toContain('analyzers'); // optional param
+      expect(auditSchema.inputSchema.required).not.toContain('formats'); // optional param
     });
 
     it('merges duplicate parameter names across actions', () => {

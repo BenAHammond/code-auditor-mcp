@@ -114,7 +114,7 @@ Severity overrides apply globally (before per-directory path profile caps). Sett
 
 ### SQL Injection Detection
 
-The `sql-injection-risk` rule is **disabled by default** (`off`) after recalibration. On the self-audit corpus, it produced 0% precision — the analyzer misinterpreted TypeScript pattern-matching code (string constants like `'SELECT'`, `'FROM'`, `'WHERE'` used for the tool's own SQL detection) as database queries. On the Gin and Excalidraw corpora, precision was also near zero.
+The `sql-injection-risk` rule is **disabled by default** (`off`) after recalibration. On the self-audit corpus, it produced 0% precision — the rule misinterpreted TypeScript pattern-matching code (string constants like `'SELECT'`, `'FROM'`, `'WHERE'` used for the tool's own SQL detection) as database queries. On the Gin and Excalidraw corpora, precision was also near zero.
 
 **When to re-enable it**: your project's SQL is constructed via string concatenation or template literals in functions whose sole purpose is query assembly. The rule detects those patterns. For codebases using ORMs or parameterized queries exclusively, the rule produces noise.
 
@@ -150,7 +150,7 @@ It is **off by default** and turned on only by an explicit opt-in — the `telem
 
 ## Style Intelligence
 
-Code Auditor indexes every style declaration in your project — CSS, SCSS, Tailwind, inline styles, and CSS-in-JS. The styles analyzer reads global distributions and flags fragmentation that no single-file linter can see.
+Code Auditor indexes every style declaration in your project — CSS, SCSS, Tailwind, inline styles, and CSS-in-JS. The styles rules read global distributions and flag fragmentation that no single-file linter can see.
 
 **7 detectors, 10 rule IDs:**
 
@@ -164,7 +164,7 @@ Code Auditor indexes every style declaration in your project — CSS, SCSS, Tail
 | **Declaration-set similarity** | Two CSS rule blocks with > 90% identical declarations |
 | **Z-index sprawl** | Project-wide z-index inventory — too many distinct values or orphan singletons |
 
-The analyzer reads from a project-wide SQLite index, so scoped runs (changed files only) still compare against the full project baseline. A fresh `#273828` drift color in a scoped run is caught against the full corpus of `#1e2328` values.
+The styles rules read from a project-wide SQLite index, so scoped runs (changed files only) still compare against the full project baseline. A fresh `#273828` drift color in a scoped run is caught against the full corpus of `#1e2328` values.
 
 **Style invariant rules:**
 
@@ -195,7 +195,7 @@ code-audit search "mechanism:inline css:color"          # inline color declarati
 code-audit search "token:--color-primary"                # bypassing a design token
 ```
 
-**The React analyzer** also gains raw-element detection: if your project has a `Button` wrapper, raw `<button>` usages outside `Button`'s definition become severe findings.
+**The React rules** also gain raw-element detection: if your project has a `Button` wrapper, raw `<button>` usages outside `Button`'s definition become severe findings.
 
 ## License
 

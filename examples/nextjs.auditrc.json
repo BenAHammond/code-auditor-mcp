@@ -21,14 +21,6 @@
     "**/coverage/**"
   ],
   
-  "enabledAnalyzers": [
-    "react",
-    "security",
-    "solid",
-    "dry",
-    "data-access"
-  ],
-  
   "analyzerConfig": {
     "component": {
       "checkErrorBoundaries": true,

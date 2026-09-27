@@ -22,7 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { realpathSync } from 'node:fs';
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../src/auditRouter.js';
+import { runAudit } from '../src/auditRunner.js';
 import { extractDriftPairs, compareToBaseline } from './verify-recall-value-drift-core.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -61,13 +61,12 @@ async function main(): Promise<number> {
   const dataDir = await mkdtemp(join(tmpdir(), 'ca-vd-gate-'));
   process.env.CODE_AUDITOR_DATA_DIR = dataDir;
   try {
-    // Styles-only: value-drift reads only the style_* tables, which the styles
-    // collector populates on its own pass. The full analyzer set would only add
-    // latency, not findings (verified — styles-only reproduces the 3 on a fresh
-    // index). indexFunctions off: the gate needs no function index.
-    const result = await runAuditDispatch({
+    // value-drift reads only the style_* tables, which the styles collector
+    // populates during its pass. Spec 68 §15 removed analyzer selection, so the
+    // full migrated set runs; the gate still reads only the `styles` bucket.
+    // indexFunctions off: the gate needs no function index.
+    const result = await runAudit({
       projectRoot: corpusDir,
-      enabledAnalyzers: ['styles'],
       indexFunctions: false,
       writeToLedger: false,
     });

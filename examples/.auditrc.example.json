@@ -20,14 +20,6 @@
     "**/__tests__/**"
   ],
   
-  "enabledAnalyzers": [
-    "solid",
-    "dry",
-    "security",
-    "react",
-    "data-access"
-  ],
-  
   "analyzerConfig": {
     "solid": {
       "maxMethodsPerClass": 10,

@@ -6,7 +6,6 @@ async function testIndexDuringAudit() {
   // Create runner with function indexing enabled
   const runner = createAuditRunner({
     projectRoot: './src',
-    enabledAnalyzers: ['solid', 'dry'],
     indexFunctions: true,
     progressCallback: (progress) => {
       if (progress.phase === 'function-indexing') {

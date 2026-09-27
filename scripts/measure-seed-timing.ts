@@ -17,7 +17,7 @@
  */
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../src/auditRouter.js';
+import { runAudit } from '../src/auditRunner.js';
 import type { Violation } from '../src/types.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -50,7 +50,7 @@ async function main() {
   initializeLanguages();
   await initParsers();
 
-  const result = await runAuditDispatch({ projectRoot } as any);
+  const result = await runAudit({ projectRoot } as any);
 
   const meta = result.metadata as any;
   const stageTiming: Record<string, number> = meta?.stageTiming ?? {};

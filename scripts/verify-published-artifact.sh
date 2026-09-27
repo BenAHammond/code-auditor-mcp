@@ -74,7 +74,6 @@ TSEOF
 
 cat > .codeauditor.json << 'JSONEOF'
 {
-  "enabledAnalyzers": ["documentation", "solid"],
   "includePaths": ["src/**/*.ts", "*.ts"],
   "excludePaths": ["**/node_modules/**", "**/*.test.ts"],
   "minSeverity": "high",
@@ -129,7 +128,7 @@ assert('metadata.coverage is an array', Array.isArray(coverage));
 assert('metadata.coverage is non-empty', Array.isArray(coverage) && coverage.length > 0);
 
 if (Array.isArray(coverage) && coverage.length > 0) {
-  const validStates = new Set(['fired', 'clean', 'notApplicable', 'unassessed']);
+  const validStates = new Set(['fired', 'clean', 'notApplicable', 'cannot-fire', 'incomplete']);
   // Validate shape of first 5 coverage entries
   for (let i = 0; i < Math.min(5, coverage.length); i++) {
     const c = coverage[i];

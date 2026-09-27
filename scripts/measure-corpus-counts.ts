@@ -24,7 +24,7 @@
  */
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../src/auditRouter.js';
+import { runAudit } from '../src/auditRunner.js';
 import type { Violation } from '../src/types.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -65,7 +65,7 @@ async function main() {
   // Route through the same dispatcher the CLI uses: projects containing `.go`
   // files go to the Go subprocess (which emits the reimplemented liskov /
   // error-handling / goroutines categories), everything else to the TS pipeline.
-  const result = await runAuditDispatch({ projectRoot } as any);
+  const result = await runAudit({ projectRoot } as any);
 
   const all: Violation[] = Object.values(result.analyzerResults as Record<string, any>).flatMap(
     (r: any) => r.violations ?? [],

@@ -23,14 +23,6 @@
     "code-auditor/**"
   ],
   
-  "enabledAnalyzers": [
-    "react",
-    "security",
-    "solid",
-    "dry",
-    "data-access"
-  ],
-  
   "analyzerConfig": {
     "security": {
       "authPatterns": [

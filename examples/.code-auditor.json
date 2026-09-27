@@ -14,8 +14,6 @@
     "**/*.spec.{ts,tsx}"
   ],
   
-  "enabledAnalyzers": ["solid", "dry", "security"],
-  
   "analyzerConfigs": {
     "solid": {
       "// Component responsibility thresholds": "Adjust based on your architecture",

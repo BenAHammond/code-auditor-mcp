@@ -4,7 +4,7 @@
 // @ts-nocheck
 import { initializeLanguages } from '../dist/languages/index.js';
 import { initParsers } from '../dist/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../dist/auditRouter.js';
+import { runAudit } from '../dist/auditRunner.js';
 
 const CORPUS = process.argv[2] || '/Users/ben/playground/recall-protocol';
 const TARGET_RULES = [
@@ -19,7 +19,7 @@ const TARGET_RULES = [
 
 initializeLanguages();
 await initParsers();
-const result = await runAuditDispatch({ projectRoot: CORPUS });
+const result = await runAudit({ projectRoot: CORPUS });
 const all = Object.values(result.analyzerResults).flatMap(r => r.violations ?? []);
 const advisory = all.filter(v => v.analyzer !== 'invariants');
 

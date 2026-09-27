@@ -17,12 +17,6 @@
     "**/*.stories.{ts,tsx,js,jsx}"
   ],
   
-  "enabledAnalyzers": [
-    "react",
-    "solid",
-    "dry"
-  ],
-  
   "analyzerConfig": {
     "component": {
       "checkErrorBoundaries": true,

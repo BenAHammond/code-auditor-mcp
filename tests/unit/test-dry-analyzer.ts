@@ -14,7 +14,6 @@ async function testDryAnalyzer() {
   // Create audit runner
   const runner = createAuditRunner({
     projectRoot: './test-duplicates',
-    enabledAnalyzers: ['dry'],
     analyzerConfigs: {
       dry: {
         debug: true,

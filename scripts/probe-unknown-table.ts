@@ -10,7 +10,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../src/auditRouter.js';
+import { runAudit } from '../src/auditRunner.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const projectRoot = resolve(process.argv[2] ?? resolve(__dirname, '..', 'src'));
@@ -18,7 +18,7 @@ const projectRoot = resolve(process.argv[2] ?? resolve(__dirname, '..', 'src'));
 initializeLanguages();
 await initParsers();
 
-const result = await runAuditDispatch({ projectRoot, writeToLedger: false } as any);
+const result = await runAudit({ projectRoot, writeToLedger: false } as any);
 
 const all = Object.values(result.analyzerResults).flatMap((ar: any) => ar.violations ?? []);
 const hits = all.filter((v: any) => v.rule === 'unknown-table' || v.rule === 'stale-table-reference');

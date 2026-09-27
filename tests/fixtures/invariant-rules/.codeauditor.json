@@ -1,5 +1,4 @@
 {
-  "enabledAnalyzers": ["invariants"],
   "includePaths": ["src/**/*.ts"],
   "rules": [
     {

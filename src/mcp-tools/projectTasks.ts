@@ -308,9 +308,6 @@ export async function handleProjectTasks(
         const severities: string[] = Array.isArray(args.severities)
           ? (args.severities as string[]).map((s) => String(s).trim()).filter(Boolean)
           : ['critical', 'severe', 'high'];
-        const analyzers: string[] | undefined = Array.isArray(args.analyzers)
-          ? (args.analyzers as string[]).map((s) => String(s).trim()).filter(Boolean)
-          : undefined;
         const pathGlobs: string[] | undefined = Array.isArray(args.paths)
           ? (args.paths as string[]).map((s) => String(s).trim()).filter(Boolean)
           : undefined;
@@ -319,9 +316,6 @@ export async function handleProjectTasks(
         const analyzerResults: Record<string, any> =
           auditRecord.analyzerResults ?? {};
         const severitySet = new Set(severities);
-        const analyzerSet = analyzers
-          ? new Set(analyzers)
-          : undefined;
 
         const priorityMap: Record<string, 'high' | 'medium' | 'low'> = {
           critical: 'high',
@@ -336,9 +330,6 @@ export async function handleProjectTasks(
         for (const [analyzerName, analyzerResult] of Object.entries(
           analyzerResults
         )) {
-          if (analyzerSet && !analyzerSet.has(analyzerName)) {
-            continue;
-          }
           const violations: any[] = Array.isArray(analyzerResult.violations)
             ? analyzerResult.violations
             : [];

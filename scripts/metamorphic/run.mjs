@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { initializeLanguages } from '../../dist/languages/index.js';
 import { initParsers } from '../../dist/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../../dist/auditRouter.js';
+import { runAudit } from '../../dist/auditRunner.js';
 import { TRANSFORMS } from './transforms.mjs';
 
 const CORPUS = '/Users/ben/playground/recall-protocol';
@@ -29,7 +29,7 @@ async function auditSource(source, basename) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ca-r2-'));
   const filePath = path.join(dir, basename);
   fs.writeFileSync(filePath, source);
-  const result = await runAuditDispatch({ projectRoot: dir, writeToLedger: false });
+  const result = await runAudit({ projectRoot: dir, writeToLedger: false });
   const all = Object.values(result.analyzerResults).flatMap(r => r.violations ?? []);
   const advisory = all.filter(v => v.analyzer !== 'invariants');
   // per-rule: count + set of (rule,line,message) normalized

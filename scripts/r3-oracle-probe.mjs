@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { initializeLanguages } from '../dist/languages/index.js';
 import { initParsers } from '../dist/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../dist/auditRouter.js';
+import { runAudit } from '../dist/auditRunner.js';
 
 initializeLanguages();
 await initParsers();
@@ -17,7 +17,7 @@ async function auditSource(source, basename) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ca-r3-'));
   const filePath = path.join(dir, basename);
   fs.writeFileSync(filePath, source);
-  const result = await runAuditDispatch({ projectRoot: dir, writeToLedger: false });
+  const result = await runAudit({ projectRoot: dir, writeToLedger: false });
   const all = Object.values(result.analyzerResults).flatMap((r) => r.violations ?? []);
   fs.rmSync(dir, { recursive: true, force: true });
   return all;

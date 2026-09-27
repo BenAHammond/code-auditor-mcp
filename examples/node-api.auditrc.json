@@ -22,13 +22,6 @@
     "**/coverage/**"
   ],
   
-  "enabledAnalyzers": [
-    "security",
-    "data-access",
-    "solid",
-    "dry"
-  ],
-  
   "analyzerConfig": {
     "security": {
       "authPatterns": ["authenticate", "authorize", "requireAuth", "passport"],

@@ -6,6 +6,5 @@
     "enabled": true,
     "dbWrapperNames": ["d1Query", "d1Exec", "buildQuery"],
     "sanitizerNames": ["escapeSql"]
-  },
-  "enabledAnalyzers": ["data-access"]
+  }
 }

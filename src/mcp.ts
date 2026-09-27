@@ -1497,7 +1497,6 @@ export function registerAllTools(registry: ToolRegistry): void {
           { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
           { name: 'auditJobId', type: 'string', required: false, description: 'Audit job ID. Omit to use most recent completed audit.' },
           { name: 'severities', type: 'array', required: false, description: 'Severities to include (default: critical, severe).' },
-          { name: 'analyzers', type: 'array', required: false, description: 'Filter violations by analyzer name.' },
           { name: 'paths', type: 'array', required: false, description: 'Filter violations by file path globs.' },
         ],
         handler: async (args, signal) => {

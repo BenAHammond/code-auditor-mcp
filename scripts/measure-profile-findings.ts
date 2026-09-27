@@ -16,7 +16,7 @@
  */
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../src/auditRouter.js';
+import { runAudit } from '../src/auditRunner.js';
 import { BUILTIN_PATH_PROFILES } from '../src/config/defaults.js';
 import { isTestOrSpecPath } from '../src/languages/testConventions.js';
 import type { Violation } from '../src/types.js';
@@ -33,7 +33,7 @@ async function main() {
   initializeLanguages();
   await initParsers();
 
-  const result = await runAuditDispatch({ projectRoot } as any);
+  const result = await runAudit({ projectRoot } as any);
   const all: Violation[] = Object.values(result.analyzerResults as Record<string, any>).flatMap(
     (r: any) => r.violations ?? [],
   );

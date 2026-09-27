@@ -10,6 +10,5 @@
       "orgFilterTables": ["projects", "users"],
       "skipTestFiles": false
     }
-  },
-  "enabledAnalyzers": ["data-access", "schema"]
+  }
 }
