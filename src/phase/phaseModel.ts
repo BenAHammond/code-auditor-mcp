@@ -78,13 +78,19 @@ export interface PhaseInfra {
    *  facts (e.g. cross-domain's `call-graph` whole-table `functions` read) are
    *  never built. */
   enabledRules?: ReadonlySet<string>;
-  /** §16.8 fault injection — a hook invoked before each (kind, file) producer
-   *  runs. If it throws, the run treats it as that producer throwing: the file
-   *  is recorded `incomplete` for `kind` and the run continues. Real runs pass
-   *  none; the per-file-failure-isolation test passes a hook that throws for one
-   *  file to prove a single failure does not abort the run or poison its
-   *  neighbors. */
-  beforeProcess?: (kind: FactKind, file: string) => void;
+  /** §16.8 fault injection — a hook invoked (and awaited) before each (kind,
+   *  file) producer runs. If it throws, the run treats it as that producer
+   *  throwing: the file is recorded `incomplete` for `kind` and the run
+   *  continues. Real runs pass none; the per-file-failure-isolation test passes
+   *  a hook that throws for one file to prove a single failure does not abort
+   *  the run or poison its neighbors. It may be async — the §16.5 ordering test
+   *  awaits a delay for one file to seed a slow processor. */
+  beforeProcess?: (kind: FactKind, file: string) => void | Promise<void>;
+  /** §16.5 ordering seam — invoked (and awaited) once, before the first rule's
+   *  `analyze` runs. The ordering test uses it to observe that analysis does not
+   *  begin until every file has been parsed and every processor level has
+   *  completed: a slow `beforeProcess` must finish before this fires. */
+  beforeAnalyze?: () => void | Promise<void>;
 }
 
 /**
@@ -137,7 +143,7 @@ export async function runPhaseModelOverFiles(
 ): Promise<PhaseModelResult> {
   const { facts, incompleteFacts } = await buildFacts(files, infra);
   return {
-    findings: await analyzeAll(facts, thresholdsByRule, infra?.enabledRules),
+    findings: await analyzeAll(facts, thresholdsByRule, infra),
     incompleteFacts,
   };
 }
@@ -226,7 +232,7 @@ async function buildFacts(
         const producer = fileProducerFor(kind, parsed.format);
         if (!producer) continue;
         try {
-          infra?.beforeProcess?.(kind, input.path);
+          await infra?.beforeProcess?.(kind, input.path);
           const acc = (facts.get(kind) as unknown[] | undefined) ?? [];
           acc.push(...(producer.process(parsed) as unknown[]));
           facts.set(kind, acc);
@@ -278,14 +284,18 @@ async function buildFacts(
   return { facts, incompleteFacts };
 }
 
-/** Analyze: run every active migrated rule against exactly its declared facts. */
+/** Analyze: run every active migrated rule against exactly its declared facts.
+ *  `beforeAnalyze` fires once before the first rule, after `buildFacts` has
+ *  completed for every file and every processor level — the §16.5 ordering
+ *  observation point. */
 async function analyzeAll(
   facts: Map<FactKind, unknown>,
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
-  enabledRules?: ReadonlySet<string>,
+  infra?: PhaseInfra,
 ): Promise<Finding[]> {
+  await infra?.beforeAnalyze?.();
   const findings: Finding[] = [];
-  for (const rule of activeRules(enabledRules)) {
+  for (const rule of activeRules(infra?.enabledRules)) {
     const ruleFacts = Object.fromEntries(
       rule.needs.facts.map((f: FactKind) => [f, facts.get(f)]),
     );
