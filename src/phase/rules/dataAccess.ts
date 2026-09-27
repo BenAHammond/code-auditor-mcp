@@ -231,6 +231,7 @@ const complexQuery: RuleDefinition<DataAccessNeeds> = {
   samples: META['complex-query'].samples,
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
+    const ordinals = new Map<string, number>();
     const joinedTableCount = num(ctx.thresholds, 'joinedTableCount', 4);
 
     for (const call of ctx.facts['data-access-calls']) {
@@ -242,6 +243,9 @@ const complexQuery: RuleDefinition<DataAccessNeeds> = {
         file: call.file,
         line: call.line,
         column: call.column,
+        // §7 — one symbol per finding. Without this, two complex queries in the
+        // same file collide on `[rule, file, '']` and dedup/baseline folds them.
+        symbol: nextSymbol(call.enclosingFunction ?? 'top-level', call.method, ordinals),
       });
     }
     return out;

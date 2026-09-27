@@ -153,6 +153,9 @@ async function issueToFindings(
       message: issue.description,
       file: a?.file ?? '(unknown)',
       line: a?.startLine ?? 0,
+      // §7 — anchor the cycle/tight-coupling finding to the resolvable node that
+      // located it, so two issues in one file do not collapse to one fingerprint.
+      symbol: a?.name,
     });
   }
   return out;

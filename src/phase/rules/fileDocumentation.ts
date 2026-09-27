@@ -144,6 +144,8 @@ const fileDocumentation: RuleDefinition<FileDocumentationNeeds> = {
           file: fact.file,
           line: 1,
           column: 1,
+          // §7 — file-level finding; the file is the symbol that located it.
+          symbol: fact.file,
         });
       }
     }

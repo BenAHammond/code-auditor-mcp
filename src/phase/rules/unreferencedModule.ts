@@ -58,6 +58,8 @@ export const unreferencedModuleRule: RuleDefinition<UnreferencedModuleNeeds> = {
         message: MESSAGE,
         file: info.file,
         line: 1,
+        // §7 — file-level finding; the module path is the symbol that located it.
+        symbol: info.file,
       });
     }
     return out;
