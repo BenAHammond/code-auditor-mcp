@@ -22,7 +22,7 @@ import {
   isBuiltInHook
 } from './utils/reactDetection.js';
 import { parseFile, walkAST, isExported, getLineAndColumn, hasModifier, getNodeText } from './languages/adapterBridge.js';
-import type { ASTNode } from './languages/types.js';
+import type { AST, ASTNode } from './languages/types.js';
 import { readFile } from 'fs/promises';
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,115 @@ interface ComponentImport {
 // ---------------------------------------------------------------------------
 
 /**
+ * Scan an already-parsed file for React components.
+ *
+ * This is the scan body split out of {@link scanFile} so the phase model's
+ * `react-component` producer can scan a `ParsedFile` it already holds — without
+ * re-reading from disk or re-parsing. `ast` is the tree-sitter parse (`ast.root`
+ * is the node the walk starts from); `content` is the source the node text is
+ * sliced from; `filePath` stamps every component's identity. The phase producer
+ * always passes `extractHooks: true` (the legacy visitor tied it to
+ * `checkHooksRules`, but the `hooks-naming` rule gates on that flag itself, so
+ * the extraction has no effect on findings).
+ */
+export function scanParsedFile(
+  ast: AST,
+  content: string,
+  filePath: string,
+  options: ComponentScannerOptions = DEFAULT_OPTIONS
+): ComponentScanResult {
+  const root = ast.root;
+  const state: ScannerState = {
+    currentFile: filePath,
+    components: [],
+    imports: [],
+    errors: []
+  };
+
+  // Extract component imports if requested
+  if (options.extractImports) {
+    state.imports = extractComponentImports(root, content);
+  }
+
+  // Pre-scan: find function declarations that use built-in hooks
+  // without starting with 'use' — these are hooks-naming violations
+  // when called inside components.
+  const hookUsingFunctions = options.extractHooks ? findHookUsingFunctions(root, content) : new Set<string>();
+
+  // Walk the AST and scan for React components
+  // walkAST visits every node recursively — no manual recursion needed
+  walkAST(root, (node) => {
+    if (!isReactComponent(node, content)) return;
+
+    const componentType = detectComponentType(node, content);
+    if (!componentType) return;
+
+    const componentName = getComponentName(node, content);
+
+    // Skip test/story components if configured
+    if (!options.includeTests && componentName.includes('Test')) return;
+    if (!options.includeStories && componentName.includes('Story')) return;
+
+    // Skip anonymous components — these are arrow callbacks in .map() / .filter()
+    // that return JSX and get misdetected as functional components.
+    if (componentName === 'AnonymousComponent') return;
+
+    // getLineAndColumn returns 1-based via toSourceLocation — no compensation needed.
+    const { line } = getLineAndColumn(node);
+    const endLine = node.location?.end?.line ?? line;
+
+    const component: ComponentMetadata = {
+      name: componentName,
+      filePath: state.currentFile,
+      lineNumber: line,
+      startLine: line,
+      endLine: endLine,
+      entityType: 'component',
+      componentType,
+      dependencies: [], // Will be populated later from imports
+      purpose: `React ${componentType} component`,
+      context: extractComponentContext(node, content),
+      isExported: isComponentExported(node),
+      body: getNodeText(node, content)
+    };
+
+    // Extract hooks if functional component
+    if (options.extractHooks && (componentType === 'functional' || componentType === 'memo' || componentType === 'forwardRef')) {
+      component.hooks = extractHooks(node, content, hookUsingFunctions.size > 0 ? hookUsingFunctions : undefined);
+    }
+
+    // Extract props (tree-sitter: no TypeChecker — capability regression per plan Step 2.5)
+    if (options.extractProps) {
+      component.props = extractPropTypes(node, content);
+    }
+
+    // Extract JSX elements used
+    component.jsxElements = extractJSXElements(node, content);
+    component.jsxElementDetails = extractJSXElementDetails(node, content);
+
+    // Calculate complexity if requested
+    if (options.detectComplexity) {
+      component.complexity = calculateComponentComplexity(node, content);
+    }
+
+    // Check for error boundary (class components)
+    if (componentType === 'class') {
+      component.hasErrorBoundary = hasErrorBoundaryMethods(node, content);
+    }
+
+    state.components.push(component);
+  });
+
+  return {
+    filePath,
+    components: state.components,
+    imports: state.imports,
+    fileHash: undefined, // TODO: implement file hash calculation
+    parseErrors: state.errors.length > 0 ? state.errors : undefined
+  };
+}
+
+/**
  * Scan a single file for React components
  */
 export async function scanFile(
@@ -114,98 +223,7 @@ export async function scanFile(
       };
     }
 
-    const root = ast.root;
-    const state: ScannerState = {
-      currentFile: filePath,
-      components: [],
-      imports: [],
-      errors: []
-    };
-
-    // Extract component imports if requested
-    if (options.extractImports) {
-      state.imports = extractComponentImports(root, content);
-    }
-
-    // Pre-scan: find function declarations that use built-in hooks
-    // without starting with 'use' — these are hooks-naming violations
-    // when called inside components.
-    const hookUsingFunctions = options.extractHooks ? findHookUsingFunctions(root, content) : new Set<string>();
-
-    // Walk the AST and scan for React components
-    // walkAST visits every node recursively — no manual recursion needed
-    walkAST(root, (node) => {
-      if (!isReactComponent(node, content)) return;
-
-      const componentType = detectComponentType(node, content);
-      if (!componentType) return;
-
-      const componentName = getComponentName(node, content);
-
-      // Skip test/story components if configured
-      if (!options.includeTests && componentName.includes('Test')) return;
-      if (!options.includeStories && componentName.includes('Story')) return;
-
-      // Skip anonymous components — these are arrow callbacks in .map() / .filter()
-      // that return JSX and get misdetected as functional components.
-      if (componentName === 'AnonymousComponent') return;
-
-      // getLineAndColumn returns 1-based via toSourceLocation — no compensation needed.
-      const { line } = getLineAndColumn(node);
-      const endLine = node.location?.end?.line ?? line;
-
-      const component: ComponentMetadata = {
-        name: componentName,
-        filePath: state.currentFile,
-        lineNumber: line,
-        startLine: line,
-        endLine: endLine,
-        entityType: 'component',
-        componentType,
-        dependencies: [], // Will be populated later from imports
-        purpose: `React ${componentType} component`,
-        context: extractComponentContext(node, content),
-        isExported: isComponentExported(node),
-        body: getNodeText(node, content)
-      };
-
-      // Extract hooks if functional component
-      if (options.extractHooks && (componentType === 'functional' || componentType === 'memo' || componentType === 'forwardRef')) {
-        component.hooks = extractHooks(node, content, hookUsingFunctions.size > 0 ? hookUsingFunctions : undefined);
-      }
-
-      // Extract props (tree-sitter: no TypeChecker — capability regression per plan Step 2.5)
-      if (options.extractProps) {
-        component.props = extractPropTypes(node, content);
-      }
-
-      // Extract JSX elements used
-      component.jsxElements = extractJSXElements(node, content);
-      component.jsxElementDetails = extractJSXElementDetails(node, content);
-
-      // Calculate complexity if requested
-      if (options.detectComplexity) {
-        component.complexity = calculateComponentComplexity(node, content);
-      }
-
-      // Check for error boundary (class components)
-      if (componentType === 'class') {
-        component.hasErrorBoundary = hasErrorBoundaryMethods(node, content);
-      }
-
-      state.components.push(component);
-    });
-
-    // Calculate file hash for change detection
-    const fileHash = undefined; // TODO: implement file hash calculation
-
-    return {
-      filePath,
-      components: state.components,
-      imports: state.imports,
-      fileHash,
-      parseErrors: state.errors.length > 0 ? state.errors : undefined
-    };
+    return scanParsedFile(ast, content, filePath, options);
   } catch (error) {
     return {
       filePath,

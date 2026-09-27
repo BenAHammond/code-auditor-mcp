@@ -35,6 +35,7 @@ import { securityRules } from './rules/security.js';
 import { secretsRules } from './rules/secrets.js';
 import { securityDefectRules } from './rules/securityDefects.js';
 import { functionBodyRules } from './rules/functionBodies.js';
+import { reactRules } from './rules/react.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -54,6 +55,7 @@ import type {
   SecretCandidate,
   SecurityCandidate,
   FunctionBodyFact,
+  ReactComponentScan,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -715,4 +717,49 @@ export async function analyzeFunctionBodies(
 export async function runFunctionBodiesSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const facts = await buildFunctionBodies(files);
   return analyzeFunctionBodies(facts, thresholds);
+}
+
+// ── react-component slice (react-component → 7 react rules) ──────────────────
+
+/**
+ * Parse → Process for the `react-component` fact. Returns the assembled corpus
+ * fact (one scan per file, each a full component universe: metadata, imports,
+ * JSX elements, hooks, props, complexity), ASTs already freed.
+ */
+export async function buildReactComponents(files: readonly InputFile[]): Promise<ReactComponentScan[]> {
+  const facts: ReactComponentScan[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('react-component', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as ReactComponentScan[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `react-component` fact with the seven react rules. */
+export async function analyzeReactComponents(
+  facts: ReactComponentScan[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'react-component': facts },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of reactRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The react slice: parse → react-component → react rules → findings. */
+export async function runReactComponentsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const facts = await buildReactComponents(files);
+  return analyzeReactComponents(facts, thresholds);
 }

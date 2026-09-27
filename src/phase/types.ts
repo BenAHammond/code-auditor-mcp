@@ -62,6 +62,7 @@ export interface FactShapes {
   'data-access-calls': ResolvedQuery[];
   'table-catalog': TableCatalog;
   'mined-conventions': MinedConvention[];
+  'react-component': ReactComponentScan[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -547,6 +548,84 @@ export type MinedConvention = {
   export_kind?: string | null;
 };
 
+/**
+ * One scanned React component, as the `react-component` producer projects it.
+ * This is the object-literal (serializable) projection of `ComponentMetadata`
+ * (types.ts), which is an `interface` and so cannot satisfy §4's `Serializable`
+ * index-signature arm. The producer is the `scanParsedFile` half of
+ * `componentScanner.scanFile` — the same tree-sitter walk the legacy react
+ * visitor ran — projected onto plain data before the AST dies with the file.
+ * The rules re-cast this shape back to `ComponentMetadata`/`ComponentScanResult`
+ * (structurally identical) and run the existing `analyzeComponent` /
+ * `checkCircularDependencies` / `checkErrorBoundaryUsage` / `checkRawElements`
+ * detectors, so the classification half is bit-identical to the legacy path.
+ */
+export type ReactComponentScan = {
+  filePath: string;
+  components: ReactComponentMetadata[];
+  imports: ReactComponentImport[];
+  fileHash?: string;
+  parseErrors?: string[];
+};
+
+/** The serializable projection of `ComponentMetadata` (the scanner's fields). */
+export type ReactComponentMetadata = {
+  name: string;
+  filePath: string;
+  lineNumber?: number;
+  startLine?: number;
+  endLine?: number;
+  entityType: 'component';
+  componentType: 'functional' | 'class' | 'memo' | 'forwardRef';
+  dependencies: string[];
+  purpose: string;
+  context: string;
+  isExported: boolean;
+  body?: string;
+  props?: ReactPropDefinition[];
+  hooks?: ReactHookUsage[];
+  jsxElements?: string[];
+  jsxElementDetails?: ReactJsxElementDetail[];
+  hasErrorBoundary?: boolean;
+  complexity?: number;
+};
+
+/** The serializable projection of `ComponentImport`. */
+export type ReactComponentImport = {
+  name: string;
+  path: string;
+  isDefault: boolean;
+};
+
+/** The serializable projection of `PropDefinition`. */
+export type ReactPropDefinition = {
+  name: string;
+  type?: string;
+  required: boolean;
+  hasDefault: boolean;
+};
+
+/** The serializable projection of `HookUsage`. */
+export type ReactHookUsage = {
+  name: string;
+  line: number;
+  customHook: boolean;
+};
+
+/** The serializable projection of `JsxAttributeDetail`. */
+export type ReactJsxAttributeDetail = {
+  name: string;
+  line: number;
+  valueKind: 'string' | 'arrow' | 'function' | 'identifier' | 'other' | 'none';
+};
+
+/** The serializable projection of `JsxElementDetail`. */
+export type ReactJsxElementDetail = {
+  tagName: string;
+  line: number;
+  attributes: ReactJsxAttributeDetail[];
+};
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -690,6 +769,7 @@ export interface SupplyingFormats {
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
   'data-access-calls': 'typescript' | 'tsx' | 'javascript';
+  'react-component': 'typescript' | 'tsx' | 'javascript';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */

@@ -41,6 +41,7 @@ import type {
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
 import { extractFunctionBodies } from './functionBodies.js';
+import { extractReactComponents } from './reactComponents.js';
 import { extractImports } from './imports.js';
 import { extractStringLiterals } from './stringLiterals.js';
 import { extractSecretCandidates } from './secretCandidates.js';
@@ -105,6 +106,7 @@ const styleSourceProcess = (file: ParsedFile): FactFragment<'style-declarations'
 const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entities'> =>
   extractCrossLanguageEntities((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file));
 const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file as AstFile);
+const reactComponentProcess = (file: ParsedFile): FactFragment<'react-component'> => [extractReactComponents(file as AstFile)];
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -174,6 +176,11 @@ export const PRODUCERS = {
     typescript: fileProducer('data-access-calls', 'typescript', dataAccessProcess),
     tsx: fileProducer('data-access-calls', 'tsx', dataAccessProcess),
     javascript: fileProducer('data-access-calls', 'javascript', dataAccessProcess),
+  },
+  'react-component': {
+    typescript: fileProducer('react-component', 'typescript', reactComponentProcess),
+    tsx: fileProducer('react-component', 'tsx', reactComponentProcess),
+    javascript: fileProducer('react-component', 'javascript', reactComponentProcess),
   },
 } satisfies ProducerMap;
 
@@ -252,4 +259,5 @@ export const FACT_KINDS = {
   'data-access-calls': true,
   'table-catalog': true,
   'mined-conventions': true,
+  'react-component': true,
 } satisfies Record<FactKind, true>;
