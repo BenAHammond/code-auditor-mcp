@@ -54,6 +54,7 @@ export function formatFor(path: string): Format {
   if (path.endsWith('.css')) return 'css';
   if (path.endsWith('.scss')) return 'scss';
   if (path.endsWith('.json')) return 'json';
+  if (path.endsWith('.sql')) return 'sql';
   return 'typescript';
 }
 
@@ -65,6 +66,12 @@ export function formatFor(path: string): Format {
  * (§3.3 makes a per-file failure `incomplete`, which is §8's concern).
  */
 export async function parseOne(input: InputFile, projectRoot?: string): Promise<ParsedFile | null> {
+  // `.sql` is the one text-only format: no grammar, no adapter, no AST. Its
+  // sole producer (ddl-declarations) reads `.source`/`.file`, so return a
+  // ParsedFile with neither `ast` nor `adapter`.
+  if (formatFor(input.path) === 'sql') {
+    return { file: input.path, format: 'sql', source: input.content, ...(projectRoot ? { projectRoot } : {}) };
+  }
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(input.path);
   if (!adapter) return null;
   try {
@@ -95,7 +102,7 @@ export async function buildFileSymbols(files: readonly InputFile[]): Promise<Fil
       const producer = fileProducerFor('file-symbols', parsed.format);
       if (producer) symbols.push(...producer.process(parsed));
     } finally {
-      parsed.ast.dispose?.();
+      parsed.ast?.dispose?.();
     }
   }
   return symbols;
@@ -158,7 +165,7 @@ export async function buildDataAccessCalls(files: readonly InputFile[]): Promise
       const producer = fileProducerFor('data-access-calls', parsed.format);
       if (producer) calls.push(...producer.process(parsed));
     } finally {
-      parsed.ast.dispose?.();
+      parsed.ast?.dispose?.();
     }
   }
   return calls;
@@ -199,7 +206,7 @@ export async function buildSchemaUsage(files: readonly InputFile[]): Promise<Sch
       const producer = fileProducerFor('schema-usage', parsed.format);
       if (producer) usages.push(...producer.process(parsed));
     } finally {
-      parsed.ast.dispose?.();
+      parsed.ast?.dispose?.();
     }
   }
   return usages;
@@ -221,7 +228,7 @@ export async function buildTableCatalog(files: readonly InputFile[]): Promise<Ta
       const producer = fileProducerFor('ddl-declarations', parsed.format);
       if (producer) declarations.push(...producer.process(parsed));
     } finally {
-      parsed.ast.dispose?.();
+      parsed.ast?.dispose?.();
     }
   }
   return CORPUS_PRODUCERS['table-catalog'].process({
@@ -300,7 +307,7 @@ export async function buildCrossLanguageEntities(files: readonly InputFile[]): P
       const producer = fileProducerFor('cross-language-entities', parsed.format);
       if (producer) entities.push(...(producer.process(parsed) as Entity[]));
     } finally {
-      parsed.ast.dispose?.();
+      parsed.ast?.dispose?.();
     }
   }
   return entities;
@@ -373,7 +380,7 @@ export async function buildStyleDeclarations(
       const producer = fileProducerFor('style-declarations', parsed.format);
       if (producer) facts.push(...producer.process(parsed));
     } finally {
-      parsed.ast.dispose?.();
+      parsed.ast?.dispose?.();
     }
   }
   return facts;

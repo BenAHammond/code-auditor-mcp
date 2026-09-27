@@ -11,23 +11,23 @@
  * equal and non-empty. It is the pin that lets §15 delete the old analyzer path
  * without losing the golden reference.
  *
- * The fixtures use *tagged-template* SQL (`sql\`…\``) because that is the one
- * extraction strategy that is byte-identical in both paths: the new
- * `schema-usage` producer runs `findTableReferences` with only
- * `DEFAULT_SCHEMA_CONFIG` (no provenance context, no known-table set), while the
- * old `analyzeAST` runs it with a provenance context and a config-derived
- * `allTables`. The tagged-template path depends on neither — it matches
- * `sqlTagNames` and calls `parseSqlTables`, whose only `allTables` interaction is
- * the `< 3`-character short-name guard (this test's tables are all ≥ 8 chars).
- * The `db.exec("…")` string-argument path is deliberately avoided: it diverges
- * (old is provenance-based, new is name-based) and is out of scope for the two
- * rules under migration.
+ * Both extraction strategies are pinned, because the migrated rules must be
+ * byte-identical on each: *tagged-template* SQL (`sql\`…\``) and *string-argument*
+ * calls (`db.query("SELECT …")`). The new `schema-usage` producer now builds the
+ * same hybrid provenance context the old `analyzeAST` built (see
+ * `extractSchemaUsage`), so the string-argument path — which the legacy
+ * pipeline recorded via `db.query` / `db.raw` — matches too. Each strategy has
+ * its own case; the tagged-template path needs no provenance, the string-arg
+ * path needs exactly the hybrid context both sides now share.
  *
  * `unknown-table` also exercises the corpus boundary: the old analyzer derives
  * its known-table set from `config.schemas`, while the new model derives it from
  * a DDL fixture file reduced through the `table-catalog` corpus producer. The
  * `CREATE TABLE users` DDL here is the new pipeline's `{ users }`, matching the
- * old analyzer's `schemas: [{ name: 'users', … }]`.
+ * old analyzer's `schemas: [{ name: 'users', … }]`. The DDL fixture is supplied
+ * in both shapes — a code migration (`migration.ts` tagged template) and a raw
+ * `.sql` migration file — because the `.sql` producer is the §5 addition that
+ * lets `unknown-table` read the corpus from migration files, not just code.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -59,7 +59,7 @@ interface ParityOpts {
   /** Known-table set the OLD analyzer reads from config.schemas. */
   schemas?: { name: string; tables: { name: string; columns: string[] }[] }[];
   /** DDL fixture the NEW model reduces into `table-catalog`. */
-  ddl?: string;
+  ddl?: { path: string; content: string };
 }
 
 /** Run the old analyzer and the new slice, return the per-rule identity multisets. */
@@ -74,7 +74,7 @@ async function parity(ruleId: string, usageSource: string, opts: ParityOpts = {}
   const old = oldRaw.filter((v) => v.rule === ruleId).map(key).sort();
 
   const files = [];
-  if (opts.ddl) files.push({ path: 'migration.ts', content: opts.ddl });
+  if (opts.ddl) files.push({ path: opts.ddl.path, content: opts.ddl.content });
   files.push({ path: 'parity.ts', content: usageSource });
   const fresh = await runSchemaSlice(files);
   const nu = fresh.filter((f) => f.ruleId === ruleId).map(key).sort();
@@ -116,8 +116,35 @@ describe('Spec 68 schema parity (new analyze(ctx) === old UniversalSchemaAnalyze
       '}\n',
       {
         schemas: [{ name: 'users', tables: [{ name: 'users', columns: [] }] }],
-        ddl,
+        ddl: { path: 'migration.ts', content: ddl },
       },
+    );
+    expect(nu).toEqual(old);
+    expect(nu.length).toBeGreaterThan(0);
+  });
+
+  it('unknown-table (string-arg db.query against a raw .sql migration catalog)', async () => {
+    const { old, nu } = await parity(
+      'unknown-table',
+      'export function getProducts(db: { query(sql: string): unknown }) {\n' +
+      '  return db.query("SELECT * FROM products");\n' +
+      '}\n',
+      {
+        schemas: [{ name: 'users', tables: [{ name: 'users', columns: [] }] }],
+        ddl: { path: 'migrations/001_init.sql', content: 'CREATE TABLE users (id INT);\n' },
+      },
+    );
+    expect(nu).toEqual(old);
+    expect(nu.length).toBeGreaterThan(0);
+  });
+
+  it('table-naming-convention (string-arg db.query)', async () => {
+    const { old, nu } = await parity(
+      'table-naming-convention',
+      'export function getProfiles(db: { query(sql: string): unknown }) {\n' +
+      '  return db.query("SELECT * FROM UserProfiles");\n' +
+      '}\n',
+      { schemas: [] },
     );
     expect(nu).toEqual(old);
     expect(nu.length).toBeGreaterThan(0);

@@ -22,6 +22,7 @@ import { schemaValidatorRules } from './schemaValidator.js';
 import { documentationRules } from './documentation.js';
 import { stylesRules } from './styles.js';
 import { crossDomainRules } from './crossDomain.js';
+import { schemaRules } from './schema.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -31,15 +32,14 @@ import { crossDomainRules } from './crossDomain.js';
  * full-pipeline audit reports (composite-fixtures pins the complete set by
  * equality, so a rule whose phase output diverges anywhere stays off this list).
  *
- * The 2 schema rules (`unknown-table`, `table-naming-convention`) are *not*
- * listed yet, despite having `analyze(ctx)` + a green tagged-template parity
- * test. Their full-pipeline parity is incomplete: the legacy schema analyzer
- * reads table references from `db.query("SELECT …")` string arguments with a
- * provenance context the provenance-free `schema-usage` producer does not have,
- * and derives the known-table catalog from `.sql` migration files the phase
- * model never parses (no adapter). Flipping them would silently drop findings
- * (composite-fixtures schema/schema-stale go red), so they stay on the legacy
- * path until the `.sql` DDL source and string-argument extraction land (§5/§9).
+ * The 2 schema rules (`unknown-table`, `table-naming-convention`) land once the
+ * `.sql` DDL source (§5) and the provenance-aware `db.query("SELECT …")` string-
+ * argument extraction are in: `unknown-table` reads `table-catalog` (now fed by
+ * `.sql` migration files via the `ddl-declarations.sql` producer), and
+ * `table-naming-convention` reads `schema-usage` (now extracting string-arg
+ * references). Their bucket is the one rule-level override in the both-paths
+ * re-emission (`table-naming-convention → schema-code`), matching the legacy
+ * schema-code visitor's result key.
  *
  * The 8 dependency-graph rules (`circular-dependency`, `break-cycles`,
  * `tight-coupling`, `reduce-coupling`, `hub-nodes`, `split-responsibilities`,
@@ -57,7 +57,7 @@ import { crossDomainRules } from './crossDomain.js';
  * imports/reachability — RENEW, §8), stays on the legacy path: the current
  * producer does not emit the `file-imports` fact it reads.
  *
- * The remaining 77 land one fact kind at a time (§11.3), and the size drives
+ * The remaining 75 land one fact kind at a time (§11.3), and the size drives
  * spec68-registry-size.spec.ts (0 → … → 100).
  */
 export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
@@ -68,4 +68,5 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...documentationRules,
   ...stylesRules,
   ...crossDomainRules,
+  ...schemaRules,
 ];

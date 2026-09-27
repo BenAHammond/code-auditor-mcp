@@ -10,12 +10,12 @@
  * rules read (declarations + tokens + classUsage, each with `filePath` baked
  * in).
  *
- * The `file` field on `ParsedFile` is the path, and `adapter` is the CSS/SCSS
+ * The `file` field on `AstFile` is the path, and `adapter` is the CSS/SCSS
  * adapter that parsed it; both are exactly what the extractors expect. No
  * `sourceCode` re-derivation and no second parse — the AST lives only here.
  */
 
-import type { ParsedFile, StyleDeclarationsFile } from './types.js';
+import type { AstFile, StyleDeclarationsFile } from './types.js';
 import {
   extractDeclarationsFromCSSAst,
   extractTokensFromCSSAst,
@@ -23,7 +23,7 @@ import {
 } from '../styles/cssAstExtractor.js';
 
 /** Extract the per-file styles fact from one parsed CSS/SCSS file. */
-export function extractStylesCss(file: ParsedFile): StyleDeclarationsFile {
+export function extractStylesCss(file: AstFile): StyleDeclarationsFile {
   return {
     declarations: extractDeclarationsFromCSSAst(file.ast, file.adapter, file.file, file.source),
     tokens: extractTokensFromCSSAst(file.ast, file.adapter, file.file, file.source),

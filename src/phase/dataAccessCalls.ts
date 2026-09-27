@@ -11,14 +11,14 @@
  * is not available to a `process(file)` call.
  *
  * `DatabaseCall` is structurally identical to the `ResolvedQuery` fact, so the
- * mapping is the identity — this module owns only the `ParsedFile` → fact
+ * mapping is the identity — this module owns only the `AstFile` → fact
  * unwrapping, and the fact shape is pinned in `phase/types.ts`.
  */
 
-import type { ParsedFile, ResolvedQuery } from './types.js';
+import type { AstFile, ResolvedQuery } from './types.js';
 import { extractDataAccessCalls as extractAnalyzerCalls } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 
 /** Extract the per-file resolved DB calls from one parsed file. */
-export function extractDataAccessCalls(file: ParsedFile): ResolvedQuery[] {
+export function extractDataAccessCalls(file: AstFile): ResolvedQuery[] {
   return extractAnalyzerCalls(file.ast, file.adapter, file.source);
 }

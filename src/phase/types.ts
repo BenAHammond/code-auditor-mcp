@@ -62,15 +62,21 @@ export interface FactShapes {
 export type FactKind = Exclude<keyof FactShapes, 'ast'>;
 
 /**
- * The file formats the adapter layer can parse and a rule can evaluate.
+ * The file formats the phase model reads.
  *
  * `'json'` was added in Amendment 1 of the fact-vocabulary pass: a JSON file is
  * a *format* like any other, parsed by a position-preserving JSON adapter, so
  * the `declared-schemas` / `schema-validations` rules go through the same
  * per-file model as every other rule instead of reading `.json` files off disk
  * through a config callback.
+ *
+ * `'sql'` is the one text-only format: a `.sql` migration file has no grammar
+ * and no adapter, so its `ParsedFile` carries no `ast`/`adapter`. It supplies
+ * exactly one fact (`ddl-declarations`) whose producer reads `.source`/`.file`
+ * only — the whole file *is* DDL, unlike code where DDL is embedded in string/
+ * template literals.
  */
-export type Format = 'typescript' | 'tsx' | 'javascript' | 'go' | 'css' | 'scss' | 'json';
+export type Format = 'typescript' | 'tsx' | 'javascript' | 'go' | 'css' | 'scss' | 'json' | 'sql';
 
 /** A rule's declaration: the formats it can evaluate and the facts it reads. */
 export interface Needs {
@@ -453,17 +459,31 @@ export interface ParsedFile {
   readonly format: Format;
   /** The source text, present so a processor may re-derive position/context. */
   readonly source: string;
-  /** The parsed tree. Dies with the file — never crosses a phase boundary. */
-  readonly ast: AST;
+  /** The parsed tree. Dies with the file — never crosses a phase boundary.
+   *  Absent for the text-only `'sql'` format (no grammar, no adapter): its one
+   *  producer (`ddl-declarations`) reads `.source`/`.file` only. */
+  readonly ast?: AST;
   /** The language adapter that parsed this file — the processor's only handle
-   *  on the extraction API (`extractFunctions`, `extractClasses`, …). */
-  readonly adapter: LanguageAdapter;
+   *  on the extraction API (`extractFunctions`, `extractClasses`, …). Absent
+   *  for `'sql'`, alongside `ast`. */
+  readonly adapter?: LanguageAdapter;
   /** The project root this file was parsed under. Optional because the vertical
    *  slice tests parse single fixtures without a project; present on the full
    *  pipeline. Only the style producer reads it (to load the project's Tailwind
    *  theme tokens for utility expansion — a corpus-level context, not per-file). */
   readonly projectRoot?: string;
 }
+
+/**
+ * The adapter-backed subset of {@link ParsedFile}: a file whose format has a
+ * grammar, so `ast` and `adapter` are always present. Every AST-reading
+ * extractor (`file-symbols`, `function-index`, `schema-usage`, the CSS and
+ * source halves of `style-declarations`, `cross-language-entities`,
+ * `data-access-calls`) is only ever registered for adapter formats, so they
+ * narrow their parameter to this; the text-only `sql` format's one producer
+ * (`ddl-declarations`) reads `.source`/`.file` alone and never narrows.
+ */
+export type AstFile = ParsedFile & { readonly ast: AST; readonly adapter: LanguageAdapter };
 
 /** The fragment a per-file processor returns for one file. The fragment is the
  *  fact for that file alone, keyed by file so the parent can assemble corpus
@@ -488,7 +508,7 @@ export type FactFragment<K extends FactKind> = FactShapes[K];
 export interface SupplyingFormats {
   'file-symbols': 'typescript' | 'tsx' | 'javascript';
   'function-index': 'typescript' | 'tsx' | 'javascript';
-  'ddl-declarations': 'typescript' | 'tsx' | 'javascript';
+  'ddl-declarations': 'typescript' | 'tsx' | 'javascript' | 'sql';
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';

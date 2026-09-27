@@ -110,6 +110,7 @@ const unknownTable: RuleDefinition<UnknownTableNeeds> = {
     const out: Finding[] = [];
     for (const ref of unknownRefs) {
       const suggestions = getNearestTableSuggestions(ref.tableName, known, 2);
+      const suggestionNames = suggestions.map((s) => s.replace(/^'|'$/g, ''));
       const message = suggestions.length > 0
         ? `Reference to unknown table '${ref.tableName}' (${ref.usageType}). Did you mean: ${suggestions.join(', ')}?`
         : `Reference to unknown table '${ref.tableName}' (${ref.usageType})`;
@@ -121,6 +122,15 @@ const unknownTable: RuleDefinition<UnknownTableNeeds> = {
         line: ref.line,
         column: ref.column,
         symbol: ref.tableName,
+        resolution: {
+          action: suggestionNames.length > 0 ? 'use-known-table' : 'register-or-fix-table',
+          summary: suggestionNames.length > 0
+            ? `Rename the table reference '${ref.tableName}' to the nearest known table: ${suggestions.join(', ')}.`
+            : `The table '${ref.tableName}' is not in the known catalog — register it, or fix the reference to a known table.`,
+          symbols: suggestionNames.length > 0 ? suggestionNames : [ref.tableName],
+          files: [ref.filePath],
+          lines: ref.line != null ? [ref.line] : undefined,
+        },
       });
     }
     return out;

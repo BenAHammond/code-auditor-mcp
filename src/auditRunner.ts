@@ -871,8 +871,15 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             // finding carries the same `profile`/`gateExcluded` the pipeline's
             // stage-2 loop would have stamped on it.
             const byAnalyzer = new Map<string, Violation[]>();
+            // Rule-level bucket override: the phase finding must land in the
+            // *legacy result key*, not the registry's `analyzer` label, so the
+            // composite fixture's `schema-code::table-naming-convention` (emitted
+            // by the schema-code visitor) does not collapse into `schema`.
+            const ruleAnalyzerOverride: Record<string, string> = {
+              'table-naming-convention': 'schema-code',
+            };
             for (const f of phaseFindings) {
-              const analyzer = RULE_REGISTRY[f.ruleId]?.analyzer ?? 'phase';
+              const analyzer = ruleAnalyzerOverride[f.ruleId] ?? RULE_REGISTRY[f.ruleId]?.analyzer ?? 'phase';
               const resolved = resolveFileProfile(f.file);
               const profile = resolved.matchedProfileNames.length > 0
                 ? resolved.matchedProfileNames[resolved.matchedProfileNames.length - 1]

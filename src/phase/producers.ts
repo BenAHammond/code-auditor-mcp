@@ -32,6 +32,7 @@ import type {
   CorpusProcessor,
   SupplyingFormats,
   ParsedFile,
+  AstFile,
   FactFragment,
   TableCatalog,
   Format,
@@ -77,16 +78,21 @@ function fileProducer<K extends FileFactKind, F extends SupplyingFormats[K]>(
 }
 
 // The seven per-file extractors, hoisted so each (kind, format) entry reuses the
-// one format-agnostic `process` for the formats that share an adapter.
-const fileSymbolsProcess = (file: ParsedFile): FactFragment<'file-symbols'> => extractFileSymbols(file);
-const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> => extractFunctionIndex(file);
+// one format-agnostic `process` for the formats that share an adapter. Every
+// AST-reading extractor narrows `ParsedFile` to `AstFile`: the ProducerMap type
+// only ever registers these under adapter-backed formats (a `sql` key exists on
+// `ddl-declarations` alone, and `extractSchemaCode` reads `.source`, not the
+// AST), so the cast is the one boundary where a text-only file cannot reach an
+// AST consumer.
+const fileSymbolsProcess = (file: ParsedFile): FactFragment<'file-symbols'> => extractFileSymbols(file as AstFile);
+const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> => extractFunctionIndex(file as AstFile);
 const ddlProcess = (file: ParsedFile): FactFragment<'ddl-declarations'> => extractSchemaCode(file);
-const schemaUsageProcess = (file: ParsedFile): FactFragment<'schema-usage'> => extractSchemaUsage(file);
-const styleProcess = (file: ParsedFile): FactFragment<'style-declarations'> => [extractStylesCss(file)];
-const styleSourceProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesSource(file);
+const schemaUsageProcess = (file: ParsedFile): FactFragment<'schema-usage'> => extractSchemaUsage(file as AstFile);
+const styleProcess = (file: ParsedFile): FactFragment<'style-declarations'> => [extractStylesCss(file as AstFile)];
+const styleSourceProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesSource(file as AstFile);
 const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entities'> =>
-  extractCrossLanguageEntities(file.ast, file.file, file.source, getLanguageFromPath(file.file));
-const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file);
+  extractCrossLanguageEntities((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file));
+const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file as AstFile);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -100,10 +106,13 @@ export const PRODUCERS = {
     javascript: fileProducer('function-index', 'javascript', functionIndexProcess),
   },
   // `ddl-declarations` was `schema-code`: DDL declarations parsed from code.
+  // `sql` is the text-only supplier — the whole file is DDL (a migration), so
+  // the same extractor runs over `.source` (it never reads the AST).
   'ddl-declarations': {
     typescript: fileProducer('ddl-declarations', 'typescript', ddlProcess),
     tsx: fileProducer('ddl-declarations', 'tsx', ddlProcess),
     javascript: fileProducer('ddl-declarations', 'javascript', ddlProcess),
+    sql: fileProducer('ddl-declarations', 'sql', ddlProcess),
   },
   'schema-usage': {
     typescript: fileProducer('schema-usage', 'typescript', schemaUsageProcess),

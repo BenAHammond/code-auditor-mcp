@@ -93,6 +93,10 @@ const FIXTURES: Record<Format, Fixture> = {
       '    "properties": { "id": { "type": "integer" } }',
       '  }', '}', ''].join('\n'),
   },
+  sql: {
+    path: '/fixture/sample.sql',
+    source: ['CREATE TABLE users (id INTEGER PRIMARY KEY);', ''].join('\n'),
+  },
 };
 
 /** The one fact kind whose top-level shape is an object, not an array. */
@@ -105,6 +109,11 @@ beforeAll(async () => {
 
 /** Build a `ParsedFile` for a fixture — the only place an AST is allowed to live. */
 function parsedFileFor(fixture: Fixture): ParsedFile {
+  // `sql` is the text-only format: no grammar, no adapter, no AST. Its one
+  // producer (`ddl-declarations.sql`) reads `.source`/`.file` alone.
+  if (formatFor(fixture.path) === 'sql') {
+    return { file: fixture.path, format: 'sql', source: fixture.source };
+  }
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(fixture.path);
   expect(adapter, `no adapter resolves ${fixture.path}`).not.toBeNull();
   const ast = parseFile(fixture.path, fixture.source);
@@ -126,6 +135,7 @@ function formatFor(path: string): Format {
   if (path.endsWith('.css')) return 'css';
   if (path.endsWith('.scss')) return 'scss';
   if (path.endsWith('.json')) return 'json';
+  if (path.endsWith('.sql')) return 'sql';
   return 'typescript';
 }
 
@@ -172,7 +182,7 @@ describe('Spec 68 §16 guard 1 — producer liveness (Amendment 1)', () => {
           const value = (producer as { process(f: ParsedFile): unknown }).process(parsed);
           assertShape(producer.produces, value);
         } finally {
-          parsed.ast.dispose?.();
+          parsed.ast?.dispose?.();
         }
       });
     }

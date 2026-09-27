@@ -20,7 +20,7 @@
  * takes when no schemas are configured.
  */
 
-import type { ParsedFile, SchemaUsageFact } from './types.js';
+import type { AstFile, SchemaUsageFact } from './types.js';
 import {
   findTableReferences,
   findClosestNodeAt,
@@ -30,7 +30,7 @@ import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 import { buildProvenanceContext } from '../analyzers/provenance.js';
 
 /** Extract the per-file table usages from one parsed file. */
-export function extractSchemaUsage(file: ParsedFile): SchemaUsageFact[] {
+export function extractSchemaUsage(file: AstFile): SchemaUsageFact[] {
   // Build the provenance context exactly as `UniversalSchemaAnalyzer.analyzeAST`
   // does (hybrid detection), so the DB-call extraction sees the same `db.query` /
   // `db.raw` methods the legacy pipeline recorded. The name-based fallback in

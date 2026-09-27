@@ -18,7 +18,7 @@
  * components).
  */
 
-import type { ParsedFile, FunctionIndexFact } from './types.js';
+import type { AstFile, FunctionIndexFact } from './types.js';
 import {
   walkAST,
   isExported,
@@ -81,7 +81,7 @@ function row(
 }
 
 /** Extract every function/method/component from one parsed file. */
-export function extractFunctionIndex(file: ParsedFile): FunctionIndexFact[] {
+export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
   const root = file.ast.root;
   const filePath = file.file;
   const sourceCode = file.source;

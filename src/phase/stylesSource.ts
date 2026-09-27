@@ -26,13 +26,13 @@
  * already loaded it this run).
  */
 
-import type { ParsedFile, StyleDeclarationsFile } from './types.js';
+import type { AstFile, StyleDeclarationsFile } from './types.js';
 import { extractDeclarations } from '../styles/styleExtractor.js';
 import { extractClassUsage } from '../styles/styleIndexer.js';
 import { loadTailwindConfig } from '../styles/tailwindConfigLoader.js';
 
 /** Extract the per-file styles fact from one parsed TS/JS file. */
-export function extractStylesSource(file: ParsedFile): StyleDeclarationsFile[] {
+export function extractStylesSource(file: AstFile): StyleDeclarationsFile[] {
   const tailwindTokens = file.projectRoot
     ? loadTailwindConfig(file.projectRoot).tokens
     : undefined;

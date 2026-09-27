@@ -48,6 +48,15 @@ export async function runPhaseModel(
   for (const rule of MIGRATED_RULES) {
     for (const f of rule.needs.formats) neededFormats.add(f);
   }
+  // Widen to the formats that supply the transitively-needed *file* facts: a
+  // rule names only the formats it evaluates (`needs.formats`), not the formats
+  // its facts come from. `unknown-table` declares `table-catalog`, whose
+  // upstream `ddl-declarations` is supplied by `sql` (migration files) as well
+  // as TS/JS — so `.sql` files must be read even though no rule declares `sql`.
+  for (const kind of neededFactKinds()) {
+    const producers = (PRODUCERS as Partial<Record<FactKind, Record<string, unknown>>>)[kind];
+    if (producers) for (const format of Object.keys(producers)) neededFormats.add(format);
+  }
 
   const files: InputFile[] = [];
   for (const p of filePaths) {
@@ -126,7 +135,7 @@ async function buildFacts(files: readonly InputFile[], projectRoot?: string): Pr
         facts.set(kind, acc);
       }
     } finally {
-      parsed.ast.dispose?.();
+      parsed.ast?.dispose?.();
     }
   }
 

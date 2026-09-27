@@ -17,7 +17,7 @@
  * class that is about to be removed, so they are re-declared here instead.
  */
 
-import type { ParsedFile, FileSymbols, FileFunctionSymbol, FileClassSymbol } from './types.js';
+import type { AstFile, FileSymbols, FileFunctionSymbol, FileClassSymbol } from './types.js';
 import type { ASTNode, ClassInfo, FunctionInfo } from '../languages/types.js';
 import { walkAST, getNodeText } from '../languages/adapterBridge.js';
 import { detectFunctionConcerns, votingConcerns, CONCERN_LABELS, isFunctionNodeType } from '../analyzers/universal/functionConcerns.js';
@@ -52,7 +52,7 @@ const ESCAPE_WRAPPERS = new Set([
 ]);
 
 /** Extract every symbol (function / class / interface) from one parsed file. */
-export function extractFileSymbols(file: ParsedFile): FileSymbols[] {
+export function extractFileSymbols(file: AstFile): FileSymbols[] {
   const { ast, adapter, source } = file;
   const symbols: FileSymbols[] = [];
 
@@ -83,7 +83,7 @@ export function extractFileSymbols(file: ParsedFile): FileSymbols[] {
   return symbols;
 }
 
-function extractClass(file: ParsedFile, cls: ClassInfo): FileClassSymbol {
+function extractClass(file: AstFile, cls: ClassInfo): FileClassSymbol {
   const { ast, adapter, source } = file;
   const classNode = findNodeByLocation(ast.root, cls.location.start);
 
@@ -127,9 +127,9 @@ function extractClass(file: ParsedFile, cls: ClassInfo): FileClassSymbol {
 }
 
 function extractFunction(
-  file: ParsedFile,
+  file: AstFile,
   func: FunctionInfo,
-  ast: ParsedFile['ast'],
+  ast: AstFile['ast'],
   source: string,
 ): FileFunctionSymbol {
   const funcNode = findFunctionNode(ast.root, func.location.start);
@@ -181,7 +181,7 @@ function nodeThrows(node: ASTNode): boolean {
  */
 function isNonPublicMethod(
   node: ASTNode,
-  adapter: ParsedFile['adapter'],
+  adapter: AstFile['adapter'],
   sourceCode: string,
 ): boolean {
   const type = adapter.getNodeType(node);
@@ -216,7 +216,7 @@ function isNonPublicMethod(
 /** The name of a method-definition node (property_identifier or identifier). */
 function getMethodName(
   node: ASTNode,
-  adapter: ParsedFile['adapter'],
+  adapter: AstFile['adapter'],
   sourceCode: string,
 ): string | null {
   if (node.children) {
@@ -236,7 +236,7 @@ function getMethodName(
  * an IIFE (R1.1 — inline callables are skipped, not downgraded). Re-homed
  * verbatim; the rule cannot reach the parent chain once the tree is freed.
  */
-function isAnonymousOrCallback(node: ASTNode, adapter: ParsedFile['adapter']): boolean {
+function isAnonymousOrCallback(node: ASTNode, adapter: AstFile['adapter']): boolean {
   const nodeType = adapter.getNodeType(node);
   const parent = adapter.getParent(node);
   if (!parent) return false;
@@ -257,7 +257,7 @@ function isAnonymousOrCallback(node: ASTNode, adapter: ParsedFile['adapter']): b
 }
 
 /** (a)/(c) — true when `parent` positions the inline callable as a call argument. */
-function isInlineInCallArguments(parent: ASTNode, adapter: ParsedFile['adapter']): boolean {
+function isInlineInCallArguments(parent: ASTNode, adapter: AstFile['adapter']): boolean {
   const parentType = adapter.getNodeType(parent);
   if (parentType === 'arguments') return true;
 
@@ -288,7 +288,7 @@ function isJsxAttributeValue(parentType: string): boolean {
 }
 
 /** (d) — true when `node` is the callee (not an argument) of the call expression. */
-function isIifeCallee(node: ASTNode, parent: ASTNode, adapter: ParsedFile['adapter']): boolean {
+function isIifeCallee(node: ASTNode, parent: ASTNode, adapter: AstFile['adapter']): boolean {
   const fnChild = getFirstChildOfType(parent, [
     'arrow_function',
     'function_expression',
@@ -318,7 +318,7 @@ function getFirstChildOfType(node: ASTNode, types: string[]): ASTNode | null {
 /** True when the class body uses `instanceof` against a user-defined type. */
 function hasTypeChecking(
   classNode: ASTNode,
-  adapter: ParsedFile['adapter'],
+  adapter: AstFile['adapter'],
   sourceCode: string,
 ): boolean {
   let has = false;
@@ -335,7 +335,7 @@ function hasTypeChecking(
 function hasHeldInstantiation(
   className: string,
   classNode: ASTNode,
-  adapter: ParsedFile['adapter'],
+  adapter: AstFile['adapter'],
   sourceCode: string,
 ): boolean {
   let has = false;
