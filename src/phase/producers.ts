@@ -43,6 +43,7 @@ import { extractFunctionIndex } from './functionIndex.js';
 import { extractImports } from './imports.js';
 import { extractStringLiterals } from './stringLiterals.js';
 import { extractSecretCandidates } from './secretCandidates.js';
+import { extractSecurityCandidates } from './securityCandidates.js';
 import { extractStylesCss } from './stylesCss.js';
 import { extractStylesSource } from './stylesSource.js';
 import { extractDataAccessCalls } from './dataAccessCalls.js';
@@ -94,6 +95,7 @@ const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> 
 const importsProcess = (file: ParsedFile): FactFragment<'imports'> => extractImports(file as AstFile);
 const stringLiteralsProcess = (file: ParsedFile): FactFragment<'string-literals'> => extractStringLiterals(file as AstFile);
 const secretCandidatesProcess = (file: ParsedFile): FactFragment<'secret-candidates'> => extractSecretCandidates(file as AstFile);
+const securityCandidatesProcess = (file: ParsedFile): FactFragment<'security-candidates'> => extractSecurityCandidates(file as AstFile);
 const ddlProcess = (file: ParsedFile): FactFragment<'ddl-declarations'> => extractSchemaCode(file);
 const schemaUsageProcess = (file: ParsedFile): FactFragment<'schema-usage'> => extractSchemaUsage(file as AstFile);
 const styleProcess = (file: ParsedFile): FactFragment<'style-declarations'> => [extractStylesCss(file as AstFile)];
@@ -127,6 +129,11 @@ export const PRODUCERS = {
     typescript: fileProducer('secret-candidates', 'typescript', secretCandidatesProcess),
     tsx: fileProducer('secret-candidates', 'tsx', secretCandidatesProcess),
     javascript: fileProducer('secret-candidates', 'javascript', secretCandidatesProcess),
+  },
+  'security-candidates': {
+    typescript: fileProducer('security-candidates', 'typescript', securityCandidatesProcess),
+    tsx: fileProducer('security-candidates', 'tsx', securityCandidatesProcess),
+    javascript: fileProducer('security-candidates', 'javascript', securityCandidatesProcess),
   },
   // `ddl-declarations` was `schema-code`: DDL declarations parsed from code.
   // `sql` is the text-only supplier — the whole file is DDL (a migration), so
@@ -229,6 +236,7 @@ export const FACT_KINDS = {
   'imports': true,
   'string-literals': true,
   'secret-candidates': true,
+  'security-candidates': true,
   'ddl-declarations': true,
   'schema-usage': true,
   'style-declarations': true,

@@ -45,6 +45,7 @@ export interface FactShapes {
   'imports': ImportFact[];
   'string-literals': StringLiteralFact[];
   'secret-candidates': SecretCandidate[];
+  'security-candidates': SecurityCandidate[];
   // Source-format names are gone (Spec 68 §2 — "a fact is named for what it
   // is, never for where it came from"; `needs.formats` already says the format):
   //   schema-code  → ddl-declarations   (DDL declarations in code)
@@ -284,6 +285,48 @@ export type SecretCandidate =
       position: 'call';
       /** The call's sibling string-argument values (selector + secret), in order. */
       args: readonly string[];
+      file: string;
+      line: number;
+      column: number;
+    };
+
+/**
+ * One candidate for the three single-file security rules (`UniversalSecurity
+ * Analyzer`), as the `security-candidates` producer extracts it. The producer
+ * runs the structural half the legacy `analyzeAST` walk did — it identifies the
+ * unsafe shell invocation, the computed require/import specifier, and the
+ * sink-reaching unescaped HTML interpolation — and projects each onto a plain
+ * tuple plus the enclosing node's start position. The rule owns the pure-text
+ * classification (`isConfigPath`, the test/fixture skip) and the finding
+ * construction (message/resolution/severity).
+ */
+export type SecurityCandidate =
+  | {
+      /** A shell/process invocation whose command is built by interpolation or
+       *  concatenation (the producer already resolved `unsafe`). */
+      kind: 'command-injection';
+      fnName: string;
+      file: string;
+      line: number;
+      column: number;
+    }
+  | {
+      /** A `require()`/`import()`/`createRequire(...)()` whose specifier is
+       *  computed (not a literal); `argText` is the raw specifier source and
+       *  `calleeText` the callee's raw text (`require`/`import`/`createRequire(…)`),
+       *  which the resolution's `symbols` names. */
+      kind: 'dynamic-require';
+      argText: string;
+      calleeText: string;
+      file: string;
+      line: number;
+      column: number;
+    }
+  | {
+      /** A template substitution that reaches an HTML sink unescaped; `prop` is
+       *  the member-access property interpolated. */
+      kind: 'unescaped-html';
+      prop: string;
       file: string;
       line: number;
       column: number;
@@ -619,6 +662,7 @@ export interface SupplyingFormats {
   'imports': 'typescript' | 'tsx' | 'javascript';
   'string-literals': 'typescript' | 'tsx' | 'javascript';
   'secret-candidates': 'typescript' | 'tsx' | 'javascript';
+  'security-candidates': 'typescript' | 'tsx' | 'javascript';
   'ddl-declarations': 'typescript' | 'tsx' | 'javascript' | 'sql';
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';

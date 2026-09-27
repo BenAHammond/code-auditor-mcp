@@ -33,6 +33,7 @@ import { conventionsRules } from './rules/conventions.js';
 import { dryRules } from './rules/dry.js';
 import { securityRules } from './rules/security.js';
 import { secretsRules } from './rules/secrets.js';
+import { securityDefectRules } from './rules/securityDefects.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -50,6 +51,7 @@ import type {
   ImportFact,
   StringLiteralFact,
   SecretCandidate,
+  SecurityCandidate,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -619,4 +621,49 @@ export async function analyzeSecrets(
 export async function runSecretsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const candidates = await buildSecretCandidates(files);
   return analyzeSecrets(candidates, thresholds);
+}
+
+// ── security-candidates slice (security-candidates → 3 defect rules) ────────
+
+/**
+ * Parse → Process for the `security-candidates` fact. Returns the assembled
+ * corpus fact (every command-injection/dynamic-require/unescaped-html candidate
+ * from every file, ASTs already freed).
+ */
+export async function buildSecurityCandidates(files: readonly InputFile[]): Promise<SecurityCandidate[]> {
+  const facts: SecurityCandidate[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('security-candidates', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as SecurityCandidate[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `security-candidates` fact with the three defect rules. */
+export async function analyzeSecurityDefects(
+  candidates: SecurityCandidate[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'security-candidates': candidates },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of securityDefectRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The security-candidates slice: parse → security-candidates → defect rules → findings. */
+export async function runSecurityDefectsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const candidates = await buildSecurityCandidates(files);
+  return analyzeSecurityDefects(candidates, thresholds);
 }
