@@ -216,7 +216,6 @@ describe('CLI integration — foreign CWD with -p', () => {
     // Write a .codeauditor.json that ONLY enables the documentation analyzer
     const configFile = join(projectDir, '.codeauditor.json');
     await writeFile(configFile, JSON.stringify({
-      enabledAnalyzers: ['documentation'],
     }));
 
     // Source file that is fully documented (summary + @param + @returns), so the

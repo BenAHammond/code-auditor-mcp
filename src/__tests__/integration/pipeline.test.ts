@@ -71,7 +71,6 @@ async function writeConfig(
   await writeFile(
     join(testDir, '.codeauditor.json'),
     JSON.stringify({
-      enabledAnalyzers: ['documentation'],
       includePaths: ['src/**/*.ts'],
       excludePaths: ['**/node_modules/**', '**/*.test.ts'],
       minSeverity: 'high',

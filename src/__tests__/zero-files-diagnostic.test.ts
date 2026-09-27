@@ -139,8 +139,9 @@ describe('runZeroFilesDiagnostics', () => {
   });
 
   it('does NOT warn for analyzers NOT in the enabled list (extra results)', () => {
-    // If an analyzer somehow produces a result but wasn't enabled, Pass 1
-    // (no-result) won't fire because it only checks enabledAnalyzers, and
+    // If an analyzer somehow produces a result but wasn't in the enabled list,
+    // Pass 1 (no-result) won't fire because it only checks the enabled-analyzer
+    // list, and
     // Pass 2 (zero-files) iterates all results — but a legitimate result
     // with filesProcessed = 0 here would still warn. This test verifies
     // that the "extra" result with >0 files doesn't generate a warning.

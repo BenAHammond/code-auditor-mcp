@@ -7,8 +7,8 @@
  *
  * The cross-domain analyzer is a Stage 4 derived reducer — it requires the
  * schema analyzer to populate schema_usage during Stage 2. A cold audit
- * with `enabledAnalyzers: ["cross-domain", "schema"]` triggers the full
- * pipeline (discovery → schema visitors → cross-domain reducer).
+ * triggers the full pipeline (discovery → schema visitors → cross-domain
+ * reducer).
  *
  * The config sets txnTableMax: 2 so any function writing to 2+ distinct
  * tables triggers transaction-boundary (default is 4).

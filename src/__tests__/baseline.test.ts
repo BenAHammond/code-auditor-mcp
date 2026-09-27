@@ -92,7 +92,6 @@ async function writeConfig(testDir: string, overrides: Record<string, any> = {})
   await writeFile(
     join(testDir, '.codeauditor.json'),
     JSON.stringify({
-      enabledAnalyzers: ['documentation'],
       includePaths: ['src/**/*.ts'],
       excludePaths: ['**/node_modules/**', '**/*.test.ts', '**/*.spec.ts'],
       minSeverity: 'high',
@@ -1170,7 +1169,7 @@ describe('Spec-18 — CLI end-to-end', () => {
       join(testDir, 'src', 'lib.ts'),
       'import { UPSERT_SQL } from "./queries";\n\nexport function record(db: any) {\n  return db.prepare(UPSERT_SQL).run();\n}\n',
     );
-    await writeConfig(testDir, { enabledAnalyzers: ['schema'] });
+    await writeConfig(testDir, {});
 
     // Seed a baseline so `changed` resolves the project (mirrors R6.7).
     runCli(`baseline -p "${testDir}" --json`, testDir);
@@ -1244,7 +1243,6 @@ describe('Spec-18 — CLI end-to-end', () => {
     await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
     // Config with an import-ban invariant rule AND documentation analyzer
     await writeConfig(testDir, {
-      enabledAnalyzers: ['documentation', 'invariants'],
       rules: [
         {
           id: 'no-lodash',
@@ -1423,24 +1421,23 @@ describe('Rule Registry', () => {
       expect(analyzers.has(name), `${name} analyzer must be registered`).toBe(true);
     }
 
-    // MCP polyglot-path analyzers (LanguageOrchestrator)
+    // Migrated-rule namespaces (schemaValidatorRules / dependencyGraphRules)
     expect(analyzers.has('schema-validator'), 'schema-validator must be registered').toBe(true);
     expect(analyzers.has('dependency-graph'), 'dependency-graph must be registered').toBe(true);
 
     // `api-contract` is deliberately absent: its six rules were removed in 4.1.0
-    // (all cannot-fire — see applicability.ts), so it has no registry entries.
-    // The analyzer remains a no-op stub in LanguageOrchestrator pending real
-    // endpoint/call extraction.
+    // (all cannot-fire — see applicability.ts), so it has no registry entries
+    // and no migrated rule.
     expect(analyzers.has('api-contract'), 'api-contract must have zero rules').toBe(false);
   });
 
   it('maps every rule ID to a reachable analyzer — no dead registry entries', () => {
-    // The canonical set of analyzers with a production run path. Every value in
-    // RULE_REGISTRY must be one of these, or its rule IDs are *claimed* but never
-    // *emitted* — the "files handed to nobody" class of loss that Spec 33 Item 8
-    // flagged. If you add an analyzer to RULE_REGISTRY, wire it into one of these
-    // two paths (auditRunner analyzerRegistry, or MCP LanguageOrchestrator) or
-    // this test fails.
+    // The canonical set of analyzer namespaces a migrated rule may declare.
+    // Every value in RULE_ANALYZER must be one of these, or its rule IDs are
+    // *claimed* but never *emitted* — the "files handed to nobody" class of loss
+    // that Spec 33 Item 8 flagged. If you add an analyzer namespace, declare it
+    // on a migrated rule in MIGRATED_RULES (the phase path re-emits it) or this
+    // test fails.
     const reachableAnalyzers = new Set([
       // CLI pipeline (auditRunner analyzerRegistry)
       'solid', 'dry', 'data-access', 'react', 'documentation',
@@ -1450,9 +1447,12 @@ describe('Rule Registry', () => {
       // data-access (never user-selectable, but it does have a production run
       // path via pipelineDerivedReducers).
       'data-access-org-filter',
-      // MCP polyglot path (LanguageOrchestrator instantiates these)
+      // Migrated-rule namespaces (schemaValidatorRules / dependencyGraphRules);
+      // `api-contract` has no migrated rule but stays allowlisted here as a
+      // former namespace with zero entries.
       'schema-validator', 'api-contract', 'dependency-graph',
-      // Go subprocess (LanguageOrchestrator → Go analyzer binary)
+      // Go rules namespace (goRules — the Go subprocess produces the facts, and
+      // the migrated rules re-home its verdicts)
       'go',
     ]);
 

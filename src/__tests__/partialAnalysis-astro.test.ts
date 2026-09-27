@@ -48,7 +48,6 @@ describe('partially analyzed — .astro dropped by stage 2, consumed by stage 3'
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['styles'],
       showProgress: false,
     });
 
@@ -88,7 +87,6 @@ describe('partially analyzed — .astro dropped by stage 2, consumed by stage 3'
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['styles'],
       showProgress: false,
     });
 

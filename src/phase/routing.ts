@@ -53,8 +53,9 @@ export function attributeRoutes(): ReadonlyMap<string, Route> {
 /**
  * The migrated rule ids the phase model runs. Spec 68 §15 deletes the analyzer
  * *selection* model — there is no `enabledAnalyzers`, so the phase path always
- * runs every migrated rule. The registry `analyzer` field is now only a
- * re-emission bucket label (§9 deletes it); it no longer gates which rules run.
+ * runs every migrated rule. `analyzer` now lives on `RuleDefinition` (not the
+ * registry entry) and is only a re-emission bucket label; it no longer gates
+ * which rules run.
  */
 export function enabledMigratedRules(): ReadonlySet<string> {
   return new Set(MIGRATED_RULES.map((r) => r.id));

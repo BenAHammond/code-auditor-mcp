@@ -10,7 +10,7 @@
  *
  * These run the analyzer at the `analyzeAST` layer (not the full project
  * dispatch) so a `numRuns` sweep is milliseconds, not seconds-per-case. The
- * end-to-end oracles were already validated against `runAuditDispatch` in
+ * end-to-end oracles were already validated against a real audit run in
  * `scripts/r3-oracle-probe.mjs` / `scripts/r3-wrapping-probe.mjs`; see
  * `specs/property-based-generators.md`.
  */

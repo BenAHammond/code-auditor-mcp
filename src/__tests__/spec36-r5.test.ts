@@ -40,7 +40,6 @@ describe('Spec 36 R5 — threshold rationale guard', () => {
     await expect(
       runAudit({
         projectRoot: testDir,
-        enabledAnalyzers: ['solid'],
         analyzerConfigs: { solid: { maxLinesPerMethod: 100 } },
         showProgress: false,
       }),
@@ -50,7 +49,6 @@ describe('Spec 36 R5 — threshold rationale guard', () => {
   it('accepts a threshold change with a rationale and reports the delta', async () => {
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['solid'],
       analyzerConfigs: { solid: { maxLinesPerMethod: 100 } },
       rationales: { 'solid.maxLinesPerMethod': 'Calibrated for the fixture corpus.' },
       showProgress: false,
@@ -73,7 +71,6 @@ describe('Spec 36 R5 — threshold rationale guard', () => {
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['solid'],
       showProgress: false,
     });
 

@@ -75,7 +75,6 @@ describe('Bug #3 — own-output exclusion (run twice, no finding cites the repor
       const run = () =>
         runAudit({
           projectRoot: testDir,
-          enabledAnalyzers: ['styles'],
           indexFunctions: false,
           showProgress: false,
           scope: 'all',

@@ -75,7 +75,6 @@ describe('undefined-class coverage-gap reframe (Spec 45 R5 + Spec 22)', () => {
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['styles'],
       showProgress: false,
     });
 

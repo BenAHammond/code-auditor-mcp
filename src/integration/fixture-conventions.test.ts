@@ -3,8 +3,8 @@
  *
  * Tests export-shape and naming conventions. The conventions analyzer is
  * a Stage 3 pipeline reducer — it requires an index sync and convention
- * mining to run. A cold audit with `enabledAnalyzers: ["conventions"]`
- * triggers the full pipeline (discovery → index → mine → detect).
+ * mining to run. A cold audit triggers the full pipeline
+ * (discovery → index → mine → detect).
  *
  * Fixture directories:
  *   src/named-majority/ — 20 named + 1 default export (named convention)

@@ -69,7 +69,6 @@ describe('Spec 33 Item 8 — mixed-language fixture (Go + TS) wiring', () => {
   it('dispatches the .go file to the universal analyzers (filesProcessed includes Go)', async () => {
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['solid', 'dry', 'data-access', 'react', 'documentation'],
       indexFunctions: false,
       showProgress: false,
       scope: 'all',
@@ -90,7 +89,6 @@ describe('Spec 33 Item 8 — mixed-language fixture (Go + TS) wiring', () => {
   it('meaningfully analyzes Go — flags Go SQL injection, not just counting the file', async () => {
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['data-access'],
       indexFunctions: false,
       showProgress: false,
       scope: 'all',

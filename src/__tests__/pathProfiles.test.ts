@@ -134,7 +134,6 @@ describe('validateConfig — pathProfiles', () => {
   const baseConfig: AuditConfig = {
     includePaths: ['**/*.ts'],
     excludePaths: [],
-    enabledAnalyzers: ['solid'],
     outputFormats: ['json'],
     outputDirectory: './reports',
     minSeverity: 'high',
@@ -330,7 +329,6 @@ describe('pathProfiles — integration', () => {
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       pathProfiles: [
         { name: 'source-strict', paths: ['src/**'], overrides: { requireFunctionDocs: true } },
         { name: 'scripts-lenient', paths: ['scripts/**'], overrides: { excludeFromGate: true } },
@@ -387,7 +385,6 @@ export function foo() { return something(); }
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['invariants'],
       showProgress: false,
     });
 
@@ -415,7 +412,6 @@ export function foo() { return something(); }
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       pathProfiles: [
         { name: 'excluded', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
@@ -446,7 +442,6 @@ export function foo() { return something(); }
     // Audit 1: high severity, no exclusion
     const result1 = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       showProgress: false,
     });
     const v1 = violationsFor(result1, 'src/module.ts');
@@ -457,7 +452,6 @@ export function foo() { return something(); }
     // Audit 2: same severity, but profile excludes from gate
     const result2 = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       pathProfiles: [
         { name: 'excluded', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
@@ -486,7 +480,6 @@ export function foo() { return something(); }
     // Pass no user profiles — just the built-in.
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       pathProfiles: BUILTIN_PATH_PROFILES,
       showProgress: false,
     });
@@ -513,7 +506,6 @@ export function foo() { return something(); }
     // No pathProfiles — built-in scripts-and-tests still applies
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       showProgress: false,
     });
 
@@ -538,7 +530,6 @@ export function foo() { return something(); }
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       builtin: false,
       showProgress: false,
     });
@@ -565,7 +556,6 @@ export function foo() { return something(); }
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       pathProfiles: [
         { name: 'source-strict', paths: ['src/**'], overrides: { requireFunctionDocs: true } },
       ],

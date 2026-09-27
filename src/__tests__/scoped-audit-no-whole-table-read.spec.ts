@@ -107,7 +107,6 @@ describe('scoped audit issues no whole-table functions read', () => {
       projectRoot: dir,
       scope: 'changed',
       explicitFiles: [join(dir, 'src', 'a.ts')],
-      enabledAnalyzers: ['dry'],
       showProgress: false,
       writeToLedger: false,
     });

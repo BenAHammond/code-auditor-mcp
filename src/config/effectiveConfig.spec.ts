@@ -122,7 +122,7 @@ describe('computeEffectiveConfig — source attribution (Spec 38 R1)', () => {
 });
 
 describe('computeTopLevelConfig — source attribution (Spec 38 R1)', () => {
-  const base = { includePaths: ['./src'], enabledAnalyzers: ['solid', 'dry'] };
+  const base = { includePaths: ['./src'], outputFormats: ['json'] };
 
   it('attributes unset keys to `default` even when present in project with equal value', () => {
     const out = computeTopLevelConfig(base, { ...base });
@@ -133,11 +133,11 @@ describe('computeTopLevelConfig — source attribution (Spec 38 R1)', () => {
   });
 
   it('attributes a differing key to `project-config`', () => {
-    const out = computeTopLevelConfig(base, { ...base, enabledAnalyzers: ['solid'] });
-    const key = out.find((k) => k.key === 'enabledAnalyzers')!;
+    const out = computeTopLevelConfig(base, { ...base, outputFormats: ['csv'] });
+    const key = out.find((k) => k.key === 'outputFormats')!;
     expect(key.source).toBe('project-config');
     expect(key.differsFromDefault).toBe(true);
-    expect(key.defaultValue).toEqual(['solid', 'dry']);
+    expect(key.defaultValue).toEqual(['json']);
   });
 
   it('surfaces project-only keys (no default) with an undefined defaultValue', () => {

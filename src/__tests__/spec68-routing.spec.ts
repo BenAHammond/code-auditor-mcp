@@ -17,9 +17,9 @@
  *
  * These are the §11.1 guards: entry points run both paths, and the split that
  * decides which path serves each rule is derived, complete, and audited. The
- * integration case is a real `runAuditDispatch` over a TS-only fixture, which
- * takes the `goFiles.length === 0` branch and returns the runner's result
- * unchanged, so `routeAttribution` is the runner's own record.
+ * integration case is a real `createAuditRunner(...).run()` over a TS-only
+ * fixture, which skips the Go subprocess (no `.go` files) so the phase path is
+ * the sole emitter, and `routeAttribution` is the runner's own record.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';

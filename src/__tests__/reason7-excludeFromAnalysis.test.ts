@@ -48,7 +48,6 @@ describe('reason 7 — excludeFromAnalysis path profile', () => {
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       severityOverrides: { 'function-documentation': 'critical' as const },
       pathProfiles: [
         { name: 'opt-out', paths: ['src/**'], overrides: { excludeFromAnalysis: true } },
@@ -84,7 +83,6 @@ describe('reason 7 — excludeFromAnalysis path profile', () => {
 
     const result = await runAudit({
       projectRoot: testDir,
-      enabledAnalyzers: ['documentation'],
       severityOverrides: { 'function-documentation': 'critical' as const },
       showProgress: false,
     });

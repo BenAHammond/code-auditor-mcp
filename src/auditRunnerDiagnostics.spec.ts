@@ -1,7 +1,7 @@
 /**
  * Defect #50 — `runZeroFilesDiagnostics` must not warn for the `go` analyzer
  * when the corpus is TypeScript-only. The `go` analyzer is a polyglot subprocess
- * reached via `runAuditDispatch` only when `.go` files exist; on a corpus with
+ * reached via the dispatch in `createAuditRunner` only when `.go` files exist; on a corpus with
  * zero `.go` files it is legitimately notApplicable, not a dropped analyzer.
  */
 

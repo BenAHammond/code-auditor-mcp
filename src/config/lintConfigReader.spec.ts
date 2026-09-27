@@ -193,7 +193,6 @@ describe('lint config as threshold authority (integration)', () => {
 
     const result = await runAudit({
       projectRoot: dir,
-      enabledAnalyzers: ['solid'],
       showProgress: false,
     });
 
@@ -217,7 +216,6 @@ describe('lint config as threshold authority (integration)', () => {
 
     const result = await runAudit({
       projectRoot: dir,
-      enabledAnalyzers: ['solid'],
       showProgress: false,
     });
 
@@ -242,7 +240,6 @@ describe('lint config as threshold authority (integration)', () => {
 
     const result = await runAudit({
       projectRoot: dir,
-      enabledAnalyzers: ['solid'],
       showProgress: false,
     });
 
@@ -262,7 +259,6 @@ describe('lint config as threshold authority (integration)', () => {
 
     const result = await runAudit({
       projectRoot: dir,
-      enabledAnalyzers: ['solid'],
       showProgress: false,
     });
 
