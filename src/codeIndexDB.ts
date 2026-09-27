@@ -326,7 +326,7 @@ export class CodeIndexDB {
   private stmts: Map<string, SqliteStatement> = new Map();
 
   // ── Schema version ──────────────────────────────────────────────────
-  private static readonly SCHEMA_VERSION = 17;
+  private static readonly SCHEMA_VERSION = 18;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
@@ -1014,6 +1014,25 @@ export class CodeIndexDB {
       `);
     }
 
+    // Migration 17 → 18: the phase facts store (Spec 68 §12). The index stops
+    // being a function cache and becomes the processed-facts store of record:
+    // per-file workers return serialized fact fragments, the parent writes them
+    // here in batched transactions, and corpus processors + rules read them back
+    // read-only under WAL (§6.2/§6.3). One row per (fact_kind, file_path); corpus
+    // facts (e.g. `table-catalog`, `reachability`) carry a NULL file_path.
+    if (currentVersion < 18) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS phase_facts (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          fact_kind   TEXT NOT NULL,
+          file_path   TEXT,
+          payload     TEXT NOT NULL,
+          created_at  TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_phase_facts_kind_file ON phase_facts(fact_kind, file_path);
+      `);
+    }
+
   }
 
   // ── SQLite schema ───────────────────────────────────────────────────
@@ -1490,6 +1509,16 @@ export class CodeIndexDB {
       );
       CREATE INDEX IF NOT EXISTS idx_gc_type_node ON graph_cache(graph_type, node_key);
       CREATE INDEX IF NOT EXISTS idx_gc_type_neighbor ON graph_cache(graph_type, neighbor_key);
+
+      -- Spec 68 §12: processed-facts store (see migration 17 → 18).
+      CREATE TABLE IF NOT EXISTS phase_facts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        fact_kind   TEXT NOT NULL,
+        file_path   TEXT,
+        payload     TEXT NOT NULL,
+        created_at  TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_phase_facts_kind_file ON phase_facts(fact_kind, file_path);
     `);
 
     // Run schema migrations (only an existing index needs upgrading)

@@ -869,6 +869,7 @@ describe('CodeIndexDB SQLite — schema migration replay', () => {
   // of migration 16→17.
   function reconstructPreBumpIndex(raw: any): void {
     raw.exec(`
+      DROP TABLE IF EXISTS phase_facts;
       ALTER TABLE functions ADD COLUMN signature TEXT;
       DROP TRIGGER IF EXISTS functions_ai;
       DROP TRIGGER IF EXISTS functions_ad;
@@ -903,7 +904,7 @@ describe('CodeIndexDB SQLite — schema migration replay', () => {
     `);
   }
 
-  it('replays the full 0→17 chain against a populated pre-bump index and stays sound', async () => {
+  it('replays the full 0→18 chain against a populated pre-bump index and stays sound', async () => {
     const dbPath = join(dir, 'index.db');
     const db = new CodeIndexDB(dbPath);
     await db.initialize();
@@ -929,13 +930,19 @@ describe('CodeIndexDB SQLite — schema migration replay', () => {
     expect(ftsCols.some(c => c.name === 'signature')).toBe(false);
 
     const version = (reopened as any).db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as { value: string };
-    expect(version.value).toBe('17');
+    expect(version.value).toBe('18');
+
+    // Migration 17 → 18 added the phase facts store.
+    const factsTable = (reopened as any).db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'phase_facts'`
+    ).get();
+    expect(factsTable).toBeDefined();
 
     await reopened.close();
   });
 
   it('integrity holds after replaying forward from every historical version', async () => {
-    for (let version = 0; version < 17; version++) {
+    for (let version = 0; version < 18; version++) {
       const vdir = join(dir, `v${version}`);
       await mkdir(vdir, { recursive: true });
       const dbPath = join(vdir, 'index.db');
@@ -953,7 +960,7 @@ describe('CodeIndexDB SQLite — schema migration replay', () => {
       expect(integrity.integrity_check, `from version ${version}`).toBe('ok');
 
       const verRow = (reopened as any).db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as { value: string };
-      expect(verRow.value, `from version ${version}`).toBe('17');
+      expect(verRow.value, `from version ${version}`).toBe('18');
 
       await reopened.close();
     }

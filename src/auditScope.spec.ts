@@ -343,7 +343,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       const version = (db as any).db
         .prepare(`SELECT value FROM meta WHERE key = 'schema_version'`)
         .get() as { value: string };
-      expect(version.value).toBe('17');
+      expect(version.value).toBe('18');
     });
   });
 
