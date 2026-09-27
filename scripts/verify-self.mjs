@@ -81,7 +81,7 @@ for (const analyzerName of Object.keys(report.analyzerResults ?? {})) {
     if (!inScope(v.file ?? '')) continue;
     if (!isBlockingSeverity(v)) continue;
     // One field, one meaning: every violation carries a canonical `rule` (the Go
-    // subprocess now emits it, matching the TS pipeline). A finding without a
+    // phase rules now emit it, matching the TS pipeline). A finding without a
     // non-empty `rule` is a seam regression — fail loudly rather than key the
     // breakdown on a silent 'unknown'.
     if (!v.rule || typeof v.rule !== 'string') {

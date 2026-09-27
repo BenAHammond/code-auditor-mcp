@@ -17,10 +17,9 @@
  * phases, because the wiring has two call paths that used to diverge:
  *
  *   Phase A — the AUDIT path. A fixture with one `.go` and one `.ts` file must
- *   route them to *different* analyzers: the `.ts` file to the TypeScript
+ *   route them to *different* rule sets: the `.ts` file to the TypeScript
  *   pipeline (`documentation::function-documentation`), the `.go` file to the
- *   Go subprocess (`analyzer` in solid/go, and *no* `rule` field,
- *   which only the Go subprocess's `Violation` shape omits). Catches the Go file
+ *   Go phase rules (`analyzer` in solid/go). Catches the Go file
  *   being silently fed to the TypeScript-tuned analyzers (the 762-finding gin
  *   result) instead of the Go subprocess.
  *
@@ -60,17 +59,17 @@ if (!existsSync(CLI)) {
 //   - index.ts  → the TypeScript pipeline. An exported function with no doc
 //     comment triggers `documentation::function-documentation`.
 //
-//   - main.go   → the Go subprocess. A dot import (`import . "fmt"`) triggers
+//   - main.go   → the Go phase rules. A dot import (`import . "fmt"`) triggers
 //     the Go `go` analyzer (`analyzer: "go"`, category
-//     `import-style`), a finding only the Go subprocess can emit. The same file
+//     `import-style`), a finding only the Go phase rules can emit. The same file
 //     still declares an exported `ProcessOrder` so Phase B has a function to
 //     index.
 //
 // The old fixture had both files carry the *same* `documentation` violation and
 // asserted they shared an `analyzer::rule` — that asserted the very defect this
 // restore removes (Go fed to the TypeScript-tuned documentation analyzer). The
-// correct invariant is divergence: `.go` findings come from the Go subprocess
-// analyzers (`solid`/`go`), never from `documentation`.
+// correct invariant is divergence: `.go` findings come from the Go phase rules
+// (`solid`/`go`), never from `documentation`.
 const GO_SOURCE = `package sample
 
 import . "fmt"
@@ -92,7 +91,7 @@ const TS_SOURCE = `export function ProcessOrder(orderID: string): Error | null {
 `;
 
 // A `*_test.go` fixture. Under `go test` this file is compiled only by the test
-// binary, never as production API, so the Go subprocess must exempt it the same
+// binary, never as production API, so the Go phase rules must exempt it the same
 // way languages/testConventions.ts exempts `*_test.go`. It carries the same dot
 // import that flags `main.go`, plus a `Test*` function — so if the exemption
 // regresses, this file produces findings and the guard below fails.
@@ -152,7 +151,7 @@ function findingsForFile(file) {
   return findings;
 }
 
-// The analyzers only the Go subprocess emits. `documentation` is deliberately
+// The analyzer buckets the Go phase rules emit. `documentation` is deliberately
 // NOT in this set — a `.go` finding labeled `documentation` means the file was
 // fed to the TypeScript-tuned documentation analyzer, i.e. the routing regressed.
 const GO_ANALYZERS = new Set(['solid', 'go']);
@@ -237,20 +236,20 @@ if (tsFindings.length === 0) {
 }
 
 if (goFindings.length === 0) {
-  failures.push('the .go file produced no audit findings — Go has been silently dropped from the analyzer dispatch (no Go subprocess output).');
+  failures.push('the .go file produced no audit findings — Go has been silently dropped from the rule dispatch (no Go phase-rule output).');
 } else if (!goFindings.some(f => GO_ANALYZERS.has(f.analyzer))) {
-  failures.push(`the .go file produced findings but none from the Go subprocess (analyzer in ${[...GO_ANALYZERS].join('/')}) — the .go file is being analyzed by the TypeScript-tuned analyzers instead.`);
+  failures.push(`the .go file produced findings but none from the Go phase rules (analyzer in ${[...GO_ANALYZERS].join('/')}) — the .go file is being analyzed by the TypeScript-tuned analyzers instead.`);
 }
 
 // The routing regression guard: if the .go file produced a documentation::*
 // finding, it was fed to the TypeScript-tuned documentation analyzer, not the
-// Go subprocess. This is the exact defect the restore removes.
+// Go phase rules. This is the exact defect the restore removes.
 if (goFindings.some(f => f.analyzer === 'documentation')) {
-  failures.push('the .go file produced a documentation finding — Go is being routed to the TypeScript-tuned documentation analyzer instead of the Go subprocess.');
+  failures.push('the .go file produced a documentation finding — Go is being routed to the TypeScript-tuned documentation analyzer instead of the Go phase rules.');
 }
 
 // The `_test.go` exemption guard: `*_test.go` files are test code, compiled only
-// by `go test`, never production API. The Go subprocess must exempt them (the
+// by `go test`, never production API. The Go phase rules must exempt them (the
 // same per-language convention as languages/testConventions.ts). A finding here
 // means test files are being analyzed again — the exact noise that re-dominates
 // any Go corpus run.
@@ -280,5 +279,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log('PASS — audit: .ts → documentation (TS pipeline), .go → Go subprocess, _test.go → exempt; index: .go→go, .ts→typescript.');
+console.log('PASS — audit: .ts → documentation (TS pipeline), .go → Go phase rules, _test.go → exempt; index: .go→go, .ts→typescript.');
 process.exit(0);

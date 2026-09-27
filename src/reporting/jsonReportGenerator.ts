@@ -95,7 +95,7 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
       },
       violations: result.violations.map(violation => ({
         // Spread the violation verbatim: fields the reporter doesn't know
-        // (the Go subprocess's `category`, `details`, `suggestion`) were
+        // (the Go rules' `category`, `details`, `suggestion`) were
         // previously dropped by a TypeScript-only allowlist below. A seam that
         // silently discards what it doesn't recognize is the same defect as the
         // old `analyzerResults.go` bucket filtering on `v.analyzer === 'go'` —

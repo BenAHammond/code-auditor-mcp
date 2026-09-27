@@ -295,7 +295,7 @@ export function registerAllTools(registry: ToolRegistry): void {
 
           const scope = (args.scope as string) || 'all';
           // Route through the single audit entry point shared with the CLI, so
-          // `.go` files dispatch to the Go subprocess instead of being silently
+          // `.go` files dispatch to the Go phase rules instead of being silently
           // skipped (task #255 — the stdio MCP server bypassed per-language
           // dispatch and left every Go rule `notApplicable`).
           const auditResult = await createAuditRunner({

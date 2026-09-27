@@ -63,7 +63,7 @@ async function main() {
   await initParsers();
 
   // Route through the same dispatcher the CLI uses: projects containing `.go`
-  // files go to the Go subprocess (which emits the reimplemented liskov /
+  // files go to the Go phase rules (which emit the reimplemented liskov /
   // error-handling / goroutines categories), everything else to the TS pipeline.
   const result = await runAudit({ projectRoot } as any);
 

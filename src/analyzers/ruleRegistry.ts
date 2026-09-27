@@ -328,8 +328,8 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   // ── Go non-SOLID rules (Spec-54 severity) ──────────────────────────────
-  // The Go subprocess emits these under a single `go` analyzer namespace: the
-  // subprocess's internal `imports`/`errors`/`goroutines`/`channels` dispatch is
+  // The Go phase rules emit these under a single `go` analyzer namespace: the
+  // rules' internal `imports`/`errors`/`goroutines`/`channels` provenance is
   // collapsed to `go` at emit time so its structure does not surface as four
   // analyzer names a user has to learn. Registered here so coverage and
   // describeRuleId see them, and so their severities carry a registry entry.
