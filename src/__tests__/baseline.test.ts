@@ -195,9 +195,28 @@ describe('Spec-18 — Baseline module', () => {
     expect(loadBaseline(testDir)).toBeNull();
   });
 
+  it('loadBaseline rejects schemaVersion 3 (a 4.x baseline — Spec 68 §14)', async () => {
+    // Spec 68 §7 unified finding identity, changing every fingerprint. A
+    // baseline written by 4.x (schemaVersion 3) must be detected as
+    // incompatible and reported with the regeneration command, never silently
+    // ignored or matched at a lower precision (criterion 19).
+    await writeFile(
+      join(testDir, '.codeauditor.baseline.json'),
+      JSON.stringify({ schemaVersion: 3, entries: [{ fingerprint: 'old-scheme', file: 'src/a.ts' }] }),
+    );
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(loadBaseline(testDir)).toBeNull();
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('schemaVersion 3'));
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('code-audit baseline'));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('saveBaseline / loadBaseline round-trip', async () => {
     const baseline: Baseline = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       created: new Date().toISOString(),
       entries: [
         { fingerprint: 'abc123', file: 'src/a.ts' },
@@ -282,7 +301,7 @@ describe('Spec-18 — Baseline module', () => {
       file: 'src/a.ts',
     };
     const baseline: Baseline = {
-      schemaVersion: 3, created: new Date().toISOString(),
+      schemaVersion: 4, created: new Date().toISOString(),
       entries: [entry],
       metadata: { toolVersion: '1', totalFindings: 1, analyzerCounts: { documentation: 1 }, corpusStats: { files: 1, functions: 1 } },
     };
@@ -306,7 +325,7 @@ describe('Spec-18 — Baseline module', () => {
       file: 'src/a.ts',
     };
     const baseline: Baseline = {
-      schemaVersion: 3, created: new Date().toISOString(),
+      schemaVersion: 4, created: new Date().toISOString(),
       entries: [entry],
       metadata: { toolVersion: '1', totalFindings: 1, analyzerCounts: { documentation: 1 }, corpusStats: { files: 1, functions: 1 } },
     };
@@ -328,7 +347,7 @@ describe('Spec-18 — Baseline module', () => {
     const fpInvariant = fingerprint({ analyzer: 'invariants', rule: 'import-ban', file: 'src/a.ts', symbol: '' });
     const entry: BaselineEntry = { fingerprint: fpInvariant, file: 'src/a.ts' };
     const baseline: Baseline = {
-      schemaVersion: 3, created: new Date().toISOString(),
+      schemaVersion: 4, created: new Date().toISOString(),
       entries: [entry],
       metadata: { toolVersion: '1', totalFindings: 1, analyzerCounts: { invariants: 1 }, corpusStats: { files: 1, functions: 1 } },
     };
@@ -349,12 +368,12 @@ describe('Spec-18 — Baseline module', () => {
     const e1: BaselineEntry = { fingerprint: 'aaa', file: 'src/a.ts' };
     const e2: BaselineEntry = { fingerprint: 'bbb', file: 'src/b.ts' };
     const previous: Baseline = {
-      schemaVersion: 3, created: '2020-01-01T00:00:00Z',
+      schemaVersion: 4, created: '2020-01-01T00:00:00Z',
       entries: [e1, e2],
       metadata: { toolVersion: '1', totalFindings: 2, analyzerCounts: {}, corpusStats: { files: 2, functions: 2 } },
     };
     const current: Baseline = {
-      schemaVersion: 3, created: '2020-01-02T00:00:00Z',
+      schemaVersion: 4, created: '2020-01-02T00:00:00Z',
       entries: [e1],
       metadata: { toolVersion: '1', totalFindings: 1, analyzerCounts: {}, corpusStats: { files: 2, functions: 2 } },
     };
@@ -368,13 +387,13 @@ describe('Spec-18 — Baseline module', () => {
   it('R6.4 — diffBaselines reports absorbed findings', () => {
     const e1: BaselineEntry = { fingerprint: 'aaa', file: 'src/a.ts' };
     const previous: Baseline = {
-      schemaVersion: 3, created: '2020-01-01T00:00:00Z',
+      schemaVersion: 4, created: '2020-01-01T00:00:00Z',
       entries: [e1],
       metadata: { toolVersion: '1', totalFindings: 1, analyzerCounts: {}, corpusStats: { files: 1, functions: 1 } },
     };
     const e2: BaselineEntry = { fingerprint: 'bbb', file: 'src/b.ts' };
     const current: Baseline = {
-      schemaVersion: 3, created: '2020-01-02T00:00:00Z',
+      schemaVersion: 4, created: '2020-01-02T00:00:00Z',
       entries: [e1, e2],
       metadata: { toolVersion: '1', totalFindings: 2, analyzerCounts: {}, corpusStats: { files: 2, functions: 2 } },
     };
@@ -397,7 +416,7 @@ describe('Spec-18 — Baseline module', () => {
       file: 'src/untouched.ts',
     };
     const baseline: Baseline = {
-      schemaVersion: 3, created: new Date().toISOString(),
+      schemaVersion: 4, created: new Date().toISOString(),
       entries: [entry, untouchedEntry],
       metadata: { toolVersion: '1', totalFindings: 2, analyzerCounts: { documentation: 2 }, corpusStats: { files: 2, functions: 2 } },
     };
@@ -421,7 +440,7 @@ describe('Spec-18 — Baseline module', () => {
       file: 'src/a.ts',
     };
     const baseline: Baseline = {
-      schemaVersion: 3, created: new Date().toISOString(),
+      schemaVersion: 4, created: new Date().toISOString(),
       entries: [entry],
       metadata: { toolVersion: '1', totalFindings: 1, analyzerCounts: { documentation: 1 }, corpusStats: { files: 1, functions: 1 } },
     };
@@ -436,7 +455,7 @@ describe('Spec-18 — Baseline module', () => {
 
   it('R6.7 — loadBaseline uses the given projectRoot, independent of cwd', async () => {
     const baseline: Baseline = {
-      schemaVersion: 3, created: new Date().toISOString(),
+      schemaVersion: 4, created: new Date().toISOString(),
       entries: [{ fingerprint: 'test', file: 'src/x.ts' }],
       metadata: { toolVersion: '1', totalFindings: 1, analyzerCounts: {}, corpusStats: { files: 1, functions: 1 } },
     };
@@ -576,7 +595,7 @@ describe('Spec-18 — Baseline module', () => {
 
   it('hashBaseline produces stable, deterministic output', () => {
     const baseline: Baseline = {
-      schemaVersion: 3, created: '2020-01-01T00:00:00Z',
+      schemaVersion: 4, created: '2020-01-01T00:00:00Z',
       entries: [
         { fingerprint: 'aaa', file: 'a.ts' },
         { fingerprint: 'bbb', file: 'b.ts' },
@@ -659,7 +678,7 @@ describe('Spec-18 — Audit pipeline integration', () => {
       file: 'src/other.ts',
     };
     const baseline: Baseline = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       created: new Date().toISOString(),
       entries: [fakeEntry],
       metadata: {

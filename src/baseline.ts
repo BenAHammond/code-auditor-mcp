@@ -38,8 +38,12 @@ export interface BaselineMetadata {
 }
 
 export interface Baseline {
-  /** Schema version for forward-compatibility. */
-  schemaVersion: 3;
+  /**
+   * Schema version for forward-compatibility. Bumped 3 → 4 in 5.0.0 (Spec 68
+   * §7/§14): the finding-identity unification changed every fingerprint, so a
+   * baseline written by a pre-5.0.0 tool no longer matches current findings.
+   */
+  schemaVersion: 4;
   /** ISO-8601 timestamp of snapshot creation. */
   created: string;
   /** Advisory finding entries (no invariants). */
@@ -74,16 +78,19 @@ export function loadBaseline(projectRoot: string): Baseline | null {
     if (!existsSync(filePath)) return null;
     const raw = readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
-    // Basic validation — schemaVersion 3 uses the shared buildFingerprintInput scheme.
-    // Reject stale v1/v2 baselines with a clear message so users re-snapshot.
-    if (parsed && (parsed.schemaVersion === 1 || parsed.schemaVersion === 2)) {
+    // Spec 68 §7/§14 — the finding-identity unification changed every
+    // fingerprint, so any baseline written by a pre-5.0.0 tool (schemaVersion
+    // ≤ 3) is incompatible. Matching it would silently absorb a regression at
+    // a lower precision, so reject it loudly with the regeneration command
+    // rather than ignore it or match it degraded.
+    if (parsed && typeof parsed.schemaVersion === 'number' && parsed.schemaVersion < 4) {
       console.error(
-        `Baseline file has schemaVersion ${parsed.schemaVersion} (older fingerprint scheme). ` +
+        `Baseline file has schemaVersion ${parsed.schemaVersion} (pre-5.0.0 fingerprint scheme). ` +
         'Run `code-audit baseline` to re-snapshot with the current scheme.',
       );
       return null;
     }
-    if (!parsed || parsed.schemaVersion !== 3 || !Array.isArray(parsed.entries)) {
+    if (!parsed || parsed.schemaVersion !== 4 || !Array.isArray(parsed.entries)) {
       return null;
     }
     return parsed as Baseline;
@@ -126,7 +133,7 @@ export function createBaselineFromFindings(
   }
 
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     created: new Date().toISOString(),
     entries: deduped,
     metadata,
