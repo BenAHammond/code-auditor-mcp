@@ -346,11 +346,13 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
       // this predicate reproduces the legacy reducer's firing exactly.
       if (call.hasOrganizationFilter) continue;
       // INSERT / REPLACE INTO carry the tenant column as a value, not a WHERE
-      // predicate. `missing-org-filter` claims "no tenant *predicate*", so a
-      // row-adding statement is excluded by design — the Go subprocess pinned
-      // this (`verb != "INSERT"`). The same INSERT fires as an unfiltered write
-      // in `unfiltered-query` instead.
-      if (isInsertForm(call.queryText)) continue;
+      // predicate. The Go subprocess pinned `verb != "INSERT"` — a row-adding
+      // statement is excluded there, firing as an unfiltered write instead. The
+      // legacy TypeScript reducer had no such skip: an INSERT-only tenant table
+      // (audit_log in the insert-delete-tables fixture) still fires, because the
+      // write omits the tenant predicate on a table that requires it. The
+      // format-aware guard reproduces both (Spec 68 §9 / §3.2 parity).
+      if (isGoCall(call) && isInsertForm(call.queryText)) continue;
       if (call.tables.length === 0) continue;
       if (!tableRequiresOrgFilter(call.tables, tierSet)) continue;
 

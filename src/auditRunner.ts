@@ -568,6 +568,18 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     let reactBundle: ReactVisitorBundle | undefined;
     let solidBundle: SolidVisitorBundle | undefined;
 
+    // Spec 68 §15 — once every registry rule is migrated, the legacy pipeline's
+    // rule-emitting visitors/reducers produce findings the phase model already
+    // emits (they are stripped to zero at the both-paths split). Only the
+    // infrastructure that still has a side-effect the phase model reads from the
+    // index must keep running: function-index (`functions` + `graph_cache`),
+    // styles-css/source (`style_*` tables), dry (`dry_pair_history`), plus the
+    // pipeline-only `invariants` reducer (user-defined rules from
+    // `.codeauditor.json`, never a registry rule). Skipping the rest removes the
+    // redundant AST walks + reducers the diff-scoped gate was burning CPU on.
+    const { legacy: legacyRuleSet } = splitRoutes();
+    const allRulesMigrated = legacyRuleSet.size === 0;
+
     // Always-on infrastructure: function-index visitor populates the
     // `functions` table so conventions + cross-domain reducers have data
     // even on a cold run with no prior index sync.
@@ -579,54 +591,77 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // reusing the stage-1 parse (eliminates the style-index re-parse).
     if (analyzers.includes('styles')) pipelineVisitors.push(createStylesSourceVisitor());
 
-    if (analyzers.includes('solid')) {
-      solidBundle = createSolidVisitor();
-      pipelineVisitors.push(solidBundle.visitor);
-    }
     if (analyzers.includes('dry')) {
       dryBundle = createDryVisitor();
       pipelineVisitors.push(dryBundle.visitor);
     }
-    if (analyzers.includes('data-access')) {
-      pipelineVisitors.push(createDataAccessVisitor());
-      // Spec 62 Amendment B — the missing-org-filter rule is a Stage-4 derived
-      // reducer that joins the data-access query facts against the declared +
-      // DDL-discovered tenant tiers. Registered whenever data-access is enabled,
-      // mirroring the data-access visitor it consumes.
-      pipelineDerivedReducers.push(createOrgFilterReducer());
-    }
-    if (analyzers.includes('secrets')) pipelineVisitors.push(createSecretsVisitor());
-    if (analyzers.includes('security')) pipelineVisitors.push(createSecurityVisitor());
-    if (analyzers.includes('react')) {
-      reactBundle = createReactVisitor();
-      pipelineVisitors.push(reactBundle.visitor);
-    }
-    if (analyzers.includes('documentation')) pipelineVisitors.push(createDocumentationVisitor());
-    if (analyzers.includes('styles')) pipelineReducers.push(createStylesReducer());
-    if (analyzers.includes('conventions')) pipelineReducers.push(createConventionsReducer());
+    // The invariant reducer is pipeline-only (its rules come from
+    // `.codeauditor.json`, not the registry), so it always runs — it is the one
+    // legacy path that still emits non-migrated findings.
     if (analyzers.includes('invariants')) pipelineReducers.push(createInvariantsReducer());
-    if (analyzers.includes('cross-domain')) pipelineDerivedReducers.push(createCrossDomainReducer());
-    if (analyzers.includes('schema')) {
-      pipelineVisitors.push(createSchemaSqlVisitor());
-      pipelineVisitors.push(createSchemaCodeVisitor());
-      pipelineVisitors.push(createSchemaPrismaVisitor());
-      pipelineVisitors.push(createSchemaJsonVisitor());
-      pipelineReducers.push(createSchemaReducer());
-    }
+    // The styles reducer persists the styles-css visitor's facts into the
+    // `style_*` tables (the styles-source visitor writes its own). The phase
+    // `defined-classes` / `unread-style-sources` corpus producers read those
+    // tables, so this reducer must keep running even though its *findings* are
+    // migrated and stripped.
+    if (analyzers.includes('styles')) pipelineReducers.push(createStylesReducer());
+    // The schema-code visitor emits the Spec 58 R1 `unresolved-query` coverage
+    // diagnostic (DB-call SQL held in an unresolvable identifier) — a
+    // *diagnostic*, not a finding, so it is not migrated and must keep running
+    // even though the visitor's own findings are stripped. Its schema_usage
+    // index facts and per-file facts are now unused by the phase model (which
+    // produces its own `ddl-declarations` / `data-access-calls`), so only the
+    // diagnostic survives; the redundant finding work is still avoided.
+    if (analyzers.includes('schema')) pipelineVisitors.push(createSchemaCodeVisitor());
 
-    // Cross-language analyzers (SchemaValidator, APIContractAnalyzer,
-    // DependencyGraphBuilder) — three Stage-4 reducers fed by one shared
-    // entity-extraction visitor. The visitor is cheap (per-file) and runs
-    // whenever ANY cross-language analyzer is enabled; the corpus-wide reducers
-    // short-circuit on scoped/diff runs.
-    const crossLanguageEnabled = ['schema-validator', 'api-contract', 'dependency-graph']
-      .some((a) => analyzers.includes(a));
-    if (crossLanguageEnabled) {
-      pipelineVisitors.push(createCrossLanguageEntityVisitor());
+    // Everything below emits findings the phase model already serves. Once the
+    // migration is complete their legacy emission is stripped to zero, so they
+    // are skipped outright — their only job (re-deriving the same violations)
+    // is redundant. Registered only while `legacyRuleSet` is non-empty (the
+    // mid-migration state where some rules still ride the legacy path).
+    if (!allRulesMigrated) {
+      if (analyzers.includes('solid')) {
+        solidBundle = createSolidVisitor();
+        pipelineVisitors.push(solidBundle.visitor);
+      }
+      if (analyzers.includes('data-access')) {
+        pipelineVisitors.push(createDataAccessVisitor());
+        // Spec 62 Amendment B — the missing-org-filter rule is a Stage-4 derived
+        // reducer that joins the data-access query facts against the declared +
+        // DDL-discovered tenant tiers. Registered whenever data-access is enabled,
+        // mirroring the data-access visitor it consumes.
+        pipelineDerivedReducers.push(createOrgFilterReducer());
+      }
+      if (analyzers.includes('secrets')) pipelineVisitors.push(createSecretsVisitor());
+      if (analyzers.includes('security')) pipelineVisitors.push(createSecurityVisitor());
+      if (analyzers.includes('react')) {
+        reactBundle = createReactVisitor();
+        pipelineVisitors.push(reactBundle.visitor);
+      }
+      if (analyzers.includes('documentation')) pipelineVisitors.push(createDocumentationVisitor());
+      if (analyzers.includes('conventions')) pipelineReducers.push(createConventionsReducer());
+      if (analyzers.includes('cross-domain')) pipelineDerivedReducers.push(createCrossDomainReducer());
+      if (analyzers.includes('schema')) {
+        pipelineVisitors.push(createSchemaSqlVisitor());
+        pipelineVisitors.push(createSchemaPrismaVisitor());
+        pipelineVisitors.push(createSchemaJsonVisitor());
+        pipelineReducers.push(createSchemaReducer());
+      }
+
+      // Cross-language analyzers (SchemaValidator, APIContractAnalyzer,
+      // DependencyGraphBuilder) — three Stage-4 reducers fed by one shared
+      // entity-extraction visitor. The visitor is cheap (per-file) and runs
+      // whenever ANY cross-language analyzer is enabled; the corpus-wide reducers
+      // short-circuit on scoped/diff runs.
+      const crossLanguageEnabled = ['schema-validator', 'api-contract', 'dependency-graph']
+        .some((a) => analyzers.includes(a));
+      if (crossLanguageEnabled) {
+        pipelineVisitors.push(createCrossLanguageEntityVisitor());
+      }
+      if (analyzers.includes('schema-validator')) pipelineDerivedReducers.push(createSchemaValidatorReducer());
+      if (analyzers.includes('api-contract')) pipelineDerivedReducers.push(createAPIContractReducer());
+      if (analyzers.includes('dependency-graph')) pipelineDerivedReducers.push(createDependencyGraphReducer());
     }
-    if (analyzers.includes('schema-validator')) pipelineDerivedReducers.push(createSchemaValidatorReducer());
-    if (analyzers.includes('api-contract')) pipelineDerivedReducers.push(createAPIContractReducer());
-    if (analyzers.includes('dependency-graph')) pipelineDerivedReducers.push(createDependencyGraphReducer());
 
     // ── 2. Safeguard warnings ────────────────────────────────────────────
     if (auditIndex) {
@@ -754,8 +789,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         consumedFilePaths: styleConsumedFiles,
         styleContributingFiles,
         onStage2Complete: async (ctx) => {
-          // Post-stage-2 setup: rebuild function_calls from the functions table
-          // (populated by the function-index visitor), then mine conventions.
+          // Post-stage-2 setup: rebuild the call-graph from the functions table
+          // (populated by the function-index visitor). `updateDependencyGraph`
+          // feeds `graph_cache`, which the phase `call-graph` corpus producer
+          // reads — it is still needed post-migration.
           if (auditIndex && analyzers.includes('conventions')) {
             try {
               await auditIndex.updateDependencyGraph();
@@ -764,14 +801,20 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
                 error: err instanceof Error ? err.message : String(err)
               });
             }
-            try {
-              // Convention mining reads source on demand via readFileSync
-              // (mineImportForm/mineExportShape have an internal fallback).
-              auditIndex.mineAllConventions(root);
-            } catch (err) {
-              logMcpInfo('analysis', 'convention mining failed (non-fatal)', {
-                error: err instanceof Error ? err.message : String(err)
-              });
+            // Convention mining writes the `conventions` table, read only by the
+            // legacy conventions reducer (migrated). The phase `mined-conventions`
+            // producer computes conventions from the `function-index` fact itself,
+            // so this index write is redundant once every rule is migrated.
+            if (!allRulesMigrated) {
+              try {
+                // Convention mining reads source on demand via readFileSync
+                // (mineImportForm/mineExportShape have an internal fallback).
+                auditIndex.mineAllConventions(root);
+              } catch (err) {
+                logMcpInfo('analysis', 'convention mining failed (non-fatal)', {
+                  error: err instanceof Error ? err.message : String(err)
+                });
+              }
             }
           }
         },
@@ -1019,7 +1062,27 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               } else {
                 analyzerResults[analyzer] = {
                   violations,
-                  status: makeVisitorStatus(0),
+                  status: makeVisitorStatus(phaseFiles.length),
+                  executionTime: 0,
+                  analyzerName: analyzer,
+                };
+              }
+            }
+
+            // Every migrated analyzer must appear in the results map even when
+            // it emitted nothing this run. Its legacy visitor is skipped (the
+            // phase model serves its findings), so a zero-finding analyzer would
+            // otherwise read as "no-result" (silently dropped) to the legacy
+            // zero-files diagnostic. The phase model ran it over `phaseFiles`;
+            // report that so the diagnostic sees a real (ran, N files, 0
+            // findings) entry rather than a dropped analyzer. `go` and
+            // `schema-code` are covered elsewhere (the former is special-cased by
+            // the diagnostic; the latter still runs as a legacy visitor).
+            for (const analyzer of new Set(RULE_ANALYZER.values())) {
+              if (!analyzerResults[analyzer]) {
+                analyzerResults[analyzer] = {
+                  violations: [],
+                  status: makeVisitorStatus(phaseFiles.length),
                   executionTime: 0,
                   analyzerName: analyzer,
                 };
