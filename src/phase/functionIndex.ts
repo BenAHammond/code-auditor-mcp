@@ -99,21 +99,15 @@ export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
       if (!name) return;
       entries.push(row(node, name, 'function', null, filePath, sourceCode, lang, importMap));
     } else if (node.type === 'method_definition') {
-      const methodName = nodeName(node, sourceCode);
-      if (!methodName) return;
-
-      let parent: ASTNode | null = node.parent ?? null;
-      let className = 'AnonymousClass';
-      while (parent) {
-        if (parent.type === 'class_declaration') {
-          // A class name is a `type_identifier`, not an `identifier` — read the
-          // `name` field (nodeName falls back to type_identifier via getFieldNode).
-          className = nodeName(parent, sourceCode) ?? 'AnonymousClass';
-          break;
-        }
-        parent = parent.parent ?? null;
-      }
-      entries.push(row(node, `${className}.${methodName}`, 'method', null, filePath, sourceCode, lang, importMap));
+      // Methods are NOT in the legacy `functions` table. The legacy
+      // `createFunctionIndexVisitor` resolved a method's name with
+      // `node.children.find(c => c.type === 'identifier')`, but a
+      // `method_definition`'s name field is a `property_identifier`, so the
+      // match always failed and the method was skipped. Re-homing that behavior
+      // means the `function-index` fact omits methods too — a method that reached
+      // the phase fact but not the DB index would over-fire the function-index-
+      // servable conventions rules (see §13 error-handling divergence).
+      return;
     }
   });
 

@@ -34,6 +34,7 @@ import type {
 } from '../types.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
+import { isTestFile } from '../reachability.js';
 
 /** The shared declaration for every TS SOLID rule in this slice. */
 type SolidNeeds = {
@@ -71,6 +72,14 @@ type GoSwitchNeeds = {
 function num(t: ThresholdValues, key: string, fallback: number): number {
   const v = t[key];
   return typeof v === 'number' ? v : fallback;
+}
+
+/** Honor the legacy `skipTestFiles` gate (default true): the whole file is
+ *  skipped, so drop every symbol in a test/spec file before any TS SOLID rule
+ *  iterates. Mirrors `UniversalSOLIDAnalyzer.analyzeAST`'s top-of-file return. */
+function visibleSymbols(symbols: readonly FileSymbols[], thresholds: ThresholdValues): FileSymbols[] {
+  if (!thresholds['skipTestFiles']) return symbols as FileSymbols[];
+  return symbols.filter((s) => !isTestFile(s.file));
 }
 
 /** The baseline symbol identity the old analyzer used for a function/method. */
@@ -140,7 +149,7 @@ const classSize: RuleDefinition<SolidNeeds> = {
     const methodsThreshold = num(ctx.thresholds, 'classMethodsThreshold', num(ctx.thresholds, 'maxMethodsPerClass', 20));
     const maxAggregate = num(ctx.thresholds, 'classAggregateComplexity', 150);
 
-    for (const s of ctx.facts['file-symbols']) {
+    for (const s of visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds)) {
       if (s.kind !== 'class') continue;
       const cls = s as FileClassSymbol;
       const line = cls.line;
@@ -195,7 +204,7 @@ const methodComplexity: RuleDefinition<SolidNeeds> = {
     const out: Finding[] = [];
     const max = num(ctx.thresholds, 'maxMethodComplexity', 50);
 
-    for (const s of ctx.facts['file-symbols']) {
+    for (const s of visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds)) {
       if (s.kind === 'function') {
         const f = s as FileFunctionSymbol;
         if (f.complexity > max) {
@@ -234,7 +243,7 @@ const openClosed: RuleDefinition<SolidNeeds> = {
   samples: META['solid/open-closed'].samples,
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
-    for (const s of ctx.facts['file-symbols']) {
+    for (const s of visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds)) {
       if (s.kind !== 'class') continue;
       const cls = s as FileClassSymbol;
       if (!cls.hasInstanceofAgainstUserType) continue;
@@ -260,7 +269,7 @@ const singleResponsibility: RuleDefinition<SolidNeeds> = {
   samples: META['solid/single-responsibility'].samples,
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
-    for (const fn of collectFunctionLikes(ctx.facts['file-symbols'])) {
+    for (const fn of collectFunctionLikes(visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds))) {
       const groups = fn.concernGroups;
       if (groups.length < 2) continue;
       const labels = groups.join(', ');
@@ -295,7 +304,7 @@ const functionLength: RuleDefinition<SolidNeeds> = {
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
     const max = num(ctx.thresholds, 'maxLinesPerMethod', 200);
-    for (const fn of collectFunctionLikes(ctx.facts['file-symbols'])) {
+    for (const fn of collectFunctionLikes(visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds))) {
       if (fn.lineCount <= max) continue;
       out.push(finding(
         'function-length', 'high',
@@ -328,7 +337,7 @@ const parameterCount: RuleDefinition<SolidNeeds> = {
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
     const max = num(ctx.thresholds, 'maxParametersPerMethod', 6);
-    for (const fn of collectFunctionLikes(ctx.facts['file-symbols'])) {
+    for (const fn of collectFunctionLikes(visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds))) {
       if (fn.parameterCount <= max) continue;
       out.push(finding(
         'parameter-count', 'high',
@@ -362,7 +371,7 @@ const interfaceSize: RuleDefinition<InterfaceSizeNeeds> = {
     const out: Finding[] = [];
     // TypeScript arm: `maxInterfaceMembers` (25) over `file-symbols`.
     const max = num(ctx.thresholds, 'maxInterfaceMembers', 25);
-    for (const s of ctx.facts['file-symbols']) {
+    for (const s of visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds)) {
       if (s.kind !== 'interface') continue;
       const iface = s as FileInterfaceSymbol;
       if (!iface.hasMethodMembers || iface.memberCount <= max) continue;
@@ -510,7 +519,7 @@ const liskovSubstitution: RuleDefinition<SolidNeeds> = {
   samples: META['solid/liskov-substitution'].samples,
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
-    const symbols = ctx.facts['file-symbols'];
+    const symbols = visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds);
     const classes = symbols.filter((s): s is FileClassSymbol => s.kind === 'class');
 
     for (const cls of classes) {
@@ -550,7 +559,7 @@ const dependencyInversion: RuleDefinition<SolidNeeds> = {
   samples: META['solid/dependency-inversion'].samples,
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
-    for (const s of ctx.facts['file-symbols']) {
+    for (const s of visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds)) {
       if (s.kind !== 'class') continue;
       const cls = s as FileClassSymbol;
       if (!cls.hasHeldDirectInstantiation) continue;

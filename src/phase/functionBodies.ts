@@ -20,9 +20,30 @@
 
 import type { AstFile, FunctionBodyFact } from './types.js';
 import { findNodeByLocation } from '../analyzers/universal/schema/codeAnalysis.js';
+import { passesFileGate } from '../analyzers/universal/schema/discovery.js';
+import { buildProvenanceContext } from '../analyzers/provenance.js';
+import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 
 /** One file's function bodies as `FunctionBodyFact[]`. */
 export function extractFunctionBodies(file: AstFile): FunctionBodyFact[] {
+  // The legacy `too-many-queries` detector ran inside the schema-code visitor,
+  // which short-circuited on `passesFileGate` (a file with no DB context never
+  // reached `checkQueryPatterns`). Mirror that gate here so the fact only carries
+  // functions from DB-context files — otherwise the rule over-fires on non-DB
+  // modules (e.g. HTML-scraping / wiki-parsing helpers). Same hybrid-mode
+  // provenance the `schema-usage` producer builds (§13 too-many-queries
+  // divergence).
+  const provenanceContext = buildProvenanceContext(file.ast, file.adapter, file.source, {
+    mode: 'hybrid',
+    dbReceiverNames: DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
+    dbBindingNames: DEFAULT_SCHEMA_CONFIG.dbBindingNames,
+    dbCallMethods: DEFAULT_SCHEMA_CONFIG.dbCallMethods,
+    dbWrapperNames: DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
+  });
+  if (!passesFileGate(file.file, file.source, DEFAULT_SCHEMA_CONFIG, provenanceContext)) {
+    return [];
+  }
+
   const infos = file.adapter.extractFunctions(file.ast);
   const out: FunctionBodyFact[] = [];
   for (const info of infos) {

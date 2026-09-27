@@ -49,19 +49,21 @@ describe('Spec 68 function-index producer', () => {
     expect(fn.language).toBe('typescript');
   });
 
-  it('extracts a class method under its class-qualified name', () => {
+  it('omits class methods (the legacy functions table never indexed them)', () => {
+    // The legacy `createFunctionIndexVisitor` resolved a method's name with
+    // `node.children.find(c => c.type === 'identifier')`, but a
+    // `method_definition`'s name field is a `property_identifier` — the match
+    // always failed, so methods never reached the DB `functions` table. The
+    // producer re-homes that behavior: a method that reached the phase fact but
+    // not the DB index would over-fire the function-index-servable conventions
+    // rules (§13 error-handling divergence).
     const out = rows('/fixture/b.ts', [
       'class Service {',
       '  run() { this.go(); }',
       '}',
     ].join('\n'));
 
-    const method = out.find((f) => f.name === 'Service.run')!;
-    expect(method).toBeDefined();
-    expect(method.entityType).toBe('method');
-    expect(method.isExported).toBe(false);
-    // `extractFunctionCalls` records the callee name, not the `this.` receiver.
-    expect(method.functionCalls).toContain('go');
+    expect(out).toEqual([]);
   });
 
   it('classifies a JSX function as a component and records its component type', () => {

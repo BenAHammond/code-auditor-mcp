@@ -57,7 +57,9 @@ async function parity(source: string) {
     .map((v) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
     .sort();
 
-  const fresh = await runDrySlice([{ path: 'parity.ts', content: source }]);
+  // Thread the same config the legacy side runs under: `checkImports: true` gates
+  // the migrated `duplicate-import` rule on (default off), matching `analyzeAST`.
+  const fresh = await runDrySlice([{ path: 'parity.ts', content: source }], { checkImports: true });
   const nu = fresh
     .filter((f) => f.ruleId === 'duplicate-import')
     .map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))
@@ -136,7 +138,7 @@ describe('Spec 68 dry parity (new analyze(ctx) === old checkDuplicateImports)', 
     const fresh = await runDrySlice([
       { path: 'a.ts', content: "import { a } from './mod';\n" },
       { path: 'b.ts', content: "import { b } from './mod';\n" },
-    ]);
+    ], { checkImports: true });
     expect(fresh.filter((f) => f.ruleId === 'duplicate-import')).toEqual([]);
   });
 });

@@ -58,7 +58,9 @@ async function parity(source: string) {
     .map((v) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
     .sort();
 
-  const fresh = await runDrySlice([{ path: 'parity.ts', content: source }]);
+  // Thread the same config the legacy side runs under: `checkStrings: true` gates
+  // the migrated `duplicate-string-literal` rule on (default off), matching `analyzeAST`.
+  const fresh = await runDrySlice([{ path: 'parity.ts', content: source }], { checkStrings: true });
   const nu = fresh
     .filter((f) => f.ruleId === 'duplicate-string-literal')
     .map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))
@@ -144,7 +146,7 @@ describe('Spec 68 dry parity (new analyze(ctx) === old checkDuplicateStrings)', 
     const fresh = await runDrySlice([
       { path: 'a.ts', content: "const a = 'the quick brown fox jumps over';\nconst b = 'the quick brown fox jumps over';\n" },
       { path: 'b.ts', content: "const a = 'the quick brown fox jumps over';\nconst b = 'the quick brown fox jumps over';\n" },
-    ]);
+    ], { checkStrings: true });
     expect(fresh.filter((f) => f.ruleId === 'duplicate-string-literal')).toEqual([]);
   });
 });

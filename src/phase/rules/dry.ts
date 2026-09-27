@@ -607,6 +607,10 @@ const duplicateImport: RuleDefinition<DryNeeds> = {
   thresholds: META.thresholds,
   samples: META.samples,
   analyze(ctx): Finding[] {
+    // The registry's `configGate` (`checkImports`, default false — the rule is
+    // retired off by default). The migrated form mirrors the legacy pipeline's
+    // gate exactly: off → no findings, not a `clean` claim.
+    if (!ctx.thresholds['checkImports']) return [];
     return detectDuplicateImport(ctx.facts['imports']);
   },
 };
@@ -620,6 +624,10 @@ const duplicateStringLiteral: RuleDefinition<StringLiteralNeeds> = {
   thresholds: STRING_META.thresholds,
   samples: STRING_META.samples,
   analyze(ctx): Finding[] {
+    // The registry's `configGate` (`checkStrings`, default false — the rule is
+    // retired off by default). The migrated form mirrors the legacy pipeline's
+    // gate exactly: off → no findings, not a `clean` claim.
+    if (!ctx.thresholds['checkStrings']) return [];
     return detectDuplicateStringLiteral(ctx.facts['string-literals']);
   },
 };
