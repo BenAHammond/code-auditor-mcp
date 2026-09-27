@@ -1228,6 +1228,11 @@ export type Finding = {
 /** A rule definition. `needs` has no optional form and no default. */
 export interface RuleDefinition<N extends Needs> {
   readonly id: RuleId;
+  /** The analyzer namespace the rule re-emits into (Spec 68 §15 — replaces the
+   *  deleted `RuleRegistryEntry.analyzer`). It is a bucket label, not a
+   *  selection gate: config cannot change it, and every rule carries one so the
+   *  full analyzer set is a pure function of `MIGRATED_RULES`. */
+  readonly analyzer: string;
   readonly needs: N;
   readonly severity: import('../types.js').Severity;
   readonly message: string;

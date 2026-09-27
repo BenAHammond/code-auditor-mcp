@@ -53,13 +53,6 @@ export const tools: Tool[] = [
         default: process.cwd(),
       },
       {
-        name: 'analyzers',
-        type: 'array',
-        required: false,
-        description: 'List of analyzers to run (solid, dry, documentation, react, data-access)',
-        default: ['solid', 'dry', 'documentation', 'react', 'data-access'],
-      },
-      {
         name: 'minSeverity',
         type: 'string',
         required: false,
@@ -480,13 +473,6 @@ export const uiTools: Tool[] = [
         required: false,
         description: 'Path to audit',
         default: '.',
-      },
-      {
-        name: 'analyzers',
-        type: 'array',
-        required: false,
-        description: 'Analyzers to run',
-        default: ['solid', 'dry', 'documentation', 'react', 'data-access'],
       },
       {
         name: 'minSeverity',

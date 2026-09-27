@@ -28,7 +28,6 @@ import { resolvePathProfile } from './config/pathProfiles.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
 import { readProjectLintThresholds, thresholdsToAnalyzerConfig } from './config/lintConfigReader.js';
 import { computeThresholdSources } from './config/effectiveConfig.js';
-import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
 import { applyPresets, getPreset, type Preset } from './presets/presets.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
@@ -82,7 +81,7 @@ import { splitRoutes, attributeRoutes, enabledMigratedRules } from './phase/rout
 import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';
 import { resolvePhaseThresholds } from './phase/config.js';
 import { deriveCoverage, presentFormatsOf } from './phase/coverage.js';
-import { MIGRATED_RULES } from './phase/rules/registry.js';
+import { MIGRATED_RULES, RULE_ANALYZER } from './phase/rules/registry.js';
 import type { Finding, FactKind } from './phase/types.js';
 
 // Package version — stamped into the build (see constants.ts), not read from
@@ -113,13 +112,14 @@ function cpuDurationMs(start: NodeJS.CpuUsage): number {
 
 /**
  * Spec 68 §15 — the full pipeline stage set, always run. Derived from the
- * registry's `analyzer` labels plus the pipeline-only `invariants` reducer
+ * migrated rules' own `analyzer` labels (each `RuleDefinition` carries the
+ * namespace it re-emits into) plus the pipeline-only `invariants` reducer
  * (user-defined rules from `.codeauditor.json`; it auto-disables when none are
  * configured). No selection remains: `indexOnly` skips analysis wholesale, but
  * config cannot pick a subset of analyzers.
  */
 const RUN_ANALYZERS: string[] = [
-  ...new Set(Object.values(RULE_REGISTRY).map((e) => e.analyzer)),
+  ...new Set(MIGRATED_RULES.map((r) => r.analyzer)),
   'invariants',
 ].sort();
 
@@ -967,7 +967,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               'dry',
             ]);
             for (const f of phaseFindings) {
-              const analyzer = ruleAnalyzerOverride[f.ruleId] ?? RULE_REGISTRY[f.ruleId]?.analyzer ?? 'phase';
+              const analyzer = ruleAnalyzerOverride[f.ruleId] ?? RULE_ANALYZER.get(f.ruleId) ?? 'phase';
               const resolved = resolveFileProfile(f.file);
               const profile = resolved.matchedProfileNames.length > 0
                 ? resolved.matchedProfileNames[resolved.matchedProfileNames.length - 1]
@@ -1023,7 +1023,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           presentFormats: presentFormatsOf(files),
           enabledRules: enabledMigratedRules(),
           incompleteFacts: phaseIncompleteFacts,
-          groupOf: (ruleId) => RULE_REGISTRY[ruleId]?.analyzer ?? ruleId,
+          groupOf: (ruleId) => RULE_ANALYZER.get(ruleId) ?? ruleId,
         });
 
         // Spec 29: extract table catalog from pipeline metadata for audit report

@@ -18,7 +18,7 @@
 
 import { createHash } from 'crypto';
 import path from 'path';
-import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
+import { MIGRATED_RULES } from './phase/rules/registry.js';
 import type {
   IndexHandle,
   IndexFactsEntry,
@@ -81,9 +81,7 @@ import type { CrossLanguageEntity, CrossReference } from './types/crossLanguage.
 // ── Rule ID helpers ──────────────────────────────────────────────────────────
 
 function getRuleIdsFor(name: string): string[] {
-  return Object.entries(RULE_REGISTRY)
-    .filter(([, entry]) => entry.analyzer === name)
-    .map(([id]) => id);
+  return MIGRATED_RULES.filter((r) => r.analyzer === name).map((r) => r.id);
 }
 
 /** Join a list of names as prose: "a", "a and b", "a, b and c". */
@@ -1420,7 +1418,7 @@ export function createCrossDomainReducer(): Stage4Reducer {
 // DependencyGraphBuilder) are corpus-wide: they compare schemas/endpoints/cycles
 // across files and languages. They run as Stage-4 derived reducers over a single
 // shared entity-extraction visitor, so each analyzer's rule IDs map to its own
-// result row (coverage resolves by RULE_REGISTRY analyzer name — one reducer per
+// result row (coverage resolves by each rule's analyzer — one reducer per
 // analyzer, not one reducer fanning out to three names).
 //
 // Scope-awareness ("Stage 4, and measure the gate"): the corpus-wide graph/cycle

@@ -132,6 +132,7 @@ function nextSymbol(
 
 const sqlInjectionRisk: RuleDefinition<DataAccessNeeds> = {
   id: 'sql-injection-risk',
+  analyzer: 'data-access',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['data-access-calls'] },
   severity: 'critical',
   message: META['sql-injection-risk'].message,
@@ -190,6 +191,7 @@ const sqlInjectionRisk: RuleDefinition<DataAccessNeeds> = {
 
 const complexQuery: RuleDefinition<DataAccessNeeds> = {
   id: 'complex-query',
+  analyzer: 'data-access',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['data-access-calls'] },
   severity: 'high',
   message: META['complex-query'].message,
@@ -220,6 +222,7 @@ const complexQuery: RuleDefinition<DataAccessNeeds> = {
 
 const unfilteredQuery: RuleDefinition<DataAccessNeeds> = {
   id: 'unfiltered-query',
+  analyzer: 'data-access',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['data-access-calls'] },
   severity: 'high',
   message: META['unfiltered-query'].message,
@@ -276,6 +279,7 @@ function num(t: ThresholdValues, key: string, fallback: number): number {
 
 const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
   id: 'missing-org-filter',
+  analyzer: 'data-access-org-filter',
   needs: {
     formats: ['typescript', 'tsx', 'javascript'],
     facts: ['data-access-calls', 'table-catalog'],
@@ -362,6 +366,7 @@ type LoopQueryNeeds = {
 
 const loopQuery: RuleDefinition<LoopQueryNeeds> = {
   id: 'loop-query',
+  analyzer: 'data-access',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['loop-queries'] },
   severity: 'severe',
   message: META['loop-query'].message,

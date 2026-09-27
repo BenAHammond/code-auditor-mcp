@@ -79,6 +79,7 @@ function findingsFor(
 
 const schemaFieldMismatch: RuleDefinition<SchemaValidatorNeeds> = {
   id: 'schema-field-mismatch',
+  analyzer: 'schema-validator',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'severe',
   message: META['schema-field-mismatch'].message,
@@ -94,6 +95,7 @@ const schemaFieldMismatch: RuleDefinition<SchemaValidatorNeeds> = {
 
 const missingField: RuleDefinition<SchemaValidatorNeeds> = {
   id: 'missing-field',
+  analyzer: 'schema-validator',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'severe',
   message: META['missing-field'].message,
@@ -109,6 +111,7 @@ const missingField: RuleDefinition<SchemaValidatorNeeds> = {
 
 const extraField: RuleDefinition<SchemaValidatorNeeds> = {
   id: 'extra-field',
+  analyzer: 'schema-validator',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'severe',
   message: META['extra-field'].message,

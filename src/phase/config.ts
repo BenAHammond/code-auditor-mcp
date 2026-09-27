@@ -18,7 +18,6 @@
  */
 
 import { MIGRATED_RULES } from './rules/registry.js';
-import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
 import { RUNTIME_DEFAULT_CONFIGS } from '../config/effectiveConfig.js';
 import type { ThresholdValues } from './types.js';
 
@@ -33,8 +32,7 @@ export function resolvePhaseThresholds(
   const out = new Map<string, ThresholdValues>();
 
   for (const rule of MIGRATED_RULES) {
-    const analyzer = RULE_REGISTRY[rule.id]?.analyzer;
-    const namespace = analyzer === 'data-access-org-filter' ? 'data-access' : (analyzer ?? rule.id);
+    const namespace = rule.analyzer === 'data-access-org-filter' ? 'data-access' : rule.analyzer;
     const defaults = (RUNTIME_DEFAULT_CONFIGS[namespace] ?? {}) as Record<string, unknown>;
     const user = (analyzerConfigs[namespace] ?? {}) as Record<string, unknown>;
     const merged = { ...defaults, ...user };

@@ -17,6 +17,7 @@ import { BUILTIN_PATH_PROFILES } from './defaults.js';
 import { resolvePathProfile, type PathProfile } from './pathProfiles.js';
 import type { Preset } from '../presets/presets.js';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
+import { RULE_ANALYZER } from '../phase/rules/registry.js';
 import type { ThresholdSource } from '../types.js';
 
 import { DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
@@ -314,8 +315,8 @@ export function computeThresholdSources(opts: {
   const out: ThresholdSource[] = [];
   const seen = new Set<string>();
 
-  for (const entry of Object.values(RULE_REGISTRY)) {
-    const analyzer = entry.analyzer;
+  for (const [id, entry] of Object.entries(RULE_REGISTRY)) {
+    const analyzer = RULE_ANALYZER.get(id) ?? '';
     const defaults = RUNTIME_DEFAULT_CONFIGS[analyzer];
     if (!defaults) continue;
 

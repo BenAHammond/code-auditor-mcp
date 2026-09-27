@@ -66,6 +66,7 @@ function detectTooManyQueries(facts: readonly FunctionBodyFact[], thresholds: Th
 
 const tooManyQueries: RuleDefinition<TooManyQueriesNeeds> = {
   id: 'too-many-queries',
+  analyzer: 'schema',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['function-bodies'] },
   severity: 'high',
   message: META.message,

@@ -19,6 +19,7 @@
  */
 
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
+import { RULE_ANALYZER } from '../phase/rules/registry.js';
 import { RUNTIME_DEFAULT_CONFIGS, flatten } from './effectiveConfig.js';
 
 export interface ThresholdChange {
@@ -59,8 +60,8 @@ export function checkThresholdRationales(
   const errors: string[] = [];
   const seen = new Set<string>();
 
-  for (const entry of Object.values(RULE_REGISTRY)) {
-    const analyzer = entry.analyzer;
+  for (const [id, entry] of Object.entries(RULE_REGISTRY)) {
+    const analyzer = RULE_ANALYZER.get(id) ?? '';
     const defaults = RUNTIME_DEFAULT_CONFIGS[analyzer];
     if (!defaults) continue;
 

@@ -92,6 +92,7 @@ function perComponent(all: ComponentScanResult[], cfg: ReactAnalyzerConfig): Rea
 
 const complexity: RuleDefinition<ReactNeeds> = {
   id: 'complexity',
+  analyzer: 'react',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['react-component'] },
   severity: 'high',
   message: META['complexity'].message,
@@ -115,6 +116,7 @@ const complexity: RuleDefinition<ReactNeeds> = {
 
 const missingProps: RuleDefinition<ReactNeeds> = {
   id: 'missing-props',
+  analyzer: 'react',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['react-component'] },
   severity: 'high',
   message: META['missing-props'].message,
@@ -132,6 +134,7 @@ const missingProps: RuleDefinition<ReactNeeds> = {
 
 const hooksNaming: RuleDefinition<ReactNeeds> = {
   id: 'hooks-naming',
+  analyzer: 'react',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['react-component'] },
   severity: 'high',
   message: META['hooks-naming'].message,
@@ -149,6 +152,7 @@ const hooksNaming: RuleDefinition<ReactNeeds> = {
 
 const noErrorBoundary: RuleDefinition<ReactNeeds> = {
   id: 'no-error-boundary',
+  analyzer: 'react',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['react-component'] },
   severity: 'severe',
   message: META['no-error-boundary'].message,
@@ -167,6 +171,7 @@ const noErrorBoundary: RuleDefinition<ReactNeeds> = {
 
 const performance: RuleDefinition<ReactNeeds> = {
   id: 'performance',
+  analyzer: 'react',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['react-component'] },
   severity: 'high',
   message: META['performance'].message,
@@ -184,6 +189,7 @@ const performance: RuleDefinition<ReactNeeds> = {
 
 const accessibility: RuleDefinition<ReactNeeds> = {
   id: 'accessibility',
+  analyzer: 'react',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['react-component'] },
   severity: 'severe',
   message: META['accessibility'].message,
@@ -201,6 +207,7 @@ const accessibility: RuleDefinition<ReactNeeds> = {
 
 const rawElement: RuleDefinition<ReactNeeds> = {
   id: 'raw-element',
+  analyzer: 'react',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['react-component'] },
   severity: 'high',
   message: META['raw-element'].message,

@@ -122,6 +122,7 @@ function unknownRefs(
 
 const unknownTable: RuleDefinition<UnknownTableNeeds> = {
   id: 'unknown-table',
+  analyzer: 'schema',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'table-catalog', 'migration-history'] },
   severity: 'critical',
   message: META['unknown-table'].message,
@@ -177,6 +178,7 @@ const unknownTable: RuleDefinition<UnknownTableNeeds> = {
 
 const tableNamingConvention: RuleDefinition<SchemaUsageNeeds> = {
   id: 'table-naming-convention',
+  analyzer: 'schema',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage'] },
   severity: 'high',
   message: META['table-naming-convention'].message,
@@ -226,6 +228,7 @@ const tableNamingConvention: RuleDefinition<SchemaUsageNeeds> = {
  */
 const staleTableReference: RuleDefinition<StaleTableReferenceNeeds> = {
   id: 'stale-table-reference',
+  analyzer: 'schema',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'table-catalog', 'migration-history'] },
   severity: 'critical',
   message: META['stale-table-reference'].message,
@@ -299,6 +302,7 @@ type DynamicSqlNeeds = {
 
 const dynamicSqlConstruction: RuleDefinition<DynamicSqlNeeds> = {
   id: 'dynamic-sql-construction',
+  analyzer: 'schema',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['dynamic-sql'] },
   severity: 'critical',
   message: META['dynamic-sql-construction'].message,

@@ -33,10 +33,6 @@ import type { Resolution } from '../types.js';
  */
 
 export interface RuleRegistryEntry {
-  /** The analyzer that emits this rule ID. */
-  analyzer: string;
-  /** The field on the Violation object that holds this ID. */
-  field: 'rule' | 'principle' | 'violationType' | 'type' | 'contractType' | 'ruleId' | 'special';
   /**
    * Spec 33 Item 14 — the input sources this rule consumes (legacy pipeline
    * metadata; derived coverage, Spec 68 §8, supersedes it). Each entry is one of:
@@ -127,8 +123,6 @@ export interface RuleSamples {
 export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // ── solid (UniversalSOLIDAnalyzer) ──────────────────────────────────────
   'solid/class-size': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Class "{name}" has {methods} methods, exceeding the maximum of {max}. Consider splitting into smaller classes.',
@@ -148,8 +142,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'solid/method-complexity': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Method "{name}" has cyclomatic complexity {complexity}, exceeding the maximum of {max}.',
@@ -166,8 +158,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'solid/open-closed': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Class "{name}" uses instanceof against a user-defined type.',
@@ -183,8 +173,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'solid/single-responsibility': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Function "{name}" mixes unrelated responsibilities. Split it into one function per concern.',
@@ -205,8 +193,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'function-length': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Function "{name}" has {lines} lines, exceeding the maximum of {max}. Consider breaking it down.',
@@ -226,8 +212,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'parameter-count': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Function "{name}" has {params} parameters, exceeding the maximum of {max}. Consider using an options object.',
@@ -247,8 +231,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'interface-size': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Interface "{name}" has many members.',
@@ -271,8 +253,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // panic()) rule. They were missing from the registry, so Go findings were
   // invisible to coverage and `describeRuleId` reported them `unknown`.
   'switch-size': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Switch or type switch has many case clauses.',
@@ -292,8 +272,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'function-size': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Function has many parameters, multiple returns, and high complexity.',
@@ -313,8 +291,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'struct-size': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Struct has many fields.',
@@ -334,8 +310,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'liskov-substitution': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Method calls panic().',
@@ -360,8 +334,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // analyzer names a user has to learn. Registered here so coverage and
   // describeRuleId see them, and so their severities carry a registry entry.
   'channel-deadlock': {
-    analyzer: 'go',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Guaranteed deadlock: an unbuffered channel is both sent to and received from in the same goroutine.',
@@ -381,8 +353,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'error-handling': {
-    analyzer: 'go',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Function assigns an error that is never checked, returned, or propagated.',
@@ -402,8 +372,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'concurrency': {
-    analyzer: 'go',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Function launches a goroutine without synchronization.',
@@ -423,8 +391,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'import-organization': {
-    analyzer: 'go',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Import block mixes standard library and third-party imports without grouping.',
@@ -444,8 +410,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'import-style': {
-    analyzer: 'go',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Dot import detected — can lead to namespace pollution.',
@@ -465,8 +429,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'solid/liskov-substitution': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Method "{name}" overrides a parent method and throws where the parent does not.',
@@ -482,8 +444,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'solid/dependency-inversion': {
-    analyzer: 'solid',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Module "{name}" violates the Dependency Inversion Principle.',
@@ -501,8 +461,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── dry (UniversalDRYAnalyzer) ──────────────────────────────────────────
   'dry/duplicate': {
-    analyzer: 'dry',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Duplicate code block detected ({lines} lines). First occurrence at {file}:{line}.',
@@ -526,8 +484,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'dry/structural-similarity': {
-    analyzer: 'dry',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Structurally similar code block detected ({similarity}% similar to {file}:{line}).',
@@ -550,8 +506,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'dry/similar-expression': {
-    analyzer: 'dry',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Near-identical expression detected ({shared} shared {unit}: {names}). First occurrence at {file}:{line}.',
@@ -588,8 +542,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // across consecutive runs (copy-paste then edit one side). Cross-run: emitted
   // by the divergence-tracking pass in auditRunner, not the per-file DRY visitor.
   'dry/diverging-clone': {
-    analyzer: 'dry',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Clone pair has diverged: similarity dropped {drop} (from {previous} to {current}) across {runs} consecutive runs. Review {file1}:{line1} and {file2}:{line2} for diverged logic.',
@@ -608,8 +560,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'duplicate-string-literal': {
-    analyzer: 'dry',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'String literal "{text}" is duplicated {count} times.',
@@ -625,8 +575,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'duplicate-import': {
-    analyzer: 'dry',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Duplicate import of "{module}".',
@@ -644,8 +592,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── data-access (UniversalDataAccessAnalyzer) ───────────────────────────
   'sql-injection-risk': {
-    analyzer: 'data-access',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Potential SQL injection risk in {method}. Use parameterized queries.',
@@ -664,8 +610,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'missing-org-filter': {
-    analyzer: 'data-access-org-filter',
-    field: 'rule',
     input: ['data-access', 'schema'],
     resolvable: true,
     // The claim is "no organization/tenant *predicate*", NOT "no filter". A
@@ -693,8 +637,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'complex-query': {
-    analyzer: 'data-access',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Query references many tables (join-heavy).',
@@ -711,8 +653,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'unfiltered-query': {
-    analyzer: 'data-access',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Unfiltered write or tenant-scoped read on {tables} has no WHERE/HAVING/LIMIT.',
@@ -729,8 +669,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'hardcoded-connection': {
-    analyzer: 'data-access',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Hardcoded database connection string detected.',
@@ -746,8 +684,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'loop-query': {
-    analyzer: 'data-access',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Database query inside a loop detected in {method}.',
@@ -765,8 +701,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── secrets (UniversalSecretsAnalyzer) ──────────────────────────────────
   'hardcoded-secret': {
-    analyzer: 'secrets',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Hardcoded secret detected: a credential value is embedded in source. Move it to an environment variable or secret store.',
@@ -801,8 +735,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── documentation (UniversalDocumentationAnalyzer) ─────────────────────
   'file-documentation': {
-    analyzer: 'documentation',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'File is missing a leading documentation comment.',
@@ -818,8 +750,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'function-documentation': {
-    analyzer: 'documentation',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Function "{name}" is missing a doc comment.',
@@ -835,8 +765,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'parameter-documentation': {
-    analyzer: 'documentation',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Parameter "{name}" in function "{func}" is missing a @param tag.',
@@ -852,8 +780,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'return-documentation': {
-    analyzer: 'documentation',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Function "{name}" is missing a @returns tag.',
@@ -880,8 +806,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'class-documentation': {
-    analyzer: 'documentation',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Class "{name}" is missing a doc comment.',
@@ -897,8 +821,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'method-documentation': {
-    analyzer: 'documentation',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Method "{name}" is missing a doc comment.',
@@ -917,8 +839,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // ── schema (UniversalSchemaAnalyzer) ────────────────────────────────────
   // JSON validation rules → emitted by the schema-json visitor path.
   'invalid-json': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Invalid JSON: {error}.',
@@ -934,8 +854,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'missing-schema-declaration': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Missing JSON schema declaration.',
@@ -951,8 +869,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'undefined-required-field': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Undefined required field "{field}".',
@@ -968,8 +884,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'invalid-type': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Invalid type for field "{field}".',
@@ -985,8 +899,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'invalid-range': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Invalid range for field "{field}".',
@@ -1002,8 +914,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'type-mismatch': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Type mismatch for field "{field}".',
@@ -1019,8 +929,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'string-too-short': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'String value too short for field "{field}".',
@@ -1036,8 +944,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'string-too-long': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'String value too long for field "{field}".',
@@ -1053,8 +959,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'pattern-mismatch': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Value does not match pattern for field "{field}".',
@@ -1070,8 +974,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'invalid-format': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Invalid format for field "{field}".',
@@ -1087,8 +989,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'below-minimum': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Value below minimum for field "{field}".',
@@ -1104,8 +1004,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'above-maximum': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Value above maximum for field "{field}".',
@@ -1121,8 +1019,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'too-few-items': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Too few items for field "{field}".',
@@ -1138,8 +1034,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'too-many-items': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Too many items for field "{field}".',
@@ -1155,8 +1049,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'missing-required-field': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Missing required field "{field}".',
@@ -1172,8 +1064,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'unexpected-property': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Unexpected property "{property}".',
@@ -1189,8 +1079,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'enum-mismatch': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-json'],
     resolvable: false,
     message: 'Value does not match any enum value for field "{field}".',
@@ -1207,8 +1095,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   },
   // SQL-injection → emitted by the schema-code visitor over TS/JS source.
   'dynamic-sql-construction': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-code'],
     resolvable: false,
     message: 'SQL query built via string interpolation or concatenation in {method}; use parameterized queries.',
@@ -1226,8 +1112,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // Table naming-convention check → emitted by the schema-code visitor.
   // Spec 38 R5: renamed from `naming-convention` (see src/ruleAliases.ts).
   'table-naming-convention': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-code'],
     resolvable: false,
     message: 'Table name "{table}" should use snake_case convention.',
@@ -1244,8 +1128,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   },
   // Cross-file unknown-table detection → emitted by the schema Stage 3 reducer.
   'unknown-table': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-code'],
     resolvable: true,
     message: 'Reference to unknown table "{table}" ({type}). Did you mean: {suggestions}?',
@@ -1269,8 +1151,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // reference, not a typo, so the message names the dropping migration and the
   // tables it created in its place.
   'stale-table-reference': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-code'],
     resolvable: true,
     message: 'Reference to dropped table "{table}" — dropped in {migration}.',
@@ -1293,8 +1173,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // (like the other schema rules) has no config shape in the threshold-validation
   // test, so the knob is documented here rather than declared in `thresholds`.
   'too-many-queries': {
-    analyzer: 'schema',
-    field: 'rule',
     input: ['schema-code'],
     resolvable: false,
     message: 'Function "{name}" has {count} queries, exceeding the maximum of {max}.',
@@ -1319,8 +1197,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── react (reactAnalyzer) ───────────────────────────────────────────────
   'hooks-naming': {
-    analyzer: 'react',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'React hook "{name}" does not follow the "use*" naming convention.',
@@ -1336,8 +1212,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'complexity': {
-    analyzer: 'react',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'React component "{name}" has complexity {complexity}, exceeding the maximum.',
@@ -1360,8 +1234,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'missing-props': {
-    analyzer: 'react',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'React component "{name}" is missing prop-types.',
@@ -1377,8 +1249,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'no-error-boundary': {
-    analyzer: 'react',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'React component tree is missing an error boundary.',
@@ -1394,8 +1264,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'performance': {
-    analyzer: 'react',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'React component "{name}" is missing memoization.',
@@ -1411,8 +1279,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'accessibility': {
-    analyzer: 'react',
-    field: 'rule',
     input: ['files'],
     resolvable: false,
     message: 'Accessibility issue in component "{name}": {issue}.',
@@ -1428,8 +1294,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'raw-element': {
-    analyzer: 'react',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'raw `<{element}>` — this project uses `<{wrapper}>` ({file}).',
@@ -1460,8 +1324,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── schema-validator (SchemaValidator) ──────────────────────────────────
   'schema-field-mismatch': {
-    analyzer: 'schema-validator',
-    field: 'rule',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Schema field type-name strings differ: {detail}.',
@@ -1477,8 +1339,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'missing-field': {
-    analyzer: 'schema-validator',
-    field: 'rule',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Missing field: {field}.',
@@ -1494,8 +1354,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'extra-field': {
-    analyzer: 'schema-validator',
-    field: 'rule',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Extra field: {field}.',
@@ -1512,8 +1370,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   },
   // ── dependency-graph (DependencyGraphBuilder) ───────────────────────────
   'circular-dependency': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Circular dependency detected: {cycle}.',
@@ -1529,8 +1385,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'break-cycles': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Break dependency cycle: {cycle}.',
@@ -1546,8 +1400,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'tight-coupling': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Tight coupling detected between {a} and {b}.',
@@ -1564,8 +1416,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'reduce-coupling': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Reduce coupling between {a} and {b}.',
@@ -1581,8 +1431,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'hub-nodes': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Hub node "{node}" has {count} dependencies.',
@@ -1598,8 +1446,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'split-responsibilities': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Split responsibilities of node "{node}".',
@@ -1615,8 +1461,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'orphaned-nodes': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Orphaned node "{node}" has no connections.',
@@ -1632,8 +1476,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'review-orphans': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Review orphaned nodes: {nodes}.',
@@ -1649,8 +1491,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'unreferenced-module': {
-    analyzer: 'dependency-graph',
-    field: 'type',
     input: ['cross-language-entities'],
     resolvable: false,
     message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
@@ -1673,8 +1513,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── styles (UniversalStylesAnalyzer) ─────────────────────────────────────
   'styles/value-drift': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: false,
     message: 'Color drift in "{property}": "{value}" is near-identical to "{canonical}" (ΔE = {d}). Consider using "{canonical}".',
@@ -1690,8 +1528,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'styles/off-scale': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: false,
     message: 'Value "{value}" is off the Tailwind spacing scale.',
@@ -1707,8 +1543,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'styles/undefined-class': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: true,
     message: 'Class "{class}" was not found in any read stylesheet or utility set.',
@@ -1733,8 +1567,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // do its job", not a defect. The registry entry is removed so coverage never
   // asserts the tool checked something it no longer checks as a finding.
   'styles/token-bypass': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: false,
     message: 'Token bypass: raw value "{value}" used instead of a design token.',
@@ -1750,8 +1582,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'styles/mechanism-fragmentation': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: false,
     message: 'Styling mechanism fragmented across {count} mechanisms.',
@@ -1767,8 +1597,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'styles/mechanism-mixing': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: false,
     message: 'Mixing styling mechanisms in one file.',
@@ -1784,8 +1612,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'styles/declaration-set-similarity': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: false,
     message: 'Declaration set similar to another block ({similarity}%).',
@@ -1801,8 +1627,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'styles/z-index-sprawl': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: false,
     message: 'Z-index sprawl: {count} distinct z-index values.',
@@ -1818,8 +1642,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'styles/z-index-singleton': {
-    analyzer: 'styles',
-    field: 'rule',
     input: ['styles-css'],
     resolvable: false,
     message: 'Z-index value "{value}" appears only once.',
@@ -1837,8 +1659,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── conventions (UniversalConventionsAnalyzer) ───────────────────────────
   'conventions/usage-pair': {
-    analyzer: 'conventions',
-    field: 'rule',
     input: ['function-index'],
     resolvable: true,
     message: '{pct}% of `{antecedent}` callers also call `{consequent}`.',
@@ -1857,8 +1677,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'conventions/import-form': {
-    analyzer: 'conventions',
-    field: 'rule',
     input: ['function-index'],
     resolvable: false,
     message: 'Import form mismatch: use {form} for "{source}".',
@@ -1874,8 +1692,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'conventions/error-handling': {
-    analyzer: 'conventions',
-    field: 'rule',
     input: ['function-index'],
     resolvable: false,
     message: 'Error-handling convention mismatch: {detail}.',
@@ -1891,8 +1707,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'conventions/export-shape': {
-    analyzer: 'conventions',
-    field: 'rule',
     input: ['function-index'],
     resolvable: false,
     message: 'Export shape mismatch: {detail}.',
@@ -1908,8 +1722,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'conventions/naming': {
-    analyzer: 'conventions',
-    field: 'rule',
     input: ['function-index'],
     resolvable: false,
     message: 'Naming convention mismatch: {detail}.',
@@ -1927,8 +1739,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── cross-domain (CrossDomainAnalyzer) ────────────────────────────────────
   'cross-domain/written-never-read': {
-    analyzer: 'cross-domain',
-    field: 'rule',
     input: ['schema_usage', 'functions'],
     resolvable: false,
     message: 'Table "{table}" is written but never read.',
@@ -1944,8 +1754,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'cross-domain/read-never-written': {
-    analyzer: 'cross-domain',
-    field: 'rule',
     input: ['schema_usage', 'functions'],
     resolvable: false,
     message: 'Table "{table}" is read but never written.',
@@ -1961,8 +1769,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'cross-domain/multi-table-write': {
-    analyzer: 'cross-domain',
-    field: 'rule',
     input: ['schema_usage', 'functions'],
     resolvable: false,
     message: 'Function writes to {count} distinct tables.',
@@ -1978,8 +1784,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'cross-domain/no-validator-reachable': {
-    analyzer: 'cross-domain',
-    field: 'rule',
     input: ['schema_usage', 'functions'],
     resolvable: false,
     message: 'No validator reachable within BFS depth: {detail}.',
@@ -1995,8 +1799,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'cross-domain/uncovered-risk': {
-    analyzer: 'cross-domain',
-    field: 'rule',
     input: ['schema_usage', 'functions'],
     resolvable: false,
     message: 'Uncovered risk: {detail}.',
@@ -2014,8 +1816,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 
   // ── security (UniversalSecurityAnalyzer) — Spec 61 R6 ─────────────────────
   'command-injection-risk': {
-    analyzer: 'security',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Unsafe process invocation: {method} is passed a command built by interpolation/concatenation.',
@@ -2031,8 +1831,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'dynamic-require-of-project-path': {
-    analyzer: 'security',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Dynamic require/import of a project config path: {path}.',
@@ -2049,8 +1847,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     },
   },
   'unescaped-html-interpolation': {
-    analyzer: 'security',
-    field: 'rule',
     input: ['files'],
     resolvable: true,
     message: 'Unescaped HTML interpolation: {field} is inserted into an HTML template without an escaping call.',
@@ -2084,32 +1880,23 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
  * Spec 68 §15 — the analyzer *selection* model is deleted. There is no longer an
  * `ALL_ANALYZERS`, `MCP_DEFAULT_ANALYZERS`, `PIPELINE_ONLY_ANALYZERS`, or
  * `RUNNABLE_ANALYZERS` list: the runner always constructs the full pipeline, and
- * config cannot select which analyzers run (only tune thresholds). The
- * `analyzer` field below is now a re-emission bucket label only, deleted in §9.
+ * config cannot select which analyzers run (only tune thresholds).
  */
 
 /**
- * A violation in the loose shape the gate and baseline code handle (a Violation
- * with the transitional analyzer/type/violationType/etc. fields still present).
+ * A violation in the loose shape the gate code handles (a Violation with the
+ * transitional `rule` field still present).
  */
 interface ViolationLike {
-  analyzer?: string;
   rule?: string;
-  type?: string;
-  violationType?: string;
-  principle?: string;
-  contractType?: string;
-  ruleId?: string;
 }
 
 /**
  * Resolve a violation to its canonical {@link RuleRegistryEntry}, if any.
  *
- * The registry records which field on the Violation carries the rule ID
- * (`field` — `rule` for almost every analyzer, `type` for dependency-graph).
- * This helper reads that field off the violation and matches it against the
- * registry key, so the gate's resolution-gap detection (Spec 45 R1) never
- * hard-codes a field.
+ * Every migrated rule is re-emitted into the result with `rule` set to its
+ * canonical registry id (the both-paths split, Spec 68 §11.1), so the registry
+ * is a direct lookup by that id — no analyzer/field indirection remains.
  *
  * Invariant violations (user-defined rule IDs) have no registry entry and
  * return `undefined`. They still gate (Spec 45 R1) — the gate blocks on every
@@ -2117,11 +1904,6 @@ interface ViolationLike {
  * missing resolution is a recorded gap.
  */
 export function getViolationRuleEntry(v: ViolationLike): Readonly<RuleRegistryEntry> | undefined {
-  if (!v.analyzer) return undefined;
-  for (const [ruleId, entry] of Object.entries(RULE_REGISTRY)) {
-    if (entry.analyzer !== v.analyzer) continue;
-    const value = (v as Record<string, unknown>)[entry.field];
-    if (value === ruleId) return entry;
-  }
-  return undefined;
+  if (!v.rule) return undefined;
+  return RULE_REGISTRY[v.rule];
 }

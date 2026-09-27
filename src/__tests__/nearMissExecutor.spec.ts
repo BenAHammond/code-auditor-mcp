@@ -32,6 +32,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
+import { RULE_ANALYZER } from '../phase/rules/registry.js';
 import { initializeLanguages, initParsers, LanguageRegistry } from '../languages/index.js';
 import { parseFile } from '../languages/adapterBridge.js';
 import type { LanguageAdapter } from '../languages/types.js';
@@ -456,7 +457,7 @@ function allNearMisses(): NearMissCase[] {
   for (const [ruleId, entry] of Object.entries(RULE_REGISTRY)) {
     for (const sample of entry.samples.valid) {
       if (sample.nearMiss) {
-        out.push({ ruleId, analyzer: entry.analyzer, code: sample.code });
+        out.push({ ruleId, analyzer: RULE_ANALYZER.get(ruleId) ?? '', code: sample.code });
       }
     }
   }
@@ -468,7 +469,7 @@ function allInvalidSamples(): NearMissCase[] {
   const out: NearMissCase[] = [];
   for (const [ruleId, entry] of Object.entries(RULE_REGISTRY)) {
     for (const sample of entry.samples.invalid ?? []) {
-      out.push({ ruleId, analyzer: entry.analyzer, code: sample.code });
+      out.push({ ruleId, analyzer: RULE_ANALYZER.get(ruleId) ?? '', code: sample.code });
     }
   }
   return out;

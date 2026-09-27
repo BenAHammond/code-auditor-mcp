@@ -878,6 +878,7 @@ function groupDeclarationsByProperty(declarations: StyleDeclRow[]): Map<string, 
 
 const valueDrift: RuleDefinition<StylesNeeds> = {
   id: 'styles/value-drift',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
   severity: 'high',
   message: META['styles/value-drift'].message,
@@ -893,6 +894,7 @@ const valueDrift: RuleDefinition<StylesNeeds> = {
 
 const offScale: RuleDefinition<StylesNeeds> = {
   id: 'styles/off-scale',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
   severity: 'high',
   message: META['styles/off-scale'].message,
@@ -915,6 +917,7 @@ const offScale: RuleDefinition<StylesNeeds> = {
 
 const tokenBypass: RuleDefinition<StylesNeeds> = {
   id: 'styles/token-bypass',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
   severity: 'high',
   message: META['styles/token-bypass'].message,
@@ -932,6 +935,7 @@ const tokenBypass: RuleDefinition<StylesNeeds> = {
 
 const mechanismFragmentation: RuleDefinition<StylesNeeds> = {
   id: 'styles/mechanism-fragmentation',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
   severity: 'high',
   message: META['styles/mechanism-fragmentation'].message,
@@ -947,6 +951,7 @@ const mechanismFragmentation: RuleDefinition<StylesNeeds> = {
 
 const mechanismMixing: RuleDefinition<StylesNeeds> = {
   id: 'styles/mechanism-mixing',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
   severity: 'high',
   message: META['styles/mechanism-mixing'].message,
@@ -962,6 +967,7 @@ const mechanismMixing: RuleDefinition<StylesNeeds> = {
 
 const declarationSetSimilarity: RuleDefinition<StylesNeeds> = {
   id: 'styles/declaration-set-similarity',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
   severity: 'high',
   message: META['styles/declaration-set-similarity'].message,
@@ -977,6 +983,7 @@ const declarationSetSimilarity: RuleDefinition<StylesNeeds> = {
 
 const zIndexSprawl: RuleDefinition<StylesNeeds> = {
   id: 'styles/z-index-sprawl',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
   severity: 'high',
   message: META['styles/z-index-sprawl'].message,
@@ -992,6 +999,7 @@ const zIndexSprawl: RuleDefinition<StylesNeeds> = {
 
 const zIndexSingleton: RuleDefinition<StylesNeeds> = {
   id: 'styles/z-index-singleton',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
   severity: 'high',
   message: META['styles/z-index-singleton'].message,
@@ -1157,6 +1165,7 @@ type UndefinedClassNeeds = {
 
 export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
   id: 'styles/undefined-class',
+  analyzer: 'styles',
   needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations', 'defined-classes'] },
   severity: 'severe',
   message: META['styles/undefined-class'].message,

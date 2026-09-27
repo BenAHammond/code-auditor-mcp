@@ -602,6 +602,7 @@ function detectDivergingClone(facts: ClonePairHistoryFact, cfg: DivergenceCfg): 
 
 const duplicateImport: RuleDefinition<DryNeeds> = {
   id: 'duplicate-import',
+  analyzer: 'dry',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['imports'] },
   severity: 'high',
   message: META.message,
@@ -615,6 +616,7 @@ const duplicateImport: RuleDefinition<DryNeeds> = {
 
 const duplicateStringLiteral: RuleDefinition<StringLiteralNeeds> = {
   id: 'duplicate-string-literal',
+  analyzer: 'dry',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['string-literals'] },
   severity: 'high',
   message: STRING_META.message,
@@ -628,6 +630,7 @@ const duplicateStringLiteral: RuleDefinition<StringLiteralNeeds> = {
 
 const dryDuplicate: RuleDefinition<CodeBlockNeeds> = {
   id: 'dry/duplicate',
+  analyzer: 'dry',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['code-block'] },
   severity: 'high',
   message: DUP_META.message,
@@ -646,6 +649,7 @@ const dryDuplicate: RuleDefinition<CodeBlockNeeds> = {
 
 const dryStructuralSimilarity: RuleDefinition<CodeBlockNeeds> = {
   id: 'dry/structural-similarity',
+  analyzer: 'dry',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['code-block'] },
   severity: 'high',
   message: STRUCT_META.message,
@@ -664,6 +668,7 @@ const dryStructuralSimilarity: RuleDefinition<CodeBlockNeeds> = {
 
 const drySimilarExpression: RuleDefinition<CodeBlockNeeds> = {
   id: 'dry/similar-expression',
+  analyzer: 'dry',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['code-block'] },
   severity: 'high',
   message: EXPR_META.message,
@@ -682,6 +687,7 @@ const drySimilarExpression: RuleDefinition<CodeBlockNeeds> = {
 
 const divergingClone: RuleDefinition<ClonePairNeeds> = {
   id: 'dry/diverging-clone',
+  analyzer: 'dry',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['clone-pair-history'] },
   severity: 'severe',
   message: DIVERGING_META.message,

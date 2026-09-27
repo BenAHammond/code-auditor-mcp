@@ -19,6 +19,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
+import { RULE_ANALYZER } from '../phase/rules/registry.js';
 import { RUNTIME_DEFAULT_CONFIGS, flatten } from '../config/effectiveConfig.js';
 
 const ENTRIES = Object.entries(RULE_REGISTRY);
@@ -64,18 +65,19 @@ describe('rule registry contract — Spec 37 R2/R3', () => {
     const ghosts: string[] = [];
     for (const [id, e] of ENTRIES) {
       if (e.thresholds.length === 0) continue;
-      const defaults = RUNTIME_DEFAULT_CONFIGS[e.analyzer];
+      const analyzer = RULE_ANALYZER.get(id) ?? '';
+      const defaults = RUNTIME_DEFAULT_CONFIGS[analyzer];
       if (!defaults) {
         // A rule that names a threshold must live in an analyzer with a runtime
         // default config surface; otherwise threshold reporting cannot resolve it.
-        ghosts.push(`${id} (analyzer ${e.analyzer} has no RUNTIME_DEFAULT_CONFIGS entry)`);
+        ghosts.push(`${id} (analyzer ${analyzer} has no RUNTIME_DEFAULT_CONFIGS entry)`);
         continue;
       }
-      const flat = flatten(defaults, e.analyzer);
+      const flat = flatten(defaults, analyzer);
       for (const t of e.thresholds) {
-        const fullKey = `${e.analyzer}.${t}`;
+        const fullKey = `${analyzer}.${t}`;
         if (!(fullKey in flat)) {
-          ghosts.push(`${id}.${t} (missing from ${e.analyzer} defaults; have: ${Object.keys(flat).join(', ')})`);
+          ghosts.push(`${id}.${t} (missing from ${analyzer} defaults; have: ${Object.keys(flat).join(', ')})`);
         }
       }
     }

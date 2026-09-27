@@ -36,6 +36,7 @@ import { extractSymbol } from '../symbols.js';
 import { generateJSONReport } from '../reporting/jsonReportGenerator.js';
 import type { Violation, Baseline, BaselineEntry } from '../types.js';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
+import { RULE_ANALYZER } from '../phase/rules/registry.js';
 import { RULE_ALIASES, canonicalRuleId, describeRuleId } from '../ruleAliases.js';
 import { DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
 import { DEFAULT_REACT_CONFIG } from '../analyzers/reactAnalyzer.js';
@@ -1367,10 +1368,11 @@ describe('Rule Registry', () => {
     // This guards against copy-paste errors where the same string is
     // accidentally used with a different analyzer name.
     const byAnalyzer = new Map<string, string[]>();
-    for (const [id, entry] of Object.entries(RULE_REGISTRY)) {
-      const existing = byAnalyzer.get(entry.analyzer) ?? [];
+    for (const [id] of Object.entries(RULE_REGISTRY)) {
+      const analyzer = RULE_ANALYZER.get(id) ?? '';
+      const existing = byAnalyzer.get(analyzer) ?? [];
       existing.push(id);
-      byAnalyzer.set(entry.analyzer, existing);
+      byAnalyzer.set(analyzer, existing);
     }
 
     const collisions: Array<{ id: string; a: string; b: string }> = [];
@@ -1396,23 +1398,18 @@ describe('Rule Registry', () => {
       );
     }
 
-    // Structural check: every entry has required fields
-    const validFields = new Set([
-      'rule', 'principle', 'violationType', 'type', 'contractType', 'ruleId', 'special',
-    ]);
-    for (const [id, entry] of Object.entries(RULE_REGISTRY)) {
-      expect(entry, `Registry entry "${id}" must have an analyzer`).toHaveProperty('analyzer');
-      expect(typeof entry.analyzer, `Registry entry "${id}" analyzer must be a string`).toBe('string');
-      expect(entry.analyzer.length, `Registry entry "${id}" analyzer must not be empty`).toBeGreaterThan(0);
-      expect(
-        validFields.has(entry.field),
-        `Registry entry "${id}" field "${entry.field}" is not a valid field`
-      ).toBe(true);
+    // Structural check: every registered rule is migrated and carries a canonical
+    // analyzer (Spec 68 §15 — the registry `analyzer`/`field` indirection is
+    // deleted; the analyzer is now a projection of MIGRATED_RULES).
+    for (const [id] of Object.entries(RULE_REGISTRY)) {
+      const analyzer = RULE_ANALYZER.get(id);
+      expect(typeof analyzer, `Registry entry "${id}" analyzer must be a string`).toBe('string');
+      expect(analyzer!.length, `Registry entry "${id}" analyzer must not be empty`).toBeGreaterThan(0);
     }
   });
 
   it('has entries for every known analyzer', () => {
-    const analyzers = new Set(Object.values(RULE_REGISTRY).map((e) => e.analyzer));
+    const analyzers = new Set(RULE_ANALYZER.values());
 
     // CLI pipeline analyzers (auditRunner analyzerRegistry). `invariants` is
     // deliberately absent: its rule IDs are user-defined in `.codeauditor.json`
@@ -1459,10 +1456,11 @@ describe('Rule Registry', () => {
       'go',
     ]);
 
-    for (const [id, entry] of Object.entries(RULE_REGISTRY)) {
+    for (const [id] of Object.entries(RULE_REGISTRY)) {
+      const analyzer = RULE_ANALYZER.get(id) ?? '';
       expect(
-        reachableAnalyzers.has(entry.analyzer),
-        `Rule ID "${id}" maps to analyzer "${entry.analyzer}", which has no production run path — wire it through or remove the entry`,
+        reachableAnalyzers.has(analyzer),
+        `Rule ID "${id}" maps to analyzer "${analyzer}", which has no production run path — wire it through or remove the entry`,
       ).toBe(true);
     }
   });
@@ -1538,15 +1536,16 @@ describe('Rule Registry', () => {
 
       // Thresholds name real config keys the analyzer reads.
       if (entry.thresholds.length === 0) continue;
-      const keys = flatKeys.get(entry.analyzer);
+      const analyzer = RULE_ANALYZER.get(id) ?? '';
+      const keys = flatKeys.get(analyzer);
       expect(
         keys !== undefined,
-        `rule "${id}" declares thresholds but analyzer "${entry.analyzer}" has no config shape registered for validation`,
+        `rule "${id}" declares thresholds but analyzer "${analyzer}" has no config shape registered for validation`,
       ).toBe(true);
       for (const t of entry.thresholds) {
         expect(
           keys?.has(t),
-          `rule "${id}" threshold "${t}" is not a real config key in analyzer "${entry.analyzer}"`,
+          `rule "${id}" threshold "${t}" is not a real config key in analyzer "${analyzer}"`,
         ).toBe(true);
       }
     }

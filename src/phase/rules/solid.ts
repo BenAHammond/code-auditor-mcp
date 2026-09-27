@@ -152,6 +152,7 @@ const META = RULE_REGISTRY;
 
 const classSize: RuleDefinition<SolidNeeds> = {
   id: 'solid/class-size',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['solid/class-size'].message,
@@ -208,6 +209,7 @@ const classSize: RuleDefinition<SolidNeeds> = {
 
 const methodComplexity: RuleDefinition<SolidNeeds> = {
   id: 'solid/method-complexity',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['solid/method-complexity'].message,
@@ -250,6 +252,7 @@ const methodComplexity: RuleDefinition<SolidNeeds> = {
 
 const openClosed: RuleDefinition<SolidNeeds> = {
   id: 'solid/open-closed',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['solid/open-closed'].message,
@@ -276,6 +279,7 @@ const openClosed: RuleDefinition<SolidNeeds> = {
 
 const singleResponsibility: RuleDefinition<SolidNeeds> = {
   id: 'solid/single-responsibility',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['solid/single-responsibility'].message,
@@ -309,6 +313,7 @@ const singleResponsibility: RuleDefinition<SolidNeeds> = {
 
 const functionLength: RuleDefinition<SolidNeeds> = {
   id: 'function-length',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['function-length'].message,
@@ -342,6 +347,7 @@ const functionLength: RuleDefinition<SolidNeeds> = {
 
 const parameterCount: RuleDefinition<SolidNeeds> = {
   id: 'parameter-count',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['parameter-count'].message,
@@ -375,6 +381,7 @@ const parameterCount: RuleDefinition<SolidNeeds> = {
 
 const interfaceSize: RuleDefinition<InterfaceSizeNeeds> = {
   id: 'interface-size',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['file-symbols', 'type-declarations'] },
   severity: 'high',
   message: META['interface-size'].message,
@@ -415,6 +422,7 @@ const interfaceSize: RuleDefinition<InterfaceSizeNeeds> = {
 
 const structSize: RuleDefinition<GoNeeds> = {
   id: 'struct-size',
+  analyzer: 'solid',
   needs: { formats: ['go'], facts: ['type-declarations'] },
   severity: 'high',
   message: META['struct-size'].message,
@@ -443,6 +451,7 @@ const structSize: RuleDefinition<GoNeeds> = {
 
 const functionSize: RuleDefinition<GoFunctionNeeds> = {
   id: 'function-size',
+  analyzer: 'solid',
   needs: { formats: ['go'], facts: ['go-functions'] },
   severity: 'high',
   message: META['function-size'].message,
@@ -471,6 +480,7 @@ const functionSize: RuleDefinition<GoFunctionNeeds> = {
 
 const switchSize: RuleDefinition<GoSwitchNeeds> = {
   id: 'switch-size',
+  analyzer: 'solid',
   needs: { formats: ['go'], facts: ['go-switches'] },
   severity: 'high',
   message: META['switch-size'].message,
@@ -499,6 +509,7 @@ const switchSize: RuleDefinition<GoSwitchNeeds> = {
 
 const goLiskovSubstitution: RuleDefinition<GoFunctionNeeds> = {
   id: 'liskov-substitution',
+  analyzer: 'solid',
   needs: { formats: ['go'], facts: ['go-functions'] },
   severity: 'severe',
   message: META['liskov-substitution'].message,
@@ -526,6 +537,7 @@ const goLiskovSubstitution: RuleDefinition<GoFunctionNeeds> = {
 
 const liskovSubstitution: RuleDefinition<SolidNeeds> = {
   id: 'solid/liskov-substitution',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'severe',
   message: META['solid/liskov-substitution'].message,
@@ -566,6 +578,7 @@ const liskovSubstitution: RuleDefinition<SolidNeeds> = {
 
 const dependencyInversion: RuleDefinition<SolidNeeds> = {
   id: 'solid/dependency-inversion',
+  analyzer: 'solid',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['solid/dependency-inversion'].message,

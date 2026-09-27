@@ -99,3 +99,9 @@ export const MIGRATED_RULES = [
   unreferencedModuleRule,
   ...goRules,
 ];
+
+/** Rule id → analyzer namespace, a pure projection of `MIGRATED_RULES` (§15 —
+ *  replaces the deleted `RuleRegistryEntry.analyzer` cross-reference). */
+export const RULE_ANALYZER: ReadonlyMap<string, string> = new Map(
+  MIGRATED_RULES.map((r) => [r.id, r.analyzer] as const),
+);

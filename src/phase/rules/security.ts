@@ -81,6 +81,7 @@ function detectHardcodedConnection(facts: readonly StringLiteralFact[]): Finding
 
 const hardcodedConnection: RuleDefinition<SecurityNeeds> = {
   id: 'hardcoded-connection',
+  analyzer: 'data-access',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['string-literals'] },
   severity: 'critical',
   message: META.message,

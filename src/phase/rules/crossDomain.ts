@@ -930,6 +930,7 @@ function detectUncoveredRiskFact(
 
 const writtenNeverRead: RuleDefinition<CrossDomainNeeds> = {
   id: 'cross-domain/written-never-read',
+  analyzer: 'cross-domain',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage'] },
   severity: 'high',
   message: META['cross-domain/written-never-read'].message,
@@ -943,6 +944,7 @@ const writtenNeverRead: RuleDefinition<CrossDomainNeeds> = {
 
 const readNeverWritten: RuleDefinition<CrossDomainNeeds> = {
   id: 'cross-domain/read-never-written',
+  analyzer: 'cross-domain',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage'] },
   severity: 'severe',
   message: META['cross-domain/read-never-written'].message,
@@ -956,6 +958,7 @@ const readNeverWritten: RuleDefinition<CrossDomainNeeds> = {
 
 const multiTableWrite: RuleDefinition<MultiTableWriteNeeds> = {
   id: 'cross-domain/multi-table-write',
+  analyzer: 'cross-domain',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'call-graph', 'batch-functions'] },
   severity: 'high',
   message: META['cross-domain/multi-table-write'].message,
@@ -976,6 +979,7 @@ const multiTableWrite: RuleDefinition<MultiTableWriteNeeds> = {
 
 const noValidatorReachable: RuleDefinition<ValidatorReachNeeds> = {
   id: 'cross-domain/no-validator-reachable',
+  analyzer: 'cross-domain',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'call-graph'] },
   severity: 'severe',
   message: META['cross-domain/no-validator-reachable'].message,
@@ -1004,6 +1008,7 @@ const noValidatorReachable: RuleDefinition<ValidatorReachNeeds> = {
 
 const uncoveredRisk: RuleDefinition<UncoveredRiskNeeds> = {
   id: 'cross-domain/uncovered-risk',
+  analyzer: 'cross-domain',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['call-graph', 'hotspot', 'coverage'] },
   severity: 'high',
   message: META['cross-domain/uncovered-risk'].message,

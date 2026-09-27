@@ -77,6 +77,7 @@ function findingsFor(validations: readonly SchemaValidationFact[], ruleId: strin
 function schemaJsonRule(id: string, severity: Severity): RuleDefinition<SchemaJsonNeeds> {
   return {
     id,
+    analyzer: 'schema',
     needs: { formats: ['json'], facts: ['schema-validations'] },
     severity,
     message: META[id].message,

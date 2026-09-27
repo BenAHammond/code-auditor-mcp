@@ -85,6 +85,7 @@ function importGroup(path: string): number {
 
 const importOrganization: RuleDefinition<ImportNeeds> = {
   id: 'import-organization',
+  analyzer: 'go',
   needs: { formats: ['go'], facts: ['imports'] },
   severity: 'high',
   message: META['import-organization'].message,
@@ -136,6 +137,7 @@ const importOrganization: RuleDefinition<ImportNeeds> = {
 
 const importStyle: RuleDefinition<ImportNeeds> = {
   id: 'import-style',
+  analyzer: 'go',
   needs: { formats: ['go'], facts: ['imports'] },
   severity: 'high',
   message: META['import-style'].message,
@@ -163,6 +165,7 @@ const importStyle: RuleDefinition<ImportNeeds> = {
 
 const errorHandling: RuleDefinition<ErrorBindingsNeeds> = {
   id: 'error-handling',
+  analyzer: 'go',
   needs: { formats: ['go'], facts: ['error-bindings'] },
   severity: 'severe',
   message: META['error-handling'].message,
@@ -207,6 +210,7 @@ const errorHandling: RuleDefinition<ErrorBindingsNeeds> = {
 
 const concurrency: RuleDefinition<ConcurrencyNeeds> = {
   id: 'concurrency',
+  analyzer: 'go',
   needs: { formats: ['go'], facts: ['concurrency-primitives'] },
   severity: 'severe',
   message: META['concurrency'].message,
@@ -232,6 +236,7 @@ const concurrency: RuleDefinition<ConcurrencyNeeds> = {
 
 const channelDeadlock: RuleDefinition<ChannelNeeds> = {
   id: 'channel-deadlock',
+  analyzer: 'go',
   needs: { formats: ['go'], facts: ['channel-operations'] },
   severity: 'critical',
   message: META['channel-deadlock'].message,

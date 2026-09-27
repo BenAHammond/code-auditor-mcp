@@ -33,6 +33,7 @@ const MESSAGE = 'Module is not imported by any other file and is not a framework
 
 export const unreferencedModuleRule: RuleDefinition<UnreferencedModuleNeeds> = {
   id: 'unreferenced-module',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['file-imports', 'reachability'] },
   severity: 'severe',
   message: MESSAGE,

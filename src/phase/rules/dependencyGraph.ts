@@ -183,6 +183,7 @@ async function suggestionToFindings(
 
 const circularDependency: RuleDefinition<DependencyGraphNeeds> = {
   id: 'circular-dependency',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'severe',
   message: META['circular-dependency'].message,
@@ -198,6 +199,7 @@ const circularDependency: RuleDefinition<DependencyGraphNeeds> = {
 
 const tightCoupling: RuleDefinition<DependencyGraphNeeds> = {
   id: 'tight-coupling',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'high',
   message: META['tight-coupling'].message,
@@ -214,6 +216,7 @@ const tightCoupling: RuleDefinition<DependencyGraphNeeds> = {
 
 const hubNodes: RuleDefinition<DependencyGraphNeeds> = {
   id: 'hub-nodes',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'high',
   message: META['hub-nodes'].message,
@@ -249,6 +252,7 @@ const hubNodes: RuleDefinition<DependencyGraphNeeds> = {
 
 const orphanedNodes: RuleDefinition<DependencyGraphNeeds> = {
   id: 'orphaned-nodes',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'severe',
   message: META['orphaned-nodes'].message,
@@ -281,6 +285,7 @@ const orphanedNodes: RuleDefinition<DependencyGraphNeeds> = {
 
 const breakCycles: RuleDefinition<DependencyGraphNeeds> = {
   id: 'break-cycles',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'severe',
   message: META['break-cycles'].message,
@@ -296,6 +301,7 @@ const breakCycles: RuleDefinition<DependencyGraphNeeds> = {
 
 const reduceCoupling: RuleDefinition<DependencyGraphNeeds> = {
   id: 'reduce-coupling',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'high',
   message: META['reduce-coupling'].message,
@@ -311,6 +317,7 @@ const reduceCoupling: RuleDefinition<DependencyGraphNeeds> = {
 
 const splitResponsibilities: RuleDefinition<DependencyGraphNeeds> = {
   id: 'split-responsibilities',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'high',
   message: META['split-responsibilities'].message,
@@ -326,6 +333,7 @@ const splitResponsibilities: RuleDefinition<DependencyGraphNeeds> = {
 
 const reviewOrphans: RuleDefinition<DependencyGraphNeeds> = {
   id: 'review-orphans',
+  analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
   severity: 'severe',
   message: META['review-orphans'].message,

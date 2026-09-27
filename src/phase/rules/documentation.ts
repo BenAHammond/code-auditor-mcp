@@ -223,6 +223,7 @@ function tagEligibleItems(symbols: FileSymbols[], cfg: DocumentationConfig): Tag
 
 const functionDocumentation: RuleDefinition<DocumentationNeeds> = {
   id: 'function-documentation',
+  analyzer: 'documentation',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['function-documentation'].message,
@@ -254,6 +255,7 @@ const functionDocumentation: RuleDefinition<DocumentationNeeds> = {
 
 const parameterDocumentation: RuleDefinition<DocumentationNeeds> = {
   id: 'parameter-documentation',
+  analyzer: 'documentation',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['parameter-documentation'].message,
@@ -280,6 +282,7 @@ const parameterDocumentation: RuleDefinition<DocumentationNeeds> = {
 
 const returnDocumentation: RuleDefinition<DocumentationNeeds> = {
   id: 'return-documentation',
+  analyzer: 'documentation',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['return-documentation'].message,
@@ -306,6 +309,7 @@ const returnDocumentation: RuleDefinition<DocumentationNeeds> = {
 
 const classDocumentation: RuleDefinition<DocumentationNeeds> = {
   id: 'class-documentation',
+  analyzer: 'documentation',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['class-documentation'].message,
@@ -336,6 +340,7 @@ const classDocumentation: RuleDefinition<DocumentationNeeds> = {
 
 const methodDocumentation: RuleDefinition<DocumentationNeeds> = {
   id: 'method-documentation',
+  analyzer: 'documentation',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
   severity: 'high',
   message: META['method-documentation'].message,

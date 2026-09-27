@@ -155,6 +155,7 @@ function detectUnescapedHtml(candidates: readonly SecurityCandidate[]): Finding[
 
 const commandInjectionRisk: RuleDefinition<SecurityDefectNeeds> = {
   id: 'command-injection-risk',
+  analyzer: 'security',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['security-candidates'] },
   severity: 'critical',
   message: META_INJ.message,
@@ -168,6 +169,7 @@ const commandInjectionRisk: RuleDefinition<SecurityDefectNeeds> = {
 
 const dynamicRequireOfProjectPath: RuleDefinition<SecurityDefectNeeds> = {
   id: 'dynamic-require-of-project-path',
+  analyzer: 'security',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['security-candidates'] },
   severity: 'critical',
   message: META_REQ.message,
@@ -181,6 +183,7 @@ const dynamicRequireOfProjectPath: RuleDefinition<SecurityDefectNeeds> = {
 
 const unescapedHtmlInterpolation: RuleDefinition<SecurityDefectNeeds> = {
   id: 'unescaped-html-interpolation',
+  analyzer: 'security',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['security-candidates'] },
   severity: 'severe',
   message: META_HTML.message,

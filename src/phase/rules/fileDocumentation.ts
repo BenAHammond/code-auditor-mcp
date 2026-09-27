@@ -117,6 +117,7 @@ function matchesAnyGlob(filePath: string, globs: string[]): boolean {
 
 const fileDocumentation: RuleDefinition<FileDocumentationNeeds> = {
   id: 'file-documentation',
+  analyzer: 'documentation',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-header'] },
   severity: 'high',
   message: META['file-documentation'].message,

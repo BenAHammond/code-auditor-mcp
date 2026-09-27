@@ -355,6 +355,7 @@ function detectImportForm(
 
 const usagePair: RuleDefinition<ConventionNeeds> = {
   id: 'conventions/usage-pair',
+  analyzer: 'conventions',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['function-index', 'mined-conventions'] },
   severity: 'high',
   message: META['conventions/usage-pair'].message,
@@ -370,6 +371,7 @@ const usagePair: RuleDefinition<ConventionNeeds> = {
 
 const errorHandling: RuleDefinition<ConventionNeeds> = {
   id: 'conventions/error-handling',
+  analyzer: 'conventions',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['function-index', 'mined-conventions'] },
   severity: 'high',
   message: META['conventions/error-handling'].message,
@@ -385,6 +387,7 @@ const errorHandling: RuleDefinition<ConventionNeeds> = {
 
 const naming: RuleDefinition<ConventionNeeds> = {
   id: 'conventions/naming',
+  analyzer: 'conventions',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['function-index', 'mined-conventions'] },
   severity: 'high',
   message: META['conventions/naming'].message,
@@ -414,6 +417,7 @@ type ExportShapeNeeds = {
 
 const exportShape: RuleDefinition<ExportShapeNeeds> = {
   id: 'conventions/export-shape',
+  analyzer: 'conventions',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['function-index', 'mined-conventions', 'export-form'] },
   severity: 'high',
   message: META['conventions/export-shape'].message,
@@ -443,6 +447,7 @@ type ImportFormNeeds = {
 
 const importForm: RuleDefinition<ImportFormNeeds> = {
   id: 'conventions/import-form',
+  analyzer: 'conventions',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['function-index', 'import-form', 'mined-conventions'] },
   severity: 'high',
   message: META['conventions/import-form'].message,

@@ -205,6 +205,7 @@ function detectHardcodedSecret(candidates: readonly SecretCandidate[]): Finding[
 
 const hardcodedSecret: RuleDefinition<SecretNeeds> = {
   id: 'hardcoded-secret',
+  analyzer: 'secrets',
   needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['secret-candidates'] },
   severity: 'critical',
   message: META.message,
