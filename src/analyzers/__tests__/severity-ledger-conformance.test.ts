@@ -83,9 +83,13 @@ const EMIT_FILES = [
   // auditRunner, not an analyzer); the rest join here wholesale at §15 when the
   // legacy analyzer emit sites are deleted.
   'src/phase/rules/dry.ts',
-  'src/languages/go/analyzer-src/solid.go',
-  'src/languages/go/analyzer-src/analyzer.go',
-  'src/languages/go/analyzer-src/dataaccess.go',
+  // Spec 68 §9 — the Go subprocess emit sites (analyzer-src/*.go) are deleted;
+  // the same verdicts now emit from the phase rule bodies as `ruleId`/`severity`
+  // `Finding`s.
+  'src/phase/rules/goRules.ts',
+  'src/phase/rules/solid.ts',
+  'src/phase/rules/dataAccess.ts',
+  'src/phase/rules/schema.ts',
 ];
 
 /** Session 15 recorded the Go-subprocess rules under `analyzer/rule` notation;
@@ -196,6 +200,17 @@ function extractEmitViolation(src: string): Array<{ rule: string; severity: Seve
   return out;
 }
 
+/** Positional `finding('ruleId', 'severity', …)` emit shape — the phase-model Go
+ *  rule bodies (goRules.ts, solid.ts) build `Finding`s through a per-file
+ *  `finding(ruleId, severity, …)` helper rather than an inline object literal, so
+ *  the `ruleId:`/`severity:` field extractor above cannot see them. */
+function extractFindingCalls(src: string): Array<{ rule: string; severity: Severity }> {
+  const out: Array<{ rule: string; severity: Severity }> = [];
+  const re = /finding\(\s*['"]([a-z][\w/-]*)['"],\s*['"](critical|severe|high)['"]/g;
+  for (let m; (m = re.exec(src)); ) out.push({ rule: m[1], severity: m[2] as Severity });
+  return out;
+}
+
 /** HEALTH_SEVERITY map — the four dependency-graph action rules whose severity
  *  lives only in the pipeline reducer, not the builder. */
 function extractHealthSeverity(src: string): Array<{ rule: string; severity: Severity }> {
@@ -247,6 +262,7 @@ function scanEmitSites(): { emits: Map<string, Set<Severity>>; diagnosticKinds: 
     add(extractPositionalEmit(src));
     add(extractEmitViolation(src));
     add(extractHealthSeverity(src));
+    add(extractFindingCalls(src));
     add(extractGoPairs(src));
     for (const kind of extractDiagnosticKinds(src)) diagnosticKinds.add(kind);
   }

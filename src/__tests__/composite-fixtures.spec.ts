@@ -36,7 +36,7 @@ import { mkdtemp, cp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { initializeLanguages } from '../languages/index.js';
 import { initParsers } from '../languages/tree-sitter/parser.js';
-import { runAuditDispatch } from '../auditRouter.js';
+import { createAuditRunner } from '../auditRunner.js';
 import type { Violation } from '../types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,7 +53,7 @@ async function auditFixture(fixture: string): Promise<string[]> {
   const tmp = await mkdtemp(join(tmpdir(), 'ca-composite-'));
   try {
     await cp(src, tmp, { recursive: true });
-    const result = await runAuditDispatch({ projectRoot: tmp, writeToLedger: false } as any);
+    const result = await createAuditRunner({ projectRoot: tmp, writeToLedger: false } as any).run();
     const all: Violation[] = Object.values(result.analyzerResults as Record<string, any>).flatMap(
       (r: any) => r.violations ?? [],
     );

@@ -20,7 +20,7 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
-import { runAuditDispatch } from '../auditRouter.js';
+import { createAuditRunner } from '../auditRunner.js';
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { PACKAGE_VERSION } from '../constants.js';
 import {
@@ -511,11 +511,11 @@ export class DaemonCore extends EventEmitter {
     this.emitState();
 
     const start = Date.now();
-    const result = await runAuditDispatch({
+    const result = await createAuditRunner({
       projectRoot: this.projectRoot,
       configName: this.configName,
       progressCallback: (p) => this.onSeedProgress(p),
-    });
+    }).run();
     const durationMs = Date.now() - start;
 
     // Reconcile deletions in the functions index. The full audit above refreshes
@@ -670,11 +670,11 @@ export class DaemonCore extends EventEmitter {
 
       const scopeFiles = [...changed, ...added].map((r) => path.join(this.projectRoot, r));
       const start = Date.now();
-      const result = await runAuditDispatch({
+      const result = await createAuditRunner({
         projectRoot: this.projectRoot,
         configName: this.configName,
         scope: scopeFiles.length > 0 ? scopeFiles : undefined,
-      });
+      }).run();
       const durationMs = Date.now() - start;
 
       const fresh = splitFindings(result.analyzerResults, this.projectRoot);

@@ -6,7 +6,6 @@
  */
 
 import { createAuditRunner } from './auditRunner.js';
-import { runAuditDispatch } from './auditRouter.js';
 import type { Severity, AuditResult, AuditRunnerOptions, Violation } from './types.js';
 import {
   registerFunctions, 
@@ -548,11 +547,8 @@ export class ToolHandlers {
       ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
     };
 
-    // Route through the single audit entry point. Whether `.go` files route to
-    // the Go subprocess or fall through to the TypeScript pipeline is decided
-    // in one place (`runAuditDispatch`), shared with the CLI — not re-detected
-    // here as a second copy that can drift from the CLI.
-    const auditResult: AuditResult = await runAuditDispatch(options);
+    // Route through the single audit entry point shared with the CLI.
+    const auditResult: AuditResult = await createAuditRunner(options).run();
 
     // Handle function indexing if enabled and functions were collected
     let indexingResult = null;

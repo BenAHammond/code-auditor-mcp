@@ -1,4 +1,4 @@
-import { runAuditDispatch } from '../auditRouter.js';
+import { createAuditRunner } from '../auditRunner.js';
 import { AuditAbortedError, AuditHandoffError } from '../types.js';
 import { initParsers } from '../languages/index.js';
 import { CodeIndexDB } from '../codeIndexDB.js';
@@ -40,7 +40,7 @@ async function handleRun(message: Extract<ParentToWorkerMessage, { kind: 'run-au
     // language-based), and the `.go` half must reach the Go subprocess. The
     // dispatch groups the shard's `explicitFiles` by language rather than
     // rediscovering the whole repo (Spec 66 follow-up, third entry point).
-    const result = await runAuditDispatch({
+    const result = await createAuditRunner({
       ...base,
       // The parent (runAuditJob) is the single ledger writer; a worker writing
       // the ledger concurrently contends with the parent's syncFileIndex
@@ -55,7 +55,7 @@ async function handleRun(message: Extract<ParentToWorkerMessage, { kind: 'run-au
           progress,
         });
       },
-    });
+    }).run();
     // Close this worker's DB connection before signaling the parent. The
     // parent (runAuditJob) proceeds straight into syncFileIndex the moment it
     // receives worker-result; if this worker is then SIGTERM'd by

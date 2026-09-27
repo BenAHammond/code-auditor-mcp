@@ -10,7 +10,6 @@ import './native-bootstrap.js';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { createAuditRunner } from './auditRunner.js';
-import { runAuditDispatch } from './auditRouter.js';
 import { promises as fs } from 'fs';
 import { createInterface } from 'readline';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
@@ -166,12 +165,12 @@ program
         }
       }
 
-      const result = await runAuditDispatch({
+      const result = await createAuditRunner({
         projectRoot: options.path,
         configName: options.config,
         outputDirectory: options.output,
         presets: presetIds
-      });
+      }).run();
 
       const violations = Object.values(result.analyzerResults).flatMap(
         (r: any) => r.violations || []

@@ -27,7 +27,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initializeLanguages, initParsers } from '../languages/index.js';
-import { runAuditDispatch } from '../auditRouter.js';
+import { createAuditRunner } from '../auditRunner.js';
 import { splitRoutes, attributeRoutes, routeFor } from '../phase/routing.js';
 import { MIGRATED_RULES } from '../phase/rules/registry.js';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
@@ -86,7 +86,7 @@ describe('Spec 68 §11.1 — the both-paths route split', () => {
     const dir = await mkdtemp(join(tmpdir(), 'ca-spec68-routing-'));
     try {
       await writeFile(join(dir, 'a.ts'), 'export const x = 1;\n');
-      const result = await runAuditDispatch({ projectRoot: dir, writeToLedger: false } as any);
+      const result = await createAuditRunner({ projectRoot: dir, writeToLedger: false } as any).run();
 
       const attribution = result.metadata?.routeAttribution;
       expect(attribution).toBeDefined();

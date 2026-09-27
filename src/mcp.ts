@@ -74,7 +74,7 @@ import { createWriteStream, mkdirSync, realpathSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-import { runAuditDispatch } from './auditRouter.js';
+import { createAuditRunner } from './auditRunner.js';
 import type { AuditResult, AuditScope, FunctionMetadata, Severity } from './types.js';
 import { searchFunctions, findDefinition, syncFileIndex, getDatabase } from './codeIndexService.js';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
@@ -309,7 +309,7 @@ export function registerAllTools(registry: ToolRegistry): void {
           // `.go` files dispatch to the Go subprocess instead of being silently
           // skipped (task #255 — the stdio MCP server bypassed per-language
           // dispatch and left every Go rule `notApplicable`).
-          const auditResult = await runAuditDispatch({
+          const auditResult = await createAuditRunner({
             projectRoot: auditPath,
             enabledAnalyzers: analyzers,
             minSeverity,
@@ -317,7 +317,7 @@ export function registerAllTools(registry: ToolRegistry): void {
             indexFunctions,
             scope: scope !== 'all' ? (scope as AuditScope) : undefined,
             ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
-          });
+          }).run();
 
           if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
             try {
@@ -590,7 +590,7 @@ export function registerAllTools(registry: ToolRegistry): void {
           ...((args.analyzerConfigs as Record<string, any>) || {}),
         };
 
-        const auditResult = await runAuditDispatch({
+        const auditResult = await createAuditRunner({
           projectRoot: auditPath,
           enabledAnalyzers: DEFAULT_ANALYZERS,
           minSeverity: 'high' as Severity,
@@ -614,7 +614,7 @@ export function registerAllTools(registry: ToolRegistry): void {
               total: p.total,
             });
           },
-        });
+        }).run();
         const healthScore = calculateHealthScore(auditResult);
 
         let indexingResult: any = null;

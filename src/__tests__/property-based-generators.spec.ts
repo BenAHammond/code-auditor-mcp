@@ -29,7 +29,7 @@ import {
   DEFAULT_DATA_ACCESS_CONFIG,
   hasWriteVerb,
 } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
-import { runAuditDispatch } from '../auditRouter.js';
+import { createAuditRunner } from '../auditRunner.js';
 
 let adapter: LanguageAdapter;
 let solid: UniversalSOLIDAnalyzer;
@@ -183,7 +183,7 @@ describe('R3 property — styles/undefined-class (two-file oracle)', () => {
         join(dir, 'view.tsx'),
         'export const v = () => <div className="cardd" />;',
       );
-      const result = await runAuditDispatch({ projectRoot: dir, writeToLedger: false } as any);
+      const result = await createAuditRunner({ projectRoot: dir, writeToLedger: false } as any).run();
       const all = Object.values(result.analyzerResults ?? {}).flatMap(
         (r: any) => r.violations ?? [],
       );
@@ -191,7 +191,7 @@ describe('R3 property — styles/undefined-class (two-file oracle)', () => {
       expect(undefinedClass.length).toBeGreaterThanOrEqual(1);
 
       await writeFile(join(dir, 'view.tsx'), 'export const v = () => <div className="card" />;');
-      const result2 = await runAuditDispatch({ projectRoot: dir, writeToLedger: false } as any);
+      const result2 = await createAuditRunner({ projectRoot: dir, writeToLedger: false } as any).run();
       const all2 = Object.values(result2.analyzerResults ?? {}).flatMap(
         (r: any) => r.violations ?? [],
       );
