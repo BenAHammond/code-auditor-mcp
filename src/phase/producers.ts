@@ -67,6 +67,7 @@ import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 import { mineConventionsFromFunctionIndex } from './conventionMining.js';
 import { replayDdlDeclarations } from '../analyzers/universal/schema/migrations.js';
 import { extractFileImports } from './fileImports.js';
+import { extractTypeDeclarations } from './typeDeclarations.js';
 import { computeReachability } from './reachability.js';
 import { DEFAULT_VIRTUAL_MODULES } from '../graph/importClassification.js';
 
@@ -131,6 +132,7 @@ const codeBlockProcess = (file: ParsedFile): FactFragment<'code-block'> => extra
 const jsonDocumentProcess = (file: ParsedFile): FactFragment<'json-document'> => extractJsonDocument(file);
 const fileImportsProcess = (file: ParsedFile): FactFragment<'file-imports'> =>
   [extractFileImports((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file))];
+const typeDeclarationsProcess = (file: ParsedFile): FactFragment<'type-declarations'> => extractTypeDeclarations(file as AstFile);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -248,6 +250,12 @@ export const PRODUCERS = {
     tsx: fileProducer('file-imports', 'tsx', fileImportsProcess),
     javascript: fileProducer('file-imports', 'javascript', fileImportsProcess),
     go: fileProducer('file-imports', 'go', fileImportsProcess),
+  },
+  // §9 — Go named struct/interface declarations, served only for the `go`
+  // format (the Go grammar is the only supplier). `struct-size` and the Go arm
+  // of `interface-size` read it.
+  'type-declarations': {
+    go: fileProducer('type-declarations', 'go', typeDeclarationsProcess),
   },
 } satisfies ProducerMap;
 
@@ -403,4 +411,5 @@ export const FACT_KINDS = {
   'schema-validations': true,
   'file-imports': true,
   'reachability': true,
+  'type-declarations': true,
 } satisfies Record<FactKind, true>;

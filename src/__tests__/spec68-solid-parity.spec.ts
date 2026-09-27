@@ -57,11 +57,13 @@ async function parity(ruleId: string, source: string, config: ThresholdValues) {
   return { old, nu };
 }
 
-/** The nine TypeScript SOLID rules, in registry order — the slice under test. */
+/** The TypeScript SOLID rules plus the §9 Go re-declaration, in registry order —
+ *  the slice under test. `struct-size` (Go-only) is asserted present but its
+ *  parity is pinned by `spec68-go-solid-parity.spec.ts`, not here. */
 const RULE_IDS = solidRules.map((r) => r.id);
 
 describe('Spec 68 SOLID parity (new analyze(ctx) === old UniversalSOLIDAnalyzer)', () => {
-  it('covers exactly the nine migrated SOLID rules', () => {
+  it('covers exactly the ten SOLID rules in registry order', () => {
     expect(RULE_IDS).toEqual([
       'solid/class-size',
       'solid/method-complexity',
@@ -72,6 +74,7 @@ describe('Spec 68 SOLID parity (new analyze(ctx) === old UniversalSOLIDAnalyzer)
       'interface-size',
       'solid/liskov-substitution',
       'solid/dependency-inversion',
+      'struct-size',
     ]);
   });
 

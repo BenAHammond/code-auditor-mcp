@@ -74,6 +74,7 @@ export interface FactShapes {
   'schema-validations': SchemaValidationFact[];
   'file-imports': FileImportsFact[];
   'reachability': ReachabilityFact;
+  'type-declarations': TypeDeclarationsFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -897,6 +898,28 @@ export type ReachabilityFact = {
   packageEntryPoints: string[];
 };
 
+/**
+ * One Go type declaration (a named struct or a named interface), as the
+ * `type-declarations` producer projects it (§9). The serializable projection of
+ * the Go binary's `Struct`/`Interface` extracts — the name, 1-based start line,
+ * and the member count the size rules threshold on:
+ *
+ *   - a struct's `fieldCount` is the *expanded* field-name count (a
+ *     `GroupA, GroupB, GroupC int` field is three, an embedded `Embedded` field
+ *     is one), matching the Go binary's `len(structType.Fields.List)` expansion;
+ *   - an interface's `methodCount` is its named `method_elem` count — embedded
+ *     types are not methods, matching the Go binary's `len(method.Names) > 0`
+ *     filter.
+ *
+ * `struct-size` (fieldCount > 15) and the Go arm of `interface-size`
+ * (methodCount > 10) read this fact. Anonymous struct/interface literals are
+ * never `type_spec` nodes, so they are absent here (the Go binary likewise only
+ * extracts named `*ast.TypeSpec` declarations).
+ */
+export type TypeDeclarationsFact =
+  | { kind: 'struct'; file: string; name: string; line: number; fieldCount: number }
+  | { kind: 'interface'; file: string; name: string; line: number; methodCount: number };
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -1049,6 +1072,7 @@ export interface SupplyingFormats {
   'code-block': 'typescript' | 'tsx' | 'javascript';
   'json-document': 'json';
   'file-imports': 'typescript' | 'tsx' | 'javascript' | 'go';
+  'type-declarations': 'go';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */

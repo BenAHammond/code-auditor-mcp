@@ -7,10 +7,12 @@
  * comparison. No AST, no adapter, no source code reaches a rule — the tree died
  * with the file.
  *
- * Nine TypeScript rules migrate here. The four Go size rules (`switch-size`,
- * `function-size`, `struct-size`, the Go `liskov-substitution`) are re-declared
- * against the Go binary's facts in §9; `interface-size`'s Go arm is likewise a
- * §9 re-declaration, so its `needs.formats` here is the TypeScript arm only.
+ * Nine TypeScript rules migrate here. The Go size rules are re-declared against
+ * the Go facts in §9: `struct-size` and `interface-size`'s Go arm read the
+ * `type-declarations` fact (§9); `switch-size`, `function-size` and the Go
+ * `liskov-substitution` read the §9 Go facts added in their own slices. The
+ * thresholds are the Go binary's hardcoded values (struct 15, interface 10),
+ * not the TS config keys (`maxInterfaceMembers` is the TS arm only).
  *
  * `message` / `docs` / `thresholds` / `samples` are the same text the rule
  * registry already carries (ruleRegistry.ts) — pulled by reference so the two
@@ -35,6 +37,18 @@ import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 type SolidNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
   readonly facts: readonly ['file-symbols'];
+};
+
+/** The Go-only SOLID size rules read the `type-declarations` fact (§9). */
+type GoNeeds = {
+  readonly formats: readonly ['go'];
+  readonly facts: readonly ['type-declarations'];
+};
+
+/** `interface-size` reads both arms: TS symbols + Go type declarations. */
+type InterfaceSizeNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript', 'go'];
+  readonly facts: readonly ['file-symbols', 'type-declarations'];
 };
 
 /** Read a numeric threshold with a documented fallback (the same value as
@@ -320,9 +334,9 @@ const parameterCount: RuleDefinition<SolidNeeds> = {
 
 // ── interface-size ──────────────────────────────────────────────────────────
 
-const interfaceSize: RuleDefinition<SolidNeeds> = {
+const interfaceSize: RuleDefinition<InterfaceSizeNeeds> = {
   id: 'interface-size',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['file-symbols', 'type-declarations'] },
   severity: 'high',
   message: META['interface-size'].message,
   docs: META['interface-size'].docs,
@@ -331,6 +345,7 @@ const interfaceSize: RuleDefinition<SolidNeeds> = {
   samples: META['interface-size'].samples,
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
+    // TypeScript arm: `maxInterfaceMembers` (25) over `file-symbols`.
     const max = num(ctx.thresholds, 'maxInterfaceMembers', 25);
     for (const s of ctx.facts['file-symbols']) {
       if (s.kind !== 'interface') continue;
@@ -340,6 +355,45 @@ const interfaceSize: RuleDefinition<SolidNeeds> = {
         'interface-size', 'high',
         `Interface "${iface.name}" has ${iface.memberCount} members, exceeding the maximum of ${max}. Consider splitting this large interface into smaller interfaces.`,
         iface.file, iface.line, iface.column, iface.name,
+      ));
+    }
+    // Go arm: the Go binary's hardcoded threshold (10 methods), read from
+    // `type-declarations`. Column is 0 — the Go binary never sets it.
+    for (const decl of ctx.facts['type-declarations']) {
+      if (decl.kind !== 'interface') continue;
+      if (decl.methodCount <= 10) continue;
+      out.push(finding(
+        'interface-size', 'high',
+        `Interface "${decl.name}" has ${decl.methodCount} methods, exceeding the maximum of 10. Consider splitting this large interface into smaller, more focused interfaces.`,
+        decl.file, decl.line, 0, decl.name,
+      ));
+    }
+    return out;
+  },
+};
+
+// ── struct-size ─────────────────────────────────────────────────────────────
+
+const structSize: RuleDefinition<GoNeeds> = {
+  id: 'struct-size',
+  needs: { formats: ['go'], facts: ['type-declarations'] },
+  severity: 'high',
+  message: META['struct-size'].message,
+  docs: META['struct-size'].docs,
+  thresholds: META['struct-size'].thresholds,
+  thresholdRationale: META['struct-size'].thresholdRationale,
+  samples: META['struct-size'].samples,
+  analyze(ctx): Finding[] {
+    const out: Finding[] = [];
+    for (const decl of ctx.facts['type-declarations']) {
+      if (decl.kind !== 'struct') continue;
+      // The Go binary's hardcoded threshold (15 fields). Column 0 matches the
+      // Go binary, which never sets it.
+      if (decl.fieldCount <= 15) continue;
+      out.push(finding(
+        'struct-size', 'high',
+        `Struct "${decl.name}" has ${decl.fieldCount} fields, exceeding the maximum of 15. Consider splitting this struct into smaller, more focused structs.`,
+        decl.file, decl.line, 0, decl.name,
       ));
     }
     return out;
@@ -412,8 +466,10 @@ const dependencyInversion: RuleDefinition<SolidNeeds> = {
   },
 };
 
-/** The nine TypeScript SOLID rules, in registry order. */
-export const solidRules: readonly RuleDefinition<SolidNeeds>[] = [
+/** The nine TypeScript SOLID rules plus the §9 Go re-declarations, in registry
+ *  order. The type widens to `any` because the rules no longer share one `Needs`
+ *  (the Go rules declare `type-declarations`). */
+export const solidRules: readonly RuleDefinition<any>[] = [
   classSize,
   methodComplexity,
   openClosed,
@@ -423,4 +479,5 @@ export const solidRules: readonly RuleDefinition<SolidNeeds>[] = [
   interfaceSize,
   liskovSubstitution,
   dependencyInversion,
+  structSize,
 ];

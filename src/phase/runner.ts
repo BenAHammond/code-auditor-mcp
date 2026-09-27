@@ -67,6 +67,7 @@ import type {
   CodeBlockFact,
   JsonDocumentFact,
   SchemaValidationFact,
+  TypeDeclarationsFact,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -134,11 +135,15 @@ export async function buildFileSymbols(files: readonly InputFile[]): Promise<Fil
   return symbols;
 }
 
-/** Analyze the assembled `file-symbols` fact with the SOLID rules. */
+/** Analyze the assembled `file-symbols` fact with the SOLID rules. The union
+ *  context carries `type-declarations` as `[]` and widens `formats` to include
+ *  `go` so the §9 Go arms (`interface-size`'s Go branch, `struct-size`) reduce an
+ *  empty fact in this TS-only slice rather than a missing one — they produce
+ *  nothing because there are no Go files here. */
 export async function analyzeFileSymbols(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
-    facts: { 'file-symbols': symbols },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
+    facts: { 'file-symbols': symbols, 'type-declarations': [] as TypeDeclarationsFact[] },
+    formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
     thresholds,
   };
   const findings: Finding[] = [];
