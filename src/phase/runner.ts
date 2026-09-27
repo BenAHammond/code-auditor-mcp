@@ -58,6 +58,7 @@ import type {
   FunctionBodyFact,
   ReactComponentScan,
   FileHeaderFact,
+  CodeBlockFact,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -487,7 +488,7 @@ export async function runConventionsSlice(files: readonly InputFile[], threshold
   return analyzeConventions(facts, conventions, thresholds);
 }
 
-// ── dry slice (imports + string-literals → duplicate-import / -string-literal) ──
+// ── dry slice (imports + string-literals + code-block → the five DRY rules) ──
 
 /**
  * Parse → Process for the `imports` fact. Returns the assembled corpus fact
@@ -527,16 +528,44 @@ export async function buildStringLiterals(files: readonly InputFile[]): Promise<
   return facts;
 }
 
-/** Analyze the assembled `imports` + `string-literals` facts with the DRY rules.
- *  Each rule reads only the fact its `needs` declares; the union context carries
- *  both. */
+/**
+ * Parse → Process for the `code-block` fact. Returns the assembled corpus fact
+ * (every code block + shape fragment from every file, ASTs already freed). The
+ * producer projects the raw blocks/fragments with no threshold and no dedup;
+ * the three block rules re-apply `minLineThreshold`/`similarityThreshold`/
+ * `minShapeNames`/`excludePatterns`/check-gates over this plain data.
+ */
+export async function buildCodeBlocks(files: readonly InputFile[]): Promise<CodeBlockFact[]> {
+  const facts: CodeBlockFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('code-block', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as CodeBlockFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/**
+ * Analyze the assembled `imports` + `string-literals` + `code-block` facts with
+ * the five DRY rules. Each rule reads only the fact its `needs` declares; the
+ * union context carries all three. The three block rules partition `code-block`
+ * by file before their filter → dedupe → compare, because the legacy
+ * `analyzeAST` ran once per file (a block in file A is never compared against a
+ * block in file B).
+ */
 export async function analyzeDry(
   imports: ImportFact[],
   stringLiterals: StringLiteralFact[],
+  codeBlocks: CodeBlockFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
   const ctx = {
-    facts: { 'imports': imports, 'string-literals': stringLiterals },
+    facts: { 'imports': imports, 'string-literals': stringLiterals, 'code-block': codeBlocks },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
   };
@@ -547,13 +576,14 @@ export async function analyzeDry(
   return findings;
 }
 
-/** The dry slice: parse → imports + string-literals → DRY rules → findings. */
+/** The dry slice: parse → imports + string-literals + code-block → DRY rules → findings. */
 export async function runDrySlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const [imports, stringLiterals] = await Promise.all([
+  const [imports, stringLiterals, codeBlocks] = await Promise.all([
     buildImports(files),
     buildStringLiterals(files),
+    buildCodeBlocks(files),
   ]);
-  return analyzeDry(imports, stringLiterals, thresholds);
+  return analyzeDry(imports, stringLiterals, codeBlocks, thresholds);
 }
 
 // ── security slice (string-literals → hardcoded-connection) ─────────────────

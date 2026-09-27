@@ -64,6 +64,7 @@ export interface FactShapes {
   'mined-conventions': MinedConvention[];
   'react-component': ReactComponentScan[];
   'file-header': FileHeaderFact[];
+  'code-block': CodeBlockFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -642,6 +643,54 @@ export type FileHeaderFact = {
   headerDoc: string | null;
 };
 
+/**
+ * The per-file `code-block` fact — the serializable projection of the two things
+ * `UniversalDRYAnalyzer` extracted from an AST: *blocks* (function/class/method/
+ * control-flow spans, with the normalized hash and structural skeleton the
+ * duplicate rules compare) and *shape fragments* (an object literal's field
+ * names or a call chain's method names, which `similar-expression` compares).
+ *
+ * One fact kind carries both because the three DRY rules share the one walk; the
+ * `kind` discriminator is the split the rule reads. The producer computes `hash`
+ * and `structuralSkeleton` with the default normalization (comments/whitespace
+ * ignored) but applies no threshold and no dedup — `minLineThreshold`,
+ * `similarityThreshold`, `minShapeNames`, `excludePatterns`, the check-gates and
+ * both dedup passes are the rules', re-applied over this plain data in the
+ * legacy order (filter → dedupe → compare).
+ */
+export type CodeBlockFact = CodeBlockBlock | CodeBlockFragment;
+
+/** A code block: an extractable span, with the duplicate rules' comparison keys. */
+export type CodeBlockBlock = {
+  kind: 'block';
+  file: string;
+  nodeType: string;
+  start: { line: number; column: number };
+  end: { line: number; column: number };
+  text: string;
+  /** SHA-256 of the normalized text (exact-duplicate grouping key). */
+  hash: string;
+  /** Token-kind skeleton (identifiers→ID, literals→LIT) for Jaccard similarity. */
+  structuralSkeleton: string;
+  lineCount: number;
+};
+
+/** A shape fragment: an object literal's fields or a call chain's methods. */
+export type CodeBlockFragment = {
+  kind: 'fragment';
+  file: string;
+  /** `'object'` for an object literal, `'chain'` for a call chain. */
+  fragmentKind: 'object' | 'chain';
+  /** Object literals only: the assignment/declaration target (chains leave it undefined). */
+  target?: string;
+  /** Field names (object) or method names (chain), in source order. */
+  names: string[];
+  /** Raw source text, used for the fix patch. */
+  text: string;
+  start: { line: number; column: number };
+  end: { line: number; column: number };
+};
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -787,6 +836,7 @@ export interface SupplyingFormats {
   'data-access-calls': 'typescript' | 'tsx' | 'javascript';
   'react-component': 'typescript' | 'tsx' | 'javascript';
   'file-header': 'typescript' | 'tsx' | 'javascript';
+  'code-block': 'typescript' | 'tsx' | 'javascript';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */

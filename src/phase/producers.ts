@@ -43,6 +43,7 @@ import { extractFunctionIndex } from './functionIndex.js';
 import { extractFunctionBodies } from './functionBodies.js';
 import { extractReactComponents } from './reactComponents.js';
 import { extractFileHeader } from './fileHeader.js';
+import { extractCodeBlocks } from './codeBlocks.js';
 import { extractImports } from './imports.js';
 import { extractStringLiterals } from './stringLiterals.js';
 import { extractSecretCandidates } from './secretCandidates.js';
@@ -109,6 +110,7 @@ const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entiti
 const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file as AstFile);
 const reactComponentProcess = (file: ParsedFile): FactFragment<'react-component'> => [extractReactComponents(file as AstFile)];
 const fileHeaderProcess = (file: ParsedFile): FactFragment<'file-header'> => extractFileHeader(file as AstFile);
+const codeBlockProcess = (file: ParsedFile): FactFragment<'code-block'> => extractCodeBlocks(file as AstFile);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -189,6 +191,11 @@ export const PRODUCERS = {
     tsx: fileProducer('file-header', 'tsx', fileHeaderProcess),
     javascript: fileProducer('file-header', 'javascript', fileHeaderProcess),
   },
+  'code-block': {
+    typescript: fileProducer('code-block', 'typescript', codeBlockProcess),
+    tsx: fileProducer('code-block', 'tsx', codeBlockProcess),
+    javascript: fileProducer('code-block', 'javascript', codeBlockProcess),
+  },
 } satisfies ProducerMap;
 
 // ── Corpus producers producing derived facts (no format) ─────────────────────
@@ -268,4 +275,5 @@ export const FACT_KINDS = {
   'mined-conventions': true,
   'react-component': true,
   'file-header': true,
+  'code-block': true,
 } satisfies Record<FactKind, true>;

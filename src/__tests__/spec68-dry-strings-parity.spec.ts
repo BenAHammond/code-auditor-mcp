@@ -68,8 +68,14 @@ async function parity(source: string) {
 }
 
 describe('Spec 68 dry parity (new analyze(ctx) === old checkDuplicateStrings)', () => {
-  it('covers exactly the two import/string-servable DRY rules', () => {
-    expect(dryRules.map((r) => r.id)).toEqual(['duplicate-import', 'duplicate-string-literal']);
+  it('covers exactly the five import/string/code-block-servable DRY rules', () => {
+    expect(dryRules.map((r) => r.id)).toEqual([
+      'duplicate-import',
+      'duplicate-string-literal',
+      'dry/duplicate',
+      'dry/structural-similarity',
+      'dry/similar-expression',
+    ]);
   });
 
   it('three identical string literals fire once, anchored at the first occurrence', async () => {
