@@ -40,6 +40,7 @@ import type {
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
+import { extractImports } from './imports.js';
 import { extractStylesCss } from './stylesCss.js';
 import { extractStylesSource } from './stylesSource.js';
 import { extractDataAccessCalls } from './dataAccessCalls.js';
@@ -88,6 +89,7 @@ function fileProducer<K extends FileFactKind, F extends SupplyingFormats[K]>(
 // AST consumer.
 const fileSymbolsProcess = (file: ParsedFile): FactFragment<'file-symbols'> => extractFileSymbols(file as AstFile);
 const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> => extractFunctionIndex(file as AstFile);
+const importsProcess = (file: ParsedFile): FactFragment<'imports'> => extractImports(file as AstFile);
 const ddlProcess = (file: ParsedFile): FactFragment<'ddl-declarations'> => extractSchemaCode(file);
 const schemaUsageProcess = (file: ParsedFile): FactFragment<'schema-usage'> => extractSchemaUsage(file as AstFile);
 const styleProcess = (file: ParsedFile): FactFragment<'style-declarations'> => [extractStylesCss(file as AstFile)];
@@ -106,6 +108,11 @@ export const PRODUCERS = {
     typescript: fileProducer('function-index', 'typescript', functionIndexProcess),
     tsx: fileProducer('function-index', 'tsx', functionIndexProcess),
     javascript: fileProducer('function-index', 'javascript', functionIndexProcess),
+  },
+  'imports': {
+    typescript: fileProducer('imports', 'typescript', importsProcess),
+    tsx: fileProducer('imports', 'tsx', importsProcess),
+    javascript: fileProducer('imports', 'javascript', importsProcess),
   },
   // `ddl-declarations` was `schema-code`: DDL declarations parsed from code.
   // `sql` is the text-only supplier — the whole file is DDL (a migration), so
@@ -205,6 +212,7 @@ export function fileProducerFor<K extends FileFactKind>(
 export const FACT_KINDS = {
   'file-symbols': true,
   'function-index': true,
+  'imports': true,
   'ddl-declarations': true,
   'schema-usage': true,
   'style-declarations': true,

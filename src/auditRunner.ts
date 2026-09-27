@@ -893,6 +893,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               'styles',
               'schema',
               'schema-code',
+              'dry',
             ]);
             for (const f of phaseFindings) {
               const analyzer = ruleAnalyzerOverride[f.ruleId] ?? RULE_REGISTRY[f.ruleId]?.analyzer ?? 'phase';

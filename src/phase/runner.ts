@@ -30,6 +30,7 @@ import { documentationRules } from './rules/documentation.js';
 import { stylesRules } from './rules/styles.js';
 import { crossDomainRules } from './rules/crossDomain.js';
 import { conventionsRules } from './rules/conventions.js';
+import { dryRules } from './rules/dry.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -44,6 +45,7 @@ import type {
   StyleDeclarationsFile,
   FunctionIndexFact,
   MinedConvention,
+  ImportFact,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -471,4 +473,48 @@ export async function runConventionsSlice(files: readonly InputFile[], threshold
   const facts = await buildFunctionIndex(files);
   const conventions = CORPUS_PRODUCERS['mined-conventions'].process({ 'function-index': facts });
   return analyzeConventions(facts, conventions, thresholds);
+}
+
+// ── imports slice (duplicate-import) ────────────────────────────────────────
+
+/**
+ * Parse → Process for the `imports` fact. Returns the assembled corpus fact
+ * (every import statement from every file, ASTs already freed).
+ */
+export async function buildImports(files: readonly InputFile[]): Promise<ImportFact[]> {
+  const facts: ImportFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('imports', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as ImportFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `imports` fact with the DRY rules. */
+export async function analyzeDry(
+  facts: ImportFact[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'imports': facts },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of dryRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The imports slice: parse → imports → duplicate-import → findings. */
+export async function runDrySlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const facts = await buildImports(files);
+  return analyzeDry(facts, thresholds);
 }

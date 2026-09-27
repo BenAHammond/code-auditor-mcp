@@ -42,6 +42,7 @@ export interface FactShapes {
   ast: never;
   'file-symbols': FileSymbols[];
   'function-index': FunctionIndexFact[];
+  'imports': ImportFact[];
   // Source-format names are gone (Spec 68 §2 — "a fact is named for what it
   // is, never for where it came from"; `needs.formats` already says the format):
   //   schema-code  → ddl-declarations   (DDL declarations in code)
@@ -215,6 +216,22 @@ export type FunctionIndexFact = {
   body: string | null;
   functionCalls: string[];
   language: string;
+};
+
+/**
+ * One import statement, the serializable projection of the adapter's
+ * `ImportInfo` (types.ts) — `source` plus the 1-based start position. The
+ * `duplicate-import` rule groups by `(file, source)`: the legacy
+ * `checkDuplicateImports` ran per AST, so two files importing the same module
+ * once are NOT duplicates — only repeats within one file are. `specifiers` is
+ * not projected (no migrated rule reads it; `conventions/import-form`, which
+ * does, stays on the legacy path and reads source text via `parseFileImports`).
+ */
+export type ImportFact = {
+  file: string;
+  source: string;
+  line: number;
+  column: number;
 };
 
 /** A schema declared in JSON (`.codeauditor.json` schemas) or in code (DDL). */
@@ -541,6 +558,7 @@ export type FactFragment<K extends FactKind> = FactShapes[K];
 export interface SupplyingFormats {
   'file-symbols': 'typescript' | 'tsx' | 'javascript';
   'function-index': 'typescript' | 'tsx' | 'javascript';
+  'imports': 'typescript' | 'tsx' | 'javascript';
   'ddl-declarations': 'typescript' | 'tsx' | 'javascript' | 'sql';
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';
