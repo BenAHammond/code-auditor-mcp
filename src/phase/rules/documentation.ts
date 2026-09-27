@@ -21,10 +21,9 @@
  * `ctx.thresholds`, so the merge is idempotent in production and load-bearing
  * only for the parity test, which passes raw config to both sides.
  *
- * The three rules that gate on `offByDefault` config booleans
- * (`parameter-documentation` → `requireParamDocs`, `return-documentation` →
- * `requireReturnDocs`) read that boolean from `ctx.thresholds` and return `[]`
- * when it is off — the migrated form of the registry's `configGate`.
+ * The three rules read only their tuning thresholds; §10 removed the
+ * `requireParamDocs` / `requireReturnDocs` off-by-default gates — these rules now
+ * fire unconditionally and the booleans are dead config until §15 drops them.
  */
 
 import type {
@@ -261,9 +260,6 @@ const parameterDocumentation: RuleDefinition<DocumentationNeeds> = {
   samples: META['parameter-documentation'].samples,
   analyze(ctx): Finding[] {
     const cfg = resolveConfig(ctx.thresholds);
-    // The legacy analyzer gates the whole function scan on `requireFunctionDocs`
-    // before the inner `requireParamDocs` tag check — both must be on.
-    if (!cfg.requireFunctionDocs || !cfg.requireParamDocs) return [];
     const out: Finding[] = [];
     for (const item of tagEligibleItems(ctx.facts['file-symbols'], cfg)) {
       for (const param of checkParameterDocumentation(item.jsDoc, item.parameterNames)) {
@@ -290,8 +286,6 @@ const returnDocumentation: RuleDefinition<DocumentationNeeds> = {
   samples: META['return-documentation'].samples,
   analyze(ctx): Finding[] {
     const cfg = resolveConfig(ctx.thresholds);
-    // Same outer `requireFunctionDocs` gate as the legacy function scan.
-    if (!cfg.requireFunctionDocs || !cfg.requireReturnDocs) return [];
     const out: Finding[] = [];
     for (const item of tagEligibleItems(ctx.facts['file-symbols'], cfg)) {
       if (!item.returnType || item.returnType === 'void') continue;

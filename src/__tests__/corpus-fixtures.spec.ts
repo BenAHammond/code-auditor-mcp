@@ -101,6 +101,13 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
       await expectCompleteSet('d1-workers', [
         'cross-domain::cross-domain/written-never-read@src/statements.ts:26',
         'data-access::loop-query@src/statements.ts:43',
+        'documentation::parameter-documentation@src/escapes.ts:40',
+        'documentation::parameter-documentation@src/statements.ts:22',
+        'documentation::parameter-documentation@src/statements.ts:32',
+        'documentation::parameter-documentation@src/statements.ts:40',
+        'documentation::return-documentation@src/db.ts:22',
+        'documentation::return-documentation@src/escapes.ts:40',
+        'documentation::return-documentation@src/statements.ts:32',
       ]);
     });
   });
@@ -129,6 +136,7 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
     it('fires only the bare-DELETE unfiltered write', async () => {
       await expectCompleteSet('crowd-answer-game', [
         'data-access::unfiltered-query@src/writes.ts:21',
+        'documentation::return-documentation@src/db.ts:18',
       ]);
     });
   });

@@ -37,10 +37,6 @@ type TooManyQueriesNeeds = {
 
 /** Re-homes `checkQueryPatterns` over the `function-bodies` fact. */
 function detectTooManyQueries(facts: readonly FunctionBodyFact[], thresholds: ThresholdValues): Finding[] {
-  // The registry's `configGate` (`validateQueryPatterns`, default true): off
-  // means no findings — the migrated form of the gate.
-  if (thresholds['validateQueryPatterns'] === false) return [];
-
   // Spec 55 R3 — skip test files unless `skipTestFiles` is explicitly false.
   const skipTest = thresholds['skipTestFiles'] !== false;
   // Resolve the ceiling once — the message must never print "undefined". Falls

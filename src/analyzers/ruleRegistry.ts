@@ -38,24 +38,6 @@ export interface RuleRegistryEntry {
   /** The field on the Violation object that holds this ID. */
   field: 'rule' | 'principle' | 'violationType' | 'type' | 'contractType' | 'ruleId' | 'special';
   /**
-   * Optional dot-separated path to a config boolean within the analyzer's namespace.
-   * When the config value is `false`, the rule is `notApplicable` (explicitly disabled).
-   *
-   * Example: `checkStructuralSimilarity` → looked up as config.config.dry.checkStructuralSimilarity.
-   * The path is relative to the analyzer namespace (config.config[analyzer]).
-   */
-  configGate?: string;
-  /**
-   * Spec 66 follow-up — when true, this rule's {@link configGate} defaults to
-   * `false` in the tool's own defaults (the rule ships off and must be opted
-   * into). A false gate then reads `off-by-default` (a named, discoverable
-   * fourth state) rather than `disabled by config` — the latter describes a rule
-   * the user turned off, the former a rule the tool ships off. The distinction
-   * keeps the zero-firing sweep from misclassifying a healthy opt-in rule as a
-   * broken one. Only meaningful alongside `configGate`.
-   */
-  offByDefault?: boolean;
-  /**
    * Spec 33 Item 14 — the input sources this rule consumes, used to promote a
    * zero-violation rule from `unassessed` to `clean` (≥1 input present) or
    * `notApplicable` (all inputs absent). Each entry is one of:
@@ -569,7 +551,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'dry/structural-similarity': {
     analyzer: 'dry',
     field: 'rule',
-    configGate: 'checkStructuralSimilarity',
     input: ['files'],
     resolvable: false,
     message: 'Structurally similar code block detected ({similarity}% similar to {file}:{line}).',
@@ -594,7 +575,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'dry/similar-expression': {
     analyzer: 'dry',
     field: 'rule',
-    configGate: 'checkExpressionSimilarity',
     input: ['files'],
     resolvable: true,
     message: 'Near-identical expression detected ({shared} shared {unit}: {names}). First occurrence at {file}:{line}.',
@@ -653,7 +633,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'duplicate-string-literal': {
     analyzer: 'dry',
     field: 'rule',
-    configGate: 'checkStrings',
     input: ['files'],
     resolvable: false,
     message: 'String literal "{text}" is duplicated {count} times.',
@@ -671,7 +650,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'duplicate-import': {
     analyzer: 'dry',
     field: 'rule',
-    configGate: 'checkImports',
     input: ['files'],
     resolvable: false,
     message: 'Duplicate import of "{module}".',
@@ -812,7 +790,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'hardcoded-secret': {
     analyzer: 'secrets',
     field: 'rule',
-    configGate: 'checkHardcodedSecrets',
     input: ['files'],
     resolvable: true,
     message: 'Hardcoded secret detected: a credential value is embedded in source. Move it to an environment variable or secret store.',
@@ -885,8 +862,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
-    configGate: 'requireParamDocs',
-    offByDefault: true,
     message: 'Parameter "{name}" in function "{func}" is missing a @param tag.',
     docs: 'parameter-documentation',
     thresholds: [],
@@ -904,8 +879,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     field: 'rule',
     input: ['files'],
     resolvable: false,
-    configGate: 'requireReturnDocs',
-    offByDefault: true,
     message: 'Function "{name}" is missing a @returns tag.',
     docs: 'return-documentation',
     thresholds: [],
@@ -1278,7 +1251,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'table-naming-convention': {
     analyzer: 'schema',
     field: 'rule',
-    configGate: 'checkNamingConventions',
     input: ['schema-code'],
     resolvable: false,
     message: 'Table name "{table}" should use snake_case convention.',
@@ -1346,7 +1318,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'too-many-queries': {
     analyzer: 'schema',
     field: 'rule',
-    configGate: 'validateQueryPatterns',
     input: ['schema-code'],
     resolvable: false,
     message: 'Function "{name}" has {count} queries, exceeding the maximum of {max}.',
@@ -1414,7 +1385,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'missing-props': {
     analyzer: 'react',
     field: 'rule',
-    configGate: 'requirePropTypes',
     input: ['files'],
     resolvable: false,
     message: 'React component "{name}" is missing prop-types.',
@@ -1449,7 +1419,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'performance': {
     analyzer: 'react',
     field: 'rule',
-    configGate: 'requireMemoization',
     input: ['files'],
     resolvable: false,
     message: 'React component "{name}" is missing memoization.',

@@ -209,11 +209,10 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     // is opt-in strict mode; off by default so a documented function that omits
     // exhaustive @param/@returns tags is not flagged as a defect.
     //
-    // These two defaults are NOT the discoverable pointer for "this rule ships
-    // off": the registry marks both rules `offByDefault: true` with their
-    // `configGate` (`requireParamDocs` / `requireReturnDocs`), so a false gate
-    // surfaces as the named `off-by-default` coverage state — with the key to
-    // enable in the reason — in every audit report, not silently as source here.
+    // §10 removed the `requireParamDocs` / `requireReturnDocs` off-by-default
+    // gates: parameter-documentation and return-documentation now fire
+    // unconditionally. These two booleans are dead config (nothing reads them)
+    // and are dropped by the §15 deletions.
     requireParamDocs: false,
     requireReturnDocs: false,
     minDescriptionLength: 2,       // Spec 11 R3 sweep: 10 → 2 (precision-first)

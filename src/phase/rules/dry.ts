@@ -165,8 +165,10 @@ interface DryBlockConfig {
 /**
  * The defaults re-declared from `DEFAULT_DRY_CONFIG` (UniversalDRYAnalyzer.ts) —
  * the same merge the legacy `analyzeAST` did before extraction. `excludePatterns`
- * is verbatim (the test/spec/tests-dir globs); `checkStructuralSimilarity` is off
- * and `checkExpressionSimilarity` on, matching the registry's `configGate`s.
+ * is verbatim (the test/spec/tests-dir globs). The `checkStructuralSimilarity` /
+ * `checkExpressionSimilarity` booleans are no longer read as gates (§10 — config
+ * tunes, never selects); they remain in the merged shape only for config-surface
+ * compatibility until the §15 deletions drop them.
  */
 const DRY_BLOCK_DEFAULTS: DryBlockConfig = {
   minLineThreshold: 15,
@@ -607,10 +609,6 @@ const duplicateImport: RuleDefinition<DryNeeds> = {
   thresholds: META.thresholds,
   samples: META.samples,
   analyze(ctx): Finding[] {
-    // The registry's `configGate` (`checkImports`, default false — the rule is
-    // retired off by default). The migrated form mirrors the legacy pipeline's
-    // gate exactly: off → no findings, not a `clean` claim.
-    if (!ctx.thresholds['checkImports']) return [];
     return detectDuplicateImport(ctx.facts['imports']);
   },
 };
@@ -624,10 +622,6 @@ const duplicateStringLiteral: RuleDefinition<StringLiteralNeeds> = {
   thresholds: STRING_META.thresholds,
   samples: STRING_META.samples,
   analyze(ctx): Finding[] {
-    // The registry's `configGate` (`checkStrings`, default false — the rule is
-    // retired off by default). The migrated form mirrors the legacy pipeline's
-    // gate exactly: off → no findings, not a `clean` claim.
-    if (!ctx.thresholds['checkStrings']) return [];
     return detectDuplicateStringLiteral(ctx.facts['string-literals']);
   },
 };
@@ -660,7 +654,6 @@ const dryStructuralSimilarity: RuleDefinition<CodeBlockNeeds> = {
   samples: STRUCT_META.samples,
   analyze(ctx): Finding[] {
     const cfg = resolveBlockConfig(ctx.thresholds);
-    if (!cfg.checkStructuralSimilarity) return [];
     const findings: Finding[] = [];
     for (const { blocks } of perFileGroups(ctx.facts['code-block'], cfg.excludePatterns ?? []).values()) {
       findings.push(...detectStructuralDuplicates(blocks, cfg));
@@ -679,7 +672,6 @@ const drySimilarExpression: RuleDefinition<CodeBlockNeeds> = {
   samples: EXPR_META.samples,
   analyze(ctx): Finding[] {
     const cfg = resolveBlockConfig(ctx.thresholds);
-    if (!cfg.checkExpressionSimilarity) return [];
     const findings: Finding[] = [];
     for (const { fragments } of perFileGroups(ctx.facts['code-block'], cfg.excludePatterns ?? []).values()) {
       findings.push(...detectExpressionSimilarities(fragments, cfg));

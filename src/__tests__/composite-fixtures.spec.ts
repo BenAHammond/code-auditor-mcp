@@ -97,6 +97,9 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
         'cross-domain::cross-domain/written-never-read@src/mixed.ts:38',
         'data-access::loop-query@src/mixed.ts:31',
         'data-access::unfiltered-query@src/mixed.ts:38',
+        'documentation::parameter-documentation@src/mixed.ts:18',
+        'documentation::parameter-documentation@src/mixed.ts:28',
+        'documentation::return-documentation@src/db.ts:22',
       ]);
     });
   });
@@ -107,12 +110,24 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
   // Target rules: class-size (god class), liskov-substitution (override that
   // throws where the parent does not), open-closed (instanceof a user type
   // inside a class method), dependency-inversion (concrete `new` held), and
-  // parameter-count (seven params). Every public member is JSDoc'd so the
-  // documentation analyzer stays silent.
+  // parameter-count (seven params). §10 made parameter-documentation and
+  // return-documentation unconditional, so the members' JSDoc (descriptions
+  // only, no exhaustive @param/@returns tags) now also fires those two rules.
   // ─────────────────────────────────────────────────────────────────────
   describe('class-structure', () => {
-    it('fires the five SOLID rules and nothing else', async () => {
+    it('fires the five SOLID rules and the now-unconditional documentation rules', async () => {
       await expectCompleteSet('class-structure', [
+        'documentation::parameter-documentation@src/classes.ts:27',
+        'documentation::parameter-documentation@src/classes.ts:64',
+        'documentation::parameter-documentation@src/classes.ts:73',
+        'documentation::parameter-documentation@src/classes.ts:73',
+        'documentation::parameter-documentation@src/classes.ts:73',
+        'documentation::parameter-documentation@src/classes.ts:73',
+        'documentation::parameter-documentation@src/classes.ts:73',
+        'documentation::parameter-documentation@src/classes.ts:73',
+        'documentation::parameter-documentation@src/classes.ts:73',
+        'documentation::return-documentation@src/classes.ts:27',
+        'documentation::return-documentation@src/classes.ts:64',
         'solid::solid/liskov-substitution@src/classes.ts:27',
         'solid::solid/dependency-inversion@src/classes.ts:41',
         'solid::solid/open-closed@src/classes.ts:62',

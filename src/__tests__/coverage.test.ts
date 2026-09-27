@@ -307,22 +307,23 @@ describe('buildCoverageReport', () => {
     expect(coverage.length).toBe(registeredRuleIds.length);
   });
 
-  it('reports config-disabled rules as notApplicable via configGate', () => {
+  it('config cannot select: false booleans no longer gate a rule off (Spec 68 §10)', () => {
     const config: PipelineConfig = {
       projectRoot: '/test',
       config: {
         dry: {
           checkStructuralSimilarity: false,
-          checkStrings: true,
+          checkStrings: false,
           checkImports: false,
         },
-        react: {
-          requirePropTypes: true,
+        documentation: {
+          requireParamDocs: false,
+          requireReturnDocs: false,
         },
       },
     };
 
-    // dry ran with input (files processed > 0)
+    // dry + documentation both ran with input (files processed > 0)
     const results: Record<string, AnalyzerResult> = {
       dry: {
         violations: [],
@@ -330,52 +331,6 @@ describe('buildCoverageReport', () => {
         analyzerName: 'dry',
         status: makeVisitorStatus(5),
       },
-      react: {
-        violations: [],
-        executionTime: 0,
-        analyzerName: 'react',
-        status: makeVisitorStatus(10),
-      },
-    };
-
-    const coverage = buildCoverageReport(results, config);
-
-    // checkStructuralSimilarity: false → notApplicable
-    const structSim = coverage.find(c => c.ruleId === 'dry/structural-similarity');
-    expect(structSim!.state).toBe('notApplicable');
-    expect(structSim!.reason).toContain('checkStructuralSimilarity');
-
-    // checkImports: false → notApplicable
-    const dupImport = coverage.find(c => c.ruleId === 'duplicate-import');
-    expect(dupImport!.state).toBe('notApplicable');
-    expect(dupImport!.reason).toContain('checkImports');
-
-    // checkStrings: true → not config-gated → clean (files input present, no violations)
-    const dupString = coverage.find(c => c.ruleId === 'duplicate-string-literal');
-    expect(dupString!.state).toBe('clean');
-
-    // dry/duplicate has no configGate → clean
-    const dryDup = coverage.find(c => c.ruleId === 'dry/duplicate');
-    expect(dryDup!.state).toBe('clean');
-
-    // requirePropTypes: true → not config-gated → clean
-    const missingProps = coverage.find(c => c.ruleId === 'missing-props');
-    expect(missingProps!.state).toBe('clean');
-  });
-
-  it('reports off-by-default (not notApplicable) for rules whose gate ships off', () => {
-    const config: PipelineConfig = {
-      projectRoot: '/test',
-      config: {
-        documentation: {
-          // Both opt-in strict-mode gates are off by default (Spec 66 follow-up).
-          requireParamDocs: false,
-          requireReturnDocs: false,
-        },
-      },
-    };
-
-    const results: Record<string, AnalyzerResult> = {
       documentation: {
         violations: [],
         executionTime: 0,
@@ -386,50 +341,19 @@ describe('buildCoverageReport', () => {
 
     const coverage = buildCoverageReport(results, config);
 
-    // off-by-default — a named fourth state, not "disabled by config".
-    const paramDocs = coverage.find(c => c.ruleId === 'parameter-documentation');
-    expect(paramDocs!.state).toBe('off-by-default');
-    expect(paramDocs!.reason).toContain('requireParamDocs');
-
-    const returnDocs = coverage.find(c => c.ruleId === 'return-documentation');
-    expect(returnDocs!.state).toBe('off-by-default');
-    expect(returnDocs!.reason).toContain('requireReturnDocs');
-
-    // function-documentation is NOT gated → clean (files input present).
-    const funcDocs = coverage.find(c => c.ruleId === 'function-documentation');
-    expect(funcDocs!.state).toBe('clean');
-  });
-
-  it('reports a gated opt-in rule as clean once its gate is enabled', () => {
-    const config: PipelineConfig = {
-      projectRoot: '/test',
-      config: {
-        documentation: {
-          requireParamDocs: true,
-          // Simulate the merged config: the other opt-in gate still defaults off.
-          requireReturnDocs: false,
-        },
-      },
-    };
-
-    const results: Record<string, AnalyzerResult> = {
-      documentation: {
-        violations: [],
-        executionTime: 0,
-        analyzerName: 'documentation',
-        status: makeVisitorStatus(10),
-      },
-    };
-
-    const coverage = buildCoverageReport(results, config);
-
-    // gate true → not config-gated → clean (files input present, no violations).
-    const paramDocs = coverage.find(c => c.ruleId === 'parameter-documentation');
-    expect(paramDocs!.state).toBe('clean');
-
-    // return-documentation gate is still off → off-by-default.
-    const returnDocs = coverage.find(c => c.ruleId === 'return-documentation');
-    expect(returnDocs!.state).toBe('off-by-default');
+    // §10 — config tunes, never selects. A false boolean must NOT drop a rule to
+    // notApplicable/off-by-default; the rule still evaluates its input and reads
+    // `clean` (input present, no violations) regardless of the config value.
+    for (const ruleId of [
+      'dry/structural-similarity',
+      'duplicate-string-literal',
+      'duplicate-import',
+      'parameter-documentation',
+      'return-documentation',
+    ]) {
+      const c = coverage.find((x) => x.ruleId === ruleId);
+      expect(c!.state).toBe('clean');
+    }
   });
 
   it('emits clean when a rule mapped to files input has zero violations', () => {

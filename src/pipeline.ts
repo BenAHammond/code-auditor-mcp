@@ -1356,8 +1356,6 @@ export function violationMatchesRule(v: Violation, ruleId: string, field: string
  * | analyzer ran with input, count > 0     | `fired`         | (none)                          |
  * | analyzer ran with input, count === 0   | `clean`/`notApplicable` | per-rule input mapping    |
  * | analyzer not enabled in `config`       | `notApplicable` | "analyzer \"X\" not enabled"       |
- * | config gate false, rule ships off      | `off-by-default` | "off by default (set `<analyzer>.<key>: true to enable`)" |
- * | config gate false, user disabled       | `notApplicable` | "disabled by config (`<analyzer>.<key>: false`)" |
  *
  * Spec 33 Item 14: zero-violation rules are promoted from `unassessed` to
  * `clean` (mapped input present) or `notApplicable` (mapped input absent). Only
@@ -1461,30 +1459,6 @@ export function buildCoverageReport(
         reason: 'no facts consumed from upstream visitors',
       });
       continue;
-    }
-
-    // Check per-rule config gate. Two distinct reasons a gate can read false:
-    //   - off-by-default (entry.offByDefault) — the tool ships this rule off and
-    //     the user has not opted in. A named fourth state, distinct from
-    //     "disabled by config", so the zero-firing sweep separates a healthy
-    //     opt-in rule from a broken one.
-    //   - disabled by config — the user explicitly turned an on-by-default rule
-    //     off.
-    if (entry.configGate) {
-      const analyzerNs = (config.config ?? {})[analyzerName];
-      const gateValue = (analyzerNs as Record<string, unknown> | undefined)?.[entry.configGate];
-      if (gateValue === false) {
-        coverage.push({
-          ruleId,
-          analyzer: analyzerName,
-          state: entry.offByDefault ? 'off-by-default' : 'notApplicable',
-          count: 0,
-          reason: entry.offByDefault
-            ? `off by default (set ${analyzerName}.${entry.configGate}: true to enable)`
-            : `disabled by config (${analyzerName}.${entry.configGate}: false)`,
-        });
-        continue;
-      }
     }
 
     // Spec 39 — derived applicability. A rule whose predicate evaluated false is

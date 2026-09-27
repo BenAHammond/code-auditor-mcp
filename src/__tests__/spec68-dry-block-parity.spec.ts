@@ -155,7 +155,7 @@ describe('Spec 68 code-block DRY parity (new analyze(ctx) === old UniversalDRYAn
     });
   });
 
-  it('the structural-similarity gate is OFF by default (no finding without the flag)', async () => {
+  it('§10 — structural-similarity fires unconditionally (flag no longer gates it off)', async () => {
     const source = [
       'function process(rows) {',
       '  for (const row of rows) {',
@@ -172,13 +172,25 @@ describe('Spec 68 code-block DRY parity (new analyze(ctx) === old UniversalDRYAn
       '  }',
       '}',
     ].join('\n');
+
+    // §10 made the rule unconditional: the phase rule fires regardless of
+    // `checkStructuralSimilarity`. It reproduces the legacy finding with the
+    // legacy gate ON (the legacy analyzer is still gated until §15 deletes it).
     const { old, nu } = await parity(source, {
+      minLineThreshold: 5,
+      checkStructuralSimilarity: true,
+      checkExpressionSimilarity: false,
+    });
+    expect(nu).toEqual(old);
+    expect(nu.length).toBe(1);
+
+    // The flag being off does NOT suppress the phase finding.
+    const off = await runDrySlice([{ path: 'parity.ts', content: source }], {
       minLineThreshold: 5,
       checkStructuralSimilarity: false,
       checkExpressionSimilarity: false,
     });
-    expect(nu).toEqual(old);
-    expect(nu.length).toBe(0);
+    expect(off.filter((f) => f.ruleId === 'dry/structural-similarity').length).toBe(1);
   });
 
   it('does not compare blocks across different files (per-file grouping)', async () => {
