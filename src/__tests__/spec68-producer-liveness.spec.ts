@@ -99,8 +99,13 @@ const FIXTURES: Record<Format, Fixture> = {
   },
 };
 
-/** The fact kinds whose top-level shape is an object, not an array. */
-const OBJECT_FACTS: ReadonlySet<FactKind> = new Set<FactKind>(['table-catalog', 'migration-history']);
+/**
+ * The fact kinds whose top-level shape is an object, not an array: the three
+ * corpus-derived facts each reduce to a single per-corpus value (`table-catalog`
+ * → `{ tables }`, `migration-history` → `{ dropped }`, `reachability` →
+ * `{ importersOf, packageEntryPoints }`).
+ */
+const OBJECT_FACTS: ReadonlySet<FactKind> = new Set<FactKind>(['table-catalog', 'migration-history', 'reachability']);
 
 beforeAll(async () => {
   initializeLanguages();

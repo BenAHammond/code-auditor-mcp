@@ -25,12 +25,35 @@ import { fileProducerFor, PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
 import { formatFor, parseOne, type InputFile } from './runner.js';
 import { loadTailwindConfig, tokensToStyleTokens } from '../styles/tailwindConfigLoader.js';
 import type {
+  CorpusContext,
   FactKind,
   FileFactKind,
   Finding,
   ThresholdValues,
   StyleDeclarationsFile,
 } from './types.js';
+
+/**
+ * The corpus-level inputs the phase model needs beyond the file list. §8's
+ * `reachability` processor reads the discovery list, virtual-module list,
+ * tsconfig aliases and package.json entry points — all derived from the
+ * project root — so the runner threads them here rather than leaking config
+ * into the fact shapes. Every field is optional: the slice tests run a single
+ * fixture with none of this, and the processor falls back to the same defaults
+ * the legacy reducer did.
+ */
+export interface PhaseInfra {
+  /** Absolute project root (Tailwind config + alias/entry resolution). */
+  projectRoot?: string;
+  /** Full corpus discovery list (unfiltered) for alias resolution. */
+  corpusFiles?: readonly string[];
+  /** Virtual-module specifiers (config, default DEFAULT_VIRTUAL_MODULES). */
+  importVirtualModules?: readonly string[];
+  /** tsconfig `paths` + `baseUrl` for alias classification + resolution. */
+  tsconfigAliases?: { pathPatterns?: readonly string[]; paths?: Readonly<Record<string, readonly string[]>>; baseUrl?: string };
+  /** package.json entry points (facade-expanded), absolute. */
+  packageEntryPoints?: readonly string[];
+}
 
 /**
  * Run the full phase model over the given absolute file paths and return the
@@ -40,7 +63,7 @@ import type {
 export async function runPhaseModel(
   filePaths: readonly string[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
-  projectRoot?: string,
+  infra?: PhaseInfra,
 ): Promise<Finding[]> {
   if (MIGRATED_RULES.length === 0) return [];
 
@@ -68,16 +91,16 @@ export async function runPhaseModel(
     }
   }
 
-  return runPhaseModelOverFiles(files, thresholdsByRule, projectRoot);
+  return runPhaseModelOverFiles(files, thresholdsByRule, infra);
 }
 
 /** The file/corpus-pipeline half, exposed for the slice tests. */
 export async function runPhaseModelOverFiles(
   files: readonly InputFile[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
-  projectRoot?: string,
+  infra?: PhaseInfra,
 ): Promise<Finding[]> {
-  const facts = await buildFacts(files, projectRoot);
+  const facts = await buildFacts(files, infra);
   return analyzeAll(facts, thresholdsByRule);
 }
 
@@ -105,7 +128,8 @@ function neededFactKinds(): Set<FactKind> {
 }
 
 /** Process: build every needed fact kind (file facts, then corpus facts in order). */
-async function buildFacts(files: readonly InputFile[], projectRoot?: string): Promise<Map<FactKind, unknown>> {
+async function buildFacts(files: readonly InputFile[], infra?: PhaseInfra): Promise<Map<FactKind, unknown>> {
+  const projectRoot = infra?.projectRoot;
   const needed = neededFactKinds();
   const facts = new Map<FactKind, unknown>();
 
@@ -161,10 +185,17 @@ async function buildFacts(files: readonly InputFile[], projectRoot?: string): Pr
     (k): k is keyof typeof CORPUS_PRODUCERS =>
       Object.prototype.hasOwnProperty.call(CORPUS_PRODUCERS, k),
   );
+  const corpusCtx: CorpusContext = {
+    projectRoot: infra?.projectRoot,
+    corpusFiles: infra?.corpusFiles,
+    virtualModules: infra?.importVirtualModules,
+    tsconfigAliases: infra?.tsconfigAliases,
+    packageEntryPoints: infra?.packageEntryPoints,
+  };
   for (const kind of corpusKinds) {
     const producer = CORPUS_PRODUCERS[kind];
     const upstream = Object.fromEntries(producer.needs.map((n) => [n, facts.get(n)]));
-    facts.set(kind, producer.process(upstream as never));
+    facts.set(kind, producer.process(upstream as never, corpusCtx));
   }
 
   return facts;

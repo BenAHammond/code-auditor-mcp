@@ -32,6 +32,7 @@ import { securityDefectRules } from './securityDefects.js';
 import { functionBodyRules } from './functionBodies.js';
 import { reactRules } from './react.js';
 import { fileDocumentationRules } from './fileDocumentation.js';
+import { unreferencedModuleRule } from './unreferencedModule.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -63,8 +64,8 @@ import { fileDocumentationRules } from './fileDocumentation.js';
  * enrichment.
  *
  * The 9th dependency-graph rule, `unreferenced-module` (file-level
- * imports/reachability — RENEW, §8), stays on the legacy path: the current
- * producer does not emit the `file-imports` fact it reads.
+ * imports/reachability — RENEW, §8), reads the `file-imports` + `reachability`
+ * facts and lands as its own rule in `unreferencedModule.ts`.
  *
  * The remaining 74 land one fact kind at a time (§11.3), and the size drives
  * spec68-registry-size.spec.ts (0 → … → 100).
@@ -91,4 +92,5 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...functionBodyRules,
   ...reactRules,
   ...fileDocumentationRules,
+  unreferencedModuleRule,
 ];

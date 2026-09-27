@@ -72,6 +72,8 @@ export interface FactShapes {
   'code-block': CodeBlockFact[];
   'json-document': JsonDocumentFact[];
   'schema-validations': SchemaValidationFact[];
+  'file-imports': FileImportsFact[];
+  'reachability': ReachabilityFact;
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -860,6 +862,41 @@ export type SchemaValidationFact = {
   message: string;
 };
 
+/**
+ * One file's import specifiers and export declaration, as the `file-imports`
+ * producer extracts it (§8 reachability). The serializable projection of the
+ * legacy `ClFileInfo` the cross-language visitor emitted alongside its entities:
+ * the resolved static import sources, whether the file exposes any symbols
+ * (TS/JS `export_statement`; Go capitalized top-level names), and the
+ * computed-specifier dynamic imports that cannot become an import edge.
+ * `unreferenced-module` reads this fact plus the corpus `reachability` fact.
+ */
+export type FileImportsFact = {
+  file: string;
+  /** Resolved static import specifiers (quotes stripped), re-exports included. */
+  imports: string[];
+  /** True when the file exposes symbols to importers (TS/JS `export`, Go public). */
+  hasExports: boolean;
+  /** Dynamic `import()`/`require()` with a computed (non-static) specifier. */
+  unresolvedDynamicImports: ReadonlyArray<{ line: number; expression: string }>;
+};
+
+/**
+ * The corpus-level `reachability` fact, reduced from `file-imports` (§8). It
+ * carries the reverse import adjacency (`importersOf`: target file → the files
+ * that import it) and the package.json entry-point set — the two things
+ * `unreferenced-module` needs beyond the per-file `hasExports`/test/entry
+ * filename heuristics. Both are plain data (a `Set`/`Map` are class instances
+ * and cannot satisfy §4's `Serializable` arm), so they are projected to sorted
+ * `string[]` values and `Record<string, string[]>`.
+ */
+export type ReachabilityFact = {
+  /** Absolute target path → the absolute paths that import it (sorted, deduped). */
+  importersOf: Record<string, string[]>;
+  /** package.json entry points (facade-expanded), absolute — entry points, not dead. */
+  packageEntryPoints: string[];
+};
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -1011,6 +1048,7 @@ export interface SupplyingFormats {
   'file-header': 'typescript' | 'tsx' | 'javascript';
   'code-block': 'typescript' | 'tsx' | 'javascript';
   'json-document': 'json';
+  'file-imports': 'typescript' | 'tsx' | 'javascript' | 'go';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */
@@ -1032,10 +1070,32 @@ export interface FileProcessor<K extends FileFactKind, F extends SupplyingFormat
   process(file: ParsedFile): FactFragment<K>;
 }
 
+/**
+ * The corpus-level inputs a corpus processor may read beyond its upstream
+ * facts. §8's `reachability` processor needs the discovery list, the virtual
+ * module list, the tsconfig aliases and the package.json entry points — all
+ * derived from the project root, none per-file — so they are threaded here as
+ * one optional context rather than leaking config into the fact shapes. A
+ * processor that needs none of this (table-catalog, migration-history,
+ * mined-conventions, schema-validations) simply ignores it.
+ */
+export interface CorpusContext {
+  /** Absolute project root (alias + entry-point resolution base). */
+  projectRoot?: string;
+  /** Full corpus discovery list (unfiltered) for alias resolution. */
+  corpusFiles?: readonly string[];
+  /** Virtual-module specifiers (exact match), default DEFAULT_VIRTUAL_MODULES. */
+  virtualModules?: readonly string[];
+  /** tsconfig `paths` + `baseUrl` for alias classification + resolution. */
+  tsconfigAliases?: { pathPatterns?: readonly string[]; paths?: Readonly<Record<string, readonly string[]>>; baseUrl?: string };
+  /** package.json entry points (facade-expanded), absolute. */
+  packageEntryPoints?: readonly string[];
+}
+
 /** A corpus processor: receives complete upstream facts, no AST, no format. */
 export interface CorpusProcessor<K extends CorpusFactKind, N extends readonly FactKind[]> {
   readonly id: ProcessorId;
   readonly produces: K;
   readonly needs: N;
-  process(facts: { readonly [J in N[number]]: FactShapes[J] }): FactShapes[K];
+  process(facts: { readonly [J in N[number]]: FactShapes[J] }, ctx?: CorpusContext): FactShapes[K];
 }

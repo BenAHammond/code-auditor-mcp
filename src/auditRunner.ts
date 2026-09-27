@@ -80,7 +80,7 @@ import type { DryVisitorBundle, ReactVisitorBundle, SolidVisitorBundle } from '.
 import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer, TestCoverageReport, DeadCluster, SizeDistribution } from './types.js';
 import { computeSizeDistributions } from './reporting/sizeDistribution.js';
 import { splitRoutes, attributeRoutes } from './phase/routing.js';
-import { runPhaseModel } from './phase/phaseModel.js';
+import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';
 import { resolvePhaseThresholds } from './phase/config.js';
 import type { Finding } from './phase/types.js';
 
@@ -854,7 +854,18 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               return resolved;
             };
             const phaseFiles = files.filter((f) => !resolveFileProfile(f).excludeFromAnalysis);
-            const phaseFindings = await runPhaseModel(phaseFiles, thresholds, root);
+            // Thread the corpus-level reachability inputs the phase model's
+            // §8 `reachability` processor reads — the same discovery list,
+            // virtual-module list, tsconfig aliases and package entry points the
+            // legacy reducer read from `_infra`.
+            const infraConfig = (pipelineAnalyzerConfig['_infra'] ?? {}) as Record<string, unknown>;
+            const phaseFindings = await runPhaseModel(phaseFiles, thresholds, {
+              projectRoot: root,
+              corpusFiles: infraConfig.corpusFiles as string[] | undefined,
+              importVirtualModules: infraConfig.importVirtualModules as string[] | undefined,
+              tsconfigAliases: infraConfig.tsconfigAliases as PhaseInfra['tsconfigAliases'],
+              packageEntryPoints: infraConfig.packageEntryPoints as string[] | undefined,
+            });
 
             // Strip the migrated rules' legacy emission from every analyzer
             // result — the phase model is now their single source of truth.

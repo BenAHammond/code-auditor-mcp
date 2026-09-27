@@ -39,6 +39,7 @@ import type {
   MinedConvention,
   Format,
   SchemaValidationFact,
+  ReachabilityFact,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
@@ -65,6 +66,9 @@ import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
 import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 import { mineConventionsFromFunctionIndex } from './conventionMining.js';
 import { replayDdlDeclarations } from '../analyzers/universal/schema/migrations.js';
+import { extractFileImports } from './fileImports.js';
+import { computeReachability } from './reachability.js';
+import { DEFAULT_VIRTUAL_MODULES } from '../graph/importClassification.js';
 
 /**
  * Exhaustive over both axes: every file fact kind, then every supplying format.
@@ -125,6 +129,8 @@ const reactComponentProcess = (file: ParsedFile): FactFragment<'react-component'
 const fileHeaderProcess = (file: ParsedFile): FactFragment<'file-header'> => extractFileHeader(file as AstFile);
 const codeBlockProcess = (file: ParsedFile): FactFragment<'code-block'> => extractCodeBlocks(file as AstFile);
 const jsonDocumentProcess = (file: ParsedFile): FactFragment<'json-document'> => extractJsonDocument(file);
+const fileImportsProcess = (file: ParsedFile): FactFragment<'file-imports'> =>
+  [extractFileImports((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file))];
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -237,6 +243,12 @@ export const PRODUCERS = {
   'json-document': {
     json: fileProducer('json-document', 'json', jsonDocumentProcess),
   },
+  'file-imports': {
+    typescript: fileProducer('file-imports', 'typescript', fileImportsProcess),
+    tsx: fileProducer('file-imports', 'tsx', fileImportsProcess),
+    javascript: fileProducer('file-imports', 'javascript', fileImportsProcess),
+    go: fileProducer('file-imports', 'go', fileImportsProcess),
+  },
 } satisfies ProducerMap;
 
 // ── Corpus producers producing derived facts (no format) ─────────────────────
@@ -318,6 +330,28 @@ export const CORPUS_PRODUCERS = {
       return buildSchemaValidations(facts['json-document']);
     },
   } satisfies CorpusProcessor<'schema-validations', readonly ['json-document']>,
+  // `reachability` reduces the `file-imports` fact into the reverse import
+  // adjacency + package entry-point set (§8). It is the one corpus processor
+  // that reads the `CorpusContext` — the discovery list, virtual-module list,
+  // tsconfig aliases and package.json entry points are corpus-level inputs the
+  // per-file fact cannot carry. Defaults mirror the legacy reducer's fallback
+  // (corpus = the file-imports set, no aliases, DEFAULT_VIRTUAL_MODULES, no
+  // package entries) so the slice tests stay self-contained.
+  'reachability': {
+    id: 'reachability',
+    produces: 'reachability',
+    needs: ['file-imports'],
+    process(facts, ctx): ReachabilityFact {
+      const fileImports = facts['file-imports'];
+      return computeReachability(fileImports, {
+        corpusFiles: new Set(ctx?.corpusFiles ?? fileImports.map((f) => f.file)),
+        virtualModules: ctx?.virtualModules ?? DEFAULT_VIRTUAL_MODULES,
+        tsconfigAliases: ctx?.tsconfigAliases,
+        packageEntryPoints: new Set(ctx?.packageEntryPoints ?? []),
+        projectRoot: ctx?.projectRoot ?? '',
+      });
+    },
+  } satisfies CorpusProcessor<'reachability', readonly ['file-imports']>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -367,4 +401,6 @@ export const FACT_KINDS = {
   'code-block': true,
   'json-document': true,
   'schema-validations': true,
+  'file-imports': true,
+  'reachability': true,
 } satisfies Record<FactKind, true>;
