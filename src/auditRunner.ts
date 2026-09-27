@@ -912,6 +912,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
                 symbol: f.symbol,
                 resolution: f.resolution,
                 analyzer,
+                ...(f.fix ? { fix: f.fix } : {}),
                 ...(f.symbol && functionNameAnalyzers.has(analyzer) ? { functionName: f.symbol } : {}),
                 ...(profile ? { profile } : {}),
                 ...(resolved.excludeFromGate ? { gateExcluded: true } : {}),

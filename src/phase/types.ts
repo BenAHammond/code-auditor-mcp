@@ -43,6 +43,7 @@ export interface FactShapes {
   'file-symbols': FileSymbols[];
   'function-index': FunctionIndexFact[];
   'imports': ImportFact[];
+  'string-literals': StringLiteralFact[];
   // Source-format names are gone (Spec 68 §2 — "a fact is named for what it
   // is, never for where it came from"; `needs.formats` already says the format):
   //   schema-code  → ddl-declarations   (DDL declarations in code)
@@ -230,6 +231,20 @@ export type FunctionIndexFact = {
 export type ImportFact = {
   file: string;
   source: string;
+  line: number;
+  column: number;
+};
+
+/**
+ * One string or template-string literal, the serializable projection of its
+ * node: the raw source text (`getNodeText` — quotes/backticks included, so the
+ * grouping key matches the legacy `checkDuplicateStrings` exactly) plus the
+ * 1-based start position. The `duplicate-string-literal` rule groups by
+ * `(file, value)`.
+ */
+export type StringLiteralFact = {
+  file: string;
+  value: string;
   line: number;
   column: number;
 };
@@ -479,6 +494,9 @@ export type Finding = {
   column?: number;
   symbol?: string;
   resolution?: import('../types.js').Resolution;
+  /** Structured text-replacement patch (DRY `duplicate-string-literal`), carried
+   *  verbatim so the phase re-emission preserves the pre-migration `fix` surface. */
+  fix?: string | { oldText: string; newText: string };
 };
 
 /** A rule definition. `needs` has no optional form and no default. */
@@ -559,6 +577,7 @@ export interface SupplyingFormats {
   'file-symbols': 'typescript' | 'tsx' | 'javascript';
   'function-index': 'typescript' | 'tsx' | 'javascript';
   'imports': 'typescript' | 'tsx' | 'javascript';
+  'string-literals': 'typescript' | 'tsx' | 'javascript';
   'ddl-declarations': 'typescript' | 'tsx' | 'javascript' | 'sql';
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';

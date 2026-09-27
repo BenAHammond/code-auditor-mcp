@@ -46,6 +46,7 @@ import type {
   FunctionIndexFact,
   MinedConvention,
   ImportFact,
+  StringLiteralFact,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -475,7 +476,7 @@ export async function runConventionsSlice(files: readonly InputFile[], threshold
   return analyzeConventions(facts, conventions, thresholds);
 }
 
-// ── imports slice (duplicate-import) ────────────────────────────────────────
+// ── dry slice (imports + string-literals → duplicate-import / -string-literal) ──
 
 /**
  * Parse → Process for the `imports` fact. Returns the assembled corpus fact
@@ -496,13 +497,35 @@ export async function buildImports(files: readonly InputFile[]): Promise<ImportF
   return facts;
 }
 
-/** Analyze the assembled `imports` fact with the DRY rules. */
+/**
+ * Parse → Process for the `string-literals` fact. Returns the assembled corpus
+ * fact (every string/template-string literal from every file, ASTs already freed).
+ */
+export async function buildStringLiterals(files: readonly InputFile[]): Promise<StringLiteralFact[]> {
+  const facts: StringLiteralFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('string-literals', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as StringLiteralFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `imports` + `string-literals` facts with the DRY rules.
+ *  Each rule reads only the fact its `needs` declares; the union context carries
+ *  both. */
 export async function analyzeDry(
-  facts: ImportFact[],
+  imports: ImportFact[],
+  stringLiterals: StringLiteralFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
   const ctx = {
-    facts: { 'imports': facts },
+    facts: { 'imports': imports, 'string-literals': stringLiterals },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
   };
@@ -513,8 +536,11 @@ export async function analyzeDry(
   return findings;
 }
 
-/** The imports slice: parse → imports → duplicate-import → findings. */
+/** The dry slice: parse → imports + string-literals → DRY rules → findings. */
 export async function runDrySlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const facts = await buildImports(files);
-  return analyzeDry(facts, thresholds);
+  const [imports, stringLiterals] = await Promise.all([
+    buildImports(files),
+    buildStringLiterals(files),
+  ]);
+  return analyzeDry(imports, stringLiterals, thresholds);
 }

@@ -67,8 +67,8 @@ async function parity(source: string) {
 }
 
 describe('Spec 68 dry parity (new analyze(ctx) === old checkDuplicateImports)', () => {
-  it('covers exactly the one import-servable DRY rule', () => {
-    expect(dryRules.map((r) => r.id)).toEqual(['duplicate-import']);
+  it('covers exactly the two import/string-servable DRY rules', () => {
+    expect(dryRules.map((r) => r.id)).toEqual(['duplicate-import', 'duplicate-string-literal']);
   });
 
   it('two imports of the same module fire once, anchored at the first import', async () => {
