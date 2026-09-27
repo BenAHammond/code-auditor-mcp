@@ -1493,10 +1493,8 @@ export function buildCoverageReport(
       continue;
     }
 
-    // Spec 33 Item 14 — zero-violation rules are now promoted from `unassessed`
-    // to `clean`/`notApplicable` based on whether the rule's mapped input was
-    // present this run. Rules with no mapping (non-pipeline analyzers) stay
-    // `unassessed`.
+    // Spec 33 Item 14 — zero-violation rules resolve to `clean`/`notApplicable`
+    // based on whether the rule's mapped input was present this run.
     coverage.push(resolveZeroViolationState(ruleId, analyzerName, entry.input, inputPresence));
   }
 
@@ -1506,12 +1504,10 @@ export function buildCoverageReport(
 /**
  * Spec 33 Item 14 — classify a zero-violation rule by its declared input.
  *
- *   - No `input` mapping → `unassessed` (input provenance unknown; non-pipeline
- *     analyzers only).
  *   - Any input source present → `clean` (the analyzer ran over the rule's real
  *     input and found nothing to flag).
- *   - All input sources absent → `notApplicable` (the input this rule reads was
- *     never produced this run).
+ *   - No input present (including no `input` mapping) → `notApplicable` (the
+ *     input this rule reads was never produced this run).
  *
  * Spec 62 Amendment B (B4) — `clean` means "could have fired". This function is
  * reached only *after* the derived-applicability branch in
@@ -1532,20 +1528,15 @@ function resolveZeroViolationState(
   input: readonly string[] | undefined,
   inputPresence: InputPresence | undefined,
 ): RuleCoverage {
-  if (!input || input.length === 0) {
-    return {
-      ruleId,
-      analyzer: analyzerName,
-      state: 'unassessed',
-      count: 0,
-      reason: 'applicability not assessed (no per-rule input mapping)',
-    };
-  }
-
+  // Spec 68 §8 — the empty-input branch is gone. Every rule declares its input
+  // (`needs.facts`/`needs.formats`), so there is no "unknown provenance" state to
+  // fall back to; a rule with no mapped input simply has no present input and
+  // reads `notApplicable`. `unassessed` is deleted (its §8 replacement,
+  // `incomplete`, is produced by the phase model's `deriveCoverage`, not here).
   const factKeys = new Set(inputPresence?.factKeys ?? []);
   const indexTables = new Set(inputPresence?.indexTables ?? []);
 
-  const anyPresent = input.some(
+  const anyPresent = (input ?? []).some(
     (source) => source === 'files' || factKeys.has(source) || indexTables.has(source),
   );
 
@@ -1558,6 +1549,6 @@ function resolveZeroViolationState(
     analyzer: analyzerName,
     state: 'notApplicable',
     count: 0,
-    reason: `rule input absent (none of: ${input.join(', ')})`,
+    reason: `rule input absent (none of: ${(input ?? []).join(', ') || '(none)'})`,
   };
 }

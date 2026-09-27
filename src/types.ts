@@ -218,17 +218,17 @@ export interface CoverageDiagnostic {
  * Per-rule coverage classification — emitted on every audit.
  * @see buildCoverageReport() in pipeline.ts
  */
-export type RuleCoverageState = 'fired' | 'clean' | 'notApplicable' | 'cannot-fire' | 'unassessed';
+export type RuleCoverageState = 'fired' | 'clean' | 'notApplicable' | 'cannot-fire' | 'incomplete';
 
 export interface RuleCoverage {
   ruleId: string;
   analyzer: string;
   state: RuleCoverageState;
-  /** Violation count for this rule (0 for notApplicable/unassessed/clean/cannot-fire). */
+  /** Violation count for this rule (0 for notApplicable/incomplete/clean/cannot-fire). */
   count: number;
   /** For notApplicable: what input was missing. For cannot-fire: why the rule is
-   *  broken in the tool (the extractor/field that never emits). For unassessed:
-   *  why applicability couldn't be confirmed. */
+   *  broken in the tool (a declared fact has no producer for its format). For
+   *  incomplete: which declared fact was missing for which files. */
   reason?: string;
 }
 

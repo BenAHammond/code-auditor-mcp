@@ -206,13 +206,13 @@ program
       if (coverage && coverage.length > 0) {
         const covFired = coverage.filter(c => c.state === 'fired').length;
         const covClean = coverage.filter(c => c.state === 'clean').length;
-        const covUnassessed = coverage.filter(c => c.state === 'unassessed').length;
+        const covIncomplete = coverage.filter(c => c.state === 'incomplete').length;
         const covNotApplicable = coverage.filter(c => c.state === 'notApplicable').length;
         const covCannotFire = coverage.filter(c => c.state === 'cannot-fire').length;
         console.log(
           chalk.gray(
             `── Coverage panel ── ${covFired} fired · ${covClean} clean · ` +
-            `${covUnassessed} unassessed · ${covNotApplicable} not-applicable · ` +
+            `${covIncomplete} incomplete · ${covNotApplicable} not-applicable · ` +
             `${covCannotFire} cannot-fire`
           )
         );
@@ -459,7 +459,7 @@ program
         if (coverage && coverage.length > 0) {
           const fired = coverage.filter(c => c.state === 'fired');
           const clean = coverage.filter(c => c.state === 'clean');
-          const unassessed = coverage.filter(c => c.state === 'unassessed');
+          const incomplete = coverage.filter(c => c.state === 'incomplete');
           const notApplicable = coverage.filter(c => c.state === 'notApplicable');
           const cannotFire = coverage.filter(c => c.state === 'cannot-fire');
           const firedCount = fired.reduce((s, c) => s + c.count, 0);
@@ -468,7 +468,7 @@ program
           console.log(
             `  ${fired.length} fired (${firedCount.toLocaleString()} violations), ` +
             `${clean.length} clean, ` +
-            `${unassessed.length} unassessed, ` +
+            `${incomplete.length} incomplete, ` +
             `${notApplicable.length} notApplicable, ` +
             `${cannotFire.length} cannot-fire ` +
             `(${coverage.length} rules registered)`
@@ -492,9 +492,9 @@ program
               console.log(`    ${c.ruleId} (0)`);
             }
           }
-          if (unassessed.length > 0) {
-            console.log(chalk.gray(`  ── Unassessed (zero readings, applicability unknown) ──`));
-            for (const c of unassessed) {
+          if (incomplete.length > 0) {
+            console.log(chalk.gray(`  ── Incomplete (missing facts for some files) ──`));
+            for (const c of incomplete) {
               console.log(`    ${c.ruleId} (0)`);
             }
           }
@@ -2770,7 +2770,7 @@ program
   .option('--analyzer <analyzer>', 'Filter by analyzer')
   .option('--file <file>', 'Filter by file path (substring match)')
   .option('--severity <severity>', 'Filter by severity (critical|severe|high)')
-  .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|cannot-fire|unassessed); omit value for all')
+  .option('--state [state]', 'Query coverage by state (fired|clean|notApplicable|cannot-fire|incomplete); omit value for all')
   .option('--count', 'Group findings by analyzer/rule with counts')
   .option('--limit <n>', 'Max findings to return (0 = unbounded)', '50')
   .option('--offset <n>', 'Findings offset', '0')

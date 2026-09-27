@@ -688,7 +688,7 @@ function mergeAnalyzerResult(base: AnalyzerResult | undefined, next: AnalyzerRes
  * the merged deduped violations — never the summed per-shard counts, which
  * over-count DB-based analyzers that emit full-project findings in every
  * shard), then `clean` (ran somewhere with input present and found nothing)
- * over `unassessed`, over `notApplicable` (only when every shard that ran the
+ * over `incomplete`, over `notApplicable` (only when every shard that ran the
  * rule reported no input). Global-only analyzers (GLOBAL_ONLY_ANALYZERS) run
  * in a single shard over the full scope, so their rows — including Spec 39
  * applicability predicates like `missing-org-filter` — pass through untouched.
@@ -743,7 +743,7 @@ function mergeCoverage(
       continue;
     }
     // Spec 44 bucket 2 — a `cannot-fire` rule is broken in the tool (same verdict
-    // every shard), so it outranks a per-shard `unassessed`/`notApplicable`.
+    // every shard), so it outranks a per-shard `incomplete`/`notApplicable`.
     const cannotFire = src.find((r) => r.state === 'cannot-fire');
     if (cannotFire) {
       merged.push({
@@ -755,9 +755,9 @@ function mergeCoverage(
       });
       continue;
     }
-    const unassessed = src.find((r) => r.state === 'unassessed');
-    if (unassessed) {
-      merged.push({ ruleId, analyzer, state: 'unassessed', count: 0 });
+    const incomplete = src.find((r) => r.state === 'incomplete');
+    if (incomplete) {
+      merged.push({ ruleId, analyzer, state: 'incomplete', count: 0 });
       continue;
     }
     const notApplicable = src.find((r) => r.state === 'notApplicable');
