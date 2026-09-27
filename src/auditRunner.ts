@@ -865,6 +865,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               importVirtualModules: infraConfig.importVirtualModules as string[] | undefined,
               tsconfigAliases: infraConfig.tsconfigAliases as PhaseInfra['tsconfigAliases'],
               packageEntryPoints: infraConfig.packageEntryPoints as string[] | undefined,
+              indexHandle: pipelineIndexHandle,
             });
 
             // Strip the migrated rules' legacy emission from every analyzer

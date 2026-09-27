@@ -40,6 +40,7 @@ import type {
   Format,
   SchemaValidationFact,
   ReachabilityFact,
+  CallGraphFact,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
@@ -47,6 +48,7 @@ import { extractFunctionBodies } from './functionBodies.js';
 import { extractReactComponents } from './reactComponents.js';
 import { extractFileHeader } from './fileHeader.js';
 import { extractCodeBlocks } from './codeBlocks.js';
+import { extractBatchFunctions } from './batchFunctions.js';
 import { extractJsonDocument } from './jsonDocument.js';
 import { buildSchemaValidations } from './schemaValidations.js';
 import { extractImports } from './imports.js';
@@ -143,6 +145,7 @@ const goImportsProcess = (file: ParsedFile): FactFragment<'imports'> => extractG
 const errorBindingsProcess = (file: ParsedFile): FactFragment<'error-bindings'> => extractErrorBindings(file as AstFile);
 const concurrencyPrimitivesProcess = (file: ParsedFile): FactFragment<'concurrency-primitives'> => extractConcurrencyPrimitives(file as AstFile);
 const channelOperationsProcess = (file: ParsedFile): FactFragment<'channel-operations'> => extractChannelOperations(file as AstFile);
+const batchFunctionsProcess = (file: ParsedFile): FactFragment<'batch-functions'> => extractBatchFunctions(file as AstFile);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -290,6 +293,15 @@ export const PRODUCERS = {
   'channel-operations': {
     go: fileProducer('channel-operations', 'go', channelOperationsProcess),
   },
+  // `batch-functions` — the functions whose full span contains `.batch(` (a
+  // Cloudflare D1 / SQLite transaction-batching commit). `multi-table-write`
+  // reads it to skip the transaction-boundary flag for batched commits; the
+  // producer re-homes the legacy `enclosingFunctionBatches` re-parse.
+  'batch-functions': {
+    typescript: fileProducer('batch-functions', 'typescript', batchFunctionsProcess),
+    tsx: fileProducer('batch-functions', 'tsx', batchFunctionsProcess),
+    javascript: fileProducer('batch-functions', 'javascript', batchFunctionsProcess),
+  },
 } satisfies ProducerMap;
 
 // ── Corpus producers producing derived facts (no format) ─────────────────────
@@ -393,6 +405,39 @@ export const CORPUS_PRODUCERS = {
       });
     },
   } satisfies CorpusProcessor<'reachability', readonly ['file-imports']>,
+  // `call-graph` (§2.2) — the index-backed function catalog + call edges the
+  // cross-domain rules' depth-1 callee expansion reads. The legacy
+  // `CrossDomainAnalyzer` queried `graph_cache` + `functions` directly; here that
+  // read is a corpus producer reading `ctx.indexHandle`, projecting plain data.
+  // With no handle (slice tests) or an unpopulated index, it degrades to an
+  // empty fact — matching the legacy graceful-degradation (direct writes only).
+  'call-graph': {
+    id: 'call-graph',
+    produces: 'call-graph',
+    needs: [],
+    process(_facts, ctx): CallGraphFact {
+      const ih = ctx?.indexHandle;
+      if (!ih) return { functions: [], callEdges: [] };
+      let funcs: Array<{ id: number; name: string; file_path: string }> = [];
+      let edges: Array<{ node_key: string; neighbor_key: string }> = [];
+      try {
+        funcs = ih.query('SELECT id, name, file_path FROM functions') as Array<{ id: number; name: string; file_path: string }>;
+        edges = ih.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
+      } catch {
+        // `functions`/`graph_cache` may not exist or be unpopulated — degrade.
+      }
+      const callEdges: Array<{ fromId: number; toId: number }> = [];
+      for (const e of edges) {
+        const fromId = parseInt(e.node_key, 10);
+        const toId = parseInt(e.neighbor_key, 10);
+        if (!isNaN(fromId) && !isNaN(toId)) callEdges.push({ fromId, toId });
+      }
+      return {
+        functions: funcs.map((f) => ({ id: f.id, name: f.name, filePath: f.file_path })),
+        callEdges,
+      };
+    },
+  } satisfies CorpusProcessor<'call-graph', readonly []>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -450,4 +495,6 @@ export const FACT_KINDS = {
   'error-bindings': true,
   'concurrency-primitives': true,
   'channel-operations': true,
+  'call-graph': true,
+  'batch-functions': true,
 } satisfies Record<FactKind, true>;

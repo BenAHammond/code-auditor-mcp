@@ -36,6 +36,7 @@
  */
 
 import type { AST, LanguageAdapter } from '../languages/types.js';
+import type { IndexHandle } from '../types.js';
 
 export interface FactShapes {
   /** Reserved: an AST is not a fact and cannot be declared. */
@@ -80,6 +81,8 @@ export interface FactShapes {
   'error-bindings': ErrorBindingsFact[];
   'concurrency-primitives': ConcurrencyPrimitivesFact[];
   'channel-operations': ChannelOperationsFact[];
+  'call-graph': CallGraphFact;
+  'batch-functions': BatchFunctionFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -1045,6 +1048,36 @@ export type ChannelOperationsFact = {
   ops: Record<string, number>;
 };
 
+/**
+ * The index-backed call-graph fact (§2.2) — the function catalog and the
+ * function→function call edges the legacy `graph_cache` carried, read by the
+ * corpus `call-graph` producer from the code index. Plain-data projection: no
+ * handle survives the corpus boundary. `functions` is the `functions` table's
+ * identity projection (id → {name, filePath}) the depth-1 callee expansion
+ * maps a `filePath::name` key through; `callEdges` is `graph_cache`'s `call`
+ * edges (fromId → toId), parsed from its string node/neighbor keys.
+ */
+export type CallGraphFact = {
+  functions: ReadonlyArray<{ id: number; name: string; filePath: string }>;
+  callEdges: ReadonlyArray<{ fromId: number; toId: number }>;
+};
+
+/**
+ * One function whose full source span contains `.batch(` (a Cloudflare D1 /
+ * SQLite transaction-batching commit). The per-file `batch-functions` producer
+ * walks function nodes and projects only the location span; `multi-table-write`
+ * checks whether a writer's line falls inside one of these spans to skip the
+ * transaction-boundary flag — the legacy `enclosingFunctionBatches` re-parse
+ * (`readFileSync` + `parseFile` + ancestor walk) re-homed as a fact. A function
+ * is emitted only when its full node range contains `.batch(` (the legacy test),
+ * so containment here is `startLine <= writeLine <= endLine`.
+ */
+export type BatchFunctionFact = {
+  file: string;
+  startLine: number;
+  endLine: number;
+};
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -1203,6 +1236,7 @@ export interface SupplyingFormats {
   'error-bindings': 'go';
   'concurrency-primitives': 'go';
   'channel-operations': 'go';
+  'batch-functions': 'typescript' | 'tsx' | 'javascript';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */
@@ -1244,6 +1278,13 @@ export interface CorpusContext {
   tsconfigAliases?: { pathPatterns?: readonly string[]; paths?: Readonly<Record<string, readonly string[]>>; baseUrl?: string };
   /** package.json entry points (facade-expanded), absolute. */
   packageEntryPoints?: readonly string[];
+  /** The read-only code-index handle the index-backed corpus producers
+   *  (`call-graph`, and later `coverage`/`defined-classes`/`clone-pair-history`)
+   *  read their facts from. §2.2: `CrossDomainAnalyzer`'s direct `indexHandle`
+   *  read becomes a corpus processor reading this — never a rule. Optional so the
+   *  slice tests run a single fixture with no index (the producer degrades to an
+   *  empty fact, matching the legacy graceful-degradation). */
+  indexHandle?: IndexHandle;
 }
 
 /** A corpus processor: receives complete upstream facts, no AST, no format. */

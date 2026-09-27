@@ -27,7 +27,8 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { CrossDomainAnalyzer } from '../analyzers/crossDomain/CrossDomainAnalyzer.js';
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { analyzeCrossDomain } from '../phase/runner.js';
-import type { SchemaUsageFact } from '../phase/types.js';
+import { multiTableWriteRule } from '../phase/rules/crossDomain.js';
+import type { SchemaUsageFact, CallGraphFact, BatchFunctionFact, Finding } from '../phase/types.js';
 import type { Violation } from '../types.js';
 
 let db: CodeIndexDB;
@@ -39,6 +40,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   db.exec('DELETE FROM schema_usage');
+  db.exec('DELETE FROM graph_cache');
+  db.exec('DELETE FROM functions');
 });
 
 afterAll(async () => {
@@ -216,5 +219,190 @@ describe('Spec 68 cross-domain parity (new analyze(ctx) === old CrossDomainAnaly
     ]);
     expect(perRule['cross-domain/written-never-read']).toEqual([]);
     expect(perRule['cross-domain/read-never-written']).toEqual([]);
+  });
+});
+
+// ── multi-table-write (transaction-boundary risk) ───────────────────────────
+
+/** Insert one `functions` row (id is explicit so call-graph edges resolve). */
+function insertFunction(id: number, name: string, filePath: string): void {
+  db.run(
+    'INSERT INTO functions (id, name, file_path) VALUES (?, ?, ?)',
+    [id, name, filePath],
+  );
+}
+
+/** Insert one `graph_cache` `call` edge (node_key → neighbor_key, both id strings). */
+function insertCallEdge(fromId: number, toId: number): void {
+  db.run(
+    "INSERT INTO graph_cache (graph_type, node_key, neighbor_key, weight) VALUES ('call', ?, ?, 1.0)",
+    [String(fromId), String(toId)],
+  );
+}
+
+/** Re-read the `functions` + `graph_cache` rows into the `call-graph` fact the
+ *  rule reads — the same two tables the legacy `resolveCallGraphContext` +
+ *  `expandWrittenTables` queried. */
+function readCallGraph(): CallGraphFact {
+  const funcs = db.query('SELECT id, name, file_path FROM functions') as Array<{ id: number; name: string; file_path: string }>;
+  const edges = db.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
+  const callEdges: Array<{ fromId: number; toId: number }> = [];
+  for (const e of edges) {
+    const fromId = parseInt(e.node_key, 10);
+    const toId = parseInt(e.neighbor_key, 10);
+    if (!isNaN(fromId) && !isNaN(toId)) callEdges.push({ fromId, toId });
+  }
+  return {
+    functions: funcs.map((f) => ({ id: f.id, name: f.name, filePath: f.file_path })),
+    callEdges,
+  };
+}
+
+/** Run the legacy multi-table-write detector and the new rule over the same seed,
+ *  assert the `(file, line, column, rule, severity)` multiset matches, and return it. */
+async function parityMultiTableWrite(seeds: Seed[], txnTableMax: number): Promise<string[]> {
+  for (const s of seeds) insertUsage(s);
+
+  const analyzer = new CrossDomainAnalyzer();
+  const legacy = await analyzer.analyze(['a.ts'], {
+    indexHandle: db,
+    schemaLifecycle: {
+      enableWrittenNeverRead: false,
+      enableReadNeverWritten: false,
+      enableTransactionBoundaryRisk: true,
+      txnTableMax,
+    },
+  });
+
+  const rows = db.query(
+    'SELECT table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, origin FROM schema_usage',
+  ) as Array<{
+    table_name: string;
+    file_path: string;
+    function_name: string | null;
+    function_start_line: number | null;
+    function_start_column: number | null;
+    usage_type: string;
+    line: number;
+    origin: string | null;
+  }>;
+
+  const facts: SchemaUsageFact[] = rows.map((r) => ({
+    tableName: r.table_name,
+    filePath: r.file_path,
+    functionName: r.function_name,
+    functionStartLine: r.function_start_line,
+    functionStartColumn: r.function_start_column,
+    usageType: r.usage_type as SchemaUsageFact['usageType'],
+    line: r.line,
+    origin: r.origin === 'query-builder' ? 'query-builder' : undefined,
+  }));
+
+  const fresh = multiTableWriteRule.analyze({
+    facts: { 'schema-usage': facts, 'call-graph': readCallGraph(), 'batch-functions': [] },
+    formats: ['typescript', 'tsx', 'javascript'],
+    thresholds: { schemaLifecycle: { txnTableMax } },
+  }) as Finding[];
+
+  const old = legacy.violations
+    .filter((v: Violation) => v.rule === 'cross-domain/multi-table-write')
+    .map((v: Violation) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
+    .sort();
+  const nu = fresh
+    .map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))
+    .sort();
+  expect(nu).toEqual(old);
+  return nu;
+}
+
+describe('Spec 68 cross-domain parity — multi-table-write', () => {
+  it('fires when a function writes ≥ txnTableMax distinct tables', async () => {
+    const nu = await parityMultiTableWrite(
+      ['a', 'b', 'c', 'd'].map((tableName) => ({
+        tableName,
+        filePath: '/p/src/migrate.ts',
+        functionName: 'migrate',
+        functionStartLine: 1,
+        functionStartColumn: 1,
+        usageType: 'insert',
+        line: 10,
+      })),
+      4,
+    );
+    expect(nu).toEqual(['/p/src/migrate.ts:10:0:cross-domain/multi-table-write:high']);
+  });
+
+  it('does not fire below the threshold', async () => {
+    const nu = await parityMultiTableWrite(
+      ['a', 'b', 'c'].map((tableName) => ({
+        tableName,
+        filePath: '/p/src/migrate.ts',
+        functionName: 'migrate',
+        functionStartLine: 1,
+        functionStartColumn: 1,
+        usageType: 'insert',
+        line: 10,
+      })),
+      4,
+    );
+    expect(nu).toEqual([]);
+  });
+
+  it('expands depth-1 callee writes through the call graph', async () => {
+    insertFunction(1, 'main', '/p/src/migrate.ts');
+    insertFunction(2, 'saveUser', '/p/src/migrate.ts');
+    insertCallEdge(1, 2);
+
+    const seeds: Seed[] = [
+      { tableName: 'a', filePath: '/p/src/migrate.ts', functionName: 'main', functionStartLine: 1, functionStartColumn: 1, usageType: 'insert', line: 10 },
+      { tableName: 'b', filePath: '/p/src/migrate.ts', functionName: 'main', functionStartLine: 1, functionStartColumn: 1, usageType: 'insert', line: 11 },
+      { tableName: 'c', filePath: '/p/src/migrate.ts', functionName: 'saveUser', functionStartLine: 5, functionStartColumn: 1, usageType: 'insert', line: 20 },
+      { tableName: 'd', filePath: '/p/src/migrate.ts', functionName: 'saveUser', functionStartLine: 5, functionStartColumn: 1, usageType: 'insert', line: 21 },
+    ];
+
+    const nu = await parityMultiTableWrite(seeds, 4);
+    expect(nu).toEqual(['/p/src/migrate.ts:10:0:cross-domain/multi-table-write:high']);
+  });
+
+  it('degrades to direct writes when the call graph is absent', async () => {
+    // No functions/graph_cache rows: the callee expansion degrades, so `main`
+    // writing 2 tables (below the 4-table threshold) does not fire even though
+    // a hypothetical callee would push it over.
+    const nu = await parityMultiTableWrite(
+      ['a', 'b'].map((tableName) => ({
+        tableName,
+        filePath: '/p/src/migrate.ts',
+        functionName: 'main',
+        functionStartLine: 1,
+        functionStartColumn: 1,
+        usageType: 'insert',
+        line: 10,
+      })),
+      4,
+    );
+    expect(nu).toEqual([]);
+  });
+
+  it('skips a write whose enclosing function commits via a single .batch()', () => {
+    const facts: SchemaUsageFact[] = ['a', 'b', 'c', 'd'].map((tableName) => ({
+      tableName,
+      filePath: '/p/src/migrate.ts',
+      functionName: 'migrate',
+      functionStartLine: 1,
+      functionStartColumn: 1,
+      usageType: 'insert',
+      line: 10,
+    }));
+    const batches: BatchFunctionFact[] = [{ file: '/p/src/migrate.ts', startLine: 1, endLine: 100 }];
+    const fresh = multiTableWriteRule.analyze({
+      facts: {
+        'schema-usage': facts,
+        'call-graph': { functions: [], callEdges: [] },
+        'batch-functions': batches,
+      },
+      formats: ['typescript', 'tsx', 'javascript'],
+      thresholds: { schemaLifecycle: { txnTableMax: 4 } },
+    }) as Finding[];
+    expect(fresh.map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))).toEqual([]);
   });
 });

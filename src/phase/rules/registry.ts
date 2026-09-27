@@ -21,7 +21,7 @@ import { dependencyGraphRules } from './dependencyGraph.js';
 import { schemaValidatorRules } from './schemaValidator.js';
 import { documentationRules } from './documentation.js';
 import { stylesRules } from './styles.js';
-import { crossDomainRules } from './crossDomain.js';
+import { crossDomainRules, multiTableWriteRule } from './crossDomain.js';
 import { schemaRules, dynamicSqlRules } from './schema.js';
 import { schemaJsonRules } from './schemaJson.js';
 import { conventionsRules, conventionsExportShapeRules, conventionsImportFormRules } from './conventions.js';
@@ -80,6 +80,7 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...documentationRules,
   ...stylesRules,
   ...crossDomainRules,
+  multiTableWriteRule,
   ...schemaRules,
   ...schemaJsonRules,
   ...dynamicSqlRules,

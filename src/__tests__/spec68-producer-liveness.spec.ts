@@ -100,12 +100,18 @@ const FIXTURES: Record<Format, Fixture> = {
 };
 
 /**
- * The fact kinds whose top-level shape is an object, not an array: the three
+ * The fact kinds whose top-level shape is an object, not an array: the four
  * corpus-derived facts each reduce to a single per-corpus value (`table-catalog`
  * → `{ tables }`, `migration-history` → `{ dropped }`, `reachability` →
- * `{ importersOf, packageEntryPoints }`).
+ * `{ importersOf, packageEntryPoints }`, `call-graph` →
+ * `{ functions, callEdges }`).
  */
-const OBJECT_FACTS: ReadonlySet<FactKind> = new Set<FactKind>(['table-catalog', 'migration-history', 'reachability']);
+const OBJECT_FACTS: ReadonlySet<FactKind> = new Set<FactKind>([
+  'table-catalog',
+  'migration-history',
+  'reachability',
+  'call-graph',
+]);
 
 beforeAll(async () => {
   initializeLanguages();
@@ -155,6 +161,10 @@ function assertShape(kind: FactKind, value: unknown): void {
     } else if (kind === 'migration-history') {
       const history = value as FactShapes['migration-history'];
       expect(history.dropped, `producer for ${kind} must expose .dropped object`).toBeTypeOf('object');
+    } else if (kind === 'call-graph') {
+      const graph = value as FactShapes['call-graph'];
+      expect(Array.isArray(graph.functions), `producer for ${kind} must expose .functions array`).toBe(true);
+      expect(Array.isArray(graph.callEdges), `producer for ${kind} must expose .callEdges array`).toBe(true);
     }
   } else {
     expect(Array.isArray(value), `producer for ${kind} must return an array`).toBe(true);

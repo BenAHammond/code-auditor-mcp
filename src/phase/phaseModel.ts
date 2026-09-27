@@ -32,6 +32,7 @@ import type {
   ThresholdValues,
   StyleDeclarationsFile,
 } from './types.js';
+import type { IndexHandle } from '../types.js';
 
 /**
  * The corpus-level inputs the phase model needs beyond the file list. §8's
@@ -53,6 +54,11 @@ export interface PhaseInfra {
   tsconfigAliases?: { pathPatterns?: readonly string[]; paths?: Readonly<Record<string, readonly string[]>>; baseUrl?: string };
   /** package.json entry points (facade-expanded), absolute. */
   packageEntryPoints?: readonly string[];
+  /** The read-only code-index handle the index-backed corpus producers
+   *  (`call-graph`) read their facts from. Optional: the slice tests run a
+   *  single fixture with no index, and the producer degrades to an empty fact
+   *  (matching the legacy graceful-degradation). */
+  indexHandle?: IndexHandle;
 }
 
 /**
@@ -191,6 +197,7 @@ async function buildFacts(files: readonly InputFile[], infra?: PhaseInfra): Prom
     virtualModules: infra?.importVirtualModules,
     tsconfigAliases: infra?.tsconfigAliases,
     packageEntryPoints: infra?.packageEntryPoints,
+    indexHandle: infra?.indexHandle,
   };
   for (const kind of corpusKinds) {
     const producer = CORPUS_PRODUCERS[kind];
