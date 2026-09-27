@@ -68,6 +68,8 @@ import { mineConventionsFromFunctionIndex } from './conventionMining.js';
 import { replayDdlDeclarations } from '../analyzers/universal/schema/migrations.js';
 import { extractFileImports } from './fileImports.js';
 import { extractTypeDeclarations } from './typeDeclarations.js';
+import { extractGoFunctions } from './goFunctions.js';
+import { extractGoSwitches } from './goSwitches.js';
 import { computeReachability } from './reachability.js';
 import { DEFAULT_VIRTUAL_MODULES } from '../graph/importClassification.js';
 
@@ -133,6 +135,8 @@ const jsonDocumentProcess = (file: ParsedFile): FactFragment<'json-document'> =>
 const fileImportsProcess = (file: ParsedFile): FactFragment<'file-imports'> =>
   [extractFileImports((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file))];
 const typeDeclarationsProcess = (file: ParsedFile): FactFragment<'type-declarations'> => extractTypeDeclarations(file as AstFile);
+const goFunctionsProcess = (file: ParsedFile): FactFragment<'go-functions'> => extractGoFunctions(file as AstFile);
+const goSwitchesProcess = (file: ParsedFile): FactFragment<'go-switches'> => extractGoSwitches(file as AstFile);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -256,6 +260,15 @@ export const PRODUCERS = {
   // of `interface-size` read it.
   'type-declarations': {
     go: fileProducer('type-declarations', 'go', typeDeclarationsProcess),
+  },
+  // §9 — Go function metrics + switch case counts, served only for the `go`
+  // format. `function-size` + `liskov-substitution` read `go-functions`;
+  // `switch-size` reads `go-switches`.
+  'go-functions': {
+    go: fileProducer('go-functions', 'go', goFunctionsProcess),
+  },
+  'go-switches': {
+    go: fileProducer('go-switches', 'go', goSwitchesProcess),
   },
 } satisfies ProducerMap;
 
@@ -412,4 +425,6 @@ export const FACT_KINDS = {
   'file-imports': true,
   'reachability': true,
   'type-declarations': true,
+  'go-functions': true,
+  'go-switches': true,
 } satisfies Record<FactKind, true>;

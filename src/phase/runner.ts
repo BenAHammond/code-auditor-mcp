@@ -68,6 +68,8 @@ import type {
   JsonDocumentFact,
   SchemaValidationFact,
   TypeDeclarationsFact,
+  GoFunctionFact,
+  GoSwitchFact,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -136,13 +138,19 @@ export async function buildFileSymbols(files: readonly InputFile[]): Promise<Fil
 }
 
 /** Analyze the assembled `file-symbols` fact with the SOLID rules. The union
- *  context carries `type-declarations` as `[]` and widens `formats` to include
- *  `go` so the §9 Go arms (`interface-size`'s Go branch, `struct-size`) reduce an
- *  empty fact in this TS-only slice rather than a missing one — they produce
- *  nothing because there are no Go files here. */
+ *  context carries the §9 Go facts as `[]` and widens `formats` to include `go`
+ *  so the Go arms (`interface-size`'s Go branch, `struct-size`, `function-size`,
+ *  `switch-size`, `liskov-substitution`) reduce an empty fact in this TS-only
+ *  slice rather than a missing one — they produce nothing because there are no
+ *  Go files here. */
 export async function analyzeFileSymbols(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
-    facts: { 'file-symbols': symbols, 'type-declarations': [] as TypeDeclarationsFact[] },
+    facts: {
+      'file-symbols': symbols,
+      'type-declarations': [] as TypeDeclarationsFact[],
+      'go-functions': [] as GoFunctionFact[],
+      'go-switches': [] as GoSwitchFact[],
+    },
     formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
     thresholds,
   };

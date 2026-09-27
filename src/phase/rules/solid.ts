@@ -29,6 +29,8 @@ import type {
   FileInterfaceSymbol,
   FileMethodSymbol,
   ThresholdValues,
+  GoFunctionFact,
+  GoSwitchFact,
 } from '../types.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
@@ -49,6 +51,19 @@ type GoNeeds = {
 type InterfaceSizeNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript', 'go'];
   readonly facts: readonly ['file-symbols', 'type-declarations'];
+};
+
+/** The Go-only function-metric rules (`function-size`, `liskov-substitution`)
+ *  read the `go-functions` fact (§9). */
+type GoFunctionNeeds = {
+  readonly formats: readonly ['go'];
+  readonly facts: readonly ['go-functions'];
+};
+
+/** The Go-only `switch-size` rule reads the `go-switches` fact (§9). */
+type GoSwitchNeeds = {
+  readonly formats: readonly ['go'];
+  readonly facts: readonly ['go-switches'];
 };
 
 /** Read a numeric threshold with a documented fallback (the same value as
@@ -101,7 +116,7 @@ function finding(
   file: string,
   line: number,
   column: number | undefined,
-  symbol: string,
+  symbol: string | undefined,
   resolution?: Resolution,
 ): Finding {
   return { ruleId, severity, message, file, line, column, symbol, resolution };
@@ -400,6 +415,89 @@ const structSize: RuleDefinition<GoNeeds> = {
   },
 };
 
+// ── function-size (Go) ──────────────────────────────────────────────────────
+
+const functionSize: RuleDefinition<GoFunctionNeeds> = {
+  id: 'function-size',
+  needs: { formats: ['go'], facts: ['go-functions'] },
+  severity: 'high',
+  message: META['function-size'].message,
+  docs: META['function-size'].docs,
+  thresholds: META['function-size'].thresholds,
+  thresholdRationale: META['function-size'].thresholdRationale,
+  samples: META['function-size'].samples,
+  analyze(ctx): Finding[] {
+    const out: Finding[] = [];
+    for (const fn of ctx.facts['go-functions']) {
+      // The Go binary's AND-combined size signal (solid.go `analyzeFunctionSize`):
+      // complexity > 20 && returns > 2 && params > 6. Column 0 matches the Go
+      // binary, which never sets it.
+      if (!(fn.complexity > 20 && fn.returnCount > 2 && fn.parameterCount > 6)) continue;
+      out.push(finding(
+        'function-size', 'high',
+        `Function "${fn.name}" has many parameters, multiple returns, and high complexity. Consider breaking it into smaller, more focused functions.`,
+        fn.file, fn.line, 0, fn.name,
+      ));
+    }
+    return out;
+  },
+};
+
+// ── switch-size (Go) ────────────────────────────────────────────────────────
+
+const switchSize: RuleDefinition<GoSwitchNeeds> = {
+  id: 'switch-size',
+  needs: { formats: ['go'], facts: ['go-switches'] },
+  severity: 'high',
+  message: META['switch-size'].message,
+  docs: META['switch-size'].docs,
+  thresholds: META['switch-size'].thresholds,
+  thresholdRationale: META['switch-size'].thresholdRationale,
+  samples: META['switch-size'].samples,
+  analyze(ctx): Finding[] {
+    const out: Finding[] = [];
+    for (const sw of ctx.facts['go-switches']) {
+      // The Go binary's hardcoded threshold (8 cases, `default` included).
+      if (sw.caseCount <= 8) continue;
+      out.push(finding(
+        'switch-size', 'high',
+        sw.kind === 'type-switch'
+          ? 'Type switch has many case clauses. Consider consolidating related cases; a type switch over a sealed set is maintainable, but an open set grows unwieldy.'
+          : 'Switch statement has many case clauses. Consider consolidating related cases or a table-driven lookup.',
+        sw.file, sw.line, 0, undefined,
+      ));
+    }
+    return out;
+  },
+};
+
+// ── liskov-substitution (Go) ────────────────────────────────────────────────
+
+const goLiskovSubstitution: RuleDefinition<GoFunctionNeeds> = {
+  id: 'liskov-substitution',
+  needs: { formats: ['go'], facts: ['go-functions'] },
+  severity: 'severe',
+  message: META['liskov-substitution'].message,
+  docs: META['liskov-substitution'].docs,
+  thresholds: META['liskov-substitution'].thresholds,
+  thresholdRationale: META['liskov-substitution'].thresholdRationale,
+  samples: META['liskov-substitution'].samples,
+  analyze(ctx): Finding[] {
+    const out: Finding[] = [];
+    for (const fn of ctx.facts['go-functions']) {
+      // LSP governs methods only — a free function has no supertype to violate.
+      // Test functions are already excluded by the producer.
+      if (!fn.isMethod || !fn.callsPanic) continue;
+      out.push(finding(
+        'liskov-substitution', 'severe',
+        `Method "${fn.name}" calls panic(). Consider returning an error instead so the method stays substitutable.`,
+        fn.file, fn.line, 0, fn.name,
+      ));
+    }
+    return out;
+  },
+};
+
 // ── solid/liskov-substitution ───────────────────────────────────────────────
 
 const liskovSubstitution: RuleDefinition<SolidNeeds> = {
@@ -468,7 +566,7 @@ const dependencyInversion: RuleDefinition<SolidNeeds> = {
 
 /** The nine TypeScript SOLID rules plus the §9 Go re-declarations, in registry
  *  order. The type widens to `any` because the rules no longer share one `Needs`
- *  (the Go rules declare `type-declarations`). */
+ *  (the Go rules declare `type-declarations`, `go-functions` or `go-switches`). */
 export const solidRules: readonly RuleDefinition<any>[] = [
   classSize,
   methodComplexity,
@@ -480,4 +578,7 @@ export const solidRules: readonly RuleDefinition<any>[] = [
   liskovSubstitution,
   dependencyInversion,
   structSize,
+  functionSize,
+  switchSize,
+  goLiskovSubstitution,
 ];

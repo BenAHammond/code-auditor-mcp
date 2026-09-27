@@ -75,6 +75,8 @@ export interface FactShapes {
   'file-imports': FileImportsFact[];
   'reachability': ReachabilityFact;
   'type-declarations': TypeDeclarationsFact[];
+  'go-functions': GoFunctionFact[];
+  'go-switches': GoSwitchFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -920,6 +922,50 @@ export type TypeDeclarationsFact =
   | { kind: 'struct'; file: string; name: string; line: number; fieldCount: number }
   | { kind: 'interface'; file: string; name: string; line: number; methodCount: number };
 
+/**
+ * One Go function/method's size + behaviour metrics, as the `go-functions`
+ * producer projects it (§9). The serializable projection of the Go binary's
+ * `Function` extract for the two rules that read it:
+ *
+ *   - `function-size` (complexity > 20 AND returnCount > 2 AND
+ *     parameterCount > 6 — the Go binary's AND-combined size signal);
+ *   - `liskov-substitution` (isMethod && callsPanic — a method whose body has a
+ *     direct `panic()` call).
+ *
+ * `line` is the `func` keyword's 1-based line (`funcDecl.Pos().Line`).
+ * `complexity` is the Go binary's `calculateComplexity`: base 1, +1 per
+ * if/for/range/switch/type-switch and per case/default clause. `parameterCount`
+ * is expanded (a `A, B, C int` declaration is three); `returnCount` is the
+ * number of result entries (0 for none, 1 for a single result, N for a
+ * parenthesised list). Test functions (`Test`/`Benchmark`/`Example`/`Fuzz`
+ * prefix) are excluded — the Go binary's `ExtractFunctions` skips them.
+ */
+export type GoFunctionFact = {
+  file: string;
+  name: string;
+  line: number;
+  isMethod: boolean;
+  parameterCount: number;
+  returnCount: number;
+  complexity: number;
+  callsPanic: boolean;
+};
+
+/**
+ * One Go `switch` / `type switch` statement's case-clause count, as the
+ * `go-switches` producer projects it (§9). `caseCount` counts `case` and
+ * `default` clauses alike (the Go binary's `countSwitchCases` / `countTypeSwitchCases`
+ * iterate `Body.List`, where a `default:` is a `CaseClause` too). `line` is the
+ * `switch` keyword's 1-based line (`node.Pos().Line`). `switch-size` flags a
+ * count > 8.
+ */
+export type GoSwitchFact = {
+  file: string;
+  line: number;
+  caseCount: number;
+  kind: 'switch' | 'type-switch';
+};
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -1073,6 +1119,8 @@ export interface SupplyingFormats {
   'json-document': 'json';
   'file-imports': 'typescript' | 'tsx' | 'javascript' | 'go';
   'type-declarations': 'go';
+  'go-functions': 'go';
+  'go-switches': 'go';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */
