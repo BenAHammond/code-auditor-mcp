@@ -29,6 +29,7 @@ import { schemaValidatorRules } from './rules/schemaValidator.js';
 import { documentationRules } from './rules/documentation.js';
 import { stylesRules } from './rules/styles.js';
 import { crossDomainRules } from './rules/crossDomain.js';
+import { conventionsRules } from './rules/conventions.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -41,6 +42,8 @@ import type {
   ThresholdValues,
   Finding,
   StyleDeclarationsFile,
+  FunctionIndexFact,
+  MinedConvention,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -421,4 +424,51 @@ export async function runStylesSlice(
 ): Promise<Finding[]> {
   const facts = await buildStyleDeclarations(files, projectRoot);
   return analyzeStyles(facts, thresholds);
+}
+
+// ── conventions slice (function-index → mined-conventions → 3 rules) ────────
+
+/**
+ * Parse → Process for the `function-index` fact. Returns the assembled corpus
+ * fact (every function/method/component from every file, ASTs already freed).
+ */
+export async function buildFunctionIndex(files: readonly InputFile[]): Promise<FunctionIndexFact[]> {
+  const facts: FunctionIndexFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('function-index', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as FunctionIndexFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `function-index` + `mined-conventions` facts with the
+ *  three function-index-servable conventions rules. */
+export async function analyzeConventions(
+  facts: FunctionIndexFact[],
+  conventions: MinedConvention[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'function-index': facts, 'mined-conventions': conventions },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of conventionsRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The conventions slice: parse → function-index → mined-conventions → rules → findings. */
+export async function runConventionsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const facts = await buildFunctionIndex(files);
+  const conventions = CORPUS_PRODUCERS['mined-conventions'].process({ 'function-index': facts });
+  return analyzeConventions(facts, conventions, thresholds);
 }

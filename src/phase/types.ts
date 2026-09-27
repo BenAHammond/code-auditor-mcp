@@ -56,6 +56,7 @@ export interface FactShapes {
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
   'table-catalog': TableCatalog;
+  'mined-conventions': MinedConvention[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -378,6 +379,36 @@ export type ResolvedQuery = {
  *  (`missing-org-filter`) can read tenancy from the corpus, not just config. */
 export type TableCatalog = {
   tables: ReadonlyArray<{ name: string; source: string; columns: ReadonlyArray<string> }>;
+};
+
+/**
+ * One mined convention, as the `mined-conventions` corpus fact carries it. This
+ * is the serializable projection of the `Convention` interface (types.ts) minus
+ * the DB-assigned/storage-only fields (`id`, `hash`, `created_at`): detection
+ * reads the domain, the antecedent/consequent/pattern, the directory it scopes,
+ * the confidence the miner computed, and the exemplar anchor — never the
+ * change-detection hash (that belongs to the SQLite index-sync path, which the
+ * phase model has no analogue of).
+ *
+ * Object-literal `type` (not `interface`) so §4's `Serializable` index-signature
+ * arm holds.
+ */
+export type MinedConvention = {
+  domain: 'usage-pair' | 'import-form' | 'error-handling' | 'export-shape' | 'naming';
+  rule_id: string;
+  antecedent: string | null;
+  consequent: string | null;
+  pattern: string | null;
+  directory: string | null;
+  file_path: string | null;
+  line: number | null;
+  support: number;
+  total_cases: number;
+  confidence: number;
+  exemplar_file: string | null;
+  exemplar_line: number | null;
+  /** For naming conventions: the sub-population (react-component, hook, function). */
+  export_kind?: string | null;
 };
 
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────

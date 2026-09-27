@@ -23,6 +23,7 @@ import { documentationRules } from './documentation.js';
 import { stylesRules } from './styles.js';
 import { crossDomainRules } from './crossDomain.js';
 import { schemaRules } from './schema.js';
+import { conventionsRules } from './conventions.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -69,4 +70,5 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...stylesRules,
   ...crossDomainRules,
   ...schemaRules,
+  ...conventionsRules,
 ];

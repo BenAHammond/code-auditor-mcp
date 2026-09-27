@@ -456,7 +456,7 @@ function computeHash(inputs: unknown[]): string {
 }
 
 /** Cap the number of conventions per domain. */
-function capPerDomain(conventions: Convention[], max: number): Convention[] {
+export function capPerDomain(conventions: Convention[], max: number): Convention[] {
   const byDomain = new Map<string, Convention[]>();
   for (const c of conventions) {
     const list = byDomain.get(c.domain) ?? [];
@@ -481,111 +481,13 @@ function capPerDomain(conventions: Convention[], max: number): Convention[] {
  * and support ≥ minCorpus.
  */
 function mineUsagePairs(db: SqliteDatabase, config: ConventionMiningConfig): Convention[] {
-  const conventions: Convention[] = [];
-
-  // Build per-function call sets
-  const rows = db
-    .prepare(
-      `SELECT f.id, f.name as func_name, f.file_path, f.line_number,
-              f.metadata_json
-       FROM functions f`,
-    )
-    .all() as Array<{
-    id: number;
-    func_name: string;
-    file_path: string;
-    line_number: number;
-    metadata_json: string | null;
-  }>;
-
-  // callerId -> Set<calleeName>
-  const callSets = new Map<number, Set<string>>();
-  const callRows = db
+  const funcs = db
+    .prepare(`SELECT id, name, file_path, line_number FROM functions`)
+    .all() as UsagePairFuncRow[];
+  const calls = db
     .prepare(`SELECT caller_id, callee_name FROM function_calls`)
-    .all() as Array<{ caller_id: number; callee_name: string }>;
-
-  for (const cr of callRows) {
-    if (!callSets.has(cr.caller_id)) callSets.set(cr.caller_id, new Set());
-    callSets.get(cr.caller_id)!.add(cr.callee_name);
-  }
-
-  // Build a set of project-defined function names (antecedents must be
-  // resolvable in the function index — Spec 22 R5.2).
-  const projectSymbols = new Set<string>();
-  for (const r of rows) {
-    projectSymbols.add(r.func_name);
-  }
-
-  // For each unique callee (potential antecedent), find all callers
-  // antecedentName -> Set<callerId>
-  const antecedentCallers = new Map<string, Set<number>>();
-  for (const cr of callRows) {
-    if (!antecedentCallers.has(cr.callee_name)) antecedentCallers.set(cr.callee_name, new Set());
-    antecedentCallers.get(cr.callee_name)!.add(cr.caller_id);
-  }
-
-  // For each antecedent A, among A-callers, compute co-occurring calls X.
-  // Skip built-in/stdlib and non-project antecedents (Spec 22 R5.2).
-  for (const [antecedent, callerIds] of antecedentCallers) {
-    // Antecedent must be project-defined and not a built-in
-    if (BUILT_IN_CALLEES.has(antecedent) || !projectSymbols.has(antecedent)) continue;
-
-    const total = callerIds.size;
-    if (total < config.minCorpus) continue;
-
-    // Count how many A-callers also call each other function.
-    // Skip built-in consequents — co-occurrence of universal methods is
-    // arithmetic, not convention (Spec 22 R5.2).
-    const coOccurCounts = new Map<string, number>();
-    for (const cid of callerIds) {
-      const callSet = callSets.get(cid);
-      if (!callSet) continue;
-      for (const callee of callSet) {
-        if (callee === antecedent) continue;
-        if (BUILT_IN_CALLEES.has(callee)) continue;
-        coOccurCounts.set(callee, (coOccurCounts.get(callee) ?? 0) + 1);
-      }
-    }
-
-    for (const [consequent, support] of coOccurCounts) {
-      const confidence = support / total;
-      if (confidence >= config.pairConfidence && support >= config.minCorpus) {
-        // Find an exemplar: a function that calls both A and X
-        let exemplarFile: string | null = null;
-        let exemplarLine: number | null = null;
-        for (const cid of callerIds) {
-          const cs = callSets.get(cid);
-          if (cs && cs.has(consequent)) {
-            const funcRow = rows.find((r) => r.id === cid);
-            if (funcRow) {
-              exemplarFile = funcRow.file_path;
-              exemplarLine = funcRow.line_number;
-              break;
-            }
-          }
-        }
-
-        conventions.push({
-          domain: 'usage-pair',
-          rule_id: 'conventions/usage-pair',
-          antecedent,
-          consequent,
-          pattern: null,
-          directory: null,
-          file_path: null,
-          line: null,
-          support,
-          total_cases: total,
-          confidence: Math.round(confidence * 10000) / 10000,
-          exemplar_file: exemplarFile,
-          exemplar_line: exemplarLine,
-          hash: computeHash([antecedent, consequent, support, total]),
-        });
-      }
-    }
-  }
-
-  return conventions;
+    .all() as MineCallRow[];
+  return mineUsagePairsFromFacts(funcs, calls, config);
 }
 
 /**
@@ -718,88 +620,14 @@ function mineErrorHandling(
   db: SqliteDatabase,
   config: ConventionMiningConfig,
 ): Convention[] {
-  const conventions: Convention[] = [];
-
-  const rows = db
+  const funcs = db
     .prepare(
       `SELECT id, name, file_path, line_number, body
        FROM functions
        WHERE body IS NOT NULL`,
     )
-    .all() as Array<{
-    id: number;
-    name: string;
-    file_path: string;
-    line_number: number;
-    body: string | null;
-  }>;
-
-  // directory -> Map<shape, count>
-  const dirShapes = new Map<string, Map<string, number>>();
-  // directory -> exemplar info
-  const dirExemplars = new Map<string, { file: string; line: number; shape: string }>();
-
-  for (const row of rows) {
-    const body: string | undefined = row.body ?? undefined;
-    const shape = detectErrorHandlingShape(body);
-    if (!shape) continue; // no error handling → skip
-
-    const directory = path.dirname(row.file_path) || '.';
-    if (!dirShapes.has(directory)) dirShapes.set(directory, new Map());
-    const shapes = dirShapes.get(directory)!;
-    shapes.set(shape, (shapes.get(shape) ?? 0) + 1);
-
-    if (!dirExemplars.has(directory)) {
-      dirExemplars.set(directory, {
-        file: row.file_path,
-        line: row.line_number,
-        shape,
-      });
-    }
-  }
-
-  for (const [directory, shapes] of dirShapes) {
-    const total = [...shapes.values()].reduce((s, c) => s + c, 0);
-    if (total < config.minCorpus) continue;
-
-    let maxCount = 0;
-    let dominantShape = '';
-    for (const [shape, count] of shapes) {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantShape = shape;
-      }
-    }
-
-    const modeShare = maxCount / total;
-    if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      const minorityShapes = [...shapes.entries()]
-        .filter(([s]) => s !== dominantShape)
-        .map(([s, c]) => `${s}:${c}`)
-        .join(',');
-
-      const exemplar = dirExemplars.get(directory);
-
-      conventions.push({
-        domain: 'error-handling',
-        rule_id: 'conventions/error-handling',
-        antecedent: null,
-        consequent: null,
-        pattern: dominantShape,
-        directory,
-        file_path: null,
-        line: null,
-        support: maxCount,
-        total_cases: total,
-        confidence: Math.round(modeShare * 10000) / 10000,
-        exemplar_file: exemplar?.file ?? null,
-        exemplar_line: exemplar?.line ?? null,
-        hash: computeHash([directory, dominantShape, maxCount, total]),
-      });
-    }
-  }
-
-  return conventions;
+    .all() as ErrorHandlingFuncRow[];
+  return mineErrorHandlingFromFacts(funcs, config);
 }
 
 /**
@@ -956,31 +784,226 @@ function classifyExportKind(row: {
  * minCorpus populations produce nothing.
  */
 function mineNaming(db: SqliteDatabase, config: ConventionMiningConfig): Convention[] {
-  const conventions: Convention[] = [];
-
-  const rows = db
+  const funcs = db
     .prepare(
       `SELECT id, name, file_path, line_number, entity_type, component_type
        FROM functions
        WHERE is_exported = 1`,
     )
-    .all() as Array<{
-    id: number;
-    name: string;
-    file_path: string;
-    line_number: number;
-    entity_type: string;
-    component_type: string | null;
-  }>;
+    .all() as NamingFuncRow[];
+  return mineNamingFromFacts(funcs, config);
+}
 
-  // directory -> export_kind -> Map<case, count>
+// ─── Pure miners (Spec 68 §3.2) ──────────────────────────────────────────────
+// The three DB-tight miners below (usage-pair / error-handling / naming) are
+// thin wrappers over these pure functions: the same algorithm that runs over
+// SQLite `functions` + `function_calls` rows also runs over the phase model's
+// `function-index` fact (via `mineConventionsFromFunctionIndex` in
+// `src/phase/conventionMining.ts`). Import-form and export-shape stay on the
+// DB path — they read source/export data the `function-index` fact does not
+// carry (the `imports` / `export-form` facts are §9's concern).
+
+/** The function-row projection usage-pair mining needs. */
+export interface UsagePairFuncRow {
+  id: number;
+  name: string;
+  file_path: string;
+  line_number: number;
+}
+
+/** The function-row projection error-handling mining needs. */
+export interface ErrorHandlingFuncRow {
+  id: number;
+  name: string;
+  file_path: string;
+  line_number: number;
+  body: string | null;
+}
+
+/** The function-row projection naming mining needs. */
+export interface NamingFuncRow {
+  id: number;
+  name: string;
+  file_path: string;
+  line_number: number;
+  entity_type: string;
+  component_type: string | null;
+}
+
+/** A function-call row (caller → callee), shared by both callers of the miner. */
+export interface MineCallRow {
+  caller_id: number;
+  callee_name: string;
+}
+
+/** The pure usage-pair miner — byte-identical logic to `mineUsagePairs`, over rows. */
+export function mineUsagePairsFromFacts(
+  funcs: UsagePairFuncRow[],
+  calls: MineCallRow[],
+  config: ConventionMiningConfig,
+): Convention[] {
+  const conventions: Convention[] = [];
+
+  const callSets = new Map<number, Set<string>>();
+  for (const cr of calls) {
+    if (!callSets.has(cr.caller_id)) callSets.set(cr.caller_id, new Set());
+    callSets.get(cr.caller_id)!.add(cr.callee_name);
+  }
+
+  const projectSymbols = new Set<string>();
+  for (const r of funcs) {
+    projectSymbols.add(r.name);
+  }
+
+  const antecedentCallers = new Map<string, Set<number>>();
+  for (const cr of calls) {
+    if (!antecedentCallers.has(cr.callee_name)) antecedentCallers.set(cr.callee_name, new Set());
+    antecedentCallers.get(cr.callee_name)!.add(cr.caller_id);
+  }
+
+  for (const [antecedent, callerIds] of antecedentCallers) {
+    if (BUILT_IN_CALLEES.has(antecedent) || !projectSymbols.has(antecedent)) continue;
+
+    const total = callerIds.size;
+    if (total < config.minCorpus) continue;
+
+    const coOccurCounts = new Map<string, number>();
+    for (const cid of callerIds) {
+      const callSet = callSets.get(cid);
+      if (!callSet) continue;
+      for (const callee of callSet) {
+        if (callee === antecedent) continue;
+        if (BUILT_IN_CALLEES.has(callee)) continue;
+        coOccurCounts.set(callee, (coOccurCounts.get(callee) ?? 0) + 1);
+      }
+    }
+
+    for (const [consequent, support] of coOccurCounts) {
+      const confidence = support / total;
+      if (confidence >= config.pairConfidence && support >= config.minCorpus) {
+        let exemplarFile: string | null = null;
+        let exemplarLine: number | null = null;
+        for (const cid of callerIds) {
+          const cs = callSets.get(cid);
+          if (cs && cs.has(consequent)) {
+            const funcRow = funcs.find((r) => r.id === cid);
+            if (funcRow) {
+              exemplarFile = funcRow.file_path;
+              exemplarLine = funcRow.line_number;
+              break;
+            }
+          }
+        }
+
+        conventions.push({
+          domain: 'usage-pair',
+          rule_id: 'conventions/usage-pair',
+          antecedent,
+          consequent,
+          pattern: null,
+          directory: null,
+          file_path: null,
+          line: null,
+          support,
+          total_cases: total,
+          confidence: Math.round(confidence * 10000) / 10000,
+          exemplar_file: exemplarFile,
+          exemplar_line: exemplarLine,
+          hash: computeHash([antecedent, consequent, support, total]),
+        });
+      }
+    }
+  }
+
+  return conventions;
+}
+
+/** The pure error-handling miner — byte-identical logic to `mineErrorHandling`. */
+export function mineErrorHandlingFromFacts(
+  funcs: ErrorHandlingFuncRow[],
+  config: ConventionMiningConfig,
+): Convention[] {
+  const conventions: Convention[] = [];
+
+  const dirShapes = new Map<string, Map<string, number>>();
+  const dirExemplars = new Map<string, { file: string; line: number; shape: string }>();
+
+  for (const row of funcs) {
+    const body: string | undefined = row.body ?? undefined;
+    const shape = detectErrorHandlingShape(body);
+    if (!shape) continue; // no error handling → skip
+
+    const directory = path.dirname(row.file_path) || '.';
+    if (!dirShapes.has(directory)) dirShapes.set(directory, new Map());
+    const shapes = dirShapes.get(directory)!;
+    shapes.set(shape, (shapes.get(shape) ?? 0) + 1);
+
+    if (!dirExemplars.has(directory)) {
+      dirExemplars.set(directory, {
+        file: row.file_path,
+        line: row.line_number,
+        shape,
+      });
+    }
+  }
+
+  for (const [directory, shapes] of dirShapes) {
+    const total = [...shapes.values()].reduce((s, c) => s + c, 0);
+    if (total < config.minCorpus) continue;
+
+    let maxCount = 0;
+    let dominantShape = '';
+    for (const [shape, count] of shapes) {
+      if (count > maxCount) {
+        maxCount = count;
+        dominantShape = shape;
+      }
+    }
+
+    const modeShare = maxCount / total;
+    if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
+      const minorityShapes = [...shapes.entries()]
+        .filter(([s]) => s !== dominantShape)
+        .map(([s, c]) => `${s}:${c}`)
+        .join(',');
+
+      const exemplar = dirExemplars.get(directory);
+
+      conventions.push({
+        domain: 'error-handling',
+        rule_id: 'conventions/error-handling',
+        antecedent: null,
+        consequent: null,
+        pattern: dominantShape,
+        directory,
+        file_path: null,
+        line: null,
+        support: maxCount,
+        total_cases: total,
+        confidence: Math.round(modeShare * 10000) / 10000,
+        exemplar_file: exemplar?.file ?? null,
+        exemplar_line: exemplar?.line ?? null,
+        hash: computeHash([directory, dominantShape, maxCount, total]),
+      });
+    }
+  }
+
+  return conventions;
+}
+
+/** The pure naming miner — byte-identical logic to `mineNaming`. */
+export function mineNamingFromFacts(
+  funcs: NamingFuncRow[],
+  config: ConventionMiningConfig,
+): Convention[] {
+  const conventions: Convention[] = [];
+
   type KindCasingMap = Map<string, Map<string, number>>;
   const dirKindCases = new Map<string, KindCasingMap>();
-  // directory -> export_kind -> exemplar
   type KindExemplarMap = Map<string, { file: string; line: number; casing: string }>;
   const dirKindExemplars = new Map<string, KindExemplarMap>();
 
-  for (const row of rows) {
+  for (const row of funcs) {
     const casing = detectCase(row.name);
     if (!casing) continue; // non-Latin or unclassifiable → skip
 

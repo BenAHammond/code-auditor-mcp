@@ -35,6 +35,7 @@ import type {
   AstFile,
   FactFragment,
   TableCatalog,
+  MinedConvention,
   Format,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
@@ -46,6 +47,7 @@ import { extractSchemaUsage } from './schemaUsage.js';
 import { extractSchemaCode } from './schemaCode.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
 import { getLanguageFromPath } from '../utils/fileDiscovery.js';
+import { mineConventionsFromFunctionIndex } from './conventionMining.js';
 
 /**
  * Exhaustive over both axes: every file fact kind, then every supplying format.
@@ -165,6 +167,17 @@ export const CORPUS_PRODUCERS = {
       return { tables };
     },
   } satisfies CorpusProcessor<'table-catalog', readonly ['ddl-declarations']>,
+  // `mined-conventions` reduces the function index into the mined-convention
+  // set the three function-index-servable convention rules read. `needs` forms
+  // the DAG edge function-index → mined-conventions.
+  'mined-conventions': {
+    id: 'mined-conventions',
+    produces: 'mined-conventions',
+    needs: ['function-index'],
+    process(facts): MinedConvention[] {
+      return mineConventionsFromFunctionIndex(facts['function-index']);
+    },
+  } satisfies CorpusProcessor<'mined-conventions', readonly ['function-index']>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -198,4 +211,5 @@ export const FACT_KINDS = {
   'cross-language-entities': true,
   'data-access-calls': true,
   'table-catalog': true,
+  'mined-conventions': true,
 } satisfies Record<FactKind, true>;
