@@ -20,9 +20,11 @@
 
 import type { AstFile, GoSwitchFact } from './types.js';
 import { walkAST } from '../languages/adapterBridge.js';
+import { isTestFile } from '../languages/testConventions.js';
 
 /** Extract every switch/type-switch statement from one parsed Go file. */
 export function extractGoSwitches(file: AstFile): GoSwitchFact[] {
+  if (isTestFile('go', file.file)) return [];
   const out: GoSwitchFact[] = [];
   walkAST(file.ast.root, (node) => {
     let kind: GoSwitchFact['kind'];

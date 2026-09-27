@@ -26,6 +26,7 @@
 import type { AstFile, TypeDeclarationsFact } from './types.js';
 import type { ASTNode } from '../languages/types.js';
 import { walkAST, getNodeText } from '../languages/adapterBridge.js';
+import { isTestFile } from '../languages/testConventions.js';
 
 /** The expanded field count of a `struct_type` node (see the module header). */
 function structFieldCount(structType: ASTNode): number {
@@ -47,6 +48,7 @@ function interfaceMethodCount(interfaceType: ASTNode): number {
 
 /** Extract every named struct/interface declaration from one parsed Go file. */
 export function extractTypeDeclarations(file: AstFile): TypeDeclarationsFact[] {
+  if (isTestFile('go', file.file)) return [];
   const out: TypeDeclarationsFact[] = [];
   walkAST(file.ast.root, (node) => {
     if (node.type !== 'type_spec') return;

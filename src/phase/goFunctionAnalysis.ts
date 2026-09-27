@@ -25,6 +25,7 @@
 
 import type { ASTNode } from '../languages/types.js';
 import { walkAST, getNodeText, getFieldNode } from '../languages/adapterBridge.js';
+import { isTestFile } from '../languages/testConventions.js';
 import type {
   AstFile,
   ErrorBindingsFact,
@@ -107,6 +108,7 @@ function forEachGoFunction(
 
 /** Extract every non-test function's error-binding positions from one Go file. */
 export function extractErrorBindings(file: AstFile): ErrorBindingsFact[] {
+  if (isTestFile('go', file.file)) return [];
   const out: ErrorBindingsFact[] = [];
   forEachGoFunction(file, (node, name, block, isMethod) => {
     const namedErr = hasNamedErrResult(node, isMethod, file.source);
@@ -188,6 +190,7 @@ const SYNC_METHOD_NAMES = new Set([
 
 /** Extract every non-test function's goroutine-synchronization signal. */
 export function extractConcurrencyPrimitives(file: AstFile): ConcurrencyPrimitivesFact[] {
+  if (isTestFile('go', file.file)) return [];
   const out: ConcurrencyPrimitivesFact[] = [];
   forEachGoFunction(file, (node, name, block) => {
     let hasGo = false;
@@ -225,6 +228,7 @@ function isUnbufferedMakeChan(rhs: ASTNode, source: string): boolean {
 
 /** Extract every non-test function's unbuffered-channel + operation counts. */
 export function extractChannelOperations(file: AstFile): ChannelOperationsFact[] {
+  if (isTestFile('go', file.file)) return [];
   const out: ChannelOperationsFact[] = [];
   forEachGoFunction(file, (node, name, block) => {
     const unbuffered = new Set<string>();

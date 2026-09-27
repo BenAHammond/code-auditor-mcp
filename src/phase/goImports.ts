@@ -21,9 +21,14 @@
 
 import type { AstFile, ImportFact } from './types.js';
 import { walkAST, getNodeText, getFieldNode } from '../languages/adapterBridge.js';
+import { isTestFile } from '../languages/testConventions.js';
 
 /** Extract every import spec from one parsed Go file. */
 export function extractGoImports(file: AstFile): ImportFact[] {
+  // `go test` compiles only `*_test.go` — test files are not production API, so
+  // the Go facts (and every rule reading them) must exempt them, matching the
+  // deleted Go subprocess's `filePatterns`.
+  if (isTestFile('go', file.file)) return [];
   const out: ImportFact[] = [];
   walkAST(file.ast.root, (node) => {
     if (node.type !== 'import_spec') return;

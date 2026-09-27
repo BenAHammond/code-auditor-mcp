@@ -31,6 +31,7 @@
 import type { AstFile, GoFunctionFact } from './types.js';
 import type { ASTNode } from '../languages/types.js';
 import { walkAST, getNodeText } from '../languages/adapterBridge.js';
+import { isTestFile } from '../languages/testConventions.js';
 
 /** The Go binary's `isTestFunction` prefix set (`testconventions.go`). */
 function isTestFunction(name: string): boolean {
@@ -117,6 +118,7 @@ function resultOf(node: ASTNode, isMethod: boolean): ASTNode | undefined {
 
 /** Extract every non-test function/method from one parsed Go file. */
 export function extractGoFunctions(file: AstFile): GoFunctionFact[] {
+  if (isTestFile('go', file.file)) return [];
   const out: GoFunctionFact[] = [];
   walkAST(file.ast.root, (node) => {
     if (node.type !== 'function_declaration' && node.type !== 'method_declaration') return;
