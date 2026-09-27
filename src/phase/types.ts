@@ -42,6 +42,7 @@ export interface FactShapes {
   ast: never;
   'file-symbols': FileSymbols[];
   'function-index': FunctionIndexFact[];
+  'function-bodies': FunctionBodyFact[];
   'imports': ImportFact[];
   'string-literals': StringLiteralFact[];
   'secret-candidates': SecretCandidate[];
@@ -219,6 +220,26 @@ export type FunctionIndexFact = {
   body: string | null;
   functionCalls: string[];
   language: string;
+};
+
+/**
+ * One function/method/arrow body, the serializable projection of the adapter's
+ * `extractFunctions` (`FunctionInfo[]`) resolved back to its node for the full
+ * source text. `too-many-queries` counts query call sites over `text`, so the
+ * producer carries the *full* node text (`getNodeText`) rather than the
+ * `statement_block` alone — an expression-bodied arrow has no block and would
+ * otherwise read `null` while the legacy walk still counts its queries. The
+ * `column` is the 1-based start column `function-index` drops, and the node set
+ * is `extractFunctions`' full set (generator/function-expression/arrow), which
+ * is wider than `function-index`'s visitor — a deliberate split: the DB index
+ * and this per-file fact answer different questions.
+ */
+export type FunctionBodyFact = {
+  file: string;
+  name: string;
+  line: number;
+  column: number;
+  text: string;
 };
 
 /**
@@ -659,6 +680,7 @@ export type FactFragment<K extends FactKind> = FactShapes[K];
 export interface SupplyingFormats {
   'file-symbols': 'typescript' | 'tsx' | 'javascript';
   'function-index': 'typescript' | 'tsx' | 'javascript';
+  'function-bodies': 'typescript' | 'tsx' | 'javascript';
   'imports': 'typescript' | 'tsx' | 'javascript';
   'string-literals': 'typescript' | 'tsx' | 'javascript';
   'secret-candidates': 'typescript' | 'tsx' | 'javascript';

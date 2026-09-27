@@ -28,6 +28,7 @@ import { dryRules } from './dry.js';
 import { securityRules } from './security.js';
 import { secretsRules } from './secrets.js';
 import { securityDefectRules } from './securityDefects.js';
+import { functionBodyRules } from './functionBodies.js';
 
 /**
  * The 12 already-pinned rules that are parity-clean on the *full* pipeline
@@ -79,4 +80,5 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...securityRules,
   ...secretsRules,
   ...securityDefectRules,
+  ...functionBodyRules,
 ];

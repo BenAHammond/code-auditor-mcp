@@ -877,6 +877,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             // by the schema-code visitor) does not collapse into `schema`.
             const ruleAnalyzerOverride: Record<string, string> = {
               'table-naming-convention': 'schema-code',
+              'too-many-queries': 'schema-code',
             };
             // The analyzer families whose legacy emission carried the provenance
             // symbol in `functionName` (the pre-`symbol` field), not `symbol`.

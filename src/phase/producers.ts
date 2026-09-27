@@ -40,6 +40,7 @@ import type {
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
+import { extractFunctionBodies } from './functionBodies.js';
 import { extractImports } from './imports.js';
 import { extractStringLiterals } from './stringLiterals.js';
 import { extractSecretCandidates } from './secretCandidates.js';
@@ -92,6 +93,7 @@ function fileProducer<K extends FileFactKind, F extends SupplyingFormats[K]>(
 // AST consumer.
 const fileSymbolsProcess = (file: ParsedFile): FactFragment<'file-symbols'> => extractFileSymbols(file as AstFile);
 const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> => extractFunctionIndex(file as AstFile);
+const functionBodiesProcess = (file: ParsedFile): FactFragment<'function-bodies'> => extractFunctionBodies(file as AstFile);
 const importsProcess = (file: ParsedFile): FactFragment<'imports'> => extractImports(file as AstFile);
 const stringLiteralsProcess = (file: ParsedFile): FactFragment<'string-literals'> => extractStringLiterals(file as AstFile);
 const secretCandidatesProcess = (file: ParsedFile): FactFragment<'secret-candidates'> => extractSecretCandidates(file as AstFile);
@@ -114,6 +116,11 @@ export const PRODUCERS = {
     typescript: fileProducer('function-index', 'typescript', functionIndexProcess),
     tsx: fileProducer('function-index', 'tsx', functionIndexProcess),
     javascript: fileProducer('function-index', 'javascript', functionIndexProcess),
+  },
+  'function-bodies': {
+    typescript: fileProducer('function-bodies', 'typescript', functionBodiesProcess),
+    tsx: fileProducer('function-bodies', 'tsx', functionBodiesProcess),
+    javascript: fileProducer('function-bodies', 'javascript', functionBodiesProcess),
   },
   'imports': {
     typescript: fileProducer('imports', 'typescript', importsProcess),
@@ -233,6 +240,7 @@ export function fileProducerFor<K extends FileFactKind>(
 export const FACT_KINDS = {
   'file-symbols': true,
   'function-index': true,
+  'function-bodies': true,
   'imports': true,
   'string-literals': true,
   'secret-candidates': true,

@@ -34,6 +34,7 @@ import { dryRules } from './rules/dry.js';
 import { securityRules } from './rules/security.js';
 import { secretsRules } from './rules/secrets.js';
 import { securityDefectRules } from './rules/securityDefects.js';
+import { functionBodyRules } from './rules/functionBodies.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -52,6 +53,7 @@ import type {
   StringLiteralFact,
   SecretCandidate,
   SecurityCandidate,
+  FunctionBodyFact,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -666,4 +668,51 @@ export async function analyzeSecurityDefects(
 export async function runSecurityDefectsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const candidates = await buildSecurityCandidates(files);
   return analyzeSecurityDefects(candidates, thresholds);
+}
+
+// ── function-bodies slice (function-bodies → too-many-queries) ───────────────
+
+/**
+ * Parse → Process for the `function-bodies` fact. Returns the assembled corpus
+ * fact (every function body from every file, ASTs already freed). The node set
+ * is `adapter.extractFunctions`' full set — wider than `function-index` — so the
+ * `too-many-queries` rule sees the same universe the legacy schema-code visitor
+ * walked.
+ */
+export async function buildFunctionBodies(files: readonly InputFile[]): Promise<FunctionBodyFact[]> {
+  const facts: FunctionBodyFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('function-bodies', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as FunctionBodyFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `function-bodies` fact with the too-many-queries rule. */
+export async function analyzeFunctionBodies(
+  facts: FunctionBodyFact[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'function-bodies': facts },
+    formats: ['typescript', 'tsx', 'javascript'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of functionBodyRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
+}
+
+/** The function-bodies slice: parse → function-bodies → too-many-queries → findings. */
+export async function runFunctionBodiesSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const facts = await buildFunctionBodies(files);
+  return analyzeFunctionBodies(facts, thresholds);
 }
