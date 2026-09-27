@@ -10,10 +10,20 @@
  * normalized declarations and design tokens, so `analyze` never touches a tree,
  * an adapter, or a source string.
  *
- * `undefined-class` (severity 'severe') is *not* here: it reads `classUsage` and
- * a defined-class catalog plus a Tailwind compile-probe, none of which is a pure
- * function of the fact. It is DEFERRED and stays on the legacy path until its
- * own inputs land.
+ * `undefined-class` (severity 'severe') is the ninth rule, exported separately
+ * (`undefinedClassRule`): its `needs` adds the corpus-shaped `defined-classes`
+ * fact (the `style_defined_classes` catalog) alongside `style-declarations`, so
+ * it cannot share the eight rules' `StylesNeeds` tuple. It reads the fact's
+ * `classUsage` against that catalog in memory (membership + Levenshtein ≤2
+ * near-miss) and resolves candidates through the shared `getTailwindExpander()`
+ * singleton. The compile-probe never initializes on the phase path — the rule's
+ * `AnalysisContext` carries no `projectRoot`, exactly as the legacy reducer
+ * passed none — so `resolve()` degrades to the user's `tailwindClasses`
+ * custom-set + bare utilities + structural patterns, byte-identical to the
+ * legacy `detectUndefinedClasses` run under the same (projectRoot-absent)
+ * production config. The two off-ladder diagnostics (`undefined-class-not-found`
+ * / `undefined-class-disabled`) have no `Finding` shape and stay on the legacy
+ * path until §15 re-homes them.
  *
  * The detector logic is re-homed verbatim from `UniversalStylesAnalyzer.ts` —
  * copied, not imported, because that analyzer is deleted in §15 and the rules
@@ -39,10 +49,13 @@ import type {
   Finding,
   StyleDeclarationsFile,
   StylesDeclaration,
+  StylesClassUsage,
+  DefinedClassesFact,
   ThresholdValues,
 } from '../types.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
+import { getTailwindExpander, type TailwindUtilityExpander } from '../../styles/tailwindUtilityExpander.js';
 import { normalizeValue } from '../../styles/normalizer.js';
 import {
   buildDeclaredScale,
@@ -140,6 +153,12 @@ function flattenTokens(files: readonly StyleDeclarationsFile[]): StyleTokenRow[]
     file_path: t.filePath,
     mechanism: t.mechanism,
   });
+  return out;
+}
+
+function flattenClassUsage(files: readonly StyleDeclarationsFile[]): StylesClassUsage[] {
+  const out: StylesClassUsage[] = [];
+  for (const f of files) for (const u of f.classUsage) out.push(u);
   return out;
 }
 
@@ -985,7 +1004,189 @@ const zIndexSingleton: RuleDefinition<StylesNeeds> = {
   },
 };
 
-/** The eight styles rules this slice migrates, in registry order. */
+// ── Detector 9: Undefined Class ─────────────────────────────────────────────
+//
+// Re-homed verbatim from `UniversalStylesAnalyzer.collectUndefinedClassCandidates`
+// / `flagUnresolvedClasses` / `createDefinedClassSuggester`, but against the
+// camelCase `StylesClassUsage` + `DefinedClassesFact` facts instead of the
+// snake_case DB rows and the batched `IN (...)` index lookup. The `defined-classes`
+// producer already loads the full catalog (one row per class name), so membership
+// and near-miss are in-memory over that fact — the same full-catalog scan the
+// legacy suggester ran (`createDefinedClassSuggester` loads the whole table once).
+//
+// The compile-probe is the one piece that does not cross: the rule's
+// `AnalysisContext` has no `projectRoot`, so `expander.init` never builds the
+// probe and `resolve()` degrades to `customClasses` + `BASE_UTILITIES` +
+// structural patterns — identical to the legacy path under the production
+// reducer (which also passed no `projectRoot`).
+
+/** Suggests the nearest defined class (within edit distance 2) for one name. */
+type DefinedClassSuggester = (name: string) => { name: string; filePath: string } | null;
+
+/** Levenshtein edit distance, capped by the length gap (mirrors
+ *  `UniversalStylesAnalyzer.levenshteinDistance` / schema `codeAnalysis.ts`). */
+function levenshteinDistance(a: string, b: string, maxDist: number): number {
+  if (Math.abs(a.length - b.length) > maxDist) return Infinity;
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/** Full-catalog near-miss lookup over the `defined-classes` fact, ceiling 2 edits. */
+function suggestDefinedClass(definedClasses: readonly DefinedClassesFact[]): DefinedClassSuggester {
+  return (name: string) => {
+    const lower = name.toLowerCase();
+    let best: { name: string; filePath: string } | null = null;
+    let bestDist = Infinity;
+    for (const c of definedClasses) {
+      const dist = levenshteinDistance(lower, c.className.toLowerCase(), 2);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { name: c.className, filePath: c.filePath };
+      }
+    }
+    return bestDist <= 2 ? best : null;
+  };
+}
+
+/** Filter class-usage rows down to candidates worth resolving — the static skip
+ *  filters distinguishing definitions, known classes, and extraction artifacts
+ *  from genuine consumptions of an unknown class. The `definedClasses` argument is
+ *  always empty at the call site (the defined check is the deferred `definedSet`
+ *  membership in `undefinedClassRule.analyze`), matching the legacy path. */
+function collectUndefinedClassCandidates(
+  classUsage: readonly StylesClassUsage[],
+  definedClasses: Set<string>,
+): { candidates: string[]; usageEntries: StylesClassUsage[] } {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const usageEntries: StylesClassUsage[] = [];
+
+  for (const u of classUsage) {
+    const key = `${u.className}::${u.filePath}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    if (u.unresolvable) continue;
+    if (u.mechanism === 'class' && /\.(css|scss)$/i.test(u.filePath)) continue;
+    if (definedClasses.has(u.className)) continue;
+    if (/^[A-Z]/.test(u.className)) continue;
+    if (u.className.includes('(')) continue;
+    if (/^\d/.test(u.className)) continue;
+    if (u.className.startsWith('[') || u.className.startsWith(']')) continue;
+    if (u.className.endsWith('[') || u.className.endsWith(']')) continue;
+    if (/['`"${}?;!@#%^&*+=<>|\\,~]/.test(u.className)) continue;
+
+    usageEntries.push(u);
+    candidates.push(u.className);
+  }
+
+  return { candidates, usageEntries };
+}
+
+/** Flag unresolved class names: a near-miss of a defined class upgrades to a
+ *  `severe` rename finding; a non-near-miss is a coverage gap that the legacy
+ *  path reports off-ladder (`undefined-class-not-found`) — no `Finding` shape
+ *  exists for it here, so the migrated rule drops it (the diagnostic stays on the
+ *  legacy path until §15). */
+function flagUnresolvedClasses(
+  usageEntries: readonly StylesClassUsage[],
+  expander: TailwindUtilityExpander,
+  report: StylesViolationReporter,
+  suggest: DefinedClassSuggester,
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const u of usageEntries) {
+    const resolved = expander.resolve(u.className);
+    if (resolved.valid) continue;
+
+    const nearest = suggest(expander.stripVariantPrefix(u.className));
+    if (nearest) {
+      findings.push(report(
+        u.filePath,
+        u.line,
+        `Class "${u.className}" was not found in any read stylesheet or ` +
+        `utility set — did you mean "${nearest.name}"` +
+        `${nearest.filePath ? ` (defined in ${nearest.filePath})` : ''}?`,
+        {
+          severity: 'severe',
+          rule: 'styles/undefined-class',
+          symbol: u.className,
+          resolution: {
+            action: 'use-defined-class',
+            summary: `Rename "${u.className}" to the defined class "${nearest.name}"${nearest.filePath ? ` (defined in ${nearest.filePath})` : ''}.`,
+            symbols: [nearest.name],
+            files: [u.filePath, nearest.filePath],
+            lines: [u.line],
+          },
+        },
+      ));
+    }
+  }
+  return findings;
+}
+
+/** The config surface `undefined-class` reads (the `tailwindClasses` custom set
+ *  that seeds the expander's validation cache when no compile-probe is present). */
+interface UndefinedClassConfig {
+  tailwindClasses?: string[];
+}
+
+function resolveUndefinedClassConfig(t: ThresholdValues): UndefinedClassConfig {
+  const tailwindClasses = (t as Record<string, unknown>).tailwindClasses;
+  return { tailwindClasses: Array.isArray(tailwindClasses) ? (tailwindClasses as string[]) : undefined };
+}
+
+/** `styles/undefined-class` reads the class-usage half of `style-declarations`
+ *  plus the corpus `defined-classes` catalog — a different fact set than the
+ *  eight rules above, so it carries its own `Needs` tuple. */
+type UndefinedClassNeeds = {
+  readonly formats: readonly ['css', 'scss', 'typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['style-declarations', 'defined-classes'];
+};
+
+export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
+  id: 'styles/undefined-class',
+  needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations', 'defined-classes'] },
+  severity: 'severe',
+  message: META['styles/undefined-class'].message,
+  docs: META['styles/undefined-class'].docs,
+  thresholds: META['styles/undefined-class'].thresholds,
+  samples: META['styles/undefined-class'].samples,
+  async analyze(ctx): Promise<Finding[]> {
+    const classUsage = flattenClassUsage(ctx.facts['style-declarations']);
+    const definedClasses = ctx.facts['defined-classes'];
+
+    const { usageEntries } = collectUndefinedClassCandidates(classUsage, new Set());
+    const definedSet = new Set(definedClasses.map((d) => d.className));
+    const unresolved = usageEntries.filter((u) => !definedSet.has(u.className));
+
+    const expander = getTailwindExpander();
+    const cfg = resolveUndefinedClassConfig(ctx.thresholds);
+    await expander.init({
+      projectRoot: undefined,
+      useProjectConfig: true,
+      customClasses: cfg.tailwindClasses ? new Set(cfg.tailwindClasses) : undefined,
+    });
+
+    return flagUnresolvedClasses(unresolved, expander, makeFinding, suggestDefinedClass(definedClasses));
+  },
+};
+
+/** The eight pure-data styles rules this slice migrates, in registry order.
+ *  `undefined-class` is exported separately (`undefinedClassRule`) — its
+ *  `needs` adds the corpus `defined-classes` fact, so it cannot share this
+ *  `StylesNeeds` array's tuple type. */
 export const stylesRules: readonly RuleDefinition<StylesNeeds>[] = [
   valueDrift,
   offScale,

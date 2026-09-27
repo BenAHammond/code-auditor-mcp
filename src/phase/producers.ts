@@ -44,6 +44,7 @@ import type {
   HotspotFact,
   CoverageFact,
   ClonePairHistoryFact,
+  DefinedClassesFact,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
@@ -62,6 +63,7 @@ import { extractSecretCandidates } from './secretCandidates.js';
 import { extractSecurityCandidates } from './securityCandidates.js';
 import { extractStylesCss } from './stylesCss.js';
 import { extractStylesSource } from './stylesSource.js';
+import { extractStylesMarkup } from './stylesMarkup.js';
 import { extractDataAccessCalls } from './dataAccessCalls.js';
 import { extractLoopQueries } from './loopQueries.js';
 import { extractDynamicSql } from './dynamicSql.js';
@@ -130,6 +132,7 @@ const ddlProcess = (file: ParsedFile): FactFragment<'ddl-declarations'> => extra
 const schemaUsageProcess = (file: ParsedFile): FactFragment<'schema-usage'> => extractSchemaUsage(file as AstFile);
 const styleProcess = (file: ParsedFile): FactFragment<'style-declarations'> => [extractStylesCss(file as AstFile)];
 const styleSourceProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesSource(file as AstFile);
+const styleMarkupProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesMarkup(file);
 const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entities'> =>
   extractCrossLanguageEntities((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file));
 const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file as AstFile);
@@ -218,6 +221,7 @@ export const PRODUCERS = {
     typescript: fileProducer('style-declarations', 'typescript', styleSourceProcess),
     tsx: fileProducer('style-declarations', 'tsx', styleSourceProcess),
     javascript: fileProducer('style-declarations', 'javascript', styleSourceProcess),
+    markup: fileProducer('style-declarations', 'markup', styleMarkupProcess),
   },
   'cross-language-entities': {
     typescript: fileProducer('cross-language-entities', 'typescript', crossLangProcess),
@@ -535,6 +539,29 @@ export const CORPUS_PRODUCERS = {
       }));
     },
   } satisfies CorpusProcessor<'clone-pair-history', readonly []>,
+  // `defined-classes` (styles/undefined-class) — the `style_defined_classes`
+  // catalog, one row per defined `.class` selector (MIN(file_path) per class name
+  // so a class defined in several files collapses to one entry). The rule resolves
+  // candidate class names against this set in memory and near-miss-suggests against
+  // it via Levenshtein. Degrades to an empty fact with no handle or an absent table.
+  'defined-classes': {
+    id: 'defined-classes',
+    produces: 'defined-classes',
+    needs: [],
+    process(_facts, ctx): DefinedClassesFact[] {
+      const ih = ctx?.indexHandle;
+      if (!ih) return [];
+      let rows: Array<{ class_name: string; file_path: string }> = [];
+      try {
+        rows = ih.query(
+          'SELECT class_name, MIN(file_path) AS file_path FROM style_defined_classes GROUP BY class_name',
+        ) as Array<{ class_name: string; file_path: string }>;
+      } catch {
+        // `style_defined_classes` may not exist — degrade to an empty fact.
+      }
+      return rows.map((r) => ({ className: r.class_name, filePath: r.file_path }));
+    },
+  } satisfies CorpusProcessor<'defined-classes', readonly []>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -597,4 +624,5 @@ export const FACT_KINDS = {
   'hotspot': true,
   'coverage': true,
   'clone-pair-history': true,
+  'defined-classes': true,
 } satisfies Record<FactKind, true>;

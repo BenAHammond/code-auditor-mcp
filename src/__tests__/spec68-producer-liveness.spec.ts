@@ -97,6 +97,16 @@ const FIXTURES: Record<Format, Fixture> = {
     path: '/fixture/sample.sql',
     source: ['CREATE TABLE users (id INTEGER PRIMARY KEY);', ''].join('\n'),
   },
+  markup: {
+    path: '/fixture/sample.astro',
+    source: [
+      '<div class="foo">hello</div>',
+      '<style>',
+      '  .foo { color: red; }',
+      '</style>',
+      '',
+    ].join('\n'),
+  },
 };
 
 /**
@@ -121,10 +131,12 @@ beforeAll(async () => {
 
 /** Build a `ParsedFile` for a fixture — the only place an AST is allowed to live. */
 function parsedFileFor(fixture: Fixture): ParsedFile {
-  // `sql` is the text-only format: no grammar, no adapter, no AST. Its one
-  // producer (`ddl-declarations.sql`) reads `.source`/`.file` alone.
-  if (formatFor(fixture.path) === 'sql') {
-    return { file: fixture.path, format: 'sql', source: fixture.source };
+  // `sql` and `markup` are the text-only formats: no grammar, no adapter, no
+  // AST. Their producers (`ddl-declarations.sql`, `style-declarations.markup`)
+  // read `.source`/`.file` alone.
+  const format = formatFor(fixture.path);
+  if (format === 'sql' || format === 'markup') {
+    return { file: fixture.path, format, source: fixture.source };
   }
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(fixture.path);
   expect(adapter, `no adapter resolves ${fixture.path}`).not.toBeNull();
@@ -148,6 +160,7 @@ function formatFor(path: string): Format {
   if (path.endsWith('.scss')) return 'scss';
   if (path.endsWith('.json')) return 'json';
   if (path.endsWith('.sql')) return 'sql';
+  if (path.endsWith('.astro')) return 'markup';
   return 'typescript';
 }
 

@@ -86,6 +86,7 @@ export interface FactShapes {
   'hotspot': HotspotFact[];
   'coverage': CoverageFact;
   'clone-pair-history': ClonePairHistoryFact;
+  'defined-classes': DefinedClassesFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -105,8 +106,17 @@ export type FactKind = Exclude<keyof FactShapes, 'ast'>;
  * exactly one fact (`ddl-declarations`) whose producer reads `.source`/`.file`
  * only — the whole file *is* DDL, unlike code where DDL is embedded in string/
  * template literals.
+ *
+ * `'markup'` is the second text-only format: an `.astro`/`.vue`/`.svelte`/
+ * `.html` component has no grammar or adapter either (the language registry only
+ * resolves TS/JS/Go/CSS/JSON), so its `ParsedFile` likewise carries no
+ * `ast`/`adapter`. It supplies the `style-declarations` fact via the same regex
+ * extractors the legacy style indexer ran (`extractDeclarations`' markup branch +
+ * `extractClassUsage`), so class usage and embedded `<style>` declarations from
+ * component files survive the phase-model migration — otherwise `undefined-class`
+ * would lose every markup finding.
  */
-export type Format = 'typescript' | 'tsx' | 'javascript' | 'go' | 'css' | 'scss' | 'json' | 'sql';
+export type Format = 'typescript' | 'tsx' | 'javascript' | 'go' | 'css' | 'scss' | 'json' | 'sql' | 'markup';
 
 /** A rule's declaration: the formats it can evaluate and the facts it reads. */
 export interface Needs {
@@ -564,6 +574,16 @@ export type StylesClassUsage = {
   line: number;
   mechanism: 'className' | 'class';
   unresolvable: boolean;
+};
+
+/** One defined CSS class (a `.foo` selector), with its defining file. The
+ *  corpus fact is the full `style_defined_classes` catalog — the
+ *  `styles/undefined-class` rule resolves candidate class names against it
+ *  (membership lookup) and near-miss-suggests against it (Levenshtein ≤2), both
+ *  in memory rather than through batched `IN (...)` index lookups. */
+export type DefinedClassesFact = {
+  className: string;
+  filePath: string;
 };
 
 /** The normalized-value union: a color (hex+alpha), a length, or a literal. */
@@ -1234,12 +1254,13 @@ export interface ParsedFile {
   /** The source text, present so a processor may re-derive position/context. */
   readonly source: string;
   /** The parsed tree. Dies with the file — never crosses a phase boundary.
-   *  Absent for the text-only `'sql'` format (no grammar, no adapter): its one
-   *  producer (`ddl-declarations`) reads `.source`/`.file` only. */
+   *  Absent for the text-only `'sql'` and `'markup'` formats (no grammar, no
+   *  adapter): their producers (`ddl-declarations.sql`, `style-declarations.markup`)
+   *  read `.source`/`.file` only. */
   readonly ast?: AST;
   /** The language adapter that parsed this file — the processor's only handle
    *  on the extraction API (`extractFunctions`, `extractClasses`, …). Absent
-   *  for `'sql'`, alongside `ast`. */
+   *  for `'sql'` and `'markup'`, alongside `ast`. */
   readonly adapter?: LanguageAdapter;
   /** The project root this file was parsed under. Optional because the vertical
    *  slice tests parse single fixtures without a project; present on the full
@@ -1291,7 +1312,7 @@ export interface SupplyingFormats {
   'security-candidates': 'typescript' | 'tsx' | 'javascript';
   'ddl-declarations': 'typescript' | 'tsx' | 'javascript' | 'sql';
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
-  'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript';
+  'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript' | 'markup';
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
   'data-access-calls': 'typescript' | 'tsx' | 'javascript';
   'loop-queries': 'typescript' | 'tsx' | 'javascript';

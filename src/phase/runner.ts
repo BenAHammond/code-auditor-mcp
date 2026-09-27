@@ -20,6 +20,7 @@
  */
 
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
+import { STYLE_MARKUP_EXTENSIONS } from '../utils/fileDiscovery.js';
 import { fileProducerFor, CORPUS_PRODUCERS } from './producers.js';
 import { solidRules } from './rules/solid.js';
 import { dataAccessRules, loopQueryRules } from './rules/dataAccess.js';
@@ -84,6 +85,8 @@ export function formatFor(path: string): Format {
   if (path.endsWith('.scss')) return 'scss';
   if (path.endsWith('.json')) return 'json';
   if (path.endsWith('.sql')) return 'sql';
+  const ext = path.slice(path.lastIndexOf('.'));
+  if (STYLE_MARKUP_EXTENSIONS.includes(ext)) return 'markup';
   return 'typescript';
 }
 
@@ -95,11 +98,13 @@ export function formatFor(path: string): Format {
  * (§3.3 makes a per-file failure `incomplete`, which is §8's concern).
  */
 export async function parseOne(input: InputFile, projectRoot?: string): Promise<ParsedFile | null> {
-  // `.sql` is the one text-only format: no grammar, no adapter, no AST. Its
-  // sole producer (ddl-declarations) reads `.source`/`.file`, so return a
+  // `.sql` and markup (`.astro`/`.vue`/`.svelte`/`.html`) are the text-only
+  // formats: no grammar, no adapter, no AST. Their sole producers
+  // (ddl-declarations, style-declarations) read `.source`/`.file`, so return a
   // ParsedFile with neither `ast` nor `adapter`.
-  if (formatFor(input.path) === 'sql') {
-    return { file: input.path, format: 'sql', source: input.content, ...(projectRoot ? { projectRoot } : {}) };
+  const format = formatFor(input.path);
+  if (format === 'sql' || format === 'markup') {
+    return { file: input.path, format, source: input.content, ...(projectRoot ? { projectRoot } : {}) };
   }
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(input.path);
   if (!adapter) return null;

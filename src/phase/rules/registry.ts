@@ -20,7 +20,7 @@ import { dataAccessRules, loopQueryRules } from './dataAccess.js';
 import { dependencyGraphRules } from './dependencyGraph.js';
 import { schemaValidatorRules } from './schemaValidator.js';
 import { documentationRules } from './documentation.js';
-import { stylesRules } from './styles.js';
+import { stylesRules, undefinedClassRule } from './styles.js';
 import { crossDomainRules, multiTableWriteRule, noValidatorReachableRule, uncoveredRiskRule } from './crossDomain.js';
 import { schemaRules, dynamicSqlRules } from './schema.js';
 import { schemaJsonRules } from './schemaJson.js';
@@ -79,6 +79,7 @@ export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
   ...schemaValidatorRules,
   ...documentationRules,
   ...stylesRules,
+  undefinedClassRule,
   ...crossDomainRules,
   multiTableWriteRule,
   noValidatorReachableRule,
