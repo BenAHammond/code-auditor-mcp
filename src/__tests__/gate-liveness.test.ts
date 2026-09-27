@@ -76,44 +76,33 @@ describe('verify:self — blocking-severity predicate', () => {
 describe('verify:self — scope filter and exemptions', () => {
   it('includes production source and excludes data tables / tests / out-of-scope paths', () => {
     expect(inScope('/app/src/analyzers/universal/UniversalSOLIDAnalyzer.ts')).toBe(true);
-    expect(inScope('/app/src/languages/RuntimeManager.ts')).toBe(true);
-    // The two declarative data-table exclusions.
+    expect(inScope('/app/src/languages/LanguageRegistry.ts')).toBe(true);
+    // The single declarative data-table exclusion.
     expect(inScope('/app/src/analyzers/ruleRegistry.ts')).toBe(false);
-    expect(inScope('/app/src/languages/go/analyzer-src/types.go')).toBe(false);
     // Tests / fixtures / out-of-tree paths.
     expect(inScope('/app/src/analyzers/foo.spec.ts')).toBe(false);
     expect(inScope('/app/src/foo.ts')).toBe(false);
     expect(inScope('/no/src/segment.ts')).toBe(false);
   });
 
-  it('exempts exactly the three correct-by-design (file, rule) pairs — nothing else', () => {
-    expect(isScopedExempt('languages/RuntimeManager.ts', 'solid/open-closed')).toBe(true);
-    expect(isScopedExempt('languages/go/analyzer-src/parser.go', 'switch-size')).toBe(true);
-    expect(isScopedExempt('languages/go/parser/go-ast-parser.go', 'switch-size')).toBe(true);
-    // A different rule in the same file is NOT exempt — the map is exact.
-    expect(isScopedExempt('languages/RuntimeManager.ts', 'solid/method-complexity')).toBe(false);
+  it('exempts nothing — Spec 68 §13.1 empties the set, findings are fixed not exempted', () => {
+    // The three pre-§68 exemptions keyed on files the Go rework deleted; the
+    // set is now empty by design (§13.1) and no finding is absorbed by a
+    // suppression.
+    expect(isScopedExempt('languages/RuntimeManager.ts', 'solid/open-closed')).toBe(false);
+    expect(isScopedExempt('languages/go/analyzer-src/parser.go', 'switch-size')).toBe(false);
     expect(isScopedExempt('analyzers/universal/UniversalSecurityAnalyzer.ts', 'dry/duplicate')).toBe(false);
-    // An unknown file/rule pair is not exempt.
     expect(isScopedExempt('analyzers/nowhere/Else.ts', 'switch-size')).toBe(false);
   });
 
   it('reports a (file, rule) exemption as stale when its finding no longer fires', () => {
-    // An empty matched set means nothing an exemption was written for fired —
-    // every exemption is stale. This is the SKIP_RULES failure mode: a
-    // suppression outliving the finding it suppressed.
-    const all = staleExemptions(new Set());
-    expect(all.length).toBe(3);
-    expect(all).toContainEqual({ file: 'languages/RuntimeManager.ts', rule: 'solid/open-closed' });
-    expect(all).toContainEqual({ file: 'languages/go/analyzer-src/parser.go', rule: 'switch-size' });
-    expect(all).toContainEqual({ file: 'languages/go/parser/go-ast-parser.go', rule: 'switch-size' });
-
-    // When every exemption is still load-bearing, none is stale.
-    const matched = new Set([
-      scopedExemptionKey('languages/RuntimeManager.ts', 'solid/open-closed'),
-      scopedExemptionKey('languages/go/analyzer-src/parser.go', 'switch-size'),
-      scopedExemptionKey('languages/go/parser/go-ast-parser.go', 'switch-size'),
-    ]);
-    expect(staleExemptions(matched)).toEqual([]);
+    // With an empty exemption set there is nothing to go stale: the stale scan
+    // over a suppression outliving its finding returns nothing, which is the
+    // SKIP_RULES failure mode inverted — an empty map can never accumulate dead
+    // entries. The branch is still exercised (it iterates the map and filters),
+    // it just has no entries to name.
+    expect(staleExemptions(new Set())).toEqual([]);
+    expect(staleExemptions(new Set([scopedExemptionKey('x.ts', 'r')]))).toEqual([]);
   });
 
   it('strips the /src/ prefix to a repo-relative path', () => {
