@@ -230,67 +230,10 @@ export const tools: Tool[] = [
     ],
   },
 
-  // Analyzer Configuration Tools
-  {
-    name: 'set_analyzer_config',
-    description: 'Set or update analyzer configuration that persists across audit runs',
-    parameters: [
-      {
-        name: 'analyzerName',
-        type: 'string',
-        required: true,
-        description: 'The analyzer to configure (solid, dry, security, etc.)',
-      },
-      {
-        name: 'config',
-        type: 'object',
-        required: true,
-        description: 'Configuration object for the analyzer (e.g., thresholds, rules)',
-      },
-      {
-        name: 'projectPath',
-        type: 'string',
-        required: false,
-        description: 'Optional project path for project-specific config (defaults to global)',
-      },
-    ],
-  },
-  {
-    name: 'get_analyzer_config',
-    description: 'Get current configuration for an analyzer',
-    parameters: [
-      {
-        name: 'analyzerName',
-        type: 'string',
-        required: false,
-        description: 'Specific analyzer name, or omit to get all configs',
-      },
-      {
-        name: 'projectPath',
-        type: 'string',
-        required: false,
-        description: 'Optional project path to get project-specific config',
-      },
-    ],
-  },
-  {
-    name: 'reset_analyzer_config',
-    description: 'Reset analyzer configuration to defaults',
-    parameters: [
-      {
-        name: 'analyzerName',
-        type: 'string',
-        required: false,
-        description: 'Specific analyzer to reset, or omit to reset all',
-      },
-      {
-        name: 'projectPath',
-        type: 'string',
-        required: false,
-        description: 'Optional project path to reset only project-specific config',
-      },
-    ],
-  },
+  // Analyzer-config tooling is removed in 5.0.0 (Spec 68 §14). The three flat
+  // `set_analyzer_config` / `get_analyzer_config` / `reset_analyzer_config`
+  // tools are gone; their get/set/reset shape survives as the `config` tool's
+  // actions in mcp.ts, the single registered config surface.
   {
     name: 'get_code_map_section',
     description: 'Retrieve a specific section of a previously generated code map',
