@@ -2,11 +2,13 @@
  * Spec 68 §3.2 — the `ddl-declarations` producer.
  *
  * The liveness guard (§16.1) proves the producer returns a live, shaped array;
- * this test proves the extraction is *correct* against the fields the
- * `table-catalog` corpus processor and the tenant-scoping question read: the
- * net table `name` after CREATE/DROP/RENAME replay, the per-table `columns`,
- * and the `origin: 'code'` tag. It exercises the producer wiring in
- * `producers.ts`.
+ * this test proves the extraction is *correct* against the per-file shape the
+ * `table-catalog` / `migration-history` corpus processors read: the ordered
+ * `ops` (CREATE/DROP/RENAME, verbatim from `parseMigrationOps`) and the
+ * per-table `tableColumns` (`extractDdlTableColumns`, lowercased). The producer
+ * is a pure projection — it does NOT net-replay, so a file whose only effect is
+ * a DROP still yields one declaration carrying its DROP op (the corpus
+ * processors replay it across files in migration order).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -39,7 +41,7 @@ function code(path: string, source: string): SchemaDeclaration[] {
 }
 
 describe('Spec 68 ddl-declarations producer', () => {
-  it('declares a CREATE TABLE from DDL in a template literal, with columns', () => {
+  it('declares one per-file entry: the CREATE op and its columns', () => {
     const out = code('/fixture/migration.ts', [
       'export const up = `',
       'CREATE TABLE users (',
@@ -51,23 +53,42 @@ describe('Spec 68 ddl-declarations producer', () => {
 
     expect(out).toHaveLength(1);
     const decl = out[0];
-    expect(decl.name).toBe('users');
-    expect(decl.origin).toBe('code');
     expect(decl.file).toBe('/fixture/migration.ts');
+    expect(decl.ops).toEqual([{ op: 'CREATE', table: 'users' }]);
     // Columns are lowercased by the DDL extractor (the tenant-scoping question
     // compares case-insensitively).
-    expect(decl.columns.map((c) => c.name)).toEqual(['id', 'organization_id']);
+    expect(decl.tableColumns).toEqual({ users: ['id', 'organization_id'] });
   });
 
-  it('replays DROP so a dropped table is not declared', () => {
+  it('preserves a DROP-only migration — the op is carried, not netted away', () => {
     const out = code('/fixture/dropped.ts', [
+      'export const up = `',
+      'DROP TABLE generation_queue;',
+      '`;',
+    ].join('\n'));
+
+    // The net table set is empty (the file declares no surviving table), but the
+    // DROP op must survive into the corpus processors, which replay it to mark
+    // `generation_queue` a stale reference in later files.
+    expect(out).toHaveLength(1);
+    expect(out[0].ops).toEqual([{ op: 'DROP', table: 'generation_queue' }]);
+    expect(out[0].tableColumns).toEqual({});
+  });
+
+  it('preserves a scratch CREATE+DROP pair (net-set replay is the processor job)', () => {
+    const out = code('/fixture/scratch.ts', [
       'export const up = `',
       'CREATE TABLE scratch (id TEXT);',
       'DROP TABLE scratch;',
       '`;',
     ].join('\n'));
 
-    expect(out).toEqual([]);
+    expect(out).toHaveLength(1);
+    expect(out[0].ops).toEqual([
+      { op: 'CREATE', table: 'scratch' },
+      { op: 'DROP', table: 'scratch' },
+    ]);
+    expect(out[0].tableColumns).toEqual({ scratch: ['id'] });
   });
 
   it('returns an empty array for a file with no DDL', () => {

@@ -23,9 +23,6 @@
  * no analyzer class and no pipeline.
  *
  * Not here, by design:
- *   - `stale-table-reference` — distinguishes "dropped in a migration" from
- *     "never existed", which needs a migration-history fact (dropped tables)
- *     that no current producer emits; it lands with the §5 corpus reduction.
  *   - `too-many-queries` — walks function *bodies* to count raw `query(`/
  *     `execute(` call sites, a per-function signal `schema-usage` doesn't carry.
  *   - The unregistered `reserved-word` emission inside the old
@@ -45,6 +42,7 @@ import type {
   Finding,
   SchemaUsageFact,
   TableCatalog,
+  MigrationHistory,
   ThresholdValues,
 } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
@@ -60,11 +58,28 @@ type SchemaUsageNeeds = {
   readonly facts: readonly ['schema-usage'];
 };
 
-/** `unknown-table` additionally reads the known-table catalog (§5). */
+/** `unknown-table` additionally reads the known-table catalog (§5) and the
+ *  migration-history corpus fact (§5) so it can hand dropped tables to
+ *  `stale-table-reference` instead of mislabeling them as never-existed. */
 type UnknownTableNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
-  readonly facts: readonly ['schema-usage', 'table-catalog'];
+  readonly facts: readonly ['schema-usage', 'table-catalog', 'migration-history'];
 };
+
+/** `stale-table-reference` additionally reads the migration-history corpus fact
+ *  (§5) to distinguish "dropped in a migration" from "never existed". */
+type StaleTableReferenceNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['schema-usage', 'table-catalog', 'migration-history'];
+};
+
+/** Join a list of names as prose: "a", "a and b", "a, b and c". Mirrors the
+ *  legacy `joinEnglish` in pipelineAdapters.ts (not exported). */
+function joinEnglish(names: readonly string[]): string {
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0]!;
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
 
 const META = RULE_REGISTRY;
 
@@ -84,34 +99,52 @@ function isRealTableRef(u: SchemaUsageFact): boolean {
     && !isTableValuedFunction(u.tableName);
 }
 
+/**
+ * The shared unknown-reference set + fail-open guard that BOTH `unknown-table`
+ * and `stale-table-reference` compute identically, so a reference lands in
+ * exactly one rule: dropped tables partition to `stale-table-reference`, the
+ * rest to `unknown-table`. The guard (R2.4) is the legacy fail-open — at 0
+ * known tables, or an unknown:known ratio above 10, the catalog is not
+ * trustworthy enough to flag individual references, so neither rule fires.
+ */
+function unknownRefs(
+  usages: readonly SchemaUsageFact[],
+  catalog: TableCatalog,
+): { refs: SchemaUsageFact[]; knownCount: number; failOpen: boolean } {
+  const known = knownTableSet(catalog);
+  const refs = usages.filter((u) => isRealTableRef(u) && !known.has(u.tableName));
+  const knownCount = known.size;
+  const failOpen = knownCount === 0 || refs.length / Math.max(knownCount, 1) > 10;
+  return { refs, knownCount, failOpen };
+}
+
 // ── unknown-table ───────────────────────────────────────────────────────────
 
 const unknownTable: RuleDefinition<UnknownTableNeeds> = {
   id: 'unknown-table',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'table-catalog'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'table-catalog', 'migration-history'] },
   severity: 'critical',
   message: META['unknown-table'].message,
   docs: META['unknown-table'].docs,
   thresholds: META['unknown-table'].thresholds,
   samples: META['unknown-table'].samples,
   analyze(ctx): Finding[] {
-    const usages = ctx.facts['schema-usage'];
     const known = knownTableSet(ctx.facts['table-catalog']);
-
-    const unknownRefs = usages.filter(
-      (u) => isRealTableRef(u) && !known.has(u.tableName),
-    );
-    const knownCount = known.size;
-    const unknownCount = unknownRefs.length;
+    const { refs, failOpen } = unknownRefs(ctx.facts['schema-usage'], ctx.facts['table-catalog']);
 
     // R2.4 fail-open: at 0 known tables, or an unknown:known ratio above 10,
     // the catalog is not trustworthy enough to flag individual references.
-    if (knownCount === 0 || unknownCount / Math.max(knownCount, 1) > 10) {
+    if (failOpen) {
       return [];
     }
 
+    // Dropped tables are `stale-table-reference`'s, not this rule's: the two
+    // rules partition the unknown set by the migration-history provenance.
+    const dropped = ctx.facts['migration-history'].dropped;
+
     const out: Finding[] = [];
-    for (const ref of unknownRefs) {
+    for (const ref of refs) {
+      if (dropped[ref.tableName]) continue;
       const suggestions = getNearestTableSuggestions(ref.tableName, known, 2);
       const suggestionNames = suggestions.map((s) => s.replace(/^'|'$/g, ''));
       const message = suggestions.length > 0
@@ -176,10 +209,74 @@ const tableNamingConvention: RuleDefinition<SchemaUsageNeeds> = {
   },
 };
 
-/** The two TypeScript schema rules this slice migrates, in registry order. */
+// ── stale-table-reference ────────────────────────────────────────────────────
+
+/**
+ * `stale-table-reference` reads the `migration-history` corpus fact (§5) — the
+ * drop-provenance map built by the shared `buildDropProvenance` the legacy
+ * schema reducer called — alongside `schema-usage` + `table-catalog`. It is the
+ * partition of the unknown-reference set that `unknown-table` hands off: a
+ * reference whose table a migration dropped is a stale code reference (the
+ * message names the dropping migration and the tables it introduced as
+ * evidence, not proof, of a successor), not a typo.
+ *
+ * Parity holds by construction: `buildDropProvenance` is the identical pure
+ * function the legacy reducer ran, and the message/resolution here are the
+ * verbatim emission from `UniversalSchemaAnalyzer` (pipelineAdapters.ts).
+ */
+const staleTableReference: RuleDefinition<StaleTableReferenceNeeds> = {
+  id: 'stale-table-reference',
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'table-catalog', 'migration-history'] },
+  severity: 'critical',
+  message: META['stale-table-reference'].message,
+  docs: META['stale-table-reference'].docs,
+  thresholds: META['stale-table-reference'].thresholds,
+  samples: META['stale-table-reference'].samples,
+  analyze(ctx): Finding[] {
+    const dropped = ctx.facts['migration-history'].dropped;
+    const { refs, failOpen } = unknownRefs(ctx.facts['schema-usage'], ctx.facts['table-catalog']);
+    if (failOpen) return [];
+
+    const out: Finding[] = [];
+    for (const ref of refs) {
+      const drop = dropped[ref.tableName];
+      if (!drop) continue;
+
+      const migrationName = drop.migrationFile.split('/').pop() ?? drop.migrationFile;
+      const created = [...drop.createdInSameMigration];
+      const message = created.length > 0
+        ? `${ref.tableName} was dropped in ${migrationName}; that migration creates ${joinEnglish(created)}.`
+        : `${ref.tableName} was dropped in ${migrationName} and was not recreated.`;
+      out.push({
+        ruleId: 'stale-table-reference',
+        severity: 'critical',
+        message,
+        file: ref.filePath,
+        line: ref.line,
+        column: ref.column,
+        symbol: ref.tableName,
+        resolution: {
+          action: 'update-stale-reference',
+          // `created` are evidence the migration replaced the dropped table, not
+          // proof of a drop-in successor — the summary names them as context and
+          // leaves update-vs-remove to the reviewer.
+          summary: created.length > 0
+            ? `The table '${ref.tableName}' was dropped in ${migrationName}. That migration introduces ${joinEnglish(created)} — review this reference and update or remove it.`
+            : `The table '${ref.tableName}' was dropped in ${migrationName} and was not recreated — update or remove this reference.`,
+          symbols: created.length > 0 ? created : [ref.tableName],
+          files: [ref.filePath],
+          lines: ref.line != null ? [ref.line] : undefined,
+        },
+      });
+    }
+    return out;
+  },
+};
+
+/** The three TypeScript schema rules this slice migrates, in registry order. */
 export const schemaRules: readonly RuleDefinition<
-  SchemaUsageNeeds | UnknownTableNeeds
->[] = [unknownTable, tableNamingConvention];
+  SchemaUsageNeeds | UnknownTableNeeds | StaleTableReferenceNeeds
+>[] = [unknownTable, tableNamingConvention, staleTableReference];
 
 // ── dynamic-sql-construction ────────────────────────────────────────────────
 

@@ -61,6 +61,140 @@ export function processMigrationSource(
   applyMigrationOps(parseMigrationOps(source), tables);
 }
 
+/** A drop-provenance entry: which migration dropped a table, and the tables
+ *  that same migration introduced (evidence, not proof, of a successor). */
+export interface DropProvenanceEntry {
+  migrationFile: string;
+  createdInSameMigration: string[];
+}
+
+/** The result of replaying per-file DDL declarations in migration order: the
+ *  surviving known-table set (with each table's last-CREATE source file and
+ *  column list) and the drop provenance the `stale-table-reference` rule reads.
+ *  Both halves derive from one replay, so the known set and the provenance can
+ *  never disagree about which table a migration dropped. */
+export interface ReplayedDdl {
+  netTables: Array<{ name: string; source: string; columns: string[] }>;
+  dropProvenance: Map<string, DropProvenanceEntry>;
+}
+
+/**
+ * Replay per-file DDL declarations in migration order to compute, in one pass,
+ * both the net known-table set (a table dropped in a migration and not
+ * recreated is *not* known) and the drop provenance (dropped-table name → which
+ * migration dropped it and what it introduced). A table created and dropped
+ * within the *same* file is a self-contained scratch fixture (its DROP is
+ * teardown, not a migration), so it is kept known and excluded from the
+ * provenance. This is the shared pure function the legacy schema reducer's
+ * inline replay and the phase-model `table-catalog` / `migration-history`
+ * corpus processors both compute, so the two facts are identical by
+ * construction (parity-by-construction for `unknown-table` and
+ * `stale-table-reference`).
+ *
+ * @param ddlFiles Per-file declarations with parsed ops and (optionally) the
+ *   columns the file declares for each table (order-independent — this sorts by
+ *   the numeric prefix in the basename, then localeCompare).
+ * @returns The net known-table set and the drop provenance.
+ */
+export function replayDdlDeclarations(
+  ddlFiles: ReadonlyArray<{
+    filePath: string;
+    ops: readonly MigrationOp[];
+    tableColumns?: Readonly<Record<string, readonly string[]>>;
+  }>,
+): ReplayedDdl {
+  const numericPrefix = (p: string): number => {
+    const base = p.split('/').pop() ?? p;
+    const m = base.match(/^(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  };
+  const sorted = [...ddlFiles].sort((a, b) => {
+    const na = numericPrefix(a.filePath);
+    const nb = numericPrefix(b.filePath);
+    if (na !== nb) return na - nb;
+    return a.filePath.localeCompare(b.filePath);
+  });
+
+  const knownTables = new Set<string>();
+  // Last-CREATE source file + column list per surviving table, so `table-catalog`
+  // names the file that most recently (re)declared the table, with its columns.
+  const sourceFile = new Map<string, string>();
+  const columnsByTable = new Map<string, string[]>();
+  const dropProvenance = new Map<string, DropProvenanceEntry>();
+
+  for (const ddlFile of sorted) {
+    const before = new Set(knownTables);
+
+    // Replay this file's CREATE/DROP/RENAME transitions, tracking last-CREATE
+    // source/columns alongside the net set (the same transitions
+    // `applyMigrationOps` performs, but with provenance bookkeeping).
+    for (const op of ddlFile.ops) {
+      const t = stripIdentifier(op.table);
+      if (op.op === 'CREATE') {
+        knownTables.add(t);
+        sourceFile.set(t, ddlFile.filePath);
+        columnsByTable.set(t, [...(ddlFile.tableColumns?.[t] ?? [])]);
+      } else if (op.op === 'DROP') {
+        knownTables.delete(t);
+      } else {
+        const nt = stripIdentifier(op.newTable!);
+        knownTables.delete(t);
+        knownTables.add(nt);
+        sourceFile.delete(t);
+        columnsByTable.delete(t);
+        sourceFile.set(nt, ddlFile.filePath);
+        columnsByTable.set(nt, [...(ddlFile.tableColumns?.[nt] ?? [])]);
+      }
+    }
+
+    // Genuinely-new tables introduced by this migration (excludes rename/rebuild
+    // churn like `ALTER … RENAME TO x_old` + re-CREATE of the same name).
+    const createdHere: string[] = [];
+    const createdTables = new Set<string>();
+    const droppedTables = new Set<string>();
+    for (const op of ddlFile.ops) {
+      const t = stripIdentifier(op.table);
+      if (op.op === 'CREATE') {
+        createdTables.add(t);
+        if (!before.has(t)) createdHere.push(t);
+      } else if (op.op === 'DROP') {
+        droppedTables.add(t);
+      }
+    }
+    for (const op of ddlFile.ops) {
+      const t = stripIdentifier(op.table);
+      if (op.op === 'DROP') {
+        dropProvenance.set(t, { migrationFile: ddlFile.filePath, createdInSameMigration: createdHere });
+      } else if (op.op === 'CREATE') {
+        dropProvenance.delete(t);
+      }
+    }
+    // A table created and dropped within this same file is a self-contained
+    // fixture — a scratch table a test or script creates, uses, then tears
+    // down. Its DROP is teardown, not a migration: keep it known and clear the
+    // drop provenance this file recorded for it.
+    for (const t of createdTables) {
+      if (droppedTables.has(t)) {
+        knownTables.add(t);
+        if (dropProvenance.get(t)?.migrationFile === ddlFile.filePath) {
+          dropProvenance.delete(t);
+        }
+      }
+    }
+  }
+
+  const netTables: Array<{ name: string; source: string; columns: string[] }> = [];
+  for (const name of knownTables) {
+    netTables.push({
+      name,
+      source: sourceFile.get(name) ?? '',
+      columns: columnsByTable.get(name) ?? [],
+    });
+  }
+
+  return { netTables, dropProvenance };
+}
+
 /**
  * The DDL state-machine regex shared by the standalone analyze() path and the
  * pipeline's schema-sql visitor. Single ordered pass — applies CREATE/DROP/

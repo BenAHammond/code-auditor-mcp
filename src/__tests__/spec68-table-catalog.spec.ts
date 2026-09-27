@@ -3,8 +3,11 @@
  *
  * The liveness guard (§16.1) runs every producer against *empty* upstream facts,
  * so it proves a corpus processor returns a live, shaped value — but not that its
- * reduction is correct. This test feeds real schema facts and asserts the flat
- * known-table set the `missing-org-filter` / `unknown-table` rules read.
+ * reduction is correct. This test feeds real per-file `ddl-declarations` and
+ * asserts the flat known-table set the `missing-org-filter` / `unknown-table`
+ * rules read: the *net* table set after replaying CREATE/DROP/RENAME across
+ * files in migration order (a table a later migration drops is a stale
+ * reference, not a known table).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -16,33 +19,33 @@ function catalog(decls: SchemaDeclaration[]) {
 }
 
 describe('Spec 68 table-catalog corpus processor', () => {
-  it('reduces schema declarations to a flat, de-duplicated table set', () => {
+  it('reduces per-file DDL to the net table set in migration order', () => {
     const decls: SchemaDeclaration[] = [
-      { name: 'users', file: 'migrations/002_users.ts', columns: [], origin: 'code' },
-      { name: 'orders', file: 'migrations/001_orders.ts', columns: [], origin: 'code' },
-      // duplicate name across files — first wins
-      { name: 'users', file: 'migrations/000_legacy.ts', columns: [], origin: 'code' },
-      // unnamed declaration — skipped
-      { name: '', file: 'migrations/000_empty.ts', columns: [], origin: 'code' },
+      { file: 'migrations/001_orders.ts', ops: [{ op: 'CREATE', table: 'orders' }], tableColumns: {} },
+      { file: 'migrations/002_users.ts', ops: [{ op: 'CREATE', table: 'users' }], tableColumns: {} },
     ];
 
-    const out = catalog(decls);
-    expect(out.tables).toEqual([
-      { name: 'users', source: 'migrations/002_users.ts', columns: [] },
+    expect(catalog(decls).tables).toEqual([
       { name: 'orders', source: 'migrations/001_orders.ts', columns: [] },
+      { name: 'users', source: 'migrations/002_users.ts', columns: [] },
     ]);
+  });
+
+  it('excludes a table dropped by a later migration (stale, not known)', () => {
+    const decls: SchemaDeclaration[] = [
+      { file: 'migrations/001_init.ts', ops: [{ op: 'CREATE', table: 'generation_queue' }], tableColumns: {} },
+      { file: 'migrations/002_drop.ts', ops: [{ op: 'DROP', table: 'generation_queue' }], tableColumns: {} },
+    ];
+
+    expect(catalog(decls).tables).toEqual([]);
   });
 
   it('carries per-table columns through for Tier 3 DDL tenant discovery', () => {
     const decls: SchemaDeclaration[] = [
       {
-        name: 'projects',
         file: 'migrations/003_projects.ts',
-        columns: [
-          { name: 'id', type: 'int' },
-          { name: 'org_id', type: 'int' },
-        ],
-        origin: 'code',
+        ops: [{ op: 'CREATE', table: 'projects' }],
+        tableColumns: { projects: ['id', 'org_id'] },
       },
     ];
 

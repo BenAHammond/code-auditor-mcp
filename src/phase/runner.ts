@@ -46,6 +46,7 @@ import type {
   SchemaUsageFact,
   SchemaDeclaration,
   TableCatalog,
+  MigrationHistory,
   Entity,
   Format,
   ThresholdValues,
@@ -336,13 +337,12 @@ export async function buildSchemaUsage(files: readonly InputFile[]): Promise<Sch
 }
 
 /**
- * Parse → Process for the `ddl-declarations` fact (DDL in code), then reduce it
- * through the `table-catalog` corpus processor into the known-table set. The
- * JSON-schema half of the old catalog is config-driven (§10) and not reachable
- * from this simple runner, so it is dropped — this is the DDL-only slice of the
- * catalog, the config-free half the corpus processor consumes.
+ * Parse → Process for the `ddl-declarations` fact (DDL in code and `.sql`
+ * migration files). Returns the raw declarations both corpus processors
+ * (`table-catalog`, `migration-history`) reduce — so the two derive from one
+ * parse pass rather than re-parsing the same files twice.
  */
-export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
+export async function buildDdlDeclarations(files: readonly InputFile[]): Promise<SchemaDeclaration[]> {
   const declarations: SchemaDeclaration[] = [];
   for (const input of files) {
     const parsed = await parseOne(input);
@@ -354,19 +354,44 @@ export async function buildTableCatalog(files: readonly InputFile[]): Promise<Ta
       parsed.ast?.dispose?.();
     }
   }
-  return CORPUS_PRODUCERS['table-catalog'].process({
-    'ddl-declarations': declarations,
-  });
+  return declarations;
 }
 
-/** Analyze the `schema-usage` + `table-catalog` facts with the schema rules. */
+/**
+ * Reduce the `ddl-declarations` fact through the `table-catalog` corpus
+ * processor into the known-table set. The JSON-schema half of the old catalog
+ * is config-driven (§10) and not reachable from this simple runner, so it is
+ * dropped — this is the DDL-only slice of the catalog, the config-free half the
+ * corpus processor consumes.
+ */
+export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
+  const declarations = await buildDdlDeclarations(files);
+  return CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations });
+}
+
+/**
+ * Reduce the `ddl-declarations` fact through the `migration-history` corpus
+ * processor into the cross-file drop provenance (`stale-table-reference` reads
+ * it to partition dropped tables from never-existed tables).
+ */
+export async function buildMigrationHistory(files: readonly InputFile[]): Promise<MigrationHistory> {
+  const declarations = await buildDdlDeclarations(files);
+  return CORPUS_PRODUCERS['migration-history'].process({ 'ddl-declarations': declarations });
+}
+
+/** Analyze the `schema-usage` + `table-catalog` + `migration-history` facts with
+ *  the schema rules. `unknown-table` reads the catalog and migration-history to
+ *  hand dropped tables to `stale-table-reference`; `table-naming-convention`
+ *  reads `schema-usage` alone (its `needs` declares only that fact, and the
+ *  union context carries all three). */
 export async function analyzeSchemaRules(
   usages: SchemaUsageFact[],
   catalog: TableCatalog,
+  migrationHistory: MigrationHistory,
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
   const ctx = {
-    facts: { 'schema-usage': usages, 'table-catalog': catalog },
+    facts: { 'schema-usage': usages, 'table-catalog': catalog, 'migration-history': migrationHistory },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
   };
@@ -377,13 +402,16 @@ export async function analyzeSchemaRules(
   return findings;
 }
 
-/** The schema slice: parse → schema-usage + table-catalog → schema rules → findings. */
+/** The schema slice: parse → schema-usage + table-catalog + migration-history →
+ *  schema rules → findings. */
 export async function runSchemaSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const [usages, catalog] = await Promise.all([
+  const [usages, declarations] = await Promise.all([
     buildSchemaUsage(files),
-    buildTableCatalog(files),
+    buildDdlDeclarations(files),
   ]);
-  return analyzeSchemaRules(usages, catalog, thresholds);
+  const catalog = CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations });
+  const migrationHistory = CORPUS_PRODUCERS['migration-history'].process({ 'ddl-declarations': declarations });
+  return analyzeSchemaRules(usages, catalog, migrationHistory, thresholds);
 }
 
 // ── cross-domain lifecycle slice (same `schema-usage` fact, different rules) ─

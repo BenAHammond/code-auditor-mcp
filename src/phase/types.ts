@@ -63,6 +63,7 @@ export interface FactShapes {
   'loop-queries': LoopQueryFact[];
   'dynamic-sql': DynamicSqlFact[];
   'table-catalog': TableCatalog;
+  'migration-history': MigrationHistory;
   'mined-conventions': MinedConvention[];
   'react-component': ReactComponentScan[];
   'file-header': FileHeaderFact[];
@@ -406,20 +407,32 @@ export type SecurityCandidate =
       column: number;
     };
 
-/** A schema declared in JSON (`.codeauditor.json` schemas) or in code (DDL). */
-export type SchemaDeclaration = {
-  name: string;
-  file: string;
-  columns: SchemaColumn[];
-  /** Always `'code'`: the only producer is the DDL extractor. */
-  origin: 'code';
-  raw?: string;
+/**
+ * One DDL state transition parsed from migration SQL — the serializable
+ * projection of the schema analyzer's `MigrationOp` (same three arms), carried
+ * so the `migration-history` corpus processor can replay CREATE/DROP/RENAME
+ * across files in migration order.
+ */
+export type MigrationOpFact = {
+  op: 'CREATE' | 'DROP' | 'RENAME';
+  table: string;
+  newTable?: string;
 };
 
-export type SchemaColumn = {
-  name: string;
-  type?: string;
-  required?: boolean;
+/**
+ * The DDL facts extracted from one file — the per-file projection of the schema
+ * analyzer's migration replay. One entry per file that contains DDL, even a
+ * migration whose net effect is only to DROP tables (zero surviving tables):
+ * `ops` is the ordered CREATE/DROP/RENAME sequence, and `tableColumns` the
+ * per-table column names the file declares. The corpus processors replay `ops`
+ * across files in migration order — a table dropped in a later migration is a
+ * stale reference, not a declaration — so the fact must carry a DROP-only file
+ * too, not just the tables that survive it.
+ */
+export type SchemaDeclaration = {
+  file: string;
+  ops: readonly MigrationOpFact[];
+  tableColumns: Readonly<Record<string, readonly string[]>>;
 };
 
 /**
@@ -568,6 +581,20 @@ export type ResolvedQuery = {
  *  (`missing-org-filter`) can read tenancy from the corpus, not just config. */
 export type TableCatalog = {
   tables: ReadonlyArray<{ name: string; source: string; columns: ReadonlyArray<string> }>;
+};
+
+/**
+ * The drop-provenance catalog built by the corpus `migration-history` processor
+ * (§5) — the serializable projection of the legacy schema reducer's
+ * `dropProvenance` map. A table appears here only when a migration dropped it
+ * and no later migration recreated it (the self-contained scratch-table case —
+ * created and dropped within one file — is excluded). `stale-table-reference`
+ * reads it to distinguish "existed and was dropped" (a stale code reference)
+ * from "never existed" (a typo → `unknown-table`).
+ */
+export type MigrationHistory = {
+  /** Dropped table name → which migration dropped it, and what that migration created. */
+  dropped: Readonly<Record<string, { migrationFile: string; createdInSameMigration: readonly string[] }>>;
 };
 
 /**

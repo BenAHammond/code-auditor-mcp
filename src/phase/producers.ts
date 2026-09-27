@@ -35,6 +35,7 @@ import type {
   AstFile,
   FactFragment,
   TableCatalog,
+  MigrationHistory,
   MinedConvention,
   Format,
 } from './types.js';
@@ -58,6 +59,7 @@ import { extractSchemaCode } from './schemaCode.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
 import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 import { mineConventionsFromFunctionIndex } from './conventionMining.js';
+import { replayDdlDeclarations } from '../analyzers/universal/schema/migrations.js';
 
 /**
  * Exhaustive over both axes: every file fact kind, then every supplying format.
@@ -213,30 +215,62 @@ export const PRODUCERS = {
 } satisfies ProducerMap;
 
 // ── Corpus producers producing derived facts (no format) ─────────────────────
-// `table-catalog` reduces the DDL declarations into the flat known-table set
-// the `missing-org-filter` and `unknown-table` rules read. `needs` forms the
-// DAG edge ddl-declarations → table-catalog. Corpus producers are a separate
-// map because the (kind, format) key cannot express a derived fact.
+// `table-catalog` and `migration-history` reduce the `ddl-declarations` fact
+// through the ONE shared `replayDdlDeclarations` — so the known-table set and
+// the drop provenance can never disagree about which table a migration dropped.
+// `needs` forms the DAG edges ddl-declarations → {table-catalog,
+// migration-history}. Corpus producers are a separate map because the
+// (kind, format) key cannot express a derived fact.
+
 export const CORPUS_PRODUCERS = {
   'table-catalog': {
     id: 'table-catalog',
     produces: 'table-catalog',
     needs: ['ddl-declarations'],
     process(facts): TableCatalog {
-      const tables: { name: string; source: string; columns: string[] }[] = [];
-      const seen = new Set<string>();
-      for (const schema of facts['ddl-declarations']) {
-        if (!schema.name || seen.has(schema.name)) continue;
-        seen.add(schema.name);
-        tables.push({
-          name: schema.name,
-          source: schema.file,
-          columns: (schema.columns ?? []).map((c) => c.name),
-        });
-      }
-      return { tables };
+      // The known-table set is the *net* set after replaying DDL across files
+      // in migration order — a table dropped in a later migration is a stale
+      // reference, not a known table. `replayDdlDeclarations` returns that net
+      // set with each table's last-CREATE source file and columns (the shape
+      // `missing-org-filter`'s Tier-3 DDL discovery reads).
+      const { netTables } = replayDdlDeclarations(
+        facts['ddl-declarations'].map((d) => ({
+          filePath: d.file,
+          ops: d.ops,
+          tableColumns: d.tableColumns,
+        })),
+      );
+      return { tables: netTables.map((t) => ({ name: t.name, source: t.source, columns: t.columns })) };
     },
   } satisfies CorpusProcessor<'table-catalog', readonly ['ddl-declarations']>,
+  // `migration-history` reduces the DDL declarations into the cross-file drop
+  // provenance (dropped-table → dropping migration + what it created). `needs`
+  // forms the DAG edge ddl-declarations → migration-history, parallel to
+  // table-catalog. The provenance is the same `replayDdlDeclarations` pass the
+  // legacy schema reducer ran, so `stale-table-reference` parity holds by
+  // construction — the phase rule reads the same map the reducer did.
+  'migration-history': {
+    id: 'migration-history',
+    produces: 'migration-history',
+    needs: ['ddl-declarations'],
+    process(facts): MigrationHistory {
+      const { dropProvenance } = replayDdlDeclarations(
+        facts['ddl-declarations'].map((d) => ({
+          filePath: d.file,
+          ops: d.ops,
+          tableColumns: d.tableColumns,
+        })),
+      );
+      const dropped: Record<string, { migrationFile: string; createdInSameMigration: readonly string[] }> = {};
+      for (const [table, entry] of dropProvenance) {
+        dropped[table] = {
+          migrationFile: entry.migrationFile,
+          createdInSameMigration: entry.createdInSameMigration,
+        };
+      }
+      return { dropped };
+    },
+  } satisfies CorpusProcessor<'migration-history', readonly ['ddl-declarations']>,
   // `mined-conventions` reduces the function index into the mined-convention
   // set the three function-index-servable convention rules read. `needs` forms
   // the DAG edge function-index → mined-conventions.
@@ -288,6 +322,7 @@ export const FACT_KINDS = {
   'loop-queries': true,
   'dynamic-sql': true,
   'table-catalog': true,
+  'migration-history': true,
   'mined-conventions': true,
   'react-component': true,
   'file-header': true,

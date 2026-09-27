@@ -10,14 +10,14 @@
  *
  * Every producer is run against a fixture of each format it declares; the
  * returned value must not throw, must not be `undefined`, and must match its
- * declared `FactShapes[K]` at the top level (an array for the seven array
- * facts, a `{ tables: [...] }` object for `table-catalog`) and round-trip
- * through JSON. A producer that throws, returns undefined, or returns the
- * wrong shape fails. It was written red-first: before any producer was
- * migrated in §3.2, all eight threw "declared but not yet migrated" and the
- * test read 0/8. Today all eight producers are live, so the meter reads 8/8
- * continuously — the reversal deleted the stubs, so there is no end-of-work
- * moment where it flips green once.
+ * declared `FactShapes[K]` at the top level (an array for the array facts, a
+ * `{ tables: [...] }` object for `table-catalog`, a `{ dropped: {...} }` object
+ * for `migration-history`) and round-trip through JSON. A producer that throws,
+ * returns undefined, or returns the wrong shape fails. It was written
+ * red-first: before any producer was migrated in §3.2, all eight threw
+ * "declared but not yet migrated" and the test read 0/8. Today all producers
+ * are live, so the meter reads live continuously — the reversal deleted the
+ * stubs, so there is no end-of-work moment where it flips green once.
  *
  * The corpus producer `table-catalog` is not a per-file producer: it is run
  * against complete (empty) upstream facts, not a parsed file.
@@ -99,8 +99,8 @@ const FIXTURES: Record<Format, Fixture> = {
   },
 };
 
-/** The one fact kind whose top-level shape is an object, not an array. */
-const OBJECT_FACTS: ReadonlySet<FactKind> = new Set<FactKind>(['table-catalog']);
+/** The fact kinds whose top-level shape is an object, not an array. */
+const OBJECT_FACTS: ReadonlySet<FactKind> = new Set<FactKind>(['table-catalog', 'migration-history']);
 
 beforeAll(async () => {
   initializeLanguages();
@@ -144,8 +144,13 @@ function assertShape(kind: FactKind, value: unknown): void {
   expect(value, `producer for ${kind} returned undefined`).not.toBeUndefined();
   if (OBJECT_FACTS.has(kind)) {
     expect(value, `producer for ${kind} must return an object`).toBeTypeOf('object');
-    const catalog = value as FactShapes['table-catalog'];
-    expect(Array.isArray(catalog.tables), `producer for ${kind} must expose .tables array`).toBe(true);
+    if (kind === 'table-catalog') {
+      const catalog = value as FactShapes['table-catalog'];
+      expect(Array.isArray(catalog.tables), `producer for ${kind} must expose .tables array`).toBe(true);
+    } else if (kind === 'migration-history') {
+      const history = value as FactShapes['migration-history'];
+      expect(history.dropped, `producer for ${kind} must expose .dropped object`).toBeTypeOf('object');
+    }
   } else {
     expect(Array.isArray(value), `producer for ${kind} must return an array`).toBe(true);
     for (const element of value as unknown[]) {

@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { SchemaUsageFact, TableCatalog, ThresholdValues, Finding } from '../phase/types.js';
+import type { SchemaUsageFact, TableCatalog, MigrationHistory, ThresholdValues, Finding } from '../phase/types.js';
 import { schemaRules } from '../phase/rules/schema.js';
 
 function u(overrides: Partial<SchemaUsageFact> = {}): SchemaUsageFact {
@@ -33,14 +33,17 @@ function catalog(names: string[]): TableCatalog {
   return { tables: names.map((name) => ({ name, source: '/fixture/schema.ts' })) };
 }
 
+/** `unknown-table` reads `migration-history` to partition dropped tables; these
+ *  fixtures exercise the never-existed path, so the history is empty. */
 function analyze(
   ruleId: string,
   facts: { 'schema-usage': SchemaUsageFact[]; 'table-catalog': TableCatalog },
   thresholds: ThresholdValues = {},
 ): Finding[] {
   const rule = schemaRules.find((r) => r.id === ruleId)!;
+  const migrationHistory: MigrationHistory = { dropped: {} };
   const ctx = {
-    facts,
+    facts: { ...facts, 'migration-history': migrationHistory },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
   };

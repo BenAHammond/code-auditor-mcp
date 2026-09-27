@@ -82,12 +82,12 @@ async function parity(ruleId: string, usageSource: string, opts: ParityOpts = {}
   return { old, nu };
 }
 
-/** The two TypeScript schema rules, in registry order — the slice under test. */
+/** The three TypeScript schema rules, in registry order — the slice under test. */
 const RULE_IDS = schemaRules.map((r) => r.id);
 
 describe('Spec 68 schema parity (new analyze(ctx) === old UniversalSchemaAnalyzer)', () => {
-  it('covers exactly the two migrated schema rules', () => {
-    expect(RULE_IDS).toEqual(['unknown-table', 'table-naming-convention']);
+  it('covers exactly the three migrated schema rules', () => {
+    expect(RULE_IDS).toEqual(['unknown-table', 'table-naming-convention', 'stale-table-reference']);
   });
 
   it('table-naming-convention (CamelCase table via tagged template)', async () => {

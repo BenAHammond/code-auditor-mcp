@@ -1,20 +1,20 @@
 /**
- * Spec 68 §3.2 — the `schema-code` FileProcessor extraction.
+ * Spec 68 §3.2 — the `ddl-declarations` FileProcessor extraction.
  *
- * Produces the "tables declared in code" half of the known-table catalog:
- * `SchemaDeclaration[]` with `origin: 'code'`, extracted from DDL written in
+ * Produces the "DDL declared in code" half of the known-table catalog:
+ * `SchemaDeclaration[]`, one entry per file that contains DDL written in
  * TypeScript/JavaScript source (migration files whose `CREATE TABLE` /
  * `ALTER TABLE` statements live inside string or template literals — the raw
  * source text carries the SQL verbatim, so the regex extraction reads it
  * directly, exactly as the old full-source scan did for `.sql` files).
  *
- * The extraction mirrors the schema reducer's SQL-migration provenance step,
- * but per-file: `parseMigrationOps` + `applyMigrationOps` replay CREATE/DROP/
- * RENAME in statement order to yield the *net* table set (a table that existed
- * and was dropped is not a declared table), then `extractDdlTableColumns`
- * attaches the per-table column names the tenant-scoping question needs.
- * Cross-file ordering (which migration drops a table another file created) is
- * the `table-catalog` corpus processor's job, not this per-file processor's.
+ * The extraction is a pure per-file projection: `parseMigrationOps` emits the
+ * ordered CREATE/DROP/RENAME ops and `extractDdlTableColumns` the per-table
+ * column names. There is NO net-table replay here — a file whose only effect
+ * is a DROP still yields one declaration carrying its DROP op, because the
+ * cross-file replay (a table dropped in a later migration is a stale
+ * reference, not a declaration) is the `table-catalog` / `migration-history`
+ * corpus processors' job, not this per-file processor's.
  *
  * The ORM half of the old schema-code visitor — the config-driven table-source
  * registry (`extractTablesFromRegistry`) — is §10 (config as input) and is not
@@ -25,26 +25,16 @@
 import type { ParsedFile, SchemaDeclaration } from './types.js';
 import {
   parseMigrationOps,
-  applyMigrationOps,
   extractDdlTableColumns,
 } from '../analyzers/universal/schema/migrations.js';
 
-/** Extract the per-file DDL table declarations from one parsed file. */
+/** Extract the per-file DDL declaration from one parsed file. Returns a single
+ *  entry whenever the file contains any DDL — even a migration whose only
+ *  effect is a DROP (zero surviving tables) — so the corpus processors can
+ *  replay the ops across files. A file with no DDL returns `[]`. */
 export function extractSchemaCode(file: ParsedFile): SchemaDeclaration[] {
-  // Net table set after CREATE/DROP/RENAME replay, in statement order.
-  const tables = new Set<string>();
-  applyMigrationOps(parseMigrationOps(file.source), tables);
-
+  const ops = parseMigrationOps(file.source);
   const tableColumns = extractDdlTableColumns(file.source);
-
-  const declarations: SchemaDeclaration[] = [];
-  for (const name of tables) {
-    declarations.push({
-      name,
-      file: file.file,
-      columns: (tableColumns[name] ?? []).map((c) => ({ name: c })),
-      origin: 'code',
-    });
-  }
-  return declarations;
+  if (ops.length === 0 && Object.keys(tableColumns).length === 0) return [];
+  return [{ file: file.file, ops, tableColumns }];
 }
