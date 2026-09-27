@@ -38,6 +38,7 @@ import type {
   MigrationHistory,
   MinedConvention,
   Format,
+  SchemaValidationFact,
 } from './types.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
@@ -45,6 +46,8 @@ import { extractFunctionBodies } from './functionBodies.js';
 import { extractReactComponents } from './reactComponents.js';
 import { extractFileHeader } from './fileHeader.js';
 import { extractCodeBlocks } from './codeBlocks.js';
+import { extractJsonDocument } from './jsonDocument.js';
+import { buildSchemaValidations } from './schemaValidations.js';
 import { extractImports } from './imports.js';
 import { extractExportForm } from './exportForm.js';
 import { extractImportForm } from './importForm.js';
@@ -121,6 +124,7 @@ const dynamicSqlProcess = (file: ParsedFile): FactFragment<'dynamic-sql'> => ext
 const reactComponentProcess = (file: ParsedFile): FactFragment<'react-component'> => [extractReactComponents(file as AstFile)];
 const fileHeaderProcess = (file: ParsedFile): FactFragment<'file-header'> => extractFileHeader(file as AstFile);
 const codeBlockProcess = (file: ParsedFile): FactFragment<'code-block'> => extractCodeBlocks(file as AstFile);
+const jsonDocumentProcess = (file: ParsedFile): FactFragment<'json-document'> => extractJsonDocument(file);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -226,6 +230,13 @@ export const PRODUCERS = {
     tsx: fileProducer('code-block', 'tsx', codeBlockProcess),
     javascript: fileProducer('code-block', 'javascript', codeBlockProcess),
   },
+  // `json-document` was the Amendment-1 "json is a format" producer: a `.json`
+  // file's parsed value, read for the `schema-validations` corpus reduction.
+  // It reads `.source` only (the JsonAdapter has no code constructs), so it
+  // takes `ParsedFile`, not `AstFile` — like the text-only `sql` DDL producer.
+  'json-document': {
+    json: fileProducer('json-document', 'json', jsonDocumentProcess),
+  },
 } satisfies ProducerMap;
 
 // ── Corpus producers producing derived facts (no format) ─────────────────────
@@ -296,6 +307,17 @@ export const CORPUS_PRODUCERS = {
       return mineConventionsFromFunctionIndex(facts['function-index'], facts['export-form'], facts['import-form']);
     },
   } satisfies CorpusProcessor<'mined-conventions', readonly ['function-index', 'export-form', 'import-form']>,
+  // `schema-validations` reduces the `json-document` fact through the legacy
+  // `analyzeJsonSchemas` free function. `needs` forms the DAG edge
+  // json-document → schema-validations.
+  'schema-validations': {
+    id: 'schema-validations',
+    produces: 'schema-validations',
+    needs: ['json-document'],
+    process(facts): SchemaValidationFact[] {
+      return buildSchemaValidations(facts['json-document']);
+    },
+  } satisfies CorpusProcessor<'schema-validations', readonly ['json-document']>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -343,4 +365,6 @@ export const FACT_KINDS = {
   'react-component': true,
   'file-header': true,
   'code-block': true,
+  'json-document': true,
+  'schema-validations': true,
 } satisfies Record<FactKind, true>;

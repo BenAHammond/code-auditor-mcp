@@ -70,6 +70,8 @@ export interface FactShapes {
   'react-component': ReactComponentScan[];
   'file-header': FileHeaderFact[];
   'code-block': CodeBlockFact[];
+  'json-document': JsonDocumentFact[];
+  'schema-validations': SchemaValidationFact[];
 }
 
 /** Every fact kind a rule or processor may declare. `ast` is excluded. */
@@ -806,6 +808,58 @@ export type CodeBlockFragment = {
   end: { line: number; column: number };
 };
 
+/**
+ * The recursive JSON value universe — exactly what `JSON.parse` can produce.
+ * It is a plain-data tree (no functions, no class instances), so it satisfies
+ * §4's `Serializable` arm and a parsed JSON document can be a fact. Unlike
+ * `Serializable`'s permissive `{ readonly [k: string]: Serializable }` object
+ * arm, this union is deliberately exhaustive: it is the value set the JSON
+ * grammar admits, so a JSON document never carries a `Date`, `Map`, or other
+ * non-JSON value through a fact boundary.
+ */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly JsonValue[]
+  | { readonly [k: string]: JsonValue };
+
+/**
+ * One parsed JSON document, as the `json-document` producer projects it. The
+ * producer `JSON.parse`s the file's `.source` and stores the raw value (or
+ * `null` on a parse failure) — matching the legacy schema reducer's `readJson`,
+ * which returned `null` for a parse error, the literal `null`, and any
+ * non-object value alike. The corpus `schema-validations` processor re-applies
+ * the `object`-only filter (an array/string/number/boolean document reads back
+ * as `null`), so the two paths stay byte-identical on the value the legacy
+ * `analyzeJsonSchemas` consumed.
+ */
+export type JsonDocumentFact = {
+  file: string;
+  /** The parsed JSON value, or null when the file is invalid or a non-object. */
+  json: JsonValue | null;
+};
+
+/**
+ * One JSON-schema validation outcome, as the `schema-validations` corpus
+ * processor projects it. This is the serializable projection of a legacy
+ * `analyzeJsonSchemas` violation — the same `(rule, file, severity, message)`
+ * plus the `line:1, column:1` the JSON visitor hardcoded (JSON files have no
+ * AST position the old path used). The 17 schema-json rules filter this fact by
+ * their own rule id and project it to `Finding`: the classification (which rule
+ * fired, at what severity, with what message) is the processor's, re-homed
+ * verbatim from the legacy free functions, so each rule is a thin projection.
+ */
+export type SchemaValidationFact = {
+  rule: string;
+  file: string;
+  line: number;
+  column: number;
+  severity: import('../types.js').Severity;
+  message: string;
+};
+
 // ── Serializable (Spec 68 §4) ──────────────────────────────────────────────
 
 /** The serializable value universe. No functions, no class instances. */
@@ -956,6 +1010,7 @@ export interface SupplyingFormats {
   'react-component': 'typescript' | 'tsx' | 'javascript';
   'file-header': 'typescript' | 'tsx' | 'javascript';
   'code-block': 'typescript' | 'tsx' | 'javascript';
+  'json-document': 'json';
 }
 
 /** A fact kind supplied from a file — every key of {@link SupplyingFormats}. */

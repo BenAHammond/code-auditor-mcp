@@ -37,6 +37,7 @@ import { securityDefectRules } from './rules/securityDefects.js';
 import { functionBodyRules } from './rules/functionBodies.js';
 import { reactRules } from './rules/react.js';
 import { fileDocumentationRules } from './rules/fileDocumentation.js';
+import { schemaJsonRules } from './rules/schemaJson.js';
 import type {
   ParsedFile,
   FileSymbols,
@@ -64,6 +65,8 @@ import type {
   ReactComponentScan,
   FileHeaderFact,
   CodeBlockFact,
+  JsonDocumentFact,
+  SchemaValidationFact,
 } from './types.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
@@ -1023,4 +1026,44 @@ export async function analyzeFileHeaders(
 export async function runFileHeadersSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const facts = await buildFileHeaders(files);
   return analyzeFileHeaders(facts, thresholds);
+}
+
+// ── schema-json slice (json-document → schema-validations → 17 rules) ────────
+
+/**
+ * Parse → Process for the `json-document` fact. Returns the assembled corpus
+ * fact (one parsed JSON document per `.json` file, ASTs already freed). The
+ * producer reads `.source` (the JsonAdapter has no code constructs), so the
+ * parse still validates the file but the fact is the `JSON.parse` value.
+ */
+export async function buildJsonDocuments(files: readonly InputFile[]): Promise<JsonDocumentFact[]> {
+  const facts: JsonDocumentFact[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('json-document', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as JsonDocumentFact[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return facts;
+}
+
+/** Analyze the assembled `schema-validations` fact with the 17 schema-json rules. */
+export async function analyzeSchemaJson(
+  validations: SchemaValidationFact[],
+  thresholds: ThresholdValues = {},
+): Promise<Finding[]> {
+  const ctx = {
+    facts: { 'schema-validations': validations },
+    formats: ['json'] as const,
+    thresholds,
+  };
+  const findings: Finding[] = [];
+  for (const rule of schemaJsonRules) {
+    findings.push(...(await rule.analyze(ctx)));
+  }
+  return findings;
 }
