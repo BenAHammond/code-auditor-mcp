@@ -161,7 +161,7 @@ export async function analyzeFileSymbols(symbols: FileSymbols[], thresholds: Thr
   };
   const findings: Finding[] = [];
   for (const rule of solidRules) {
-    findings.push(...(await rule.analyze(ctx)));
+    findings.push(...(await rule.analyze(ctx as never)));
   }
   return findings;
 }

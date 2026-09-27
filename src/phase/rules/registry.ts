@@ -14,7 +14,6 @@
  * and pins its parity test — never before, and never as a placeholder.
  */
 
-import type { RuleDefinition } from '../types.js';
 import { solidRules } from './solid.js';
 import { dataAccessRules, loopQueryRules } from './dataAccess.js';
 import { dependencyGraphRules } from './dependencyGraph.js';
@@ -71,7 +70,7 @@ import { goRules } from './goRules.js';
  * The remaining 74 land one fact kind at a time (§11.3), and the size drives
  * spec68-registry-size.spec.ts (0 → … → 100).
  */
-export const MIGRATED_RULES: readonly RuleDefinition<any>[] = [
+export const MIGRATED_RULES = [
   ...solidRules,
   ...dataAccessRules,
   ...loopQueryRules,

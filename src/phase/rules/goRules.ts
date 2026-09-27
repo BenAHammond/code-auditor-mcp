@@ -260,7 +260,7 @@ const channelDeadlock: RuleDefinition<ChannelNeeds> = {
   },
 };
 
-export const goRules: readonly RuleDefinition<any>[] = [
+export const goRules = [
   importOrganization,
   importStyle,
   errorHandling,

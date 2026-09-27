@@ -565,9 +565,10 @@ const dependencyInversion: RuleDefinition<SolidNeeds> = {
 };
 
 /** The nine TypeScript SOLID rules plus the §9 Go re-declarations, in registry
- *  order. The type widens to `any` because the rules no longer share one `Needs`
- *  (the Go rules declare `type-declarations`, `go-functions` or `go-switches`). */
-export const solidRules: readonly RuleDefinition<any>[] = [
+ *  order. The element type is the *union* of each rule's `RuleDefinition<N>`
+ *  (not `any`) so the consumed-set check can recover the Go facts each declares;
+ *  a slice runner that feeds one broad context casts at the call site. */
+export const solidRules = [
   classSize,
   methodComplexity,
   openClosed,
