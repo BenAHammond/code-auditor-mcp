@@ -8,14 +8,13 @@
  * through the three pure miners that also back the SQLite path.
  *
  * The pure miners (`mineUsagePairsFromFacts` / `mineErrorHandlingFromFacts` /
- * `mineNamingFromFacts` in conventionMiner.ts) are byte-identical to the DB
- * miners the legacy pipeline ran; the DB miners are now thin wrappers that
- * project `functions`/`function_calls` rows into the same row types and call the
- * pure function. So the corpus fact produced here is, for the three domains the
- * `function-index` fact can serve, the same set the SQLite `conventions` table
- * held. `import-form` and `export-shape` stay on the DB path — they read
- * source/export data the `function-index` fact does not carry (`imports` /
- * `export-form` are later fact kinds).
+ * `mineNamingFromFacts` / `mineExportShapeFromFacts` in conventionMiner.ts) are
+ * byte-identical to the DB miners the legacy pipeline ran; the DB miners are now
+ * thin wrappers that project `functions`/`function_calls` rows into the same row
+ * types and call the pure function. So the corpus fact produced here is, for the
+ * four domains the `function-index` (+ `export-form`) facts can serve, the same
+ * set the SQLite `conventions` table held. `import-form` stays on the DB path —
+ * it reads the `imports` fact (a later fact kind), not `function-index`.
  *
  * The DB-assigned `id` is dropped (a function's identity is `(file, name, line)`),
  * so the array index stands in for it here; the miner uses `id` only to key the
@@ -25,15 +24,17 @@
  */
 
 import type { Convention, ConventionMiningConfig } from '../types.js';
-import type { FunctionIndexFact, MinedConvention } from './types.js';
+import type { ExportFormFact, FunctionIndexFact, MinedConvention } from './types.js';
 import {
   mineUsagePairsFromFacts,
   mineErrorHandlingFromFacts,
   mineNamingFromFacts,
+  mineExportShapeFromFacts,
   capPerDomain,
   type UsagePairFuncRow,
   type ErrorHandlingFuncRow,
   type NamingFuncRow,
+  type ExportShapeFuncRow,
   type MineCallRow,
 } from '../conventions/conventionMiner.js';
 
@@ -71,18 +72,27 @@ function toMinedConvention(c: Convention): MinedConvention {
 }
 
 /**
- * Mine the three function-index-servable domains from the assembled fact and
- * reduce them to the `mined-conventions` fact. The array index is the synthetic
- * `id` (see the header) — the miner's exemplar anchor is `(file, line)`, so the
+ * Mine the function-index-servable domains from the assembled fact and reduce
+ * them to the `mined-conventions` fact. The array index is the synthetic `id`
+ * (see the header) — the miner's exemplar anchor is `(file, line)`, so the
  * numbering is only a key, never a finding field.
+ *
+ * `usage-pair` / `error-handling` / `naming` are servable from `function-index`
+ * alone. `export-shape` additionally needs the `export-form` fact (the
+ * AST-extracted `(name, isDefault)` exports the legacy reducer read as
+ * `exportsMap`), so it is mined only when `exportForms` is provided — a caller
+ * that has not assembled that fact (the three-domain parity seed) simply gets
+ * the three domains, never a half-formed export-shape convention.
  */
 export function mineConventionsFromFunctionIndex(
   facts: readonly FunctionIndexFact[],
+  exportForms: readonly ExportFormFact[] = [],
   config: ConventionMiningConfig = DEFAULT_MINING_CONFIG,
 ): MinedConvention[] {
   const usageFuncs: UsagePairFuncRow[] = [];
   const errFuncs: ErrorHandlingFuncRow[] = [];
   const namingFuncs: NamingFuncRow[] = [];
+  const exportShapeFuncs: ExportShapeFuncRow[] = [];
   const calls: MineCallRow[] = [];
 
   facts.forEach((f, i) => {
@@ -95,7 +105,10 @@ export function mineConventionsFromFunctionIndex(
       errFuncs.push({ id: i, name: f.name, file_path: f.file, line_number: f.line, body: f.body });
     }
 
-    // naming reads only exported functions — mirrors `WHERE is_exported = 1`.
+    // naming and export-shape read only exported functions — mirror
+    // `WHERE is_exported = 1`. The export-shape row projection is the same
+    // `SELECT id, name, file_path, line_number` the DB miner reads; the form
+    // comes from the export-form fact at reduction time.
     if (f.isExported) {
       namingFuncs.push({
         id: i,
@@ -105,6 +118,7 @@ export function mineConventionsFromFunctionIndex(
         entity_type: f.entityType,
         component_type: f.componentType,
       });
+      exportShapeFuncs.push({ id: i, name: f.name, file_path: f.file, line_number: f.line });
     }
 
     for (const callee of f.functionCalls) {
@@ -112,11 +126,24 @@ export function mineConventionsFromFunctionIndex(
     }
   });
 
+  // file → exports (the export-form fact projected to the lookup `getExportForm`
+  // consumes). The fact is flat ({file, name, isDefault}[]), so group it.
+  const exportFormByFile = new Map<string, Array<{ name: string; isDefault: boolean }>>();
+  for (const e of exportForms) {
+    const list = exportFormByFile.get(e.file);
+    if (list) list.push({ name: e.name, isDefault: e.isDefault });
+    else exportFormByFile.set(e.file, [{ name: e.name, isDefault: e.isDefault }]);
+  }
+
   const mined: Convention[] = [
     ...mineUsagePairsFromFacts(usageFuncs, calls, config),
     ...mineErrorHandlingFromFacts(errFuncs, config),
     ...mineNamingFromFacts(namingFuncs, config),
   ];
+
+  if (exportForms.length > 0) {
+    mined.push(...mineExportShapeFromFacts(exportShapeFuncs, config, (fp) => exportFormByFile.get(fp)));
+  }
 
   return capPerDomain(mined, config.maxConventionsPerDomain).map(toMinedConvention);
 }

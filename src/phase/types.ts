@@ -44,6 +44,7 @@ export interface FactShapes {
   'function-index': FunctionIndexFact[];
   'function-bodies': FunctionBodyFact[];
   'imports': ImportFact[];
+  'export-form': ExportFormFact[];
   'string-literals': StringLiteralFact[];
   'secret-candidates': SecretCandidate[];
   'security-candidates': SecurityCandidate[];
@@ -262,6 +263,22 @@ export type ImportFact = {
   source: string;
   line: number;
   column: number;
+};
+
+/**
+ * One export declaration, the serializable projection of the adapter's
+ * `extractExports` (`ExportInfo[]`) that `conventions/export-shape` reads: the
+ * exported name plus whether it is a default export. The `location` the adapter
+ * returns is dropped — the export-shape finding anchors to the *function*'s
+ * `function-index` line, never the export statement's, so position is a key the
+ * rule does not read. One element per `export_statement` (the producer walks
+ * `extractExports` in source order, matching the legacy `exportsMap` built from
+ * the same adapter call).
+ */
+export type ExportFormFact = {
+  file: string;
+  name: string;
+  isDefault: boolean;
 };
 
 /**
@@ -903,6 +920,7 @@ export interface SupplyingFormats {
   'function-index': 'typescript' | 'tsx' | 'javascript';
   'function-bodies': 'typescript' | 'tsx' | 'javascript';
   'imports': 'typescript' | 'tsx' | 'javascript';
+  'export-form': 'typescript' | 'tsx' | 'javascript';
   'string-literals': 'typescript' | 'tsx' | 'javascript';
   'secret-candidates': 'typescript' | 'tsx' | 'javascript';
   'security-candidates': 'typescript' | 'tsx' | 'javascript';

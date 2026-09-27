@@ -631,6 +631,113 @@ function mineErrorHandling(
 }
 
 /**
+ * One exported-function row for `mineExportShapeFromFacts` — the same
+ * projection the DB miner reads (`SELECT id, name, file_path, line_number FROM
+ * functions WHERE is_exported = 1`). The `id` is a key only (the exemplar
+ * anchor is `(file, line)`), so the phase fact's array index is equivalent.
+ */
+export interface ExportShapeFuncRow {
+  id: number;
+  name: string;
+  file_path: string;
+  line_number: number;
+}
+
+/**
+ * Shared histogram → conventions tail for export-shape mining. `dirForms` is
+ * directory → Map<form, count> and `dirExemplars` directory → first-seen anchor;
+ * both the pure (`mineExportShapeFromFacts`) and DB (`mineExportShape`) miners
+ * build these maps and reduce them through this one function, so the dominant-
+ * form selection and confidence math can never drift between the two paths.
+ */
+function buildExportShapeConventions(
+  dirForms: Map<string, Map<string, number>>,
+  dirExemplars: Map<string, { file: string; line: number; form: string }>,
+  config: ConventionMiningConfig,
+): Convention[] {
+  const conventions: Convention[] = [];
+
+  for (const [directory, forms] of dirForms) {
+    const total = [...forms.values()].reduce((s, c) => s + c, 0);
+    if (total < config.minCorpus) continue;
+
+    let maxCount = 0;
+    let dominantForm = '';
+    for (const [form, count] of forms) {
+      if (count > maxCount) {
+        maxCount = count;
+        dominantForm = form;
+      }
+    }
+
+    const modeShare = maxCount / total;
+    if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
+      const minorityForms = [...forms.entries()]
+        .filter(([f]) => f !== dominantForm)
+        .map(([f, c]) => `${f}:${c}`)
+        .join(',');
+
+      const exemplar = dirExemplars.get(directory);
+
+      conventions.push({
+        domain: 'export-shape',
+        rule_id: 'conventions/export-shape',
+        antecedent: null,
+        consequent: null,
+        pattern: dominantForm,
+        directory,
+        file_path: null,
+        line: null,
+        support: maxCount,
+        total_cases: total,
+        confidence: Math.round(modeShare * 10000) / 10000,
+        exemplar_file: exemplar?.file ?? null,
+        exemplar_line: exemplar?.line ?? null,
+        hash: computeHash([directory, dominantForm, maxCount, total]),
+      });
+    }
+  }
+
+  return conventions;
+}
+
+/**
+ * Mine `export-shape` conventions from facts — the pure, AST-served path the
+ * phase model runs (`function-index` + `export-form` facts). `getExportForm`
+ * resolves a file's exported `(name, isDefault)` pairs from the `export-form`
+ * fact, which is the AST-extracted exports set (`extractExports`) the legacy
+ * reducer read as `exportsMap`. No source fallback: the phase model always has
+ * the export-form fact, so an absent file simply contributes no row.
+ */
+export function mineExportShapeFromFacts(
+  funcs: ExportShapeFuncRow[],
+  config: ConventionMiningConfig,
+  getExportForm?: (filePath: string) => Array<{ name: string; isDefault: boolean }> | undefined,
+): Convention[] {
+  const dirForms = new Map<string, Map<string, number>>();
+  const dirExemplars = new Map<string, { file: string; line: number; form: string }>();
+
+  for (const row of funcs) {
+    const fileExports = getExportForm?.(row.file_path);
+    if (!fileExports) continue;
+    const match = fileExports.find((e) => e.name === row.name);
+    if (!match) continue;
+    const form: 'default' | 'named' = match.isDefault ? 'default' : 'named';
+
+    const directory = path.dirname(row.file_path) || '.';
+    if (!dirForms.has(directory)) dirForms.set(directory, new Map());
+    const forms = dirForms.get(directory)!;
+    forms.set(form, (forms.get(form) ?? 0) + 1);
+
+    if (!dirExemplars.has(directory)) {
+      dirExemplars.set(directory, { file: row.file_path, line: row.line_number, form });
+    }
+  }
+
+  return buildExportShapeConventions(dirForms, dirExemplars, config);
+}
+
+/**
  * Mine `export-shape` conventions.
  *
  * Per directory, compute the dominant export style (default vs named) among
@@ -644,20 +751,13 @@ function mineExportShape(
   getSource?: (filePath: string) => string | undefined,
   getExports?: (filePath: string) => ExportInfo[] | undefined,
 ): Convention[] {
-  const conventions: Convention[] = [];
-
   const rows = db
     .prepare(
       `SELECT id, name, file_path, line_number
        FROM functions
        WHERE is_exported = 1`,
     )
-    .all() as Array<{
-    id: number;
-    name: string;
-    file_path: string;
-    line_number: number;
-  }>;
+    .all() as ExportShapeFuncRow[];
 
   // directory -> Map<form, count>
   const dirForms = new Map<string, Map<string, number>>();
@@ -704,48 +804,7 @@ function mineExportShape(
     }
   }
 
-  for (const [directory, forms] of dirForms) {
-    const total = [...forms.values()].reduce((s, c) => s + c, 0);
-    if (total < config.minCorpus) continue;
-
-    let maxCount = 0;
-    let dominantForm = '';
-    for (const [form, count] of forms) {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantForm = form;
-      }
-    }
-
-    const modeShare = maxCount / total;
-    if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      const minorityForms = [...forms.entries()]
-        .filter(([f]) => f !== dominantForm)
-        .map(([f, c]) => `${f}:${c}`)
-        .join(',');
-
-      const exemplar = dirExemplars.get(directory);
-
-      conventions.push({
-        domain: 'export-shape',
-        rule_id: 'conventions/export-shape',
-        antecedent: null,
-        consequent: null,
-        pattern: dominantForm,
-        directory,
-        file_path: null,
-        line: null,
-        support: maxCount,
-        total_cases: total,
-        confidence: Math.round(modeShare * 10000) / 10000,
-        exemplar_file: exemplar?.file ?? null,
-        exemplar_line: exemplar?.line ?? null,
-        hash: computeHash([directory, dominantForm, maxCount, total]),
-      });
-    }
-  }
-
-  return conventions;
+  return buildExportShapeConventions(dirForms, dirExemplars, config);
 }
 
 /**

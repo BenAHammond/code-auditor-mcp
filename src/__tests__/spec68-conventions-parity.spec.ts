@@ -7,27 +7,33 @@
  * `conventions` + `functions` + `function_calls` tables. So the parity test seeds
  * those tables in an in-memory `CodeIndexDB`, mines the conventions the legacy
  * path would (`mineConventions` over the raw handle), runs the legacy
- * `analyze(files, { indexHandle })`, then re-reads the *same* rows as the
- * `function-index` fact and reduces them through `mineConventionsFromFunctionIndex`
- * into the `mined-conventions` fact. The rule half is what is pinned — same file,
- * line, column, rule, severity — on the full multiset, for the three domains the
- * `function-index` fact can serve (usage-pair / error-handling / naming).
+ * `analyze(files, { indexHandle, exportsMap })`, then re-reads the *same* rows as
+ * the `function-index` fact and reduces them through
+ * `mineConventionsFromFunctionIndex` into the `mined-conventions` fact. The rule
+ * half is what is pinned — same file, line, column, rule, severity — on the full
+ * multiset, for the four domains the `function-index` (+ `export-form`) facts can
+ * serve (usage-pair / error-handling / naming / export-shape).
  *
  * The producer half is pinned by construction: `mineConventions` (the legacy
  * miner) is now a thin wrapper over the same pure miners
  * `mineConventionsFromFunctionIndex` calls, so the two convention sets are
  * asserted equal before the rule comparison runs — the test fails on a mining
- * divergence, not just a detector divergence. `import-form` / `export-shape`
- * stay on the legacy path (they read source/export data the `function-index`
- * fact does not carry), so the seed produces no such rows and the domain sets
- * collapse to the three migrated domains.
+ * divergence, not just a detector divergence. `import-form` stays on the legacy
+ * path (it reads the `imports` fact — a later fact kind — not `function-index`),
+ * so the seed produces no such rows and the domain set is the four migrated
+ * domains.
+ *
+ * `export-shape` reads `export-form`: the seed's `exportsMap` (the legacy
+ * `getExports` input, `ExportInfo[]` per file) and `exportForms` (the phase
+ * `export-form` fact) encode the same `(name, isDefault)` pairs, so both the DB
+ * miner and the pure miner resolve the same form per exported function.
  *
  * Each domain is isolated in its own directory so the miners' per-directory
  * histograms cannot bleed across domains: `/p/pairs/` (usage-pair), `/p/errors/`
- * (error-handling), `/p/names/` (naming). The seeding order (functions by id,
- * calls grouped by caller) keeps the pure miners' exemplar tiebreak identical on
- * both paths, since the array index in the phase fact is a 1:1 bijection with the
- * DB auto-increment id.
+ * (error-handling), `/p/names/` (naming), `/p/shapes/` (export-shape). The
+ * seeding order (functions by id, calls grouped by caller) keeps the pure
+ * miners' exemplar tiebreak identical on both paths, since the array index in the
+ * phase fact is a 1:1 bijection with the DB auto-increment id.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
@@ -37,7 +43,8 @@ import { CodeIndexDB } from '../codeIndexDB.js';
 import { mineConventions } from '../conventions/conventionMiner.js';
 import { mineConventionsFromFunctionIndex } from '../phase/conventionMining.js';
 import { analyzeConventions } from '../phase/runner.js';
-import type { FunctionIndexFact, MinedConvention } from '../phase/types.js';
+import type { FunctionIndexFact, MinedConvention, ExportFormFact } from '../phase/types.js';
+import type { ExportInfo } from '../languages/types.js';
 import type { Convention, ConventionMiningConfig } from '../types.js';
 import type { Violation } from '../types.js';
 
@@ -154,8 +161,23 @@ function insertConventions(conventions: Convention[]): void {
   }
 }
 
-/** Seed the three isolated domains and return the expected per-rule anchors. */
-function seed(): Record<string, string[]> {
+/** One seeded convention corpus: the per-rule anchors plus the export-form data
+ *  the export-shape domain reads. `exportsMap` is the legacy `getExports`/config
+ *  input (`ExportInfo[]` per file); `exportForms` is the phase `export-form` fact.
+ *  They encode the same `(name, isDefault)` pairs so both paths mine identically. */
+interface SeedResult {
+  expected: Record<string, string[]>;
+  exportsMap: Map<string, ExportInfo[]>;
+  exportForms: ExportFormFact[];
+}
+
+/** A minimal `ExportInfo` — the detectors read only `name` + `isDefault`. */
+function exportInfo(name: string, isDefault: boolean): ExportInfo {
+  return { name, isDefault, location: { start: { line: 1, column: 0 }, end: { line: 1, column: 0 } } };
+}
+
+/** Seed the four isolated domains and return the expected per-rule anchors. */
+function seed(): SeedResult {
   // usage-pair: openDb → closeDb is the dominant pair; f3 deviates.
   const f1 = insertFunction({ name: 'f1', filePath: '/p/pairs/f1.ts', line: 10 });
   const f2 = insertFunction({ name: 'f2', filePath: '/p/pairs/f2.ts', line: 20 });
@@ -176,21 +198,50 @@ function seed(): Record<string, string[]> {
   insertFunction({ name: 'getData', filePath: '/p/names/getData.ts', line: 20, isExported: true });
   insertFunction({ name: 'GetThing', filePath: '/p/names/GetThing.ts', line: 30, isExported: true });
 
+  // export-shape: default export is dominant in /p/shapes/; s3 uses named.
+  insertFunction({ name: 's1', filePath: '/p/shapes/s1.ts', line: 10, isExported: true });
+  insertFunction({ name: 's2', filePath: '/p/shapes/s2.ts', line: 20, isExported: true });
+  insertFunction({ name: 's3', filePath: '/p/shapes/s3.ts', line: 30, isExported: true });
+
+  // Only /p/shapes/ files carry export-form data — the /p/names/ exports stay
+  // form-less (mirrors the real pipeline: a file with no AST-extracted exports
+  // contributes no export-shape row on either path).
+  const exportsMap = new Map<string, ExportInfo[]>([
+    ['/p/shapes/s1.ts', [exportInfo('s1', true)]],
+    ['/p/shapes/s2.ts', [exportInfo('s2', true)]],
+    ['/p/shapes/s3.ts', [exportInfo('s3', false)]],
+  ]);
+  const exportForms: ExportFormFact[] = [
+    { file: '/p/shapes/s1.ts', name: 's1', isDefault: true },
+    { file: '/p/shapes/s2.ts', name: 's2', isDefault: true },
+    { file: '/p/shapes/s3.ts', name: 's3', isDefault: false },
+  ];
+
   return {
-    'conventions/usage-pair': ['/p/pairs/f3.ts:30:1:conventions/usage-pair:high'],
-    'conventions/error-handling': ['/p/errors/e3.ts:30:1:conventions/error-handling:high'],
-    'conventions/naming': ['/p/names/GetThing.ts:30:1:conventions/naming:high'],
+    expected: {
+      'conventions/usage-pair': ['/p/pairs/f3.ts:30:1:conventions/usage-pair:high'],
+      'conventions/error-handling': ['/p/errors/e3.ts:30:1:conventions/error-handling:high'],
+      'conventions/naming': ['/p/names/GetThing.ts:30:1:conventions/naming:high'],
+      'conventions/export-shape': ['/p/shapes/s3.ts:30:1:conventions/export-shape:high'],
+    },
+    exportsMap,
+    exportForms,
   };
 }
 
 /** Run the legacy analyzer and the new `analyzeConventions`, return per-rule multisets. */
-async function parity(expected: Record<string, string[]>): Promise<void> {
-  // Legacy conventions, mined over the raw handle (the production path).
-  const legacyConventions = mineConventions(db.rawDb, CONFIG);
+async function parity(result: SeedResult): Promise<void> {
+  const { expected, exportsMap, exportForms } = result;
+  const getExports = (filePath: string) => exportsMap.get(filePath);
+
+  // Legacy conventions, mined over the raw handle (the production path). The
+  // `getExports` callback is the AST-extracted exports set — the same input the
+  // phase `export-form` fact encodes.
+  const legacyConventions = mineConventions(db.rawDb, CONFIG, undefined, undefined, getExports);
   insertConventions(legacyConventions);
 
   const analyzer = new UniversalConventionsAnalyzer();
-  const legacy = await analyzer.analyze(['a.ts'], { indexHandle: db });
+  const legacy = await analyzer.analyze(['a.ts'], { indexHandle: db, exportsMap });
 
   // Re-read the SAME rows as the `function-index` fact (id order), and derive the
   // call set from the function_calls table in rowid order (grouped by caller).
@@ -229,16 +280,16 @@ async function parity(expected: Record<string, string[]>): Promise<void> {
     facts[idToIndex.get(cr.caller_id)!].functionCalls.push(cr.callee_name);
   }
 
-  const newConventions = mineConventionsFromFunctionIndex(facts, CONFIG);
+  const newConventions = mineConventionsFromFunctionIndex(facts, exportForms, CONFIG);
 
   // Producer parity: the two miners produce the same convention set.
   const legacyProjected = legacyConventions.map(toMinedConvention).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const newProjected = newConventions.map((c) => ({ ...c })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   expect(newProjected).toEqual(legacyProjected);
 
-  const fresh = await analyzeConventions(facts, newConventions);
+  const fresh = await analyzeConventions(facts, newConventions, exportForms);
 
-  for (const ruleId of ['conventions/usage-pair', 'conventions/error-handling', 'conventions/naming']) {
+  for (const ruleId of ['conventions/usage-pair', 'conventions/error-handling', 'conventions/naming', 'conventions/export-shape']) {
     const old = legacy.violations
       .filter((v: Violation) => v.rule === ruleId)
       .map((v: Violation) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
@@ -253,18 +304,18 @@ async function parity(expected: Record<string, string[]>): Promise<void> {
 }
 
 describe('Spec 68 conventions parity (new analyze(ctx) === old UniversalConventionsAnalyzer)', () => {
-  it('covers exactly the three function-index-servable conventions rules', async () => {
-    const expected = seed();
+  it('covers exactly the four function-index-servable conventions rules', async () => {
+    const { expected } = seed();
     expect(Object.keys(expected).sort()).toEqual([
       'conventions/error-handling',
+      'conventions/export-shape',
       'conventions/naming',
       'conventions/usage-pair',
     ]);
   });
 
-  it('all three rules fire on their deviants and match the legacy multiset', async () => {
-    const expected = seed();
-    await parity(expected);
+  it('all four rules fire on their deviants and match the legacy multiset', async () => {
+    await parity(seed());
   });
 
   it('usage-pair does not fire when every antecedent caller also calls the consequent', async () => {
@@ -276,6 +327,15 @@ describe('Spec 68 conventions parity (new analyze(ctx) === old UniversalConventi
     insertCall(f1, 'openDb'); insertCall(f1, 'closeDb');
     insertCall(f2, 'openDb'); insertCall(f2, 'closeDb');
 
-    await parity({ 'conventions/usage-pair': [], 'conventions/error-handling': [], 'conventions/naming': [] });
+    await parity({
+      expected: {
+        'conventions/usage-pair': [],
+        'conventions/error-handling': [],
+        'conventions/naming': [],
+        'conventions/export-shape': [],
+      },
+      exportsMap: new Map(),
+      exportForms: [],
+    });
   });
 });

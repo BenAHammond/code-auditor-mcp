@@ -13,23 +13,26 @@
  *     from its directory's dominant shape.
  *   - naming — an exported symbol whose casing differs from its directory+kind's
  *     dominant casing.
+ *   - export-shape — an exported symbol whose export form (default vs named)
+ *     differs from its directory's dominant form (reads `export-form`).
  *
  * The detection logic is re-homed verbatim from `UniversalConventionsAnalyzer`'s
  * `detectUsagePairForConvention` / `detectErrorHandlingForRow` /
- * `detectNamingForRow` (and its `buildCallMaps` / `buildDirShapes` /
- * `buildDirKindCases` / `classifyExportKind` helpers). The DB-assigned `id`
- * becomes the array index; the finding anchors to `(file, line)` and never to
- * the id, so the numbering is a key only.
+ * `detectNamingForRow` / `detectExportShapeForRow` (and its `buildCallMaps` /
+ * `buildDirShapes` / `buildDirKindCases` / `classifyExportKind` /
+ * `buildDirForms` helpers). The DB-assigned `id` becomes the array index; the
+ * finding anchors to `(file, line)` and never to the id, so the numbering is a
+ * key only.
  *
- * `import-form` and `export-shape` stay on the legacy path: they read
- * `imports`/`export-form` facts the `function-index` producer does not carry
- * (§9). The error-handling `cannot-fire` diagnostic (a non-TS/JS body) has no
- * `analyze` channel — §8 derives coverage states, so the diagnostic folds into
- * that, not into findings.
+ * `import-form` stays on the legacy path: it reads the `imports` fact (a later
+ * fact kind) the `function-index` producer does not carry (§9). The
+ * error-handling `cannot-fire` diagnostic (a non-TS/JS body) has no `analyze`
+ * channel — §8 derives coverage states, so the diagnostic folds into that, not
+ * into findings.
  */
 
 import * as path from 'path';
-import type { RuleDefinition, Finding, FunctionIndexFact, MinedConvention } from '../types.js';
+import type { RuleDefinition, Finding, FunctionIndexFact, MinedConvention, ExportFormFact } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 import {
   detectCase,
@@ -230,6 +233,69 @@ function detectNaming(findings: Finding[], facts: readonly FunctionIndexFact[], 
   }
 }
 
+// ── export-shape ────────────────────────────────────────────────────────────
+
+/** Build directory → dominant export form from convention rows (re-homes the
+ *  analyzer's `buildDirForms`). */
+function buildDirFormsForShape(conventions: readonly MinedConvention[]): Map<string, MinedConvention> {
+  const dirForms = new Map<string, MinedConvention>();
+  for (const conv of conventionsOf(conventions, 'export-shape')) {
+    const dir = conv.directory ?? '.';
+    if (!conv.pattern) continue;
+    dirForms.set(dir, conv);
+  }
+  return dirForms;
+}
+
+/** Detect an export-shape deviation for each exported function (re-homes the
+ *  analyzer's `detectExportShapeForRow`). The form resolves from the
+ *  `export-form` fact — the same AST-extracted `(name, isDefault)` pairs the
+ *  legacy reducer read as `exportsMap`. */
+function detectExportShape(
+  findings: Finding[],
+  facts: readonly FunctionIndexFact[],
+  conventions: readonly MinedConvention[],
+  exportForms: readonly ExportFormFact[],
+): void {
+  const dirForms = buildDirFormsForShape(conventions);
+
+  // file → exports, grouped from the flat export-form fact.
+  const exportsByFile = new Map<string, Array<{ name: string; isDefault: boolean }>>();
+  for (const e of exportForms) {
+    const list = exportsByFile.get(e.file);
+    if (list) list.push({ name: e.name, isDefault: e.isDefault });
+    else exportsByFile.set(e.file, [{ name: e.name, isDefault: e.isDefault }]);
+  }
+
+  for (const fact of facts) {
+    if (!fact.isExported) continue;
+
+    const directory = path.dirname(fact.file) || '.';
+    const conv = dirForms.get(directory);
+    if (!conv) continue;
+
+    const fileExports = exportsByFile.get(fact.file);
+    if (!fileExports) continue;
+    const match = fileExports.find((e) => e.name === fact.name);
+    if (!match) continue;
+    const form: 'default' | 'named' = match.isDefault ? 'default' : 'named';
+    if (form === conv.pattern) continue;
+
+    const pct = Math.round(conv.confidence * 100);
+    findings.push({
+      ruleId: 'conventions/export-shape',
+      severity: 'high',
+      message:
+        `${pct}% of exports in \`${directory}/\` use ${conv.pattern} export — ` +
+        `\`${fact.name}\` uses ${form}${exemplarRef(conv)}`,
+      file: fact.file,
+      line: fact.line,
+      column: 1,
+      symbol: fact.name,
+    });
+  }
+}
+
 // ── Rule definitions ────────────────────────────────────────────────────────
 
 const usagePair: RuleDefinition<ConventionNeeds> = {
@@ -282,4 +348,31 @@ export const conventionsRules: readonly RuleDefinition<ConventionNeeds>[] = [
   usagePair,
   errorHandling,
   naming,
+];
+
+/** The export-shape rule reads one extra fact (`export-form`), so it carries a
+ *  distinct `Needs` tuple and lives in its own array. */
+type ExportShapeNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['function-index', 'mined-conventions', 'export-form'];
+};
+
+const exportShape: RuleDefinition<ExportShapeNeeds> = {
+  id: 'conventions/export-shape',
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['function-index', 'mined-conventions', 'export-form'] },
+  severity: 'high',
+  message: META['conventions/export-shape'].message,
+  docs: META['conventions/export-shape'].docs,
+  thresholds: META['conventions/export-shape'].thresholds,
+  samples: META['conventions/export-shape'].samples,
+  analyze(ctx): Finding[] {
+    const out: Finding[] = [];
+    detectExportShape(out, ctx.facts['function-index'], ctx.facts['mined-conventions'], ctx.facts['export-form']);
+    return out;
+  },
+};
+
+/** The export-shape conventions rule, in registry order. */
+export const conventionsExportShapeRules: readonly RuleDefinition<ExportShapeNeeds>[] = [
+  exportShape,
 ];
