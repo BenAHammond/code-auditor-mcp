@@ -79,7 +79,7 @@ import {
 import type { DryVisitorBundle, ReactVisitorBundle, SolidVisitorBundle } from './pipelineAdapters.js';
 import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer, TestCoverageReport, DeadCluster, SizeDistribution } from './types.js';
 import { computeSizeDistributions } from './reporting/sizeDistribution.js';
-import { splitRoutes, attributeRoutes } from './phase/routing.js';
+import { splitRoutes, attributeRoutes, enabledMigratedRules } from './phase/routing.js';
 import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';
 import { resolvePhaseThresholds } from './phase/config.js';
 import type { Finding } from './phase/types.js';
@@ -866,6 +866,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               tsconfigAliases: infraConfig.tsconfigAliases as PhaseInfra['tsconfigAliases'],
               packageEntryPoints: infraConfig.packageEntryPoints as string[] | undefined,
               indexHandle: pipelineIndexHandle,
+              enabledRules: enabledMigratedRules(enabledAnalyzers),
             });
 
             // Strip the migrated rules' legacy emission from every analyzer

@@ -29,6 +29,7 @@ import type {
   FactKind,
   FileFactKind,
   Finding,
+  RuleDefinition,
   ThresholdValues,
   StyleDeclarationsFile,
 } from './types.js';
@@ -59,6 +60,12 @@ export interface PhaseInfra {
    *  single fixture with no index, and the producer degrades to an empty fact
    *  (matching the legacy graceful-degradation). */
   indexHandle?: IndexHandle;
+  /** The migrated rule ids to run (already filtered to the enabled analyzers).
+   *  Undefined runs every migrated rule — the slice-test / full-pipeline path.
+   *  A scoped, analyzer-restricted audit passes its subset so disabled analyzers'
+   *  facts (e.g. cross-domain's `call-graph` whole-table `functions` read) are
+   *  never built. */
+  enabledRules?: ReadonlySet<string>;
 }
 
 /**
@@ -73,8 +80,11 @@ export async function runPhaseModel(
 ): Promise<Finding[]> {
   if (MIGRATED_RULES.length === 0) return [];
 
+  const active = activeRules(infra?.enabledRules);
+  if (active.length === 0) return [];
+
   const neededFormats = new Set<string>();
-  for (const rule of MIGRATED_RULES) {
+  for (const rule of active) {
     for (const f of rule.needs.formats) neededFormats.add(f);
   }
   // Widen to the formats that supply the transitively-needed *file* facts: a
@@ -82,7 +92,7 @@ export async function runPhaseModel(
   // its facts come from. `unknown-table` declares `table-catalog`, whose
   // upstream `ddl-declarations` is supplied by `sql` (migration files) as well
   // as TS/JS — so `.sql` files must be read even though no rule declares `sql`.
-  for (const kind of neededFactKinds()) {
+  for (const kind of neededFactKinds(active)) {
     const producers = (PRODUCERS as Partial<Record<FactKind, Record<string, unknown>>>)[kind];
     if (producers) for (const format of Object.keys(producers)) neededFormats.add(format);
   }
@@ -107,13 +117,19 @@ export async function runPhaseModelOverFiles(
   infra?: PhaseInfra,
 ): Promise<Finding[]> {
   const facts = await buildFacts(files, infra);
-  return analyzeAll(facts, thresholdsByRule);
+  return analyzeAll(facts, thresholdsByRule, infra?.enabledRules);
+}
+
+/** The migrated rules this run should serve: all, or the enabled subset. */
+function activeRules(enabledRules?: ReadonlySet<string>): readonly RuleDefinition<any>[] {
+  if (!enabledRules) return MIGRATED_RULES;
+  return MIGRATED_RULES.filter((r) => enabledRules.has(r.id));
 }
 
 /** The fact kinds the migrated rules read, transitively closed over corpus `needs`. */
-function neededFactKinds(): Set<FactKind> {
+function neededFactKinds(active: readonly RuleDefinition<any>[] = MIGRATED_RULES): Set<FactKind> {
   const needed = new Set<FactKind>();
-  for (const rule of MIGRATED_RULES) {
+  for (const rule of active) {
     for (const f of rule.needs.facts) needed.add(f);
   }
   // Corpus producers pull in their upstream facts (ddl-declarations → table-catalog).
@@ -136,7 +152,8 @@ function neededFactKinds(): Set<FactKind> {
 /** Process: build every needed fact kind (file facts, then corpus facts in order). */
 async function buildFacts(files: readonly InputFile[], infra?: PhaseInfra): Promise<Map<FactKind, unknown>> {
   const projectRoot = infra?.projectRoot;
-  const needed = neededFactKinds();
+  const active = activeRules(infra?.enabledRules);
+  const needed = neededFactKinds(active);
   const facts = new Map<FactKind, unknown>();
 
   const fileKinds = [...needed].filter(
@@ -208,13 +225,14 @@ async function buildFacts(files: readonly InputFile[], infra?: PhaseInfra): Prom
   return facts;
 }
 
-/** Analyze: run every migrated rule against exactly its declared facts. */
+/** Analyze: run every active migrated rule against exactly its declared facts. */
 async function analyzeAll(
   facts: Map<FactKind, unknown>,
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
+  enabledRules?: ReadonlySet<string>,
 ): Promise<Finding[]> {
   const findings: Finding[] = [];
-  for (const rule of MIGRATED_RULES) {
+  for (const rule of activeRules(enabledRules)) {
     const ruleFacts = Object.fromEntries(
       rule.needs.facts.map((f: FactKind) => [f, facts.get(f)]),
     );
