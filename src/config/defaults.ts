@@ -3,7 +3,6 @@
  */
 
 import { AuditConfig, PathProfile } from '../types.js';
-import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
 
 /**
  * Get default configuration
@@ -26,7 +25,6 @@ export function getDefaultConfig(): AuditConfig {
       '**/*.test.{ts,tsx,js,jsx}',
       '**/*.spec.{ts,tsx,js,jsx}'
     ],
-    enabledAnalyzers: [...ALL_ANALYZERS],
     // Note: no `outputFormats`/`outputDirectory` default. Reports are written
     // only to an explicit CLI `--output` path (or stdout); a config default here
     // would advertise a key that `print-config` then shows and the loader then
@@ -206,13 +204,10 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     requireFunctionDocs: true,
     requireClassDocs: true,
     // #135 — tag completeness (parameter-documentation / return-documentation)
-    // is opt-in strict mode; off by default so a documented function that omits
-    // exhaustive @param/@returns tags is not flagged as a defect.
-    //
-    // §10 removed the `requireParamDocs` / `requireReturnDocs` off-by-default
-    // gates: parameter-documentation and return-documentation now fire
-    // unconditionally. These two booleans are dead config (nothing reads them)
-    // and are dropped by the §15 deletions.
+    // fires unconditionally (§10 removed the `requireParamDocs` /
+    // `requireReturnDocs` opt-in gates). These two booleans remain only for the
+    // legacy documentation analyzer (deleted in §15); the migrated rules in
+    // `phase/rules/documentation.ts` do not read them.
     requireParamDocs: false,
     requireReturnDocs: false,
     minDescriptionLength: 2,       // Spec 11 R3 sweep: 10 → 2 (precision-first)

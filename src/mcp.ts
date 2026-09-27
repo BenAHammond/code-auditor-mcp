@@ -82,7 +82,6 @@ import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { resolveConfigGenerateDir } from './config/configGeneratePath.js';
 import { getInstallId, getTelemetryOptIn, setTelemetryOptIn, PRIVACY_MESSAGE, resolveTelemetryEndpoint } from './installConfig.js';
-import { MCP_DEFAULT_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
 import { resolveMcpDevLogPath } from './dataPaths.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
@@ -236,8 +235,6 @@ function registerProcessReliabilityHandlers(): void {
 
 // ── Tool registration ────────────────────────────────────────────────────────
 
-const DEFAULT_ANALYZERS = [...MCP_DEFAULT_ANALYZERS];
-
 export function registerAllTools(registry: ToolRegistry): void {
   // ── audit ──────────────────────────────────────────────────────────────────
   const auditActions: ActionDefinition[] = [
@@ -251,13 +248,6 @@ export function registerAllTools(registry: ToolRegistry): void {
           required: false,
           description: 'File or directory path to audit (defaults to current directory).',
           default: process.cwd(),
-        },
-        {
-          name: 'analyzers',
-          type: 'array',
-          required: false,
-          description: `Analyzers to run (default: ${DEFAULT_ANALYZERS.join(', ')}).`,
-          default: DEFAULT_ANALYZERS,
         },
         {
           name: 'minSeverity',
@@ -292,7 +282,6 @@ export function registerAllTools(registry: ToolRegistry): void {
         return withAbortSignal(signal, 'audit.run', async () => {
           const auditPath = path.resolve((args.path as string) || process.cwd());
           await assertAuditPathExists(auditPath);
-          const analyzers = (args.analyzers as string[]) ?? DEFAULT_ANALYZERS;
           const minSeverity = ((args.minSeverity as string) || 'high') as Severity;
           const indexFunctions = (args.indexFunctions as boolean) !== false;
 
@@ -311,7 +300,6 @@ export function registerAllTools(registry: ToolRegistry): void {
           // dispatch and left every Go rule `notApplicable`).
           const auditResult = await createAuditRunner({
             projectRoot: auditPath,
-            enabledAnalyzers: analyzers,
             minSeverity,
             verbose: false,
             indexFunctions,
@@ -353,13 +341,6 @@ export function registerAllTools(registry: ToolRegistry): void {
           required: false,
           description: 'File or directory path to audit (defaults to current directory).',
           default: process.cwd(),
-        },
-        {
-          name: 'analyzers',
-          type: 'array',
-          required: false,
-          description: `Analyzers to run (default: ${DEFAULT_ANALYZERS.join(', ')}).`,
-          default: DEFAULT_ANALYZERS,
         },
         {
           name: 'minSeverity',
@@ -406,7 +387,6 @@ export function registerAllTools(registry: ToolRegistry): void {
       handler: async (args, signal) => {
         return withAbortSignal(signal, 'audit.start', () =>
           startAuditJob(args, {
-            defaultAnalyzers: DEFAULT_ANALYZERS,
             defaultMinSeverity: 'high',
             defaultGenerateCodeMap: false,
           }),
@@ -531,7 +511,6 @@ export function registerAllTools(registry: ToolRegistry): void {
 
         const auditResult = await createAuditRunner({
           projectRoot: auditPath,
-          enabledAnalyzers: DEFAULT_ANALYZERS,
           minSeverity: 'high' as Severity,
           verbose: false,
           indexFunctions,

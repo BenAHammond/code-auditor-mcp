@@ -51,23 +51,11 @@ export function attributeRoutes(): ReadonlyMap<string, Route> {
 }
 
 /**
- * The migrated rule ids the phase model should run when only `enabledAnalyzers`
- * are on. A rule runs iff its analyzer *family* (the registry `analyzer` field)
- * is enabled — the family, not the sub-visitor result key (`schema-code`,
- * `schema-json`): those are driven by the parent `schema` being enabled. The
- * auto-registered `data-access-org-filter` folds into `data-access`. Undefined
- * (all analyzers) returns every migrated rule.
+ * The migrated rule ids the phase model runs. Spec 68 §15 deletes the analyzer
+ * *selection* model — there is no `enabledAnalyzers`, so the phase path always
+ * runs every migrated rule. The registry `analyzer` field is now only a
+ * re-emission bucket label (§9 deletes it); it no longer gates which rules run.
  */
-export function enabledMigratedRules(enabledAnalyzers?: readonly string[]): ReadonlySet<string> {
-  if (enabledAnalyzers === undefined) return new Set(MIGRATED_RULES.map((r) => r.id));
-  const enabled = new Set(enabledAnalyzers);
-  return new Set(
-    MIGRATED_RULES.filter((r) => enabled.has(ruleFamily(r.id))).map((r) => r.id),
-  );
-}
-
-/** The analyzer family a rule belongs to for enablement gating. */
-function ruleFamily(ruleId: string): string {
-  const analyzer = RULE_REGISTRY[ruleId]?.analyzer ?? ruleId;
-  return analyzer === 'data-access-org-filter' ? 'data-access' : analyzer;
+export function enabledMigratedRules(): ReadonlySet<string> {
+  return new Set(MIGRATED_RULES.map((r) => r.id));
 }

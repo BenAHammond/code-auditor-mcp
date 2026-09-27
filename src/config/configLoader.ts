@@ -7,7 +7,6 @@ import { promises as fs, realpathSync } from 'fs';
 import path from 'path';
 import { AuditConfig, PathProfile, ProjectFileConfig, PROJECT_FILE_CONFIG_KEYS } from '../types.js';
 import { getDefaultConfig, DEFAULT_CODE_INDEX_CONFIG, mergePathProfiles } from './defaults.js';
-import { RUNNABLE_ANALYZERS } from '../analyzers/ruleRegistry.js';
 
 /**
  * A config key dropped by `sanitizeProjectFileConfig`, with why.
@@ -262,11 +261,6 @@ function loadFromEnvironment(baseConfig: AuditConfig, prefix: string): AuditConf
     envConfig.failOnCritical = env[`${prefix}_FAIL_ON_CRITICAL`] === 'true';
   }
 
-  const enabledAnalyzersVar = env[`${prefix}_ANALYZERS`];
-  if (enabledAnalyzersVar) {
-    envConfig.enabledAnalyzers = enabledAnalyzersVar.split(',');
-  }
-
   // Code index environment variables
   const codeIndexConfig: any = {};
   if (env[`${prefix}_CODE_INDEX_DB_PATH`]) {
@@ -348,18 +342,6 @@ export function validateConfig(config: AuditConfig): string[] {
   // Validate severity
   if (config.minSeverity && !['critical', 'severe', 'high'].includes(config.minSeverity)) {
     errors.push(`Invalid severity: ${config.minSeverity}`);
-  }
-
-  // Validate analyzers against the canonical runnable set (registry rule
-  // emitters plus pipeline-only analyzers like `invariants`), so a user naming
-  // any analyzer the pipeline can actually run is never rejected for an analyzer
-  // that is valid but was missing from a hand-typed list.
-  const validAnalyzers = RUNNABLE_ANALYZERS;
-  if (config.enabledAnalyzers) {
-    const invalid = config.enabledAnalyzers.filter(a => !validAnalyzers.includes(a));
-    if (invalid.length > 0) {
-      errors.push(`Invalid analyzers: ${invalid.join(', ')}`);
-    }
   }
 
   // Validate path profiles (Spec-20)

@@ -4,7 +4,7 @@
  *
  * The core reuses the Spec 41 incremental machinery wholesale: `hashAndStatFiles`
  * / `diffFiles` / `splitFindings` / `mergeFindings` from `nextFileIncremental.ts`.
- * The seed is a full `runAuditDispatch` (the same entry `code-audit audit` uses,
+ * The seed is a full `runAudit` (the same entry `code-audit audit` uses,
  * so counts match — acceptance 10); a warm re-audit is a scoped dispatch merged
  * per-analyzer, exactly the `next-file` warm path made continuous.
  *

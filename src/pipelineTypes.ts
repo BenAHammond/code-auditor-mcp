@@ -56,19 +56,6 @@ export function validateFactsDependencies(
     }
   }
 
-  // Stage 4 reducers can consume from stage 2 visitors OR stage 3 reducers
-  const allPriorNames = new Set([...visitorNames, ...reducerNames]);
-  for (const dr of derivedReducers) {
-    for (const consumed of dr.consumes) {
-      if (!allPriorNames.has(consumed)) {
-        errors.push(
-          `Derived reducer "${dr.name}" consumes "${consumed}" but no prior-stage contributor with that name exists. ` +
-          `Available contributors: ${[...allPriorNames].join(', ')}`,
-        );
-      }
-    }
-  }
-
   // No two visitors/reducers may share the same name
   const allNames = new Set<string>();
   for (const v of visitors) {

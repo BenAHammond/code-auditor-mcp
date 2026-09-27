@@ -22,7 +22,7 @@ export async function runAutoIndex(projectPath: string): Promise<void> {
 
   const runner = createAuditRunner({
     projectRoot: root,
-    enabledAnalyzers: [],
+    indexOnly: true,
     indexFunctions: true,
     minSeverity: 'high',
     verbose: false,

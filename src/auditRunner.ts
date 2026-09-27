@@ -28,7 +28,7 @@ import { resolvePathProfile } from './config/pathProfiles.js';
 import { checkThresholdRationales } from './config/thresholdRationales.js';
 import { readProjectLintThresholds, thresholdsToAnalyzerConfig } from './config/lintConfigReader.js';
 import { computeThresholdSources } from './config/effectiveConfig.js';
-import { ALL_ANALYZERS, RULE_REGISTRY } from './analyzers/ruleRegistry.js';
+import { RULE_REGISTRY } from './analyzers/ruleRegistry.js';
 import { applyPresets, getPreset, type Preset } from './presets/presets.js';
 import { generateReport } from './reporting/reportGenerator.js';
 import { extractFunctionsFromFile } from './functionScanner.js';
@@ -112,13 +112,21 @@ function cpuDurationMs(start: NodeJS.CpuUsage): number {
 }
 
 /**
+ * Spec 68 §15 — the full pipeline stage set, always run. Derived from the
+ * registry's `analyzer` labels plus the pipeline-only `invariants` reducer
+ * (user-defined rules from `.codeauditor.json`; it auto-disables when none are
+ * configured). No selection remains: `indexOnly` skips analysis wholesale, but
+ * config cannot pick a subset of analyzers.
+ */
+const RUN_ANALYZERS: string[] = [
+  ...new Set(Object.values(RULE_REGISTRY).map((e) => e.analyzer)),
+  'invariants',
+].sort();
+
+/**
  * Create an audit runner with the given options
  */
 export function createAuditRunner(options: AuditRunnerOptions = {}) {
-  const analyzerRegistry: Record<string, { name: string }> = Object.fromEntries(
-    ALL_ANALYZERS.map((name) => [name, { name }])
-  );
-  
   /**
    * Load configuration from file
    */
@@ -352,10 +360,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // Spec 60.1 Correction 1 — the import classifier's corpus file set must be
     // the UNFILTERED stage-1 discovery list, not the audit's `files` list.
     // `files` is narrowed at two points before `_infra` is built:
-    //   1. Polyglot (Go) path — `LanguageOrchestrator.discoverAndGroupFiles`
-    //      drops files with no detectable language (`.json`, `.sql`), then
-    //      `TypeScriptAnalyzer.analyze` (RuntimeManager.ts) re-runs `runAudit`
-    //      with `includePaths: files` = the TS-only list.
+    //   1. The polyglot dispatch narrows `files` to the per-language list it
+    //      actually hands to the TypeScript analyzer — files with no detectable
+    //      language (`.json`, `.sql`) drop out here.
     //   2. `filterFiles` (fileDiscovery.ts, called from `findFiles`) applies
     //      `includePaths` as a positive-selection glob filter — a `.json` file
     //      that survives step 1 is dropped here (or by the default `includePaths`
@@ -437,7 +444,9 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
 
     // Run analyzers
     const analyzerResults: Record<string, AnalyzerResult> = {};
-    const enabledAnalyzers = getEnabledAnalyzers(mergedOptions, analyzerRegistry);
+    // Spec 68 §15 — no selection model: the full pipeline always runs. `indexOnly`
+    // skips analysis wholesale (the index-only harness); config cannot pick a subset.
+    const analyzers: string[] = mergedOptions.indexOnly ? [] : [...RUN_ANALYZERS];
 
     // ── Style index sync (Spec 10) ────────────────────────────────────
     // Sync style declarations, tokens, and class usage before the
@@ -450,7 +459,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // the sync did not run or failed — the styles reducer must not short-circuit
     // on that (it falls back to full analysis), so we only assign on success.
     let styleContributingFiles: string[] | undefined;
-    if (enabledAnalyzers.includes('styles')) {
+    if (analyzers.includes('styles')) {
       try {
         const styleDb = CodeIndexDB.getInstance(undefined, root);
         await styleDb.initialize();
@@ -502,11 +511,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // rule is `legacy`), so the split is observable even mid-migration.
     let routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
     logMcpInfo('analysis', 'enabled analyzers', {
-      names: enabledAnalyzers,
+      names: analyzers,
       fileCount: files.length,
       scope: scopeResultType
     });
-    logMcpDebug('analysis', 'registry keys', { keys: Object.keys(analyzerRegistry) });
 
     // ── Initialize CodeIndexDB for analyzer DB access ────────────────────
     // Styles, conventions, and cross-domain analyzers read config.indexHandle
@@ -562,20 +570,20 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     pipelineVisitors.push(createFunctionIndexVisitor());
 
     // styles-css visitor — AST-extracts .css files into style_* tables (Spec 26 Phase 2)
-    if (enabledAnalyzers.includes('styles')) pipelineVisitors.push(createStylesCssVisitor());
+    if (analyzers.includes('styles')) pipelineVisitors.push(createStylesCssVisitor());
     // styles-source visitor — AST-extracts TS/JS CSS-in-JS into style_* tables,
     // reusing the stage-1 parse (eliminates the style-index re-parse).
-    if (enabledAnalyzers.includes('styles')) pipelineVisitors.push(createStylesSourceVisitor());
+    if (analyzers.includes('styles')) pipelineVisitors.push(createStylesSourceVisitor());
 
-    if (enabledAnalyzers.includes('solid')) {
+    if (analyzers.includes('solid')) {
       solidBundle = createSolidVisitor();
       pipelineVisitors.push(solidBundle.visitor);
     }
-    if (enabledAnalyzers.includes('dry')) {
+    if (analyzers.includes('dry')) {
       dryBundle = createDryVisitor();
       pipelineVisitors.push(dryBundle.visitor);
     }
-    if (enabledAnalyzers.includes('data-access')) {
+    if (analyzers.includes('data-access')) {
       pipelineVisitors.push(createDataAccessVisitor());
       // Spec 62 Amendment B — the missing-org-filter rule is a Stage-4 derived
       // reducer that joins the data-access query facts against the declared +
@@ -583,18 +591,18 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // mirroring the data-access visitor it consumes.
       pipelineDerivedReducers.push(createOrgFilterReducer());
     }
-    if (enabledAnalyzers.includes('secrets')) pipelineVisitors.push(createSecretsVisitor());
-    if (enabledAnalyzers.includes('security')) pipelineVisitors.push(createSecurityVisitor());
-    if (enabledAnalyzers.includes('react')) {
+    if (analyzers.includes('secrets')) pipelineVisitors.push(createSecretsVisitor());
+    if (analyzers.includes('security')) pipelineVisitors.push(createSecurityVisitor());
+    if (analyzers.includes('react')) {
       reactBundle = createReactVisitor();
       pipelineVisitors.push(reactBundle.visitor);
     }
-    if (enabledAnalyzers.includes('documentation')) pipelineVisitors.push(createDocumentationVisitor());
-    if (enabledAnalyzers.includes('styles')) pipelineReducers.push(createStylesReducer());
-    if (enabledAnalyzers.includes('conventions')) pipelineReducers.push(createConventionsReducer());
-    if (enabledAnalyzers.includes('invariants')) pipelineReducers.push(createInvariantsReducer());
-    if (enabledAnalyzers.includes('cross-domain')) pipelineDerivedReducers.push(createCrossDomainReducer());
-    if (enabledAnalyzers.includes('schema')) {
+    if (analyzers.includes('documentation')) pipelineVisitors.push(createDocumentationVisitor());
+    if (analyzers.includes('styles')) pipelineReducers.push(createStylesReducer());
+    if (analyzers.includes('conventions')) pipelineReducers.push(createConventionsReducer());
+    if (analyzers.includes('invariants')) pipelineReducers.push(createInvariantsReducer());
+    if (analyzers.includes('cross-domain')) pipelineDerivedReducers.push(createCrossDomainReducer());
+    if (analyzers.includes('schema')) {
       pipelineVisitors.push(createSchemaSqlVisitor());
       pipelineVisitors.push(createSchemaCodeVisitor());
       pipelineVisitors.push(createSchemaPrismaVisitor());
@@ -608,17 +616,17 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // whenever ANY cross-language analyzer is enabled; the corpus-wide reducers
     // short-circuit on scoped/diff runs.
     const crossLanguageEnabled = ['schema-validator', 'api-contract', 'dependency-graph']
-      .some((a) => enabledAnalyzers.includes(a));
+      .some((a) => analyzers.includes(a));
     if (crossLanguageEnabled) {
       pipelineVisitors.push(createCrossLanguageEntityVisitor());
     }
-    if (enabledAnalyzers.includes('schema-validator')) pipelineDerivedReducers.push(createSchemaValidatorReducer());
-    if (enabledAnalyzers.includes('api-contract')) pipelineDerivedReducers.push(createAPIContractReducer());
-    if (enabledAnalyzers.includes('dependency-graph')) pipelineDerivedReducers.push(createDependencyGraphReducer());
+    if (analyzers.includes('schema-validator')) pipelineDerivedReducers.push(createSchemaValidatorReducer());
+    if (analyzers.includes('api-contract')) pipelineDerivedReducers.push(createAPIContractReducer());
+    if (analyzers.includes('dependency-graph')) pipelineDerivedReducers.push(createDependencyGraphReducer());
 
     // ── 2. Safeguard warnings ────────────────────────────────────────────
     if (auditIndex) {
-      if (enabledAnalyzers.includes('cross-domain')) {
+      if (analyzers.includes('cross-domain')) {
         const suCount = auditIndex.count('schema_usage');
         if (suCount === 0) {
           console.warn('[code-audit] ⚠ cross-domain analyzer requires schema_usage data. '
@@ -638,27 +646,27 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       // Each analyzer gets its own namespace; _infra holds shared infrastructure keys
       // that every visitor/reducer receives alongside its own config.
       const pipelineAnalyzerConfig: Record<string, Record<string, unknown>> = {};
-      for (const name of enabledAnalyzers) {
+      for (const name of analyzers) {
         pipelineAnalyzerConfig[name] = { ...(mergedOptions.analyzerConfigs?.[name] ?? {}) };
       }
       // Spec 62 Amendment B — the missing-org-filter Stage-4 reducer reads the
       // data-access config namespace (orgFilterTables/orgFilterColumns/schemas),
       // so it inherits the data-access analyzer's config rather than a fresh
-      // empty namespace. `data-access-org-filter` is never in enabledAnalyzers
-      // (it is auto-registered), so this is the only place its config is set.
-      if (enabledAnalyzers.includes('data-access')) {
+      // empty namespace. `data-access-org-filter` has no config namespace of its
+      // own, so this is the only place its config is set.
+      if (analyzers.includes('data-access')) {
         pipelineAnalyzerConfig['data-access-org-filter'] = { ...(pipelineAnalyzerConfig['data-access'] ?? {}) };
       }
       // Pass invariant rules from .codeauditor.json into the invariants pipeline config.
       // The rules field lives at the top level of the loaded config (not under analyzerConfigs).
-      if (enabledAnalyzers.includes('invariants') && (mergedOptions as any).rules) {
+      if (analyzers.includes('invariants') && (mergedOptions as any).rules) {
         pipelineAnalyzerConfig['invariants'] = {
           ...(pipelineAnalyzerConfig['invariants'] ?? {}),
           rules: (mergedOptions as any).rules,
         };
       }
       // Cross-domain config lives at the top level (not analyzerConfigs)
-      if (enabledAnalyzers.includes('cross-domain') && (mergedOptions as any).crossDomain) {
+      if (analyzers.includes('cross-domain') && (mergedOptions as any).crossDomain) {
         pipelineAnalyzerConfig['cross-domain'] = {
           ...(pipelineAnalyzerConfig['cross-domain'] ?? {}),
           ...(mergedOptions as any).crossDomain,
@@ -666,7 +674,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       }
       // Schema config: all table discovery flows through visitors and facts;
       // the reducer builds the known-tables catalog solely from fact data.
-      if (enabledAnalyzers.includes('schema')) {
+      if (analyzers.includes('schema')) {
         const scConfig = mergedOptions.analyzerConfigs?.schema ?? {};
         const schemaConfig = {
           ...(pipelineAnalyzerConfig['schema'] ?? {}),
@@ -744,7 +752,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         onStage2Complete: async (ctx) => {
           // Post-stage-2 setup: rebuild function_calls from the functions table
           // (populated by the function-index visitor), then mine conventions.
-          if (auditIndex && enabledAnalyzers.includes('conventions')) {
+          if (auditIndex && analyzers.includes('conventions')) {
             try {
               await auditIndex.updateDependencyGraph();
             } catch (err) {
@@ -909,7 +917,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
               tsconfigAliases: infraConfig.tsconfigAliases as PhaseInfra['tsconfigAliases'],
               packageEntryPoints: infraConfig.packageEntryPoints as string[] | undefined,
               indexHandle: pipelineIndexHandle,
-              enabledRules: enabledMigratedRules(enabledAnalyzers),
+              enabledRules: enabledMigratedRules(),
             });
 
             // Strip the migrated rules' legacy emission from every analyzer
@@ -1007,7 +1015,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
           rules: MIGRATED_RULES,
           findings: phaseFindings,
           presentFormats: presentFormatsOf(files),
-          enabledRules: enabledMigratedRules(enabledAnalyzers),
+          enabledRules: enabledMigratedRules(),
           groupOf: (ruleId) => RULE_REGISTRY[ruleId]?.analyzer ?? ruleId,
         });
 
@@ -1061,14 +1069,14 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // raw analyzerResults before truthiness filtering so the "no result" pass
     // catches analyzers skipped by the registry, abort, or handoff exceptions.
     const hasGoFiles = files.some((f) => f.endsWith('.go'));
-    const zeroFilesDiagnostics = runZeroFilesDiagnostics(enabledAnalyzers, analyzerResults, files.length, hasGoFiles);
+    const zeroFilesDiagnostics = runZeroFilesDiagnostics(analyzers, analyzerResults, files.length, hasGoFiles);
     for (const w of zeroFilesDiagnostics) {
       console.warn(w.message);
     }
     // Build ordered results — filter to truthy entries so downstream consumers
     // (DRY pair persistence, baseline, report generation) don't see undefineds.
     const orderedAnalyzerResults: Record<string, AnalyzerResult> = {};
-    for (const analyzerName of enabledAnalyzers) {
+    for (const analyzerName of analyzers) {
       if (analyzerResults[analyzerName]) {
         orderedAnalyzerResults[analyzerName] = analyzerResults[analyzerName];
       }
@@ -1082,7 +1090,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         }
       }
       // Spec 62 Amendment B — `data-access-org-filter` is auto-registered (never
-      // in enabledAnalyzers), so surface its Stage-4 row right after data-access.
+      // in analyzers), so surface its Stage-4 row right after data-access.
       if (analyzerName === 'data-access' && analyzerResults['data-access-org-filter']) {
         orderedAnalyzerResults['data-access-org-filter'] = analyzerResults['data-access-org-filter'];
       }
@@ -1275,7 +1283,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         auditDuration: Date.now() - startTime,
         auditCpuMs: cpuDurationMs(startCpu),
         filesAnalyzed: files.length,
-        analyzersRun: enabledAnalyzers,
+        analyzersRun: analyzers,
         ...(isScoped && { analyzedFiles: files }),
         configUsed: mergedOptions,
         scope: scopeResultType,
@@ -1515,25 +1523,6 @@ async function resolveFilesScope(
 
 
 
-/**
- * Get list of enabled analyzers
- */
-function getEnabledAnalyzers(
-  options: AuditRunnerOptions,
-  registry: Record<string, { name: string }>
-): string[] {
-  // Explicit array (including empty = run no analyzers, e.g. index-only harness)
-  if (options.enabledAnalyzers !== undefined) {
-    // invariants auto-disables at runtime inside the pipeline reducer when no
-    // rules are configured — it stays in the list so coverage can report its
-    // rules as notApplicable (Spec 27 criterion 5).
-    return options.enabledAnalyzers;
-  }
-
-  const allAnalyzers = Object.keys(registry);
-
-  return allAnalyzers;
-}
 
 /**
  * Generate audit summary
@@ -1698,7 +1687,7 @@ export interface DiagnosticWarning {
  * errors fires a warning — the analyzer ran but matched zero source files.
  */
 export function runZeroFilesDiagnostics(
-  enabledAnalyzers: string[],
+  analyzers: string[],
   analyzerResults: Record<string, AnalyzerResult>,
   totalFiles?: number,
   hasGoFiles?: boolean,
@@ -1709,10 +1698,10 @@ export function runZeroFilesDiagnostics(
   const warnings: DiagnosticWarning[] = [];
 
   // Pass 1: enabled but absent from results
-  for (const analyzerName of enabledAnalyzers) {
+  for (const analyzerName of analyzers) {
     if (!analyzerResults[analyzerName]) {
-      // The `go` analyzer is a polyglot subprocess reached only via
-      // `runAuditDispatch` when `.go` files exist. On a TypeScript-only corpus
+      // The `go` analyzer is a polyglot subprocess that runs only when `.go`
+      // files exist. On a TypeScript-only corpus
       // it is legitimately notApplicable, not a dropped analyzer (defect #50) —
       // zero `.go` files means there was nothing for it to run on.
       if (analyzerName === 'go' && hasGoFiles === false) continue;

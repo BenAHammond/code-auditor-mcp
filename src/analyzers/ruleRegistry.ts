@@ -38,38 +38,15 @@ export interface RuleRegistryEntry {
   /** The field on the Violation object that holds this ID. */
   field: 'rule' | 'principle' | 'violationType' | 'type' | 'contractType' | 'ruleId' | 'special';
   /**
-   * Spec 33 Item 14 — the input sources this rule consumes, used to promote a
-   * zero-violation rule from `unassessed` to `clean` (≥1 input present) or
-   * `notApplicable` (all inputs absent). Each entry is one of:
-   *   - `'files'` — the analyzer ran on ≥1 parsed source file (always present at
-   *     the zero-violation branch, since earlier checks already excluded the
-   *     empty-input cases);
+   * Spec 33 Item 14 — the input sources this rule consumes (legacy pipeline
+   * metadata; derived coverage, Spec 68 §8, supersedes it). Each entry is one of:
+   *   - `'files'` — the analyzer ran on ≥1 parsed source file;
    *   - a fact-key — a visitor/reducer name (e.g. `'schema-json'`, `'function-index'`)
    *     whose per-file facts were non-empty this run;
    *   - an index table — a table name (e.g. `'schema_usage'`, `'functions'`) that
    *     held ≥1 row at coverage-build time.
-   *
-   * Omitted for non-pipeline analyzers (schema-validator, api-contract,
-   * dependency-graph), whose rules stay `unassessed`.
    */
   input?: string[];
-  /**
-   * The set of function languages this rule's detector can actually classify.
-   * When declared, a corpus that holds function rows in *only* unhandled
-   * languages reports the rule `cannot-fire` (with a reason naming the unhandled
-   * language) rather than `clean` — `clean` would assert the rule evaluated every
-   * function it saw, when it evaluated none of them. A mixed corpus (some handled,
-   * some unhandled) leaves the rule applicable: it evaluates the handled rows
-   * normally, and the unhandled rows are reported per-file by the analyzer's
-   * coverage diagnostics, not by gating the whole rule.
-   *
-   * Omitted for rules whose detection is language-agnostic (name matching,
-   * call-co-occurrence) or that consume non-function input. Only the
-   * `conventions/error-handling` detector is currently language-shaped: its
-   * body classifier hard-codes the TypeScript grammar (see
-   * `detectErrorHandlingShape`), so it handles TypeScript/JavaScript only.
-   */
-  handledLanguages?: readonly string[];
   /**
    * Spec 37 R1 — whether this rule can produce a `resolution` (a specific next
    * action naming concrete symbols/files/lines) for every occurrence it emits.
@@ -1336,9 +1313,9 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // constant, computed/concatenated expression, call result) is no longer a
   // violation rule. It moved to the coverage-diagnostics channel
   // (`CoverageDiagnostic`, kind `unresolved-query`) — surfaced in the report
-  // with file+line, never blocking. The registry entry is removed so
-  // `buildCoverageReport` doesn't classify it `clean` (which would assert the
-  // tool checked something it no longer checks as a finding).
+  // with file+line, never blocking. The registry entry is removed so derived
+  // coverage doesn't classify it `clean` (which would assert the tool checked
+  // something it no longer checks as a finding).
 
   // ── react (reactAnalyzer) ───────────────────────────────────────────────
   'hooks-naming': {
@@ -1477,7 +1454,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // the coverage-diagnostics channel (`CoverageDiagnostic`, kinds `config-error`
   // / `engine-error`). A bad `.codeauditor.json` or a rule-engine failure is a
   // tool-side "couldn't do its job", not a defect in the audited code. The
-  // registry entries are removed so `buildCoverageReport` doesn't classify them
+  // registry entries are removed so derived coverage doesn't classify them
   // `clean` (which would assert the tool checked something it no longer checks
   // as a finding).
 
@@ -1692,7 +1669,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   // specifier is no longer a violation rule. It moved to the coverage-
   // diagnostics channel (`CoverageDiagnostic`, kind `unresolved-dynamic-import`)
   // — surfaced with file+line, never blocking. Removed from the registry so
-  // `buildCoverageReport` doesn't flip it to a false `clean`.
+  // derived coverage doesn't flip it to a false `clean`.
 
   // ── styles (UniversalStylesAnalyzer) ─────────────────────────────────────
   'styles/value-drift': {
@@ -1900,11 +1877,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     analyzer: 'conventions',
     field: 'rule',
     input: ['function-index'],
-    // The detector wraps each body as `async function __ca() {…}` and parses it
-    // with the TypeScript grammar (`detectErrorHandlingShape`), so only
-    // TypeScript/JavaScript bodies are classifiable. A Go (or other-language)
-    // function row makes the rule report `cannot-fire`, not `clean`.
-    handledLanguages: ['typescript', 'javascript'],
     resolvable: false,
     message: 'Error-handling convention mismatch: {detail}.',
     docs: 'conventions/error-handling',
@@ -2109,55 +2081,12 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
 };
 
 /**
- * Canonical set of every analyzer ID that emits at least one rule in
- * {@link RULE_REGISTRY}, derived from the registry itself. An analyzer "exists"
- * iff it emits a rule, so this is the single source of truth for analyzer
- * identity.
- *
- * Every other analyzer list — the audit-runner registry, config validation,
- * default-enabled analyzers, the detached runner, and the MCP default set —
- * must derive from this rather than re-type names. Adding an analyzer is then a
- * registry edit plus an enable decision, never a hunt across hand-maintained
- * arrays that drift out of sync (the historical failure: four lists at 13, 10,
- * 10, and 7).
+ * Spec 68 §15 — the analyzer *selection* model is deleted. There is no longer an
+ * `ALL_ANALYZERS`, `MCP_DEFAULT_ANALYZERS`, `PIPELINE_ONLY_ANALYZERS`, or
+ * `RUNNABLE_ANALYZERS` list: the runner always constructs the full pipeline, and
+ * config cannot select which analyzers run (only tune thresholds). The
+ * `analyzer` field below is now a re-emission bucket label only, deleted in §9.
  */
-export const ALL_ANALYZERS: readonly string[] = [
-  ...new Set(Object.values(RULE_REGISTRY).map((e) => e.analyzer)),
-].sort();
-
-/**
- * The reduced analyzer set the MCP `audit.run` surface enables by default —
- * a deliberate subset of {@link ALL_ANALYZERS} (the MCP path favors a lighter,
- * latency-sensitive audit). The full CLI `audit` default is {@link ALL_ANALYZERS}.
- * Referenced here so mcp.ts and mcp-tools-shared.ts don't each re-type the list.
- */
-export const MCP_DEFAULT_ANALYZERS: readonly string[] = [
-  'solid',
-  'dry',
-  'documentation',
-  'react',
-  'data-access',
-  'data-access-org-filter',
-];
-
-/**
- * Analyzers the pipeline can run that emit *no* registry rule. Their rules come
- * from a runtime source other than {@link RULE_REGISTRY}: `invariants` reads its
- * rules from the `.codeauditor.json` `rules` array (the seven invariant rule
- * kinds), not from registry rows, so it is absent from {@link ALL_ANALYZERS}.
- */
-export const PIPELINE_ONLY_ANALYZERS: readonly string[] = ['invariants'];
-
-/**
- * Every analyzer `enabledAnalyzers` may legitimately name — {@link ALL_ANALYZERS}
- * (registry rule emitters) plus {@link PIPELINE_ONLY_ANALYZERS}. This is the
- * single source of truth for "can this analyzer actually run?" — used by config
- * validation, which must not reject `invariants` (a valid pipeline analyzer that
- * happens to carry no registry rule).
- */
-export const RUNNABLE_ANALYZERS: readonly string[] = [
-  ...new Set([...ALL_ANALYZERS, ...PIPELINE_ONLY_ANALYZERS]),
-].sort();
 
 /**
  * A violation in the loose shape the gate and baseline code handle (a Violation

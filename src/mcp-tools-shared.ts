@@ -23,7 +23,6 @@ import { CodeIndexDB } from './codeIndexDB.js';
 import path from 'node:path';
 import chalk from 'chalk';
 import { assertAuditPathExists } from './mcpToolErrors.js';
-import { MCP_DEFAULT_ANALYZERS } from './analyzers/ruleRegistry.js';
 
 export interface ToolParameter {
   name: string;
@@ -539,7 +538,6 @@ export class ToolHandlers {
     
     const options: AuditRunnerOptions = {
       projectRoot: isFile ? path.dirname(auditPath) : auditPath,
-      enabledAnalyzers: (args.analyzers as string[]) || ['solid', 'dry', 'documentation', 'react', 'data-access'],
       minSeverity: ((args.minSeverity as string) || 'high') as Severity,
       verbose: false,
       indexFunctions,
@@ -669,7 +667,6 @@ export class ToolHandlers {
 
     const runner = createAuditRunner({
       projectRoot: auditPath,
-      enabledAnalyzers: [...MCP_DEFAULT_ANALYZERS],
       minSeverity: 'high',
       verbose: false,
       indexFunctions,

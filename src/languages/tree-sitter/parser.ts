@@ -46,11 +46,18 @@ let recoveryGeneration = 0;
 /**
  * Mapping from adapter language ID to the grammar WASM filename.
  * Keyed by the strings adapters use internally (not file extensions).
+ *
+ * Spec 68 §15 (Fact 2) — there is NO `javascript` grammar. `.js` / `.jsx` /
+ * `.mjs` / `.cjs` parse with the `typescript` grammar, which is a strict
+ * superset. Loading `tree-sitter-javascript.wasm` was dead weight: it was
+ * constructed at init and never routed to. The phase model's `javascript`
+ * FORMAT (file classification for fact producers) is a separate concept and is
+ * unaffected — a `.js` file is classified `javascript` for producer selection
+ * while its source is parsed by the `typescript` grammar.
  */
 const GRAMMAR_FILES: Record<string, string> = {
   typescript: 'tree-sitter-typescript.wasm',
   tsx: 'tree-sitter-tsx.wasm',
-  javascript: 'tree-sitter-javascript.wasm',
   go: 'tree-sitter-go.wasm',
   css: 'tree-sitter-css.wasm',
   scss: 'tree-sitter-scss.wasm',
@@ -63,7 +70,6 @@ const GRAMMAR_FILES: Record<string, string> = {
 const LANGUAGE_GRAMMAR_MAP: Record<string, string> = {
   typescript: 'typescript',
   tsx: 'tsx',
-  javascript: 'javascript',
   go: 'go',
   css: 'css',
   scss: 'scss',
@@ -161,7 +167,7 @@ export async function recoverParsers(): Promise<void> {
  * and retries the file once. A second abort propagates to the caller so the
  * file is recorded as unparsed rather than silently dropped.
  *
- * @param lang - Language identifier ('typescript', 'javascript', 'go', ...)
+ * @param lang - Language identifier ('typescript', 'tsx', 'go', 'css', 'scss')
  * @param isTsx - If true, use the TSX grammar
  * @param content - Source text to parse
  * @param recover - Fault-injection seam. Defaults to the real `recoverParsers`;
@@ -191,7 +197,7 @@ export async function parseWithRecovery(
  * Get a tree-sitter Parser for the given language.
  * Throws if initParsers() has not been called.
  *
- * @param lang - Language identifier ('typescript', 'javascript', 'go')
+ * @param lang - Language identifier ('typescript', 'tsx', 'go', 'css', 'scss')
  * @param isTsx - If true and lang is 'typescript', use the TSX grammar
   * @returns
  */

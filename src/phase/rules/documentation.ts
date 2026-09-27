@@ -22,8 +22,10 @@
  * only for the parity test, which passes raw config to both sides.
  *
  * The three rules read only their tuning thresholds; §10 removed the
- * `requireParamDocs` / `requireReturnDocs` off-by-default gates — these rules now
- * fire unconditionally and the booleans are dead config until §15 drops them.
+ * `requireParamDocs` / `requireReturnDocs` opt-in gates — these rules now fire
+ * unconditionally. The two booleans survive on this config type only for
+ * merge-shape parity with the legacy analyzer (deleted in §15); no rule body
+ * reads them.
  */
 
 import type {

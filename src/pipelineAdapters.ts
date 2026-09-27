@@ -255,9 +255,8 @@ export function createOrgFilterReducer(): Stage4Reducer {
     stage: 'derivedReducer',
     // Hard dependency on the data-access visitor's per-query facts. The schema
     // table catalog (`allFacts['schema'].tableColumns`) is read opportunistically
-    // so an MCP-default run (which omits `schema`) degrades to Tier 1–2
-    // (config-only) instead of throwing — see buildOrgFilterTierSet.
-    consumes: ['data-access'],
+    // so a run without `schema` facts degrades to Tier 1–2 (config-only) instead
+    // of throwing — see buildOrgFilterTierSet.
     getRuleIds: () => getRuleIdsFor('data-access-org-filter'),
     async reduce(allFacts: Readonly<Record<string, unknown>>, context: ReducerContext) {
       const violations: Violation[] = [];
@@ -1381,7 +1380,6 @@ export function createCrossDomainReducer(): Stage4Reducer {
   return {
     name: 'cross-domain',
     stage: 'derivedReducer',
-    consumes: [],
     getRuleIds: () => getRuleIdsFor('cross-domain'),
     async reduce(_allFacts: Readonly<Record<string, unknown>>, context: ReducerContext) {
       if (!context.indexHandle) return { violations: [], facts: {} };
@@ -2308,7 +2306,6 @@ export function createSchemaValidatorReducer(): Stage4Reducer {
   return {
     name: 'schema-validator',
     stage: 'derivedReducer',
-    consumes: ['cross-language-entities'],
     getRuleIds: () => getRuleIdsFor('schema-validator'),
     async reduce(allFacts, context) {
       if (context.isScoped) {
@@ -2366,7 +2363,6 @@ export function createAPIContractReducer(): Stage4Reducer {
   return {
     name: 'api-contract',
     stage: 'derivedReducer',
-    consumes: ['cross-language-entities'],
     getRuleIds: () => getRuleIdsFor('api-contract'),
     async reduce(allFacts, context) {
       if (context.isScoped) {
@@ -2404,7 +2400,6 @@ export function createDependencyGraphReducer(): Stage4Reducer {
   return {
     name: 'dependency-graph',
     stage: 'derivedReducer',
-    consumes: ['cross-language-entities'],
     getRuleIds: () => getRuleIdsFor('dependency-graph'),
     async reduce(allFacts, context) {
       if (context.isScoped) {

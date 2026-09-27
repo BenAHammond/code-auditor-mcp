@@ -216,7 +216,8 @@ export interface CoverageDiagnostic {
 
 /**
  * Per-rule coverage classification — emitted on every audit.
- * @see buildCoverageReport() in pipeline.ts
+ * Derived coverage (Spec 68 §8): a rule's `needs` declaration is the whole
+ * story. @see phase/coverage.ts
  */
 export type RuleCoverageState = 'fired' | 'clean' | 'notApplicable' | 'cannot-fire' | 'incomplete';
 
@@ -303,8 +304,9 @@ export interface SizeDistribution {
  * fact-key (a visitor/reducer name whose per-file facts were non-empty this run),
  * or an index table (a table that held ≥1 row when coverage was built).
  *
- * `buildCoverageReport` uses this to promote a zero-violation rule from
- * `unassessed` to `clean` (input present) or `notApplicable` (all inputs absent).
+ * Legacy per-rule input presence — superseded by derived coverage (Spec 68 §8),
+ * which resolves a zero-violation rule to `clean` / `notApplicable` / `cannot-fire`
+ * / `incomplete` from its `needs` declaration, not a hand-maintained `input` list.
  */
 export interface InputPresence {
   /** Fact-keys (visitor/reducer names) that emitted ≥1 non-empty per-file fact this run. */
@@ -456,13 +458,14 @@ export interface Stage3Reducer {
   category: string;
 }
 
-/** Derived reducer — consumes from stage 3 reducers + stage 2 visitors in stage 4. */
+/** Derived reducer — reduces over stage 3 reducers + stage 2 visitors in stage 4.
+ *  Spec 68 §15 — `consumes` is deleted: the phase model derives fact dependencies
+ *  from producer declarations, not a hand-maintained string array. */
 export interface Stage4Reducer {
   name: string;
   stage: 'derivedReducer';
   reduce(allFacts: Record<string, unknown>, context: ReducerContext): Promise<ReducerResult>;
   getRuleIds(): string[];
-  consumes: string[];
   defaultConfig: Record<string, unknown>;
   description: string;
   category: string;
@@ -634,17 +637,15 @@ export interface PipelineResult {
      *  being analyzed here" rather than silently dropping unlisted extensions at
      *  discovery. Sorted by count descending. */
     skippedExtensions?: Array<{ ext: string; count: number }>;
-    /** Spec 33 Item 14: per-rule input presence snapshot consumed by
-     *  buildCoverageReport to promote zero-violation rules from `unassessed` to
-     *  `clean` (input present) or `notApplicable` (all inputs absent). */
+    /** Spec 33 Item 14: per-rule input presence snapshot (legacy pipeline
+     *  metadata). Derived coverage (Spec 68 §8) supersedes it. */
     inputPresence?: InputPresence;
     /** Spec 38 R2: per-rule wall-clock timing, slowest first, gating path only.
      *  Present only when CODE_AUDIT_RULE_TIMING=1. */
     ruleTiming?: Array<{ ruleId: string; totalMs: number; calls: number }>;
     /** Spec 39: per-rule derived applicability evaluated over the pipeline's
-     *  computed inputs. Consumed by buildCoverageReport to report inapplicable
-     *  rules as `notApplicable` (or `cannot-fire`, Spec 44 bucket 2) with a
-     *  reason. */
+     *  computed inputs (legacy pipeline metadata). Derived coverage (Spec 68 §8)
+     *  supersedes it. */
     ruleApplicability?: Array<{ ruleId: string; applicable: boolean; reason?: string; kind?: 'notApplicable' | 'cannot-fire' }>;
     /** Spec 44: per-file accounting (analyzed vs. dropped, with reasons). */
     fileAccounting?: FileAccountingSummary;
@@ -663,7 +664,9 @@ export interface AuditOptions {
   excludePaths?: string[];
   fileExtensions?: string[]; // Override file extensions to analyze
   minSeverity?: Severity;
-  enabledAnalyzers?: string[];
+  /** Spec 68 §15 — run the index-only harness (no analysis phases). Replaces the
+   *  deleted `enabledAnalyzers: []` "select nothing" idiom. */
+  indexOnly?: boolean;
   outputFormats?: ReportFormat[];
   outputDir?: string;
   failOnCritical?: boolean;
@@ -768,9 +771,8 @@ export interface AuditResult {
      *  Informational — surfaces "what isn't being analyzed here" rather than
      *  silently dropping unlisted extensions at discovery. */
     skippedExtensions?: Array<{ ext: string; count: number }>;
-    /** Spec 33 Item 14: per-rule input presence snapshot consumed by
-     *  buildCoverageReport to promote zero-violation rules from `unassessed` to
-     *  `clean` (input present) or `notApplicable` (all inputs absent). */
+    /** Spec 33 Item 14: per-rule input presence snapshot (legacy pipeline
+     *  metadata). Derived coverage (Spec 68 §8) supersedes it. */
     inputPresence?: InputPresence;
     /** Spec 44: per-file accounting (analyzed vs. dropped, with reasons). */
     fileAccounting?: FileAccountingSummary;
@@ -886,7 +888,6 @@ export interface PathProfile {
 export interface AuditConfig {
   includePaths?: string[];
   excludePaths?: string[];
-  enabledAnalyzers?: string[];
   outputFormats?: ReportFormat[];
   outputDir?: string;
   outputDirectory?: string;
@@ -943,7 +944,6 @@ export interface AuditConfig {
 export interface ProjectFileConfig {
   includePaths?: string[];
   excludePaths?: string[];
-  enabledAnalyzers?: string[];
   outputFormats?: ReportFormat[];
   outputDir?: string;
   outputDirectory?: string;
@@ -980,7 +980,7 @@ export interface ProjectFileConfig {
  * to update is the same bug with an extra step.
  */
 export const PROJECT_FILE_CONFIG_KEYS = [
-  'includePaths', 'excludePaths', 'enabledAnalyzers', 'outputFormats',
+  'includePaths', 'excludePaths', 'outputFormats',
   'outputDir', 'outputDirectory', 'minSeverity', 'failOnCritical',
   'showProgress', 'parallel', 'thresholds', 'pathProfiles', 'builtin',
   'churn', 'divergence', 'crossDomain', 'analyzerOptions', 'analyzerConfigs',

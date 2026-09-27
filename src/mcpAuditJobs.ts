@@ -31,7 +31,6 @@ import { runAudit } from './auditRunner.js';
 import chalk from 'chalk';
 
 type StartAuditDefaults = {
-  defaultAnalyzers: string[];
   defaultMinSeverity: Severity;
   defaultGenerateCodeMap: boolean;
 };
@@ -320,11 +319,8 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
       ...(args.analyzerConfigs as Record<string, unknown> || {}),
     };
 
-    const enabledAnalyzers = (args.analyzers as string[]) || defaults.defaultAnalyzers;
-
     const baseOptions: AuditRunnerOptions = {
       projectRoot,
-      enabledAnalyzers,
       minSeverity: ((args.minSeverity as string) || defaults.defaultMinSeverity) as Severity,
       verbose: false,
       indexFunctions,

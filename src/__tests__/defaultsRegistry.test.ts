@@ -1,16 +1,5 @@
 /**
- * Guard: the shipped enabledAnalyzers list must agree with the canonical
- * analyzer set — which is now DERIVED from RULE_REGISTRY (the unique `analyzer`
- * values) rather than hand-typed. Ghost names (in defaults but not registered)
- * produce silent no-ops; absent names (registered but not in defaults) mean
- * users never see that analyzer — the schema bug (3.0.0–3.5.x), which recurred
- * as the four-list drift (RULE_REGISTRY 13 vs defaults 10 vs registry 10 vs
- * validateConfig 7).
- *
- * This test asserts the DEFAULT list is *exactly* the canonical ALL_ANALYZERS,
- * so a divergent hand-maintained list can never sneak back in.
- *
- * Guard 2 (Spec 22 Item 3): the config objects in DEFAULT_ANALYZER_CONFIGS
+ * Guard (Spec 22 Item 3): the config objects in DEFAULT_ANALYZER_CONFIGS
  * must be structurally consistent with each analyzer's own DEFAULT_*_CONFIG.
  * A key-name mismatch between the two surfaces (e.g. `parameterized` in
  * defaults vs `parameterizedQueries` in the analyzer) survives shallow-spread
@@ -20,26 +9,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { getDefaultConfig, getProjectTypeDefaults, getEnvironmentDefaults, DEFAULT_ANALYZER_CONFIGS } from '../config/defaults.js';
-import { ALL_ANALYZERS } from '../analyzers/ruleRegistry.js';
 // Analyzer defaults — used by each analyzer's constructor/analyzeAST
 import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import { DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
-
-describe('defaults ≡ registry guard', () => {
-  const defaults = getDefaultConfig().enabledAnalyzers!;
-
-  it('equals the canonical ALL_ANALYZERS (derived from RULE_REGISTRY, not hand-typed)', () => {
-    expect(defaults).toEqual([...ALL_ANALYZERS]);
-  });
-
-  it('contains no duplicate entries', () => {
-    expect(defaults.length).toBe(new Set(defaults).size);
-  });
-
-  it('ALL_ANALYZERS itself is de-duplicated and sorted (canonical form)', () => {
-    expect([...ALL_ANALYZERS]).toEqual([...new Set(ALL_ANALYZERS)].sort());
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Spec 22 Item 3 — config-key guards

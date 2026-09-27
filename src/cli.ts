@@ -26,7 +26,6 @@ import { fingerprint, buildFingerprintInput } from './fingerprint.js';
 import { buildDismissalEntry, upsertDismissal } from './dismissals.js';
 import { resolveTelemetryConfig, signatureForFinding, buildTelemetryPayload, formatTelemetryPreview, sendTelemetry, languageHint } from './telemetry.js';
 import { getInstallId } from './installConfig.js';
-import { ALL_ANALYZERS } from './analyzers/ruleRegistry.js';
 import { computeGatingDecision } from './enforcement/gate.js';
 import { BLOCKING_SEVERITIES, SEVERITIES } from './types.js';
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
@@ -121,9 +120,6 @@ program
   .option('--fail-on-regression', 'Exit code 2 when total high debt exceeds the baseline snapshot')
   .option('--preset <id>', 'Apply a shareable preset (repeatable)', (v: string, prev: string[]) => prev.concat([v]), [])
   .option('--detach', 'Run the audit in a detached background process and print the job ID')
-  .option('--partition-strategy <strategy>', 'Partition strategy for detached runs: none, auto, or top-level')
-  .option('--max-partitions <n>', 'Maximum number of partition shards (detached runs)')
-  .option('--shard-timeout-ms <ms>', 'Per-shard timeout in milliseconds (detached runs)')
   .option('--explain-skipped', 'Print a per-reason breakdown of files dropped from analysis')
   .action(async (options) => {
     console.log(chalk.blue('🔍 Code Quality Audit Tool'));
@@ -2584,10 +2580,6 @@ ledgerCmd
 // the persisted ledger. One job model (the ledger run), one write path — these
 // are thin wrappers over ledger.ts + mcpAuditJobs.ts, not a second store.
 
-/** Full analyzer set — derives from createAuditRunner's registry so `--detach`
- *  produces the same per-rule coverage as a synchronous `audit`. */
-const DETACHED_DEFAULT_ANALYZERS = [...ALL_ANALYZERS];
-
 /** Lease TTL used by read-path reclaim, mirroring mcpAuditJobs.jobLeaseTtlMs. */
 const CLI_JOB_LEASE_TTL_MS = Number(process.env.CODE_AUDITOR_JOB_LEASE_TTL_MS) || 30_000;
 
@@ -2646,9 +2638,6 @@ function spec41RenderStaleness(staleness: { stale: boolean; changedFiles: string
  */
 async function runDetachedAudit(options: {
   path?: string;
-  partitionStrategy?: string;
-  maxPartitions?: string;
-  shardTimeoutMs?: string;
 }): Promise<void> {
   // `spawn` + no IPC channel: `fork()` establishes an IPC channel, and `unref()`
   // does NOT let the parent exit while that channel is open (Node: "unless there
@@ -2681,12 +2670,8 @@ async function runDetachedAudit(options: {
 
   const argsJson = JSON.stringify({
     path: auditPath,
-    ...(options.partitionStrategy && { partitionStrategy: options.partitionStrategy }),
-    ...(options.maxPartitions && { maxPartitions: Number(options.maxPartitions) }),
-    ...(options.shardTimeoutMs && { shardTimeoutMs: Number(options.shardTimeoutMs) }),
   });
   const defaultsJson = JSON.stringify({
-    defaultAnalyzers: DETACHED_DEFAULT_ANALYZERS,
     defaultMinSeverity: 'high',
     defaultGenerateCodeMap: false,
   });
@@ -3463,7 +3448,6 @@ program
 
       const analyzerConfigs = (config.analyzerConfigs ?? {}) as Record<string, unknown>;
       const pathProfiles = (config.pathProfiles ?? []) as any[];
-      const enabledAnalyzers = (config.enabledAnalyzers ?? []) as string[];
 
       // Resolve --preset ids to ordered preset objects (Spec 38 R4). Unknown
       // ids are a hard error, not a silent skip.
@@ -3486,7 +3470,6 @@ program
         projectRoot,
         analyzerConfigs,
         pathProfiles,
-        enabledAnalyzers,
         presets,
         lintConfig,
       });

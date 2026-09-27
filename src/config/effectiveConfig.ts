@@ -169,14 +169,13 @@ export function computeEffectiveConfig(opts: {
   projectRoot: string;
   analyzerConfigs?: Record<string, unknown>;
   pathProfiles?: PathProfile[];
-  enabledAnalyzers?: string[];
   /** Ordered presets; later presets win on key collision (Spec 38 R4). */
   presets?: Preset[];
   /** Lint-sourced thresholds (analyzerConfigs-shaped, e.g. `{ solid: { maxLinesPerMethod } }`),
    *  merged as a base under `analyzerConfigs` (Spec 50 R2). */
   lintConfig?: Record<string, unknown>;
 }): EffectiveConfigResult {
-  const { filePath, projectRoot, analyzerConfigs = {}, pathProfiles = [], enabledAnalyzers, presets = [], lintConfig = {} } = opts;
+  const { filePath, projectRoot, analyzerConfigs = {}, pathProfiles = [], presets = [], lintConfig = {} } = opts;
 
   const resolved = pathProfiles.length > 0
     ? resolvePathProfile(filePath, projectRoot, pathProfiles)
@@ -184,9 +183,8 @@ export function computeEffectiveConfig(opts: {
 
   const relativePath = relativePosix(projectRoot, filePath);
 
-  const namespaces = enabledAnalyzers && enabledAnalyzers.length > 0
-    ? enabledAnalyzers.filter((n) => n in RUNTIME_DEFAULT_CONFIGS)
-    : Object.keys(RUNTIME_DEFAULT_CONFIGS);
+  // Spec 68 §15 — no analyzer selection: every configured namespace is surfaced.
+  const namespaces = Object.keys(RUNTIME_DEFAULT_CONFIGS);
 
   const analyzers: EffectiveAnalyzerConfig[] = namespaces.map((namespace) => {
     const defaults = RUNTIME_DEFAULT_CONFIGS[namespace] ?? {};
