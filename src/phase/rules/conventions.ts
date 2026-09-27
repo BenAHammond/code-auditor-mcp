@@ -347,6 +347,9 @@ function detectImportForm(
       file: imp.file,
       line: imp.line,
       column: 1,
+      // §7 — the module source is what located this finding; two deviating
+      // imports in one file must not collapse to one fingerprint.
+      symbol: imp.source,
     });
   }
 }

@@ -592,6 +592,8 @@ function detectDivergingClone(facts: ClonePairHistoryFact, cfg: DivergenceCfg): 
         message: `Clone pair has diverged: similarity dropped ${drop} (from ${prevSim.toFixed(3)} to ${currentSim.toFixed(3)}) across ${requiredDeclines} consecutive runs (pair: ${fp.slice(0, 12)}…). Review ${group.file1}:${group.line1} and ${group.file2}:${group.line2} for diverged logic.`,
         file: group.file1,
         line: group.line1,
+        // §7 — the pair fingerprint is the stable identity that located this finding.
+        symbol: fp,
       });
     }
   }

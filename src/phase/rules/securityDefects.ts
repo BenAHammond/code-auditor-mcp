@@ -109,6 +109,9 @@ function detectDynamicRequire(candidates: readonly SecurityCandidate[]): Finding
       file: c.file,
       line: c.line,
       column: c.column,
+      // §7 — the computed specifier is what located this finding; two dynamic
+      // requires in one file must not collapse to one fingerprint.
+      symbol: c.argText,
       resolution: {
         action: 'static-config-extraction',
         summary:
