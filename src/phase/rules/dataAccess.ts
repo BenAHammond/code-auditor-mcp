@@ -77,6 +77,16 @@ function isUpsertForm(text: string): boolean {
     || /\bON\s+DUPLICATE\s+KEY\b/.test(upper);
 }
 
+/** True when a statement mutates or deletes existing rows (DELETE/UPDATE) — the
+ *  TypeScript `unfiltered-query` mass-write set. INSERT is *not* a mass write:
+ *  Spec 55 R5 / Spec 56 R1 made `unfiltered-query` about DELETE/UPDATE with no
+ *  row-limiting clause, not about row-adding statements. */
+function hasMassWriteVerb(text: string): boolean {
+  const upper = text.toUpperCase();
+  return /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
+    || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
+}
+
 /** True when the statement adds rows (INSERT / REPLACE INTO). A row-adding
  *  statement carries the tenant column as a *value*, never as a WHERE
  *  predicate, so `missing-org-filter` (which claims "no tenant predicate")
@@ -88,14 +98,24 @@ function isInsertForm(text: string): boolean {
     || /\bINSERTINTO\b/.test(upper);
 }
 
-/** True when a call is an unfiltered write: a write verb (INSERT/UPDATE/DELETE)
- *  with no filter. INSERT counts as a write — the Go subprocess pinned this (an
- *  unparameterized mass INSERT is the same "no filter" shape as a mass
- *  DELETE/UPDATE). Upsert forms are excluded by `isUpsertForm`. */
+/** True when the call came from a Go file. The Go subprocess classified a write
+ *  as INSERT/UPDATE/DELETE, so Go's `unfiltered-query` counts a filterless
+ *  INSERT as a write; the TypeScript analyzer (Spec 55 R5 / Spec 56 R1) narrowed
+ *  its write set to DELETE/UPDATE. Spec 68 §9 serves both from this one rule and
+ *  preserves the Go corpus's pinned count, so the write set is format-aware. */
+function isGoCall(call: ResolvedQuery): boolean {
+  return call.file.endsWith('.go');
+}
+
+/** True when a call is an unfiltered write: a write verb with no filter, where
+ *  the write set depends on the source format (Go: INSERT/UPDATE/DELETE;
+ *  TypeScript: DELETE/UPDATE). Upsert forms are excluded by `isUpsertForm`. */
 function isUnfilteredWrite(call: ResolvedQuery): boolean {
-  return !isUpsertForm(call.queryText)
-    && hasWriteVerb(call.queryText)
-    && !call.hasFilter;
+  if (isUpsertForm(call.queryText)) return false;
+  const isWrite = isGoCall(call)
+    ? hasWriteVerb(call.queryText)
+    : hasMassWriteVerb(call.queryText);
+  return isWrite && !call.hasFilter;
 }
 
 /**
