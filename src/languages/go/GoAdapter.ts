@@ -840,15 +840,13 @@ export class TreeSitterGoAdapter extends GoOptionalCapabilities implements Langu
       if (argType === 'interpreted_string_literal' || argType === 'raw_string_literal') continue;
       const text = sourceCode.slice(arg.startIndex, arg.endIndex);
       const isId = /^[\p{L}_][\p{L}\p{N}_]*$/u.test(text.trim());
-      const idNode = isId ? {
-        type: argType,
-        range: [arg.startIndex, arg.endIndex] as [number, number],
-        location: {
-          start: { line: arg.startPosition.row, column: arg.startPosition.column },
-          end: { line: arg.endPosition.row, column: arg.endPosition.column },
-        },
-        raw: arg,
-      } : undefined;
+      // `toASTNode` registers the raw node in the `rawNodes` WeakMap. A plain
+      // object literal here would leave it unregistered, so the identifier's
+      // `resolveLocalConstant` → `findEnclosingScopeGo` → `getRawNode` chain
+      // throws "ASTNode is not backed by a registered tree-sitter node". It
+      // also yields the canonical 1-based location rather than the raw 0-based
+      // row/column the old hand-built object carried.
+      const idNode = isId ? toASTNode(arg, undefined, 'go') : undefined;
       parts.push({ text: text.trim(), isIdentifier: isId, node: idNode });
     }
     return parts;

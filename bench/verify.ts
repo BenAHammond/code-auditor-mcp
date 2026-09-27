@@ -40,7 +40,7 @@ const ANALYZER_MAP: Record<string, string> = {
   'diverging-clones': 'dry',
   documentation: 'documentation',
   dry: 'dry',
-  'go-data-access': 'go',
+  'go-data-access': 'data-access',
   graph: 'dependency-graph',
   invariants: 'invariants',
   'non-english': 'data-access',

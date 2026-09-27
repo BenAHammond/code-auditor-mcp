@@ -68,13 +68,6 @@ function hasWriteVerb(text: string): boolean {
     || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper) || /\bINSERTINTO\b/.test(upper);
 }
 
-/** True when a statement mutates or deletes existing rows (DELETE/UPDATE). */
-function hasMassWriteVerb(text: string): boolean {
-  const upper = text.toUpperCase();
-  return /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
-    || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
-}
-
 /** True when a statement is an upsert (keyed by construction — never unfiltered). */
 function isUpsertForm(text: string): boolean {
   const upper = text.toUpperCase();
@@ -84,10 +77,24 @@ function isUpsertForm(text: string): boolean {
     || /\bON\s+DUPLICATE\s+KEY\b/.test(upper);
 }
 
-/** True when a call is an unfiltered write: a mass-write verb with no filter. */
+/** True when the statement adds rows (INSERT / REPLACE INTO). A row-adding
+ *  statement carries the tenant column as a *value*, never as a WHERE
+ *  predicate, so `missing-org-filter` (which claims "no tenant predicate")
+ *  excludes it — the Go subprocess pinned this as `verb != "INSERT"`. */
+function isInsertForm(text: string): boolean {
+  const upper = text.toUpperCase();
+  return /\bINSERT\b/.test(upper)
+    || /\bREPLACE\s+INTO\b/.test(upper)
+    || /\bINSERTINTO\b/.test(upper);
+}
+
+/** True when a call is an unfiltered write: a write verb (INSERT/UPDATE/DELETE)
+ *  with no filter. INSERT counts as a write — the Go subprocess pinned this (an
+ *  unparameterized mass INSERT is the same "no filter" shape as a mass
+ *  DELETE/UPDATE). Upsert forms are excluded by `isUpsertForm`. */
 function isUnfilteredWrite(call: ResolvedQuery): boolean {
   return !isUpsertForm(call.queryText)
-    && hasMassWriteVerb(call.queryText)
+    && hasWriteVerb(call.queryText)
     && !call.hasFilter;
 }
 
@@ -318,6 +325,12 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
       // tenant). `hasOrganizationFilter` is false for the PK-scoped case, so
       // this predicate reproduces the legacy reducer's firing exactly.
       if (call.hasOrganizationFilter) continue;
+      // INSERT / REPLACE INTO carry the tenant column as a value, not a WHERE
+      // predicate. `missing-org-filter` claims "no tenant *predicate*", so a
+      // row-adding statement is excluded by design — the Go subprocess pinned
+      // this (`verb != "INSERT"`). The same INSERT fires as an unfiltered write
+      // in `unfiltered-query` instead.
+      if (isInsertForm(call.queryText)) continue;
       if (call.tables.length === 0) continue;
       if (!tableRequiresOrgFilter(call.tables, tierSet)) continue;
 
