@@ -878,6 +878,22 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             const ruleAnalyzerOverride: Record<string, string> = {
               'table-naming-convention': 'schema-code',
             };
+            // The analyzer families whose legacy emission carried the provenance
+            // symbol in `functionName` (the pre-`symbol` field), not `symbol`.
+            // Their migrated `analyze(ctx)` writes the same value into
+            // `Finding.symbol`; bridge it back so JSON/SARIF consumers that read
+            // `functionName` keep the pre-migration contract (Spec 62 Amendment B
+            // provenance — pinned by the d1Exec integration test). SOLID /
+            // dependency-graph / schema-validator / cross-domain / conventions
+            // never set `functionName`, so they stay off this list.
+            const functionNameAnalyzers = new Set([
+              'data-access',
+              'data-access-org-filter',
+              'documentation',
+              'styles',
+              'schema',
+              'schema-code',
+            ]);
             for (const f of phaseFindings) {
               const analyzer = ruleAnalyzerOverride[f.ruleId] ?? RULE_REGISTRY[f.ruleId]?.analyzer ?? 'phase';
               const resolved = resolveFileProfile(f.file);
@@ -895,6 +911,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
                 symbol: f.symbol,
                 resolution: f.resolution,
                 analyzer,
+                ...(f.symbol && functionNameAnalyzers.has(analyzer) ? { functionName: f.symbol } : {}),
                 ...(profile ? { profile } : {}),
                 ...(resolved.excludeFromGate ? { gateExcluded: true } : {}),
               });
