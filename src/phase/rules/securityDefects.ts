@@ -62,99 +62,106 @@ function isConfigPath(text: string): boolean {
 
 // ── Detection ───────────────────────────────────────────────────────────────
 
-/** Re-homes `checkCommandInjection`: emit a finding per unsafe shell call. */
-function detectCommandInjection(candidates: readonly SecurityCandidate[]): Finding[] {
+/** The member of the `SecurityCandidate` union whose `kind` is `K`. */
+type CandidateOf<K extends SecurityCandidate['kind']> = Extract<SecurityCandidate, { kind: K }>;
+
+/** The per-rule specifics the shared emitter fills into the common scaffold. */
+interface SecurityDefectSpec<K extends SecurityCandidate['kind']> {
+  kind: K;
+  /** Extra candidate filter past the kind + test/fixture skips. */
+  accept?: (c: CandidateOf<K>) => boolean;
+  ruleId: string;
+  severity: Finding['severity'];
+  symbol: (c: CandidateOf<K>) => string;
+  message: (c: CandidateOf<K>) => string;
+  resolutionAction: string;
+  resolutionSummary: (c: CandidateOf<K>) => string;
+  resolutionSymbols: (c: CandidateOf<K>) => string[];
+}
+
+/** Emit one finding per candidate matching `spec`. The three single-file rules
+ *  repeat the same loop + test/fixture skip + finding/resolution scaffold; only
+ *  the classification (kind/accept) and the text (message/summary/symbol) vary. */
+function detectSecurityDefect<K extends SecurityCandidate['kind']>(
+  candidates: readonly SecurityCandidate[],
+  spec: SecurityDefectSpec<K>,
+): Finding[] {
   const findings: Finding[] = [];
   for (const c of candidates) {
-    if (c.kind !== 'command-injection') continue;
+    if (c.kind !== spec.kind) continue;
     if (isTestOrFixtureFile(c.file)) continue;
-    const fnName = c.fnName;
+    const candidate = c as CandidateOf<K>;
+    if (spec.accept && !spec.accept(candidate)) continue;
     findings.push({
-      ruleId: 'command-injection-risk',
-      severity: 'critical',
-      message:
-        `Unsafe process invocation: ${fnName}() is passed a command built by interpolation/concatenation, so a value can become a shell command. ` +
-        'Pass the command as a string literal and arguments as an argv array (execFileSync/spawn), never a shell string.',
-      file: c.file,
-      line: c.line,
-      column: c.column,
-      symbol: fnName,
+      ruleId: spec.ruleId,
+      severity: spec.severity,
+      message: spec.message(candidate),
+      file: candidate.file,
+      line: candidate.line,
+      column: candidate.column,
+      symbol: spec.symbol(candidate),
       resolution: {
-        action: 'use-argv-array',
-        summary:
-          `Replace ${fnName} with an argv-array form (execFileSync/spawn) whose command is a string literal ` +
-          'and whose arguments are separate array elements, so no shell interprets them.',
-        symbols: [fnName],
-        files: [c.file],
-        lines: [c.line],
+        action: spec.resolutionAction,
+        summary: spec.resolutionSummary(candidate),
+        symbols: spec.resolutionSymbols(candidate),
+        files: [candidate.file],
+        lines: [candidate.line],
       },
     });
   }
   return findings;
 }
 
+/** Re-homes `checkCommandInjection`: emit a finding per unsafe shell call. */
+const COMMAND_INJECTION: SecurityDefectSpec<'command-injection'> = {
+  kind: 'command-injection',
+  ruleId: 'command-injection-risk',
+  severity: 'critical',
+  symbol: (c) => c.fnName,
+  message: (c) =>
+    `Unsafe process invocation: ${c.fnName}() is passed a command built by interpolation/concatenation, so a value can become a shell command. ` +
+    'Pass the command as a string literal and arguments as an argv array (execFileSync/spawn), never a shell string.',
+  resolutionAction: 'use-argv-array',
+  resolutionSummary: (c) =>
+    `Replace ${c.fnName} with an argv-array form (execFileSync/spawn) whose command is a string literal ` +
+    'and whose arguments are separate array elements, so no shell interprets them.',
+  resolutionSymbols: (c) => [c.fnName],
+};
+
 /** Re-homes `checkDynamicRequire`: emit a finding per computed config-path require. */
-function detectDynamicRequire(candidates: readonly SecurityCandidate[]): Finding[] {
-  const findings: Finding[] = [];
-  for (const c of candidates) {
-    if (c.kind !== 'dynamic-require') continue;
-    if (isTestOrFixtureFile(c.file)) continue;
-    if (!isConfigPath(c.argText)) continue;
-    findings.push({
-      ruleId: 'dynamic-require-of-project-path',
-      severity: 'critical',
-      message:
-        `Dynamic require/import of a project config path: ${c.argText}. A path discovered from the project tree is executed ` +
-        "when it is require()'d or import()'d. Read config files without executing them (static extraction).",
-      file: c.file,
-      line: c.line,
-      column: c.column,
-      // §7 — the computed specifier is what located this finding; two dynamic
-      // requires in one file must not collapse to one fingerprint.
-      symbol: c.argText,
-      resolution: {
-        action: 'static-config-extraction',
-        summary:
-          'Replace the dynamic require/import with static extraction (read the source and extract the literal export) ' +
-          'so a project-supplied config is never executed.',
-        symbols: [c.calleeText],
-        files: [c.file],
-        lines: [c.line],
-      },
-    });
-  }
-  return findings;
-}
+const DYNAMIC_REQUIRE: SecurityDefectSpec<'dynamic-require'> = {
+  kind: 'dynamic-require',
+  accept: (c) => isConfigPath(c.argText),
+  ruleId: 'dynamic-require-of-project-path',
+  severity: 'critical',
+  // §7 — the computed specifier is what located this finding; two dynamic
+  // requires in one file must not collapse to one fingerprint.
+  symbol: (c) => c.argText,
+  message: (c) =>
+    `Dynamic require/import of a project config path: ${c.argText}. A path discovered from the project tree is executed ` +
+    "when it is require()'d or import()'d. Read config files without executing them (static extraction).",
+  resolutionAction: 'static-config-extraction',
+  resolutionSummary: () =>
+    'Replace the dynamic require/import with static extraction (read the source and extract the literal export) ' +
+    'so a project-supplied config is never executed.',
+  resolutionSymbols: (c) => [c.calleeText],
+};
 
 /** Re-homes `checkUnescapedHtml` + `checkInterpolation`: emit a finding per
  *  sink-reaching unescaped member-access interpolation. */
-function detectUnescapedHtml(candidates: readonly SecurityCandidate[]): Finding[] {
-  const findings: Finding[] = [];
-  for (const c of candidates) {
-    if (c.kind !== 'unescaped-html') continue;
-    if (isTestOrFixtureFile(c.file)) continue;
-    const prop = c.prop;
-    findings.push({
-      ruleId: 'unescaped-html-interpolation',
-      severity: 'severe',
-      message:
-        `Unescaped HTML interpolation: ${prop} is inserted into an HTML template without an escaping call. ` +
-        'Analysis-controlled strings (file paths, messages, previews) can carry markup — wrap the interpolation in escapeHtml() to prevent stored XSS.',
-      file: c.file,
-      line: c.line,
-      column: c.column,
-      symbol: prop,
-      resolution: {
-        action: 'escape-html-interpolation',
-        summary: `Wrap the ${prop} interpolation in an escaping call (e.g. \${escapeHtml(${prop})}) before it reaches the HTML template.`,
-        symbols: [prop],
-        files: [c.file],
-        lines: [c.line],
-      },
-    });
-  }
-  return findings;
-}
+const UNESCAPED_HTML: SecurityDefectSpec<'unescaped-html'> = {
+  kind: 'unescaped-html',
+  ruleId: 'unescaped-html-interpolation',
+  severity: 'severe',
+  symbol: (c) => c.prop,
+  message: (c) =>
+    `Unescaped HTML interpolation: ${c.prop} is inserted into an HTML template without an escaping call. ` +
+    'Analysis-controlled strings (file paths, messages, previews) can carry markup — wrap the interpolation in escapeHtml() to prevent stored XSS.',
+  resolutionAction: 'escape-html-interpolation',
+  resolutionSummary: (c) =>
+    `Wrap the ${c.prop} interpolation in an escaping call (e.g. \${escapeHtml(${c.prop})}) before it reaches the HTML template.`,
+  resolutionSymbols: (c) => [c.prop],
+};
 
 const commandInjectionRisk: RuleDefinition<SecurityDefectNeeds> = {
   id: 'command-injection-risk',
@@ -166,7 +173,7 @@ const commandInjectionRisk: RuleDefinition<SecurityDefectNeeds> = {
   thresholds: META_INJ.thresholds,
   samples: META_INJ.samples,
   analyze(ctx): Finding[] {
-    return detectCommandInjection(ctx.facts['security-candidates']);
+    return detectSecurityDefect(ctx.facts['security-candidates'], COMMAND_INJECTION);
   },
 };
 
@@ -180,7 +187,7 @@ const dynamicRequireOfProjectPath: RuleDefinition<SecurityDefectNeeds> = {
   thresholds: META_REQ.thresholds,
   samples: META_REQ.samples,
   analyze(ctx): Finding[] {
-    return detectDynamicRequire(ctx.facts['security-candidates']);
+    return detectSecurityDefect(ctx.facts['security-candidates'], DYNAMIC_REQUIRE);
   },
 };
 
@@ -194,7 +201,7 @@ const unescapedHtmlInterpolation: RuleDefinition<SecurityDefectNeeds> = {
   thresholds: META_HTML.thresholds,
   samples: META_HTML.samples,
   analyze(ctx): Finding[] {
-    return detectUnescapedHtml(ctx.facts['security-candidates']);
+    return detectSecurityDefect(ctx.facts['security-candidates'], UNESCAPED_HTML);
   },
 };
 

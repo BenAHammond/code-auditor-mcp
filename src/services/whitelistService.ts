@@ -13,6 +13,43 @@ import {
 import { promises as fs } from 'fs';
 import path from 'path';
 
+const FRAMEWORK_LIBRARIES: readonly string[] = [
+  'react', 'react-dom', 'react-router', 'react-redux',
+  'vue', 'vue-router', 'vuex',
+  'angular', '@angular/core', '@angular/common',
+  'next', 'nextjs', '@next/font',
+  'express', 'fastify', 'koa',
+  'nestjs', '@nestjs/core',
+  'electron',
+  '@testing-library/react', 'jest', 'vitest', 'mocha',
+  'webpack', 'vite', 'rollup', 'parcel',
+  'typescript', '@types/node'
+];
+
+const SHARED_LIBRARIES: readonly string[] = [
+  'lodash', 'underscore', 'ramda',
+  'axios', 'node-fetch', 'got', 'ky',
+  'moment', 'dayjs', 'date-fns',
+  'uuid', 'nanoid', 'shortid',
+  'chalk', 'colors', 'ora', 'inquirer',
+  'dotenv', 'config', 'yargs', 'commander',
+  'joi', 'yup', 'zod', 'ajv',
+  'winston', 'pino', 'bunyan', 'debug',
+  'prettier', 'eslint', '@typescript-eslint',
+  'husky', 'lint-staged',
+  'classnames', 'clsx',
+  'query-string', 'qs',
+  'formik', 'react-hook-form',
+  'swr', 'react-query', '@tanstack/react-query',
+  'zustand', 'mobx', 'recoil', 'jotai',
+  'styled-components', 'emotion', '@emotion/styled',
+  'tailwindcss', 'postcss', 'autoprefixer',
+  'framer-motion', 'react-spring',
+  'd3', 'chart.js', 'recharts',
+  'monaco-editor', 'codemirror',
+  'markdown-it', 'marked', 'remark'
+];
+
 /**
  * Manages whitelisted dependencies and classes for the SOLID analyzer.
  */
@@ -227,51 +264,14 @@ export class WhitelistService {
    * Check if a dependency is a known framework library
    */
   private isFrameworkLibrary(dep: string): boolean {
-    const frameworks = [
-      'react', 'react-dom', 'react-router', 'react-redux',
-      'vue', 'vue-router', 'vuex',
-      'angular', '@angular/core', '@angular/common',
-      'next', 'nextjs', '@next/font',
-      'express', 'fastify', 'koa',
-      'nestjs', '@nestjs/core',
-      'electron',
-      '@testing-library/react', 'jest', 'vitest', 'mocha',
-      'webpack', 'vite', 'rollup', 'parcel',
-      'typescript', '@types/node'
-    ];
-
-    return matchesLibrary(dep, frameworks);
+    return matchesLibrary(dep, FRAMEWORK_LIBRARIES);
   }
 
   /**
    * Check if a dependency is a common shared/utility library
    */
   private isSharedLibrary(dep: string): boolean {
-    const sharedLibs = [
-      'lodash', 'underscore', 'ramda',
-      'axios', 'node-fetch', 'got', 'ky',
-      'moment', 'dayjs', 'date-fns',
-      'uuid', 'nanoid', 'shortid',
-      'chalk', 'colors', 'ora', 'inquirer',
-      'dotenv', 'config', 'yargs', 'commander',
-      'joi', 'yup', 'zod', 'ajv',
-      'winston', 'pino', 'bunyan', 'debug',
-      'prettier', 'eslint', '@typescript-eslint',
-      'husky', 'lint-staged',
-      'classnames', 'clsx',
-      'query-string', 'qs',
-      'formik', 'react-hook-form',
-      'swr', 'react-query', '@tanstack/react-query',
-      'zustand', 'mobx', 'recoil', 'jotai',
-      'styled-components', 'emotion', '@emotion/styled',
-      'tailwindcss', 'postcss', 'autoprefixer',
-      'framer-motion', 'react-spring',
-      'd3', 'chart.js', 'recharts',
-      'monaco-editor', 'codemirror',
-      'markdown-it', 'marked', 'remark'
-    ];
-
-    return matchesLibrary(dep, sharedLibs);
+    return matchesLibrary(dep, SHARED_LIBRARIES);
   }
 }
 
