@@ -36,6 +36,9 @@ export interface RuleAlias {
  * the registry test fails on a prior-release rule ID absent from both
  * {@link RULE_REGISTRY} and this map.
  */
+const SOLID_PREFIX_RENAME_REASON =
+  'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.';
+
 export const RULE_ALIASES: Record<string, RuleAlias> = {
   // Rename: naming-convention → table-naming-convention (schema analyzer).
   // Disambiguates the schema table-naming check from conventions/naming.
@@ -62,12 +65,12 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
   'open-closed': {
     to: 'solid/open-closed',
     reason:
-      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+      SOLID_PREFIX_RENAME_REASON,
   },
   'single-responsibility': {
     to: 'solid/single-responsibility',
     reason:
-      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+      SOLID_PREFIX_RENAME_REASON,
   },
   // Rename: sql-injection → dynamic-sql-construction (Spec-49).
   // The old ID claimed "SQL injection" but the schema analyzer's regex only
@@ -103,7 +106,7 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
   'dependency-inversion': {
     to: 'solid/dependency-inversion',
     reason:
-      'Prefixed with solid/ to match the namespace used by solid/class-size and solid/method-complexity.',
+      SOLID_PREFIX_RENAME_REASON,
   },
   // Rename: cross-domain/transaction-boundary → cross-domain/multi-table-write (Spec-49).
   // The old ID asserted a transaction boundary the code never computes — it only

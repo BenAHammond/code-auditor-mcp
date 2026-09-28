@@ -296,7 +296,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     // Get unique file paths. Scoped: only read source for in-scope files.
     const fileScope = options.scope?.apply('file_path');
     const fileRows = indexHandle.query(
-      `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+      `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${andFileScope(fileScope)}`,
       fileScope?.params,
     ) as Array<{ file_path: string }>;
 
@@ -429,7 +429,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, is_exported
          FROM functions
-         WHERE is_exported = 1${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+         WHERE is_exported = 1${andFileScope(fileScope)}`,
         fileScope?.params,
       ) as FunctionRow[];
 
@@ -462,7 +462,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, is_exported, entity_type, component_type
          FROM functions
-         WHERE is_exported = 1${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+         WHERE is_exported = 1${andFileScope(fileScope)}`,
         fileScope?.params,
       ) as NamingFunctionRow[];
 
@@ -546,7 +546,7 @@ function groupConventionsByDomain(conventions: ConventionRow[]): Map<string, Con
 function countUniqueFiles(indexHandle: IndexHandle, projectRoot?: string, scope?: FileScope): number {
   const fileScope = scope?.apply('file_path');
   const rows = indexHandle.query(
-    `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${fileScope ? ` AND ${fileScope.clause}` : ''}`,
+    `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${andFileScope(fileScope)}`,
     fileScope?.params,
   ) as Array<{ file_path: string }>;
   return rows.length;
@@ -560,6 +560,10 @@ function countUniqueFiles(indexHandle: IndexHandle, projectRoot?: string, scope?
  * Returns a non-scoped (no-op) scope when there is no in-scope set — the
  * convention corpus is then read whole, preserving full-run behaviour.
  */
+function andFileScope(fileScope: { clause: string } | null | undefined): string {
+  return fileScope ? ` AND ${fileScope.clause}` : '';
+}
+
 interface FileScope {
   isScoped: boolean;
   apply(column: string): { clause: string; params: string[] } | null;

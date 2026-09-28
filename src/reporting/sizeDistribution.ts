@@ -56,10 +56,12 @@ const MEASURES: SizeDistribution['measure'][] = [
  * trivial (cyclomatic complexity 1), so including them dilutes the median with
  * noise. `class-size` and `interface-size` are structural and need no exclusion.
  */
+const FUNCTION_MEASURES_POPULATION = 'named functions + methods, anonymous excluded';
+
 const POPULATIONS: Record<SizeDistribution['measure'], string> = {
-  'function-length': 'named functions + methods, anonymous excluded',
-  'parameter-count': 'named functions + methods, anonymous excluded',
-  complexity: 'named functions + methods, anonymous excluded',
+  'function-length': FUNCTION_MEASURES_POPULATION,
+  'parameter-count': FUNCTION_MEASURES_POPULATION,
+  complexity: FUNCTION_MEASURES_POPULATION,
   'class-size': 'all classes',
   'interface-size': 'all interfaces',
 };

@@ -22,6 +22,10 @@ import { makeVisitorStatus } from '../../../pipeline.js';
  * Validation context threaded through the JSON-schema helpers to keep their
  * parameter lists small.
  */
+function qualifiedKey(path: string, key: string): string {
+  return `${path}.${key}`;
+}
+
 interface ValidationCtx {
   filePath: string;
   config: SchemaAnalyzerConfig;
@@ -220,7 +224,7 @@ function validateSchemaTypes(schema: any, ctx: ValidationCtx, path = ''): void {
 
   if (schema.properties) {
     for (const [key, value] of Object.entries(schema.properties)) {
-      validateSchemaTypes(value, ctx, `${path}.${key}`);
+      validateSchemaTypes(value, ctx, qualifiedKey(path, key));
     }
   }
   if (schema.items) {
@@ -525,7 +529,7 @@ function checkObjectConstraints(data: any, schema: any, ctx: ValidationCtx, path
   if (schema.properties) {
     for (const [key, propSchema] of Object.entries(schema.properties)) {
       if (key in data) {
-        validateAgainstSchema(data[key], propSchema, ctx, path ? `${path}.${key}` : key);
+        validateAgainstSchema(data[key], propSchema, ctx, path ? qualifiedKey(path, key) : key);
       }
     }
   }
@@ -550,7 +554,7 @@ function checkAdditionalProperties(data: any, schema: any, ctx: ValidationCtx, p
   const definedKeys = new Set(Object.keys(schema.properties || {}));
   for (const [key, value] of Object.entries(data)) {
     if (!definedKeys.has(key)) {
-      validateAgainstSchema(value, schema.additionalProperties, ctx, path ? `${path}.${key}` : key);
+      validateAgainstSchema(value, schema.additionalProperties, ctx, path ? qualifiedKey(path, key) : key);
     }
   }
 }

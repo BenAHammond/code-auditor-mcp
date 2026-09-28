@@ -36,6 +36,10 @@ import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 
 /** The shared declaration for every TS SOLID rule in this slice. */
+function qualifiedMethod(clsName: string, methodName: string): string {
+  return `${clsName}.${methodName}`;
+}
+
 type SolidNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
   readonly facts: readonly ['file-symbols'];
@@ -179,7 +183,7 @@ const classSize: RuleDefinition<SolidNeeds> = {
           {
             action: 'split-class',
             summary: `Split class "${cls.name}" (${cls.methodCount} methods) into smaller classes by extracting a cohesive subset of its methods.`,
-            symbols: cls.methods.map((m) => `${cls.name}.${m.name}`),
+            symbols: cls.methods.map((m) => qualifiedMethod(cls.name, m.name)),
             files: [cls.file],
             lines: cls.methods.map((m) => m.line),
           },
@@ -194,7 +198,7 @@ const classSize: RuleDefinition<SolidNeeds> = {
           {
             action: 'split-class',
             summary: `Split class "${cls.name}" (aggregate complexity ${cls.aggregateComplexity}) to move its most-complex methods into a separate class.`,
-            symbols: cls.methods.map((m) => `${cls.name}.${m.name}`),
+            symbols: cls.methods.map((m) => qualifiedMethod(cls.name, m.name)),
             files: [cls.file],
             lines: cls.methods.map((m) => m.line),
           },
@@ -238,7 +242,7 @@ const methodComplexity: RuleDefinition<SolidNeeds> = {
             out.push(finding(
               'solid/method-complexity', 'high',
               `Method "${cls.name}.${m.name}" has cyclomatic complexity ${m.complexity}, exceeding the maximum of ${max}. Consider breaking it into smaller methods.`,
-              cls.file, m.line, m.column, `${cls.name}.${m.name}`,
+              cls.file, m.line, m.column, qualifiedMethod(cls.name, m.name),
             ));
           }
         }
@@ -565,7 +569,7 @@ const liskovSubstitution: RuleDefinition<SolidNeeds> = {
           out.push(finding(
             'solid/liskov-substitution', 'severe',
             `Method "${cls.name}.${m.name}" overrides "${parent.name}.${m.name}" and throws where the parent does not. Callers of the parent contract cannot handle it.`,
-            cls.file, m.line, m.column, `${cls.name}.${m.name}`,
+            cls.file, m.line, m.column, qualifiedMethod(cls.name, m.name),
           ));
         }
       }

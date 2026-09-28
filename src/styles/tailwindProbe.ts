@@ -30,6 +30,10 @@ import { pathToFileURL } from 'node:url';
 // Types
 // ---------------------------------------------------------------------------
 
+function autoClass(prefix: string): string {
+  return `${prefix}-auto`;
+}
+
 export interface ProbeInitResult {
   /** Whether initialization succeeded. */
   ok: boolean;
@@ -515,17 +519,17 @@ export class TailwindProbe {
         }
       }
       for (const prefix of ['m', 'mx', 'my', 'mt', 'mr', 'mb', 'ml']) {
-        classes.add(`${prefix}-auto`);
+        classes.add(autoClass(prefix));
       }
       for (const prefix of ['top', 'right', 'bottom', 'left']) {
-        classes.add(`${prefix}-auto`);
+        classes.add(autoClass(prefix));
         classes.add(`${prefix}-full`);
         for (const frac of ['1/2', '1/3', '2/3', '1/4', '3/4']) {
           classes.add(`${prefix}-${frac}`);
         }
       }
       for (const prefix of ['inset', 'inset-x', 'inset-y']) {
-        classes.add(`${prefix}-auto`);
+        classes.add(autoClass(prefix));
         classes.add(`${prefix}-full`);
         for (const frac of ['1/2', '1/3', '2/3', '1/4', '3/4']) {
           classes.add(`${prefix}-${frac}`);

@@ -16,6 +16,10 @@ import { detectFunctionConcerns, countConcernGroups, votingConcerns, CONCERN_LAB
  * maxMethodComplexity (per-method cyclomatic complexity, solid/method-complexity)
  * and classAggregateComplexity (class-size aggregation, solid/class-size).
  */
+function qualifiedMethod(clsName: string, methodName: string): string {
+  return `${clsName}.${methodName}`;
+}
+
 export interface SOLIDAnalyzerConfig {
   maxMethodsPerClass?: number;
   maxLinesPerMethod?: number;
@@ -303,7 +307,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
         aggregateComplexity += methodComplexity;
 
         // Spec 60 R2 — per-method cyclomatic complexity feeds the `complexity` distribution.
-        this.recordSample('complexity', methodComplexity, 'method', `${cls.name}.${method.name}`, ast.filePath);
+        this.recordSample('complexity', methodComplexity, 'method', qualifiedMethod(cls.name, method.name), ast.filePath);
 
         const maxMethod = config.maxMethodComplexity ?? 50;
         if (methodComplexity > maxMethod) {
@@ -312,7 +316,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
             method.location.start,
             `Method "${cls.name}.${method.name}" has cyclomatic complexity ${methodComplexity}, ` +
             `exceeding the maximum of ${maxMethod}. Consider breaking it into smaller methods.`,
-            { severity: 'high', rule: 'solid/method-complexity', symbol: `${cls.name}.${method.name}` }  // method-complexity → high
+            { severity: 'high', rule: 'solid/method-complexity', symbol: qualifiedMethod(cls.name, method.name) }  // method-complexity → high
           ));
         }
       }
@@ -606,7 +610,7 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
           ast.filePath,
           method.location.start,
           `Method "${cls.name}.${method.name}" overrides "${parent.name}.${method.name}" and throws where the parent does not. Callers of the parent contract cannot handle it.`,
-          { severity: 'severe', rule: 'solid/liskov-substitution', symbol: `${cls.name}.${method.name}` }
+          { severity: 'severe', rule: 'solid/liskov-substitution', symbol: qualifiedMethod(cls.name, method.name) }
         ));
       }
     }

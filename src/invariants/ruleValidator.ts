@@ -7,6 +7,10 @@ import picomatch from 'picomatch';
 import type { InvariantRule, RulesConfig, RuleKind } from './types.js';
 import schema from './invariant-rules.schema.json' with { type: 'json' };
 
+function invalidGlobMessage(kind: string, value: string): string {
+  return `Invalid glob pattern in "${kind}": "${value}"`;
+}
+
 export interface RuleValidationError {
   ruleId?: string;
   message: string;
@@ -121,7 +125,7 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
       if (Array.isArray(rule.except)) {
         for (const g of rule.except) {
           if (!isValidGlob(g)) {
-            errors.push({ ruleId: rule.id, message: `Invalid glob pattern in "except": "${g}"` });
+            errors.push({ ruleId: rule.id, message: invalidGlobMessage('except', g) });
           }
         }
       }
@@ -165,13 +169,13 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
       if (!rule.from || typeof rule.from !== 'string') {
         errors.push({ ruleId: rule.id, message: 'module-boundary requires a "from" glob string' });
       } else if (!isValidGlob(rule.from)) {
-        errors.push({ ruleId: rule.id, message: `Invalid glob pattern in "from": "${rule.from}"` });
+        errors.push({ ruleId: rule.id, message: invalidGlobMessage('from', rule.from) });
       }
 
       if (!rule.to || typeof rule.to !== 'string') {
         errors.push({ ruleId: rule.id, message: 'module-boundary requires a "to" glob string' });
       } else if (!isValidGlob(rule.to)) {
-        errors.push({ ruleId: rule.id, message: `Invalid glob pattern in "to": "${rule.to}"` });
+        errors.push({ ruleId: rule.id, message: invalidGlobMessage('to', rule.to) });
       }
       break;
     }
@@ -180,7 +184,7 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
       if (!rule.path || typeof rule.path !== 'string') {
         errors.push({ ruleId: rule.id, message: 'naming requires a "path" glob string' });
       } else if (!isValidGlob(rule.path)) {
-        errors.push({ ruleId: rule.id, message: `Invalid glob pattern in "path": "${rule.path}"` });
+        errors.push({ ruleId: rule.id, message: invalidGlobMessage('path', rule.path) });
       }
 
       if (!rule.exports || typeof rule.exports !== 'string') {
@@ -217,7 +221,7 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
         if (typeof rule.path !== 'string' || !isValidGlob(rule.path)) {
           errors.push({
             ruleId: rule.id,
-            message: `Invalid glob pattern in "path": "${rule.path}"`,
+            message: invalidGlobMessage('path', rule.path),
           });
         }
       }
@@ -240,7 +244,7 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
         if (typeof rule.path !== 'string' || !isValidGlob(rule.path)) {
           errors.push({
             ruleId: rule.id,
-            message: `Invalid glob pattern in "path": "${rule.path}"`,
+            message: invalidGlobMessage('path', rule.path),
           });
         }
       }
@@ -276,7 +280,7 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
         if (typeof rule.path !== 'string' || !isValidGlob(rule.path)) {
           errors.push({
             ruleId: rule.id,
-            message: `Invalid glob pattern in "path": "${rule.path}"`,
+            message: invalidGlobMessage('path', rule.path),
           });
         }
       }

@@ -23,7 +23,9 @@ import type { FileDropReason, FileAccountingSummary, FileAccountingFileEntry } f
 /** Detail attached to a drop (everything except the filePath, which is the key). */
 export type FileDropDetail = Omit<FileAccountingFileEntry, 'filePath'>;
 
-type EntryState = 'touched' | 'analyzed' | 'partially analyzed' | 'dropped';
+const PARTIALLY_ANALYZED = 'partially analyzed';
+
+type EntryState = 'touched' | 'analyzed' | typeof PARTIALLY_ANALYZED | 'dropped';
 
 interface Entry {
   state: EntryState;
@@ -158,7 +160,7 @@ export class FileAccounting {
     const entry = this.entries.get(filePath);
     if (!entry || entry.state !== 'dropped') return;
     if (entry.reason !== 'no adapter' && entry.reason !== 'no visitor matched') return;
-    entry.state = 'partially analyzed';
+    entry.state = PARTIALLY_ANALYZED;
   }
 
   /**
@@ -226,10 +228,10 @@ export class FileAccounting {
       if (entry.state === 'analyzed') {
         analyzed++;
       } else if (
-        (entry.state === 'dropped' || entry.state === 'partially analyzed') &&
+        (entry.state === 'dropped' || entry.state === PARTIALLY_ANALYZED) &&
         entry.reason
       ) {
-        if (entry.state === 'partially analyzed') partiallyAnalyzed++;
+        if (entry.state === PARTIALLY_ANALYZED) partiallyAnalyzed++;
         else dropped++;
         let list = reasons.get(entry.reason);
         if (!list) {
@@ -240,7 +242,7 @@ export class FileAccounting {
         list.push({
           filePath,
           ...detail,
-          ...(entry.state === 'partially analyzed' ? { partial: true } : {}),
+          ...(entry.state === PARTIALLY_ANALYZED ? { partial: true } : {}),
         });
       }
     }

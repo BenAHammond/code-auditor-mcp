@@ -416,6 +416,10 @@ function stripNullability(type: string): string {
  * A named type with no alias maps through unchanged, so two identical named
  * types still compare equal and two different named types still differ.
  */
+function listType(inner: string, language: string): string {
+  return `list<${normalizeType(inner, language)}>`;
+}
+
 function normalizeType(type: string, language: string): string {
   const t = stripNullability(type);
   if (!t) return 'any';
@@ -428,11 +432,11 @@ function normalizeType(type: string, language: string): string {
 
   // Slice / array: `[]T` and `[N]T` (Go) / `T[]` (TS) / `Array<T>` / `List<T>`.
   m = t.match(/^\[\](.+)$/) || t.match(/^\[[0-9]*\](.+)$/);
-  if (m) return `list<${normalizeType(m[1], language)}>`;
+  if (m) return listType(m[1], language);
   m = t.match(/^(.+)\[\]$/);
-  if (m) return `list<${normalizeType(m[1], language)}>`;
+  if (m) return listType(m[1], language);
   m = t.match(/^(?:Array|List|ArrayList)<(.+)>$/);
-  if (m) return `list<${normalizeType(m[1], language)}>`;
+  if (m) return listType(m[1], language);
 
   return PRIMITIVE_ALIASES[language]?.[t] || t;
 }
