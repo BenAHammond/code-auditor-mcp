@@ -88,8 +88,7 @@ import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAu
 import { CodeIndexDB } from './codeIndexDB.js';
 import { logMcpDebug, logMcpInfo, mcpDebugStderr, mcpTraceStderr } from './mcpDiagnostics.js';
 import { assertAuditPathExists, formatMcpToolErrorPayload } from './mcpToolErrors.js';
-import { ToolRegistry } from './tool-registry.js';
-import type { ActionDefinition, ToolDefinition } from './tool-registry.js';
+import { ToolRegistry, type ActionDefinition, type ToolDefinition } from './tool-registry.js';
 import { initParsers } from './languages/index.js';
 
 // ── Console / logging setup ──────────────────────────────────────────────────

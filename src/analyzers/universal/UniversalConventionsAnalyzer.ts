@@ -16,8 +16,7 @@
 import * as path from 'path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
-import type { AnalyzerResult, Violation, ConventionsAnalyzerConfig, CoverageDiagnostic } from '../../types.js';
-import type { IndexHandle } from '../../types.js';
+import type { AnalyzerResult, Violation, ConventionsAnalyzerConfig, CoverageDiagnostic, IndexHandle } from '../../types.js';
 import { makeVisitorStatus } from '../../pipeline.js';
 import {
   detectCase,

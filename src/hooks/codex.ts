@@ -17,8 +17,7 @@
  *   1 — internal error (adapter crash, not violation-related)
  */
 
-import { readStdin, runHookAudit } from './core.js';
-import type { HookAuditOutput } from './core.js';
+import { readStdin, runHookAudit, type HookAuditOutput } from './core.js';
 import chalk from 'chalk';
 
 export interface CodexPostToolUse {

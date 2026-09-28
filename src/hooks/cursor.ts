@@ -25,8 +25,7 @@
  *   1 — internal error (adapter crash, not violation-related)
  */
 
-import { readStdin, runHookAudit } from './core.js';
-import type { HookAuditOutput } from './core.js';
+import { readStdin, runHookAudit, type HookAuditOutput } from './core.js';
 import type { Severity } from '../types.js';
 import chalk from 'chalk';
 

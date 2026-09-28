@@ -13,7 +13,7 @@
 import { join } from 'node:path';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
-import type { AnalyzerResult, IndexHandle, Violation, Resolution, CoverageDiagnostic } from '../../types.js';
+import type { AnalyzerResult, IndexHandle, Violation, Resolution, CoverageDiagnostic, StylesAnalyzerConfig } from '../../types.js';
 import type { AST, LanguageAdapter } from '../../languages/types.js';
 import { makeVisitorStatus } from '../../pipeline.js';
 import type {
@@ -24,7 +24,6 @@ import type {
   StyleToken,
   StyleClassUsage,
 } from '../../styles/types.js';
-import type { StylesAnalyzerConfig } from '../../types.js';
 import { getTailwindExpander, type TailwindUtilityExpander } from '../../styles/tailwindUtilityExpander.js';
 import { normalizeValue } from '../../styles/normalizer.js';
 import {

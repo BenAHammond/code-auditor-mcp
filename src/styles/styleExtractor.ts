@@ -15,8 +15,7 @@ import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
 import type { NormalizedDeclaration, StyleMechanism, StyleToken, UnreadStyleSource } from './types.js';
 import { normalizeValue, expandShorthand } from './normalizer.js';
 import { expandUtility } from './tailwindExpander.js';
-import { loadTailwindConfig, tokensToStyleTokens } from './tailwindConfigLoader.js';
-import type { TailwindThemeTokens } from './tailwindConfigLoader.js';
+import { loadTailwindConfig, tokensToStyleTokens, type TailwindThemeTokens } from './tailwindConfigLoader.js';
 import { STYLE_MARKUP_EXTENSIONS, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileDiscovery.js';
 
 // ---------------------------------------------------------------------------

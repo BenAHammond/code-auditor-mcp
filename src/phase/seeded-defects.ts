@@ -16,8 +16,7 @@
  */
 
 import type { FactKind, Serializable } from './types.js';
-import { PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
-import type { ProducedFactKind, ProducerMap } from './producers.js';
+import { PRODUCERS, CORPUS_PRODUCERS, type ProducedFactKind, type ProducerMap } from './producers.js';
 import type { ConsumedFactKind } from './consumed.js';
 
 // 1. Residue #1 — every fact kind has a producer. `Exclude<FactKind,

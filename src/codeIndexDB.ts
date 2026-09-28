@@ -36,8 +36,7 @@ import { extractChurn } from './churn/churnExtractor.js';
 import { computeHotspots } from './hotspots/hotspotScorer.js';
 import { populateCallGraphCache, getGraphStats as getGs } from './graph/callGraph.js';
 import { populateImportGraphCache } from './graph/importGraph.js';
-import { QueryParser, compileToSQL } from './search/QueryParser.js';
-import type { SqlQuery } from './search/QueryParser.js';
+import { QueryParser, compileToSQL, type SqlQuery } from './search/QueryParser.js';
 import { getPersistedStorageRoot, resolvePersistedIndexPath } from './dataPaths.js';
 import { ContextualError, getErrnoCode } from './mcpToolErrors.js';
 import type {

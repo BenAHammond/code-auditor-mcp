@@ -21,7 +21,6 @@
 
 import { readFileSync } from 'node:fs';
 import * as webTreeSitter from 'web-tree-sitter';
-import type { Tree } from 'web-tree-sitter';
 
 // Mutable bindings — a recovery swaps these to a fresh module's classes.
 let Parser: typeof webTreeSitter.Parser = webTreeSitter.Parser;
@@ -180,7 +179,7 @@ export async function parseWithRecovery(
   isTsx: boolean,
   content: string,
   recover: () => Promise<void> = recoverParsers,
-): Promise<Tree | null> {
+): Promise<webTreeSitter.Tree | null> {
   try {
     const parser = getParser(lang, isTsx);
     return parser.parse(content);

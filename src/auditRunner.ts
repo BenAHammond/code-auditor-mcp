@@ -20,6 +20,15 @@ import {
   type RuleCoverage,
   type InputPresence,
   type FileAccountingSummary,
+  type PipelineConfig,
+  type PipelineResult,
+  type IndexHandle,
+  type Stage2Visitor,
+  type Stage3Reducer,
+  type Stage4Reducer,
+  type TestCoverageReport,
+  type DeadCluster,
+  type SizeDistribution,
 } from './types.js';
 import { discoverFiles, discoverFilesDetailed } from './utils/fileDiscovery.js';
 import { FileAccounting } from './services/fileAccounting.js';
@@ -74,9 +83,10 @@ import {
   createSchemaValidatorReducer,
   createAPIContractReducer,
   createDependencyGraphReducer,
+  type DryVisitorBundle,
+  type ReactVisitorBundle,
+  type SolidVisitorBundle,
 } from './pipelineAdapters.js';
-import type { DryVisitorBundle, ReactVisitorBundle, SolidVisitorBundle } from './pipelineAdapters.js';
-import type { PipelineConfig, PipelineResult, IndexHandle, Stage2Visitor, Stage3Reducer, Stage4Reducer, TestCoverageReport, DeadCluster, SizeDistribution } from './types.js';
 import { computeSizeDistributions } from './reporting/sizeDistribution.js';
 import { splitRoutes, attributeRoutes, enabledMigratedRules } from './phase/routing.js';
 import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';

@@ -37,10 +37,10 @@
 import type { RuleDefinition, Finding, Entity } from '../types.js';
 import type { Severity } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
-import { DependencyGraphBuilder } from '../../analyzers/cross-language/DependencyGraphBuilder.js';
-import type {
-  DependencyIssue,
-  DependencySuggestion,
+import {
+  DependencyGraphBuilder,
+  type DependencyIssue,
+  type DependencySuggestion,
 } from '../../analyzers/cross-language/DependencyGraphBuilder.js';
 import type { CrossLanguageEntity, CrossReference } from '../../types/crossLanguage.js';
 

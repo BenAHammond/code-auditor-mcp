@@ -61,8 +61,8 @@ import {
   checkSQLInjection,
   findClosestNodeAt,
   findEnclosingFunctionIdentity,
+  type UnresolvedQuery,
 } from './schema/codeAnalysis.js';
-import type { UnresolvedQuery } from './schema/codeAnalysis.js';
 import {
   discoverTablesFromMigrations,
   discoverTablesFromWrangler,

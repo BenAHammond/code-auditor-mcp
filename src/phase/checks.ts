@@ -37,8 +37,7 @@
  */
 
 import type { FactShapes, FactKind, Serializable } from './types.js';
-import { PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
-import type { ProducedFactKind } from './producers.js';
+import { PRODUCERS, CORPUS_PRODUCERS, type ProducedFactKind } from './producers.js';
 import type { ConsumedFactKind } from './consumed.js';
 
 // ── 1. Residue #1 — every fact kind has a producer ──────────────────────────

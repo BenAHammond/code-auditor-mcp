@@ -24,9 +24,8 @@
 import * as path from 'node:path';
 import { readFileSync } from 'node:fs';
 
-import type { AnalyzerResult, Violation, ValidatorBypassConfig, CoverageConfig } from '../../types.js';
+import type { AnalyzerResult, Violation, ValidatorBypassConfig, CoverageConfig, IndexHandle } from '../../types.js';
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
-import type { IndexHandle } from '../../types.js';
 import type { AST, ASTNode } from '../../languages/types.js';
 import { parseFile } from '../../languages/adapterBridge.js';
 import { VALIDATOR_PACKAGES } from '../provenance.js';
