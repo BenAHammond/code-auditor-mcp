@@ -241,10 +241,18 @@ function checkFunctionDocumentation(node: ASTNode, ctx: DocScanContext): void {
   checkReturnDocumentation(node, ctx, hasGoodDoc);
 }
 
-/** Push a missing-function-documentation violation. */
-function pushFunctionDocViolation(node: ASTNode, ctx: DocScanContext): void {
+/** Push a documentation violation with the shared file/position scaffolding. */
+function pushDocViolation(
+  node: ASTNode,
+  ctx: DocScanContext,
+  rule: string,
+  message: (functionName: string) => string,
+  details: string,
+  suggestion: string,
+  fallbackName: string,
+): void {
   const { fileName, violations } = ctx;
-  const functionName = getNodeName(node) || 'anonymous function';
+  const functionName = getNodeName(node) || fallbackName;
   const position = getNodePosition(node);
 
   violations.push({
@@ -252,12 +260,23 @@ function pushFunctionDocViolation(node: ASTNode, ctx: DocScanContext): void {
     line: position.line,
     column: position.column,
     severity: 'high',
-    rule: 'function-documentation',
-    message: `Function '${functionName}' lacks documentation`,
-    details: 'Functions should have JSDoc comments describing their purpose',
-    suggestion: 'Add JSDoc comment with function description and parameter/return documentation',
-    symbol: functionName
+    rule,
+    message: message(functionName),
+    details,
+    suggestion,
+    symbol: functionName,
   });
+}
+
+/** Push a missing-function-documentation violation. */
+function pushFunctionDocViolation(node: ASTNode, ctx: DocScanContext): void {
+  pushDocViolation(
+    node, ctx, 'function-documentation',
+    (name) => `Function '${name}' lacks documentation`,
+    'Functions should have JSDoc comments describing their purpose',
+    'Add JSDoc comment with function description and parameter/return documentation',
+    'anonymous function',
+  );
 }
 
 /** Check @param coverage for a function-like node. */
@@ -270,21 +289,13 @@ function checkParamDocumentation(node: ASTNode, ctx: DocScanContext, hasGoodDoc:
   if (paramAnalysis.documentedParams === paramAnalysis.totalParams) {
     counters.paramsDocumented++;
   } else if (config.requireParamDocs && hasGoodDoc) {
-    const { fileName, violations } = ctx;
-    const functionName = getNodeName(node) || 'function';
-    const position = getNodePosition(node);
-
-    violations.push({
-      file: fileName,
-      line: position.line,
-      column: position.column,
-      severity: 'high',
-      rule: 'parameter-documentation',
-      message: `Function '${functionName}' has undocumented parameters`,
-      details: `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
-      suggestion: 'Add @param tags for all function parameters',
-      symbol: functionName
-    });
+    pushDocViolation(
+      node, ctx, 'parameter-documentation',
+      (name) => `Function '${name}' has undocumented parameters`,
+      `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
+      'Add @param tags for all function parameters',
+      'function',
+    );
   }
 }
 
@@ -304,21 +315,13 @@ function checkReturnDocumentation(node: ASTNode, ctx: DocScanContext, hasGoodDoc
   if (hasReturnDocumentation(node, adapter!)) {
     counters.returnsDocumented++;
   } else if (config.requireReturnDocs && hasGoodDoc) {
-    const { fileName, violations } = ctx;
-    const functionName = getNodeName(node) || 'function';
-    const position = getNodePosition(node);
-
-    violations.push({
-      file: fileName,
-      line: position.line,
-      column: position.column,
-      severity: 'high',
-      rule: 'return-documentation',
-      message: `Function '${functionName}' missing return documentation`,
-      details: 'Functions with return values should document what they return',
-      suggestion: 'Add @returns tag describing the return value',
-      symbol: functionName
-    });
+    pushDocViolation(
+      node, ctx, 'return-documentation',
+      (name) => `Function '${name}' missing return documentation`,
+      'Functions with return values should document what they return',
+      'Add @returns tag describing the return value',
+      'function',
+    );
   }
 }
 

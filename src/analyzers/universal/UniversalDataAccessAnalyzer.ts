@@ -2439,12 +2439,13 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
  * @param config The data-access analyzer config (defaults when omitted).
  * @returns The database calls extracted from the file.
  */
-export function extractDataAccessCalls(
+/** Build the shared data-access scan context (config + provenance + imports). */
+function buildDataAccessScan(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
-  config?: DataAccessAnalyzerConfig,
-): DatabaseCall[] {
+  config: DataAccessAnalyzerConfig | undefined,
+): DataAccessScanContext {
   const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
   const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
   const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
@@ -2454,14 +2455,22 @@ export function extractDataAccessCalls(
     dbCallMethods: finalConfig.dbCallMethods,
     dbWrapperNames: finalConfig.dbWrapperNames,
   });
-  const scan: DataAccessScanContext = {
+  return {
     adapter,
     sourceCode,
     dbImports: mapDatabaseImports(adapter.extractImports(ast), finalConfig),
     config: finalConfig,
     provenanceContext,
   };
-  return extractDatabaseCalls(ast, scan);
+}
+
+export function extractDataAccessCalls(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  config?: DataAccessAnalyzerConfig,
+): DatabaseCall[] {
+  return extractDatabaseCalls(ast, buildDataAccessScan(ast, adapter, sourceCode, config));
 }
 
 /**
@@ -2483,21 +2492,5 @@ export function extractLoopQueries(
   sourceCode: string,
   config?: DataAccessAnalyzerConfig,
 ): LoopQueryCandidate[] {
-  const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
-  const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
-  const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
-    mode: detectionMode,
-    dbReceiverNames: finalConfig.dbReceiverNames,
-    dbBindingNames: finalConfig.dbBindingNames,
-    dbCallMethods: finalConfig.dbCallMethods,
-    dbWrapperNames: finalConfig.dbWrapperNames,
-  });
-  const scan: DataAccessScanContext = {
-    adapter,
-    sourceCode,
-    dbImports: mapDatabaseImports(adapter.extractImports(ast), finalConfig),
-    config: finalConfig,
-    provenanceContext,
-  };
-  return collectLoopQueryCandidates(ast, scan);
+  return collectLoopQueryCandidates(ast, buildDataAccessScan(ast, adapter, sourceCode, config));
 }

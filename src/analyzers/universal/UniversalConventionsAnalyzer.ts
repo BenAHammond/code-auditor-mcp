@@ -725,21 +725,29 @@ function detectImportFormForFile(
   return violations;
 }
 
-/** Build directory → dominant error-handling shape from convention rows. */
-function buildDirShapes(conventions: ConventionRow[]): Map<string, DirShape> {
-  const dirShapes = new Map<string, DirShape>();
+/** Build directory → convention value map, skipping rows with no pattern. */
+function buildDirMap<T>(
+  conventions: ConventionRow[],
+  make: (pattern: string, conv: ConventionRow) => T,
+): Map<string, T> {
+  const map = new Map<string, T>();
   for (const conv of conventions) {
     const dir = conv.directory ?? '.';
-    const shape = conv.pattern;
-    if (!shape) continue;
-    dirShapes.set(dir, {
-      shape,
-      confidence: conv.confidence,
-      exemplar_file: conv.exemplar_file,
-      exemplar_line: conv.exemplar_line,
-    });
+    const pattern = conv.pattern;
+    if (!pattern) continue;
+    map.set(dir, make(pattern, conv));
   }
-  return dirShapes;
+  return map;
+}
+
+/** Build directory → dominant error-handling shape from convention rows. */
+function buildDirShapes(conventions: ConventionRow[]): Map<string, DirShape> {
+  return buildDirMap(conventions, (shape, conv) => ({
+    shape,
+    confidence: conv.confidence,
+    exemplar_file: conv.exemplar_file,
+    exemplar_line: conv.exemplar_line,
+  }));
 }
 
 /** Detect an error-handling-shape deviation for one function row, if any. */
@@ -774,19 +782,12 @@ function detectErrorHandlingForRow(
 
 /** Build directory → dominant export form from convention rows. */
 function buildDirForms(conventions: ConventionRow[]): Map<string, DirForm> {
-  const dirForms = new Map<string, DirForm>();
-  for (const conv of conventions) {
-    const dir = conv.directory ?? '.';
-    const form = conv.pattern;
-    if (!form) continue;
-    dirForms.set(dir, {
-      form,
-      confidence: conv.confidence,
-      exemplar_file: conv.exemplar_file,
-      exemplar_line: conv.exemplar_line,
-    });
-  }
-  return dirForms;
+  return buildDirMap(conventions, (form, conv) => ({
+    form,
+    confidence: conv.confidence,
+    exemplar_file: conv.exemplar_file,
+    exemplar_line: conv.exemplar_line,
+  }));
 }
 
 /** Detect an export-shape deviation for one function row, if any. */

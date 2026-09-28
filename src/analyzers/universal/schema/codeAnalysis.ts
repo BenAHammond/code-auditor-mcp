@@ -1305,6 +1305,36 @@ export function isSystemTable(table: string): boolean {
   return systemTables.some(st => table.toLowerCase() === st || table.toLowerCase().startsWith(st + '.'));
 }
 
+const TABLE_VALUED_FUNCTIONS: ReadonlySet<string> = new Set([
+  // SQLite
+  'json_each', 'json_tree',
+  // PostgreSQL
+  'unnest', 'generate_series', 'generate_subscripts',
+  'json_array_elements', 'jsonb_array_elements',
+  'json_array_elements_text', 'jsonb_array_elements_text',
+  'json_each_text', 'jsonb_each_text', 'jsonb_each',
+  'json_object_keys', 'jsonb_object_keys',
+  'regexp_split_to_table', 'string_to_table',
+  // DuckDB / ClickHouse-ish readers
+  'read_csv', 'read_csv_auto', 'read_parquet', 'read_json', 'read_json_auto',
+  'parquet_scan', 'csv_scan', 'glob', 'range',
+]);
+
+const SQL_KEYWORDS: ReadonlySet<string> = new Set([
+  'select', 'from', 'where', 'join', 'inner', 'outer', 'left', 'right',
+  'full', 'cross', 'on', 'and', 'or', 'not', 'in', 'as', 'is', 'null',
+  'like', 'between', 'order', 'group', 'by', 'having', 'limit', 'offset',
+  'union', 'all', 'distinct', 'case', 'when', 'then', 'else', 'end',
+  'insert', 'into', 'values', 'update', 'set', 'delete', 'create',
+  'table', 'alter', 'drop', 'index', 'view', 'if', 'exists', 'primary',
+  'key', 'foreign', 'references', 'constraint', 'default', 'unique',
+  'check', 'asc', 'desc', 'count', 'sum', 'avg', 'min', 'max',
+  'skip', 'locked', 'nowait',
+  'integer', 'text', 'varchar', 'text', 'boolean', 'float', 'blob',
+  'real', 'timestamp', 'date', 'time', 'datetime', 'serial', 'bigint',
+  'the', 'a', 'an',
+]);
+
 /**
  * True when `name` is a SQL table-valued function rather than a real table.
  * These appear after FROM/JOIN (`FROM json_each(...)`, `FROM generate_series(...)`)
@@ -1320,21 +1350,7 @@ export function isSystemTable(table: string): boolean {
  * @returns True when `name` is a known table-valued function.
  */
 export function isTableValuedFunction(name: string): boolean {
-  const tvfs = new Set([
-    // SQLite
-    'json_each', 'json_tree',
-    // PostgreSQL
-    'unnest', 'generate_series', 'generate_subscripts',
-    'json_array_elements', 'jsonb_array_elements',
-    'json_array_elements_text', 'jsonb_array_elements_text',
-    'json_each_text', 'jsonb_each_text', 'jsonb_each',
-    'json_object_keys', 'jsonb_object_keys',
-    'regexp_split_to_table', 'string_to_table',
-    // DuckDB / ClickHouse-ish readers
-    'read_csv', 'read_csv_auto', 'read_parquet', 'read_json', 'read_json_auto',
-    'parquet_scan', 'csv_scan', 'glob', 'range',
-  ]);
-  return tvfs.has(name.toLowerCase());
+  return TABLE_VALUED_FUNCTIONS.has(name.toLowerCase());
 }
 
 /**
@@ -1344,21 +1360,7 @@ export function isTableValuedFunction(name: string): boolean {
  * @returns True when `word` is a SQL keyword/reserved identifier.
  */
 export function isSqlKeyword(word: string): boolean {
-  const keywords = new Set([
-    'select', 'from', 'where', 'join', 'inner', 'outer', 'left', 'right',
-    'full', 'cross', 'on', 'and', 'or', 'not', 'in', 'as', 'is', 'null',
-    'like', 'between', 'order', 'group', 'by', 'having', 'limit', 'offset',
-    'union', 'all', 'distinct', 'case', 'when', 'then', 'else', 'end',
-    'insert', 'into', 'values', 'update', 'set', 'delete', 'create',
-    'table', 'alter', 'drop', 'index', 'view', 'if', 'exists', 'primary',
-    'key', 'foreign', 'references', 'constraint', 'default', 'unique',
-    'check', 'asc', 'desc', 'count', 'sum', 'avg', 'min', 'max',
-    'skip', 'locked', 'nowait',
-    'integer', 'text', 'varchar', 'text', 'boolean', 'float', 'blob',
-    'real', 'timestamp', 'date', 'time', 'datetime', 'serial', 'bigint',
-    'the', 'a', 'an',
-  ]);
-  return keywords.has(word.toLowerCase());
+  return SQL_KEYWORDS.has(word.toLowerCase());
 }
 
 /**
