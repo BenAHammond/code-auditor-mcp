@@ -200,20 +200,9 @@ function extractTypeScriptAPICall(entity: any): APICall | null {
       entity.purpose?.includes('axios') ||
       entity.name.toLowerCase().includes('api') ||
       entity.name.toLowerCase().includes('request')) {
-
-    const method = extractCallMethodFromTypeScript(entity);
-    const url = extractUrlFromTypeScript(entity);
-
-    if (method && url) {
-      return {
-        id: entity.id,
-        method,
-        url,
-        language: 'typescript',
-        file: entity.file,
-        line: entity.startLine || 0,
-      };
-    }
+    return buildApiCall(entity, 'typescript',
+      extractCallMethodFromTypeScript(entity),
+      extractUrlFromTypeScript(entity));
   }
   return null;
 }
@@ -223,22 +212,27 @@ function extractGoAPICall(entity: any): APICall | null {
   if (entity.signature?.includes('http.Client') ||
       entity.purpose?.includes('HTTP') ||
       entity.name.toLowerCase().includes('request')) {
-
-    const method = extractCallMethodFromGo(entity);
-    const url = extractUrlFromGo(entity);
-
-    if (method && url) {
-      return {
-        id: entity.id,
-        method,
-        url,
-        language: 'go',
-        file: entity.file,
-        line: entity.startLine || 0,
-      };
-    }
+    return buildApiCall(entity, 'go',
+      extractCallMethodFromGo(entity),
+      extractUrlFromGo(entity));
   }
   return null;
+}
+
+/** Assemble an `APICall` from a method/url pair, or `null` when either is
+ *  missing. The TS and Go extractors share this tail (the two `if (method &&
+ *  url)` guards and the identical object shape); only the language literal
+ *  differs, which each caller passes in. */
+function buildApiCall(entity: any, language: 'typescript' | 'go', method: string | null, url: string | null): APICall | null {
+  if (!method || !url) return null;
+  return {
+    id: entity.id,
+    method,
+    url,
+    language,
+    file: entity.file,
+    line: entity.startLine || 0,
+  };
 }
 
 // Helper functions for extracting HTTP info from code patterns
