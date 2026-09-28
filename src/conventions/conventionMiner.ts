@@ -554,33 +554,17 @@ export function mineImportFormFromFacts(
   // For each (source, directory) pair, find dominant form
   for (const [key, fc] of formCounts) {
     const [source, directory] = key.split('::');
-    const total = [...fc.values()].reduce((s, c) => s + c, 0);
-    if (total < config.minCorpus) continue;
-
-    // Find the mode (most common form)
-    let maxCount = 0;
-    let dominantForm = '';
-    for (const [form, count] of fc) {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantForm = form;
-      }
-    }
-
-    const modeShare = maxCount / total;
-    if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      pushModeConvention(conventions, {
-        domain: 'import-form',
-        antecedent: source,
-        consequent: dominantForm,
-        pattern: minorityLabel(fc, dominantForm) || null,
-        directory,
-        support: maxCount,
-        total,
-        exemplar: exemplars.get(key),
-        hash: computeHash([source, directory, dominantForm, maxCount, total]),
-      });
-    }
+    const mode = summarizeModes(fc, config);
+    if (!mode) continue;
+    pushModeConvention(conventions, mode, {
+      domain: 'import-form',
+      antecedent: source,
+      consequent: mode.dominant,
+      pattern: minorityLabel(fc, mode.dominant) || null,
+      directory,
+      exemplar: exemplars.get(key),
+      hash: computeHash([source, directory, mode.dominant, mode.maxCount, mode.total]),
+    });
   }
 
   return conventions;
@@ -690,6 +674,31 @@ function minorityLabel(counts: Map<string, number>, dominant: string): string {
 }
 
 /**
+ * Reduce a group's `Map<form, count>` to its dominant form, or null when the
+ * group is below the corpus minimum or the dominant form does not clear the
+ * mode-share gate. Shared by the import-form, export-shape, and error-handling
+ * miners so the total/dominant/mode-share math lives once.
+ */
+function summarizeModes(
+  counts: Map<string, number>,
+  config: ConventionMiningConfig,
+): { dominant: string; maxCount: number; total: number } | null {
+  const total = [...counts.values()].reduce((s, c) => s + c, 0);
+  if (total < config.minCorpus) return null;
+  let maxCount = 0;
+  let dominant = '';
+  for (const [form, count] of counts) {
+    if (count > maxCount) {
+      maxCount = count;
+      dominant = form;
+    }
+  }
+  const modeShare = maxCount / total;
+  if (modeShare < config.modeShare || maxCount < config.minCorpus) return null;
+  return { dominant, maxCount, total };
+}
+
+/**
  * Push one dominant-form convention onto `conventions`. The import-form,
  * export-shape, and error-handling miners each reduce a group's histogram to a
  * dominant form and emit a single `Convention` whose `file_path`/`line` are
@@ -699,14 +708,13 @@ function minorityLabel(counts: Map<string, number>, dominant: string): string {
  */
 function pushModeConvention(
   conventions: Convention[],
+  mode: { dominant: string; maxCount: number; total: number },
   fields: {
     domain: Convention['domain'];
     antecedent: string | null;
     consequent: string | null;
     pattern: string | null;
     directory: string | null;
-    support: number;
-    total: number;
     exemplar: { file: string; line: number } | undefined;
     hash: string;
   },
@@ -720,9 +728,9 @@ function pushModeConvention(
     directory: fields.directory,
     file_path: null,
     line: null,
-    support: fields.support,
-    total_cases: fields.total,
-    confidence: Math.round((fields.support / fields.total) * 10000) / 10000,
+    support: mode.maxCount,
+    total_cases: mode.total,
+    confidence: Math.round((mode.maxCount / mode.total) * 10000) / 10000,
     exemplar_file: fields.exemplar?.file ?? null,
     exemplar_line: fields.exemplar?.line ?? null,
     hash: fields.hash,
@@ -744,32 +752,17 @@ function buildExportShapeConventions(
   const conventions: Convention[] = [];
 
   for (const [directory, forms] of dirForms) {
-    const total = [...forms.values()].reduce((s, c) => s + c, 0);
-    if (total < config.minCorpus) continue;
-
-    let maxCount = 0;
-    let dominantForm = '';
-    for (const [form, count] of forms) {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantForm = form;
-      }
-    }
-
-    const modeShare = maxCount / total;
-    if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      pushModeConvention(conventions, {
-        domain: 'export-shape',
-        antecedent: null,
-        consequent: null,
-        pattern: dominantForm,
-        directory,
-        support: maxCount,
-        total,
-        exemplar: dirExemplars.get(directory),
-        hash: computeHash([directory, dominantForm, maxCount, total]),
-      });
-    }
+    const mode = summarizeModes(forms, config);
+    if (!mode) continue;
+    pushModeConvention(conventions, mode, {
+      domain: 'export-shape',
+      antecedent: null,
+      consequent: null,
+      pattern: mode.dominant,
+      directory,
+      exemplar: dirExemplars.get(directory),
+      hash: computeHash([directory, mode.dominant, mode.maxCount, mode.total]),
+    });
   }
 
   return conventions;
@@ -1085,32 +1078,17 @@ export function mineErrorHandlingFromFacts(
   }
 
   for (const [directory, shapes] of dirShapes) {
-    const total = [...shapes.values()].reduce((s, c) => s + c, 0);
-    if (total < config.minCorpus) continue;
-
-    let maxCount = 0;
-    let dominantShape = '';
-    for (const [shape, count] of shapes) {
-      if (count > maxCount) {
-        maxCount = count;
-        dominantShape = shape;
-      }
-    }
-
-    const modeShare = maxCount / total;
-    if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      pushModeConvention(conventions, {
-        domain: 'error-handling',
-        antecedent: null,
-        consequent: null,
-        pattern: dominantShape,
-        directory,
-        support: maxCount,
-        total,
-        exemplar: dirExemplars.get(directory),
-        hash: computeHash([directory, dominantShape, maxCount, total]),
-      });
-    }
+    const mode = summarizeModes(shapes, config);
+    if (!mode) continue;
+    pushModeConvention(conventions, mode, {
+      domain: 'error-handling',
+      antecedent: null,
+      consequent: null,
+      pattern: mode.dominant,
+      directory,
+      exemplar: dirExemplars.get(directory),
+      hash: computeHash([directory, mode.dominant, mode.maxCount, mode.total]),
+    });
   }
 
   return conventions;
