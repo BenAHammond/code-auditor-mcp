@@ -1006,7 +1006,7 @@ export class CodeIndexDB {
       // `functions_ad` trigger against a freshly recreated (empty) external-content
       // `functions_fts` while `functions` still holds rows yields
       // SQLITE_CORRUPT, not a clean delete.
-      this.db.exec(`DELETE FROM functions WHERE id IS NOT NULL`);
+      this.db.exec(`DELETE FROM functions`);
 
       // Drop the FTS surface — SQLite refuses DROP COLUMN while the FTS triggers
       // reference the column, and the FTS table's column list must shed
@@ -2084,7 +2084,7 @@ export class CodeIndexDB {
           `DELETE FROM function_calls WHERE caller_id IN (SELECT id FROM functions WHERE file_path = ?)`
         ).run(filePath);
       } else {
-        this.db.prepare('DELETE FROM function_calls WHERE caller_id IS NOT NULL').run();
+        this.db.prepare('DELETE FROM function_calls').run();
       }
 
       // Clear existing dependency edges for scoped functions
@@ -2093,7 +2093,7 @@ export class CodeIndexDB {
           `DELETE FROM function_dependencies WHERE function_id IN (SELECT id FROM functions WHERE file_path = ?)`
         ).run(filePath);
       } else {
-        this.db.prepare('DELETE FROM function_dependencies WHERE function_id IS NOT NULL').run();
+        this.db.prepare('DELETE FROM function_dependencies').run();
       }
 
       // Rebuild edges from metadata. When scoped to one file, read only that
@@ -2539,22 +2539,18 @@ export class CodeIndexDB {
   async clearIndex(): Promise<void> {
     this.ensureInitialized();
     this.db.transaction(() => {
-      // Full clears. A bare `DELETE FROM t` is flagged by `unfiltered-query`, so
-      // each states its scope explicitly via the table's non-null primary key:
-      // always-true, not a tautology, and future-proof against the rule's
-      // tautology detector. See `verify:self` §13.1 precision pass.
-      this.db.prepare('DELETE FROM functions WHERE id IS NOT NULL').run();
+      this.db.prepare('DELETE FROM functions').run();
       // FTS5 triggers handle cleanup
-      this.db.prepare('DELETE FROM audit_results WHERE audit_id IS NOT NULL').run();
-      this.db.prepare('DELETE FROM code_maps WHERE map_id IS NOT NULL').run();
-      this.db.prepare('DELETE FROM schema_definitions WHERE schema_id IS NOT NULL').run();
-      this.db.prepare('DELETE FROM schema_usage WHERE id IS NOT NULL').run();
-      this.db.prepare('DELETE FROM conventions WHERE id IS NOT NULL').run();
-      this.db.prepare('DELETE FROM file_churn WHERE file_path IS NOT NULL').run();
-      this.db.prepare('DELETE FROM function_churn WHERE id IS NOT NULL').run();
-      this.db.prepare('DELETE FROM hotspot_scores WHERE target IS NOT NULL').run();
-      this.db.prepare('DELETE FROM dry_pair_history WHERE id IS NOT NULL').run();
-      this.db.prepare('DELETE FROM graph_cache WHERE graph_type IS NOT NULL').run();
+      this.db.prepare('DELETE FROM audit_results').run();
+      this.db.prepare('DELETE FROM code_maps').run();
+      this.db.prepare('DELETE FROM schema_definitions').run();
+      this.db.prepare('DELETE FROM schema_usage').run();
+      this.db.prepare('DELETE FROM conventions').run();
+      this.db.prepare('DELETE FROM file_churn').run();
+      this.db.prepare('DELETE FROM function_churn').run();
+      this.db.prepare('DELETE FROM hotspot_scores').run();
+      this.db.prepare('DELETE FROM dry_pair_history').run();
+      this.db.prepare('DELETE FROM graph_cache').run();
       this.db.prepare("DELETE FROM meta WHERE key IN ('churn_hash', 'conventions_hash', 'style_last_sync')").run();
       // Preserve: project_tasks, analyzer_configs, whitelist, findings_ledger_runs, findings_ledger_findings
     })();
@@ -3553,7 +3549,7 @@ export class CodeIndexDB {
     if (projectPath) {
       this.db.prepare('DELETE FROM analyzer_configs WHERE project_path = ? AND is_global = 0').run(projectPath);
     } else {
-      this.db.prepare('DELETE FROM analyzer_configs WHERE id IS NOT NULL').run();
+      this.db.prepare('DELETE FROM analyzer_configs').run();
     }
   }
 
@@ -4141,7 +4137,7 @@ export class CodeIndexDB {
     if (basis) {
       this.db.prepare('DELETE FROM coverage_data WHERE basis = ?').run(basis);
     } else {
-      this.db.prepare('DELETE FROM coverage_data WHERE id IS NOT NULL').run();
+      this.db.prepare('DELETE FROM coverage_data').run();
     }
   }
 
@@ -4329,7 +4325,7 @@ export class CodeIndexDB {
 
     if (!oldHashRow || oldHashRow.value !== newHash) {
       const conventions = mineConventions(this.db, miningConfig, projectRoot, getSource);
-      const deleteStmt = this.db.prepare('DELETE FROM conventions WHERE id IS NOT NULL');
+      const deleteStmt = this.db.prepare('DELETE FROM conventions');
       const insertStmt = this.db.prepare(
         `INSERT INTO conventions
          (domain, rule_id, antecedent, consequent, pattern, directory,
