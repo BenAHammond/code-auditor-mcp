@@ -53,6 +53,7 @@ import {
   extractDriftPairs,
   compareToBaseline,
 } from '../../scripts/verify-recall-value-drift-core.mjs';
+import { compareCompleteness } from '../../scripts/verify-extraction-completeness-core.mjs';
 
 const APP_ROOT = process.cwd();
 const DIST_CLI = join(APP_ROOT, 'dist', 'cli.js');
@@ -222,5 +223,36 @@ describe('verify:recall-value-drift — liveness', () => {
     actual[0] = { drift: '#cfe2ee', canonical: '#cfe0ef', deltaE76: '2.50' }; // ΔE moved
     const drift = compareToBaseline(actual, baseline);
     expect(drift.some((d) => d.startsWith('missing pair') || d.startsWith('extra pair'))).toBe(true);
+  });
+});
+
+describe('verify:extraction-completeness — liveness', () => {
+  // The residual gap gate re-measures the corpora each run; the corpus is absent
+  // in CI, so the gate SKIPs there. The failure branch lives in the pure
+  // comparison — a moved gap, a missing corpus, or an unexpected corpus must
+  // produce drift lines (and so a non-zero exit), never a silent green.
+  const baseline = { 'hhra-org': 24, blitz: 4, openstatus: 67, 'recall-protocol': 98 };
+
+  it('is green when every corpus gap matches the baseline exactly', () => {
+    expect(compareCompleteness({ ...baseline }, baseline)).toEqual([]);
+  });
+
+  it('reports a moved gap', () => {
+    expect(compareCompleteness({ ...baseline, 'hhra-org': 23 }, baseline)).toContain(
+      'corpus hhra-org gap 23 != baseline 24',
+    );
+  });
+
+  it('reports a corpus the gate failed to measure', () => {
+    const { 'hhra-org': _dropped, ...rest } = baseline;
+    expect(compareCompleteness(rest, baseline)).toContain(
+      'corpus hhra-org not measured (baseline 24)',
+    );
+  });
+
+  it('reports an unexpected corpus measured beyond the baseline', () => {
+    expect(compareCompleteness({ ...baseline, 'new-corpus': 5 }, baseline)).toContain(
+      'unexpected corpus new-corpus measured (gap 5)',
+    );
   });
 });

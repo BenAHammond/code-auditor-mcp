@@ -22,6 +22,50 @@ knex `solid::function-length` was recorded 60 but measures 59 (total 404, not
 (`81efaeb`) — the recorded numbers never matched that tree, so these are ledger
 errors, not analysis changes.
 
+## Spec 68 Thing 2 (#312) — query-builder shape test (2026-09-28)
+
+The `data-access-calls` producer's receiver-name blind spot is replaced with a
+*shape test*: a query-builder chain is discovered by its verb-plus-companion
+grammar (`.select().from(`, `.insert().values(`, `.update().set()/.where(`,
+`.delete() + .where(`) or the Prisma object form (`<recv>.<Model>.<verb>({
+where, data })`), not by what the receiver is named. `DB_RECEIVER_NAMES` is not
+grown; it still serves the raw-SQL path (`db.exec(sql)`), which has no chain
+grammar.
+
+The extraction-completeness sweep (independent builder-site count vs. extracted
+calls) measures the residual receiver-name blind spot — the builder sites still
+not admitted after the shape test. Delta per corpus:
+
+| corpus | extracted (before → after) | residual gap (before → after) |
+| --- | --- | --- |
+| hhra-org | 158 → 334 | 200 → 24 |
+| blitz | 61 → 124 | 6 → 4 |
+| openstatus | 1656 → 2186 | 561 → 67 |
+| recall-protocol | 1848 → 1848 | 98 → 98 |
+| go-data-access | 0 (Go-only) | 0 |
+
+New findings sampled (not a name-list patch — real tenant/query defects that
+stay): `loop-query` ×7 on hhra-org (genuine N+1), ×2 on blitz; no phantom
+`unfiltered-query`/`sql-injection-risk` findings. `sample_ownership` extracts
+(4 calls resolving `sampleOwnership → sample_ownership` and `organizations`),
+confirming the #311 alias chain fires.
+
+The residual gap is dominated by true negatives (Map/URLSearchParams/Set/Headers/
+R2/`cookies.delete`, `createHash()`/`createHmac()` `.update`, Stripe/Slack/tRPC/
+Hono receivers, `this.cache.delete`) plus a small real miss: a *variable-split*
+builder whose companion verb lives in a prior statement (`baseQuery.where(…)`,
+`countBase.where(…)`, `statsQuery.where(…)`). A third admitter — catalog-resolved
+argument — was rejected: the residual has no bare `.from(table)`/`.query(table)`
+chain whose verb argument resolves to a catalog table, so catalog resolution
+would not close it and would re-introduce the under-discovery failure one layer
+up.
+
+Pinned as a gate: `scripts/verify-extraction-completeness.ts` + `bench/baselines/
+extraction-completeness.json` (hhra-org 24, blitz 4, openstatus 67,
+recall-protocol 98), wired into `verify:close` and unit-tested for liveness. The
+next unseen idiom, or an extractor regression, moves a number instead of a quiet
+report.
+
 Re-pinned 2026-09-10 after Spec 52 (findings from a real D1/Workers project
 audit). Three defect fixes moved four rules on recall-protocol, two on knex,
 and one on hhra-org; every delta is attributed and no genuine N+1 was lost:

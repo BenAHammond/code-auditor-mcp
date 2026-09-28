@@ -41,7 +41,8 @@
     "verify:languages": "node scripts/verify-languages.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
     "verify:recall-value-drift": "tsx scripts/verify-recall-value-drift.ts",
-    "verify:close": "npm run verify:disk-space && npm run verify:types && npm run verify:dist-fresh && npm run test && npm run test:integration && npm run bench && npm run verify:recall-value-drift && npm run verify:gate-budget && npm run verify:clean-install && npm run verify:dist && npm run verify:self"
+    "verify:extraction-completeness": "tsx scripts/verify-extraction-completeness.ts",
+    "verify:close": "npm run verify:disk-space && npm run verify:types && npm run verify:dist-fresh && npm run test && npm run test:integration && npm run bench && npm run verify:recall-value-drift && npm run verify:extraction-completeness && npm run verify:gate-budget && npm run verify:clean-install && npm run verify:dist && npm run verify:self"
   },
   "keywords": [
     "mcp",

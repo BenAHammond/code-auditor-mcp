@@ -373,11 +373,141 @@ function isTaggedTemplateSqlCall(
 }
 
 /**
+ * The four companion pairs of the query-builder chain grammar (Spec 68 Thing 2,
+ * #312). A verb admits a chain only when one of its required companions appears
+ * LATER in the same callee — this is the Drizzle/Kysely grammar and is pure
+ * syntax (no catalog, no name list).
+ */
+const QUERY_BUILDER_COMPANIONS: ReadonlyArray<{ verb: RegExp; companions: RegExp[] }> = [
+  // `.select` also admits Drizzle's `.selectDistinct(…)` / `.selectDistinctOn(…)`
+  // — the same select verb followed by `.from(`; `.select\b` alone would miss the
+  // `Distinct` suffix (a word character breaks the boundary).
+  { verb: /\.select(?:DistinctOn|Distinct)?\b/, companions: [/\.from\b/] },
+  { verb: /\.insert\b/, companions: [/\.values\b/] },
+  { verb: /\.update\b/, companions: [/\.set\b/, /\.where\b/] },
+  { verb: /\.delete\b/, companions: [/\.where\b/] },
+];
+
+/**
+ * Admitter 1 — verb plus required companion, tested on the CALLEE text. The
+ * callee of the outermost call in a chain carries every earlier verb with its
+ * argument (e.g. `db.select({…}).from(users).where(…)` → callee text
+ * `db.select({…}).from(users).where`), so a single substring scan over the
+ * callee sees the whole grammar. The trailing verb appears without its paren
+ * (the arguments belong to the outermost call), so companions are matched with
+ * a word boundary, not `\(`. `map.delete(k)`, `createHash().update(b)`,
+ * `cookies.delete(n)` and `stripe.customers.update(id, data)` all lack the
+ * companion and fail.
+ */
+function hasChainCompanion(calleeText: string): boolean {
+  for (const { verb, companions } of QUERY_BUILDER_COMPANIONS) {
+    const verbIdx = calleeText.search(verb);
+    if (verbIdx < 0) continue;
+    const rest = calleeText.slice(verbIdx + 1);
+    if (companions.some((companion) => companion.test(rest))) return true;
+  }
+  return false;
+}
+
+/** Prisma CRUD verbs admitted by the object-form shape (admitter 2). */
+const PRISMA_VERBS = new Set([
+  'create', 'createMany', 'update', 'updateMany', 'upsert',
+  'delete', 'deleteMany', 'findUnique', 'findFirst', 'findMany',
+  'findUniqueOrThrow', 'findFirstOrThrow', 'findRaw', 'count', 'groupBy', 'aggregate',
+]);
+
+/** Collect the property keys of an object literal, including its nested objects. */
+function collectObjectLiteralKeys(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string[] {
+  const keys: string[] = [];
+  const stack: ASTNode[] = [node];
+  while (stack.length) {
+    const n = stack.pop()!;
+    const t = adapter.getNodeType(n);
+    if (t === 'shorthand_property_identifier' || t === 'property_identifier') {
+      const txt = adapter.getNodeText(n, sourceCode)?.trim();
+      if (txt) keys.push(txt);
+      continue;
+    }
+    for (const c of adapter.getChildren(n) ?? []) stack.push(c);
+  }
+  return keys;
+}
+
+/**
+ * Admitter 2 — Prisma's object form: `<recv>.<Model>.<verb>({ … })` where the
+ * object-literal argument carries a `where` or `data` key. Option 1 (chained
+ * companions) misses this because the `where`/`data` are keys inside an object
+ * literal, not chained calls (blitz `prisma.user.update({ where, data })`).
+ */
+function isPrismaObjectForm(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee || adapter.getNodeType(callee) !== 'member_expression') return false;
+  const calleeText = stripComments(adapter.getNodeText(callee, sourceCode) ?? '').trim();
+  const parts = calleeText.split('.');
+  if (parts.length < 3) return false;
+  if (!PRISMA_VERBS.has(parts[parts.length - 1])) return false;
+
+  const args = adapter.getChildren(node).find((c) => adapter.getNodeType(c) === 'arguments');
+  if (!args) return false;
+  for (const arg of adapter.getChildren(args)) {
+    const keys = collectObjectLiteralKeys(arg, adapter, sourceCode);
+    if (keys.includes('where') || keys.includes('data')) return true;
+  }
+  return false;
+}
+
+/**
+ * Spec 68 Thing 2 (#312) — the query-builder shape test.
+ *
+ * Answers "is this a DB query?" structurally, from the call's own grammar,
+ * instead of by the receiver's name. A chain that shapes like a Drizzle/Kysely
+ * builder or a Prisma CRUD call is a query regardless of whether its receiver
+ * is named `db`, `appDb`, `tx`, or `prisma`. This replaces the receiver-name
+ * blind spot (`DB_RECEIVER_NAMES`) without growing the name list — the raw-SQL
+ * path (`db.exec(sql)`) still relies on receiver/import provenance because it
+ * has no chain grammar to lean on.
+ *
+ * Two admitting conditions, union (not intersection):
+ *   1. verb + companion chain grammar — {@link hasChainCompanion};
+ *   2. Prisma object form — {@link isPrismaObjectForm}.
+ *
+ * A third admitter — catalog-resolved argument (a bare `.from(table)` /
+ * `.query(table)` whose verb argument resolves to a `table-catalog` table) —
+ * was evaluated and REJECTED. The residual gap after admitter 1+2 contains no
+ * such chain: the real misses are *variable-split* builders (the companion verb
+ * lives in a prior statement, e.g. `const q = baseQuery.where(…)`), which
+ * catalog resolution does not address. Gating on an under-discovered catalog
+ * would just rebuild the receiver-name failure one layer up. See the
+ * extraction-completeness gate (scripts/verify-extraction-completeness.ts) for
+ * the pinned residual.
+ */
+function isQueryBuilderShape(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  if (node.type !== 'call_expression') return false;
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee) return false;
+  const calleeText = stripComments(adapter.getNodeText(callee, sourceCode) ?? '');
+  return hasChainCompanion(calleeText) || isPrismaObjectForm(node, adapter, sourceCode);
+}
+
+/**
  * Predicate for the node-discovery pass of extractDatabaseCalls.  A node is a
  * candidate when it is a DB-provenanced function call, a tagged-template SQL
- * call, a template literal in a DB-provenanced call's arguments, or a variable
+ * call, a template literal in a DB-provenanced call's arguments, a variable
  * assignment holding SQL-shaped text (Spec 17 R2 — content scanning is removed
- * in favour of provenance).
+ * in favour of provenance), or a query-builder chain discovered by shape
+ * (Spec 68 Thing 2, #312).
  */
 function isDbCallCandidate(
   node: ASTNode,
@@ -390,6 +520,11 @@ function isDbCallCandidate(
 
   // Check if it's a function call whose callee is DB-related
   if (provenanceContext && isDBProvenancedFunctionCall(node, adapter, sourceCode, provenanceContext)) {
+    return true;
+  }
+
+  // A query-builder chain is discovered by shape, not receiver name.
+  if (isQueryBuilderShape(node, adapter, sourceCode)) {
     return true;
   }
 

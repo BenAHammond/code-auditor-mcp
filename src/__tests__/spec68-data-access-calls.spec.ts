@@ -94,3 +94,81 @@ describe('Spec 68 data-access-calls producer', () => {
     expect(out).toEqual([]);
   });
 });
+
+/**
+ * Spec 68 Thing 2 (#312) — query-builder discovery is shape-based, not
+ * receiver-name-based. A chain carrying a verb plus its required companion is a
+ * query builder regardless of what the receiver is called; the same shape test
+ * rejects `.delete`/`.update` on non-builder receivers that share the verb.
+ */
+describe('Spec 68 query-builder shape test', () => {
+  it('admits a `.select().from()` chain on an un-provenanced receiver', () => {
+    const out = calls('/fixture/shape-select.ts', [
+      'appDb.getDb().select().from(users).where(eq(users.id, id));',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.some((c) => c.tables.includes('users'))).toBe(true);
+  });
+
+  it('admits an `.insert().values()` chain', () => {
+    const out = calls('/fixture/shape-insert.ts', [
+      'appDb.getDb().insert(users).values({ name });',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('admits an `.update().set().where()` chain', () => {
+    const out = calls('/fixture/shape-update.ts', [
+      'appDb.getDb().update(users).set({ name }).where(eq(users.id, id));',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('admits a `.delete().where()` chain', () => {
+    const out = calls('/fixture/shape-delete.ts', [
+      'appDb.getDb().delete(users).where(eq(users.id, id));',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('admits a `.selectDistinct().from()` chain (word-boundary regression)', () => {
+    const out = calls('/fixture/shape-distinct.ts', [
+      'db.selectDistinct({ a: t.a }).from(t);',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.some((c) => c.tables.includes('t'))).toBe(true);
+  });
+
+  it('admits the Prisma object form `prisma.<model>.<verb>({ where, data })`', () => {
+    const out = calls('/fixture/shape-prisma.ts', [
+      'prisma.user.update({ where: { id }, data: { name } });',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('rejects `map.delete(key)` — a verb with no query-builder companion', () => {
+    const out = calls('/fixture/shape-map.ts', 'params.delete(key);\n');
+    expect(out).toEqual([]);
+  });
+
+  it('rejects `crypto.createHash().update()` — `.update` without a companion', () => {
+    const out = calls('/fixture/shape-crypto.ts', [
+      'crypto.createHash("sha256").update(input);',
+    ].join('\n'));
+    expect(out).toEqual([]);
+  });
+
+  it('rejects `stripe.customers.update(id, data)` — no `where`/`data` object form', () => {
+    const out = calls('/fixture/shape-stripe.ts', [
+      'stripe.customers.update(id, data);',
+    ].join('\n'));
+    expect(out).toEqual([]);
+  });
+
+  it('rejects `cookies.delete(name)` — `.delete` with no chained `.where`', () => {
+    const out = calls('/fixture/shape-cookies.ts', [
+      'response.cookies.delete("auth");',
+    ].join('\n'));
+    expect(out).toEqual([]);
+  });
+});
