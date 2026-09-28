@@ -431,17 +431,6 @@ function nonQueryBuilderTableFilter(fp: { clause: string; params: string[] }): {
   };
 }
 
-/**
- * Detect tables that are written to (INSERT/UPDATE/DELETE/CREATE) but
- * never read from (SELECT). These might be dead writes or missed read paths.
- *
- * A table must have at least one `insert`/`update` ("data flows in") usage to
- * qualify — a table whose only visible writes are `create` (DDL) or `delete`
- * (truncate) is not a dead write path, because its `insert`/`select` live in a
- * file the extractor does not scan (an out-of-scope receiver) or a dynamic-SQL
- * read. The anchor still sorts the full write set, so `delete` keeps its
- * byte-order edge over `insert` and a mixed write table anchors on the `delete`.
- */
 /** Deduplicate query rows by table and emit one violation per unique table,
  *  anchored to the first row encountered. The two read/write-mismatch detectors
  *  share this tail: their SQL and message/severity/rule differ, but the
@@ -473,30 +462,66 @@ function emitTableViolations(
   return violations;
 }
 
-function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Violation[] {
+/** One direction of the one-sided lifecycle check: the write-side usage types,
+ *  the read-side usage types (the `NOT IN` exclusion), an optional further
+ *  `IN` requirement, and the rule/severity/message for the violation. */
+interface DirectionCheck {
+  writeTypes: readonly string[];
+  readTypes: readonly string[];
+  requireTypes?: readonly string[];
+  rule: string;
+  severity: Violation['severity'];
+  message: (row: SchemaUsageRow) => string;
+}
+
+/** Run one usage-direction check: tables used with `writeTypes` but never with
+ *  `readTypes` (optionally requiring membership in `requireTypes`), emitted as
+ *  per-table violations. Written-never-read and read-never-written are this one
+ *  shape with the two type sets swapped, so the shared SELECT list, scope/QB
+ *  filters, ORDER BY, dedup, and emit live here once. `usage_type IN ('select')`
+ *  is equivalent to `usage_type = 'select'`, so one IN path covers both. */
+function runUsageDirectionCheck(indexHandle: IndexHandle, scope: FileScope, check: DirectionCheck): Violation[] {
   const fp = scope.apply('file_path');
   const qb = nonQueryBuilderTableFilter(fp);
+  const inList = (types: readonly string[]) => types.map((t) => `'${t}'`).join(', ');
+  const requireClause = check.requireTypes
+    ? `\n         AND table_name IN (\n           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type IN (${inList(check.requireTypes)}) ${fp.clause}\n         )`
+    : '';
 
   const rows = indexHandle
     .query(`SELECT DISTINCT table_name, file_path, function_name, function_start_line, function_start_column, line, usage_type
        FROM schema_usage
-       WHERE usage_type IN ('insert', 'update', 'delete', 'create')
+       WHERE usage_type IN (${inList(check.writeTypes)})
          ${fp.clause}
          ${qb.clause}
          AND table_name NOT IN (
-           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type = 'select' ${fp.clause}
-         )
-         AND table_name IN (
-           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type IN ('insert', 'update') ${fp.clause}
-         )
-       ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params, ...fp.params]) as SchemaUsageRow[];
+           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type IN (${inList(check.readTypes)}) ${fp.clause}
+         )${requireClause}
+       ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params, ...(check.requireTypes ? fp.params : [])]) as SchemaUsageRow[];
 
-  return emitTableViolations(
-    rows,
-    'cross-domain/written-never-read',
-    'high',
-    (row) => `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
-  );
+  return emitTableViolations(rows, check.rule, check.severity, check.message);
+}
+
+/**
+ * Detect tables that are written to (INSERT/UPDATE/DELETE/CREATE) but
+ * never read from (SELECT). These might be dead writes or missed read paths.
+ *
+ * A table must have at least one `insert`/`update` ("data flows in") usage to
+ * qualify — a table whose only visible writes are `create` (DDL) or `delete`
+ * (truncate) is not a dead write path, because its `insert`/`select` live in a
+ * file the extractor does not scan (an out-of-scope receiver) or a dynamic-SQL
+ * read. The anchor still sorts the full write set, so `delete` keeps its
+ * byte-order edge over `insert` and a mixed write table anchors on the `delete`.
+ */
+function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Violation[] {
+  return runUsageDirectionCheck(indexHandle, scope, {
+    writeTypes: ['insert', 'update', 'delete', 'create'],
+    readTypes: ['select'],
+    requireTypes: ['insert', 'update'],
+    rule: 'cross-domain/written-never-read',
+    severity: 'high',
+    message: (row) => `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
+  });
 }
 
 // ── R1: Read-Never-Written ──────────────────────────────────────────────
@@ -507,27 +532,13 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
  * or indicate missing write coverage.
  */
 function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Violation[] {
-  const fp = scope.apply('file_path');
-  const qb = nonQueryBuilderTableFilter(fp);
-
-  const rows = indexHandle
-    .query(`SELECT DISTINCT table_name, file_path, function_name, function_start_line, function_start_column, line, usage_type
-       FROM schema_usage
-       WHERE usage_type = 'select'
-         ${fp.clause}
-         ${qb.clause}
-         AND table_name NOT IN (
-           SELECT DISTINCT table_name FROM schema_usage
-           WHERE usage_type IN ('insert', 'update', 'delete', 'create') ${fp.clause}
-         )
-       ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params]) as SchemaUsageRow[];
-
-  return emitTableViolations(
-    rows,
-    'cross-domain/read-never-written',
-    'severe',
-    (row) => `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
-  );
+  return runUsageDirectionCheck(indexHandle, scope, {
+    writeTypes: ['select'],
+    readTypes: ['insert', 'update', 'delete', 'create'],
+    rule: 'cross-domain/read-never-written',
+    severity: 'severe',
+    message: (row) => `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
+  });
 }
 
 // ── R1: Transaction-Boundary Risk ───────────────────────────────────────
