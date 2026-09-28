@@ -1725,6 +1725,63 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     });
     return guarded;
   }
+
+  /** True when the member expression names a class field (`this.X`) that a
+   *  guard call (assert/validate/check/ensure/guard-prefixed) has validated
+   *  before this use — e.g. `assertSqlIdentifier(this.tableName, 'table name')`
+   *  in the constructor, then `FROM "${this.tableName}"` in a method.  A
+   *  whitelist guard on a field holds across the object's life (the field is
+   *  assigned only at construction), so the interpolation is provably safe.
+   *  This is the field analogue of `isGuardValidatedParameter`, which only
+   *  covers function parameters and so missed class-property interpolation. */
+  protected isGuardValidatedMember(memberNode: ASTNode, ast: AST): boolean {
+    const idRaw = getRawNode(memberNode);
+    if (idRaw.type !== 'member_expression') return false;
+    const prop = (idRaw as any).childForFieldName?.('property') as TreeSitterNode | null;
+    if (!prop) return false;
+    const propName = prop.text;
+
+    // Walk the raw parent chain to the enclosing class declaration (the ASTNode
+    // parent chain is empty for detached nodes).
+    let raw: TreeSitterNode | null = idRaw.parent;
+    while (raw) {
+      if (raw.type === 'class_declaration' || raw.type === 'abstract_class_declaration') break;
+      raw = raw.parent ?? null;
+    }
+    if (!raw) return false;
+    const classId = raw.id;
+    let classNode: ASTNode | null = null;
+    this.walk(ast.root, (candidate) => {
+      if (classNode) return;
+      if (getRawNode(candidate).id === classId) classNode = candidate;
+    });
+    if (!classNode) return false;
+
+    let guarded = false;
+    this.walk(classNode, (node) => {
+      if (guarded) return;
+      const r = getRawNode(node);
+      if (r.type !== 'call_expression') return;
+      const fn = (r as any).childForFieldName?.('function') as TreeSitterNode | null;
+      if (!fn) return;
+      let calleeName: string | null = null;
+      if (fn.type === 'identifier') calleeName = fn.text;
+      else if (fn.type === 'member_expression') {
+        calleeName = (fn as any).childForFieldName?.('property')?.text ?? null;
+      }
+      if (!calleeName) return;
+      if (!/^(assert|validate|check|ensure|guard)([A-Z_]|$)/i.test(calleeName)) return;
+      const argsNode = (r as any).childForFieldName?.('arguments') as TreeSitterNode | null;
+      const first = argsNode?.namedChildren[0] ?? null;
+      if (!first || first.type !== 'member_expression') return;
+      const firstProp = (first as any).childForFieldName?.('property') as TreeSitterNode | null;
+      if (firstProp && firstProp.text === propName
+          && r.startIndex < idRaw.startIndex) {
+        guarded = true;
+      }
+    });
+    return guarded;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1862,8 +1919,12 @@ class TsSafetyAnalysis extends TsConstantResolution {
         return this.isSafeArray(node, ctx);
       case 'call_expression':
         return this.isSafeCallExpression(node, ctx);
-      // member_expression, object/class literals, await/async, etc. — a value we
-      // cannot prove safe.  Conservative: stay flagged.
+      case 'member_expression':
+        // A class field (`this.X`) that a whitelist guard has validated before
+        // this use is safe; anything else stays conservatively flagged.
+        return this.isGuardValidatedMember(node, ctx.ast);
+      // object/class literals, await/async, etc. — a value we cannot prove safe.
+      // Conservative: stay flagged.
       default:
         return false;
     }

@@ -259,17 +259,31 @@ function deduplicateBlocks(blocks: CodeBlockBlock[]): CodeBlockBlock[] {
   return result;
 }
 
-/** Jaccard similarity over two whitespace-tokenized strings, [0, 1]. */
+/** Overlapping bigrams of a token sequence — an order-aware fingerprint.  A
+ *  sequence shorter than two tokens yields no bigrams (similarity 0). */
+function tokenBigrams(tokens: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i + 1 < tokens.length; i++) {
+    out.push(tokens[i] + ' ' + tokens[i + 1]);
+  }
+  return out;
+}
+
+/** Jaccard similarity over the token *bigrams* of two whitespace-tokenized
+ *  strings, [0, 1].  Bigrams are order- and frequency-aware where a bare token
+ *  SET is not: two blocks sharing the same token vocabulary but in a different
+ *  order (or a large block whose vocabulary subsumes a smaller block's) no
+ *  longer compare as ~100% structurally similar. */
 function computeJaccardSimilarity(text1: string, text2: string): number {
-  const tokens1 = new Set(text1.split(/\s+/).filter(Boolean));
-  const tokens2 = new Set(text2.split(/\s+/).filter(Boolean));
+  const grams1 = new Set(tokenBigrams(text1.split(/\s+/).filter(Boolean)));
+  const grams2 = new Set(tokenBigrams(text2.split(/\s+/).filter(Boolean)));
 
   let intersection = 0;
-  for (const t of tokens1) {
-    if (tokens2.has(t)) intersection++;
+  for (const g of grams1) {
+    if (grams2.has(g)) intersection++;
   }
 
-  const union = tokens1.size + tokens2.size - intersection;
+  const union = grams1.size + grams2.size - intersection;
   return union === 0 ? 0 : intersection / union;
 }
 
