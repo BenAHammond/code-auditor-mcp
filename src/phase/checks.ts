@@ -67,13 +67,8 @@ const _allSerializable: _FactsSerializable[FactKind] = true as const;
 type _OverlappingKinds = keyof typeof PRODUCERS & keyof typeof CORPUS_PRODUCERS;
 const _mapsDisjoint: _OverlappingKinds extends never ? true : never = true;
 
-// The assertions above must be *referenced* (not just declared) so a build that
-// drops this file still fails: `export type` is enough for the residue aliases,
-// but the `const` values are what carry the failure at compile time. This
-// export re-exposes them as a tuple the entry-point conformance test can name.
-export type Spec68Checks = [
-  _Unproduced extends never ? true : never,
-  _Unconsumed extends never ? true : never,
-  _FactsSerializable[FactKind],
-  _OverlappingKinds extends never ? true : never,
-];
+// The `const` values above are the check: each is type-checked by `tsc` when
+// this file is compiled, and a regressed invariant turns the assignment's type
+// into `never` so `= true` fails the build. Nothing imports this module — it is
+// a compile-time-only guard (like `seeded-defects.ts`), in `include: src/**/*`,
+// so `tsc --noEmit` reaches it regardless of the import graph.

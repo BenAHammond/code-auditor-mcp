@@ -772,18 +772,26 @@ interface InjectionCheckContext {
 function collectInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArray): DynamicSqlCandidate | null {
   const { ast, adapter, sourceCode, symbolOrdinals } = ctx;
 
-  // Parameterized queries pass a bound-params argument (`query(sql, params)`).
-  // When the matched literal is followed by `, params` the interpolated
-  // `${...}` segments are compile-time clauses whose `?` placeholders are
-  // bound by that argument — not an injection vector. The data-access
-  // analyzer's checkQuerySecurity applies the same signal.
-  const afterMatch = sourceCode.slice(match.index + match[0].length);
-  if (/^\s*,/.test(afterMatch)) return null;
-
   const location = offsetToLocation(sourceCode, match.index, { line: 1, column: 1 });
 
   // Find enclosing function from the AST at this position
   const node = findClosestNodeAt(ast.root, location, adapter);
+  const callNode = findEnclosingCallExpression(node, adapter);
+
+  // Parameterized queries pass a bound-params argument (`query(sql, params)`).
+  // When the matched literal's enclosing call carries a second argument, the
+  // interpolated `${...}` segments are compile-time clauses whose `?`
+  // placeholders are bound by that argument — not an injection vector.  This is
+  // checked at the *call* level (two source forms below), not by looking for a
+  // comma immediately after the match: a *nested* template fragment inside the
+  // first argument — `query(\`...\${scope ? \` WHERE \${scope.clause}\` : ''}\`,
+  // scope?.params)` — ends the regex match at the inner template's backtick, so
+  // the `,` lands several characters later and a bare `^\s*,` lookahead misses
+  // it.  The data-access analyzer's checkQuerySecurity applies the same signal.
+  const afterMatch = sourceCode.slice(match.index + match[0].length);
+  if (/^\s*,/.test(afterMatch) || (callNode && callHasBindParams(callNode, adapter))) {
+    return null;
+  }
 
   // Taint-aware safety check (Spec 33 Item 11a): clear the finding when the
   // query argument's dynamic parts are all provably safe. The naive regex
@@ -792,7 +800,6 @@ function collectInjectionMatch(ctx: InjectionCheckContext, match: RegExpExecArra
   // distinction is delegated to the adapter's dynamic-string safety analysis
   // (isSafeInterpolation / resolveLocalConstant) — the same signal the
   // data-access analyzer already trusts for sql-injection-risk.
-  const callNode = findEnclosingCallExpression(node, adapter);
   if (callNode && isAllDynamicPartsSafe(callNode, ast, adapter, sourceCode)) {
     return null;
   }
@@ -884,6 +891,18 @@ function findEnclosingCallExpression(
     current = adapter.getParent(current);
   }
   return null;
+}
+
+/** True when the call expression carries a second argument — the bound-params
+ *  argument of a parameterized `query(sql, params)` / `execute(sql, params)`.
+ *  Mirrors the argument-count signal `isWrapperFunctionWithBindParams` uses. */
+function callHasBindParams(callNode: ASTNode, adapter: LanguageAdapter): boolean {
+  const args = adapter.getChildren(callNode).find(c => adapter.getNodeType(c) === 'arguments');
+  if (!args) return false;
+  const realArgs = adapter.getChildren(args).filter(
+    c => !['(', ')', ','].includes(adapter.getNodeType(c)),
+  );
+  return realArgs.length >= 2;
 }
 
 /**

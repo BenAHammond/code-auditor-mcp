@@ -37,7 +37,7 @@ export function isTestFile(fp: string): boolean {
 const ENTRY_BASENAMES = new Set([
   'route', 'page', 'layout', 'loading', 'error', 'not-found', 'template', 'default',
   'middleware', 'instrumentation', 'server', 'client', 'cli', 'main', 'app', 'index', 'worker',
-  'setup', 'seed',
+  'setup', 'seed', 'mcp',
 ]);
 
 /**
