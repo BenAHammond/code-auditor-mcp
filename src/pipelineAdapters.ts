@@ -101,6 +101,38 @@ function lazySingleton<T>(loader: () => Promise<T>): () => Promise<T> {
   };
 }
 
+// ── Shared AST visitor scaffold ──────────────────────────────────────────────
+// The four analyzers whose whole per-file story is `analyzeAST()` (SOLID, DRY,
+// documentation, secrets) repeat the same stage-2 visitor shape: lazily load the
+// analyzer, call analyzeAST, return empty facts. Only the name, loader, and
+// prose differ. The caller owns `getAnalyzer` so a bundle can share one lazy
+// instance between the visitor and its sample/pair getter (sizeSamples, dryPairs).
+
+interface AnalyzerAstVisitorSpec {
+  name: string;
+  getAnalyzer: () => Promise<any>;
+  description: string;
+  category: string;
+}
+
+function createAnalyzerAstVisitor(spec: AnalyzerAstVisitorSpec): Stage2Visitor {
+  return {
+    name: spec.name,
+    stage: 'visitor',
+    getRuleIds: () => getRuleIdsFor(spec.name),
+    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
+      const a = await spec.getAnalyzer();
+      const violations: Violation[] = await a.analyzeAST(
+        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
+      );
+      return { violations, facts: {} };
+    },
+    defaultConfig: {},
+    description: spec.description,
+    category: spec.category,
+  };
+}
+
 // ── SOLID visitor ────────────────────────────────────────────────────────────
 
 export interface SolidVisitorBundle {
@@ -122,27 +154,13 @@ export function createSolidVisitor(): SolidVisitorBundle {
     ),
   );
 
-  const visitor: Stage2Visitor = {
-    name: 'solid',
-    stage: 'visitor',
-    getRuleIds: () => getRuleIdsFor('solid'),
-    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const a = await getAnalyzer();
-      const violations: Violation[] = await a.analyzeAST(
-        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
-      );
-      return {
-        violations,
-        facts: {},
-      };
-    },
-    defaultConfig: {},
-    description: 'Detects violations of SOLID principles',
-    category: 'architecture',
-  };
-
   return {
-    visitor,
+    visitor: createAnalyzerAstVisitor({
+      name: 'solid',
+      getAnalyzer,
+      description: 'Detects violations of SOLID principles',
+      category: 'architecture',
+    }),
     getSizeSamples: async () => {
       try {
         const a = await getAnalyzer();
@@ -180,24 +198,13 @@ export function createDryVisitor(): DryVisitorBundle {
     ),
   );
 
-  const visitor: Stage2Visitor = {
-    name: 'dry',
-    stage: 'visitor',
-    getRuleIds: () => getRuleIdsFor('dry'),
-    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const a = await getAnalyzer();
-      const violations: Violation[] = await a.analyzeAST(
-        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
-      );
-      return { violations, facts: {} };
-    },
-    defaultConfig: {},
-    description: 'Detects code duplication across the codebase',
-    category: 'maintainability',
-  };
-
   return {
-    visitor,
+    visitor: createAnalyzerAstVisitor({
+      name: 'dry',
+      getAnalyzer,
+      description: 'Detects code duplication across the codebase',
+      category: 'maintainability',
+    }),
     getDryPairs: async () => {
       try {
         const a = await getAnalyzer();
@@ -348,27 +355,16 @@ export function createOrgFilterReducer(): Stage4Reducer {
  * @returns The documentation stage-2 visitor.
  */
 export function createDocumentationVisitor(): Stage2Visitor {
-  const getAnalyzer = lazySingleton<any>(() =>
-    import('./analyzers/universal/UniversalDocumentationAnalyzer.js').then(
-      (m) => new m.UniversalDocumentationAnalyzer(),
-    ),
-  );
-
-  return {
+  return createAnalyzerAstVisitor({
     name: 'documentation',
-    stage: 'visitor',
-    getRuleIds: () => getRuleIdsFor('documentation'),
-    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const a = await getAnalyzer();
-      const violations: Violation[] = await a.analyzeAST(
-        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
-      );
-      return { violations, facts: {} };
-    },
-    defaultConfig: {},
+    getAnalyzer: lazySingleton<any>(() =>
+      import('./analyzers/universal/UniversalDocumentationAnalyzer.js').then(
+        (m) => new m.UniversalDocumentationAnalyzer(),
+      ),
+    ),
     description: 'Checks documentation completeness',
     category: 'style',
-  };
+  });
 }
 
 // ── Secrets visitor ──────────────────────────────────────────────────────────
@@ -380,27 +376,16 @@ export function createDocumentationVisitor(): Stage2Visitor {
  * @returns The secrets stage-2 visitor.
  */
 export function createSecretsVisitor(): Stage2Visitor {
-  const getAnalyzer = lazySingleton<any>(() =>
-    import('./analyzers/universal/UniversalSecretsAnalyzer.js').then(
-      (m) => new m.UniversalSecretsAnalyzer(),
-    ),
-  );
-
-  return {
+  return createAnalyzerAstVisitor({
     name: 'secrets',
-    stage: 'visitor',
-    getRuleIds: () => getRuleIdsFor('secrets'),
-    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const a = await getAnalyzer();
-      const violations: Violation[] = await a.analyzeAST(
-        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
-      );
-      return { violations, facts: {} };
-    },
-    defaultConfig: {},
+    getAnalyzer: lazySingleton<any>(() =>
+      import('./analyzers/universal/UniversalSecretsAnalyzer.js').then(
+        (m) => new m.UniversalSecretsAnalyzer(),
+      ),
+    ),
     description: 'Detects hardcoded credentials, API keys, and tokens',
     category: 'security',
-  };
+  });
 }
 
 // ── Security visitor (Spec 61 R6) ────────────────────────────────────────────
@@ -2501,6 +2486,35 @@ export function createAPIContractReducer(): Stage4Reducer {
 // ── dependency-graph reducer (Stage 4) ───────────────────────────────────────
 
 /**
+ * Persist a `graph_cache` edge set in one transaction: delete the graph's
+ * existing rows, then insert `rows` as (node_key, neighbor_key, weight).
+ * Advisory — a failure here only degrades the post-pipeline hotspot ranking,
+ * so it is swallowed rather than surfaced as an audit error.
+ */
+function persistGraphEdges(
+  rawDb: unknown,
+  graphType: string,
+  rows: ReadonlyArray<readonly [string, string, unknown]>,
+): void {
+  try {
+    const db = rawDb as any;
+    const del = db.prepare(`DELETE FROM graph_cache WHERE graph_type = '${graphType}'`);
+    const ins = db.prepare(
+      `INSERT OR REPLACE INTO graph_cache (graph_type, node_key, neighbor_key, weight) VALUES ('${graphType}', ?, ?, ?)`,
+    );
+    const tx = db.transaction(() => {
+      del.run();
+      for (const [nodeKey, neighborKey, weight] of rows) {
+        ins.run(nodeKey, neighborKey, weight);
+      }
+    });
+    tx();
+  } catch {
+    // Advisory persistence — ranking falls back to a neutral default without it.
+  }
+}
+
+/**
  * Create the dependency-graph stage-4 reducer, which detects dependency cycles,
  * hubs, and orphaned nodes.
  *
@@ -2622,23 +2636,10 @@ export function createDependencyGraphReducer(): Stage4Reducer {
           // Persist reachability to graph_cache so the post-pipeline reorder
           // (auditRunner hotspot block) can rank every finding by live/dead.
           if (context.indexHandle?.rawDb) {
-            try {
-              const db = context.indexHandle.rawDb as any;
-              const del = db.prepare("DELETE FROM graph_cache WHERE graph_type = 'reachability'");
-              const ins = db.prepare(
-                "INSERT OR REPLACE INTO graph_cache (graph_type, node_key, neighbor_key, weight) VALUES ('reachability', ?, '', ?)"
-              );
-              const tx = db.transaction(() => {
-                del.run();
-                for (const [fp, score] of reachability) {
-                  ins.run(fp, score);
-                }
-              });
-              tx();
-            } catch {
-              // Reachability persistence is advisory — ranking falls back to a
-              // neutral default without it.
-            }
+            const reachabilityRows = [...reachability].map(
+              ([fp, score]) => [fp, '', score] as const,
+            );
+            persistGraphEdges(context.indexHandle.rawDb, 'reachability', reachabilityRows);
           }
 
           // Spec 60 R1 — persist the file-level import edges (reverse adjacency:
@@ -2646,24 +2647,13 @@ export function createDependencyGraphReducer(): Stage4Reducer {
           // is answerable downstream from `importersOf`, not the symbol-level
           // `function_dependencies` table.
           if (context.indexHandle?.rawDb) {
-            try {
-              const db = context.indexHandle.rawDb as any;
-              const del = db.prepare("DELETE FROM graph_cache WHERE graph_type = 'importers'");
-              const ins = db.prepare(
-                "INSERT OR REPLACE INTO graph_cache (graph_type, node_key, neighbor_key, weight) VALUES ('importers', ?, ?, 1)"
-              );
-              const tx = db.transaction(() => {
-                del.run();
-                for (const [fp, importers] of importersOf) {
-                  for (const importer of importers) {
-                    ins.run(fp, importer);
-                  }
-                }
-              });
-              tx();
-            } catch {
-              // Importer-edge persistence is advisory, like reachability.
+            const importerRows: Array<readonly [string, string, unknown]> = [];
+            for (const [fp, importers] of importersOf) {
+              for (const importer of importers) {
+                importerRows.push([fp, importer, 1]);
+              }
             }
+            persistGraphEdges(context.indexHandle.rawDb, 'importers', importerRows);
           }
 
           // Flag files that export symbols yet are imported by nothing and are
