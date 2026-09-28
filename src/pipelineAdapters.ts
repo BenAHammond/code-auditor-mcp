@@ -133,6 +133,16 @@ function createAnalyzerAstVisitor(spec: AnalyzerAstVisitorSpec): Stage2Visitor {
   };
 }
 
+/** Read the analyzer's accumulated samples/pairs, swallowing a load failure. */
+function readAccumulated<T>(
+  getAnalyzer: () => Promise<any>,
+  pick: (a: any) => T[] | undefined,
+): Promise<T[]> {
+  return getAnalyzer()
+    .then((a) => pick(a) ?? [])
+    .catch(() => []);
+}
+
 // ── SOLID visitor ────────────────────────────────────────────────────────────
 
 export interface SolidVisitorBundle {
@@ -161,14 +171,7 @@ export function createSolidVisitor(): SolidVisitorBundle {
       description: 'Detects violations of SOLID principles',
       category: 'architecture',
     }),
-    getSizeSamples: async () => {
-      try {
-        const a = await getAnalyzer();
-        return a.sizeSamples ?? [];
-      } catch {
-        return [];
-      }
-    },
+    getSizeSamples: () => readAccumulated(getAnalyzer, (a) => a.sizeSamples),
   };
 }
 
@@ -205,14 +208,7 @@ export function createDryVisitor(): DryVisitorBundle {
       description: 'Detects code duplication across the codebase',
       category: 'maintainability',
     }),
-    getDryPairs: async () => {
-      try {
-        const a = await getAnalyzer();
-        return a.dryPairs ?? [];
-      } catch {
-        return [];
-      }
-    },
+    getDryPairs: () => readAccumulated(getAnalyzer, (a) => a.dryPairs),
   };
 }
 
