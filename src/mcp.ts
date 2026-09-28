@@ -86,6 +86,7 @@ import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js
 import { resolveMcpDevLogPath } from './dataPaths.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
 import { CodeIndexDB } from './codeIndexDB.js';
+import { errorMessage } from './utils/errorMessage.js';
 import { logMcpDebug, logMcpInfo, mcpDebugStderr, mcpTraceStderr } from './mcpDiagnostics.js';
 import { assertAuditPathExists, formatMcpToolErrorPayload } from './mcpToolErrors.js';
 import { ToolRegistry, type ActionDefinition, type ToolDefinition } from './tool-registry.js';
@@ -1065,7 +1066,7 @@ export function registerAllTools(registry: ToolRegistry): void {
               }
             } catch (error) {
               errors.push(
-                `Failed to generate config for ${tool}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                `Failed to generate config for ${tool}: ${errorMessage(error)}`,
               );
             }
           }
@@ -1547,7 +1548,7 @@ export function registerAllTools(registry: ToolRegistry): void {
           } catch (error) {
             return {
               success: false,
-              error: error instanceof Error ? error.message : 'Unknown error',
+              error: errorMessage(error),
               availableScenarios: [
                 'initial-setup',
                 'react-development',

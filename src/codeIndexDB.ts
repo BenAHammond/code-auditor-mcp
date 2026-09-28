@@ -9,6 +9,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { discoverFiles, ALL_EXTENSIONS } from './utils/fileDiscovery.js';
 import { computeContentHash } from './utils/contentHash.js';
+import { errorMessage } from './utils/errorMessage.js';
 import type {
   CompleteProjectTaskResult,
   CreateProjectTaskInput,
@@ -1898,7 +1899,7 @@ export class CodeIndexDB {
           metadata_json=excluded.metadata_json
       `).run(row);
     } catch (error) {
-      throw new Error(`Failed to register function: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(`Failed to register function: ${errorMessage(error)}`);
     }
   }
 
@@ -1928,7 +1929,7 @@ export class CodeIndexDB {
           failed++;
           errors.push({
             function: func.name || 'unknown',
-            error: error instanceof Error ? error.message : 'Unknown error'
+            error: errorMessage(error)
           });
         }
       }
@@ -2602,7 +2603,7 @@ export class CodeIndexDB {
       const parsedFunctions = await scanner.scanFunctions(fileContent, filePath);
       return await this.syncFileIndex(filePath, parsedFunctions);
     } catch (error) {
-      throw new Error(`Failed to sync file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(`Failed to sync file: ${errorMessage(error)}`);
     }
   }
 

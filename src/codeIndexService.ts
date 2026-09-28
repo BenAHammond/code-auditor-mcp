@@ -5,6 +5,7 @@
 
 import { FunctionMetadata, EnhancedFunctionMetadata, SearchOptions, RegisterResult, SearchResult, IndexStats } from './types.js';
 import { CodeIndexDB } from './codeIndexDB.js';
+import { errorMessage } from './utils/errorMessage.js';
 import { loadConfig } from './config/configLoader.js';
 import path from 'path';
 
@@ -87,7 +88,7 @@ export async function initializeCodeIndex(dbPath?: string): Promise<CodeIndexDB>
     await db.initialize();
     return db;
   } catch (error) {
-    throw new DatabaseError(`Failed to initialize code index: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to initialize code index: ${errorMessage(error)}`);
   }
 }
 
@@ -194,7 +195,7 @@ export async function searchFunctions(searchOptions: SearchOptions): Promise<Sea
   try {
     return await db.searchFunctions(searchOptions);
   } catch (error) {
-    throw new SearchError(`Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new SearchError(`Search failed: ${errorMessage(error)}`);
   }
 }
 
@@ -214,7 +215,7 @@ export async function syncFileIndex(
   try {
     return await db.syncFileIndex(filePath, currentFunctions);
   } catch (error) {
-    throw new DatabaseError(`Failed to sync file index: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to sync file index: ${errorMessage(error)}`);
   }
 }
 
@@ -234,7 +235,7 @@ export async function findDefinition(
   try {
     return await db.findDefinition(name, filePath);
   } catch (error) {
-    throw new SearchError(`Failed to find definition: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new SearchError(`Failed to find definition: ${errorMessage(error)}`);
   }
 }
 
@@ -256,7 +257,7 @@ export async function getIndexStats(): Promise<IndexStats> {
       lastUpdated: stats.lastUpdated
     };
   } catch (error) {
-    throw new DatabaseError(`Failed to get index stats: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to get index stats: ${errorMessage(error)}`);
   }
 }
 
@@ -272,7 +273,7 @@ export async function clearIndex(): Promise<void> {
   try {
     await db.clearIndex();
   } catch (error) {
-    throw new DatabaseError(`Failed to clear index: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to clear index: ${errorMessage(error)}`);
   }
 }
 
@@ -295,7 +296,7 @@ export async function updateDependencyGraph(filePath?: string): Promise<void> {
   try {
     await db.updateDependencyGraph(filePath);
   } catch (error) {
-    throw new DatabaseError(`Failed to update dependency graph: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to update dependency graph: ${errorMessage(error)}`);
   }
 }
 
@@ -315,7 +316,7 @@ export async function getTransitiveDependencies(
   try {
     return await db.getTransitiveDependencies(functionName, maxDepth);
   } catch (error) {
-    throw new DatabaseError(`Failed to get transitive dependencies: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to get transitive dependencies: ${errorMessage(error)}`);
   }
 }
 
@@ -335,7 +336,7 @@ export async function getTransitiveCallers(
   try {
     return await db.getTransitiveCallers(functionName, maxDepth);
   } catch (error) {
-    throw new DatabaseError(`Failed to get transitive callers: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to get transitive callers: ${errorMessage(error)}`);
   }
 }
 
@@ -350,7 +351,7 @@ export async function detectCircularDependencies(): Promise<Array<string[]>> {
   try {
     return await db.detectCircularDependencies();
   } catch (error) {
-    throw new DatabaseError(`Failed to detect circular dependencies: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to detect circular dependencies: ${errorMessage(error)}`);
   }
 }
 
@@ -365,7 +366,7 @@ export async function calculateDependencyDepths(): Promise<void> {
   try {
     await db.calculateDependencyDepths();
   } catch (error) {
-    throw new DatabaseError(`Failed to calculate dependency depths: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to calculate dependency depths: ${errorMessage(error)}`);
   }
 }
 
@@ -380,6 +381,6 @@ export async function getAllFunctions(): Promise<EnhancedFunctionMetadata[]> {
   try {
     return await db.getAllFunctions();
   } catch (error) {
-    throw new DatabaseError(`Failed to get all functions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new DatabaseError(`Failed to get all functions: ${errorMessage(error)}`);
   }
 }

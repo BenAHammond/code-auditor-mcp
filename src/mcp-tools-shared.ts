@@ -19,6 +19,7 @@ import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { DEFAULT_SERVER_URL } from './constants.js';
 import { CodeIndexDB } from './codeIndexDB.js';
+import { errorMessage } from './utils/errorMessage.js';
 
 import path from 'node:path';
 import chalk from 'chalk';
@@ -798,7 +799,7 @@ export class ToolHandlers {
     } catch (error) {
       return {
         success: false,
-        error: `Failed to create schema from SQL results: ${error instanceof Error ? error.message : 'Unknown error'}`
+        error: `Failed to create schema from SQL results: ${errorMessage(error)}`
       };
     }
   }
@@ -872,7 +873,7 @@ export class ToolHandlers {
     } catch (error) {
       return {
         success: false,
-        error: `Failed to add table: ${error instanceof Error ? error.message : 'Unknown error'}`
+        error: `Failed to add table: ${errorMessage(error)}`
       };
     }
   }
@@ -905,7 +906,7 @@ export class ToolHandlers {
     } catch (error) {
       return {
         success: false,
-        error: `Failed to list schemas: ${error instanceof Error ? error.message : 'Unknown error'}`
+        error: `Failed to list schemas: ${errorMessage(error)}`
       };
     }
   }
@@ -983,7 +984,7 @@ export class ToolHandlers {
     } catch (error) {
       return {
         success: false,
-        error: `Failed to search schema elements: ${error instanceof Error ? error.message : 'Unknown error'}`
+        error: `Failed to search schema elements: ${errorMessage(error)}`
       };
     }
   }

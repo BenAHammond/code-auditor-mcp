@@ -11,6 +11,7 @@
 import { FunctionMetadata, AuditOptions } from './types.js';
 import { discoverFiles, getLanguageFromPath } from './utils/fileDiscovery.js';
 import { parseTypeScriptFile } from './utils/astParser.js';
+import { errorMessage } from './utils/errorMessage.js';
 import {
   findNodesByKind,
   getNodeText,
@@ -102,7 +103,7 @@ export async function scanDirectoryForFunctions(
 
     return functions;
   } catch (error) {
-    throw new Error(`Failed to scan directory: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new Error(`Failed to scan directory: ${errorMessage(error)}`);
   }
 }
 
