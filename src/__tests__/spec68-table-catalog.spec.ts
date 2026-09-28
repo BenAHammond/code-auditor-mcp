@@ -21,20 +21,20 @@ function catalog(decls: SchemaDeclaration[], objects: SchemaObject[] = []) {
 describe('Spec 68 table-catalog corpus processor', () => {
   it('reduces per-file DDL to the net table set in migration order', () => {
     const decls: SchemaDeclaration[] = [
-      { file: 'migrations/001_orders.ts', ops: [{ op: 'CREATE', table: 'orders' }], tableColumns: {} },
-      { file: 'migrations/002_users.ts', ops: [{ op: 'CREATE', table: 'users' }], tableColumns: {} },
+      { file: 'migrations/001_orders.ts', ops: [{ op: 'CREATE', table: 'orders' }], tableColumns: {}, uniqueColumns: {} },
+      { file: 'migrations/002_users.ts', ops: [{ op: 'CREATE', table: 'users' }], tableColumns: {}, uniqueColumns: {} },
     ];
 
     expect(catalog(decls).tables).toEqual([
-      { name: 'orders', source: 'migrations/001_orders.ts', columns: [] },
-      { name: 'users', source: 'migrations/002_users.ts', columns: [] },
+      { name: 'orders', source: 'migrations/001_orders.ts', columns: [], uniqueColumns: [] },
+      { name: 'users', source: 'migrations/002_users.ts', columns: [], uniqueColumns: [] },
     ]);
   });
 
   it('excludes a table dropped by a later migration (stale, not known)', () => {
     const decls: SchemaDeclaration[] = [
-      { file: 'migrations/001_init.ts', ops: [{ op: 'CREATE', table: 'generation_queue' }], tableColumns: {} },
-      { file: 'migrations/002_drop.ts', ops: [{ op: 'DROP', table: 'generation_queue' }], tableColumns: {} },
+      { file: 'migrations/001_init.ts', ops: [{ op: 'CREATE', table: 'generation_queue' }], tableColumns: {}, uniqueColumns: {} },
+      { file: 'migrations/002_drop.ts', ops: [{ op: 'DROP', table: 'generation_queue' }], tableColumns: {}, uniqueColumns: {} },
     ];
 
     expect(catalog(decls).tables).toEqual([]);
@@ -46,11 +46,12 @@ describe('Spec 68 table-catalog corpus processor', () => {
         file: 'migrations/003_projects.ts',
         ops: [{ op: 'CREATE', table: 'projects' }],
         tableColumns: { projects: ['id', 'org_id'] },
+        uniqueColumns: {},
       },
     ];
 
     expect(catalog(decls).tables).toEqual([
-      { name: 'projects', source: 'migrations/003_projects.ts', columns: ['id', 'org_id'] },
+      { name: 'projects', source: 'migrations/003_projects.ts', columns: ['id', 'org_id'], uniqueColumns: [] },
     ]);
   });
 
@@ -58,10 +59,30 @@ describe('Spec 68 table-catalog corpus processor', () => {
     expect(catalog([]).tables).toEqual([]);
   });
 
+  it('threads DDL natural-UNIQUE columns through the catalog', () => {
+    const decls: SchemaDeclaration[] = [
+      {
+        file: 'migrations/004_api_key.ts',
+        ops: [{ op: 'CREATE', table: 'api_key' }],
+        tableColumns: { api_key: ['id', 'prefix', 'workspace_id'] },
+        uniqueColumns: { api_key: ['prefix'] },
+      },
+    ];
+
+    expect(catalog(decls).tables).toEqual([
+      {
+        name: 'api_key',
+        source: 'migrations/004_api_key.ts',
+        columns: ['id', 'prefix', 'workspace_id'],
+        uniqueColumns: ['prefix'],
+      },
+    ]);
+  });
+
   it('folds ORM schema-object bindings into the identifier → SQL-name alias map', () => {
     const objects: SchemaObject[] = [
-      { file: 'database/schema.ts', identifier: 'sampleOwnership', table: 'sample_ownership' },
-      { file: 'database/schema.ts', identifier: 'organizations', table: 'organizations' },
+      { file: 'database/schema.ts', identifier: 'sampleOwnership', table: 'sample_ownership', uniqueColumns: [] },
+      { file: 'database/schema.ts', identifier: 'organizations', table: 'organizations', uniqueColumns: [] },
     ];
 
     expect(catalog([], objects).aliases).toEqual({
@@ -72,11 +93,33 @@ describe('Spec 68 table-catalog corpus processor', () => {
 
   it('keeps the first binding when an identifier is declared twice', () => {
     const objects: SchemaObject[] = [
-      { file: 'a.ts', identifier: 'users', table: 'users' },
-      { file: 'b.ts', identifier: 'users', table: 'auth_users' },
+      { file: 'a.ts', identifier: 'users', table: 'users', uniqueColumns: [] },
+      { file: 'b.ts', identifier: 'users', table: 'auth_users', uniqueColumns: [] },
     ];
 
     expect(catalog([], objects).aliases).toEqual({ users: 'users' });
+  });
+
+  it('merges Drizzle natural-UNIQUE columns (JS + SQL names) into the matching catalog entry', () => {
+    const decls: SchemaDeclaration[] = [
+      {
+        file: 'migrations/001_api_key.ts',
+        ops: [{ op: 'CREATE', table: 'api_key' }],
+        tableColumns: { api_key: ['workspace_id'] },
+        uniqueColumns: { api_key: ['slug'] },
+      },
+    ];
+    const objects: SchemaObject[] = [
+      {
+        file: 'schema/api_key.ts',
+        identifier: 'apiKey',
+        table: 'api_key',
+        uniqueColumns: ['prefix', 'hashedToken', 'hashed_token'],
+      },
+    ];
+
+    const entry = catalog(decls, objects).tables.find((t) => t.name === 'api_key')!;
+    expect(entry.uniqueColumns).toEqual(['slug', 'prefix', 'hashedToken', 'hashed_token']);
   });
 
   it('returns an empty alias map for no schema objects', () => {

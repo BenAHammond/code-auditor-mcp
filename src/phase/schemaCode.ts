@@ -26,6 +26,7 @@ import type { ParsedFile, SchemaDeclaration } from './types.js';
 import {
   parseMigrationOps,
   extractDdlTableColumns,
+  extractDdlUniqueColumns,
 } from '../analyzers/universal/schema/migrations.js';
 
 /** Extract the per-file DDL declaration from one parsed file. Returns a single
@@ -38,6 +39,7 @@ import {
 export function extractSchemaCode(file: ParsedFile): SchemaDeclaration[] {
   const ops = parseMigrationOps(file.source);
   const tableColumns = extractDdlTableColumns(file.source);
+  const uniqueColumns = extractDdlUniqueColumns(file.source);
   if (ops.length === 0 && Object.keys(tableColumns).length === 0) return [];
-  return [{ file: file.file, ops, tableColumns }];
+  return [{ file: file.file, ops, tableColumns, uniqueColumns }];
 }

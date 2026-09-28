@@ -347,15 +347,22 @@ export const CORPUS_PRODUCERS = {
           filePath: d.file,
           ops: d.ops,
           tableColumns: d.tableColumns,
+          uniqueColumns: d.uniqueColumns,
         })),
       );
-      const tables = netTables.map((t) => ({ name: t.name, source: t.source, columns: t.columns }));
+      const tables = netTables.map((t) => ({
+        name: t.name,
+        source: t.source,
+        columns: t.columns,
+        uniqueColumns: [...t.uniqueColumns],
+      }));
       // §5 parity: merge the config-declared external tables the legacy schema
       // reducer added to the known-table set (`knownTables` + `schemas`). Without
       // them a config-only schema is a 0-table catalog and `unknown-table`'s
       // fail-open guard silently never fires — exactly the sql-cte regression.
+      // Config-declared tables carry no column metadata, so no UNIQUE columns.
       for (const t of ctx?.externalTables ?? []) {
-        tables.push({ name: t.name, source: t.source, columns: [...t.columns] });
+        tables.push({ name: t.name, source: t.source, columns: [...t.columns], uniqueColumns: [] });
       }
       // The ORM schema-object alias map: `.from(sampleOwnership)` names the JS
       // identifier, not the SQL table. Resolve it through the pgTable/mysqlTable/
@@ -364,6 +371,15 @@ export const CORPUS_PRODUCERS = {
       const aliases: Record<string, string> = {};
       for (const obj of facts['schema-objects']) {
         if (!(obj.identifier in aliases)) aliases[obj.identifier] = obj.table;
+        // Merge the Drizzle `.unique()` / `.primaryKey()` columns (JS field name
+        // + SQL name) into the matching catalog entry, so a query filtering on
+        // either spelling is recognised as a structurally-scoped (bootstrap)
+        // lookup by `missing-org-filter`. A DDL-only table with no schema-object
+        // binding keeps just its DDL-declared UNIQUE columns.
+        const entry = tables.find((t) => t.name === obj.table);
+        if (entry && obj.uniqueColumns.length > 0) {
+          entry.uniqueColumns = [...new Set([...entry.uniqueColumns, ...obj.uniqueColumns])];
+        }
       }
       return { tables, aliases };
     },

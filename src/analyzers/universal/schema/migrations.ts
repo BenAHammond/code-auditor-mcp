@@ -74,7 +74,7 @@ export interface DropProvenanceEntry {
  *  Both halves derive from one replay, so the known set and the provenance can
  *  never disagree about which table a migration dropped. */
 export interface ReplayedDdl {
-  netTables: Array<{ name: string; source: string; columns: string[] }>;
+  netTables: Array<{ name: string; source: string; columns: string[]; uniqueColumns: string[] }>;
   dropProvenance: Map<string, DropProvenanceEntry>;
 }
 
@@ -101,6 +101,7 @@ export function replayDdlDeclarations(
     filePath: string;
     ops: readonly MigrationOp[];
     tableColumns?: Readonly<Record<string, readonly string[]>>;
+    uniqueColumns?: Readonly<Record<string, readonly string[]>>;
   }>,
 ): ReplayedDdl {
   const numericPrefix = (p: string): number => {
@@ -120,6 +121,7 @@ export function replayDdlDeclarations(
   // names the file that most recently (re)declared the table, with its columns.
   const sourceFile = new Map<string, string>();
   const columnsByTable = new Map<string, string[]>();
+  const uniqueColumnsByTable = new Map<string, string[]>();
   const dropProvenance = new Map<string, DropProvenanceEntry>();
 
   for (const ddlFile of sorted) {
@@ -134,6 +136,7 @@ export function replayDdlDeclarations(
         knownTables.add(t);
         sourceFile.set(t, ddlFile.filePath);
         columnsByTable.set(t, [...(ddlFile.tableColumns?.[t] ?? [])]);
+        uniqueColumnsByTable.set(t, [...(ddlFile.uniqueColumns?.[t] ?? [])]);
       } else if (op.op === 'DROP') {
         knownTables.delete(t);
       } else {
@@ -142,8 +145,10 @@ export function replayDdlDeclarations(
         knownTables.add(nt);
         sourceFile.delete(t);
         columnsByTable.delete(t);
+        uniqueColumnsByTable.delete(t);
         sourceFile.set(nt, ddlFile.filePath);
         columnsByTable.set(nt, [...(ddlFile.tableColumns?.[nt] ?? [])]);
+        uniqueColumnsByTable.set(nt, [...(ddlFile.uniqueColumns?.[nt] ?? [])]);
       }
     }
 
@@ -183,12 +188,13 @@ export function replayDdlDeclarations(
     }
   }
 
-  const netTables: Array<{ name: string; source: string; columns: string[] }> = [];
+  const netTables: Array<{ name: string; source: string; columns: string[]; uniqueColumns: string[] }> = [];
   for (const name of knownTables) {
     netTables.push({
       name,
       source: sourceFile.get(name) ?? '',
       columns: columnsByTable.get(name) ?? [],
+      uniqueColumns: uniqueColumnsByTable.get(name) ?? [],
     });
   }
 
@@ -369,6 +375,101 @@ export function extractDdlTableColumns(source: string): Record<string, string[]>
 
   const result: Record<string, string[]> = {};
   for (const [table, cols] of tableColumns) result[table] = [...cols];
+  return result;
+}
+
+/**
+ * Extract per-table *natural* UNIQUE column names from migration SQL — the
+ * bootstrap-lookup signal `missing-org-filter` reads: a query whose predicate
+ * carries one of these is a structurally-scoped lookup by a natural key. Covers
+ * the three DDL spellings of `UNIQUE`:
+ *
+ *   - column-level:  `slug TEXT UNIQUE`
+ *   - table-level:   `UNIQUE (slug)`, `UNIQUE (a, b)`
+ *   - ALTER:         `ALTER TABLE t ADD CONSTRAINT … UNIQUE (col)`
+ *
+ * PRIMARY KEY is deliberately *excluded*. A surrogate primary key is not a
+ * bootstrap lookup: `WHERE id = $1` on a tenant table returns exactly one row
+ * selected by a caller-supplied id — that is the IDOR surface the rule exists
+ * to catch, not a signal that tenant scoping is unnecessary (see
+ * `specs/rule-authenticity-ledger.md:46`, and the Thing 1 correction that
+ * narrowed this signal to natural keys).
+ *
+ * Returns lowercased SQL column names keyed by table. A column that is unique
+ * only through a composite constraint still appears — the predicate test is
+ * "does the filter name this column", not "is the column alone unique".
+ * @param source Migration/DDL SQL text.
+ * @returns Per-table lowercased natural-UNIQUE column-name lists.
+ */
+export function extractDdlUniqueColumns(source: string): Record<string, string[]> {
+  const uniqueColumns = new Map<string, Set<string>>();
+  const uniqueFor = (table: string): Set<string> => {
+    let cols = uniqueColumns.get(table);
+    if (!cols) {
+      cols = new Set<string>();
+      uniqueColumns.set(table, cols);
+    }
+    return cols;
+  };
+
+  const createRe = /\bCREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s*\(/gi;
+  let match: RegExpExecArray | null;
+  while ((match = createRe.exec(source)) !== null) {
+    const table = stripIdentifier(match[1]);
+    const openParen = createRe.lastIndex - 1;
+    let depth = 0;
+    let closeParen = -1;
+    let inString: '"' | "'" | '`' | null = null;
+    for (let i = openParen; i < source.length; i++) {
+      const ch = source[i];
+      if (inString) {
+        if (ch === inString) inString = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) { closeParen = i; break; } }
+    }
+    if (closeParen === -1) {
+      createRe.lastIndex = openParen + 1;
+      continue;
+    }
+    const body = source.slice(openParen + 1, closeParen);
+    for (const def of splitColumnDefs(body)) {
+      const leading = leadingColumnName(def);
+      if (leading) {
+        // Column-level `col … UNIQUE`. PRIMARY KEY is excluded: a surrogate PK
+        // is the IDOR surface, not a bootstrap-lookup signal.
+        if (/\bUNIQUE\b/i.test(def)) {
+          uniqueFor(table).add(leading.toLowerCase());
+        }
+      } else {
+        // Table-level `UNIQUE (…)` (and `CONSTRAINT x UNIQUE (…)`). PRIMARY KEY
+        // is excluded for the same reason.
+        const tm = /\bUNIQUE\b\s*\(([^)]*)\)/i.exec(def);
+        if (tm) {
+          for (const raw of tm[1].split(',')) {
+            const name = stripIdentifier(raw.trim()).toLowerCase();
+            if (name) uniqueFor(table).add(name);
+          }
+        }
+      }
+    }
+    createRe.lastIndex = closeParen + 1;
+  }
+
+  // ALTER TABLE … ADD [CONSTRAINT …] UNIQUE (col[, …]) — PRIMARY KEY excluded.
+  const alterUniqueRe = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s+ADD\s+(?:CONSTRAINT\s+(?:`[^`]+`|"[^"]+"|\w+)\s+)?UNIQUE\s*\(([^)]*)\)/gi;
+  while ((match = alterUniqueRe.exec(source)) !== null) {
+    const cols = uniqueFor(stripIdentifier(match[1]));
+    for (const raw of match[2].split(',')) {
+      const name = stripIdentifier(raw.trim()).toLowerCase();
+      if (name) cols.add(name);
+    }
+  }
+
+  const result: Record<string, string[]> = {};
+  for (const [table, cols] of uniqueColumns) result[table] = [...cols];
   return result;
 }
 

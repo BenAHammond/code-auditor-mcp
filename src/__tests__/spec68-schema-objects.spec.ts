@@ -36,7 +36,7 @@ describe('Spec 68 schema-objects producer', () => {
     ].join('\n'));
 
     expect(out).toEqual([
-      { file: '/fixture/schema.ts', identifier: 'sampleOwnership', table: 'sample_ownership' },
+      { file: '/fixture/schema.ts', identifier: 'sampleOwnership', table: 'sample_ownership', uniqueColumns: [] },
     ]);
   });
 
@@ -55,6 +55,34 @@ describe('Spec 68 schema-objects producer', () => {
   it('ignores non-ORM const bindings', () => {
     const out = objects('/fixture/other.ts', 'export const MAX = 5;\n');
     expect(out).toEqual([]);
+  });
+
+  it('captures natural UNIQUE columns and excludes `.primaryKey()`', () => {
+    // Mirrors the openstatus api_key shape: `prefix`/`slug` are JS==SQL, while
+    // `hashedToken` is the JS name of the SQL `hashed_token` column — the two
+    // namespaces a Drizzle filter (`eq(apiKey.prefix, …)`) and a raw-SQL filter
+    // (`WHERE hashed_token = ?`) each write. `id` is a surrogate primary key (the
+    // IDOR surface, not a bootstrap signal), so it is excluded.
+    const out = objects('/fixture/api_key.ts', [
+      'export const apiKey = sqliteTable(',
+      '  "api_key",',
+      '  {',
+      '    id: integer("id").primaryKey({ autoIncrement: true }),',
+      '    prefix: text("prefix").notNull().unique(),',
+      '    hashedToken: text("hashed_token").notNull().unique(),',
+      '    workspaceId: integer("workspace_id").notNull(),',
+      '  },',
+      ');',
+    ].join('\n'));
+
+    expect(out).toEqual([
+      {
+        file: '/fixture/api_key.ts',
+        identifier: 'apiKey',
+        table: 'api_key',
+        uniqueColumns: ['prefix', 'hashedToken', 'hashed_token'],
+      },
+    ]);
   });
 
   it('returns an empty array for a file with no schema objects', () => {
@@ -93,7 +121,7 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
   }
 
   const catalog: TableCatalog = {
-    tables: [{ name: 'sample_ownership', source: '/fixture/schema.sql', columns: ['organization_id'] }],
+    tables: [{ name: 'sample_ownership', source: '/fixture/schema.sql', columns: ['organization_id'], uniqueColumns: [] }],
     aliases: { sampleOwnership: 'sample_ownership' },
   };
 
@@ -112,9 +140,69 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
 
   it('stays quiet on a non-tenant table (no tenant column)', () => {
     const nonTenant: TableCatalog = {
-      tables: [{ name: 'sample_ownership', source: '/fixture/schema.sql', columns: ['id'] }],
+      tables: [{ name: 'sample_ownership', source: '/fixture/schema.sql', columns: ['id'], uniqueColumns: [] }],
       aliases: { sampleOwnership: 'sample_ownership' },
     };
     expect(analyzeOrg([call(['sampleOwnership'])], nonTenant)).toEqual([]);
+  });
+
+  it('stays quiet when the filter is an equality lookup on a UNIQUE column (bootstrap lookup)', () => {
+    // `eq(apiKey.prefix, …)` binds a UNIQUE column → at most one row, so tenant
+    // scoping is structurally unnecessary. The catalog carries the Drizzle name.
+    const uniqueCatalog: TableCatalog = {
+      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: ['workspace_id'], uniqueColumns: ['prefix'] }],
+      aliases: { apiKey: 'api_key' },
+    };
+    const bootstrap = {
+      ...call(['apiKey']),
+      queryText: 'db.select().from(apiKey).where(eq(apiKey.prefix, prefix)).get()',
+    };
+    expect(analyzeOrg([bootstrap], uniqueCatalog)).toEqual([]);
+  });
+
+  it('still fires when the filter is NOT on a natural UNIQUE column', () => {
+    const idOnlyCatalog: TableCatalog = {
+      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: ['workspace_id'], uniqueColumns: [] }],
+      aliases: { apiKey: 'api_key' },
+    };
+    const byWorkspace = {
+      ...call(['apiKey']),
+      queryText: 'db.select().from(apiKey).where(eq(apiKey.workspaceId, wsId))',
+    };
+    expect(analyzeOrg([byWorkspace], idOnlyCatalog)).toHaveLength(1);
+  });
+
+  it('still fires when the filter is on a PRIMARY-KEY column (surrogate id = IDOR surface)', () => {
+    // `eq(apiKey.id, …)` selects at most one row — but by a caller-supplied
+    // surrogate id, which is precisely the IDOR case. The natural-UNIQUE quiet
+    // must not extend to a primary key (Thing 1 correction).
+    const pkCatalog: TableCatalog = {
+      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: ['workspace_id'], uniqueColumns: [] }],
+      aliases: { apiKey: 'api_key' },
+    };
+    const byId = {
+      ...call(['apiKey']),
+      queryText: 'db.select().from(apiKey).where(eq(apiKey.id, id)).get()',
+    };
+    expect(analyzeOrg([byId], pkCatalog)).toHaveLength(1);
+  });
+
+  it('fires when a UNIQUE column appears only in a JOIN … ON condition, not a WHERE predicate', () => {
+    // The openstatus `monitors.go` three-table join shape: a UNIQUE column in a
+    // JOIN … ON equality scopes how rows match, not which rows return, so it is
+    // not a bootstrap lookup. The raw-SQL matcher must read WHERE clauses only.
+    const joinCatalog: TableCatalog = {
+      tables: [
+        { name: 'monitor', source: '/fixture/monitor.ts', columns: ['workspace_id'], uniqueColumns: ['slug'] },
+        { name: 'private_location', source: '/fixture/pl.ts', columns: ['workspace_id'], uniqueColumns: ['token'] },
+      ],
+      aliases: {},
+    };
+    const joined = {
+      ...call(['monitor', 'private_location']),
+      queryText:
+        'SELECT m.id FROM monitor m JOIN private_location p ON m.slug = p.token WHERE p.active = 1',
+    };
+    expect(analyzeOrg([joined], joinCatalog)).toHaveLength(1);
   });
 });

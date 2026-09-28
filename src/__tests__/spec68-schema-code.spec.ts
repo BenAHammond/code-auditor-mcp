@@ -60,6 +60,47 @@ describe('Spec 68 ddl-declarations producer', () => {
     expect(decl.tableColumns).toEqual({ users: ['id', 'organization_id'] });
   });
 
+  it('extracts natural UNIQUE columns and excludes PRIMARY KEY (bootstrap-lookup signal)', () => {
+    const out = code('/fixture/unique.ts', [
+      'export const up = `',
+      'CREATE TABLE api_key (',
+      '  id TEXT PRIMARY KEY,',
+      '  prefix TEXT UNIQUE,',
+      '  hashed_token TEXT UNIQUE,',
+      '  workspace_id TEXT NOT NULL',
+      ');',
+      '`;',
+    ].join('\n'));
+
+    expect(out).toHaveLength(1);
+    // `id` is a PRIMARY KEY — the IDOR surface, not a bootstrap signal — so it is
+    // excluded; only the natural UNIQUE columns survive.
+    expect(out[0].uniqueColumns).toEqual({ api_key: ['prefix', 'hashed_token'] });
+  });
+
+  it('excludes a table-level PRIMARY KEY (composite) from the unique set', () => {
+    const out = code('/fixture/pk.ts', [
+      'export const up = `',
+      'CREATE TABLE line_items (invoice_id TEXT, line_no INT, sku TEXT UNIQUE, PRIMARY KEY (invoice_id, line_no));',
+      '`;',
+    ].join('\n'));
+
+    expect(out).toHaveLength(1);
+    expect(out[0].uniqueColumns).toEqual({ line_items: ['sku'] });
+  });
+
+  it('extracts table-level UNIQUE constraints and ALTER UNIQUE columns', () => {
+    const out = code('/fixture/unique-composite.ts', [
+      'export const up = `',
+      'CREATE TABLE page (id TEXT, slug TEXT, workspace_id TEXT, UNIQUE (slug));',
+      'ALTER TABLE page ADD CONSTRAINT page_slug_unique UNIQUE (slug);',
+      '`;',
+    ].join('\n'));
+
+    expect(out).toHaveLength(1);
+    expect(out[0].uniqueColumns).toEqual({ page: ['slug'] });
+  });
+
   it('preserves a DROP-only migration — the op is carried, not netted away', () => {
     const out = code('/fixture/dropped.ts', [
       'export const up = `',

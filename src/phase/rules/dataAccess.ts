@@ -30,6 +30,7 @@ import type {
   Finding,
   ResolvedQuery,
   ThresholdValues,
+  TableCatalog,
 } from '../types.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
@@ -319,6 +320,75 @@ function num(t: ThresholdValues, key: string, fallback: number): number {
   return typeof v === 'number' ? v : fallback;
 }
 
+/**
+ * True when a query's predicate is an equality lookup on one of the table's
+ * *natural* UNIQUE columns — the bootstrap-lookup signal. A predicate that
+ * binds a natural unique key is a lookup by that key (the row is identified by
+ * its key, not by tenant), so tenant scoping is structurally unnecessary. Only
+ * the *equality* spellings count: `<`/`IN`/`LIKE` on a unique column admit
+ * multiple rows and must still carry a tenant predicate.
+ *
+ * Two exclusions, both from the Thing 1 correction:
+ *
+ *   - PRIMARY KEY columns are excluded upstream (a surrogate PK is the IDOR
+ *     surface, not a bootstrap lookup).
+ *   - The raw-SQL comparison form is scoped to WHERE clauses only: a
+ *     `JOIN … ON monitor.id = a.monitor_id` equality scopes how rows match,
+ *     not which rows return, so it is never a bootstrap lookup.
+ *
+ *   - Drizzle member access:  `eq(apiKey.prefix, …)` → `prefix`
+ *   - positional Knex form:   `.where('prefix', value)` → `prefix`
+ *   - raw SQL comparison:     `WHERE prefix = ?` → `prefix`
+ *
+ * Matching is case-insensitive against the union of DDL SQL names and Drizzle
+ * JS/SQL names (both stored in the catalog), so `eq(apiKey.hashedToken, …)`
+ * resolves to `hashed_token` via the JS name while `WHERE hashed_token = ?`
+ * resolves via the SQL name. `uniqueColumns` is pre-lowercased by the caller.
+ */
+function hasUniqueColumnFilter(text: string, uniqueColumns: ReadonlySet<string>): boolean {
+  // `eq(ident.col, …)` — the Drizzle equality helper, member-access spelling.
+  // `eq(…)` is only a filter helper, never a JOIN condition, so it is safe to
+  // match anywhere in the query text.
+  const eqMemberRe = /\beq\s*\(\s*[A-Za-z_$][\w$]*\s*\.\s*([A-Za-z_$][\w$]*)\s*[,)]/g;
+  for (const m of text.matchAll(eqMemberRe)) {
+    if (uniqueColumns.has(m[1].toLowerCase())) return true;
+  }
+  // `.where('col', value)` — the Knex/positional two-argument equality form. The
+  // three-argument `.where('col', '>', value)` form is NOT equality, so the
+  // negative lookahead rejects a second quoted operand before the `,`/`)`.
+  const wherePosRe = /\.where\s*\(\s*['"]([^'"]+)['"]\s*,\s*(?!['"][^'"]*['"]\s*[,)])/g;
+  for (const m of text.matchAll(wherePosRe)) {
+    if (uniqueColumns.has(m[1].toLowerCase())) return true;
+  }
+  // `col = ?` / `col == ?` — a raw-SQL equality predicate, but ONLY within a
+  // WHERE clause. A JOIN … ON equality (`monitor.id = a.monitor_id`) scopes how
+  // rows match, not which rows return, so it must not count as a bootstrap
+  // lookup (Thing 1 correction — the openstatus `monitors.go` three-table join).
+  const whereRe = /\bWHERE\b/gi;
+  for (const wm of text.matchAll(whereRe)) {
+    const afterWhere = text.slice(wm.index + wm[0].length);
+    const body = afterWhere.split(/\b(?:GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION)\b/i)[0];
+    const rawEqRe = /\b([A-Za-z_][A-Za-z0-9_]*)\b\s*==?\s*[^=]/g;
+    for (const em of body.matchAll(rawEqRe)) {
+      if (uniqueColumns.has(em[1].toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
+/** The lowercased UNIQUE / PRIMARY-KEY columns of the named tables, unioned —
+ *  the set `hasUniqueColumnFilter` matches a filter-column token against. A
+ *  table with no catalog entry (or none declared) contributes nothing. */
+function uniqueColumnsForTables(tables: string[], catalog: TableCatalog): ReadonlySet<string> {
+  const set = new Set<string>();
+  for (const name of tables) {
+    const entry = catalog.tables.find((t) => t.name === name);
+    if (!entry) continue;
+    for (const col of entry.uniqueColumns) set.add(col.toLowerCase());
+  }
+  return set;
+}
+
 // ── missing-org-filter ──────────────────────────────────────────────────────
 
 const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
@@ -385,6 +455,11 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
           || columns.some((c) => tenantColumnSet.has(c));
         if (setsTenant) continue;
       } else if (call.hasOrganizationFilter) {
+        continue;
+      } else if (hasUniqueColumnFilter(call.queryText, uniqueColumnsForTables(tables, catalog))) {
+        // A predicate bound to a UNIQUE / PRIMARY-KEY column returns at most one
+        // row — the bootstrap-lookup shape (`eq(apiKey.prefix, …)`). Scoping by
+        // tenant is structurally unnecessary here, so the rule stays quiet.
         continue;
       }
 

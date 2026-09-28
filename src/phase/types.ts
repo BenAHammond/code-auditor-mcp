@@ -505,6 +505,12 @@ export type SchemaDeclaration = {
   file: string;
   ops: readonly MigrationOpFact[];
   tableColumns: Readonly<Record<string, readonly string[]>>;
+  /** Per-table columns the file declares as natural UNIQUE (SQL names,
+   *  lowercased) — the bootstrap-lookup signal `missing-org-filter` reads: a
+   *  query whose predicate carries one of these is a lookup by that natural key.
+   *  PRIMARY KEY is excluded — a surrogate PK is the IDOR surface, not a
+   *  bootstrap signal. */
+  uniqueColumns: Readonly<Record<string, readonly string[]>>;
 };
 
 /**
@@ -524,6 +530,12 @@ export type SchemaObject = {
   identifier: string;
   /** The declared SQL table name (`sample_ownership`). */
   table: string;
+  /** The `.unique()` (natural, not `.primaryKey()`) columns, each carried as its
+   *  JS field name (`prefix`) and, when different, its SQL column name
+   *  (`hashed_token`) — so a query filtering on either name is recognized as a
+   *  structurally-scoped (bootstrap) lookup by `missing-org-filter`. A surrogate
+   *  primary key is excluded: it is the IDOR surface, not a bootstrap signal. */
+  uniqueColumns: readonly string[];
 };
 
 /**
@@ -695,7 +707,14 @@ export type ResolvedQuery = {
  *  declared SQL names (`sample_ownership`), so a query referencing the
  *  identifier resolves to the catalog entry it names. */
 export type TableCatalog = {
-  tables: ReadonlyArray<{ name: string; source: string; columns: ReadonlyArray<string> }>;
+  tables: ReadonlyArray<{
+    name: string;
+    source: string;
+    columns: ReadonlyArray<string>;
+    /** Natural UNIQUE columns (DDL SQL names + Drizzle JS/SQL names, PRIMARY KEY
+     *  excluded), the bootstrap-lookup signal `missing-org-filter` reads. */
+    uniqueColumns: ReadonlyArray<string>;
+  }>;
   aliases: Readonly<Record<string, string>>;
 };
 
