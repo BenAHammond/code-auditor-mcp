@@ -228,16 +228,17 @@ export function extractFunctionsFromSource(
     };
   };
 
-  const pushScannedFunction = (
-    name: string,
-    line: number,
-    endLine: number,
-    node: ASTNode,
-    kind: 'function' | 'arrow' | 'method',
-    purpose: string,
-    context: string,
-    extraMetadata: Record<string, unknown>,
-  ) => {
+  const pushScannedFunction = (opts: {
+    name: string;
+    line: number;
+    endLine: number;
+    node: ASTNode;
+    kind: 'function' | 'arrow' | 'method';
+    purpose: string;
+    context: string;
+    extraMetadata: Record<string, unknown>;
+  }) => {
+    const { name, line, endLine, node, kind, purpose, context, extraMetadata } = opts;
     const d = deriveFunctionData(node);
     functions.push({
       name,
@@ -270,9 +271,15 @@ export function extractFunctionsFromSource(
     if (!nameNode) continue;
     const { line } = getLineAndColumn(func);
     const name = getNodeText(nameNode, content);
-    pushScannedFunction(name, line, func.location?.end?.line ?? line, func, 'function',
-      `Function ${name} implementation`, `Located in ${path.basename(filePath)}`,
-      { isAsync: hasModifier(func, 'async'), isExported: isExported(func) });
+    pushScannedFunction({
+      name, line,
+      endLine: func.location?.end?.line ?? line,
+      node: func,
+      kind: 'function',
+      purpose: `Function ${name} implementation`,
+      context: `Located in ${path.basename(filePath)}`,
+      extraMetadata: { isAsync: hasModifier(func, 'async'), isExported: isExported(func) },
+    });
   }
 
   // Find arrow functions assigned to variables
@@ -288,9 +295,15 @@ export function extractFunctionsFromSource(
       if (!nameNode || !arrowFunc) continue;
       const { line } = getLineAndColumn(varDecl);
       const name = getNodeText(nameNode, content);
-      pushScannedFunction(name, line, arrowFunc.location?.end?.line ?? line, arrowFunc, 'arrow',
-        `Arrow function ${name}`, `Defined in ${path.basename(filePath)}`,
-        { isAsync: hasModifier(arrowFunc, 'async'), isExported: isExported(varStmt) });
+      pushScannedFunction({
+        name, line,
+        endLine: arrowFunc.location?.end?.line ?? line,
+        node: arrowFunc,
+        kind: 'arrow',
+        purpose: `Arrow function ${name}`,
+        context: `Defined in ${path.basename(filePath)}`,
+        extraMetadata: { isAsync: hasModifier(arrowFunc, 'async'), isExported: isExported(varStmt) },
+      });
     }
   }
 
@@ -307,14 +320,21 @@ export function extractFunctionsFromSource(
       if (!methodNameNode) continue;
       const { line } = getLineAndColumn(method);
       const methodName = getNodeText(methodNameNode, content);
-      pushScannedFunction(`${className}.${methodName}`, line, method.location?.end?.line ?? line, method, 'method',
-        `Method ${methodName} of class ${className}`, `Class method in ${path.basename(filePath)}`,
-        {
+      pushScannedFunction({
+        name: `${className}.${methodName}`,
+        line,
+        endLine: method.location?.end?.line ?? line,
+        node: method,
+        kind: 'method',
+        purpose: `Method ${methodName} of class ${className}`,
+        context: `Class method in ${path.basename(filePath)}`,
+        extraMetadata: {
           className,
           isAsync: hasModifier(method, 'async'),
           isStatic: hasModifier(method, 'static'),
           isPrivate: hasModifier(method, 'private')
-        });
+        },
+      });
     }
   }
 

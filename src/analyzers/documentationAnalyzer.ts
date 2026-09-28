@@ -245,14 +245,16 @@ function checkFunctionDocumentation(node: ASTNode, ctx: DocScanContext): void {
 function pushDocViolation(
   node: ASTNode,
   ctx: DocScanContext,
-  rule: string,
-  message: (functionName: string) => string,
-  details: string,
-  suggestion: string,
-  fallbackName: string,
+  opts: {
+    rule: string;
+    message: (functionName: string) => string;
+    details: string;
+    suggestion: string;
+    fallbackName: string;
+  },
 ): void {
   const { fileName, violations } = ctx;
-  const functionName = getNodeName(node) || fallbackName;
+  const functionName = getNodeName(node) || opts.fallbackName;
   const position = getNodePosition(node);
 
   violations.push({
@@ -260,23 +262,23 @@ function pushDocViolation(
     line: position.line,
     column: position.column,
     severity: 'high',
-    rule,
-    message: message(functionName),
-    details,
-    suggestion,
+    rule: opts.rule,
+    message: opts.message(functionName),
+    details: opts.details,
+    suggestion: opts.suggestion,
     symbol: functionName,
   });
 }
 
 /** Push a missing-function-documentation violation. */
 function pushFunctionDocViolation(node: ASTNode, ctx: DocScanContext): void {
-  pushDocViolation(
-    node, ctx, 'function-documentation',
-    (name) => `Function '${name}' lacks documentation`,
-    'Functions should have JSDoc comments describing their purpose',
-    'Add JSDoc comment with function description and parameter/return documentation',
-    'anonymous function',
-  );
+  pushDocViolation(node, ctx, {
+    rule: 'function-documentation',
+    message: (name) => `Function '${name}' lacks documentation`,
+    details: 'Functions should have JSDoc comments describing their purpose',
+    suggestion: 'Add JSDoc comment with function description and parameter/return documentation',
+    fallbackName: 'anonymous function',
+  });
 }
 
 /** Check @param coverage for a function-like node. */
@@ -289,13 +291,13 @@ function checkParamDocumentation(node: ASTNode, ctx: DocScanContext, hasGoodDoc:
   if (paramAnalysis.documentedParams === paramAnalysis.totalParams) {
     counters.paramsDocumented++;
   } else if (config.requireParamDocs && hasGoodDoc) {
-    pushDocViolation(
-      node, ctx, 'parameter-documentation',
-      (name) => `Function '${name}' has undocumented parameters`,
-      `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
-      'Add @param tags for all function parameters',
-      'function',
-    );
+    pushDocViolation(node, ctx, {
+      rule: 'parameter-documentation',
+      message: (name) => `Function '${name}' has undocumented parameters`,
+      details: `${paramAnalysis.documentedParams}/${paramAnalysis.totalParams} parameters documented`,
+      suggestion: 'Add @param tags for all function parameters',
+      fallbackName: 'function',
+    });
   }
 }
 
@@ -315,13 +317,13 @@ function checkReturnDocumentation(node: ASTNode, ctx: DocScanContext, hasGoodDoc
   if (hasReturnDocumentation(node, adapter!)) {
     counters.returnsDocumented++;
   } else if (config.requireReturnDocs && hasGoodDoc) {
-    pushDocViolation(
-      node, ctx, 'return-documentation',
-      (name) => `Function '${name}' missing return documentation`,
-      'Functions with return values should document what they return',
-      'Add @returns tag describing the return value',
-      'function',
-    );
+    pushDocViolation(node, ctx, {
+      rule: 'return-documentation',
+      message: (name) => `Function '${name}' missing return documentation`,
+      details: 'Functions with return values should document what they return',
+      suggestion: 'Add @returns tag describing the return value',
+      fallbackName: 'function',
+    });
   }
 }
 

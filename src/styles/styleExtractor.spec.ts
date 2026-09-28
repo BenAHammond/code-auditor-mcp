@@ -21,7 +21,7 @@ import type { NormalizedDeclaration } from './types.js';
 /** Shorthand: extract declarations from a CSS block and return {property, rawValue} pairs. */
 function extract(block: string): Array<{ property: string; rawValue: string }> {
   const declarations: NormalizedDeclaration[] = [];
-  extractDeclarationsFromBlock(block, 'test.css', 'css', '.test', null, declarations, 0);
+  extractDeclarationsFromBlock(block, declarations, { filePath: 'test.css', mechanism: 'css', selector: '.test', variantContext: null, baseLine: 0 });
   return declarations.map(d => ({ property: d.property, rawValue: d.rawValue }));
 }
 

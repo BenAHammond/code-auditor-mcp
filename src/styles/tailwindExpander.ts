@@ -405,7 +405,7 @@ function expandStandard(
     if (mapping.property === 'border-radius') {
       const roundedVal = ROUNDED_SCALE[value];
       if (roundedVal !== undefined) {
-        return buildDeclarations(mapping.property, roundedVal, filePath, line, mechanism, variantContext);
+        return buildDeclarations({ property: mapping.property, rawValue: roundedVal, filePath, line, mechanism, variantContext });
       }
     }
 
@@ -413,25 +413,26 @@ function expandStandard(
     if (mapping.property === 'font-weight') {
       const weightVal = FONT_WEIGHT_MAP[value];
       if (weightVal) {
-        return buildDeclarations(mapping.property, weightVal, filePath, line, mechanism, variantContext);
+        return buildDeclarations({ property: mapping.property, rawValue: weightVal, filePath, line, mechanism, variantContext });
       }
     }
 
     return [];
   }
 
-  return buildDeclarations(mapping.property, resolvedValue, filePath, line, mechanism, variantContext, opacity);
+  return buildDeclarations({ property: mapping.property, rawValue: resolvedValue, filePath, line, mechanism, variantContext, opacity });
 }
 
-function buildDeclarations(
-  property: string,
-  rawValue: string,
-  filePath: string,
-  line: number,
-  mechanism: StyleMechanism,
-  variantContext: string | null,
-  opacity?: string | null,
-): NormalizedDeclaration[] {
+function buildDeclarations(opts: {
+  property: string;
+  rawValue: string;
+  filePath: string;
+  line: number;
+  mechanism: StyleMechanism;
+  variantContext: string | null;
+  opacity?: string | null;
+}): NormalizedDeclaration[] {
+  const { property, rawValue, filePath, line, mechanism, variantContext, opacity } = opts;
   let finalValue = rawValue;
   if (opacity) {
     // Apply opacity as a CSS color-mix or alpha modification

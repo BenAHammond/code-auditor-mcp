@@ -250,15 +250,13 @@ function extractRuleSets(
 
     // Extract declarations inside this block
     const block = css.slice(braceOpen + 1, braceClose);
-    extractDeclarationsFromBlock(
-      block,
+    extractDeclarationsFromBlock(block, declarations, {
       filePath,
       mechanism,
       selector,
-      atRuleStack.length > 0 ? atRuleStack.join(', ') : null,
-      declarations,
-      css.slice(0, braceOpen).split('\n').length,
-    );
+      variantContext: atRuleStack.length > 0 ? atRuleStack.join(', ') : null,
+      baseLine: css.slice(0, braceOpen).split('\n').length,
+    });
 
     i = braceClose + 1;
   }
@@ -366,13 +364,16 @@ function stripAllBlockComments(s: string): string {
  */
 export function extractDeclarationsFromBlock(
   block: string,
-  filePath: string,
-  mechanism: StyleMechanism,
-  selector: string,
-  variantContext: string | null,
   declarations: NormalizedDeclaration[],
-  baseLine: number,
+  ctx: {
+    filePath: string;
+    mechanism: StyleMechanism;
+    selector: string;
+    variantContext: string | null;
+    baseLine: number;
+  },
 ): void {
+  const { filePath, mechanism, selector, variantContext, baseLine } = ctx;
   // Strip all block comments from the entire block before splitting into lines.
   // CSS comments are not line-scoped; per-line stripping silently preserves
   // comment tail text when `/*` is on one line and `*/` is on another.
@@ -718,15 +719,13 @@ function extractFromCSSinJS(
   // Parse the CSS template content
   if (cleanedTemplate.includes(':')) {
     const block = cleanedTemplate;
-    extractDeclarationsFromBlock(
-      block,
+    extractDeclarationsFromBlock(block, declarations, {
       filePath,
-      'css-in-js',
-      `styled`,
-      null,
-      declarations,
-      line,
-    );
+      mechanism: 'css-in-js',
+      selector: `styled`,
+      variantContext: null,
+      baseLine: line,
+    });
   }
 
   return true;

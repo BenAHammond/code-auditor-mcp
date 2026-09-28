@@ -157,16 +157,17 @@ function collectOversizedFunctionLikes(
 }
 
 /** A finding with the fields every SOLID rule shares. */
-function finding(
-  ruleId: string,
-  severity: Severity,
-  message: string,
-  file: string,
-  line: number,
-  column: number | undefined,
-  symbol: string | undefined,
-  resolution?: Resolution,
-): Finding {
+function finding(opts: {
+  ruleId: string;
+  severity: Severity;
+  message: string;
+  file: string;
+  line: number;
+  column: number | undefined;
+  symbol: string | undefined;
+  resolution?: Resolution;
+}): Finding {
+  const { ruleId, severity, message, file, line, column, symbol, resolution } = opts;
   return { ruleId, severity, message, file, line, column, symbol, resolution };
 }
 
@@ -195,11 +196,11 @@ function makeSizeRule(spec: {
     samples: META[spec.id].samples,
     analyze(ctx): Finding[] {
       return collectOversizedFunctionLikes(ctx, spec.thresholdKey, spec.fallback, spec.measure)
-        .map(({ fn, max }) => finding(
-          spec.id, 'high', spec.messageFor(fn, max),
-          fn.file, fn.line, fn.column, symbolOf(fn.name, fn.line, fn.column),
-          spec.resolutionFor(fn),
-        ));
+        .map(({ fn, max }) => finding({
+          ruleId: spec.id, severity: 'high', message: spec.messageFor(fn, max),
+          file: fn.file, line: fn.line, column: fn.column, symbol: symbolOf(fn.name, fn.line, fn.column),
+          resolution: spec.resolutionFor(fn),
+        }));
     },
   };
 }
@@ -230,33 +231,33 @@ const classSize: RuleDefinition<SolidNeeds> = {
       const column = cls.column;
 
       if (cls.methodCount > methodsThreshold) {
-        out.push(finding(
-          'solid/class-size', 'high',
-          `Class "${cls.name}" has ${cls.methodCount} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting into smaller classes.`,
-          cls.file, line, column, cls.name,
-          {
+        out.push(finding({
+          ruleId: 'solid/class-size', severity: 'high',
+          message: `Class "${cls.name}" has ${cls.methodCount} methods, exceeding the maximum of ${methodsThreshold}. Consider splitting into smaller classes.`,
+          file: cls.file, line, column, symbol: cls.name,
+          resolution: {
             action: 'split-class',
             summary: `Split class "${cls.name}" (${cls.methodCount} methods) into smaller classes by extracting a cohesive subset of its methods.`,
             symbols: cls.methods.map((m) => qualifiedMethod(cls.name, m.name)),
             files: [cls.file],
             lines: cls.methods.map((m) => m.line),
           },
-        ));
+        }));
       }
 
       if (cls.aggregateComplexity > maxAggregate) {
-        out.push(finding(
-          'solid/class-size', 'high',
-          `Class "${cls.name}" has aggregate cyclomatic complexity ${cls.aggregateComplexity}, exceeding the maximum of ${maxAggregate}. Consider splitting the class.`,
-          cls.file, line, column, cls.name,
-          {
+        out.push(finding({
+          ruleId: 'solid/class-size', severity: 'high',
+          message: `Class "${cls.name}" has aggregate cyclomatic complexity ${cls.aggregateComplexity}, exceeding the maximum of ${maxAggregate}. Consider splitting the class.`,
+          file: cls.file, line, column, symbol: cls.name,
+          resolution: {
             action: 'split-class',
             summary: `Split class "${cls.name}" (aggregate complexity ${cls.aggregateComplexity}) to move its most-complex methods into a separate class.`,
             symbols: cls.methods.map((m) => qualifiedMethod(cls.name, m.name)),
             files: [cls.file],
             lines: cls.methods.map((m) => m.line),
           },
-        ));
+        }));
       }
     }
     return out;
@@ -283,21 +284,21 @@ const methodComplexity: RuleDefinition<SolidNeeds> = {
       if (s.kind === 'function') {
         const f = s as FileFunctionSymbol;
         if (f.complexity > max) {
-          out.push(finding(
-            'solid/method-complexity', 'high',
-            `Function "${f.name}" has cyclomatic complexity ${f.complexity}, exceeding the maximum of ${max}. Consider breaking it into smaller functions.`,
-            f.file, f.line, f.column, symbolOf(f.name, f.line, f.column),
-          ));
+          out.push(finding({
+            ruleId: 'solid/method-complexity', severity: 'high',
+            message: `Function "${f.name}" has cyclomatic complexity ${f.complexity}, exceeding the maximum of ${max}. Consider breaking it into smaller functions.`,
+            file: f.file, line: f.line, column: f.column, symbol: symbolOf(f.name, f.line, f.column),
+          }));
         }
       } else if (s.kind === 'class') {
         const cls = s as FileClassSymbol;
         for (const m of cls.methods) {
           if (m.complexity > max) {
-            out.push(finding(
-              'solid/method-complexity', 'high',
-              `Method "${cls.name}.${m.name}" has cyclomatic complexity ${m.complexity}, exceeding the maximum of ${max}. Consider breaking it into smaller methods.`,
-              cls.file, m.line, m.column, qualifiedMethod(cls.name, m.name),
-            ));
+            out.push(finding({
+              ruleId: 'solid/method-complexity', severity: 'high',
+              message: `Method "${cls.name}.${m.name}" has cyclomatic complexity ${m.complexity}, exceeding the maximum of ${max}. Consider breaking it into smaller methods.`,
+              file: cls.file, line: m.line, column: m.column, symbol: qualifiedMethod(cls.name, m.name),
+            }));
           }
         }
       }
@@ -323,11 +324,11 @@ const openClosed: RuleDefinition<SolidNeeds> = {
       if (s.kind !== 'class') continue;
       const cls = s as FileClassSymbol;
       if (!cls.hasInstanceofAgainstUserType) continue;
-      out.push(finding(
-        'solid/open-closed', 'high',
-        `Class "${cls.name}" uses instanceof against a user-defined type. Consider composition or inheritance for extension.`,
-        cls.file, cls.line, cls.column, cls.name,
-      ));
+      out.push(finding({
+        ruleId: 'solid/open-closed', severity: 'high',
+        message: `Class "${cls.name}" uses instanceof against a user-defined type. Consider composition or inheritance for extension.`,
+        file: cls.file, line: cls.line, column: cls.column, symbol: cls.name,
+      }));
     }
     return out;
   },
@@ -350,18 +351,18 @@ const singleResponsibility: RuleDefinition<SolidNeeds> = {
       const groups = fn.concernGroups;
       if (groups.length < 2) continue;
       const labels = groups.join(', ');
-      out.push(finding(
-        'solid/single-responsibility', 'high',
-        `Function "${fn.name}" mixes ${groups.length} unrelated concerns (${labels}). Split it into one function per concern.`,
-        fn.file, fn.line, fn.column, symbolOf(fn.name, fn.line, fn.column),
-        {
+      out.push(finding({
+        ruleId: 'solid/single-responsibility', severity: 'high',
+        message: `Function "${fn.name}" mixes ${groups.length} unrelated concerns (${labels}). Split it into one function per concern.`,
+        file: fn.file, line: fn.line, column: fn.column, symbol: symbolOf(fn.name, fn.line, fn.column),
+        resolution: {
           action: 'split-function',
           summary: `Split "${fn.name}" into one function per concern (${labels}) and compose them at the call site.`,
           symbols: [fn.name],
           files: [fn.file],
           lines: [fn.line],
         },
-      ));
+      }));
     }
     return out;
   },
@@ -421,22 +422,22 @@ const interfaceSize: RuleDefinition<InterfaceSizeNeeds> = {
       if (s.kind !== 'interface') continue;
       const iface = s as FileInterfaceSymbol;
       if (!iface.hasMethodMembers || iface.memberCount <= max) continue;
-      out.push(finding(
-        'interface-size', 'high',
-        `Interface "${iface.name}" has ${iface.memberCount} members, exceeding the maximum of ${max}. Consider splitting this large interface into smaller interfaces.`,
-        iface.file, iface.line, iface.column, iface.name,
-      ));
+      out.push(finding({
+        ruleId: 'interface-size', severity: 'high',
+        message: `Interface "${iface.name}" has ${iface.memberCount} members, exceeding the maximum of ${max}. Consider splitting this large interface into smaller interfaces.`,
+        file: iface.file, line: iface.line, column: iface.column, symbol: iface.name,
+      }));
     }
     // Go arm: the Go binary's hardcoded threshold (10 methods), read from
     // `type-declarations`. Column is 0 — the Go binary never sets it.
     for (const decl of ctx.facts['type-declarations']) {
       if (decl.kind !== 'interface') continue;
       if (decl.methodCount <= 10) continue;
-      out.push(finding(
-        'interface-size', 'high',
-        `Interface "${decl.name}" has ${decl.methodCount} methods, exceeding the maximum of 10. Consider splitting this large interface into smaller, more focused interfaces.`,
-        decl.file, decl.line, 0, decl.name,
-      ));
+      out.push(finding({
+        ruleId: 'interface-size', severity: 'high',
+        message: `Interface "${decl.name}" has ${decl.methodCount} methods, exceeding the maximum of 10. Consider splitting this large interface into smaller, more focused interfaces.`,
+        file: decl.file, line: decl.line, column: 0, symbol: decl.name,
+      }));
     }
     return out;
   },
@@ -461,11 +462,11 @@ const structSize: RuleDefinition<GoNeeds> = {
       // The Go binary's hardcoded threshold (15 fields). Column 0 matches the
       // Go binary, which never sets it.
       if (decl.fieldCount <= 15) continue;
-      out.push(finding(
-        'struct-size', 'high',
-        `Struct "${decl.name}" has ${decl.fieldCount} fields, exceeding the maximum of 15. Consider splitting this struct into smaller, more focused structs.`,
-        decl.file, decl.line, 0, decl.name,
-      ));
+      out.push(finding({
+        ruleId: 'struct-size', severity: 'high',
+        message: `Struct "${decl.name}" has ${decl.fieldCount} fields, exceeding the maximum of 15. Consider splitting this struct into smaller, more focused structs.`,
+        file: decl.file, line: decl.line, column: 0, symbol: decl.name,
+      }));
     }
     return out;
   },
@@ -490,11 +491,11 @@ const functionSize: RuleDefinition<GoFunctionNeeds> = {
       // complexity > 20 && returns > 2 && params > 6. Column 0 matches the Go
       // binary, which never sets it.
       if (!(fn.complexity > 20 && fn.returnCount > 2 && fn.parameterCount > 6)) continue;
-      out.push(finding(
-        'function-size', 'high',
-        `Function "${fn.name}" has many parameters, multiple returns, and high complexity. Consider breaking it into smaller, more focused functions.`,
-        fn.file, fn.line, 0, fn.name,
-      ));
+      out.push(finding({
+        ruleId: 'function-size', severity: 'high',
+        message: `Function "${fn.name}" has many parameters, multiple returns, and high complexity. Consider breaking it into smaller, more focused functions.`,
+        file: fn.file, line: fn.line, column: 0, symbol: fn.name,
+      }));
     }
     return out;
   },
@@ -517,13 +518,13 @@ const switchSize: RuleDefinition<GoSwitchNeeds> = {
     for (const sw of ctx.facts['go-switches']) {
       // The Go binary's hardcoded threshold (8 cases, `default` included).
       if (sw.caseCount <= 8) continue;
-      out.push(finding(
-        'switch-size', 'high',
-        sw.kind === 'type-switch'
+      out.push(finding({
+        ruleId: 'switch-size', severity: 'high',
+        message: sw.kind === 'type-switch'
           ? 'Type switch has many case clauses. Consider consolidating related cases; a type switch over a sealed set is maintainable, but an open set grows unwieldy.'
           : 'Switch statement has many case clauses. Consider consolidating related cases or a table-driven lookup.',
-        sw.file, sw.line, 0, undefined,
-      ));
+        file: sw.file, line: sw.line, column: 0, symbol: undefined,
+      }));
     }
     return out;
   },
@@ -547,11 +548,11 @@ const goLiskovSubstitution: RuleDefinition<GoFunctionNeeds> = {
       // LSP governs methods only — a free function has no supertype to violate.
       // Test functions are already excluded by the producer.
       if (!fn.isMethod || !fn.callsPanic) continue;
-      out.push(finding(
-        'liskov-substitution', 'severe',
-        `Method "${fn.name}" calls panic(). Consider returning an error instead so the method stays substitutable.`,
-        fn.file, fn.line, 0, fn.name,
-      ));
+      out.push(finding({
+        ruleId: 'liskov-substitution', severity: 'severe',
+        message: `Method "${fn.name}" calls panic(). Consider returning an error instead so the method stays substitutable.`,
+        file: fn.file, line: fn.line, column: 0, symbol: fn.name,
+      }));
     }
     return out;
   },
@@ -586,11 +587,11 @@ const liskovSubstitution: RuleDefinition<SolidNeeds> = {
         const parentMethod = parentMethods.get(m.name);
         if (!parentMethod) continue;
         if (m.throws && !parentMethod.throws) {
-          out.push(finding(
-            'solid/liskov-substitution', 'severe',
-            `Method "${cls.name}.${m.name}" overrides "${parent.name}.${m.name}" and throws where the parent does not. Callers of the parent contract cannot handle it.`,
-            cls.file, m.line, m.column, qualifiedMethod(cls.name, m.name),
-          ));
+          out.push(finding({
+            ruleId: 'solid/liskov-substitution', severity: 'severe',
+            message: `Method "${cls.name}.${m.name}" overrides "${parent.name}.${m.name}" and throws where the parent does not. Callers of the parent contract cannot handle it.`,
+            file: cls.file, line: m.line, column: m.column, symbol: qualifiedMethod(cls.name, m.name),
+          }));
         }
       }
     }
@@ -626,11 +627,11 @@ const dependencyInversion: RuleDefinition<SolidNeeds> = {
       const cls = s as FileClassSymbol;
       if (!cls.hasHeldDirectInstantiation) continue;
       if (isAbstractionBoundary(cls.name)) continue;
-      out.push(finding(
-        'solid/dependency-inversion', 'high',
-        `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
-        cls.file, cls.line, cls.column, cls.name,
-      ));
+      out.push(finding({
+        ruleId: 'solid/dependency-inversion', severity: 'high',
+        message: `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
+        file: cls.file, line: cls.line, column: cls.column, symbol: cls.name,
+      }));
     }
     return out;
   },

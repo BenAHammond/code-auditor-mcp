@@ -56,12 +56,10 @@ function row(
   name: string,
   entityType: FunctionIndexFact['entityType'],
   componentType: string | null,
-  filePath: string,
-  sourceCode: string,
-  lang: string,
-  importMap: ReturnType<typeof buildImportMap>,
+  ctx: { filePath: string; sourceCode: string; lang: string; importMap: ReturnType<typeof buildImportMap> },
   exportedNode: ASTNode = node,
 ): FunctionIndexFact {
+  const { filePath, sourceCode, lang, importMap } = ctx;
   const { line } = getLineAndColumn(node);
   const body = getFunctionBody(node, sourceCode);
   const calls = extractFunctionCalls(node, sourceCode, importMap);
@@ -95,6 +93,7 @@ export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
   if (lang === 'unknown') return [];
 
   const importMap = buildImportMap(root, sourceCode);
+  const scanCtx = { filePath, sourceCode, lang, importMap };
   const entries: FunctionIndexFact[] = [];
 
   // Pass 1 — named function declarations and class methods.
@@ -102,7 +101,7 @@ export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
     if (node.type === 'function_declaration') {
       const name = nodeName(node, sourceCode);
       if (!name) return;
-      entries.push(row(node, name, 'function', null, filePath, sourceCode, lang, importMap));
+      entries.push(row(node, name, 'function', null, scanCtx));
     } else if (node.type === 'method_definition') {
       // Methods are NOT in the legacy `functions` table. The legacy
       // `createFunctionIndexVisitor` resolved a method's name with
@@ -125,7 +124,7 @@ export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
     if (!nameNode || !arrowFunc) return;
     const name = getNodeText(nameNode, sourceCode);
     if (!name) return;
-    entries.push(row(arrowFunc, name, 'function', null, filePath, sourceCode, lang, importMap, node));
+    entries.push(row(arrowFunc, name, 'function', null, scanCtx, node));
   });
 
   // Pass 3 — React component detection. Upgrade an existing entry (function /
@@ -149,7 +148,7 @@ export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
         existing.entityType = 'component';
         existing.componentType = ct;
       } else {
-        entries.push(row(node, cName, 'component', ct, filePath, sourceCode, lang, importMap));
+        entries.push(row(node, cName, 'component', ct, scanCtx));
       }
     });
   }

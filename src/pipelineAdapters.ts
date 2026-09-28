@@ -1622,19 +1622,20 @@ function clCollectFileReferences(node: ASTNode, sourceCode: string): string[] {
   return [...names];
 }
 
-function clMakeFunction(
-  filePath: string,
-  lang: string,
-  name: string,
-  line: number,
-  signature: string,
-  purpose: string,
-  params: any[],
-  callees: string[],
-  exported: boolean,
-  complexity: number,
-  isMethod = false,
-): CrossLanguageEntity {
+function clMakeFunction(opts: {
+  filePath: string;
+  lang: string;
+  name: string;
+  line: number;
+  signature: string;
+  purpose: string;
+  params: any[];
+  callees: string[];
+  exported: boolean;
+  complexity: number;
+  isMethod?: boolean;
+}): CrossLanguageEntity {
+  const { filePath, lang, name, line, signature, purpose, params, callees, exported, complexity, isMethod = false } = opts;
   return {
     id: clEntityId(filePath, 'function', name, line),
     name,
@@ -1827,16 +1828,16 @@ function clExtractTSEntities(
         }
       }
       const line = node.location.start.line;
-      const entity = clMakeFunction(
-        filePath, lang, displayName, line,
-        clSignatureText(node, sourceCode) || getNodeText(node, sourceCode),
-        clBodyText(node, sourceCode),
-        clExtractTSParams(node, sourceCode),
-        clCollectCallees(node, sourceCode),
-        isExported(node),
-        calculateComplexity(node),
-        node.type === 'method_definition',
-      );
+      const entity = clMakeFunction({
+        filePath, lang, name: displayName, line,
+        signature: clSignatureText(node, sourceCode) || getNodeText(node, sourceCode),
+        purpose: clBodyText(node, sourceCode),
+        params: clExtractTSParams(node, sourceCode),
+        callees: clCollectCallees(node, sourceCode),
+        exported: isExported(node),
+        complexity: calculateComplexity(node),
+        isMethod: node.type === 'method_definition',
+      });
       entity.metadata!.fileReferences = fileReferences;
       out.push(entity);
       return;
@@ -1849,15 +1850,15 @@ function clExtractTSEntities(
       const name = nameNode ? getNodeText(nameNode, sourceCode) : undefined;
       if (!name) return;
       const line = node.location.start.line;
-      const entity = clMakeFunction(
+      const entity = clMakeFunction({
         filePath, lang, name, line,
-        clSignatureText(arrow, sourceCode) || getNodeText(arrow, sourceCode),
-        clBodyText(arrow, sourceCode),
-        [],
-        clCollectCallees(arrow, sourceCode),
-        isExported(node),
-        calculateComplexity(node),
-      );
+        signature: clSignatureText(arrow, sourceCode) || getNodeText(arrow, sourceCode),
+        purpose: clBodyText(arrow, sourceCode),
+        params: [],
+        callees: clCollectCallees(arrow, sourceCode),
+        exported: isExported(node),
+        complexity: calculateComplexity(node),
+      });
       entity.metadata!.fileReferences = fileReferences;
       out.push(entity);
       return;
@@ -1953,15 +1954,15 @@ function clExtractGoEntities(
       const receiverType = receiver ? clGoReceiverType(receiver, sourceCode) : undefined;
       const displayName = receiverType ? `${receiverType}.${name}` : name;
       const line = node.location.start.line;
-      const entity = clMakeFunction(
-        filePath, 'go', displayName, line,
-        clSignatureText(node, sourceCode) || getNodeText(node, sourceCode),
-        clBodyText(node, sourceCode),
-        clExtractGoParams(node, sourceCode),
-        clCollectCallees(node, sourceCode),
-        clIsExportedGo(name),
-        calculateComplexity(node),
-      );
+      const entity = clMakeFunction({
+        filePath, lang: 'go', name: displayName, line,
+        signature: clSignatureText(node, sourceCode) || getNodeText(node, sourceCode),
+        purpose: clBodyText(node, sourceCode),
+        params: clExtractGoParams(node, sourceCode),
+        callees: clCollectCallees(node, sourceCode),
+        exported: clIsExportedGo(name),
+        complexity: calculateComplexity(node),
+      });
       entity.metadata!.fileReferences = fileReferences;
       out.push(entity);
       return;
