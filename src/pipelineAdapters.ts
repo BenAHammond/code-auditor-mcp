@@ -134,13 +134,38 @@ function createAnalyzerAstVisitor(spec: AnalyzerAstVisitorSpec): Stage2Visitor {
 }
 
 /** Read the analyzer's accumulated samples/pairs, swallowing a load failure. */
-function readAccumulated<T>(
+async function readAccumulated<T>(
   getAnalyzer: () => Promise<any>,
   pick: (a: any) => T[] | undefined,
 ): Promise<T[]> {
-  return getAnalyzer()
-    .then((a) => pick(a) ?? [])
-    .catch(() => []);
+  try {
+    const a = await getAnalyzer();
+    return pick(a) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** A bundle visitor: an analyzeAST visitor plus a getter for the analyzer's
+ *  accumulated samples/pairs. The bundle creators (SOLID, DRY) share one lazy
+ *  analyzer instance between the visitor and the getter. */
+function createAnalyzerBundle<T>(spec: {
+  name: string;
+  loader: () => Promise<any>;
+  description: string;
+  category: string;
+  pick: (a: any) => T[] | undefined;
+}): { visitor: Stage2Visitor; getAccumulated: () => Promise<T[]> } {
+  const getAnalyzer = lazySingleton<any>(spec.loader);
+  return {
+    visitor: createAnalyzerAstVisitor({
+      name: spec.name,
+      getAnalyzer,
+      description: spec.description,
+      category: spec.category,
+    }),
+    getAccumulated: () => readAccumulated(getAnalyzer, spec.pick),
+  };
 }
 
 // ── SOLID visitor ────────────────────────────────────────────────────────────
@@ -158,34 +183,30 @@ export interface SolidVisitorBundle {
  * @returns The SOLID visitor bundle.
  */
 export function createSolidVisitor(): SolidVisitorBundle {
-  const getAnalyzer = lazySingleton<any>(() =>
-    import('./analyzers/universal/UniversalSOLIDAnalyzer.js').then(
-      (m) => new m.UniversalSOLIDAnalyzer(),
-    ),
-  );
-
-  return {
-    visitor: createAnalyzerAstVisitor({
-      name: 'solid',
-      getAnalyzer,
-      description: 'Detects violations of SOLID principles',
-      category: 'architecture',
-    }),
-    getSizeSamples: () => readAccumulated(getAnalyzer, (a) => a.sizeSamples),
-  };
+  const { visitor, getAccumulated } = createAnalyzerBundle({
+    name: 'solid',
+    loader: () => import('./analyzers/universal/UniversalSOLIDAnalyzer.js').then((m) => new m.UniversalSOLIDAnalyzer()),
+    description: 'Detects violations of SOLID principles',
+    category: 'architecture',
+    pick: (a): SizeSample[] => a.sizeSamples,
+  });
+  return { visitor, getSizeSamples: getAccumulated };
 }
 
 // ── DRY visitor ──────────────────────────────────────────────────────────────
 
+/** One duplicate-code pair accumulated by the DRY analyzer. */
+export interface DryPair {
+  pairFingerprint: string;
+  file1: string; symbol1: string; line1: number; contentHash1: string;
+  file2: string; symbol2: string; line2: number; contentHash2: string;
+  similarity: number;
+}
+
 export interface DryVisitorBundle {
   visitor: Stage2Visitor;
   /** Extract accumulated dryPairs after the pipeline finishes stage 2. */
-  getDryPairs: () => Promise<Array<{
-    pairFingerprint: string;
-    file1: string; symbol1: string; line1: number; contentHash1: string;
-    file2: string; symbol2: string; line2: number; contentHash2: string;
-    similarity: number;
-  }>>;
+  getDryPairs: () => Promise<DryPair[]>;
 }
 
 /**
@@ -195,21 +216,14 @@ export interface DryVisitorBundle {
  * @returns The DRY visitor bundle.
  */
 export function createDryVisitor(): DryVisitorBundle {
-  const getAnalyzer = lazySingleton<any>(() =>
-    import('./analyzers/universal/UniversalDRYAnalyzer.js').then(
-      (m) => new m.UniversalDRYAnalyzer(),
-    ),
-  );
-
-  return {
-    visitor: createAnalyzerAstVisitor({
-      name: 'dry',
-      getAnalyzer,
-      description: 'Detects code duplication across the codebase',
-      category: 'maintainability',
-    }),
-    getDryPairs: () => readAccumulated(getAnalyzer, (a) => a.dryPairs),
-  };
+  const { visitor, getAccumulated } = createAnalyzerBundle({
+    name: 'dry',
+    loader: () => import('./analyzers/universal/UniversalDRYAnalyzer.js').then((m) => new m.UniversalDRYAnalyzer()),
+    description: 'Detects code duplication across the codebase',
+    category: 'maintainability',
+    pick: (a): DryPair[] => a.dryPairs,
+  });
+  return { visitor, getDryPairs: getAccumulated };
 }
 
 // ── Data-Access visitor ──────────────────────────────────────────────────────
