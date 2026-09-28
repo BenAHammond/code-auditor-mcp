@@ -214,4 +214,32 @@ describe('Spec 68 hasOrganizationFilter — projection vs. predicate', () => {
     expect(out.length).toBeGreaterThan(0);
     expect(out[0].hasOrganizationFilter).toBe(true);
   });
+
+  it('detects a Drizzle `eq(orgCol, value)` comparison helper (org col as first arg)', () => {
+    const out = calls('/fixture/org-eq-helper.ts', [
+      'appDb.getDb().select().from(userOrganizations)',
+      '  .where(and(eq(userOrganizations.userId, userId), eq(userOrganizations.organizationId, organizationId)));',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasOrganizationFilter).toBe(true);
+  });
+
+  it('detects a Drizzle `inArray(orgCol, values)` comparison helper (org col as first arg)', () => {
+    const out = calls('/fixture/org-inarray-helper.ts', [
+      'appDb.getDb().select().from(sampleOwnership)',
+      '  .where(and(inArray(sampleOwnership.sampleId, sampleIds), inArray(sampleOwnership.organizationId, userOrgIds)));',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasOrganizationFilter).toBe(true);
+  });
+
+  it('does NOT treat a JOIN-on-org `innerJoin(x, eq(a.orgId, b.orgId))` as a filter', () => {
+    const out = calls('/fixture/org-join-on.ts', [
+      'appDb.getDb().select().from(userOrganizations)',
+      '  .innerJoin(organizations, eq(userOrganizations.organizationId, organizations.id))',
+      '  .where(eq(userOrganizations.userId, userId));',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasOrganizationFilter).toBe(false);
+  });
 });

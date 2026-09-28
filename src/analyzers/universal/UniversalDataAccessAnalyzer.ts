@@ -1645,6 +1645,22 @@ function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): 
   );
   if (comparisonRe.test(text)) return true;
 
+  // ORM comparison-helper form: the org column as the FIRST argument of a
+  // predicate helper — `eq(org_id, v)`, `inArray(org_id, vs)`, `lt(org_id, v)`.
+  // The old bare-column match caught these by accident; the operator/object/
+  // positional regexes do not (they expect `org_id =` / `{ org_id: }` /
+  // `where('org_id')`). A helper's first arg is the column and its second arg
+  // is the value. Distinguish that from a JOIN-on-org — `innerJoin(x, eq(a.org_id,
+  // b.org_id))` — whose second arg is *another column* (`b.org_id`), not a value:
+  // a join scopes how rows match, not which rows come back, so it is not tenant
+  // isolation. The lookahead rejects a dotted second argument (Spec 68 Thing 2
+  // recall — `checkOrganizationAccess`/`filterSamplesByOrganization`).
+  const helperRe = new RegExp(
+    `\\b(?:eq|ne|notEq|gt|gte|lt|lte|inArray|notInArray|like|ilike|notIlike|between|notBetween)\\s*\\(\\s*(?:[\\w$]+\\.)*\\s*\\b${alt}\\b\\s*,\\s*(?!\\s*[\\w$]+\\s*\\.)`,
+    'i',
+  );
+  if (helperRe.test(text)) return true;
+
   // Object-literal filter: the column as a value key inside a predicate/set
   // object (`.where({ org_id: v })`, `.values({ org_id: v })`, Prisma
   // `where: { org_id: v }`). The colon is a filter signal ONLY inside a
