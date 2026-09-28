@@ -1901,6 +1901,10 @@ function collectLoopQueryCandidates(
   const reported = new Set<string>();
   const loopOrdinals = new Map<string, number>();
 
+  // §13.1: methods this file invokes inside a `db.transaction(fn)` callback have
+  // their writes already batched by the caller's transaction (see the helper).
+  const transactionWrappedMethods = collectTransactionWrappedMethods(ast, adapter, sourceCode);
+
   for (const node of dbNodes) {
     // A DB call and its template-literal SQL argument both satisfy isDbCallNode —
     // the call via provenance, the literal via the template-literal branch — so one
@@ -1933,7 +1937,17 @@ function collectLoopQueryCandidates(
     // an N+1 is a false positive: the code already follows the advice. (A
     // per-iteration `db.transaction(() => …)` *inside* the loop would still fire —
     // that does not wrap the loop, and each iteration commits separately.)
-    if (isInsideDbTransaction(loopInfo.loopNode, adapter)) continue;
+    if (isInsideDbTransaction(loopInfo.loopNode, adapter, sourceCode)) continue;
+
+    // §13.1 (transaction-wrapped-helper): the loop sits in a method that this
+    // file invokes inside a `db.transaction(fn)` callback — its writes are
+    // already batched by the caller's transaction, so it is not a batchable N+1.
+    const enclosingFnName = findEnclosingFunctionIdentity(
+      loopInfo.loopNode,
+      adapter,
+      ast.filePath,
+    ).name;
+    if (enclosingFnName && transactionWrappedMethods.has(enclosingFnName)) continue;
 
     // R4.1 (Spec 46): LLM-pipeline discriminator. A loop whose body invokes an
     // LLM/agent (embedding, model completion, corpus extraction) is an intentional
@@ -2037,7 +2051,11 @@ function loopBodyContainsMessageLifecycleCall(
  * the loop itself is outside the transaction and every iteration commits
  * separately, so it must still fire.
  */
-function isInsideDbTransaction(node: ASTNode, adapter: LanguageAdapter): boolean {
+function isInsideDbTransaction(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
   let current: ASTNode | null = node;
   while (current) {
     const parent = adapter.getParent(current);
@@ -2046,13 +2064,55 @@ function isInsideDbTransaction(node: ASTNode, adapter: LanguageAdapter): boolean
       const callee = adapter.getChildren(parent).find(
         (c) => adapter.getNodeType(c) === 'member_expression',
       );
-      if (callee && memberPropertyName(callee, adapter, '') === 'transaction') {
+      if (callee && memberPropertyName(callee, adapter, sourceCode) === 'transaction') {
         return true;
       }
     }
     current = parent;
   }
   return false;
+}
+
+/**
+ * §13.1 (transaction-wrapped-helper discriminator): method names that this file
+ * invokes *inside* a `db.transaction(fn)` callback — `this.db.transaction(() =>
+ * this.syncFileIndexRow(...))`. A private helper written to run inside the
+ * caller's transaction has its per-iteration writes already batched into the
+ * caller's single commit, so its internal loops are not a batchable N+1. This
+ * mirrors the textual {@link isInsideDbTransaction} check but bridges the call
+ * boundary: the loop lives in the helper's body while the transaction wraps the
+ * *call*, which the purely lexical check cannot see. A per-iteration
+ * `db.transaction(() => …)` *inside* a loop is unaffected — the helper is only
+ * recognized when it is the thing being invoked within a transaction callback.
+ */
+function collectTransactionWrappedMethods(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): Set<string> {
+  const wrapped = new Set<string>();
+  for (const callNode of adapter.findNodes(ast, {
+    custom: (n) => adapter.getNodeType(n) === 'call_expression',
+  })) {
+    const callee = adapter.getChildren(callNode).find(
+      (c) => adapter.getNodeType(c) === 'member_expression',
+    );
+    if (!callee || memberPropertyName(callee, adapter, sourceCode) !== 'transaction') continue;
+    walkSubtree(callNode, adapter, (n) => {
+      if (n === callNode) return;
+      if (adapter.getNodeType(n) !== 'call_expression') return;
+      const innerCallee = getCallExpressionCallee(n, adapter);
+      if (!innerCallee || adapter.getNodeType(innerCallee) !== 'member_expression') return;
+      const obj = adapter.getChildren(innerCallee).find(
+        (c) => adapter.getNodeType(c) !== 'property_identifier',
+      );
+      const objText = obj ? adapter.getNodeText(obj, sourceCode) : '';
+      if (objText !== 'this') return;
+      const prop = memberPropertyName(innerCallee, adapter, sourceCode);
+      if (prop) wrapped.add(prop);
+    });
+  }
+  return wrapped;
 }
 
 /** Depth-first walk over an ASTNode subtree (children only, no parent links). */

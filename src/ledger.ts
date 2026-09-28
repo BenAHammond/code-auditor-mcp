@@ -228,20 +228,18 @@ export function writeAuditToLedger(
   exitStatus: number,
   opts?: { runId?: string; coverage?: RuleCoverage[] },
 ): string {
-  const runId = opts?.runId ?? randomUUID();
-  db.transaction(() => {
-    writeAuditToLedgerRaw(db, runInput, violations, durationMs, exitStatus, opts, runId);
-  })();
-  return runId;
+  return db.transaction(() =>
+    writeAuditToLedgerRaw(db, runInput, violations, durationMs, exitStatus, opts),
+  )();
 }
 
 /**
  * Transaction-less core of {@link writeAuditToLedger}: runs the run/finding/
- * coverage inserts without opening its own transaction. `importLedgerFromDir`
- * wraps its whole file loop in one transaction and calls this per run — calling
- * {@link writeAuditToLedger} there would nest transactions (better-sqlite3
- * rejects nesting), and the per-run inserts are already batched by the outer
- * transaction.
+ * coverage inserts without opening its own transaction, returning the run id.
+ * `importLedgerFromDir` wraps its whole file loop in one transaction and calls
+ * this per run — calling {@link writeAuditToLedger} there would nest
+ * transactions (better-sqlite3 rejects nesting), and the per-run inserts are
+ * already batched by the outer transaction.
  */
 function writeAuditToLedgerRaw(
   db: SqliteDatabase,
@@ -249,10 +247,10 @@ function writeAuditToLedgerRaw(
   violations: Violation[],
   durationMs: number,
   exitStatus: number,
-  opts: { runId?: string; coverage?: RuleCoverage[] } | undefined,
-  runId: string,
-): void {
+  opts?: { runId?: string; coverage?: RuleCoverage[] },
+): string {
   const isAttach = !!opts?.runId;
+  const runId = opts?.runId ?? randomUUID();
   const timestamp = new Date().toISOString();
 
   const insertRun = db.prepare(`
@@ -324,6 +322,8 @@ function writeAuditToLedgerRaw(
       insertCoverage.run(runId, c.analyzer, c.ruleId, c.state, c.count, c.reason ?? null);
     }
   }
+
+  return runId;
 }
 
 /**
@@ -1406,7 +1406,7 @@ export function importLedgerFromDir(db: SqliteDatabase, dirPath: string): { impo
 
   db.transaction(() => {
     for (const run of parsedRuns) {
-      writeAuditToLedgerRaw(db, run.runInput, run.violations, 0, 0, undefined, randomUUID());
+      writeAuditToLedgerRaw(db, run.runInput, run.violations, 0, 0);
       imported++;
     }
   })();

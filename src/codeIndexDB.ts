@@ -2666,16 +2666,14 @@ export class CodeIndexDB {
       }
     }
 
-    // Batch the deletes — one `IN (…)` per chunk instead of one DELETE per stale
-    // file (loop-query / N+1). Chunked at the SQLite bind-parameter ceiling (900)
-    // so a large stale set can't exceed the variable limit.
-    const SQLITE_MAX_VARIABLES = 900;
-    for (let i = 0; i < stalePaths.length; i += SQLITE_MAX_VARIABLES) {
-      const chunk = stalePaths.slice(i, i + SQLITE_MAX_VARIABLES);
-      const placeholders = chunk.map(() => '?').join(', ');
+    // Batch the deletes — one `IN (SELECT value FROM json_each(?))` DELETE for the
+    // whole stale set, instead of one DELETE per stale file (loop-query / N+1).
+    // A single JSON-array bind expands through json_each, so a large stale set
+    // can't exceed the SQLite bind-parameter ceiling.
+    if (stalePaths.length > 0) {
       const result = this.db
-        .prepare(`DELETE FROM functions WHERE file_path IN (${placeholders})`)
-        .run(...chunk);
+        .prepare(`DELETE FROM functions WHERE file_path IN (SELECT value FROM json_each(?))`)
+        .run(JSON.stringify(stalePaths));
       removedCount += result.changes;
     }
 
@@ -2767,15 +2765,14 @@ export class CodeIndexDB {
       if (stale) stalePaths.push(fp);
     }
 
-    // Batch the deletes — one `IN (…)` per chunk instead of one DELETE per stale
-    // file (loop-query / N+1), chunked at the SQLite bind-parameter ceiling.
-    const SQLITE_MAX_VARIABLES = 900;
-    for (let i = 0; i < stalePaths.length; i += SQLITE_MAX_VARIABLES) {
-      const chunk = stalePaths.slice(i, i + SQLITE_MAX_VARIABLES);
-      const placeholders = chunk.map(() => '?').join(', ');
+    // Batch the deletes — one `IN (SELECT value FROM json_each(?))` DELETE for the
+    // whole stale set, instead of one DELETE per stale file (loop-query / N+1). A
+    // single JSON-array bind expands through json_each, so a large stale set can't
+    // exceed the SQLite bind-parameter ceiling.
+    if (stalePaths.length > 0) {
       const result = this.db
-        .prepare(`DELETE FROM functions WHERE file_path IN (${placeholders})`)
-        .run(...chunk);
+        .prepare(`DELETE FROM functions WHERE file_path IN (SELECT value FROM json_each(?))`)
+        .run(JSON.stringify(stalePaths));
       totalRemoved += result.changes;
     }
 
@@ -2857,25 +2854,36 @@ export class CodeIndexDB {
     }
 
     if (missingFiles.length > 0) {
-      const SQLITE_MAX_VARIABLES = 900;
-      for (let i = 0; i < missingFiles.length; i += SQLITE_MAX_VARIABLES) {
-        const chunk = missingFiles.slice(i, i + SQLITE_MAX_VARIABLES);
-        const placeholders = chunk.map(() => '?').join(', ');
-        const removed = this.db.prepare(
-          `SELECT * FROM functions WHERE file_path IN (${placeholders})`
-        ).all(...chunk) as any[];
-        if (removed.length > 0) {
-          deletedFunctions.push(...removed.map((r: any) => this.rowToFunction(r)));
-          this.db.prepare(
-            `DELETE FROM functions WHERE file_path IN (${placeholders})`
-          ).run(...chunk);
-          const touched = new Set(removed.map((r: any) => r.file_path));
-          changedFilePaths.push(...chunk.filter((fp) => touched.has(fp)));
-        }
+      const removed = this.db.prepare(
+        `SELECT * FROM functions WHERE file_path IN (SELECT value FROM json_each(?))`
+      ).all(JSON.stringify(missingFiles)) as any[];
+      if (removed.length > 0) {
+        deletedFunctions.push(...removed.map((r: any) => this.rowToFunction(r)));
+        this.db.prepare(
+          `DELETE FROM functions WHERE file_path IN (SELECT value FROM json_each(?))`
+        ).run(JSON.stringify(missingFiles));
+        const touched = new Set(removed.map((r: any) => r.file_path));
+        changedFilePaths.push(...missingFiles.filter((fp) => touched.has(fp)));
       }
     }
 
     const missingSet = new Set(missingFiles);
+
+    // Batch-fetch the existing functions for every still-present file in one
+    // query, grouped in memory — a per-file `SELECT … WHERE file_path = ?` inside
+    // the diff loop below was a query-in-loop N+1.
+    const presentFiles = filePaths.filter((fp) => !missingSet.has(fp));
+    const existingByFile = new Map<string, any[]>();
+    if (presentFiles.length > 0) {
+      const rows = this.db.prepare(
+        `SELECT * FROM functions WHERE file_path IN (SELECT value FROM json_each(?))`
+      ).all(JSON.stringify(presentFiles)) as any[];
+      for (const row of rows) {
+        const list = existingByFile.get(row.file_path) ?? [];
+        list.push(row);
+        existingByFile.set(row.file_path, list);
+      }
+    }
 
     for (const filePath of filePaths) {
       if (missingSet.has(filePath)) continue;
@@ -2885,10 +2893,7 @@ export class CodeIndexDB {
         const fileContent = await fs.readFile(filePath, 'utf-8');
         const currentFunctions = await scanner.scanFunctions(fileContent, filePath);
 
-        // Get existing functions for this file from DB
-        const existing = this.db.prepare(
-          'SELECT * FROM functions WHERE file_path = ?'
-        ).all(filePath) as any[];
+        const existing = existingByFile.get(filePath) ?? [];
 
         // Key identity on (name, line_number) — the table's unique index —
         // not name alone. Two same-named functions in one file (overloads, a
