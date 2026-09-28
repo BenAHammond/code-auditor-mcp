@@ -267,20 +267,26 @@ export function extractClassUsage(
   const usage: StyleClassUsage[] = [];
   const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
 
-  // Class usage only exists in markup/component source. Data/config files
-  // (`.json`, `.sql`, `.toml`, `.prisma`), `.go`, and stylesheets can contain
-  // `class`/`className` substrings inside string literals (Bug #3 — e.g. an
-  // audit-report.json embedding a raw source snippet with `error_class =
-  // 'zombie-capped'`). Those must never reach the class-usage table, so gate
-  // extraction to the extensions that actually carry class attributes. Derived
-  // from the shared discovery constants so this list can't drift from the
-  // declaration extractor (the `.astro` silent-drop bug).
-  const CLASS_USAGE_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...STYLE_MARKUP_EXTENSIONS];
+  // Class usage only exists in files that can carry a real class/className
+  // attribute: JSX (`.tsx`/`.jsx`) and markup (`.html`/`.astro`/`.vue`/`.svelte`).
+  // Data/config files (`.json`, `.sql`, `.toml`, `.prisma`), `.go`, and
+  // stylesheets can contain `class`/`className` substrings inside string literals
+  // (Bug #3 — e.g. an audit-report.json embedding a raw source snippet with
+  // `error_class = 'zombie-capped'`); those must never reach the class-usage table.
+  //
+  // Plain `.ts`/`.js` (and their `.mts`/`.cts`/`.mjs`/`.cjs` variants) are excluded
+  // for the same reason: with no JSX, a `class="…"` substring there is always inside
+  // a string or template literal — HTML being generated (e.g. htmlReportGenerator.ts),
+  // whose stylesheet is typically embedded in the same file and not indexed. Flagging
+  // it undefined-class is a false positive, so gate extraction to the extensions that
+  // actually carry real class attributes.
+  const JSX_EXTENSIONS = ['.tsx', '.jsx'];
+  const CLASS_USAGE_EXTENSIONS = [...JSX_EXTENSIONS, ...STYLE_MARKUP_EXTENSIONS];
   if (!CLASS_USAGE_EXTENSIONS.includes(ext)) return [];
 
   // Determine mechanism by file type
   let mechanism: StyleClassUsage['mechanism'] = 'class';
-  if ([...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS].includes(ext)) {
+  if (JSX_EXTENSIONS.includes(ext)) {
     mechanism = 'className';
   }
 

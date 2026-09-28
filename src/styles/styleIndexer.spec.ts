@@ -44,10 +44,19 @@ describe('extractClassUsage — attribute boundary', () => {
     }
   });
 
-  it('still extracts class usage from markup/component extensions', () => {
+  it('still extracts class usage from JSX/markup extensions', () => {
     const src = `<div className="mt-1">hi</div>`;
-    for (const ext of ['.tsx', '.jsx', '.ts', '.js', '.html', '.vue', '.svelte', '.astro']) {
+    for (const ext of ['.tsx', '.jsx', '.html', '.vue', '.svelte', '.astro']) {
       expect(extractClassUsage(`component${ext}`, src).map((u) => u.className)).toEqual(['mt-1']);
+    }
+  });
+
+  it('does NOT extract class usage from plain TS/JS (no JSX)', () => {
+    // With no JSX, a `class="…"` substring in a .ts/.js file is always inside a
+    // string/template literal — HTML being generated (htmlReportGenerator.ts).
+    const src = `<div className="mt-1">hi</div> class="stat-card total"`;
+    for (const ext of ['.ts', '.js', '.mts', '.cts', '.mjs', '.cjs']) {
+      expect(extractClassUsage(`component${ext}`, src)).toEqual([]);
     }
   });
 });

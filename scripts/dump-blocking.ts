@@ -59,6 +59,7 @@ async function main() {
           line: v.line,
           column: v.column,
           symbol: v.symbol,
+          severity: v.severity,
           message: v.message,
         })),
     }));

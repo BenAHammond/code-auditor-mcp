@@ -61,13 +61,6 @@ function findChildOfType(node: ASTNode, type: string): ASTNode | undefined {
   return node.children?.find(c => c.type === type);
 }
 
-/**
- * Find all children of a given type.
- */
-function findChildrenOfType(node: ASTNode, type: string): ASTNode[] {
-  return node.children?.filter(c => c.type === type) ?? [];
-}
-
 // ---------------------------------------------------------------------------
 // Component detection
 // ---------------------------------------------------------------------------

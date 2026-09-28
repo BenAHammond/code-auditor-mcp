@@ -159,6 +159,11 @@ function looksLikeRealSecret(value: string): boolean {
   if (t.length < 8) return false;
   if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) return false; // email
   if (/^https?:\/\//i.test(t)) return false;               // URL
+  // A letters-only camelCase identifier (`styleToken`, `cssProperty`) is a code
+  // reference written as a string — an operator→field map value, not a
+  // credential. Real credentials carry digits or hard symbols; a clean
+  // camelCase name carries none of that entropy.
+  if (/^[A-Za-z_$][A-Za-z_$]*$/.test(t)) return false;
   const hasDigit = /\d/.test(t);
   const hasUpper = /[A-Z]/.test(t);
   const hasHardSymbol = HARD_SYMBOL.test(t);

@@ -336,6 +336,11 @@ class DependencyGraphBuilderCore {
       // code for them; flagging them orphaned produced a flood of 1081
       // interfaces on a corpus whose actual signal was ~139 functions.
       if (node.type === 'interface' || node.type === 'struct') return false;
+      // `_`-prefixed declarations are unused by convention — compile-time check
+      // seeds (seeded-defects.ts's `_notSerializable`) or unused markers. An
+      // orphaned-node finding means "dead code to delete", which does not apply
+      // to a name the author already marked as intentionally unused.
+      if (node.name.startsWith('_')) return false;
       // Methods are invoked via `this.` / receiver / prototype dispatch, which a
       // name-only call graph cannot model. Class-prefixed names (`Client.formatter`,
       // Go `Foo.Bar`) never resolve — the reference resolver matches a bare callee

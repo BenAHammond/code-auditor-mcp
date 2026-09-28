@@ -2,7 +2,6 @@ import path from 'node:path';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type {
-  AnalyzerResult,
   AuditResult,
   AuditRunnerOptions,
   AuditScope,
@@ -182,41 +181,6 @@ function calculateHealthScore(result: {
   const weightedViolations = critical * 10 + severe * 3 + high * 0.5;
   let score = 100 - (weightedViolations / filesAnalyzed) * 2;
   return Math.max(0, Math.round(Math.min(100, score)));
-}
-
-function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult>, filesAnalyzed: number) {
-  let totalViolations = 0;
-  let criticalIssues = 0;
-  let severe = 0;
-  let high = 0;
-  const violationsByCategory: Record<string, number> = {};
-
-  for (const [analyzer, result] of Object.entries(analyzerResults)) {
-    for (const violation of result.violations) {
-      totalViolations++;
-      if (violation.severity === 'critical') criticalIssues++;
-      else if (violation.severity === 'severe') severe++;
-      else high++;
-      const category = violation.rule;
-      violationsByCategory[category] = (violationsByCategory[category] || 0) + 1;
-    }
-  }
-
-  // Compute top issues from violationsByCategory
-  const topIssues = Object.entries(violationsByCategory)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5)
-    .map(([type, count]) => ({ type, count }));
-
-  return {
-    totalFiles: filesAnalyzed,
-    totalViolations,
-    criticalIssues,
-    severe,
-    high,
-    violationsByCategory,
-    topIssues,
-  };
 }
 
 /**
