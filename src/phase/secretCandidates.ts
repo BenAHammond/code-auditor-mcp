@@ -132,7 +132,12 @@ function candidateFor(
   return null;
 }
 
-/** One file's credential-position strings as `SecretCandidate[]`. */
+/**
+ * One file's credential-position strings as `SecretCandidate[]`.
+ *
+ * @param file - The parsed file whose credential-position strings are projected.
+ * @returns The file's candidate secret strings with their positions.
+ */
 export function extractSecretCandidates(file: AstFile): SecretCandidate[] {
   const out: SecretCandidate[] = [];
   walkAST(file.ast.root, (node) => {

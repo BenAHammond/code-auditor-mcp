@@ -8,6 +8,11 @@ import { syncFileIndex } from './codeIndexService.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { logMcpInfo } from './mcpDiagnostics.js';
 
+/**
+ * Discover, extract, and sync functions for a project into the code index.
+ * @param projectPath - The project root to index.
+ * @returns A promise that resolves once the index sync completes.
+ */
 export async function runAutoIndex(projectPath: string): Promise<void> {
   const root = path.resolve(projectPath);
   logMcpInfo('auto-index', 'start', {

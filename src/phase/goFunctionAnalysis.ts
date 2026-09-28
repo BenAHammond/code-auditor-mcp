@@ -106,7 +106,12 @@ function forEachGoFunction(
 
 // ── error-bindings ──────────────────────────────────────────────────────────
 
-/** Extract every non-test function's error-binding positions from one Go file. */
+/**
+ * Extract every non-test function's error-binding positions from one Go file.
+ *
+ * @param file - The parsed Go file whose error bindings are projected.
+ * @returns One `ErrorBindingsFact` per function (assign/check byte offsets).
+ */
 export function extractErrorBindings(file: AstFile): ErrorBindingsFact[] {
   if (isTestFile('go', file.file)) return [];
   const out: ErrorBindingsFact[] = [];
@@ -188,7 +193,12 @@ const SYNC_METHOD_NAMES = new Set([
   'RUnlock',
 ]);
 
-/** Extract every non-test function's goroutine-synchronization signal. */
+/**
+ * Extract every non-test function's goroutine-synchronization signal.
+ *
+ * @param file - The parsed Go file whose goroutines are inspected.
+ * @returns One `ConcurrencyPrimitivesFact` per function (`hasGo`/`hasSync`).
+ */
 export function extractConcurrencyPrimitives(file: AstFile): ConcurrencyPrimitivesFact[] {
   if (isTestFile('go', file.file)) return [];
   const out: ConcurrencyPrimitivesFact[] = [];
@@ -226,7 +236,12 @@ function isUnbufferedMakeChan(rhs: ASTNode, source: string): boolean {
   return elements[0].type === 'channel_type';
 }
 
-/** Extract every non-test function's unbuffered-channel + operation counts. */
+/**
+ * Extract every non-test function's unbuffered-channel + operation counts.
+ *
+ * @param file - The parsed Go file whose channel operations are projected.
+ * @returns One `ChannelOperationsFact` per function (unbuffered names, op counts).
+ */
 export function extractChannelOperations(file: AstFile): ChannelOperationsFact[] {
   if (isTestFile('go', file.file)) return [];
   const out: ChannelOperationsFact[] = [];

@@ -61,6 +61,10 @@ export interface ScanOptions {
 
 /**
  * Scan directory for functions
+ *
+ * @param dirPath - Directory to scan for TS/JS files.
+ * @param options - Scan options (extensions, includes/excludes, unused-import config).
+ * @returns Function metadata for every function found in the directory.
  */
 export async function scanDirectoryForFunctions(
   dirPath: string,
@@ -104,6 +108,10 @@ export async function scanDirectoryForFunctions(
 
 /**
  * Extract functions from a single file (convenience wrapper that reads the file).
+ *
+ * @param filePath - Path of the file to read and extract from.
+ * @param options - Optional unused-import config forwarded to extraction.
+ * @returns Function metadata for the file's functions.
  */
 export async function extractFunctionsFromFile(
   filePath: string,
@@ -116,6 +124,11 @@ export async function extractFunctionsFromFile(
 /**
  * Extract functions from source content (no file I/O — usable by both the
  * audit runner and the index sync path).
+ *
+ * @param content - Source text to parse and extract from.
+ * @param filePath - Path used to resolve the language and relative imports.
+ * @param options - Optional unused-import config.
+ * @returns Function metadata extracted from the source.
  */
 export function extractFunctionsFromSource(
   content: string,
@@ -580,6 +593,15 @@ function isComponentExported(node: ASTNode): boolean {
 // Aliases for MCP server compatibility
 export const scanFunctionsInFile = extractFunctionsFromFile;
 
+/**
+ * Scan a directory for functions using a compatibility-friendly option shape.
+ * Delegates to {@link scanDirectoryForFunctions}, translating `recursive` and
+ * `fileTypes` into its include-path and extension options.
+ *
+ * @param dirPath - Directory to scan.
+ * @param options - Optional recursion toggle and file-type filter.
+ * @returns Function metadata for every function found.
+ */
 export async function scanFunctionsInDirectory(
   dirPath: string,
   options?: { recursive?: boolean; fileTypes?: string[] }
@@ -594,6 +616,13 @@ export async function scanFunctionsInDirectory(
  * Function Scanner class for compatibility
  */
 export class FunctionScanner {
+  /**
+   * Extract functions from source content via the shared extraction path.
+   *
+   * @param content - Source text to parse and extract from.
+   * @param filePath - Path used to resolve the language.
+   * @returns Function metadata for the source's functions.
+   */
   async scanFunctions(
     content: string,
     filePath: string

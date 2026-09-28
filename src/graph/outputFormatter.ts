@@ -76,6 +76,10 @@ function escapeLabel(label: string): string {
 
 /**
  * Emit a Graphviz DOT-format string for the given call graph.
+ *
+ * @param graph - The call graph to render.
+ * @param options - Rendering options such as label, communities, and legend.
+ * @returns The generated DOT string.
  */
 export function callGraphToDot(graph: CallGraph, options: DotOptions = {}): string {
   const {
@@ -152,6 +156,10 @@ export function callGraphToDot(graph: CallGraph, options: DotOptions = {}): stri
 
 /**
  * Emit a Graphviz DOT-format string for the given import graph.
+ *
+ * @param graph - The import graph to render.
+ * @param options - Rendering options such as label, communities, and legend.
+ * @returns The generated DOT string.
  */
 export function importGraphToDot(graph: ImportGraph, options: DotOptions = {}): string {
   const {
@@ -228,6 +236,10 @@ export function importGraphToDot(graph: ImportGraph, options: DotOptions = {}): 
 
 /**
  * Emit a Mermaid graph TD string for the given call graph.
+ *
+ * @param graph - The call graph to render.
+ * @param options - Rendering options such as label, communities, and weights.
+ * @returns The generated Mermaid string.
  */
 export function callGraphToMermaid(graph: CallGraph, options: MermaidOptions = {}): string {
   const { label, nodeLabels, communities, maxNodes, showWeights = false } = options;
@@ -295,6 +307,10 @@ export function callGraphToMermaid(graph: CallGraph, options: MermaidOptions = {
 
 /**
  * Emit a Mermaid graph TD string for the given import graph.
+ *
+ * @param graph - The import graph to render.
+ * @param options - Rendering options such as label, communities, and weights.
+ * @returns The generated Mermaid string.
  */
 export function importGraphToMermaid(graph: ImportGraph, options: MermaidOptions = {}): string {
   const { label, communities, maxNodes, showWeights = false } = options;

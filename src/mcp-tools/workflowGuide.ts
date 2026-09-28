@@ -519,6 +519,11 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
   }
 };
 
+/**
+ * Return the workflow guide for a scenario, or all scenarios when none is given.
+ * @param scenario - Optional scenario key to look up.
+ * @returns The matching workflow scenario, or the full scenario map.
+ */
 export function getWorkflowGuide(scenario?: string): WorkflowScenario | Record<string, WorkflowScenario> {
   if (scenario) {
     const workflow = WORKFLOW_SCENARIOS[scenario];
@@ -530,6 +535,10 @@ export function getWorkflowGuide(scenario?: string): WorkflowScenario | Record<s
   return WORKFLOW_SCENARIOS;
 }
 
+/**
+ * Return the curated tips keyed by category.
+ * @returns The tips grouped by category.
+ */
 export function getWorkflowTips(): Record<string, string[]> {
   return {
     'general': [

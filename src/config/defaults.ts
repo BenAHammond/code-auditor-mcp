@@ -6,6 +6,8 @@ import { AuditConfig, PathProfile } from '../types.js';
 
 /**
  * Get default configuration
+ *
+ * @returns The built-in default audit configuration.
  */
 export function getDefaultConfig(): AuditConfig {
   return {
@@ -52,6 +54,9 @@ export function getDefaultConfig(): AuditConfig {
 
 /**
  * Get project type specific defaults
+ *
+ * @param projectType The project kind (`nextjs`, `react`, `node`, …).
+ * @returns Project-type-specific defaults, or an empty object when unknown.
  */
 export function getProjectTypeDefaults(projectType: string): Partial<AuditConfig> {
   switch (projectType) {
@@ -87,6 +92,9 @@ export function getProjectTypeDefaults(projectType: string): Partial<AuditConfig
 
 /**
  * Get environment-specific defaults
+ *
+ * @param env The environment (`ci`, `development`, `production`, …).
+ * @returns Environment-specific defaults, or an empty object when unknown.
  */
 export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
   switch (env) {
@@ -373,6 +381,8 @@ export const BUILTIN_PATH_PROFILES: PathProfile[] = [
  * - Otherwise: built-ins come first, user profiles appended after
  *   (later wins on conflict)
  *
+ * @param userProfiles The user-configured path profiles to merge.
+ * @param builtinEnabled Whether the built-in profiles are enabled (false disables all).
  * @returns The merged profile array, or undefined if no profiles active
  */
 export function mergePathProfiles(

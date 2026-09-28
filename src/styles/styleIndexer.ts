@@ -81,6 +81,11 @@ export interface StyleSyncOptions {
  * - Uses content hashes to skip unchanged files.
  * - For scoped runs: deletes and re-inserts declarations for the given files.
  * - For full runs: also removes stale entries for files no longer on disk.
+ * @param rawDb The SQLite database to write the style index to.
+ * @param files The file paths to sync.
+ * @param projectRoot The project root for Tailwind config loading.
+ * @param options Sync options (scoped flag).
+ * @returns The sync result summary.
  */
 export async function syncStyleIndex(
   rawDb: SqliteDatabase,
@@ -251,6 +256,9 @@ function extractForFile(
 /**
  * Extract class usage from a source file.
  * Looks for className="..." attributes in JSX and class="..." in HTML.
+ * @param filePath The source file path.
+ * @param sourceCode The raw source text.
+ * @returns The class usages extracted from the source.
  */
 export function extractClassUsage(
   filePath: string,

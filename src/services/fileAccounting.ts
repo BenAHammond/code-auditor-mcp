@@ -38,25 +38,42 @@ interface Entry {
  */
 export class AccountingBalanceError extends Error {
   override readonly name = 'AccountingBalanceError';
+  /**
+   * Creates an accounting balance error.
+   *
+   * @param message - The balance failure description.
+   */
   constructor(message: string) {
     super(message);
   }
 }
 
+/**
+ * Accumulates per-file terminal states across a discovery run and asserts the
+ * `analyzed + partiallyAnalyzed + dropped === touched` balance at the end.
+ */
 export class FileAccounting {
   private readonly entries = new Map<string, Entry>();
   private readonly infraPrunedMap = new Map<string, { directory: string; rule: string; directories: number }>();
   private readonly unsupportedDialects: Array<{ filePath: string; reason?: string }> = [];
   private readonly conflicts: string[] = [];
 
-  /** Mark a candidate file as part of the touched universe. */
+  /**
+   * Mark a candidate file as part of the touched universe.
+   *
+   * @param filePath - The file to record as touched.
+   */
   recordTouched(filePath: string): void {
     if (!this.entries.has(filePath)) {
       this.entries.set(filePath, { state: 'touched' });
     }
   }
 
-  /** Mark a file as analyzed (its tuple reached >= 1 stage-2 visitor). */
+  /**
+   * Mark a file as analyzed (its tuple reached >= 1 stage-2 visitor).
+   *
+   * @param filePath - The file to record as analyzed.
+   */
   recordAnalyzed(filePath: string): void {
     const entry = this.entries.get(filePath);
     if (!entry) {
@@ -71,7 +88,13 @@ export class FileAccounting {
     entry.state = 'analyzed';
   }
 
-  /** Mark a file as dropped with exactly one of the eight reasons. */
+  /**
+   * Mark a file as dropped with exactly one of the eight reasons.
+   *
+   * @param reason - The drop reason to record.
+   * @param filePath - The file being dropped.
+   * @param detail - Optional additional drop detail.
+   */
   recordDropped(reason: FileDropReason, filePath: string, detail?: FileDropDetail): void {
     const entry = this.entries.get(filePath);
     if (!entry) {
@@ -97,6 +120,10 @@ export class FileAccounting {
    * Sanctioned transition used only for the size-threshold path: an oversized
    * `.sql` orphan reaches the schema-sql visitor (and is therefore first
    * recorded `analyzed`) before being skipped. Reclassify it as dropped.
+   *
+   * @param reason - The drop reason to record.
+   * @param filePath - The file being reclassified.
+   * @param detail - Optional additional drop detail.
    */
   reclassifyAnalyzedToDropped(reason: FileDropReason, filePath: string, detail?: FileDropDetail): void {
     const entry = this.entries.get(filePath);
@@ -124,6 +151,8 @@ export class FileAccounting {
    * profile excluded) every analysis layer, so a read from one of them would be
    * a genuine accounting bug, not a partial analysis. No-ops otherwise, so the
    * pipeline can call it blindly over every consumed file path.
+   *
+   * @param filePath - The file being reclassified as partially analyzed.
    */
   reclassifyDroppedToPartiallyAnalyzed(filePath: string): void {
     const entry = this.entries.get(filePath);
@@ -132,7 +161,12 @@ export class FileAccounting {
     entry.state = 'partially analyzed';
   }
 
-  /** Record an infrastructure directory prune (aggregate, not per-file). */
+  /**
+   * Record an infrastructure directory prune (aggregate, not per-file).
+   *
+   * @param directory - The pruned directory.
+   * @param rule - The pruning rule that matched.
+   */
   recordInfraPruned(directory: string, rule: string): void {
     const key = `${directory}::${rule}`;
     const existing = this.infraPrunedMap.get(key);
@@ -177,7 +211,11 @@ export class FileAccounting {
     throw new AccountingBalanceError(lines.join('\n'));
   }
 
-  /** Produce the summary (touched/analyzed/partiallyAnalyzed/dropped counts + per-reason lists). */
+  /**
+   * Produce the summary (touched/analyzed/partiallyAnalyzed/dropped counts + per-reason lists).
+   *
+   * @returns The file accounting summary.
+   */
   summary(): FileAccountingSummary {
     let analyzed = 0;
     let partiallyAnalyzed = 0;

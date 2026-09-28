@@ -80,7 +80,12 @@ function row(
   };
 }
 
-/** Extract every function/method/component from one parsed file. */
+/**
+ * Extract every function/method/component from one parsed file.
+ *
+ * @param file - The parsed file whose functions are indexed.
+ * @returns One `FunctionIndexFact` per function, arrow, or React component.
+ */
 export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
   const root = file.ast.root;
   const filePath = file.file;

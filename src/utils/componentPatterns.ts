@@ -174,6 +174,13 @@ export const DEFAULT_PATTERNS: ComponentPattern[] = [
 
 /**
  * Detects which pattern a component matches based on various indicators
+ *
+ * @param componentName - The name of the component to classify.
+ * @param filePath - The path of the file the component is defined in.
+ * @param props - The component's prop names.
+ * @param hooks - The hook names used by the component.
+ * @param imports - The modules imported by the component's file.
+ * @returns The best matching component pattern, or undefined when none matches.
  */
 export function detectComponentPattern(
   componentName: string,
@@ -257,6 +264,10 @@ export function detectComponentPattern(
 
 /**
  * Checks if a set of responsibilities is allowed for a given pattern
+ *
+ * @param responsibilities - The responsibilities to check.
+ * @param pattern - The component pattern defining the allowed set.
+ * @returns True when every responsibility is allowed for the pattern.
  */
 export function areResponsibilitiesAllowedForPattern(
   responsibilities: ResponsibilityType[],
@@ -269,6 +280,10 @@ export function areResponsibilitiesAllowedForPattern(
 
 /**
  * Gets unrelated responsibilities for a pattern
+ *
+ * @param responsibilities - The responsibilities to analyze.
+ * @param pattern - The component pattern whose relationships are checked.
+ * @returns Groups of responsibilities considered unrelated for the pattern.
  */
 export function getUnrelatedResponsibilities(
   responsibilities: ResponsibilityType[],

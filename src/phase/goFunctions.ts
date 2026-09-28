@@ -116,7 +116,12 @@ function resultOf(node: ASTNode, isMethod: boolean): ASTNode | undefined {
   return before;
 }
 
-/** Extract every non-test function/method from one parsed Go file. */
+/**
+ * Extract every non-test function/method from one parsed Go file.
+ *
+ * @param file - The parsed Go file whose functions are projected.
+ * @returns One `GoFunctionFact` per function/method (size, complexity, panic).
+ */
 export function extractGoFunctions(file: AstFile): GoFunctionFact[] {
   if (isTestFile('go', file.file)) return [];
   const out: GoFunctionFact[] = [];

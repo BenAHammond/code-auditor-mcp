@@ -191,6 +191,9 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
  * recorded, so existing baselines survive a rename without reshuffling known
  * vs new. Returns the input unchanged when no reverse mapping exists (and for
  * old IDs that are already canonical).
+ *
+ * @param rule - The rule ID to canonicalize.
+ * @returns The pre-rename ID when a reverse mapping exists, else the input unchanged.
  */
 export function canonicalRuleId(rule: string): string {
   if (!rule) return rule;
@@ -207,6 +210,9 @@ export function canonicalRuleId(rule: string): string {
  * for a renamed ID, `{ status: 'removed', reason }` for a tombstone, and
  * `{ status: 'unknown' }` otherwise. Consumed by `rules-check` and
  * `print-config` so a human or agent querying a retired ID sees the reason.
+ *
+ * @param rule - The rule ID to resolve.
+ * @returns The alias status of the rule ID.
  */
 export function describeRuleId(rule: string):
   | { status: 'current' }

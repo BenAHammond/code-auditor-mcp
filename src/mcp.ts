@@ -235,6 +235,10 @@ function registerProcessReliabilityHandlers(): void {
 
 // ── Tool registration ────────────────────────────────────────────────────────
 
+/**
+ * Register every MCP tool and its actions on the given registry.
+ * @param registry - The tool registry to register tools on.
+ */
 export function registerAllTools(registry: ToolRegistry): void {
   // ── audit ──────────────────────────────────────────────────────────────────
   const auditActions: ActionDefinition[] = [

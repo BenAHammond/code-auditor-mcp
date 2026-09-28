@@ -22,7 +22,12 @@ export type FactProducer = {
   readonly needs?: readonly FactKind[];
 };
 
-/** Every dependency edge in the graph, as `[produces, needs]` pairs. */
+/**
+ * Every dependency edge in the graph, as `[produces, needs]` pairs.
+ *
+ * @param producers - The producer map whose `needs` edges are enumerated.
+ * @returns One `[produces, needs]` pair per declared dependency.
+ */
 export function factEdges(producers: Readonly<Record<string, FactProducer>>): ReadonlyArray<readonly [FactKind, FactKind]> {
   const edges: Array<readonly [FactKind, FactKind]> = [];
   for (const p of Object.values(producers)) {
@@ -35,6 +40,9 @@ export function factEdges(producers: Readonly<Record<string, FactProducer>>): Re
  * Detects a cycle in the producer dependency graph, returning the cycle path
  * (which repeats its first node at the end, so both ends of the back edge are
  * named) or `null` when the graph is acyclic.
+ *
+ * @param producers - The producer map whose dependency graph is inspected.
+ * @returns The cycle path (first node repeated at the end), or `null` if acyclic.
  */
 export function detectFactCycle(producers: Readonly<Record<string, FactProducer>>): FactKind[] | null {
   const adj = new Map<FactKind, FactKind[]>();
@@ -86,6 +94,9 @@ export function detectFactCycle(producers: Readonly<Record<string, FactProducer>
  * past the deepest of its needs' levels. A cycle makes the level-set infinite
  * and is a defect — callers are expected to have run {@link detectFactCycle}
  * first; this function returns `null` on a cycle rather than looping.
+ *
+ * @param producers - The producer map whose fact kinds are scheduled.
+ * @returns A `factKind` → level map, or `null` when the graph has a cycle.
  */
 export function topologicalLevels(producers: Readonly<Record<string, FactProducer>>): Map<FactKind, number> | null {
   if (detectFactCycle(producers)) return null;

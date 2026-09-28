@@ -22,7 +22,12 @@ import {
   extractClassUsageFromCSSAst,
 } from '../styles/cssAstExtractor.js';
 
-/** Extract the per-file styles fact from one parsed CSS/SCSS file. */
+/**
+ * Extract the per-file styles fact from one parsed CSS/SCSS file.
+ *
+ * @param file - The parsed CSS/SCSS file whose declarations are extracted.
+ * @returns The file's declarations, tokens, and class usage.
+ */
 export function extractStylesCss(file: AstFile): StyleDeclarationsFile {
   return {
     declarations: extractDeclarationsFromCSSAst(file.ast, file.adapter, file.file, file.source),

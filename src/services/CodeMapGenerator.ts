@@ -77,10 +77,17 @@ export interface DependencyInfo {
   unusedInFiles: string[];
 }
 
+/**
+ * Generates terminal-friendly code maps from indexed code data.
+ */
 export class CodeMapGenerator {
 
   /**
-   * Generates a complete code map for the project
+   * Generates a complete code map for the project.
+   *
+   * @param projectPath - The project path the map describes.
+   * @param options - Optional flags controlling which sections are included.
+   * @returns The code map stats, file groups, and dependencies.
    */
   async generateCodeMap(
     projectPath: string, 
@@ -111,8 +118,12 @@ export class CodeMapGenerator {
   }
 
   /**
-   * Generates a paginated code map and stores sections in database
-   * Returns summary with section references
+   * Generates a paginated code map and stores sections in database.
+   * Returns summary with section references.
+   *
+   * @param projectPath - The project path the map describes.
+   * @param options - Optional flags controlling which sections are included.
+   * @returns The map ID, section summary, and a quick preview.
    */
   async generatePaginatedCodeMap(
     projectPath: string,
@@ -163,7 +174,11 @@ export class CodeMapGenerator {
   }
 
   /**
-   * Formats the code map as terminal-friendly text
+   * Formats the code map as terminal-friendly text.
+   *
+   * @param codeMap - The generated code map to format.
+   * @param options - Optional flags controlling section inclusion.
+   * @returns The formatted terminal text.
    */
   formatAsText(codeMap: Awaited<ReturnType<CodeMapGenerator['generateCodeMap']>>, options: CodeMapOptions = {}): string {
     const lines: string[] = [];

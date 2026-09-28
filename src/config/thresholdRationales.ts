@@ -51,6 +51,8 @@ function valuesEqual(a: unknown, b: unknown): boolean {
  * @param analyzerConfigs The user-facing config layer (project config file +
  *   inline options), BEFORE presets are applied.
  * @param rationales      Optional `rationales` map from the project config.
+ * @returns Config errors for every changed threshold lacking a rationale, plus
+ *   the full list of detected threshold changes.
  */
 export function checkThresholdRationales(
   analyzerConfigs: Record<string, unknown> | undefined,

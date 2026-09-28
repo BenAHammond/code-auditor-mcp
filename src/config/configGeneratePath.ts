@@ -17,6 +17,10 @@ import { homedir } from 'node:os';
  *
  * `~` expansion happens *before* the containment check, so `~` is a convenience
  * only when it still lands inside `cwd` — it is no longer an escape hatch.
+ *
+ * @param rawOutputDir The caller-supplied output directory, which may use `~`.
+ * @param cwd The working directory the resolved output must stay inside.
+ * @returns The resolved output directory, guaranteed to be `cwd` or beneath it.
  */
 export function resolveConfigGenerateDir(rawOutputDir: string, cwd: string): string {
   const expandedOutputDir = rawOutputDir.replace(/^~(?=$|\/)/, homedir());

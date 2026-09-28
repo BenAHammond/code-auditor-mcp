@@ -16,15 +16,30 @@
 
 import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
 
+/**
+ * MCP config generator for the OpenAI Codex CLI.
+ */
 export class CodexConfigGenerator extends BaseConfigGenerator {
+  /**
+   * Return the display name of the tool.
+   * @returns The tool display name.
+   */
   getToolName(): string {
     return 'Codex CLI';
   }
 
+  /**
+   * Return the default config file path for the tool.
+   * @returns The default config file path.
+   */
   getFilename(): string {
     return '~/.codex/config.toml';
   }
 
+  /**
+   * Generate the tool's MCP configuration.
+   * @returns The generated config output.
+   */
   generateConfig(): ConfigOutput {
     const mcpSection = {
       'code-auditor': {
@@ -60,6 +75,10 @@ export class CodexConfigGenerator extends BaseConfigGenerator {
     return toml.trimEnd() + '\n';
   }
 
+  /**
+   * Return setup instructions for the tool.
+   * @returns The setup instructions.
+   */
   getInstructions(): string {
     return `
 Codex CLI MCP Configuration Instructions:
@@ -84,6 +103,10 @@ Claude Code.
 `;
   }
 
+  /**
+   * Return whether the tool requires authentication.
+   * @returns True when the tool requires authentication.
+   */
   requiresAuth(): boolean {
     return false;
   }

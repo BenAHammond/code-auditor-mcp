@@ -92,6 +92,9 @@ const RADIUS_PREFIXES = [
 // TailwindProbe
 // ---------------------------------------------------------------------------
 
+/**
+ * Compile-probes the project's tailwindcss package to validate class names.
+ */
 export class TailwindProbe {
   private validClasses: Set<string> | null = null;
   private _ready = false;
@@ -137,6 +140,8 @@ export class TailwindProbe {
    * Initialize the probe by locating and loading the project's tailwindcss
    * package. Tests compilation with a known-good class to verify the
    * pipeline works end-to-end.
+   * @param projectRoot The project root to locate tailwindcss from.
+   * @returns The initialization result (ok/error/tailwindFound).
    */
   async init(projectRoot: string): Promise<ProbeInitResult> {
     this.projectRoot = projectRoot;
@@ -239,6 +244,8 @@ export class TailwindProbe {
    * Returns the full Set of all known-valid classes (including previously
    * cached ones). Unknown classes that don't validate are NOT added to the
    * cache — callers should treat absence from the returned set as "not valid."
+   * @param candidates The class names to validate.
+   * @returns The full set of all known-valid classes.
    */
   async validateBatch(candidates: string[]): Promise<Set<string>> {
     if (!this._ready) {
@@ -773,6 +780,8 @@ export class TailwindProbe {
  * producing dotted keys (e.g. "blue-500").
  *
  * Uses hyphens for separators to match Tailwind CSS class naming.
+ * @param obj The theme section object to flatten.
+ * @returns The flattened dotted-key → value map.
  */
 export function flattenThemeSection(
   obj: Record<string, unknown>,

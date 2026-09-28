@@ -19,15 +19,30 @@
 
 import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
 
+/**
+ * MCP config generator for Continue.
+ */
 export class ContinueConfigGenerator extends BaseConfigGenerator {
+  /**
+   * Return the display name of the tool.
+   * @returns The tool display name.
+   */
   getToolName(): string {
     return 'Continue';
   }
 
+  /**
+   * Return the default config file path for the tool.
+   * @returns The default config file path.
+   */
   getFilename(): string {
     return '.continue/config.yaml';
   }
 
+  /**
+   * Generate the tool's MCP configuration.
+   * @returns The generated config output.
+   */
   generateConfig(): ConfigOutput {
     const content = `# Add this to your .continue/config.yaml under the mcpServers key.
 # If you already have an mcpServers section, merge the code-auditor entry.
@@ -47,6 +62,10 @@ mcpServers:
     };
   }
 
+  /**
+   * Return setup instructions for the tool.
+   * @returns The setup instructions.
+   */
   getInstructions(): string {
     return `
 Continue MCP Configuration Instructions:
@@ -67,6 +86,10 @@ For blocking hooks, use Claude Code or Codex.
 `;
   }
 
+  /**
+   * Return whether the tool requires authentication.
+   * @returns True when the tool requires authentication.
+   */
   requiresAuth(): boolean {
     return false;
   }

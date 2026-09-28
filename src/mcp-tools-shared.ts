@@ -447,6 +447,11 @@ export const uiTools: Tool[] = [
  */
 export class ToolHandlers {
   
+  /**
+   * Run a full audit on a path and return the formatted MCP result.
+   * @param args - The tool arguments (path, minSeverity, indexFunctions, etc.).
+   * @returns The audit summary, violations, and optional indexing/code-map results.
+   */
   static async handleAudit(args: any): Promise<any> {
     const auditPath = path.resolve((args.path as string) || process.cwd());
     const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
@@ -576,6 +581,11 @@ export class ToolHandlers {
     };
   }
 
+  /**
+   * Run a quick health check and return key metrics with a pass/fail status.
+   * @param args - The tool arguments (path, threshold, indexFunctions, etc.).
+   * @returns The health score, threshold, and pass/fail status.
+   */
   static async handleAuditHealth(args: any): Promise<any> {
     const auditPath = path.resolve((args.path as string) || process.cwd());
     await assertAuditPathExists(auditPath);
@@ -706,6 +716,11 @@ export class ToolHandlers {
   // Add all other tool handlers here following the same pattern...
   // (I'll include key ones for brevity)
 
+  /**
+   * Search indexed functions and components with natural language and operators.
+   * @param args - The tool arguments (query, filters, limit, offset).
+   * @returns The matching indexed functions.
+   */
   static async handleSearchCode(args: any): Promise<any> {
     const query = args.query as string;
     const filters = args.filters as any;
@@ -724,6 +739,11 @@ export class ToolHandlers {
     });
   }
 
+  /**
+   * Find the exact definition of a named function or component.
+   * @param args - The tool arguments (name, filePath).
+   * @returns The definition, or an error object when not found.
+   */
   static async handleFindDefinition(args: any): Promise<any> {
     const name = args.name as string;
     const filePath = args.filePath as string;
@@ -737,6 +757,11 @@ export class ToolHandlers {
   }
 
   // Schema Management Tool Handlers
+  /**
+   * Generate SQL discovery queries for a database type.
+   * @param args - The tool arguments (databaseType, includeIndexes, etc.).
+   * @returns The generated queries plus instructions for using them.
+   */
   static async handleGenerateSchemaDiscoverySQL(args: any): Promise<any> {
     const databaseType = args.databaseType as string;
     const includeIndexes = (args.includeIndexes as boolean) !== false;
@@ -767,6 +792,11 @@ export class ToolHandlers {
     };
   }
 
+  /**
+   * Build and store a schema from SQL discovery result rows.
+   * @param args - The tool arguments (schemaName, databaseType, and result rows).
+   * @returns The stored schema id and stats, or an error object.
+   */
   static async handleCreateSchemaFromSqlResult(args: any): Promise<any> {
     const schemaName = args.schemaName as string;
     const databaseType = args.databaseType as string;
@@ -813,6 +843,11 @@ export class ToolHandlers {
     }
   }
 
+  /**
+   * Add a table to an existing or newly-created schema.
+   * @param args - The tool arguments (schemaName, tableName, columns, databaseType).
+   * @returns The stored schema id and table details, or an error object.
+   */
   static async handleAddTableManually(args: any): Promise<any> {
     const schemaName = args.schemaName as string;
     const tableName = args.tableName as string;
@@ -882,6 +917,11 @@ export class ToolHandlers {
     }
   }
 
+  /**
+   * List all loaded schemas with their metadata.
+   * @param args - The tool arguments (currently unused).
+   * @returns The schemas and aggregate stats, or an error object.
+   */
   static async handleListSchemas(args: any): Promise<any> {
     try {
       const db = CodeIndexDB.getInstance();
@@ -910,6 +950,11 @@ export class ToolHandlers {
     }
   }
 
+  /**
+   * Search tables, columns, and relationships in loaded schemas.
+   * @param args - The tool arguments (query, elementType).
+   * @returns The matching schema elements, or an error object.
+   */
   static async handleSearchSchemaElements(args: any): Promise<any> {
     const query = args.query as string;
     const elementType = (args.elementType as string) || 'all';
@@ -984,6 +1029,14 @@ export class ToolHandlers {
   }
 
   // Schema Helper Functions
+  /**
+   * Build the ordered list of SQL discovery queries for a database type.
+   * @param databaseType - The database engine to generate queries for.
+   * @param includeIndexes - Whether to include index-discovery queries.
+   * @param includeConstraints - Whether to include foreign-key queries.
+   * @param specificTables - Optional table names to limit discovery to.
+   * @returns The generated discovery queries.
+   */
   static generateSchemaDiscoveryQueries(
     databaseType: string,
     includeIndexes: boolean,
@@ -1104,6 +1157,15 @@ export class ToolHandlers {
     return queries;
   }
 
+  /**
+   * Build a schema object from SQL discovery result rows.
+   * @param schemaName - The name to give the schema.
+   * @param databaseType - The database engine the data came from.
+   * @param tablesData - The table rows from discovery.
+   * @param columnsData - The column rows from discovery.
+   * @param constraintsData - Optional foreign-key rows from discovery.
+   * @returns The assembled schema object.
+   */
   static buildSchemaFromSqlData(
     schemaName: string,
     databaseType: string,
@@ -1184,6 +1246,11 @@ export class ToolHandlers {
   }
 
   // Helper functions
+  /**
+   * Flatten all violations across analyzers, tagging each with its analyzer name.
+   * @param result - The audit result to extract violations from.
+   * @returns The flat list of violations.
+   */
   static getAllViolations(result: AuditResult): Violation[] {
     const violations: Violation[] = [];
     
@@ -1199,6 +1266,11 @@ export class ToolHandlers {
     return violations;
   }
 
+  /**
+   * Compute a 0-100 health score from weighted violation counts.
+   * @param result - The audit result to score.
+   * @returns The computed health score.
+   */
   static calculateHealthScore(result: AuditResult): number {
     const filesAnalyzed = result.metadata?.filesAnalyzed || 1;
     const critical = result.summary.criticalIssues || 0;
@@ -1221,6 +1293,12 @@ export class ToolHandlers {
     return Math.max(0, Math.round(Math.min(100, score)));
   }
 
+  /**
+   * Produce a human-readable recommendation from the health score.
+   * @param score - The computed health score.
+   * @param result - The audit result used to tailor the recommendation.
+   * @returns The recommendation string.
+   */
   static getHealthRecommendation(score: number, result: AuditResult): string {
     const criticals = result.summary.criticalIssues || 0;
     const severe = result.summary.severe || 0;

@@ -75,6 +75,10 @@ export interface DaemonCoreOptions {
   onFindings?: (snapshot: NextFileSnapshot) => void;
 }
 
+/**
+ * The daemon's heart: owns the store and the audit pipeline and emits state and
+ * findings events that the LSP and Unix-socket faces translate for their clients.
+ */
 export class DaemonCore extends EventEmitter {
   readonly projectRoot: string;
   private readonly configName?: string;
@@ -109,6 +113,10 @@ export class DaemonCore extends EventEmitter {
   private shutdownRequested = false;
   private config: AuditConfig | null = null;
 
+  /**
+   * Creates a core bound to a project root, config name, and idle timeout.
+   * @param options - Project root, config name, idle timeout, and event callbacks.
+   */
   constructor(options: DaemonCoreOptions) {
     super();
     this.projectRoot = path.resolve(options.projectRoot);
@@ -121,6 +129,7 @@ export class DaemonCore extends EventEmitter {
     this.activeConnections++;
     this.markActivity();
   }
+  /** Called by each face when a client disconnects, decrementing the active count. */
   unregisterConnection(): void {
     this.activeConnections = Math.max(0, this.activeConnections - 1);
     this.markActivity();
@@ -131,6 +140,10 @@ export class DaemonCore extends EventEmitter {
     this.lastActivityAt = Date.now();
   }
 
+  /**
+   * Build the observable state snapshot: status, progress, and the retry hint.
+   * @returns The current daemon state for clients.
+   */
   getState(): DaemonState {
     const state: DaemonState = {
       status: this.status,
@@ -293,7 +306,10 @@ export class DaemonCore extends EventEmitter {
     }
   }
 
-  /** All current findings + R4 stale-file report. */
+  /**
+   * All current findings + R4 stale-file report.
+   * @returns The findings snapshot with the stale-file report.
+   */
   getFindings(): DaemonFindingsResult {
     const staleFiles = this.checkStaleness();
     return {
@@ -303,7 +319,11 @@ export class DaemonCore extends EventEmitter {
     };
   }
 
-  /** Per-file findings (diagnostics) + R4 staleness for those files. */
+  /**
+   * Per-file findings (diagnostics) + R4 staleness for those files.
+   * @param files - The files to serve diagnostics for.
+   * @returns The per-file diagnostics with the stale-file report.
+   */
   getDiagnostics(files: string[]): DaemonDiagnosticsResult {
     const staleFiles = this.checkStaleness(files);
     const diagnostics = [];
@@ -339,6 +359,8 @@ export class DaemonCore extends EventEmitter {
    * content re-hashed. `files` narrows the check to a specific read; `undefined`
    * checks the whole recorded set (count + newest mtime fast path, full hash on
    * divergence).
+   * @param files - Optional file paths to check; undefined checks the whole set.
+   * @returns The relative paths of files whose served findings are stale.
    */
   checkStaleness(files?: string[]): string[] {
     if (!this.snapshot) return [];
@@ -394,7 +416,10 @@ export class DaemonCore extends EventEmitter {
     return [...stale];
   }
 
-  /** Start: init parsers, claim the lease, seed, watch. Resolves once seed completes. */
+  /**
+   * Start: init parsers, claim the lease, seed, watch. Resolves once seed completes.
+   * @returns A promise that resolves once the daemon is ready to serve.
+   */
   async start(): Promise<void> {
     this.status = 'starting';
     await initParsers();
@@ -727,6 +752,11 @@ export class DaemonCore extends EventEmitter {
     if (this.snapshot) this.emit('findings', this.snapshot);
   }
 
+  /**
+   * Shut the daemon down: stop watching, close the lease, and emit `shutdown`.
+   * @param reason - Why the daemon is shutting down (surfaced to listeners).
+   * @returns A promise that resolves once the shutdown sequence has run.
+   */
   async shutdown(reason = 'shutdown'): Promise<void> {
     if (this.shutdownRequested) return;
     this.shutdownRequested = true;

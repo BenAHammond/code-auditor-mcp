@@ -432,6 +432,8 @@ const NEXT_ERROR_BOUNDARY_BASENAMES = new Set([
  * app-level fact, so it is decided here: if any boundary exists anywhere in the
  * app, no finding is emitted; only a boundary-less app of meaningful size is
  * flagged.
+ * @param scanResults Per-file component scan results.
+ * @returns Violations when a boundary-less app of meaningful size is found.
  */
 export function checkErrorBoundaryUsage(scanResults: ComponentScanResult[]): ReactViolation[] {
   const violations: ReactViolation[] = [];

@@ -31,7 +31,10 @@ import {
 /** Extract the per-file DDL declaration from one parsed file. Returns a single
  *  entry whenever the file contains any DDL — even a migration whose only
  *  effect is a DROP (zero surviving tables) — so the corpus processors can
- *  replay the ops across files. A file with no DDL returns `[]`. */
+ *  replay the ops across files. A file with no DDL returns `[]`.
+ *
+ *  @param file - The parsed file whose source is scanned for DDL.
+ *  @returns A single-element fact when the file declares DDL, otherwise `[]`. */
 export function extractSchemaCode(file: ParsedFile): SchemaDeclaration[] {
   const ops = parseMigrationOps(file.source);
   const tableColumns = extractDdlTableColumns(file.source);

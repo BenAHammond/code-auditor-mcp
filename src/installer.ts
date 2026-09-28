@@ -105,6 +105,9 @@ export interface InstallResult {
 
 /**
  * Main entry point for `code-audit install`.
+ *
+ * @param options - Install options (agent, scope, hooks, list).
+ * @returns A promise that resolves when installation completes.
  */
 export async function runInstall(options: InstallOptions): Promise<void> {
   if (options.list) {
@@ -174,6 +177,9 @@ export async function runInstall(options: InstallOptions): Promise<void> {
  * Non-fatal by design: a failed warm (offline, registry error) leaves the hook to
  * pay the cold-start cost on first use, which is strictly better than failing the
  * install over a warm-the-cache nicety.
+ *
+ * @param packageVersion - Exact version to warm into the pinned-CLI cache dir.
+ * @returns A promise that resolves when the warm completes (or fails/times out non-fatally).
  */
 export function warmPinnedCli(packageVersion: string): Promise<void> {
   const dir = join(

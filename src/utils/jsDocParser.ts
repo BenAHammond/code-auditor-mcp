@@ -217,6 +217,7 @@ function parseTag(tagName: string, content: string): ParsedTag {
 /**
  * Extract JSDoc information from a tree-sitter AST node.
  * @param node The AST node to extract JSDoc from
+ * @param sourceCode - The original source text to read comment content from.
  * @returns Extracted JSDoc information
  */
 export function extractJSDoc(node: ASTNode, sourceCode: string): JSDocInfo {
@@ -312,6 +313,7 @@ function applyParsedTag(tag: ParsedTag, jsDocInfo: JSDocInfo): void {
 /**
  * Extract JSDoc for function-like declarations.
  * @param node Function declaration, method definition, or arrow function AST node
+ * @param sourceCode - The original source text to read comment content from.
  * @returns JSDoc information formatted for EnhancedFunctionMetadata
  */
 export function extractFunctionJSDoc(
@@ -350,6 +352,7 @@ export function extractFunctionJSDoc(
 /**
  * Extract parameter information including JSDoc.
  * @param node Function-like declaration AST node
+ * @param sourceCode - The original source text to read names and JSDoc from.
  * @returns Array of parameter information
  */
 export function extractParameters(
@@ -447,6 +450,7 @@ export function extractParameters(
 /**
  * Extract return type information including JSDoc.
  * @param node Function-like declaration AST node
+ * @param sourceCode - The original source text to read the type annotation from.
  * @returns Return type string or undefined
  */
 export function extractReturnType(node: ASTNode, sourceCode: string): string | undefined {
@@ -478,6 +482,7 @@ export function hasJSDoc(node: ASTNode, sourceCode: string): boolean {
 /**
  * Extract all JSDoc tags from a node.
  * @param node The AST node
+ * @param sourceCode - The original source text to read comment content from.
  * @returns Map of tag names to their values
  */
 export function extractAllJSDocTags(node: ASTNode, sourceCode: string): Record<string, string[]> {

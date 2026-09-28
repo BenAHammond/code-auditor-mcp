@@ -175,6 +175,9 @@ export const KNOWN_SOURCE_EXTENSIONS = [...ALL_EXTENSIONS, '.html'];
  * `.mts`/`.cts`/`.mjs`/`.cjs` variants) and silently handed Go files a language
  * of `unknown`. Consolidating to one function means a language is either mapped
  * here for everyone or not at all — it cannot be forgotten in one call path.
+ *
+ * @param filePath - The file path whose extension determines the language.
+ * @returns The language id, or 'unknown' for unrecognized extensions.
  */
 export function getLanguageFromPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
@@ -439,6 +442,10 @@ async function findFilesRecursive(
 
 /**
  * Find all files matching the given options
+ *
+ * @param rootDir - The directory to scan recursively.
+ * @param options - Discovery options for extensions, exclusions, and filters.
+ * @returns The sorted list of matching file paths.
  */
 export async function findFiles(
   rootDir: string = process.cwd(),
@@ -477,6 +484,10 @@ export async function findFiles(
 
 /**
  * Find TypeScript/TSX files
+ *
+ * @param rootDir - The directory to scan recursively.
+ * @param options - Discovery options excluding the extensions override.
+ * @returns The sorted list of TypeScript file paths.
  */
 export async function findTypeScriptFiles(
   rootDir: string = process.cwd(),
@@ -490,6 +501,10 @@ export async function findTypeScriptFiles(
 
 /**
  * Find JavaScript/JSX files
+ *
+ * @param rootDir - The directory to scan recursively.
+ * @param options - Discovery options excluding the extensions override.
+ * @returns The sorted list of JavaScript file paths.
  */
 export async function findJavaScriptFiles(
   rootDir: string = process.cwd(),
@@ -503,6 +518,10 @@ export async function findJavaScriptFiles(
 
 /**
  * Find JSON files
+ *
+ * @param rootDir - The directory to scan recursively.
+ * @param options - Discovery options excluding the extensions override.
+ * @returns The sorted list of JSON file paths.
  */
 export async function findJsonFiles(
   rootDir: string = process.cwd(),
@@ -516,6 +535,11 @@ export async function findJsonFiles(
 
 /**
  * Find files by pattern (e.g., "*.test.ts", "*.spec.tsx")
+ *
+ * @param rootDir - The directory to scan recursively.
+ * @param pattern - The file-name pattern (glob string or RegExp) to match.
+ * @param options - Discovery options for extensions, exclusions, and filters.
+ * @returns The sorted list of matching file paths.
  */
 export async function findFilesByPattern(
   rootDir: string = process.cwd(),
@@ -556,6 +580,10 @@ export async function findFilesByPattern(
 
 /**
  * Filter files by include/exclude patterns
+ *
+ * @param files - The candidate file paths to filter.
+ * @param options - Include/exclude patterns and optional file accounting.
+ * @returns The filtered file list.
  */
 export function filterFiles(
   files: string[],
@@ -619,6 +647,9 @@ function globToRegex(pattern: string): RegExp {
 
 /**
  * Get file statistics
+ *
+ * @param filePath - The file to stat and count lines for.
+ * @returns File size, modification time, and line count when readable.
  */
 export async function getFileStats(filePath: string): Promise<{
   size: number;
@@ -645,6 +676,9 @@ export async function getFileStats(filePath: string): Promise<{
 
 /**
  * Check if a file exists and is readable
+ *
+ * @param filePath - The file path to check.
+ * @returns True when the file exists and is readable.
  */
 export async function isReadableFile(filePath: string): Promise<boolean> {
   try {
@@ -679,6 +713,10 @@ export interface DiscoverFilesDetailedResult {
  * `skippedExtensions` is aggregated during the recursive walk — before
  * `includePaths`/`excludePaths` filtering — so it reflects the full scan, not
  * just the filtered subset. Sorted by count descending, then extension.
+ *
+ * @param rootDir - The directory to scan recursively.
+ * @param options - Discovery options for extensions, exclusions, and filters.
+ * @returns The discovered files plus aggregated skipped extensions.
  */
 export async function discoverFilesDetailed(
   rootDir: string = process.cwd(),

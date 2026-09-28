@@ -449,6 +449,11 @@ function getParentClassNameFromSelectors(selectorsNode: ASTNode, sourceCode: str
  *   Bug 3: Nested @-rule closing brace — tree-sitter handles brace matching
  *   Bug 4: findSelectorStart walking past boundaries — no backward scanning needed
  *   Bug 5: CSS comments as class names — comment nodes are typed, filtered out
+ * @param ast The parsed CSS AST.
+ * @param adapter The language adapter for the CSS syntax.
+ * @param filePath The source file path.
+ * @param sourceCode The raw source text.
+ * @returns The normalized declarations extracted from the AST.
  */
 export function extractDeclarationsFromCSSAst(
   ast: AST,
@@ -632,6 +637,11 @@ export function extractDeclarationsFromCSSAst(
  * Replaces the regex-based extractTokens() for .css files.
  * Finds declarations where the property starts with -- and extracts
  * the token name and value.
+ * @param ast The parsed CSS AST.
+ * @param adapter The language adapter for the CSS syntax.
+ * @param filePath The source file path.
+ * @param sourceCode The raw source text.
+ * @returns The custom property tokens extracted from the AST.
  */
 export function extractTokensFromCSSAst(
   ast: AST,
@@ -676,6 +686,11 @@ export function extractTokensFromCSSAst(
  * &.modifier (chained class) and & .descendant patterns are tracked as
  * unresolvable rather than registered as standalone classes — registering
  * them would produce false negatives in the undefined-class detector.
+ * @param ast The parsed CSS AST.
+ * @param adapter The language adapter for the CSS syntax.
+ * @param filePath The source file path.
+ * @param sourceCode The raw source text.
+ * @returns The class usages extracted from the AST.
  */
 export function extractClassUsageFromCSSAst(
   ast: AST,

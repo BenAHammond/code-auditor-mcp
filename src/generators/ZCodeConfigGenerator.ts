@@ -13,15 +13,30 @@
 
 import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
 
+/**
+ * MCP config generator for ZCode.
+ */
 export class ZCodeConfigGenerator extends BaseConfigGenerator {
+  /**
+   * Return the display name of the tool.
+   * @returns The tool display name.
+   */
   getToolName(): string {
     return 'ZCode';
   }
 
+  /**
+   * Return the default config file path for the tool.
+   * @returns The default config file path.
+   */
   getFilename(): string {
     return '.zcode/config.json';
   }
 
+  /**
+   * Generate the tool's MCP configuration.
+   * @returns The generated config output.
+   */
   generateConfig(): ConfigOutput {
     const config = {
       mcp: {
@@ -42,6 +57,10 @@ export class ZCodeConfigGenerator extends BaseConfigGenerator {
     };
   }
 
+  /**
+   * Return setup instructions for the tool.
+   * @returns The setup instructions.
+   */
   getInstructions(): string {
     return `
 ZCode MCP Configuration Instructions:
@@ -64,6 +83,10 @@ Use the MCP tools for interactive auditing.
 `;
   }
 
+  /**
+   * Return whether the tool requires authentication.
+   * @returns True when the tool requires authentication.
+   */
   requiresAuth(): boolean {
     return false;
   }

@@ -24,7 +24,12 @@ import { passesFileGate } from '../analyzers/universal/schema/discovery.js';
 import { buildProvenanceContext } from '../analyzers/provenance.js';
 import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 
-/** One file's function bodies as `FunctionBodyFact[]`. */
+/**
+ * One file's function bodies as `FunctionBodyFact[]`.
+ *
+ * @param file - The parsed file whose functions are projected.
+ * @returns The full source text of each DB-context function in the file.
+ */
 export function extractFunctionBodies(file: AstFile): FunctionBodyFact[] {
   // The legacy `too-many-queries` detector ran inside the schema-code visitor,
   // which short-circuited on `passesFileGate` (a file with no DB context never

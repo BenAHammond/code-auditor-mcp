@@ -123,6 +123,10 @@ export const version = '0.1.0';
 
 /**
  * Create a pre-configured audit runner for specific project types
+ *
+ * @param projectType - Project type whose defaults seed the runner config.
+ * @param options - Runner options overriding the project-type defaults.
+ * @returns A configured audit runner.
  */
 export async function createProjectAuditRunner(
   projectType: 'nextjs' | 'react' | 'vue' | 'angular' | 'node' | 'generic',

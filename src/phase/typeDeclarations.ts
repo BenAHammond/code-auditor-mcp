@@ -46,7 +46,12 @@ function interfaceMethodCount(interfaceType: ASTNode): number {
   return (interfaceType.children ?? []).filter((c) => c.type === 'method_elem').length;
 }
 
-/** Extract every named struct/interface declaration from one parsed Go file. */
+/**
+ * Extract every named struct/interface declaration from one parsed Go file.
+ *
+ * @param file - The parsed Go file whose type declarations are projected.
+ * @returns One `TypeDeclarationsFact` per named struct/interface (size metrics).
+ */
 export function extractTypeDeclarations(file: AstFile): TypeDeclarationsFact[] {
   if (isTestFile('go', file.file)) return [];
   const out: TypeDeclarationsFact[] = [];

@@ -46,6 +46,8 @@ export interface DaemonRunOptions {
  * Run the daemon in-process, blocking until a signal / idle timeout / socket
  * `shutdown` request. Shared by the detached entry (`main.ts`'s own `main`) and
  * the CLI's `daemon start --foreground`, so the two never drift on lifecycle.
+ * @param options - Project root, config name, idle timeout, and face flags.
+ * @returns A promise that resolves once the daemon has been stopped.
  */
 export async function runDaemonForeground(options: DaemonRunOptions): Promise<void> {
   const projectRoot = path.resolve(options.projectRoot);

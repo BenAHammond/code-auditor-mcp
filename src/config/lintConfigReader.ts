@@ -88,6 +88,9 @@ const CONFIG_CANDIDATES = [
  *
  * Returns `null` when no lint config is found (or nothing loadable). The
  * caller treats `null` as "defaults" — absence is not an error.
+ *
+ * @param projectRoot The project root to search for a lint config in.
+ * @returns The mapped size thresholds, or null when no config is available.
  */
 export async function readProjectLintThresholds(
   projectRoot: string,
@@ -147,6 +150,9 @@ export async function readProjectLintThresholds(
  * Convert a mapped `thresholds` map (dot-notation keys) into the
  * `analyzerConfigs` fragment shape the pipeline merges, grouped by namespace
  * (the prefix before the first `.`).
+ *
+ * @param thresholds Dot-notation threshold keys mapped to numeric values.
+ * @returns The same thresholds grouped into per-namespace nested objects.
  */
 export function thresholdsToAnalyzerConfig(
   thresholds: Record<string, number>,

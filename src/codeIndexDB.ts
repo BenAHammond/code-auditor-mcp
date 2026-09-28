@@ -94,7 +94,9 @@ const SQL_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Reject a value that is not a plain SQL identifier. Table and column names are
  *  interpolated into SQL (SQLite cannot parameterize identifiers), so a value that
- *  fails this check is a would-be injection surface and is refused, never run. */
+ *  fails this check is a would-be injection surface and is refused, never run.
+ *  @param name - The identifier value to validate.
+ *  @param context - The SQL context (e.g. "table name") used in the error message. */
 export function assertSqlIdentifier(name: string, context: string): void {
   if (!SQL_IDENTIFIER_RE.test(name)) {
     throw new Error(`invalid SQL identifier in ${context}: ${JSON.stringify(name)}`);
@@ -289,6 +291,11 @@ class SqliteCollectionAdapter {
 
 // ── Main class ──────────────────────────────────────────────────────────
 
+/**
+ * SQLite-backed code index storing functions, whitelist entries, audit
+ * results, analyzer configs, code maps, schemas, project tasks, and coverage
+ * data for a single project.
+ */
 export class CodeIndexDB {
   private static instance: CodeIndexDB;
   /** Subclasses (e.g. EnhancedCodeIndexDB) need access for extra tables without `as any`. */
@@ -328,6 +335,11 @@ export class CodeIndexDB {
   // ── Schema version ──────────────────────────────────────────────────
   private static readonly SCHEMA_VERSION = 18;
 
+  /**
+   * Create an index handle for the given SQLite file (in-memory by default).
+   *
+   * @param dbPath - Path to the SQLite database file, or ':memory:'.
+   */
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath === ':memory:' ? dbPath : path.resolve(dbPath);
   }
@@ -337,6 +349,14 @@ export class CodeIndexDB {
   /** The project root this singleton was opened for (used for mismatch detection). */
   private static currentProjectRoot: string | undefined;
 
+  /**
+   * Return the process-wide singleton, reopening the store when the requested
+   * path differs from the one currently open.
+   *
+   * @param dbPath - Optional explicit database file path.
+   * @param projectRoot - The project root the store is scoped to.
+   * @returns The singleton index instance.
+   */
   static getInstance(dbPath?: string, projectRoot?: string): CodeIndexDB {
     let resolved: string;
     if (dbPath !== undefined && dbPath !== '') {
@@ -382,6 +402,12 @@ export class CodeIndexDB {
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
+  /**
+   * Initialize the database schema and adapters once, memoized via a shared
+   * promise so concurrent callers await the same initialization.
+   *
+   * @returns A promise that resolves once initialization completes.
+   */
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
     if (this.initializePromise) {
@@ -1821,6 +1847,12 @@ export class CodeIndexDB {
 
   // ── Function CRUD ───────────────────────────────────────────────────
 
+  /**
+   * Insert or update a single function row (upsert keyed on name, file, line).
+   *
+   * @param func - The function metadata to store.
+   * @returns A promise that resolves once the row is written.
+   */
   async registerFunction(func: FunctionMetadata | EnhancedFunctionMetadata): Promise<void> {
     this.ensureInitialized();
     const row = this.functionToRow(func);
@@ -1856,6 +1888,12 @@ export class CodeIndexDB {
     }
   }
 
+  /**
+   * Register many functions in one transaction, reporting per-function errors.
+   *
+   * @param functions - The function metadata records to store.
+   * @returns The registration summary with success/registered/failed counts.
+   */
   async registerFunctions(functions: (FunctionMetadata | EnhancedFunctionMetadata)[]): Promise<{
     success: boolean;
     registered: number;
@@ -1938,6 +1976,14 @@ export class CodeIndexDB {
     }
   }
 
+  /**
+   * Upsert one file's functions and remove rows that no longer exist, then
+   * rebuild the dependency graph for that file.
+   *
+   * @param filePath - The file whose functions are being synced.
+   * @param currentFunctions - The functions currently present in the file.
+   * @returns Counts of added, updated, and removed rows.
+   */
   async syncFileIndex(filePath: string, currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[]): Promise<{
     added: number;
     updated: number;
@@ -1969,6 +2015,9 @@ export class CodeIndexDB {
    * one transaction plus one dependency-graph rebuild per file, and the
    * rebuild's un-scoped `SELECT` made that O(files × functions). Collapsing it
    * to one transaction is Amendment B2.
+   *
+   * @param entries - The per-file sync entries (path plus current functions).
+   * @returns Counts of added, updated, and removed rows across all files.
    */
   async syncFileIndexBatch(
     entries: Array<{ filePath: string; currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[] }>
@@ -2000,6 +2049,13 @@ export class CodeIndexDB {
 
   // ── Dependency graph ────────────────────────────────────────────────
 
+  /**
+   * Rebuild call and dependency edges from function metadata, scoped to a
+   * single file when a path is given.
+   *
+   * @param filePath - Optional file to scope the rebuild to.
+   * @returns A promise that resolves once the graph edges are rebuilt.
+   */
   async updateDependencyGraph(filePath?: string): Promise<void> {
     this.ensureInitialized();
 
@@ -2063,6 +2119,13 @@ export class CodeIndexDB {
     txn.immediate();
   }
 
+  /**
+   * Return the transitive set of dependencies for a function via recursive CTE.
+   *
+   * @param functionName - The function whose dependencies are traversed.
+   * @param maxDepth - Maximum traversal depth.
+   * @returns Dependency names with their depth from the starting function.
+   */
   async getTransitiveDependencies(
     functionName: string,
     maxDepth: number = 10
@@ -2097,6 +2160,13 @@ export class CodeIndexDB {
     return rows;
   }
 
+  /**
+   * Return the transitive set of callers for a function via recursive CTE.
+   *
+   * @param functionName - The function whose callers are traversed.
+   * @param maxDepth - Maximum traversal depth.
+   * @returns Caller names with their depth from the starting function.
+   */
   async getTransitiveCallers(
     functionName: string,
     maxDepth: number = 10
@@ -2122,6 +2192,11 @@ export class CodeIndexDB {
     return rows;
   }
 
+  /**
+   * Detect dependency cycles using a recursive CTE over call edges.
+   *
+   * @returns Each cycle as an ordered list of function names.
+   */
   async detectCircularDependencies(): Promise<Array<string[]>> {
     this.ensureInitialized();
 
@@ -2149,6 +2224,12 @@ export class CodeIndexDB {
     return rows.map(r => r.path.split('→'));
   }
 
+  /**
+   * Recompute and store each function's dependency depth from its transitive
+   * dependencies.
+   *
+   * @returns A promise that resolves once depths are updated.
+   */
   async calculateDependencyDepths(): Promise<void> {
     this.ensureInitialized();
 
@@ -2174,6 +2255,13 @@ export class CodeIndexDB {
 
   // ── Search ──────────────────────────────────────────────────────────
 
+  /**
+   * Search indexed functions, using the compiled SQL path when a parsed query
+   * is available and falling back to in-memory filtering otherwise.
+   *
+   * @param options - Search options including query, filters, limit, and offset.
+   * @returns The search result with matching functions and total count.
+   */
   async searchFunctions(options: SearchOptions): Promise<SearchResult> {
     this.ensureInitialized();
     const startTime = Date.now();
@@ -2332,6 +2420,13 @@ export class CodeIndexDB {
     return doc;
   }
 
+  /**
+   * Look up a single function definition by name, optionally scoped to a file.
+   *
+   * @param name - The function name to look up.
+   * @param filePath - Optional file path to scope the lookup.
+   * @returns The function metadata, or null when not found.
+   */
   async findDefinition(name: string, filePath?: string): Promise<EnhancedFunctionMetadata | null> {
     this.ensureInitialized();
 
@@ -2349,19 +2444,34 @@ export class CodeIndexDB {
 
   // ── Stats ───────────────────────────────────────────────────────────
 
+  /**
+   * Return all indexed functions.
+   *
+   * @returns The full list of indexed function metadata.
+   */
   async getAllFunctions(): Promise<EnhancedFunctionMetadata[]> {
     this.ensureInitialized();
     const rows = this.db.prepare('SELECT * FROM functions').all() as any[];
     return rows.map((r: any) => this.rowToFunction(r));
   }
 
-  /** Row count of the `functions` table — for callers that only need `.length`. */
+  /**
+   * Row count of the `functions` table — for callers that only need `.length`.
+   *
+   * @returns The number of rows in the functions table.
+   */
   async getFunctionCount(): Promise<number> {
     this.ensureInitialized();
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM functions').get() as any;
     return row?.n ?? 0;
   }
 
+  /**
+   * Compute aggregate index statistics (function count, languages, top
+   * dependencies, files indexed, and last-updated time).
+   *
+   * @returns The aggregate statistics.
+   */
   async getStats(): Promise<{
     totalFunctions: number;
     languages: Record<string, number>;
@@ -2402,6 +2512,12 @@ export class CodeIndexDB {
 
   // ── Lifecycle: clear & close ────────────────────────────────────────
 
+  /**
+   * Delete all index data while preserving project tasks, configs, whitelist,
+   * and ledger rows.
+   *
+   * @returns A promise that resolves once the index is cleared.
+   */
   async clearIndex(): Promise<void> {
     this.ensureInitialized();
     this.db.transaction(() => {
@@ -2422,6 +2538,11 @@ export class CodeIndexDB {
     })();
   }
 
+  /**
+   * Close the database handle and release resources, if initialized.
+   *
+   * @returns A promise that resolves once the handle is closed.
+   */
   async close(): Promise<void> {
     if (this.isInitialized) {
       this.taskRepository = null;
@@ -2434,6 +2555,13 @@ export class CodeIndexDB {
 
   // ── File sync & bulk cleanup ────────────────────────────────────────
 
+  /**
+   * Re-scan a single file and reconcile its indexed functions, removing rows
+   * when the file no longer exists.
+   *
+   * @param filePath - The file to synchronize.
+   * @returns Counts of added, updated, and removed rows (null on scan error).
+   */
   async synchronizeFile(filePath: string): Promise<{
     added: number;
     updated: number;
@@ -2460,6 +2588,13 @@ export class CodeIndexDB {
     }
   }
 
+  /**
+   * Remove stale function rows whose files are deleted or no longer part of
+   * the discovery set.
+   *
+   * @param projectRoot - Optional project root to reconcile against.
+   * @returns Scan counts, removed rows, and per-file errors.
+   */
   async bulkCleanup(projectRoot?: string): Promise<{
     scannedCount: number;
     removedCount: number;
@@ -2516,6 +2651,14 @@ export class CodeIndexDB {
     return { scannedCount, removedCount, removedFiles, errors };
   }
 
+  /**
+   * Re-scan the whole project (or the already-indexed files) and reconcile the
+   * index, reporting aggregate counts.
+   *
+   * @param projectRoot - Optional project root to discover files from.
+   * @param progressCallback - Optional per-file progress callback.
+   * @returns Aggregate sync counts and errors.
+   */
   async deepSync(
     projectRoot?: string,
     progressCallback?: (progress: { current: number; total: number; file: string }) => void
@@ -2643,6 +2786,9 @@ export class CodeIndexDB {
    *
    * Returns the list of changed/new function metadata for scoped analysis,
    * and the set of file paths that were actually touched.
+   *
+   * @param filePaths - The file paths to re-parse and diff.
+   * @returns Changed and deleted functions, touched paths, and per-file errors.
    */
   async detectChangedFunctions(filePaths: string[]): Promise<{
     changedFunctions: EnhancedFunctionMetadata[];
@@ -2755,6 +2901,9 @@ export class CodeIndexDB {
   /**
    * Given a project root, detect all indexed files whose mtime is newer than
    * the stored last_modified timestamp. Returns file paths for further processing.
+   *
+   * @param projectRoot - The project root to scan.
+   * @returns The file paths whose mtime is newer than the stored timestamp.
    */
   async detectModifiedFiles(projectRoot: string): Promise<string[]> {
     this.ensureInitialized();
@@ -2991,6 +3140,13 @@ export class CodeIndexDB {
     }
   }
 
+  /**
+   * List whitelist entries, optionally filtered by type and status.
+   *
+   * @param type - Optional entry type filter.
+   * @param status - Optional entry status filter.
+   * @returns The matching whitelist entries.
+   */
   async getWhitelist(type?: WhitelistType, status?: WhitelistStatus): Promise<WhitelistEntry[]> {
     this.ensureInitialized();
     const rows = this.whitelistAdapter.find({
@@ -3011,6 +3167,12 @@ export class CodeIndexDB {
     }));
   }
 
+  /**
+   * Insert a new whitelist entry.
+   *
+   * @param entry - The entry to add (without id/addedAt, which are assigned).
+   * @returns The stored whitelist entry.
+   */
   async addWhitelistEntry(entry: Omit<WhitelistEntry, 'id' | 'addedAt'>): Promise<WhitelistEntry> {
     this.ensureInitialized();
     const row = this.whitelistAdapter.insert({
@@ -3036,12 +3198,26 @@ export class CodeIndexDB {
     } as WhitelistEntry;
   }
 
+  /**
+   * Update a whitelist entry's status.
+   *
+   * @param name - The entry name to update.
+   * @param status - The new status.
+   * @returns A promise that resolves once the status is updated.
+   */
   async updateWhitelistStatus(name: string, status: WhitelistStatus): Promise<void> {
     this.ensureInitialized();
     this.db.prepare('UPDATE whitelist SET status = ?, updated_at = ? WHERE name = ?')
       .run(status, new Date().toISOString(), name);
   }
 
+  /**
+   * Check whether a name matches an active whitelist entry (literal or pattern).
+   *
+   * @param name - The name to check.
+   * @param type - The whitelist type to check against.
+   * @returns True when the name is whitelisted.
+   */
   isWhitelisted(name: string, type: WhitelistType): boolean {
     if (!this.isInitialized) return false;
     const rows = this.db.prepare(
@@ -3064,12 +3240,24 @@ export class CodeIndexDB {
     });
   }
 
+  /**
+   * Detect whitelist candidate suggestions. Currently returns no candidates.
+   *
+   * @returns The candidate whitelist suggestions.
+   */
   async detectWhitelistCandidates(): Promise<WhitelistSuggestion[]> {
     return [];
   }
 
   // ── Audit results ───────────────────────────────────────────────────
 
+  /**
+   * Persist a full audit result and return its generated audit ID.
+   *
+   * @param auditResult - The audit result payload.
+   * @param projectPath - The project the audit ran against.
+   * @returns The generated audit ID.
+   */
   async storeAuditResults(auditResult: any, projectPath: string): Promise<string> {
     this.ensureInitialized();
     const auditId = `audit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -3091,6 +3279,12 @@ export class CodeIndexDB {
     return auditId;
   }
 
+  /**
+   * Retrieve a stored audit result by ID, returning null when expired or absent.
+   *
+   * @param auditId - The audit ID to look up.
+   * @returns The audit result, or null when missing or expired.
+   */
   async getAuditResults(auditId: string): Promise<any | null> {
     this.ensureInitialized();
     const row = this.db.prepare('SELECT * FROM audit_results WHERE audit_id = ?').get(auditId) as any;
@@ -3112,6 +3306,14 @@ export class CodeIndexDB {
     };
   }
 
+  /**
+   * Return the most recent non-expired audit result, optionally scoped to a
+   * project and/or result scope.
+   *
+   * @param projectPath - Optional project path filter.
+   * @param resultScope - Optional result scope ('full' or 'scoped').
+   * @returns The most recent audit result, or null when none found.
+   */
   async getMostRecentAuditResults(
     projectPath?: string,
     resultScope?: 'full' | 'scoped'
@@ -3151,6 +3353,12 @@ export class CodeIndexDB {
     };
   }
 
+  /**
+   * Check whether any non-closed project task matches the given fingerprint.
+   *
+   * @param fingerprint - The violation fingerprint to match.
+   * @returns True when an open task with the fingerprint exists.
+   */
   hasOpenTaskByFingerprint(fingerprint: string | null | undefined): boolean {
     if (!fingerprint) return false;
     return this.getTaskRepository().findOpenByFingerprint(fingerprint).length > 0;
@@ -3162,6 +3370,14 @@ export class CodeIndexDB {
 
   // ── Analyzer configs ────────────────────────────────────────────────
 
+  /**
+   * Upsert an analyzer configuration (global or project-scoped).
+   *
+   * @param analyzerName - The analyzer the config belongs to.
+   * @param config - The configuration object.
+   * @param options - Optional project scope, global flag, and metadata.
+   * @returns The analyzer name stored.
+   */
   async storeAnalyzerConfig(
     analyzerName: string,
     config: Record<string, any>,
@@ -3190,6 +3406,14 @@ export class CodeIndexDB {
     return analyzerName;
   }
 
+  /**
+   * Retrieve an analyzer config, preferring a project-scoped config when a
+   * project path is given, then falling back to the global config.
+   *
+   * @param analyzerName - The analyzer to look up.
+   * @param projectPath - Optional project scope.
+   * @returns The config object, or null when not found.
+   */
   async getAnalyzerConfig(analyzerName: string, projectPath?: string): Promise<Record<string, any> | null> {
     this.ensureInitialized();
     if (projectPath) {
@@ -3204,6 +3428,13 @@ export class CodeIndexDB {
     return globalRow ? tryParseJson(globalRow.config_json) : null;
   }
 
+  /**
+   * Return all analyzer configs (global plus, when a project path is given,
+   * that project's local configs).
+   *
+   * @param projectPath - Optional project scope for local configs.
+   * @returns A map of analyzer name to config object.
+   */
   async getAllAnalyzerConfigs(projectPath?: string): Promise<Record<string, any>> {
     this.ensureInitialized();
     const configs: Record<string, any> = {};
@@ -3225,6 +3456,13 @@ export class CodeIndexDB {
     return configs;
   }
 
+  /**
+   * Delete an analyzer config, returning whether a row was removed.
+   *
+   * @param analyzerName - The analyzer to delete config for.
+   * @param options - Optional project scope and global flag.
+   * @returns True when a config row was deleted.
+   */
   async deleteAnalyzerConfig(analyzerName: string, options?: { projectPath?: string; isGlobal?: boolean }): Promise<boolean> {
     this.ensureInitialized();
     const result = this.db.prepare(
@@ -3233,6 +3471,12 @@ export class CodeIndexDB {
     return result.changes > 0;
   }
 
+  /**
+   * Delete analyzer configs, scoped to a project when a path is given.
+   *
+   * @param projectPath - Optional project scope (all configs when omitted).
+   * @returns A promise that resolves once configs are reset.
+   */
   async resetAnalyzerConfigs(projectPath?: string): Promise<void> {
     this.ensureInitialized();
     if (projectPath) {
@@ -3244,6 +3488,15 @@ export class CodeIndexDB {
 
   // ── Code maps ───────────────────────────────────────────────────────
 
+  /**
+   * Store one code map section for a map.
+   *
+   * @param mapId - The code map ID.
+   * @param sectionType - The section type.
+   * @param content - The section content.
+   * @param metadata - Optional section metadata.
+   * @returns A promise that resolves once the section is stored.
+   */
   async storeCodeMapSection(mapId: string, sectionType: string, content: string, metadata?: any): Promise<void> {
     this.ensureInitialized();
     this.db.prepare(
@@ -3252,6 +3505,13 @@ export class CodeIndexDB {
     ).run(mapId, sectionType, content, JSON.stringify(metadata ?? {}), new Date().toISOString(), content.length);
   }
 
+  /**
+   * Retrieve one code map section.
+   *
+   * @param mapId - The code map ID.
+   * @param sectionType - The section type.
+   * @returns The section content and metadata, or null when absent.
+   */
   async getCodeMapSection(mapId: string, sectionType: string): Promise<{ content: string; metadata: any } | null> {
     this.ensureInitialized();
     const row = this.db.prepare('SELECT content, metadata_json FROM code_maps WHERE map_id = ? AND section_type = ?')
@@ -3259,6 +3519,12 @@ export class CodeIndexDB {
     return row ? { content: row.content, metadata: tryParseJson(row.metadata_json) ?? {} } : null;
   }
 
+  /**
+   * List the sections of a code map with size and timestamp.
+   *
+   * @param mapId - The code map ID.
+   * @returns The section metadata.
+   */
   async listCodeMapSections(mapId: string): Promise<Array<{ sectionType: string; size: number; timestamp: Date }>> {
     this.ensureInitialized();
     const rows = this.db.prepare('SELECT section_type, size, timestamp FROM code_maps WHERE map_id = ?')
@@ -3266,6 +3532,12 @@ export class CodeIndexDB {
     return rows.map((r: any) => ({ sectionType: r.section_type, size: r.size ?? 0, timestamp: new Date(r.timestamp) }));
   }
 
+  /**
+   * Delete code map sections older than the given age.
+   *
+   * @param olderThanHours - Age threshold in hours (default 24).
+   * @returns The number of sections deleted.
+   */
   async clearOldCodeMaps(olderThanHours: number = 24): Promise<number> {
     this.ensureInitialized();
     const cutoff = new Date(Date.now() - olderThanHours * 60 * 60 * 1000).toISOString();
@@ -3273,6 +3545,12 @@ export class CodeIndexDB {
     return result.changes;
   }
 
+  /**
+   * Delete all sections of a code map.
+   *
+   * @param mapId - The code map ID to delete.
+   * @returns The number of sections deleted.
+   */
   async deleteCodeMap(mapId: string): Promise<number> {
     this.ensureInitialized();
     const result = this.db.prepare('DELETE FROM code_maps WHERE map_id = ?').run(mapId);
@@ -3281,6 +3559,12 @@ export class CodeIndexDB {
 
   // ── Schema management ───────────────────────────────────────────────
 
+  /**
+   * Store a schema definition and return its generated schema ID.
+   *
+   * @param schema - The schema definition to store.
+   * @returns The generated schema ID.
+   */
   async storeSchema(schema: SchemaDefinition): Promise<string> {
     this.ensureInitialized();
     const schemaId = `schema_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -3303,12 +3587,23 @@ export class CodeIndexDB {
     return schemaId;
   }
 
+  /**
+   * Retrieve a stored schema by ID.
+   *
+   * @param schemaId - The schema ID to look up.
+   * @returns The schema definition, or null when not found.
+   */
   async getSchema(schemaId: string): Promise<SchemaDefinition | null> {
     this.ensureInitialized();
     const row = this.db.prepare('SELECT schema_json FROM schema_definitions WHERE schema_id = ?').get(schemaId) as any;
     return row ? tryParseJson(row.schema_json) : null;
   }
 
+  /**
+   * Return all stored schemas with their indexing metadata.
+   *
+   * @returns The stored schemas.
+   */
   async getAllSchemas(): Promise<Array<{ schemaId: string; metadata: SchemaIndexMetadata; schema: SchemaDefinition }>> {
     this.ensureInitialized();
     const rows = this.db.prepare('SELECT schema_id, schema_json, metadata_json FROM schema_definitions').all() as any[];
@@ -3319,6 +3614,12 @@ export class CodeIndexDB {
     }));
   }
 
+  /**
+   * Delete a schema and its usage rows.
+   *
+   * @param schemaId - The schema ID to delete.
+   * @returns True when a schema row was removed.
+   */
   async deleteSchema(schemaId: string): Promise<boolean> {
     this.ensureInitialized();
     this.db.prepare('DELETE FROM schema_usage WHERE schema_id = ?').run(schemaId);
@@ -3326,6 +3627,13 @@ export class CodeIndexDB {
     return result.changes > 0;
   }
 
+  /**
+   * Record one schema usage, upserting on table/file/location identity.
+   *
+   * @param usage - The schema usage to record.
+   * @param schemaId - Optional schema ID (defaults to 'default').
+   * @returns A promise that resolves once the usage is recorded.
+   */
   async recordSchemaUsage(usage: SchemaUsage, schemaId?: string): Promise<void> {
     this.ensureInitialized();
     const existing = this.db.prepare(
@@ -3358,6 +3666,12 @@ export class CodeIndexDB {
     this.db.prepare('DELETE FROM schema_usage WHERE file_path = ?').run(filePath);
   }
 
+  /**
+   * Query schema usage entries, filtered by the optional options.
+   *
+   * @param options - Optional filters (schemaId, tableName, filePath, functionName, usageType).
+   * @returns The matching schema usage entries.
+   */
   async getSchemaUsage(options: {
     schemaId?: string; tableName?: string; filePath?: string; functionName?: string; usageType?: string;
   } = {}): Promise<SchemaUsage[]> {
@@ -3386,6 +3700,12 @@ export class CodeIndexDB {
     }));
   }
 
+  /**
+   * Find functions that reference the given table.
+   *
+   * @param tableName - The table name to search for.
+   * @returns The functions using the table, with file and usage type.
+   */
   async findFunctionsUsingTable(tableName: string): Promise<Array<{
     functionName: string; filePath: string; usageType: string; line: number;
   }>> {
@@ -3401,6 +3721,12 @@ export class CodeIndexDB {
     }));
   }
 
+  /**
+   * Compute aggregate schema statistics (schemas, tables, usage patterns,
+   * most-used tables, and usage by type).
+   *
+   * @returns The aggregate schema statistics.
+   */
   async getSchemaStats(): Promise<{
     totalSchemas: number; totalTables: number; totalUsagePatterns: number;
     mostUsedTables: Array<{ tableName: string; usageCount: number }>;
@@ -3431,6 +3757,13 @@ export class CodeIndexDB {
     return { totalSchemas, totalTables, totalUsagePatterns, mostUsedTables, usageByType };
   }
 
+  /**
+   * Search functions and optionally annotate results with schema usage context.
+   *
+   * @param query - The search query string.
+   * @param options - Search options, including includeSchemaUsage.
+   * @returns The search result, with schema context when requested.
+   */
   async searchWithSchemaContext(
     query: string,
     options: SearchOptions & { includeSchemaUsage?: boolean } = {}
@@ -3474,18 +3807,44 @@ export class CodeIndexDB {
     return this.taskRepository;
   }
 
+  /**
+   * Create a project task via the task repository.
+   *
+   * @param input - The task creation input.
+   * @returns The created task in its public shape.
+   */
   async createProjectTask(input: CreateProjectTaskInput): Promise<ProjectTask> {
     return this.getTaskRepository().create(input);
   }
 
+  /**
+   * Fetch a project task by ID.
+   *
+   * @param taskId - The task ID to look up.
+   * @returns The task, or null when not found.
+   */
   async getProjectTask(taskId: string): Promise<ProjectTask | null> {
     return this.getTaskRepository().getById(taskId);
   }
 
+  /**
+   * List project tasks for a project, with optional filters.
+   *
+   * @param projectPath - The project path whose tasks to list.
+   * @param options - Optional filters, search, and pagination.
+   * @returns The matching tasks.
+   */
   async listProjectTasks(projectPath: string, options?: ListProjectTasksOptions): Promise<ProjectTask[]> {
     return this.getTaskRepository().list(projectPath, options);
   }
 
+  /**
+   * List project tasks as a tree of nodes with descendant statistics.
+   *
+   * @param projectPath - The project path whose tasks to list.
+   * @param options - Optional filters and limit.
+   * @returns The tree nodes.
+   */
   async listProjectTasksTree(
     projectPath: string,
     options?: Omit<ListProjectTasksOptions, 'parentTaskId' | 'hasChildren'>
@@ -3493,6 +3852,13 @@ export class CodeIndexDB {
     return this.getTaskRepository().listTree(projectPath, options);
   }
 
+  /**
+   * List project tasks that are actionable (open dependencies resolved).
+   *
+   * @param projectPath - The project path whose tasks to list.
+   * @param options - Optional filters (actionableOnly is forced on).
+   * @returns The actionable tasks.
+   */
   async listActionableProjectTasks(
     projectPath: string,
     options?: Omit<ListProjectTasksOptions, 'actionableOnly'>
@@ -3500,21 +3866,46 @@ export class CodeIndexDB {
     return this.getTaskRepository().listActionable(projectPath, options);
   }
 
+  /**
+   * Mark a project task done after validating subtasks and dependencies.
+   *
+   * @param taskId - The task to complete.
+   * @returns The completion result, or null when not found.
+   */
   async completeProjectTask(taskId: string): Promise<CompleteProjectTaskResult | null> {
     return this.getTaskRepository().complete(taskId);
   }
 
+  /**
+   * Update a project task from a raw patch.
+   *
+   * @param taskId - The task to update.
+   * @param patch - The raw patch (sanitized internally).
+   * @returns The updated task, or null when not found.
+   */
   async updateProjectTask(taskId: string, patch: unknown): Promise<ProjectTask | null> {
     return this.getTaskRepository().update(taskId, patch);
   }
 
+  /**
+   * Delete a project task, handling subtasks per the given mode.
+   *
+   * @param taskId - The task to delete.
+   * @param mode - How to handle subtasks (reject, detach, or cascade).
+   * @returns True when the task was deleted.
+   */
   async deleteProjectTask(taskId: string, mode?: ProjectTaskDeleteMode): Promise<boolean> {
     return this.getTaskRepository().delete(taskId, mode);
   }
 
   // ── Meta key-value store ─────────────────────────────────────────────
 
-  /** Upsert a key-value pair in the meta table. */
+  /**
+   * Upsert a key-value pair in the meta table.
+   *
+   * @param key - The meta key.
+   * @param value - The value to store.
+   */
   setMeta(key: string, value: string): void {
     this.ensureInitialized();
     this.db.prepare(
@@ -3523,7 +3914,12 @@ export class CodeIndexDB {
     ).run(key, value);
   }
 
-  /** Retrieve a value from the meta table, or null if absent. */
+  /**
+   * Retrieve a value from the meta table, or null if absent.
+   *
+   * @param key - The meta key to look up.
+   * @returns The stored value, or null when absent.
+   */
   getMeta(key: string): string | null {
     this.ensureInitialized();
     const row = this.db.prepare(
@@ -3534,7 +3930,12 @@ export class CodeIndexDB {
 
   // ── Provenance storage (Spec-21 R2 cross-file) ─────────────────────
 
-  /** Store per-file provenance context in the meta table. */
+  /**
+   * Store per-file provenance context in the meta table.
+   *
+   * @param filePath - The file the provenance belongs to.
+   * @param provenanceData - The db- and validator-provenanced identifiers.
+   */
   storeFileProvenance(filePath: string, provenanceData: {
     dbProvenanced: Array<{ identifier: string; reason: string; source: string; chain?: string[] }>;
     validatorProvenanced: Array<{ identifier: string; reason: string; source: string; chain?: string[] }>;
@@ -3543,7 +3944,12 @@ export class CodeIndexDB {
     this.setMeta(key, JSON.stringify(provenanceData));
   }
 
-  /** Retrieve per-file provenance context, or null if not stored. */
+  /**
+   * Retrieve per-file provenance context, or null if not stored.
+   *
+   * @param filePath - The file whose provenance is retrieved.
+   * @returns The provenance context, or null when absent.
+   */
   getFileProvenance(filePath: string): {
     dbProvenanced: Array<{ identifier: string; reason: string; source: string; chain?: string[] }>;
     validatorProvenanced: Array<{ identifier: string; reason: string; source: string; chain?: string[] }>;
@@ -3557,7 +3963,11 @@ export class CodeIndexDB {
     }
   }
 
-  /** Store the inferred receiver set as a meta record. */
+  /**
+   * Store the inferred receiver set as a meta record.
+   *
+   * @param inferred - The inferred receivers to store.
+   */
   storeInferredReceivers(inferred: Array<{
     identifier: string;
     file: string;
@@ -3566,7 +3976,11 @@ export class CodeIndexDB {
     this.setMeta('inferred_receivers', JSON.stringify(inferred));
   }
 
-  /** Retrieve the inferred receiver set, or null if not stored. */
+  /**
+   * Retrieve the inferred receiver set, or null if not stored.
+   *
+   * @returns The inferred receivers, or null when absent.
+   */
   getInferredReceivers(): Array<{
     identifier: string;
     file: string;
@@ -3583,7 +3997,11 @@ export class CodeIndexDB {
 
   // ── Coverage data (Spec 15 R4) ──────────────────────────────────────
 
-  /** Import coverage entries, replacing any existing data for the given basis. */
+  /**
+   * Import coverage entries, replacing any existing data for the given basis.
+   *
+   * @param entries - The coverage entries to import.
+   */
   importCoverageData(entries: Array<{
     functionName: string;
     filePath: string;
@@ -3612,7 +4030,12 @@ export class CodeIndexDB {
     tx(entries);
   }
 
-  /** Get all coverage entries for a given basis. */
+  /**
+   * Get all coverage entries for a given basis.
+   *
+   * @param basis - The coverage basis to query ('static-reach' or 'measured').
+   * @returns The matching coverage entries.
+   */
   getCoverageByBasis(basis: 'static-reach' | 'measured'): Array<{
     functionName: string;
     filePath: string;
@@ -3637,7 +4060,11 @@ export class CodeIndexDB {
     }));
   }
 
-  /** Clear coverage data, optionally scoped to a single basis. */
+  /**
+   * Clear coverage data, optionally scoped to a single basis.
+   *
+   * @param basis - Optional basis to scope the deletion to.
+   */
   clearCoverageData(basis?: 'static-reach' | 'measured'): void {
     this.ensureInitialized();
     if (basis) {
@@ -3647,7 +4074,11 @@ export class CodeIndexDB {
     }
   }
 
-  /** Check if measured coverage data is stale (older than the last full sync). */
+  /**
+   * Check if measured coverage data is stale (older than the last full sync).
+   *
+   * @returns True when measured coverage predates the last full sync.
+   */
   isCoverageStale(): boolean {
     this.ensureInitialized();
     const lastSync = this.getMeta('last_full_sync_timestamp');
@@ -3659,7 +4090,12 @@ export class CodeIndexDB {
     return (staleRow?.cnt ?? 0) > 0;
   }
 
-  /** Get coverage rate by risk decile for the coverage report. */
+  /**
+   * Get coverage rate by risk decile for the coverage report.
+   *
+   * @param decileCount - Number of risk deciles to bucket into (default 10).
+   * @returns Coverage totals and rates per decile.
+   */
   getCoverageByRiskDecile(decileCount: number = 10): Array<{
     decile: number;
     covered: number;
@@ -3703,7 +4139,12 @@ export class CodeIndexDB {
     }));
   }
 
-  /** Get untested functions in the top risk decile. */
+  /**
+   * Get untested functions in the top risk decile.
+   *
+   * @param topDecile - Fraction of the highest-risk functions to consider (default 0.1).
+   * @returns The untested functions in the top decile.
+   */
   getUntestedTopDecile(topDecile: number = 0.1): Array<{
     functionName: string;
     filePath: string;
@@ -3751,7 +4192,13 @@ export class CodeIndexDB {
     }));
   }
 
-  /** Execute a parameterized query and return all rows. */
+  /**
+   * Execute a parameterized query and return all rows.
+   *
+   * @param sql - The SQL to execute.
+   * @param params - Optional bind parameters.
+   * @returns The result rows.
+   */
   query(sql: string, params?: any[]): any[] {
     this.ensureInitialized();
     return params?.length
@@ -3759,7 +4206,14 @@ export class CodeIndexDB {
       : this.db.prepare(sql).all();
   }
 
-  /** Count rows in a table, with optional WHERE clause. */
+  /**
+   * Count rows in a table, with optional WHERE clause.
+   *
+   * @param table - The table to count (validated as a SQL identifier).
+   * @param where - Optional WHERE clause (without the keyword).
+   * @param params - Optional bind parameters for the WHERE clause.
+   * @returns The row count.
+   */
   count(table: string, where?: string, params?: any[]): number {
     this.ensureInitialized();
     assertSqlIdentifier(table, 'table name');
@@ -3768,7 +4222,12 @@ export class CodeIndexDB {
     return row.cnt;
   }
 
-  /** Check if a table has any rows. */
+  /**
+   * Check if a table has any rows.
+   *
+   * @param table - The table to check (validated as a SQL identifier).
+   * @returns True when the table has at least one row.
+   */
   tableHasRows(table: string): boolean {
     this.ensureInitialized();
     assertSqlIdentifier(table, 'table name');
@@ -3783,6 +4242,9 @@ export class CodeIndexDB {
    *
    * Called both by deepSync() (after indexing) and by audit runs (so the
    * conventions analyzer has data to query even without an explicit sync).
+   *
+   * @param projectRoot - Optional project root passed to the mining logic.
+   * @param getSource - Optional callback to read a file's source content.
    */
   mineAllConventions(projectRoot?: string, getSource?: (filePath: string) => string | undefined): void {
     this.ensureInitialized();
@@ -3845,7 +4307,13 @@ export class CodeIndexDB {
     }
   }
 
-  /** Execute a DML statement (INSERT/UPDATE/DELETE) and return its result. */
+  /**
+   * Execute a DML statement (INSERT/UPDATE/DELETE) and return its result.
+   *
+   * @param sql - The SQL statement to execute.
+   * @param params - Optional bind parameters.
+   * @returns The statement result with change count and last insert row id.
+   */
   run(sql: string, params?: unknown[]): { changes: number; lastInsertRowid: number | bigint } {
     this.ensureInitialized();
     return params?.length

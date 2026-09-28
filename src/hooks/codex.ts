@@ -44,6 +44,8 @@ export interface CodexHookResult {
 
 /**
  * Build the Codex feedback payload from audit output.
+ * @param output - The hook audit output to translate into feedback.
+ * @returns The feedback payload and whether the edit should be blocked.
  */
 export function formatCodexFeedback(output: HookAuditOutput): {
   feedback: Record<string, unknown> | null;
@@ -92,6 +94,10 @@ export function formatCodexFeedback(output: HookAuditOutput): {
 /**
  * Process a Codex PostToolUse event and return the hook result.
  * Extracted from main() for testability — tests inject a mock audit function.
+ * @param rawStdin - The raw JSON stdin payload from Codex.
+ * @param auditFn - The audit function to run over the edited file.
+ * @param resolveRoot - Resolves the project root from the event.
+ * @returns The hook result with exit code, stdout, and stderr.
  */
 export async function processCodexEvent(
   rawStdin: string,
@@ -148,6 +154,7 @@ export async function processCodexEvent(
 
 /**
  * CLI entry point — reads stdin, processes, writes result, exits.
+ * @returns A promise that resolves once the hook output has been written.
  */
 export async function main(): Promise<void> {
   const raw = await readStdin();

@@ -573,6 +573,8 @@ export interface UnimplementedSchemaExtraction {
  * caller can state the gap as a notApplicable reason ("protobuf extraction not
  * implemented") rather than silently comparing nothing. Returns one entry per
  * distinct unimplemented language present in the corpus.
+ * @param entities The cross-language schema entities to inspect for file extensions.
+ * @returns One entry per distinct unimplemented language present in the corpus.
  */
 export function getUnimplementedSchemaExtractions(entities: CrossLanguageEntity[]): UnimplementedSchemaExtraction[] {
   const seen = new Set<string>();

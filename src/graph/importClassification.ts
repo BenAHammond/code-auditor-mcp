@@ -186,6 +186,7 @@ function resolveAliasTarget(
  *                    and `baseUrl`/`projectRoot` (for alias + baseUrl-rooted bare
  *                    resolution). All default to empty; the caller supplies them
  *                    from config/tsconfig.
+ * @returns The five-way classification plus the resolved path when internal.
  */
 export function classifyImportSpecifier(
   specifier: string,
@@ -400,6 +401,10 @@ function collectExportsTargets(exports: unknown, out: string[]): void {
  * … so the ESM/types facades that no in-tree import reaches are still counted
  * as live. Each declared path is resolved against `projectRoot`; `./`-prefixed
  * and extensionless entries resolve the same way.
+ *
+ * @param declared - Declared entry-point paths from the package manifest.
+ * @param projectRoot - Absolute project root to resolve entry paths against.
+ * @returns Set of absolute entry paths plus their sibling facades.
  */
 export function expandEntryPointFacades(
   declared: readonly string[],
@@ -424,6 +429,9 @@ export function expandEntryPointFacades(
  *
  * Malformed or absent package.json yields an empty set (same failure mode as
  * `readTsconfigAliases`).
+ *
+ * @param projectRoot - Absolute project root whose package.json is read.
+ * @returns Declared entry points expanded to facades, plus whether package.json existed.
  */
 export function readPackageEntryPoints(projectRoot: string): PackageEntryPoints {
   let raw: string;

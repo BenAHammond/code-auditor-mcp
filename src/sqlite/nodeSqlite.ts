@@ -67,7 +67,11 @@ function loadDatabaseSync(): typeof DatabaseSync {
   return mod.DatabaseSync;
 }
 
-/** Capability probe: can this Node load the `node:sqlite` builtin? */
+/**
+ * Capability probe: can this Node load the `node:sqlite` builtin?
+ *
+ * @returns True when `node:sqlite` (with `DatabaseSync`) loads.
+ */
 export function isNodeSqliteAvailable(): boolean {
   try {
     loadDatabaseSync();
@@ -113,9 +117,17 @@ class NodeSqliteStatement implements SqliteStatement {
   }
 }
 
+/**
+ * SQLite database backed by the Node built-in `node:sqlite`.
+ */
 export class NodeSqliteDatabase implements SqliteDatabase {
   private readonly db: DatabaseSync;
 
+  /**
+   * Open (or create) a database through `node:sqlite`.
+   * @param dbPath The database file path.
+   * @param opts Open options carrying the busy timeout.
+   */
   constructor(dbPath: string, opts: OpenSqliteOptions) {
     const DatabaseSyncCtor = loadDatabaseSync();
     this.db = new DatabaseSyncCtor(dbPath);
@@ -123,6 +135,11 @@ export class NodeSqliteDatabase implements SqliteDatabase {
     this.db.exec(`PRAGMA busy_timeout = ${opts.timeoutMs}`);
   }
 
+  /**
+   * Prepare a SQL statement for later execution.
+   * @param sql The SQL to prepare.
+   * @returns A prepared statement.
+   */
   prepare(sql: string): SqliteStatement {
     try {
       return new NodeSqliteStatement(this.db.prepare(sql));
@@ -131,6 +148,10 @@ export class NodeSqliteDatabase implements SqliteDatabase {
     }
   }
 
+  /**
+   * Execute one or more SQL statements directly.
+   * @param sql The SQL to execute.
+   */
   exec(sql: string): void {
     try {
       this.db.exec(sql);
@@ -139,6 +160,11 @@ export class NodeSqliteDatabase implements SqliteDatabase {
     }
   }
 
+  /**
+   * Run a PRAGMA statement, discarding the result (node:sqlite has no pragma API).
+   * @param pragmaSql The PRAGMA body (without the `PRAGMA` prefix).
+   * @returns Always undefined.
+   */
   pragma(pragmaSql: string): unknown {
     try {
       this.db.exec(`PRAGMA ${pragmaSql}`);
@@ -148,6 +174,11 @@ export class NodeSqliteDatabase implements SqliteDatabase {
     return undefined;
   }
 
+  /**
+   * Wrap a function in a SQLite transaction via explicit BEGIN/COMMIT/ROLLBACK.
+   * @param fn The function to run transactionally.
+   * @returns A callable transaction with `immediate`/`deferred` variants.
+   */
   transaction<Args extends unknown[] = unknown[], R = unknown>(
     fn: (...args: Args) => R
   ): SqliteTransaction<Args, R> {
@@ -177,6 +208,9 @@ export class NodeSqliteDatabase implements SqliteDatabase {
     return txn;
   }
 
+  /**
+   * Close the underlying database.
+   */
   close(): void {
     this.db.close();
   }

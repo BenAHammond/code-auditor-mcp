@@ -24,7 +24,11 @@ export interface RouteSplit {
   readonly legacy: ReadonlySet<string>;
 }
 
-/** Derive `{ migrated, legacy }` from MIGRATED_RULES against RULE_REGISTRY. */
+/**
+ * Derive `{ migrated, legacy }` from MIGRATED_RULES against RULE_REGISTRY.
+ *
+ * @returns The disjoint `migrated` and `legacy` rule-id sets.
+ */
 export function splitRoutes(): RouteSplit {
   const migrated = new Set(MIGRATED_RULES.map((r) => r.id));
   const legacy = new Set(
@@ -34,14 +38,21 @@ export function splitRoutes(): RouteSplit {
 }
 
 /** The route a rule id takes — `'phase'` if migrated, `'legacy'` if registry-only,
- *  `undefined` if it is not a registry rule at all. */
+ *  `undefined` if it is not a registry rule at all.
+ *
+ *  @param ruleId - The rule id whose route is resolved.
+ *  @returns `'phase'`, `'legacy'`, or `undefined` for an unknown rule. */
 export function routeFor(ruleId: string): Route | undefined {
   if (MIGRATED_RULES.some((r) => r.id === ruleId)) return 'phase';
   if (Object.prototype.hasOwnProperty.call(RULE_REGISTRY, ruleId)) return 'legacy';
   return undefined;
 }
 
-/** Full attribution: every registry rule mapped to its route. */
+/**
+ * Full attribution: every registry rule mapped to its route.
+ *
+ * @returns A `ruleId` → route map over the whole registry.
+ */
 export function attributeRoutes(): ReadonlyMap<string, Route> {
   const { migrated, legacy } = splitRoutes();
   const map = new Map<string, Route>();

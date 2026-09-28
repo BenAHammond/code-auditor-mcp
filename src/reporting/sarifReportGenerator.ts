@@ -43,6 +43,9 @@ const SEVERITY_TO_LEVEL: Record<string, string> = {
  *   5. `violation.schemaType`  (Schema)
  *   6. `violation.violationType` (general fallback)
  *   7. `'unknown'`
+ *
+ * @param violation - The violation to resolve a rule identifier for.
+ * @returns The stable local rule identifier.
  */
 export function resolveRuleId(violation: Violation): string {
   if (violation.rule && typeof violation.rule === 'string') {
@@ -74,6 +77,10 @@ export function resolveRuleId(violation: Violation): string {
 
 /**
  * Builds the full SARIF rule ID: `{analyzerName}/{localRuleId}`.
+ *
+ * @param analyzerName - The analyzer name to namespace the rule under.
+ * @param violation - The violation whose rule identifier is used.
+ * @returns The fully-namespaced SARIF rule ID.
  */
 export function buildFullRuleId(analyzerName: string, violation: Violation): string {
   const localId = resolveRuleId(violation);
@@ -124,6 +131,10 @@ export interface SARIFReportConfig {
 
 /**
  * Generates a SARIF 2.1.0 log string from an AuditResult.
+ *
+ * @param result - The audit result to emit as SARIF.
+ * @param config - Optional repository URI, revision ID, and root-dir configuration.
+ * @returns The SARIF 2.1.0 log as a pretty-printed JSON string.
  */
 export function generateSARIFReport(result: AuditResult, config?: SARIFReportConfig): string {
   const rootDir = config?.rootDir ?? process.cwd();
@@ -347,6 +358,9 @@ function buildPartialFingerprints(_analyzerName: string, violation: Violation, r
  * `repositoryUri` is the `origin` remote and `revisionId` is the current HEAD
  * commit. Any failure (not a git repo, no commits, no remote) yields an empty
  * object — provenance is optional and must never break SARIF generation.
+ *
+ * @param rootDir - The repository root to read git provenance from.
+ * @returns The repository URI and revision ID, if determinable.
  */
 export function readVersionControlProvenance(rootDir: string): { repositoryUri?: string; revisionId?: string } {
   const result: { repositoryUri?: string; revisionId?: string } = {};

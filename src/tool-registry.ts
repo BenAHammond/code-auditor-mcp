@@ -55,9 +55,18 @@ export interface MCPToolSchema {
   };
 }
 
+/**
+ * Registry of MCP tool definitions: the single source of truth for tool
+ * names, descriptions, actions, and dispatch handling.
+ */
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
 
+  /**
+   * Register a tool definition, rejecting duplicate tool names.
+   *
+   * @param tool - The tool definition to register.
+   */
   register(tool: ToolDefinition): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool "${tool.name}" is already registered`);
@@ -65,10 +74,21 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
   }
 
+  /**
+   * Look up a tool definition by name.
+   *
+   * @param name - The tool name to look up.
+   * @returns The matching tool definition, or undefined when absent.
+   */
   getTool(name: string): ToolDefinition | undefined {
     return this.tools.get(name);
   }
 
+  /**
+   * Return every registered tool definition.
+   *
+   * @returns All registered tool definitions.
+   */
   getAllTools(): ToolDefinition[] {
     return Array.from(this.tools.values());
   }
@@ -77,6 +97,9 @@ export class ToolRegistry {
    * Build a combined input schema for a tool: the `action` enum parameter
    * plus all action-specific parameters. The action enum lists every action
    * name so agents see the full surface in the schema.
+   *
+   * @param tool - The tool definition to build the schema for.
+   * @returns The combined input schema properties and required fields.
    */
   buildToolInputSchema(tool: ToolDefinition): {
     properties: Record<string, unknown>;
@@ -123,6 +146,11 @@ export class ToolRegistry {
     return { properties, required };
   }
 
+  /**
+   * Generate the MCP tool schemas for every registered tool.
+   *
+   * @returns MCP tool schema objects for all registered tools.
+   */
   getMCPToolSchemas(): MCPToolSchema[] {
     const schemas: MCPToolSchema[] = [];
     for (const tool of this.tools.values()) {
@@ -143,6 +171,12 @@ export class ToolRegistry {
   /**
    * Dispatch a tool call. Returns the handler result on success, or a
    * StructuredError when the tool name or action is invalid.
+   *
+   * @param toolName - The tool to dispatch to.
+   * @param action - The action within the tool to invoke.
+   * @param args - Action parameters.
+   * @param signal - Optional abort signal passed to the handler.
+   * @returns The handler result, or a StructuredError for an invalid tool/action.
    */
   async dispatch(
     toolName: string,
@@ -191,8 +225,10 @@ export class ToolRegistry {
   }
 
   /**
-   * Placeholder: generates CLI subcommand definitions from the same
+   * Generates CLI subcommand definitions from the same
    * tool definitions. Used in Specs 04/07 for `code-audit changed` etc.
+   *
+   * @returns CLI subcommand definitions derived from the registered tools.
    */
   getCLISubcommands(): Array<{ name: string; description: string; actions: string[] }> {
     return this.getAllTools().map((t) => ({

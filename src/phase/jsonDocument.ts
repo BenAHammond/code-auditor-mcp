@@ -18,7 +18,12 @@
 
 import type { ParsedFile, JsonDocumentFact, JsonValue } from './types.js';
 
-/** Parse one `.json` file into its `json-document` fact (one element). */
+/**
+ * Parse one `.json` file into its `json-document` fact (one element).
+ *
+ * @param file - The parsed JSON file whose source is parsed.
+ * @returns A single-element fact holding the `JSON.parse` value (or `null`).
+ */
 export function extractJsonDocument(file: ParsedFile): JsonDocumentFact[] {
   let json: JsonValue | null = null;
   try {

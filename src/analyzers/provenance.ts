@@ -858,6 +858,9 @@ function getMemberExpressionReceiver(
  * guards must agree on: a bare `identifier`, a `member_expression`/`selector`,
  * and — for `await fn<T>(...)` — an `await_expression` wrapping the callee plus
  * a `type_arguments` child (skipped, not mistaken for the callee).
+ * @param node The call-expression node whose callee to extract.
+ * @param adapter The language adapter for child traversal.
+ * @returns The callee node, or null when none is found.
  */
 export function getCallExpressionCallee(
   node: ASTNode,

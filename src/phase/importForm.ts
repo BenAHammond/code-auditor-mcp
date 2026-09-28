@@ -13,7 +13,12 @@
 import type { ImportFormFact, ParsedFile } from './types.js';
 import { parseFileImports } from '../conventions/conventionMiner.js';
 
-/** One file's imports as `ImportFormFact[]` (form + source + anchor line). */
+/**
+ * One file's imports as `ImportFormFact[]` (form + source + anchor line).
+ *
+ * @param file - The parsed file whose imports are classified.
+ * @returns The file's imports with their classified form and anchor line.
+ */
 export function extractImportForm(file: ParsedFile): ImportFormFact[] {
   return parseFileImports(file.source).map((imp) => ({
     file: file.file,

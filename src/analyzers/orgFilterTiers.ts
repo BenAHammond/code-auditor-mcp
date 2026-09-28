@@ -79,6 +79,9 @@ export interface OrgFilterTierSet {
  * string[]>` folded by the schema reducer; it is undefined when the schema
  * analyzer was not part of the run (Tier 3 is then empty — the rule can still
  * fire on Tiers 1–2, which come from config alone).
+ * @param config The org-filter config (may be undefined).
+ * @param ddlTableColumns Corpus-wide DDL-declared per-table columns.
+ * @returns The resolved tenant-scoping tier set.
  */
 export function buildOrgFilterTierSet(
   config: OrgFilterConfig | undefined,
@@ -117,6 +120,9 @@ export function buildOrgFilterTierSet(
 /**
  * Firing predicate — true when any of the query's referenced tables requires an
  * org/tenant filter, across all three tiers.
+ * @param tables The query's referenced table names.
+ * @param tierSet The resolved tenant-scoping tier set.
+ * @returns True when any referenced table requires an org/tenant filter.
  */
 export function tableRequiresOrgFilter(
   tables: string[],
@@ -136,6 +142,8 @@ export function tableRequiresOrgFilter(
  * Applicability predicate — true when any tier declares tenancy. When false,
  * the rule is `notApplicable` (this corpus has no tenant-scoping input), never
  * `clean` (the strongest claim the tool makes).
+ * @param tierSet The resolved tenant-scoping tier set.
+ * @returns True when any tier declares tenancy.
  */
 export function hasDeclaredTenancy(tierSet: OrgFilterTierSet): boolean {
   return (

@@ -15,7 +15,12 @@
 
 import type { AstFile, ExportFormFact } from './types.js';
 
-/** One file's export declarations as `ExportFormFact[]`. */
+/**
+ * One file's export declarations as `ExportFormFact[]`.
+ *
+ * @param file - The parsed file whose exports are projected.
+ * @returns The exported `(name, isDefault)` pairs in the file.
+ */
 export function extractExportForm(file: AstFile): ExportFormFact[] {
   const infos = file.adapter.extractExports(file.ast);
   return infos.map((exp) => ({

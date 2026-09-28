@@ -37,6 +37,10 @@ function findChildOfType(node: ASTNode, type: string): ASTNode | undefined {
 /**
  * Find all nodes matching a predicate in the AST subtree.
  * Replacement for the old `findNodesByKind<T>(node, SyntaxKind)`.
+ *
+ * @param root - The root AST node to search within.
+ * @param predicate - Predicate that returns true for nodes to keep.
+ * @returns All nodes for which the predicate returns true.
  */
 export function findNodesByType(
   root: ASTNode,
@@ -84,6 +88,10 @@ export { bridgeCalculateComplexity as calculateComplexity };
  * Extract import statements from an AST root node.
  * Uses tree-sitter import_statement structure:
  *   import_statement → import_clause? → (identifier | named_imports) → string
+ *
+ * @param root - The root AST node to search for import statements.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The list of extracted imports.
  */
 export function getImports(root: ASTNode, sourceCode: string): ImportInfo[] {
   const imports: ImportInfo[] = [];
@@ -158,6 +166,10 @@ export function getImports(root: ASTNode, sourceCode: string): ImportInfo[] {
 /**
  * Extract export statements from an AST root node.
  * Uses tree-sitter export_statement structure.
+ *
+ * @param root - The root AST node to search for export statements.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The list of extracted exports.
  */
 export function getExports(root: ASTNode, sourceCode: string): ExportInfo[] {
   const exports: ExportInfo[] = [];
@@ -243,6 +255,10 @@ export function findClasses(root: ASTNode): ASTNode[] {
 
 /**
  * Get AST node for inspection/debugging.
+ *
+ * @param node - The AST node to inspect.
+ * @param sourceCode - The original source text for text extraction.
+ * @returns A plain-object snapshot of the node and its children.
  */
 export function getASTNode(node: ASTNode, sourceCode: string): any {
   return {
@@ -259,6 +275,11 @@ export function getASTNode(node: ASTNode, sourceCode: string): any {
 /**
  * Check if a node has a specific decorator.
  * Tree-sitter parses decorators as `decorator` nodes.
+ *
+ * @param node - The AST node to search for decorators.
+ * @param decoratorName - The decorator name to match.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns True if the node carries a matching decorator.
  */
 export function hasDecorator(node: ASTNode, decoratorName: string, sourceCode: string): boolean {
   const decorators = findNodes(node, n => n.type === 'decorator');
@@ -287,6 +308,10 @@ export function hasDecorator(node: ASTNode, decoratorName: string, sourceCode: s
 /**
  * Get method names from a class declaration node.
  * Tree-sitter: class_declaration → class_body → method_definition / public_field_definition
+ *
+ * @param classNode - The class declaration node to inspect.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The names of the class's methods and public fields.
  */
 export function getClassMethods(classNode: ASTNode, sourceCode: string): string[] {
   const methods: string[] = [];
@@ -314,6 +339,9 @@ export function getClassMethods(classNode: ASTNode, sourceCode: string): string[
 /**
  * Count lines of code (excluding comments and empty lines).
  * Takes source text directly instead of ts.SourceFile.
+ *
+ * @param sourceCode - The source text to count lines in.
+ * @returns The number of non-comment, non-empty lines.
  */
 export function countLinesOfCode(sourceCode: string): number {
   const lines = sourceCode.split('\n');
@@ -359,6 +387,9 @@ export function isAsyncFunction(node: ASTNode): boolean {
 /**
  * Get parameter count for a function/method node.
  * Tree-sitter: formal_parameters → required_parameter / optional_parameter.
+ *
+ * @param node - The function or method node to inspect.
+ * @returns The number of declared parameters.
  */
 export function getParameterCount(node: ASTNode): number {
   const params = findChildOfType(node, 'formal_parameters');
@@ -405,6 +436,9 @@ export function findInterfaces(root: ASTNode): ASTNode[] {
 /**
  * Parse a TypeScript file and return an AST.
  * Uses the adapterBridge parseFile function.
+ *
+ * @param filePath - The path of the file to parse.
+ * @returns The parsed AST plus any parse errors.
  */
 export async function parseTypeScriptFile(
   filePath: string
@@ -429,6 +463,10 @@ export async function parseTypeScriptFile(
 /**
  * Enhanced version of getImports that returns detailed ImportMapping[].
  * Uses tree-sitter import_statement traversal.
+ *
+ * @param root - The root AST node to search for import statements.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The detailed import mappings extracted from the file.
  */
 export function getImportsDetailed(root: ASTNode, sourceCode: string): ImportMapping[] {
   const imports: ImportMapping[] = [];
@@ -514,6 +552,10 @@ export function getImportsDetailed(root: ASTNode, sourceCode: string): ImportMap
 /**
  * Get re-exports from a source file.
  * Tree-sitter: export_statement → string (module specifier).
+ *
+ * @param root - The root AST node to search for re-exports.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The list of re-exported names and their source modules.
  */
 export function getReExports(root: ASTNode, sourceCode: string): Array<{ name: string; module: string }> {
   const reExports: Array<{ name: string; module: string }> = [];
@@ -894,6 +936,11 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
 /**
  * Extract identifier usage to track which imports are used.
  * Uses tree-sitter AST traversal with walkAST.
+ *
+ * @param root - The root AST node to walk.
+ * @param sourceCode - The original source text for name extraction.
+ * @param importNames - Set of imported names to track usage for.
+ * @returns Map of imported name to its usage information.
  */
 export function extractIdentifierUsage(
   root: ASTNode,
@@ -1102,6 +1149,11 @@ export function extractIdentifierUsage(
 /**
  * Check if a function name is defined locally in the file.
  * Uses tree-sitter instead of TS API.
+ *
+ * @param name - The function name to look for.
+ * @param root - The root AST node to search.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns True if the name is declared locally.
  */
 export function isLocalFunction(name: string, root: ASTNode, sourceCode: string): boolean {
   let found = false;
@@ -1147,6 +1199,10 @@ export function isLocalFunction(name: string, root: ASTNode, sourceCode: string)
 /**
  * Normalize a function call target for consistent naming.
  * No TypeScript dependency — pure string manipulation.
+ *
+ * @param callee - The callee name as written at the call site.
+ * @param filePath - The file path the call occurs in.
+ * @returns The normalized call target.
  */
 export function normalizeCallTarget(callee: string, filePath: string): string {
   if (callee.includes('#') || callee.includes('.')) {
@@ -1166,6 +1222,10 @@ export function normalizeCallTarget(callee: string, filePath: string): string {
  *
  * Note: the type parameter is retained only for backward compatibility with
  * the generic-based call pattern; tree-sitter uses string types, not SyntaxKind enums.
+ *
+ * @param root - The root AST node to search within.
+ * @param nodeType - The tree-sitter node type to match.
+ * @returns All matching AST nodes cast to the requested type.
  */
 export function findNodesByKind<T extends ASTNode = ASTNode>(
   root: ASTNode,

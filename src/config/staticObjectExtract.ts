@@ -41,6 +41,10 @@ function loc(node: ASTNode): { line: number; column: number } {
  * `{ resolved: false, reason, node? }` naming why it could not. Reasons are the
  * spec's vocabulary: `call-expression`, `imported-spread`, `computed-key`,
  * `function-value`, `template-substitution`, `dynamic-export`, `parse-error`.
+ *
+ * @param filePath The path to the config file being extracted.
+ * @param sourceText The raw source text of that file.
+ * @returns A resolved literal value, or an unresolved reason with its location.
  */
 export function extractModuleExport(filePath: string, sourceText: string): StaticExtractResult {
   if (!isInitialized()) {

@@ -266,6 +266,7 @@ export function expandUtility(
  *
  * @param variantPrefix - e.g. "hover", "sm:dark"
  * @param declarations - Declarations to apply the variant to
+ * @returns Declarations with the variant context applied.
  */
 export function expandVariant(
   variantPrefix: string,
@@ -764,6 +765,8 @@ function findMatchingKey(utility: string): string | null {
 /**
  * Heuristic check: does this class name look like a Tailwind utility?
  * Used to skip non-utility class names without attempting expansion.
+ * @param className - The class name to test.
+ * @returns True when the class looks like a Tailwind utility.
  */
 export function looksLikeTailwind(className: string): boolean {
   const trimmed = className.trim();

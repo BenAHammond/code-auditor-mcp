@@ -33,6 +33,9 @@ export function registerRawNode(astNode: ASTNode, raw: TreeSitterNode): void {
  * Throwing here — rather than returning `undefined` and letting strict-null
  * checks surface a soft miss deep in a traversal — keeps the adapter's
  * "raw is always present" invariant explicit.
+ *
+ * @param node The `ASTNode` whose backing tree-sitter node is requested.
+ * @returns The registered tree-sitter node.
  */
 export function getRawNode(node: ASTNode): TreeSitterNode {
   const raw = rawNodes.get(node);

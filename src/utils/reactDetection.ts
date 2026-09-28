@@ -40,6 +40,9 @@ function isComponentName(name: string): boolean {
 
 /**
  * Check if a hook name is a built-in React hook
+ *
+ * @param hookName - The hook name to check.
+ * @returns True when the name is a built-in React hook.
  */
 export function isBuiltInHook(hookName: string): boolean {
   const builtInHooks = [
@@ -78,6 +81,9 @@ export function isReactComponent(node: ASTNode, sourceCode: string): boolean {
 
 /**
  * Check if a node is a functional React component
+ *
+ * @param node - The AST node to check.
+ * @returns True when the node represents a functional component.
  */
 export function isFunctionalComponent(node: ASTNode): boolean {
   if (node.type === 'function_declaration' || node.type === 'function_expression') {
@@ -106,6 +112,9 @@ export function isFunctionalComponent(node: ASTNode): boolean {
 
 /**
  * Check if a node returns JSX elements
+ *
+ * @param node - The AST node to scan for JSX.
+ * @returns True when the node contains JSX elements.
  */
 export function returnsJSX(node: ASTNode): boolean {
   // Check for JSX elements anywhere in the subtree
@@ -125,6 +134,10 @@ export function returnsJSX(node: ASTNode): boolean {
 
 /**
  * Check if a node is a class component extending React.Component
+ *
+ * @param node - The AST node to check.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns True when the node is a class extending React.Component.
  */
 export function isClassComponent(node: ASTNode, sourceCode: string): boolean {
   if (node.type !== 'class_declaration') return false;
@@ -196,6 +209,8 @@ function isReactComponentBaseType(typeNode: ASTNode, sourceCode: string): boolea
  *                       that call built-in hooks but don't start with 'use'.
  *                       These are captured so checkHooksRules can flag the
  *                       naming violation at the call site.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The hook usages found within the component.
  */
 export function extractHooks(node: ASTNode, sourceCode: string, hookUsingFns?: Set<string>): HookUsage[] {
   const hooks: HookUsage[] = [];
@@ -290,6 +305,10 @@ function extractPropsFromTypeLiteral(typeLiteral: ASTNode, sourceCode: string): 
  * with tree-sitter. We recover inline types and parameter destructuring,
  * but type references (e.g. `React.FC<Props>`) without inline definition
  * will fall through to parameter heuristics.
+ *
+ * @param node - The component node to extract prop types from.
+ * @param sourceCode - The original source text for type extraction.
+ * @returns The extracted prop definitions.
  */
 export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinition[] {
   const props: PropDefinition[] = [];
@@ -421,6 +440,10 @@ export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinit
 
 /**
  * Extract component imports from an AST.
+ *
+ * @param astRoot - The root AST node to scan for imports.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The component imports found in the file.
  */
 export function extractComponentImports(astRoot: ASTNode, sourceCode: string): ComponentImport[] {
   const imports: ComponentImport[] = [];
@@ -477,6 +500,10 @@ export function extractComponentImports(astRoot: ASTNode, sourceCode: string): C
 
 /**
  * Detect the specific type of component (functional, class, memo, forwardRef)
+ *
+ * @param node - The component node to classify.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The detected component type, or null when none matches.
  */
 export function detectComponentType(node: ASTNode, sourceCode: string): ComponentMetadata['componentType'] | null {
   // Check for call expression wrapping (memo, forwardRef)
@@ -516,6 +543,10 @@ export function detectComponentType(node: ASTNode, sourceCode: string): Componen
 
 /**
  * Get component name from various declaration patterns
+ *
+ * @param node - The component node to derive a name from.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The component name, or 'AnonymousComponent' when unnamed.
  */
 export function getComponentName(node: ASTNode, sourceCode: string): string {
   // Function declaration

@@ -481,6 +481,8 @@ app.get('/api/audit/:sessionKey', tokenGuard, (req, res) => {
 
 /**
  * Start the MCP-UI HTTP server
+ * @param opts - Optional host and port overrides.
+ * @returns The listening HTTP server instance.
  */
 export function startMcpUIServer(opts?: { host?: string; port?: number }): Server {
   const host = opts?.host ?? '127.0.0.1';

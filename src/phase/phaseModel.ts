@@ -113,6 +113,11 @@ export interface PhaseInfra {
  * Run the full phase model over the given absolute file paths and return the
  * migrated rules' findings. A no-op while `MIGRATED_RULES` is empty (the legacy
  * pipeline serves everything, so the tool is functionally unchanged).
+ *
+ * @param filePaths - The absolute file paths to read and run through the model.
+ * @param thresholdsByRule - The resolved per-rule threshold map.
+ * @param infra - The optional corpus-level inputs (project root, index, workers).
+ * @returns The migrated rules' findings and the per-file fact completeness map.
  */
 export async function runPhaseModel(
   filePaths: readonly string[],
@@ -151,7 +156,14 @@ export async function runPhaseModel(
   return runPhaseModelOverFiles(files, thresholdsByRule, infra);
 }
 
-/** The file/corpus-pipeline half, exposed for the slice tests. */
+/**
+ * The file/corpus-pipeline half, exposed for the slice tests.
+ *
+ * @param files - The already-read input files to parse, process, and analyze.
+ * @param thresholdsByRule - The resolved per-rule threshold map.
+ * @param infra - The optional corpus-level inputs (project root, index, workers).
+ * @returns The migrated rules' findings and the per-file fact completeness map.
+ */
 export async function runPhaseModelOverFiles(
   files: readonly InputFile[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,

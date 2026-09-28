@@ -114,7 +114,13 @@ function profileSource(profile: PathProfile): ConfigSource {
     : `path-profile:${profile.name}`;
 }
 
-/** Flatten a nested object to dot-notation. Arrays are treated as leaf values. */
+/**
+ * Flatten a nested object to dot-notation. Arrays are treated as leaf values.
+ *
+ * @param value The nested object (or leaf value) to flatten.
+ * @param prefix The dot-notation key prefix accumulated so far.
+ * @returns A flat record mapping dot-notation keys to their leaf values.
+ */
 export function flatten(value: unknown, prefix = ''): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -164,6 +170,10 @@ function flattenPresetLayer(
  * `_infra` is infrastructure (pathProfiles, files, projectRoot) spread into
  * every visitor's config; it is surfaced in `topLevel` rather than re-listed
  * per analyzer.
+ *
+ * @param opts Resolution inputs: the file path, project root, analyzer configs,
+ *   path profiles, ordered presets, and lint-sourced thresholds.
+ * @returns The per-analyzer effective config with a per-key source for one file.
  */
 export function computeEffectiveConfig(opts: {
   filePath: string;
@@ -246,6 +256,10 @@ export function computeEffectiveConfig(opts: {
 /**
  * Top-level (non-analyzer) config keys with source tracking. `base` is
  * `getDefaultConfig()`; `project` is the config loaded from file/env/cli.
+ *
+ * @param base The default top-level config keys.
+ * @param project The project's loaded config keys.
+ * @returns An effective key per top-level key, each with its source tracked.
  */
 export function computeTopLevelConfig(
   base: Record<string, unknown>,
@@ -292,6 +306,8 @@ function relativePosix(root: string, file: string): string {
  * @param projectConfig   User-facing `analyzerConfigs` (.codeauditor.json + inline options).
  * @param lintThresholds  Dot-notation lint thresholds (`solid.maxLinesPerMethod`, …).
  * @param presets         Ordered presets; later presets win.
+ * @param opts            Resolution inputs: project config, lint thresholds, presets.
+ * @returns One `ThresholdSource` per named threshold, with its effective value.
  */
 export function computeThresholdSources(opts: {
   projectConfig?: Record<string, unknown>;

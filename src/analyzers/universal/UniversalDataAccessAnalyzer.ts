@@ -1354,6 +1354,9 @@ function collectPatternTables(
  * Extract the set of table names referenced in a SQL/ORM fragment, via the
  * configured `tablePatterns` plus the `.from(...)` / `db.<table>.<method>()`
  * ORM shapes. SQL keywords and aggregates captured in passing are filtered out.
+ * @param text The SQL/ORM fragment to scan.
+ * @param config The data-access analyzer config holding table patterns.
+ * @returns The set of table names referenced in the fragment.
  */
 export function extractTables(text: string, config: DataAccessAnalyzerConfig): string[] {
   // JS `.from(...)` construction (Array.from / Buffer.from / Uint8Array.from)
@@ -1478,6 +1481,8 @@ function whereClauseIsTautology(text: string): boolean {
  * Spec 52 R2: `REPLACE INTO` is an upsert write — matched as a two-word clause
  * (not a bare `REPLACE` word) so the `REPLACE()` string function is not misread
  * as a write.
+ * @param text The SQL statement text.
+ * @returns True when the statement carries a write verb.
  */
 export function hasWriteVerb(text: string): boolean {
   const upper = text.toUpperCase();
@@ -2252,6 +2257,11 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
    * unfiltered-query, hardcoded-connection, complex-query) fire here at Stage 2
    * exactly as before. Emitting the calls as a by-product of this one scan
    * avoids a second traversal or re-parse.
+   * @param ast The parsed file AST.
+   * @param adapter The language adapter for the file's syntax.
+   * @param config The data-access analyzer config.
+   * @param sourceCode The raw source text.
+   * @returns The violations plus the extracted database calls.
    */
   async analyzeWithFacts(
     ast: AST,
@@ -2322,6 +2332,11 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
  * missing-org-filter / unfiltered-query / sql-injection-risk rules read, with no
  * violation production and no side effects. Config is the §10 tuning surface;
  * omitted here, the extraction runs on {@link DEFAULT_DATA_ACCESS_CONFIG}.
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param config The data-access analyzer config (defaults when omitted).
+ * @returns The database calls extracted from the file.
  */
 export function extractDataAccessCalls(
   ast: AST,
@@ -2355,6 +2370,11 @@ export function extractDataAccessCalls(
  * on the same provenance context — so detection parity holds by construction,
  * not by re-implementation. Config is the §10 tuning surface; omitted here, the
  * extraction runs on {@link DEFAULT_DATA_ACCESS_CONFIG}.
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param config The data-access analyzer config (defaults when omitted).
+ * @returns The loop-query candidates extracted from the file.
  */
 export function extractLoopQueries(
   ast: AST,

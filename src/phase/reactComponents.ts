@@ -36,7 +36,12 @@ const SCAN_OPTIONS = {
   detectComplexity: true,
 };
 
-/** One file's scanned components as a single `ReactComponentScan` fragment. */
+/**
+ * One file's scanned components as a single `ReactComponentScan` fragment.
+ *
+ * @param file - The parsed file whose components are scanned.
+ * @returns The file's component universe (metadata, imports, JSX, hooks, props).
+ */
 export function extractReactComponents(file: AstFile): ReactComponentScan {
   const scanned = scanParsedFile(file.ast, file.source, file.file, SCAN_OPTIONS);
   // The scan result is already plain data; the cast drops the interface/object-

@@ -215,6 +215,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
    * @param ast
    * @param filePath
    * @param references
+   * @param sourceCode The raw source text of the file.
    * @returns
    */
   public recordTableUsage(

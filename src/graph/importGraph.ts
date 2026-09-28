@@ -48,6 +48,9 @@ export interface PurityResult {
  * joined with `functions.file_path`.
  *
  * Edge weight = count of distinct dependency symbols between a file pair.
+ *
+ * @param db - The SQLite database to read function dependencies from.
+ * @returns The file-level import graph.
  */
 export function buildImportGraph(db: SqliteDatabase): ImportGraph {
   const adjacency = new Map<string, Map<string, number>>();
@@ -123,6 +126,12 @@ export function buildImportGraph(db: SqliteDatabase): ImportGraph {
   return { adjacency, filePaths };
 }
 
+/**
+ * Return a file path's basename with its extension stripped.
+ *
+ * @param fp - The file path to derive a basename from.
+ * @returns The basename without its extension.
+ */
 export function basenameNoExt(fp: string): string {
   const segments = fp.replace(/\\/g, '/').split('/');
   const basename = segments[segments.length - 1];
@@ -138,6 +147,12 @@ export function basenameNoExt(fp: string): string {
  * 2. Module name matching (npm package → search path patterns)
  * 3. Relative import resolution
  * 4. Basename matching
+ *
+ * @param dep - The dependency specifier to resolve.
+ * @param filePaths - Set of all known file paths in the corpus.
+ * @param moduleToFile - Map of module basename to matching file paths.
+ * @param sourceFile - The file that declared the dependency.
+ * @returns The set of file paths the dependency resolves to.
  */
 export function resolveDependency(
   dep: string,
@@ -208,6 +223,12 @@ export function resolveDependency(
   return results;
 }
 
+/**
+ * Normalize a path by resolving `.`/`..` segments and converting backslashes.
+ *
+ * @param p - The path to normalize.
+ * @returns The normalized path, preserving a leading slash when present.
+ */
 export function normalizePath(p: string): string {
   // Preserve a leading slash so absolute paths survive normalization. Dropping
   // the empty first segment (the root) here was silently turning
@@ -231,6 +252,8 @@ export function normalizePath(p: string): string {
 
 /**
  * Populate `graph_cache` with import graph edges.
+ *
+ * @param db - The SQLite database whose `graph_cache` table is populated.
  */
 export function populateImportGraphCache(db: SqliteDatabase): void {
   const { adjacency } = buildImportGraph(db);
@@ -254,6 +277,9 @@ export function populateImportGraphCache(db: SqliteDatabase): void {
 
 /**
  * Build an import graph from the persistent `graph_cache` table (fast path).
+ *
+ * @param db - The SQLite database to read cached import edges from.
+ * @returns The reconstructed import graph.
  */
 export function buildImportGraphFromCache(db: SqliteDatabase): ImportGraph {
   const adjacency = new Map<string, Map<string, number>>();
@@ -282,6 +308,10 @@ export function buildImportGraphFromCache(db: SqliteDatabase): ImportGraph {
  * Phase 1: Greedy modularity optimization (move nodes between communities)
  * Phase 2: Community aggregation (build super-graph)
  * Repeat until modularity gain < threshold.
+ *
+ * @param adjacency - Weighted adjacency map of file path to neighbor weights.
+ * @param filePaths - Set of all file paths in the graph.
+ * @returns Detected communities, community count, and final modularity.
  */
 export function detectCommunities(
   adjacency: Map<string, Map<string, number>>,
@@ -520,6 +550,10 @@ const COMMUNITY_MIN_FILES = 5;
  * For each directory, compute: share of its files in the plurality community.
  * Detects split candidates (directories spanning ≥2 communities) and
  * merge candidates (one community dominating ≥2 directories).
+ *
+ * @param communities - Map of file path to community ID.
+ * @param filePaths - Set of all file paths in the corpus.
+ * @returns Directory purities, split/merge candidates, and agreement score.
  */
 export function computeDirectoryPurity(
   communities: Map<string, number>,
@@ -639,6 +673,10 @@ function dirname(fp: string): string {
  * IMPORTANT: Abstractness computation uses an AST scan for export type/interface
  * declarations because the `functions` table does not index type/interface entities.
  * Uses a lightweight file-content scan.
+ *
+ * @param db - The SQLite database to read exported function counts from.
+ * @param importGraph - The file-level import graph to derive couplings from.
+ * @returns Martin metric entries sorted by distance from the main sequence.
  */
 export function computeMartinMetrics(
   db: SqliteDatabase,

@@ -29,9 +29,14 @@ export const PRIVACY_MESSAGE =
 export const DEFAULT_TELEMETRY_ENDPOINT =
   'https://code-auditor-dismissals.ben-a-hammond.workers.dev/ingest';
 
-/** Resolve the effective endpoint: an explicit non-blank value wins, else the shipped
- *  default. The endpoint must be an https URL — telemetry leaves the machine, so a
- *  plaintext (or non-URL) scheme is rejected loudly rather than silently sent. */
+/**
+ * Resolve the effective endpoint: an explicit non-blank value wins, else the shipped
+ * default. The endpoint must be an https URL — telemetry leaves the machine, so a
+ * plaintext (or non-URL) scheme is rejected loudly rather than silently sent.
+ *
+ * @param input - Optional explicit endpoint override.
+ * @returns The resolved https endpoint.
+ */
 export function resolveTelemetryEndpoint(input?: string): string {
   const trimmed = (input ?? '').trim();
   const endpoint = trimmed || DEFAULT_TELEMETRY_ENDPOINT;
@@ -64,6 +69,9 @@ export function configDir(dir?: string): string {
  * Return the anonymous install ID, generating and persisting it on first use.
  * Random and carrying nothing. Never throws — a config read/write failure falls
  * back to a fresh random UUID so telemetry can never block on local config I/O.
+ *
+ * @param dir - Optional config directory override (for tests).
+ * @returns The anonymous install ID (generated and persisted on first use).
  */
 export function getInstallId(dir?: string): string {
   const root = configDir(dir);
@@ -82,7 +90,12 @@ export function getInstallId(dir?: string): string {
   }
 }
 
-/** Read the telemetry opt-in. Any read failure is fail-closed (off, no endpoint). */
+/**
+ * Read the telemetry opt-in. Any read failure is fail-closed (off, no endpoint).
+ *
+ * @param dir - Optional config directory override (for tests).
+ * @returns The opt-in state, defaulting to disabled with no endpoint.
+ */
 export function getTelemetryOptIn(dir?: string): TelemetryOptIn {
   const root = configDir(dir);
   const filePath = path.join(root, TELEMETRY_FILENAME);
@@ -98,7 +111,12 @@ export function getTelemetryOptIn(dir?: string): TelemetryOptIn {
   }
 }
 
-/** Persist the telemetry opt-in. Throws on write failure (an explicit user action). */
+/**
+ * Persist the telemetry opt-in. Throws on write failure (an explicit user action).
+ *
+ * @param optIn - The opt-in state to persist.
+ * @param dir - Optional config directory override (for tests).
+ */
 export function setTelemetryOptIn(optIn: TelemetryOptIn, dir?: string): void {
   const root = configDir(dir);
   const filePath = path.join(root, TELEMETRY_FILENAME);

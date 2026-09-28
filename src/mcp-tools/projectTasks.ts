@@ -63,6 +63,8 @@ async function withReadDedup<T>(key: string, run: () => Promise<T>): Promise<T> 
  * Resolve project root for list/create. If omitted, uses `process.cwd()` (MCP server working directory),
  * same idea as the audit tool's default path. Prefer passing an absolute project path when cwd may differ
  * from the repo you mean (common with MCP hosts).
+ * @param args - The tool arguments that may carry a `projectPath`.
+ * @returns The resolved project path and whether it was defaulted.
  */
 export function resolveProjectPathForTasks(args: Record<string, unknown>): {
   projectPath: string;
@@ -102,6 +104,12 @@ function parseListTaskOptions(
   };
 }
 
+/**
+ * Dispatch a project-task action (list, create, get, update, delete, from_audit).
+ * @param args - The tool arguments, including the `action` to perform.
+ * @param options - Optional abort signal to cancel the request.
+ * @returns The action result object.
+ */
 export async function handleProjectTasks(
   args: Record<string, unknown>,
   options?: { signal?: AbortSignal }

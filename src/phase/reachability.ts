@@ -17,6 +17,13 @@
 import { classifyImportSpecifier, DEFAULT_VIRTUAL_MODULES } from '../graph/importClassification.js';
 import type { FileImportsFact, ReachabilityFact } from './types.js';
 
+/**
+ * True when the file path matches a test-file convention (`.test.`/`.spec.`/
+ * `__tests__`/`/test/`/`/tests/`/`_test.go`).
+ *
+ * @param fp - The file path to classify.
+ * @returns `true` when the path is a test file.
+ */
 export function isTestFile(fp: string): boolean {
   const lower = fp.toLowerCase();
   return lower.includes('.test.') || lower.includes('.spec.') ||
@@ -33,6 +40,13 @@ const ENTRY_BASENAMES = new Set([
   'setup', 'seed',
 ]);
 
+/**
+ * True when the file is a framework-loaded entry point (route/page/CLI/config)
+ * rather than a module imported by sibling code.
+ *
+ * @param fp - The file path to classify.
+ * @returns `true` when the path matches an entry-point basename or directory.
+ */
 export function isEntryPointFile(fp: string): boolean {
   const segments = fp.replace(/\\/g, '/').split('/').filter(Boolean);
   const base = segments[segments.length - 1] ?? '';
@@ -81,6 +95,10 @@ function resolveImport(dep: string, sourceFile: string, options: ReachabilityOpt
  * edges (`info.imports`) are resolved against the corpus; every resolved
  * internal target records its source as an importer. `packageEntryPoints` is
  * projected to a plain array so the fact stays serializable (§4).
+ *
+ * @param fileImports - The per-file import facts whose edges are reversed.
+ * @param options - The corpus, alias, and entry-point resolution inputs.
+ * @returns The reverse import adjacency and the package entry-point set.
  */
 export function computeReachability(
   fileImports: readonly FileImportsFact[],

@@ -31,7 +31,12 @@ import { extractDeclarations } from '../styles/styleExtractor.js';
 import { extractClassUsage } from '../styles/styleIndexer.js';
 import { loadTailwindConfig } from '../styles/tailwindConfigLoader.js';
 
-/** Extract the per-file styles fact from one parsed TS/JS file. */
+/**
+ * Extract the per-file styles fact from one parsed TS/JS file.
+ *
+ * @param file - The parsed TS/JS file whose styles are extracted.
+ * @returns A single-element fact with the file's declarations and class usage.
+ */
 export function extractStylesSource(file: AstFile): StyleDeclarationsFile[] {
   const tailwindTokens = file.projectRoot
     ? loadTailwindConfig(file.projectRoot).tokens

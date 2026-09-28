@@ -10,7 +10,12 @@ import { generateCSVReport } from './csvReportGenerator.js';
 import { generateSARIFReport, type SARIFReportConfig } from './sarifReportGenerator.js';
 
 /**
- * Generate a report in the specified format
+ * Generate a report in the specified format.
+ *
+ * @param result - The audit result to report.
+ * @param format - The output format (html, json, csv, or sarif).
+ * @param config - Optional SARIF-specific report configuration.
+ * @returns The rendered report string.
  */
 export function generateReport(result: AuditResult, format: ReportFormat, config?: SARIFReportConfig): string {
   switch (format) {
@@ -28,7 +33,9 @@ export function generateReport(result: AuditResult, format: ReportFormat, config
 }
 
 /**
- * Create a report generator with custom formatters
+ * Create a report generator with custom formatters.
+ *
+ * @param customFormatters - Optional additional format name to formatter mappings.
  */
 export function createReportGenerator(customFormatters?: Record<string, (result: AuditResult) => string>) {
   const formatters: Record<string, (result: AuditResult) => string> = {

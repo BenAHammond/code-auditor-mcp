@@ -22,7 +22,12 @@ import type { AstFile, GoSwitchFact } from './types.js';
 import { walkAST } from '../languages/adapterBridge.js';
 import { isTestFile } from '../languages/testConventions.js';
 
-/** Extract every switch/type-switch statement from one parsed Go file. */
+/**
+ * Extract every switch/type-switch statement from one parsed Go file.
+ *
+ * @param file - The parsed Go file whose switches are projected.
+ * @returns One `GoSwitchFact` per switch (case count, kind, line).
+ */
 export function extractGoSwitches(file: AstFile): GoSwitchFact[] {
   if (isTestFile('go', file.file)) return [];
   const out: GoSwitchFact[] = [];

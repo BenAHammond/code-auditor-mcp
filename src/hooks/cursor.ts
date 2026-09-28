@@ -54,6 +54,8 @@ export interface CursorHookResult {
 
 /**
  * Detect whether this is a Write/Edit tool invocation we should audit.
+ * @param event - The postToolUse event to inspect.
+ * @returns True when the tool name is Write or Edit.
  */
 export function isWriteOrEdit(event: CursorPostToolUse): boolean {
   const toolName = (event.tool_name || event.toolName || '').toLowerCase();
@@ -66,6 +68,8 @@ export function isWriteOrEdit(event: CursorPostToolUse): boolean {
  * Extract the edited file path from tool_input.
  * Cursor Write: tool_input.file_path
  * Claude Code Edit: tool_input.file_path
+ * @param event - The postToolUse event to inspect.
+ * @returns The edited file path, or null when none is present.
  */
 export function extractFilePath(event: CursorPostToolUse): string | null {
   const input = event.tool_input || event.toolInput;
@@ -79,6 +83,8 @@ export function extractFilePath(event: CursorPostToolUse): string | null {
 
 /**
  * Build the additional_context string for violations.
+ * @param output - The hook audit output to format.
+ * @returns The context string and whether the edit should be blocked.
  */
 export function formatViolationContext(output: HookAuditOutput): {
   context: string;
@@ -133,6 +139,9 @@ export function formatViolationContext(output: HookAuditOutput): {
 /**
  * Process a Cursor postToolUse event and return the hook result.
  * Extracted from main() for testability — tests inject a mock audit function.
+ * @param rawStdin - The raw JSON stdin payload from Cursor.
+ * @param auditFn - The audit function to run over the edited file.
+ * @returns The hook result with exit code, stdout, and stderr.
  */
 export async function processCursorEvent(
   rawStdin: string,
@@ -200,6 +209,7 @@ export async function processCursorEvent(
 /**
  * CLI entry point — reads stdin, processes, writes result, exits.
  * Exported so the CLI can call it explicitly after importing.
+ * @returns A promise that resolves after the hook output is written.
  */
 export async function main(): Promise<void> {
   const raw = await readStdin();

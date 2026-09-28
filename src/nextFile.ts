@@ -44,6 +44,9 @@ export interface RankedFile {
  * Group violations by file and rank worst-first: by highest severity, then by
  * total finding count, then by deterministic path order. The result is a stable
  * queue — repeated audits of an unchanged tree return the same head.
+ *
+ * @param violations - All findings to group and rank.
+ * @returns Files ranked worst-first (severity, count, then path).
  */
 export function rankFilesByPriority(violations: Violation[]): RankedFile[] {
   const byFile = new Map<string, Violation[]>();
@@ -75,6 +78,9 @@ export function rankFilesByPriority(violations: Violation[]): RankedFile[] {
 /**
  * Order one file's findings critical → severe → high so the consumer
  * sees the most urgent defect first. Stable for equal severities.
+ *
+ * @param violations - Findings within a single file.
+ * @returns The findings sorted critical → severe → high.
  */
 export function orderFindingsWithinFile(violations: Violation[]): Violation[] {
   return [...violations].sort(

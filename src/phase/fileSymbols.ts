@@ -51,7 +51,12 @@ const ESCAPE_WRAPPERS = new Set([
   'non_null_expression',
 ]);
 
-/** Extract every symbol (function / class / interface) from one parsed file. */
+/**
+ * Extract every symbol (function / class / interface) from one parsed file.
+ *
+ * @param file - The parsed file whose symbols are projected.
+ * @returns The file's functions, classes, and interfaces as plain-data symbols.
+ */
 export function extractFileSymbols(file: AstFile): FileSymbols[] {
   const { ast, adapter, source } = file;
   const symbols: FileSymbols[] = [];

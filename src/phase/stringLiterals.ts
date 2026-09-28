@@ -20,7 +20,12 @@ import {
   functionIdentityLabel,
 } from '../analyzers/universal/schema/codeAnalysis.js';
 
-/** One file's string/template-string literals as `StringLiteralFact[]`. */
+/**
+ * One file's string/template-string literals as `StringLiteralFact[]`.
+ *
+ * @param file - The parsed file whose literals are projected.
+ * @returns The file's string literals with their enclosing-function labels.
+ */
 export function extractStringLiterals(file: AstFile): StringLiteralFact[] {
   const nodes = file.adapter.findNodes(file.ast, {
     custom: (node) => node.type === 'string' || node.type === 'template_string',

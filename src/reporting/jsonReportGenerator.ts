@@ -15,10 +15,14 @@ export interface JSONReportConfig {
 }
 
 /**
- * Generate a JSON report from audit results
+ * Generate a JSON report from audit results.
+ *
+ * @param result - The audit result to serialize.
+ * @param config - Optional pretty-printing and metadata options.
+ * @returns The JSON report string.
  */
 export function generateJSONReport(
-  result: AuditResult, 
+  result: AuditResult,
   config?: JSONReportConfig
 ): string {
   const pretty = config?.pretty ?? true;
@@ -125,7 +129,10 @@ function countBySeverity(violations: any[]): Record<string, number> {
 }
 
 /**
- * Generate a compact JSON report (minimal size)
+ * Generate a compact JSON report (minimal size).
+ *
+ * @param result - The audit result to serialize.
+ * @returns The compact JSON report string.
  */
 export function generateCompactJSONReport(result: AuditResult): string {
   const compactReport = {

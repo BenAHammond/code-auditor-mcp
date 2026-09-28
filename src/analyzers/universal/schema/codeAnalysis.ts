@@ -1198,6 +1198,9 @@ function resolveQuerySql(
  * file whose DB access is only partly visible. These are diagnostics — "the
  * tool could not see this query" — not findings that the code is wrong, so they
  * are non-blocking (see CoverageDiagnostic).
+ * @param unresolved The unresolved-query records to report.
+ * @param filePath The file path the diagnostics belong to.
+ * @returns Coverage diagnostics for each unresolved query.
  */
 export function checkUnresolvedQueries(unresolved: UnresolvedQuery[], filePath: string): CoverageDiagnostic[] {
   return unresolved.map((u) => ({
@@ -1640,6 +1643,10 @@ const FUNCTION_NODE_TYPES = new Set([
  * than carrying a divergent copy (the old copies differed only in whether the
  * walk started at `node` or `parent(node)`, which is equivalent for every real
  * call site, all of which hand in a leaf or call node, never a function node).
+ * @param node The AST node to start walking from.
+ * @param adapter The language adapter for parent/type traversal.
+ * @param filePath The file path recorded in the identity.
+ * @returns The enclosing function's identity (or a top-level identity).
  */
 export function findEnclosingFunctionIdentity(
   node: ASTNode,

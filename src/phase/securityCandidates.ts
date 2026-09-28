@@ -447,7 +447,12 @@ function unescapedHtmlCandidates(template: ASTNode, sourceCode: string, filePath
   return out;
 }
 
-/** One file's security constructs as `SecurityCandidate[]`. */
+/**
+ * One file's security constructs as `SecurityCandidate[]`.
+ *
+ * @param file - The parsed file whose security constructs are projected.
+ * @returns The file's command-injection, dynamic-require, and HTML-sink candidates.
+ */
 export function extractSecurityCandidates(file: AstFile): SecurityCandidate[] {
   const out: SecurityCandidate[] = [];
   const sourceCode = file.source;

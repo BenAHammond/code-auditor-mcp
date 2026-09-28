@@ -68,6 +68,11 @@ const SCHEMA_DEFINITION_EXTENSIONS = new Set(['.sql', '.prisma']);
  * surface (DDL + Prisma models). Such a change can shift the known-tables catalog,
  * so it must escalate to a full re-seed *before* a scoped pass runs (defect #48:
  * running the scoped pass first would throw its result away when escalating).
+ *
+ * @param changed - Project-relative paths of files whose content changed.
+ * @param added - Project-relative paths of newly added files.
+ * @param deleted - Project-relative paths of deleted files.
+ * @returns True when any of the three touches a `.sql`/`.prisma` definition surface.
  */
 export function hasSchemaDefinitionChange(
   changed: string[],
@@ -151,7 +156,14 @@ function sha256(data: string | Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
-/** Hash + stat every file, keyed by project-relative path. */
+/**
+ * Hash + stat every file, keyed by project-relative path.
+ *
+ * @param files - File paths to hash (absolute or project-relative).
+ * @param projectRoot - Project root used to resolve relative paths.
+ * @param onProgress - Optional callback invoked with the count of files done.
+ * @returns Map of project-relative path to content hash and mtime.
+ */
 export function hashAndStatFiles(
   files: string[],
   projectRoot: string,
@@ -179,7 +191,13 @@ export function hashAndStatFiles(
   return out;
 }
 
-/** Diff the current file set against the snapshot's recorded set. */
+/**
+ * Diff the current file set against the snapshot's recorded set.
+ *
+ * @param snapshotFiles - The snapshot's recorded file records.
+ * @param current - The freshly hashed current file set.
+ * @returns Changed, added, and deleted file paths (sorted).
+ */
 export function diffFiles(
   snapshotFiles: Record<string, FileRecord>,
   current: Record<string, FileRecord>,
@@ -212,6 +230,11 @@ export function diffFiles(
  *    mtime did not — an mtime-based diff would have missed this change.
  *  - `missing-on-disk`: a file left the current set but still exists on disk —
  *    discovery missed it, and dropping its findings would be silent data loss.
+ *
+ * @param snapshotFiles - The snapshot's recorded file records.
+ * @param current - The freshly hashed current file set.
+ * @param projectRoot - Project root used to probe on-disk existence.
+ * @returns Staleness violations that must hard-error rather than proceed stale.
  */
 export function assertNoStaleFiles(
   snapshotFiles: Record<string, FileRecord>,
@@ -245,7 +268,13 @@ export interface SplitResult {
   schemaFindings: Violation[];
 }
 
-/** Split an audit result into file-local / corpus-DB / schema-fact buckets. */
+/**
+ * Split an audit result into file-local / corpus-DB / schema-fact buckets.
+ *
+ * @param analyzerResults - Map of analyzer name to its result (violations).
+ * @param projectRoot - Project root used to relativize finding file paths.
+ * @returns Findings partitioned into visitor, corpus, and schema buckets.
+ */
 export function splitFindings(
   analyzerResults: Record<string, AnalyzerResultLike>,
   projectRoot: string,
@@ -301,6 +330,9 @@ export interface MergeOutput {
  * (dependency-graph/api-contract/schema-validator) are preserved from the cache
  * because a scoped run short-circuits them. Schema findings are passed through
  * (the caller decides cache-vs-re-seed).
+ *
+ * @param input - Cached and fresh findings plus the change set to merge.
+ * @returns Merged visitor, corpus, and schema findings (plus the flattened `all`).
  */
 export function mergeFindings(input: MergeInput): MergeOutput {
   const drop = new Set([...input.deleted, ...input.changed, ...input.added]);
@@ -344,7 +376,12 @@ export interface NextFileSummary {
   topIssues: Array<{ type: string; count: number }>;
 }
 
-/** Compute a summary from a merged violation set (cached + fresh). */
+/**
+ * Compute a summary from a merged violation set (cached + fresh).
+ *
+ * @param violations - The merged violation set to summarize.
+ * @returns Severity counts, per-category counts, and top issues.
+ */
 export function summarizeViolations(violations: Violation[]): NextFileSummary {
   let criticalIssues = 0;
   let severe = 0;
@@ -387,6 +424,9 @@ function seedSnapshot(root: string, files: Record<string, FileRecord>, split: Sp
  * merge, and persist the refreshed snapshot. A warm call that touches a
  * schema-definition file escalates to a full re-seed (the schema catalog can
  * only be rebuilt correctly from the full corpus).
+ *
+ * @param options - Project root (and optional config name) for the run.
+ * @returns Snapshot, merged violations, cold flag, and summary.
  */
 export async function runNextFile(options: {
   projectRoot: string;

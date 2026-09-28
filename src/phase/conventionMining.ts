@@ -89,6 +89,12 @@ function toMinedConvention(c: Convention): MinedConvention {
  * only when `importForms` is provided — a caller that has not assembled those
  * facts (the three-domain parity seed) simply gets the three domains, never a
  * half-formed export-shape or import-form convention.
+ *
+ * @param facts - The assembled `function-index` facts to mine from.
+ * @param exportForms - The `export-form` facts (enables `export-shape` mining).
+ * @param importForms - The `import-form` facts (enables `import-form` mining).
+ * @param config - The mining thresholds (defaults to {@link DEFAULT_MINING_CONFIG}).
+ * @returns The mined conventions, capped per domain and stripped of DB-only fields.
  */
 export function mineConventionsFromFunctionIndex(
   facts: readonly FunctionIndexFact[],

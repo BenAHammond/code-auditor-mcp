@@ -602,6 +602,10 @@ export const CORPUS_PRODUCERS = {
  * format cannot supply the concept (which is not a defect — the caller skips
  * the file and §8 reports the rule `notApplicable` for it). The dynamic format
  * in a parsed file is a full {@link Format}, so the lookup is a guarded cast.
+ *
+ * @param kind - The fact kind whose producer is looked up.
+ * @param format - The format the parsed file declares.
+ * @returns The producer for `(kind, format)`, or `undefined` when unsupplied.
  */
 export function fileProducerFor<K extends FileFactKind>(
   kind: K,

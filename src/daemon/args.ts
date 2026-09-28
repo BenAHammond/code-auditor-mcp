@@ -40,6 +40,9 @@ export interface DaemonArgs {
 /**
  * Parse daemon argv. `cwd` is injectable for tests; the daemon resolves the
  * default project root against it.
+ * @param argv - The command-line arguments to parse.
+ * @param cwd - The working directory used as the default project root.
+ * @returns The parsed daemon arguments.
  */
 export function parseArgs(argv: string[], cwd: string = process.cwd()): DaemonArgs {
   let projectRoot = cwd;

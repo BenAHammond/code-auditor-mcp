@@ -34,7 +34,7 @@ export interface DeclaredScale {
   fontSize: Set<number>;
 }
 
-/** Parse a CSS length value to px-equivalent, or null if not parseable. */
+/** Parse a CSS length value to px-equivalent, or null if not parseable. @param raw The raw CSS length value. @returns The px-equivalent number, or null when unparseable. */
 export function parseLengthToPx(raw: string): number | null {
   try {
     const v = raw.trim().toLowerCase();
@@ -69,6 +69,8 @@ export function parseLengthToPx(raw: string): number | null {
  * - CSS custom properties use the Tailwind v4 `@theme` conventions: `--space-*`/
  *   `--spacing-*` → spacing, `--font-size-*`/`--text-*` → font-size. (`--font-*`
  *   is a font-*family* token, not a length, so it is deliberately excluded.)
+ * @param name The token name to classify.
+ * @returns The scale family the token declares, or null when unclassified.
  */
 export function tokenScaleCategory(name: string): 'spacing' | 'font-size' | null {
   if (name.startsWith('spacing.')) return 'spacing';
@@ -81,7 +83,7 @@ export function tokenScaleCategory(name: string): 'spacing' | 'font-size' | null
   return null;
 }
 
-/** Build the declared scale from the project's own token rows. */
+/** Build the declared scale from the project's own token rows. @param tokens The project's style token rows. @returns The declared spacing/font-size scale. */
 export function buildDeclaredScale(tokens: readonly StyleTokenLike[]): DeclaredScale {
   const scale: DeclaredScale = { spacing: new Set(), fontSize: new Set() };
   for (const t of tokens) {

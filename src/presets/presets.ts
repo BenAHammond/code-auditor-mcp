@@ -170,6 +170,10 @@ export function getPreset(id: string): Preset | undefined {
  * `dbReceiverNames`.
  *
  * Precedence: project-config > preset (presets merge in order, later wins).
+ *
+ * @param presetIds - IDs of the presets to apply, in merge order.
+ * @param analyzerConfigs - Optional existing analyzer config to layer on top.
+ * @returns The merged analyzer-config object.
  */
 export function applyPresets(
   presetIds: string[],
@@ -183,6 +187,9 @@ export function applyPresets(
  * Merge several presets (in order) into a single namespace-scoped config
  * fragment. Later presets win on key collision; nested objects are deep-merged
  * so `drizzle` + `plain-pg` compose without one clobbering the other.
+ *
+ * @param ids - Preset IDs to merge, in order (later wins on collision).
+ * @returns A namespace-scoped config fragment merging all matched presets.
  */
 export function mergePresets(ids: string[]): Record<string, Record<string, unknown>> {
   const out: Record<string, Record<string, unknown>> = {};

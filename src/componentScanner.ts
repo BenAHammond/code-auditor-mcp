@@ -104,6 +104,12 @@ interface ComponentImport {
  * always passes `extractHooks: true` (the legacy visitor tied it to
  * `checkHooksRules`, but the `hooks-naming` rule gates on that flag itself, so
  * the extraction has no effect on findings).
+ *
+ * @param ast - Tree-sitter parse of the file (`ast.root` is the walk start).
+ * @param content - Source text the node text is sliced from.
+ * @param filePath - File path stamped onto every scanned component.
+ * @param options - Scanner options (extract hooks/props/imports, complexity, etc.).
+ * @returns Scan result with components, imports, and any parse errors.
  */
 export function scanParsedFile(
   ast: AST,
@@ -204,6 +210,10 @@ export function scanParsedFile(
 
 /**
  * Scan a single file for React components
+ *
+ * @param filePath - Path to the file to read, parse, and scan.
+ * @param options - Scanner options forwarded to {@link scanParsedFile}.
+ * @returns Scan result (or an error-carrying result when read/parse fails).
  */
 export async function scanFile(
   filePath: string,
@@ -236,6 +246,11 @@ export async function scanFile(
 
 /**
  * Scan multiple files for React components
+ *
+ * @param filePaths - Paths of files to scan sequentially.
+ * @param options - Scanner options forwarded to each file.
+ * @param progressCallback - Optional callback invoked with (current, total) progress.
+ * @returns Scan results in input order.
  */
 export async function scanFiles(
   filePaths: string[],
@@ -530,6 +545,9 @@ function hasErrorBoundaryMethods(node: ASTNode, content: string): boolean {
 
 /**
  * Create a component dependency tree from scan results
+ *
+ * @param scanResults - Scan results whose component JSX usage defines the edges.
+ * @returns Map of component name to the set of imported component names it uses.
  */
 export function buildComponentTree(scanResults: ComponentScanResult[]): Map<string, Set<string>> {
   const tree = new Map<string, Set<string>>();
@@ -570,6 +588,9 @@ export function buildComponentTree(scanResults: ComponentScanResult[]): Map<stri
 
 /**
  * Convert component metadata to function metadata for indexing
+ *
+ * @param component - Component metadata to convert.
+ * @returns Function metadata with component-specific fields moved into `metadata`.
  */
 export function componentToFunctionMetadata(component: ComponentMetadata): FunctionMetadata {
   const { entityType, componentType, props, hooks, jsxElements, imports, hasErrorBoundary, isExported, ...base } = component;

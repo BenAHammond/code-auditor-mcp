@@ -49,6 +49,7 @@ export interface GatingDecision {
  *
  * @param violations The full violation list for the audited file(s).
  * @param blockingSeverities Severities that block (the fixed all-three set).
+ * @returns The gating decision: blocking violations plus any resolution gaps.
  */
 export function computeGatingDecision(
   violations: Violation[],

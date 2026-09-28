@@ -70,6 +70,7 @@ export interface HookAuditOutput {
 
 /**
  * Read all of stdin as a string. Returns empty string on EOF/error.
+ * @returns A promise resolving to the full stdin contents.
  */
 export async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -107,6 +108,8 @@ export async function readStdin(): Promise<string> {
 /**
  * Run a diff-scoped audit on the given file paths.
  * This is the shared core — all hook adapters call this.
+ * @param input - The file paths, project root, and severity to audit.
+ * @returns The audit output with violations and a severity summary.
  */
 export async function runHookAudit(input: HookAuditInput): Promise<HookAuditOutput> {
   if (input.filePaths.length === 0) {
@@ -200,6 +203,9 @@ function buildHookOutput(allViolations: any[], diagnostics: any[], filesAnalyzed
 
 /**
  * Check if violations at or above failOn severity exist.
+ * @param violations - The violations to scan.
+ * @param failOn - The minimum severity that gates the edit.
+ * @returns True when any violation is at or above the fail-on severity.
  */
 export function hasViolationsAtOrAbove(
   violations: HookViolation[],

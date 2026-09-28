@@ -27,7 +27,13 @@ import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 import type { SchemaAnalyzerConfig } from '../analyzers/universal/schema/types.js';
 import type { JsonDocumentFact, SchemaValidationFact } from './types.js';
 
-/** Reduce the `json-document` fact through the legacy validation free functions. */
+/**
+ * Reduce the `json-document` fact through the legacy validation free functions.
+ *
+ * @param documents - The parsed JSON documents to validate.
+ * @param config - The schema-json config (defaults to {@link DEFAULT_SCHEMA_CONFIG}).
+ * @returns One `SchemaValidationFact` per validation violation produced.
+ */
 export function buildSchemaValidations(
   documents: readonly JsonDocumentFact[],
   config: SchemaAnalyzerConfig = DEFAULT_SCHEMA_CONFIG,

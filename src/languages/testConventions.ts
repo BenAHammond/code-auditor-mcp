@@ -70,6 +70,9 @@ export function isTestFunction(language: string, name: string): boolean {
  * not a per-language convention, so it is one predicate rather than a table
  * entry. Segment anchoring (`/test/`) avoids matching `contest/`, `latest/`,
  * etc., which a bare `/test\//` substring would.
+ *
+ * @param filePath The file path to classify.
+ * @returns True when the path matches a test/spec file shape.
  */
 export function isTestOrSpecPath(filePath: string): boolean {
   const p = filePath.replace(/\\/g, '/');

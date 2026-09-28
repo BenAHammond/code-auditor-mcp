@@ -76,7 +76,12 @@ export interface CoverageInput {
   groupOf?: (ruleId: string) => string;
 }
 
-/** Derive per-rule coverage from the rules' declarations and the run's findings. */
+/**
+ * Derive per-rule coverage from the rules' declarations and the run's findings.
+ *
+ * @param input - The run's rules, findings, present formats, and completeness map.
+ * @returns One `RuleCoverage` per rule, in the input rule order.
+ */
 export function deriveCoverage(input: CoverageInput): RuleCoverage[] {
   const countByRule = new Map<string, number>();
   for (const f of input.findings) {

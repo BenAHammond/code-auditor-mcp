@@ -70,6 +70,9 @@ const SCHEMA_VERSION = 1;
  * entry missing a non-empty `fingerprint`/`reason`), a config error is reported
  * to stderr and `null` is returned — the run proceeds with zero dismissals
  * rather than silently honouring a malformed suppression list.
+ *
+ * @param projectRoot - Project root that contains the dismissals file.
+ * @returns The parsed dismissals file, or null when absent or structurally invalid.
  */
 export function loadDismissals(projectRoot: string): DismissalsFile | null {
   const filePath = path.join(projectRoot, DISMISSALS_FILENAME);
@@ -106,7 +109,14 @@ export function saveDismissals(projectRoot: string, dismissals: DismissalsFile):
 
 // ── Mutation ─────────────────────────────────────────────────────────────────
 
-/** Build a dismissal entry from a live violation and a required reason. */
+/**
+ * Build a dismissal entry from a live violation and a required reason.
+ *
+ * @param violation - The live violation being dismissed.
+ * @param reason - Why the finding is dismissed (required, non-empty).
+ * @param toolVersion - Tool version (package.json) at dismissal time.
+ * @returns A dismissal entry keyed by the violation's fingerprint.
+ */
 export function buildDismissalEntry(violation: Violation, reason: string, toolVersion: string): DismissalEntry {
   const input = buildFingerprintInput(violation);
   return {
@@ -123,6 +133,10 @@ export function buildDismissalEntry(violation: Violation, reason: string, toolVe
 /**
  * Add (or replace) a dismissal entry, keyed by fingerprint. Idempotent: re-
  * dismissing an already-dismissed finding updates its reason and timestamp.
+ *
+ * @param projectRoot - Project root holding the dismissals file.
+ * @param entry - Dismissal entry to add or replace (keyed by fingerprint).
+ * @returns The updated dismissals file.
  */
 export function upsertDismissal(projectRoot: string, entry: DismissalEntry): DismissalsFile {
   const dismissals = loadDismissals(projectRoot) ?? { schemaVersion: SCHEMA_VERSION as 1, entries: [] };
@@ -140,6 +154,10 @@ export function upsertDismissal(projectRoot: string, entry: DismissalEntry): Dis
 
 /**
  * Partition a run's findings into dismissed vs active by fingerprint.
+ *
+ * @param violations - Findings from this run.
+ * @param dismissals - The committed dismissals file to match against.
+ * @returns Findings partitioned into dismissed and active.
  */
 export function matchDismissals(
   violations: Violation[],
@@ -164,6 +182,9 @@ export function matchDismissals(
  * Apply dismissals to a completed audit result: mark dismissed findings so the
  * gate skips them, and record the dismissed count in the summary (never subtracted
  * from `totalViolations`).
+ *
+ * @param result - Completed audit result whose findings are marked dismissed.
+ * @param projectRoot - Project root holding the dismissals file.
  */
 export function applyDismissals(result: AuditResult, projectRoot: string): void {
   const dismissals = loadDismissals(projectRoot);

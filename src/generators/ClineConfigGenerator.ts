@@ -14,15 +14,30 @@
 
 import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
 
+/**
+ * MCP config generator for Cline.
+ */
 export class ClineConfigGenerator extends BaseConfigGenerator {
+  /**
+   * Return the display name of the tool.
+   * @returns The tool display name.
+   */
   getToolName(): string {
     return 'Cline';
   }
 
+  /**
+   * Return the default config file path for the tool.
+   * @returns The default config file path.
+   */
   getFilename(): string {
     return '.cline/mcp.json';
   }
 
+  /**
+   * Generate the tool's MCP configuration.
+   * @returns The generated config output.
+   */
   generateConfig(): ConfigOutput {
     const config = {
       mcpServers: {
@@ -40,6 +55,10 @@ export class ClineConfigGenerator extends BaseConfigGenerator {
     };
   }
 
+  /**
+   * Return setup instructions for the tool.
+   * @returns The setup instructions.
+   */
   getInstructions(): string {
     return `
 Cline MCP Configuration Instructions:
@@ -59,6 +78,10 @@ For blocking hooks, use Claude Code or Codex.
 `;
   }
 
+  /**
+   * Return whether the tool requires authentication.
+   * @returns True when the tool requires authentication.
+   */
   requiresAuth(): boolean {
     return false;
   }

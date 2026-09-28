@@ -12,7 +12,11 @@ export interface HTMLReportConfig {
 }
 
 /**
- * Generate an HTML report from audit results
+ * Generate an HTML report from audit results.
+ *
+ * @param result - The audit result to render.
+ * @param config - Optional theming and chart configuration.
+ * @returns The generated HTML document string.
  */
 export function generateHTMLReport(
   result: AuditResult, 

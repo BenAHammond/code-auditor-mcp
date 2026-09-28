@@ -36,6 +36,9 @@ export interface FingerprintInput {
  * The components are JSON-serialized in a fixed-order array so that a colon
  * or any other character inside a component cannot create an ambiguous
  * boundary.
+ *
+ * @param input - The canonical {analyzer, rule, file, symbol} tuple.
+ * @returns A hex SHA-256 digest of the canonical tuple.
  */
 export function fingerprint(input: FingerprintInput): string {
   const canonical = JSON.stringify([
@@ -52,6 +55,9 @@ export function fingerprint(input: FingerprintInput): string {
  *
  * `rule` is required on Violation — it is the single source of truth for
  * rule identity. Every analyzer must set `rule` when constructing a violation.
+ *
+ * @param violation - The violation to derive the tuple from.
+ * @returns The canonical four-tuple for fingerprinting.
  */
 export function buildFingerprintInput(violation: Violation): FingerprintInput {
   // Canonicalize through the rule-alias map (Spec 38 R5) so a rename does not

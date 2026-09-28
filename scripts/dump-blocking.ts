@@ -10,19 +10,25 @@ import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runAudit } from '../src/auditRunner.js';
 import fs from 'node:fs';
 
-const BUILTIN_DIRS = /(^|\/)(scripts|tests|test|__tests__|fixtures|test-tsd|test-tstyche)\//;
-const BUILTIN_FILES = /\.(test|spec)\.[^.]+$|\.test-d\.ts$|\.tst\.ts$/;
-const BENCH = /(^|\/)bench\/(corpus|recall-fixture)\//;
+// Spec 68 §13.1 — the widened gate audits the whole shipped product: everything
+// under `src/` that is production source. The tool's own test corpus (tests,
+// spec files, __tests__, fixtures), the declarative ruleRegistry data table, and
+// the dev/measurement/bench tooling (scripts/, bench/) and the separate vscode
+// package (editors/) are out of scope — they are not the shipped `src` product.
 const IGNORED = /(^|\/)(node_modules|dist|\.git|\.claude)\//;
+const TEST_DIRS = /(^|\/)(__tests__|fixtures|bench)\//;
+const TEST_FILES = /\.(test|spec)\.[^.]+$|\.test-d\.ts$|\.tst\.ts$/;
+const RULE_REGISTRY = /(^|\/)analyzers\/ruleRegistry\.ts$/;
 const BLOCKING = new Set(['critical', 'severe', 'high']);
 
 function inScope(file: string): boolean {
   const m = file.match(/\/app\/(.*)$/);
   const rel = m ? m[1] : file;
+  if (!/^src\//.test(rel)) return false; // only shipped src/ product
   if (IGNORED.test(rel)) return false;
-  if (BENCH.test(rel)) return false;
-  if (BUILTIN_DIRS.test(rel)) return false;
-  if (BUILTIN_FILES.test(rel)) return false;
+  if (TEST_DIRS.test(rel)) return false;
+  if (TEST_FILES.test(rel)) return false;
+  if (RULE_REGISTRY.test(rel)) return false;
   return true;
 }
 

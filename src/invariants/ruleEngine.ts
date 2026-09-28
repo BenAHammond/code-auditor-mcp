@@ -583,6 +583,9 @@ export interface RuleEngineOptions {
  * Check all rules against all specified files.
  * import-ban, module-boundary, and naming are per-file.
  * call-constraint queries the full index for callers.
+ *
+ * @param options - Rule engine options (rules, files, index handle, project dir).
+ * @returns The rule-check result with violations and errors.
  */
 export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   const { rules, files, indexHandle, projectDir, readSource, knownFiles, fileData: preExtractedFileData, isScoped } = options;

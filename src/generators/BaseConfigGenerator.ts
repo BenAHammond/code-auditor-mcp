@@ -17,9 +17,16 @@ export interface AdditionalFile {
   content: string;
 }
 
+/**
+ * Abstract base class for all AI tool config generators.
+ */
 export abstract class BaseConfigGenerator {
   protected serverUrl: string;
 
+  /**
+   * Create a generator bound to a given MCP server URL.
+   * @param serverUrl The MCP server URL the generated config should reference.
+   */
   constructor(serverUrl: string = DEFAULT_SERVER_URL) {
     this.serverUrl = serverUrl;
   }

@@ -73,6 +73,13 @@ const DEFAULT_TOKENS: TailwindThemeTokens = {
  */
 const configCache = new Map<string, TailwindConfigResult>();
 
+/**
+ * Load the project's Tailwind config tokens, falling back to bundled defaults
+ * when no config is present.
+ *
+ * @param projectRoot The project root to load the config from.
+ * @returns The resolved Tailwind config result.
+ */
 export function loadTailwindConfig(projectRoot: string): TailwindConfigResult {
   const cached = configCache.get(projectRoot);
   if (cached) return cached;
@@ -105,6 +112,9 @@ export function loadTailwindConfig(projectRoot: string): TailwindConfigResult {
 
 /**
  * Get the tokens as StyleToken[] for storage in the style index.
+ * @param result The loaded Tailwind config result.
+ * @param projectRoot The project root (for the token file path).
+ * @returns The tokens as StyleToken[] for storage.
  */
 export function tokensToStyleTokens(
   result: TailwindConfigResult,
@@ -243,6 +253,8 @@ function loadV3ConfigFile(configPath: string): { tokens: TailwindThemeTokens | n
  * file discovery applies, and it keeps the diff-scoped `changed` gate from
  * paying a full-tree walk per invocation. Falls back to a raw recursive walk
  * when git is unavailable (not a repository).
+ * @param projectRoot The project root to search.
+ * @returns The .css files containing @theme directives.
  */
 export function findThemeCssFiles(projectRoot: string): string[] {
   const gitCssFiles = listCssFilesViaGit(projectRoot);

@@ -373,6 +373,10 @@ export function getNodeName(node: ASTNode): string | null {
  * (which never leaves this module), and the matching `ASTNode` is returned so
  * callers can read it via `getNodeText`/`getNodeName` without holding a
  * parser-specific node. Returns `undefined` when the field is absent.
+ *
+ * @param node The AST node whose field child should be resolved.
+ * @param field The tree-sitter field name to look up.
+ * @returns The matching `ASTNode` child, or `undefined` when absent.
  */
 export function getFieldNode(node: ASTNode, field: string): ASTNode | undefined {
   const raw = getRawNode(node);

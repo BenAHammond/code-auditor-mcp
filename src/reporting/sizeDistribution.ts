@@ -11,7 +11,12 @@
 import type { SizeDistribution } from '../types.js';
 import type { SizeSample } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
 
-/** Median of a sorted numeric array (average of the two middle values for even n). */
+/**
+ * Median of a sorted numeric array (average of the two middle values for even n).
+ *
+ * @param sorted - The sorted numeric array to compute the median of.
+ * @returns The median value, or 0 for an empty array.
+ */
 export function median(sorted: number[]): number {
   const n = sorted.length;
   if (n === 0) return 0;
@@ -19,7 +24,13 @@ export function median(sorted: number[]): number {
   return n % 2 === 1 ? sorted[mid] : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-/** Nearest-rank percentile: the smallest value at or above `p`% of the samples. */
+/**
+ * Nearest-rank percentile: the smallest value at or above `p`% of the samples.
+ *
+ * @param sorted - The sorted numeric array of samples.
+ * @param p - The percentile to compute (0-100).
+ * @returns The percentile value, or 0 for an empty array.
+ */
 export function percentile(sorted: number[], p: number): number {
   const n = sorted.length;
   if (n === 0) return 0;
@@ -55,6 +66,12 @@ const POPULATIONS: Record<SizeDistribution['measure'], string> = {
 
 const MAX_TAIL_ENTRIES = 10;
 
+/**
+ * Aggregate raw size samples into per-measure size distributions.
+ *
+ * @param samples - The size samples accumulated by the SOLID analyzer.
+ * @returns One distribution per populated measure.
+ */
 export function computeSizeDistributions(samples: SizeSample[]): SizeDistribution[] {
   const byMeasure = new Map<string, SizeSample[]>();
   for (const s of samples) {

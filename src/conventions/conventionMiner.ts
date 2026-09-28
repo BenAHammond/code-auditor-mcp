@@ -84,7 +84,7 @@ export function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Detect whether a string contains non-Latin-script characters (Spec 21 R5.4). */
+/** Detect whether a string contains non-Latin-script characters (Spec 21 R5.4). @param name The string to inspect. @returns True when the string contains non-Latin-script characters. */
 export function hasNonLatinChars(name: string): boolean {
   // Latin script covers Basic Latin (U+0000–U+007F), Latin-1 Supplement
   // (U+0080–U+00FF), and Latin Extended-A/B (U+0100–U+024F). Allow digits,
@@ -105,7 +105,9 @@ export function hasNonLatinChars(name: string): boolean {
 }
 
 /** Classify a symbol name into a casing convention. Returns null for
- *  non-Latin, unclassifiable, or ambiguous names. */
+ *  non-Latin, unclassifiable, or ambiguous names.
+ *  @param name The symbol name to classify.
+ *  @returns The casing convention name, or null when unclassifiable. */
 export function detectCase(name: string): string | null {
   if (!name || name.length === 0) return null;
   if (hasNonLatinChars(name)) return null;
@@ -134,6 +136,8 @@ export function detectCase(name: string): string | null {
  * Handles: import default, import named, import namespace, import side-effect,
  * require default, require destructured.
  * Multi-line imports supported via {}-accumulation.
+ * @param content The raw file content.
+ * @returns The parsed import statements.
  */
 export function parseFileImports(
   content: string,
@@ -267,6 +271,9 @@ export function parseFileImports(
 /**
  * Parse the export form for a specific exported function from AST-extracted
  * export data. Returns null if the function isn't found in the export list.
+ * @param functionName The function name to look up.
+ * @param exports The AST-extracted export list.
+ * @returns The export form, or null when the function is not in the list.
  */
 export function detectExportForm(
   functionName: string,
@@ -330,6 +337,8 @@ function _detectExportFormFromSource(
  * A string/comment containing `try {` or `if (err)` no longer registers, and a
  * body that mixes two shapes is no longer collapsed to whichever the regex
  * happened to see first.
+ * @param body The function body source (may be null/undefined).
+ * @returns The detected error-handling shape, or null when none is present.
  */
 export function detectErrorHandlingShape(body: string | undefined | null): string | null {
   if (!body) return null;
@@ -455,7 +464,7 @@ function computeHash(inputs: unknown[]): string {
   return crypto.createHash('md5').update(JSON.stringify(inputs)).digest('hex');
 }
 
-/** Cap the number of conventions per domain. */
+/** Cap the number of conventions per domain. @param conventions The conventions to cap. @param max The per-domain maximum. @returns The capped conventions. */
 export function capPerDomain(conventions: Convention[], max: number): Convention[] {
   const byDomain = new Map<string, Convention[]>();
   for (const c of conventions) {
@@ -504,6 +513,10 @@ type ImportFormShape = 'default' | 'named' | 'namespace' | 'side-effect' | 'requ
  * from the `function-index` fact, preserving first-appearance order) and reads
  * each file's imports from the projection — so a file with imports but no
  * indexed functions contributes nothing on either path.
+ * @param files The distinct file paths to mine.
+ * @param getImports Callback returning a file's parsed imports.
+ * @param config The convention mining config.
+ * @returns The mined import-form conventions.
  */
 export function mineImportFormFromFacts(
   files: readonly string[],
@@ -741,6 +754,10 @@ function buildExportShapeConventions(
  * fact, which is the AST-extracted exports set (`extractExports`) the legacy
  * reducer read as `exportsMap`. No source fallback: the phase model always has
  * the export-form fact, so an absent file simply contributes no row.
+ * @param funcs The function-index rows to mine.
+ * @param config The convention mining config.
+ * @param getExportForm Callback resolving a file's exported (name, isDefault) pairs.
+ * @returns The mined export-shape conventions.
  */
 export function mineExportShapeFromFacts(
   funcs: ExportShapeFuncRow[],
@@ -928,7 +945,7 @@ export interface MineCallRow {
   callee_name: string;
 }
 
-/** The pure usage-pair miner — byte-identical logic to `mineUsagePairs`, over rows. */
+/** The pure usage-pair miner — byte-identical logic to `mineUsagePairs`, over rows. @param funcs The function rows. @param calls The caller→callee call rows. @param config The convention mining config. @returns The mined usage-pair conventions. */
 export function mineUsagePairsFromFacts(
   funcs: UsagePairFuncRow[],
   calls: MineCallRow[],
@@ -1010,7 +1027,7 @@ export function mineUsagePairsFromFacts(
   return conventions;
 }
 
-/** The pure error-handling miner — byte-identical logic to `mineErrorHandling`. */
+/** The pure error-handling miner — byte-identical logic to `mineErrorHandling`. @param funcs The function rows carrying bodies. @param config The convention mining config. @returns The mined error-handling conventions. */
 export function mineErrorHandlingFromFacts(
   funcs: ErrorHandlingFuncRow[],
   config: ConventionMiningConfig,
@@ -1083,7 +1100,7 @@ export function mineErrorHandlingFromFacts(
   return conventions;
 }
 
-/** The pure naming miner — byte-identical logic to `mineNaming`. */
+/** The pure naming miner — byte-identical logic to `mineNaming`. @param funcs The function rows to classify. @param config The convention mining config. @returns The mined naming conventions. */
 export function mineNamingFromFacts(
   funcs: NamingFuncRow[],
   config: ConventionMiningConfig,
@@ -1181,6 +1198,9 @@ export const MINER_VERSION = 2;
  * Compute a content hash of the miner inputs for change detection.
  * Callers can store this in the meta table to skip re-mining when unchanged.
  * Includes MINER_VERSION so that algorithm changes force a re-mine.
+ * @param db The SQLite database to hash inputs from.
+ * @param config The convention mining config.
+ * @returns The computed input hash string.
  */
 export function computeMinerInputHash(
   db: SqliteDatabase,
@@ -1215,6 +1235,8 @@ export function computeMinerInputHash(
  * @param config       Threshold configuration for the miner.
  * @param projectRoot  Optional project root — required for import-form and
  *                     export-shape mining to resolve file paths.
+ * @param getSource    Optional callback to read a file's source (avoids disk reads).
+ * @param getExports   Optional callback for AST-based export-form detection.
  * @returns Array of mined conventions (uncapped — caller should upsert).
  */
 export function mineConventions(

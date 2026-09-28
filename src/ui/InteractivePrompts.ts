@@ -13,9 +13,13 @@ export interface ToolChoice {
   disabled?: boolean;
 }
 
+/**
+ * Interactive prompts for tool selection, confirmations, and server setup.
+ */
 export class InteractivePrompts {
   /**
    * Prompt user to select AI tools to configure
+   * @returns The selected tool values.
    */
   async selectTools(): Promise<string[]> {
     const choices: ToolChoice[] = [
@@ -61,6 +65,8 @@ export class InteractivePrompts {
 
   /**
    * Confirm overwriting existing files
+   * @param files - The files that already exist.
+   * @returns Whether the user confirmed overwriting them.
    */
   async confirmOverwrite(files: string[]): Promise<boolean> {
     if (files.length === 0) {
@@ -86,6 +92,8 @@ export class InteractivePrompts {
 
   /**
    * Select output directory
+   * @param defaultDir - The default directory to offer.
+   * @returns The chosen output directory.
    */
   async selectOutputDirectory(defaultDir: string = '.'): Promise<string> {
     const { outputDir } = await inquirer.prompt([
@@ -108,6 +116,8 @@ export class InteractivePrompts {
 
   /**
    * Confirm server URL
+   * @param defaultUrl - The default URL to offer.
+   * @returns The confirmed server URL.
    */
   async confirmServerUrl(defaultUrl: string): Promise<string> {
     const { serverUrl } = await inquirer.prompt([
@@ -132,6 +142,7 @@ export class InteractivePrompts {
 
   /**
    * Select server mode
+   * @returns The chosen server mode.
    */
   async selectServerMode(): Promise<'mcp' | 'rest' | 'both'> {
     const { mode } = await inquirer.prompt([
@@ -153,6 +164,7 @@ export class InteractivePrompts {
 
   /**
    * Display success message with next steps
+   * @param generatedFiles - The files that were generated.
    */
   displaySuccess(generatedFiles: string[]): void {
     console.log(chalk.green('\n✓ Configuration files generated successfully!\n'));

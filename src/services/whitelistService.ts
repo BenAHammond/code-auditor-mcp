@@ -13,11 +13,19 @@ import {
 import { promises as fs } from 'fs';
 import path from 'path';
 
+/**
+ * Manages whitelisted dependencies and classes for the SOLID analyzer.
+ */
 export class WhitelistService {
   private static instance: WhitelistService;
 
   private constructor() {}
 
+  /**
+   * Return the process-wide singleton service instance.
+   *
+   * @returns The singleton `WhitelistService`.
+   */
   static getInstance(): WhitelistService {
     if (!WhitelistService.instance) {
       WhitelistService.instance = new WhitelistService();
@@ -34,7 +42,13 @@ export class WhitelistService {
   }
 
   /**
-   * Add a new whitelist entry
+   * Add a new whitelist entry.
+   *
+   * @param name - The entry name to whitelist.
+   * @param type - The whitelist type.
+   * @param description - Optional entry description.
+   * @param patterns - Optional matching patterns.
+   * @returns The created whitelist entry.
    */
   async addEntry(
     name: string,
@@ -70,7 +84,10 @@ export class WhitelistService {
   }
 
   /**
-   * Detect whitelist candidates from package.json
+   * Detect whitelist candidates from package.json.
+   *
+   * @param projectPath - The project path whose dependencies are scanned.
+   * @returns The candidate whitelist suggestions.
    */
   async detectFromPackageJson(projectPath: string): Promise<WhitelistSuggestion[]> {
     const suggestions: WhitelistSuggestion[] = [];
@@ -125,7 +142,10 @@ export class WhitelistService {
   }
 
   /**
-   * Detect whitelist candidates from usage patterns
+   * Detect whitelist candidates from usage patterns.
+   *
+   * @param projectPath - The project path to scan for usage patterns.
+   * @returns The candidate whitelist suggestions.
    */
   async detectFromUsagePatterns(projectPath: string): Promise<WhitelistSuggestion[]> {
     // TODO: Implement usage pattern detection
@@ -135,7 +155,10 @@ export class WhitelistService {
   }
 
   /**
-   * Auto-populate whitelist for a project
+   * Auto-populate whitelist for a project.
+   *
+   * @param projectPath - The project whose high-confidence candidates are added.
+   * @returns The number added and the remaining low-confidence suggestions.
    */
   async autoPopulateWhitelist(projectPath: string): Promise<{
     added: number;
@@ -167,7 +190,10 @@ export class WhitelistService {
   }
 
   /**
-   * Whitelist ALL dependencies from package.json
+   * Whitelist ALL dependencies from package.json.
+   *
+   * @param projectPath - The project whose dependencies are all whitelisted.
+   * @returns The number added and any dependency names that failed.
    */
   async whitelistAllDependencies(projectPath: string): Promise<{
     added: number;
@@ -260,6 +286,15 @@ export async function getWhitelist(type?: WhitelistType, status?: WhitelistStatu
   return whitelistService.getWhitelist(type, status);
 }
 
+/**
+ * Add a whitelist entry via the singleton service.
+ *
+ * @param name - The entry name to whitelist.
+ * @param type - The whitelist type.
+ * @param description - Optional entry description.
+ * @param patterns - Optional matching patterns.
+ * @returns The created whitelist entry.
+ */
 export async function addWhitelistEntry(
   name: string,
   type: WhitelistType,

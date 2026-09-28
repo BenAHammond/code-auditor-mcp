@@ -223,6 +223,9 @@ function classifyCall(calleeText: string): FunctionConcern | null {
 /**
  * Classify every call in a function body into concern categories, skipping
  * nested function bodies (their calls belong to them, not to this function).
+ * @param functionNode The function-body AST node to walk.
+ * @param getText Callback returning the source text of a node.
+ * @returns The set of concern categories found in the body.
  */
 export function detectFunctionConcerns(
   functionNode: ASTNode,

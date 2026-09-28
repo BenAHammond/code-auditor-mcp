@@ -86,6 +86,11 @@ function safeStringify(value: unknown): string {
  * `AuditConfig`, reached `execSync(\`git diff --name-only ${ref}\`)` only
  * because `mergeConfig` iterated raw JSON keys, and is absent from
  * `PROJECT_FILE_CONFIG_KEYS`.
+ *
+ * @param raw The untrusted `JSON.parse` result of a `.codeauditor.json` file.
+ * @param configPath The path to the config file, used to resolve relative paths.
+ * @param projectRoot The project root that path-valued keys must stay within.
+ * @returns The sanitized config fragment plus every entry that was rejected.
  */
 export function sanitizeProjectFileConfig(
   raw: unknown,
@@ -143,6 +148,10 @@ export function sanitizeProjectFileConfig(
 
 /**
  * Load configuration from multiple sources
+ *
+ * @param options Loader options: the config path, project root, CLI overrides,
+ *   and environment-variable prefix to read from.
+ * @returns The merged config plus every file-sourced entry that was rejected.
  */
 export async function loadConfig(options: {
   configPath?: string;
@@ -205,6 +214,9 @@ export async function loadConfig(options: {
  * This is what lets a scoped audit (`code-audit audit --path src`) still load
  * the project-root config instead of silently falling back to defaults: the
  * config lives at the project root, which is an ancestor of the audit path.
+ *
+ * @param startDir The directory to begin the upward search from.
+ * @returns The absolute path to the nearest `.codeauditor.json`, or null.
  */
 export async function findConfigFileUp(startDir: string): Promise<string | null> {
   let dir = path.resolve(startDir);
@@ -335,6 +347,9 @@ function normalizePaths(config: AuditConfig, baseDir?: string): AuditConfig {
 
 /**
  * Validate configuration
+ *
+ * @param config The merged config to validate.
+ * @returns A list of validation error messages (empty when valid).
  */
 export function validateConfig(config: AuditConfig): string[] {
   const errors: string[] = [];

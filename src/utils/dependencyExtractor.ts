@@ -32,6 +32,11 @@ function findChildOfType(node: ASTNode, type: string): ASTNode | undefined {
 
 /**
  * Extract all function calls within a given AST node
+ *
+ * @param node - The AST node to scan for call expressions.
+ * @param sourceCode - The original source text for name extraction.
+ * @param importMap - Map of local names to their import mappings.
+ * @returns The function calls found within the node.
  */
 export function extractFunctionCalls(
   node: ASTNode,
@@ -54,6 +59,10 @@ export function extractFunctionCalls(
 
 /**
  * Build a map of imports from import statements
+ *
+ * @param root - The root AST node to scan for imports.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns Map of local import name to its import mapping.
  */
 export function buildImportMap(root: ASTNode, sourceCode: string): Map<string, ImportMapping> {
   const importMap = new Map<string, ImportMapping>();
@@ -152,6 +161,11 @@ export function buildImportMap(root: ASTNode, sourceCode: string): Map<string, I
 
 /**
  * Resolve a call expression to get call information
+ *
+ * @param callExpr - The call expression node to resolve.
+ * @param importMap - Map of local names to their import mappings.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The resolved function call, or undefined when unresolved.
  */
 export function resolveCallExpression(
   callExpr: ASTNode,
@@ -238,6 +252,11 @@ function resolvePropertyAccess(
 
 /**
  * Extract identifier usage within a function to determine which imports are actually used
+ *
+ * @param node - The AST node to scan for identifier usage.
+ * @param sourceCode - The original source text for name extraction.
+ * @param importNames - Set of imported names to track usage for.
+ * @returns Map of imported name to its usage information.
  */
 export function extractIdentifierUsage(
   node: ASTNode,
@@ -297,6 +316,10 @@ export function extractIdentifierUsage(
 
 /**
  * Get all local function names defined in the file
+ *
+ * @param root - The root AST node to scan for local declarations.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns Set of local function and class-method names.
  */
 export function getLocalFunctionNames(root: ASTNode, sourceCode: string): Set<string> {
   const functionNames = new Set<string>();
@@ -352,6 +375,11 @@ export function getLocalFunctionNames(root: ASTNode, sourceCode: string): Set<st
 
 /**
  * Normalize a function call target for consistent naming
+ *
+ * @param callee - The callee name as written at the call site.
+ * @param filePath - The file path the call occurs in.
+ * @param localFunctions - Set of local function names to disambiguate.
+ * @returns The normalized call target.
  */
 export function normalizeCallTarget(
   callee: string,

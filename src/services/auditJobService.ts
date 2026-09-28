@@ -82,6 +82,14 @@ function toAuditJobRecord(detail: LedgerRunDetail): AuditJobRecord {
   };
 }
 
+/**
+ * Create a queued audit job backed by a ledger run.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param projectRoot - The resolved project path for the job.
+ * @param meta - Optional creation metadata (surface, scope, command).
+ * @returns The created job record.
+ */
 export function createAuditJob(
   db: SqliteDatabase,
   projectRoot: string,
@@ -104,6 +112,14 @@ export function getAuditJob(db: SqliteDatabase, jobId: string): AuditJobRecord |
   return detail ? toAuditJobRecord(detail) : undefined;
 }
 
+/**
+ * Patch a job's lifecycle fields, delegating to the ledger run.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param jobId - The job (run) ID to patch.
+ * @param patch - The job fields to update.
+ * @returns The updated job record, or undefined when the job is not found.
+ */
 export function patchAuditJob(
   db: SqliteDatabase,
   jobId: string,

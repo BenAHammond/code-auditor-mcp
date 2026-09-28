@@ -139,6 +139,8 @@ function resolveWorkerCount(): number {
 
 /**
  * Create an audit runner with the given options
+ *
+ * @param options - Audit runner options (project root, analyzer config, thresholds).
  */
 export function createAuditRunner(options: AuditRunnerOptions = {}) {
   /**
@@ -1786,6 +1788,12 @@ export interface DiagnosticWarning {
  *
  * Pass 2: Every analyzer with a result entry but filesProcessed === 0 and no
  * errors fires a warning — the analyzer ran but matched zero source files.
+ *
+ * @param analyzers - Names of the enabled analyzers to check against the results.
+ * @param analyzerResults - Map of analyzer name to its audit result.
+ * @param totalFiles - Total files processed; a zero total suppresses the warning as expected.
+ * @param hasGoFiles - Whether the corpus contained `.go` files (false excuses a skipped `go` analyzer).
+ * @returns Diagnostic warnings for analyzers that produced no result or matched zero files.
  */
 export function runZeroFilesDiagnostics(
   analyzers: string[],

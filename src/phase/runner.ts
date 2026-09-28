@@ -76,7 +76,12 @@ import type {
 /** A file to parse, with its source already read (the CLI reads it in §11). */
 export type InputFile = { readonly path: string; readonly content: string };
 
-/** The format a path declares, by extension (matches the liveness fixtures). */
+/**
+ * The format a path declares, by extension (matches the liveness fixtures).
+ *
+ * @param path - The file path whose extension determines the format.
+ * @returns The `Format` the path declares.
+ */
 export function formatFor(path: string): Format {
   if (path.endsWith('.tsx') || path.endsWith('.jsx')) return 'tsx';
   if (path.endsWith('.js')) return 'javascript';
@@ -96,6 +101,10 @@ export function formatFor(path: string): Format {
  * `extractClasses` read the real source through it. Returns `null` when no
  * adapter resolves the path or the parse fails; the caller records the drop
  * (§3.3 makes a per-file failure `incomplete`, which is §8's concern).
+ *
+ * @param input - The file to parse (path + already-read content).
+ * @param projectRoot - The optional project root threaded into the parsed file.
+ * @returns The parsed file, or `null` when no adapter resolves or the parse fails.
  */
 export async function parseOne(input: InputFile, projectRoot?: string): Promise<ParsedFile | null> {
   // `.sql` and markup (`.astro`/`.vue`/`.svelte`/`.html`) are the text-only
@@ -126,6 +135,9 @@ export async function parseOne(input: InputFile, projectRoot?: string): Promise<
 /**
  * Parse → Process for the `file-symbols` fact. Returns the assembled corpus
  * fact (every symbol from every file, files' ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `file-symbols` corpus fact.
  */
 export async function buildFileSymbols(files: readonly InputFile[]): Promise<FileSymbols[]> {
   const symbols: FileSymbols[] = [];
@@ -147,7 +159,12 @@ export async function buildFileSymbols(files: readonly InputFile[]): Promise<Fil
  *  so the Go arms (`interface-size`'s Go branch, `struct-size`, `function-size`,
  *  `switch-size`, `liskov-substitution`) reduce an empty fact in this TS-only
  *  slice rather than a missing one — they produce nothing because there are no
- *  Go files here. */
+ *  Go files here.
+ *
+ *  @param symbols - The assembled `file-symbols` fact to analyze.
+ *  @param thresholds - The SOLID rule thresholds (defaults to `{}`).
+ *  @returns The SOLID rules' findings over the fact.
+ */
 export async function analyzeFileSymbols(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
     facts: {
@@ -174,7 +191,13 @@ export async function runFileSymbolsSlice(files: readonly InputFile[], threshold
 
 // ── documentation slice (same fact, different rules) ─────────────────────────
 
-/** Analyze the assembled `file-symbols` fact with the documentation rules. */
+/**
+ * Analyze the assembled `file-symbols` fact with the documentation rules.
+ *
+ * @param symbols - The assembled `file-symbols` fact to analyze.
+ * @param thresholds - The documentation rule thresholds (defaults to `{}`).
+ * @returns The documentation rules' findings over the fact.
+ */
 export async function analyzeDocumentation(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
     facts: { 'file-symbols': symbols },
@@ -199,6 +222,9 @@ export async function runDocumentationSlice(files: readonly InputFile[], thresho
 /**
  * Parse → Process for the `data-access-calls` fact. Returns the assembled
  * corpus fact (every resolved DB call from every file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `data-access-calls` corpus fact.
  */
 export async function buildDataAccessCalls(files: readonly InputFile[]): Promise<ResolvedQuery[]> {
   const calls: ResolvedQuery[] = [];
@@ -218,7 +244,13 @@ export async function buildDataAccessCalls(files: readonly InputFile[]): Promise
 /** Analyze the assembled `data-access-calls` + `table-catalog` facts with the
  *  data-access rules. `missing-org-filter` reads the catalog for Tier 3 (DDL)
  *  tenancy; the other three rules ignore it (their `needs` declare only
- *  `data-access-calls`, and the union context carries both). */
+ *  `data-access-calls`, and the union context carries both).
+ *
+ *  @param calls - The assembled `data-access-calls` fact to analyze.
+ *  @param catalog - The known-table catalog (`missing-org-filter` reads it).
+ *  @param thresholds - The data-access rule thresholds (defaults to `{}`).
+ *  @returns The data-access rules' findings over the facts.
+ */
 export async function analyzeDataAccessCalls(
   calls: ResolvedQuery[],
   catalog: TableCatalog,
@@ -236,7 +268,13 @@ export async function analyzeDataAccessCalls(
   return findings;
 }
 
-/** The data-access slice: parse → data-access-calls + table-catalog → rules → findings. */
+/**
+ * The data-access slice: parse → data-access-calls + table-catalog → rules → findings.
+ *
+ * @param files - The input files to parse and process.
+ * @param thresholds - The data-access rule thresholds (defaults to `{}`).
+ * @returns The data-access rules' findings over the assembled facts.
+ */
 export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const [calls, catalog] = await Promise.all([
     buildDataAccessCalls(files),
@@ -252,6 +290,9 @@ export async function runDataAccessSlice(files: readonly InputFile[], thresholds
  * fact (every loop whose body issues a DB call, ASTs already freed). The fact
  * carries no cross-file structure — the `loop-query` rule reduces each element
  * in isolation, exactly as the legacy `checkLoopQueries` ran once per AST.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `loop-queries` corpus fact.
  */
 export async function buildLoopQueries(files: readonly InputFile[]): Promise<LoopQueryFact[]> {
   const facts: LoopQueryFact[] = [];
@@ -268,7 +309,13 @@ export async function buildLoopQueries(files: readonly InputFile[]): Promise<Loo
   return facts;
 }
 
-/** Analyze the assembled `loop-queries` fact with the loop-query rule. */
+/**
+ * Analyze the assembled `loop-queries` fact with the loop-query rule.
+ *
+ * @param facts - The assembled `loop-queries` fact to analyze.
+ * @param thresholds - The loop-query rule thresholds (defaults to `{}`).
+ * @returns The loop-query rule's findings over the fact.
+ */
 export async function analyzeLoopQueries(
   facts: LoopQueryFact[],
   thresholds: ThresholdValues = {},
@@ -299,6 +346,9 @@ export async function runLoopQueriesSlice(files: readonly InputFile[], threshold
  * carries no cross-file structure — the `dynamic-sql-construction` rule reduces
  * each element in isolation, exactly as the legacy `checkSQLInjection` ran once
  * per AST.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `dynamic-sql` corpus fact.
  */
 export async function buildDynamicSql(files: readonly InputFile[]): Promise<DynamicSqlFact[]> {
   const facts: DynamicSqlFact[] = [];
@@ -315,7 +365,13 @@ export async function buildDynamicSql(files: readonly InputFile[]): Promise<Dyna
   return facts;
 }
 
-/** Analyze the assembled `dynamic-sql` fact with the dynamic-sql-construction rule. */
+/**
+ * Analyze the assembled `dynamic-sql` fact with the dynamic-sql-construction rule.
+ *
+ * @param facts - The assembled `dynamic-sql` fact to analyze.
+ * @param thresholds - The dynamic-sql rule thresholds (defaults to `{}`).
+ * @returns The dynamic-sql-construction rule's findings over the fact.
+ */
 export async function analyzeDynamicSql(
   facts: DynamicSqlFact[],
   thresholds: ThresholdValues = {},
@@ -343,6 +399,9 @@ export async function runDynamicSqlSlice(files: readonly InputFile[], thresholds
 /**
  * Parse → Process for the `schema-usage` fact. Returns the assembled corpus
  * fact (every table reference from every file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `schema-usage` corpus fact.
  */
 export async function buildSchemaUsage(files: readonly InputFile[]): Promise<SchemaUsageFact[]> {
   const usages: SchemaUsageFact[] = [];
@@ -364,6 +423,9 @@ export async function buildSchemaUsage(files: readonly InputFile[]): Promise<Sch
  * migration files). Returns the raw declarations both corpus processors
  * (`table-catalog`, `migration-history`) reduce — so the two derive from one
  * parse pass rather than re-parsing the same files twice.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The raw `ddl-declarations` the corpus processors reduce.
  */
 export async function buildDdlDeclarations(files: readonly InputFile[]): Promise<SchemaDeclaration[]> {
   const declarations: SchemaDeclaration[] = [];
@@ -406,7 +468,14 @@ export async function buildMigrationHistory(files: readonly InputFile[]): Promis
  *  the schema rules. `unknown-table` reads the catalog and migration-history to
  *  hand dropped tables to `stale-table-reference`; `table-naming-convention`
  *  reads `schema-usage` alone (its `needs` declares only that fact, and the
- *  union context carries all three). */
+ *  union context carries all three).
+ *
+ *  @param usages - The assembled `schema-usage` fact to analyze.
+ *  @param catalog - The known-table catalog (`unknown-table` reads it).
+ *  @param migrationHistory - The cross-file drop provenance.
+ *  @param thresholds - The schema rule thresholds (defaults to `{}`).
+ *  @returns The schema rules' findings over the facts.
+ */
 export async function analyzeSchemaRules(
   usages: SchemaUsageFact[],
   catalog: TableCatalog,
@@ -426,7 +495,12 @@ export async function analyzeSchemaRules(
 }
 
 /** The schema slice: parse → schema-usage + table-catalog + migration-history →
- *  schema rules → findings. */
+ *  schema rules → findings.
+ *
+ *  @param files - The input files to parse and process.
+ *  @param thresholds - The schema rule thresholds (defaults to `{}`).
+ *  @returns The schema rules' findings over the assembled facts.
+ */
 export async function runSchemaSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const [usages, declarations] = await Promise.all([
     buildSchemaUsage(files),
@@ -444,6 +518,10 @@ export async function runSchemaSlice(files: readonly InputFile[], thresholds?: T
  * rules (`written-never-read`, `read-never-written`). Like the schema rules,
  * these reduce the whole corpus at once; the two detectors are pure set
  * differences over the flat usage list.
+ *
+ * @param usages - The assembled `schema-usage` fact to analyze.
+ * @param thresholds - The cross-domain rule thresholds (defaults to `{}`).
+ * @returns The cross-domain lifecycle rules' findings over the fact.
  */
 export async function analyzeCrossDomain(usages: SchemaUsageFact[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
@@ -471,6 +549,9 @@ export async function runCrossDomainSlice(files: readonly InputFile[], threshold
  * corpus fact (every entity from every file, ASTs already freed). The
  * dependency-graph rules read the *whole* corpus at once, so unlike the SOLID /
  * data-access slices there is no per-file analysis arm — the fact is the input.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `cross-language-entities` corpus fact.
  */
 export async function buildCrossLanguageEntities(files: readonly InputFile[]): Promise<Entity[]> {
   const entities: Entity[] = [];
@@ -487,7 +568,13 @@ export async function buildCrossLanguageEntities(files: readonly InputFile[]): P
   return entities;
 }
 
-/** Analyze the assembled `cross-language-entities` fact with the dependency-graph rules. */
+/**
+ * Analyze the assembled `cross-language-entities` fact with the dependency-graph rules.
+ *
+ * @param entities - The assembled `cross-language-entities` fact to analyze.
+ * @param thresholds - The dependency-graph rule thresholds (defaults to `{}`).
+ * @returns The dependency-graph rules' findings over the fact.
+ */
 export async function analyzeDependencyGraph(entities: Entity[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
     facts: { 'cross-language-entities': entities },
@@ -514,6 +601,10 @@ export async function runDependencyGraphSlice(files: readonly InputFile[], thres
  * rules. The dependency-graph and schema-validator slices share one producer;
  * they differ only in which rules reduce the fact. Like the dependency-graph
  * rules, the schema-validator rules read the *whole* corpus at once.
+ *
+ * @param entities - The assembled `cross-language-entities` fact to analyze.
+ * @param thresholds - The schema-validator rule thresholds (defaults to `{}`).
+ * @returns The schema-validator rules' findings over the fact.
  */
 export async function analyzeSchemaValidator(entities: Entity[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
   const ctx = {
@@ -541,6 +632,10 @@ export async function runSchemaValidatorSlice(files: readonly InputFile[], thres
  * corpus fact (every declaration/token/class-usage from every CSS/SCSS/TS/JS
  * file, ASTs already freed). `projectRoot` threads through to the TS/JS producer
  * so Tailwind utility expansion resolves the project's theme tokens.
+ *
+ * @param files - The input files to parse and process.
+ * @param projectRoot - The optional project root for Tailwind token resolution.
+ * @returns The assembled `style-declarations` corpus fact.
  */
 export async function buildStyleDeclarations(
   files: readonly InputFile[],
@@ -560,7 +655,13 @@ export async function buildStyleDeclarations(
   return facts;
 }
 
-/** Analyze the assembled `style-declarations` fact with the styles rules. */
+/**
+ * Analyze the assembled `style-declarations` fact with the styles rules.
+ *
+ * @param facts - The assembled `style-declarations` fact to analyze.
+ * @param thresholds - The styles rule thresholds (defaults to `{}`).
+ * @returns The styles rules' findings over the fact.
+ */
 export async function analyzeStyles(
   facts: StyleDeclarationsFile[],
   thresholds: ThresholdValues = {},
@@ -577,7 +678,14 @@ export async function analyzeStyles(
   return findings;
 }
 
-/** The styles slice: parse → style-declarations → styles rules → findings. */
+/**
+ * The styles slice: parse → style-declarations → styles rules → findings.
+ *
+ * @param files - The input files to parse and process.
+ * @param projectRoot - The optional project root for Tailwind token resolution.
+ * @param thresholds - The styles rule thresholds (defaults to `{}`).
+ * @returns The styles rules' findings over the assembled fact.
+ */
 export async function runStylesSlice(
   files: readonly InputFile[],
   projectRoot?: string,
@@ -592,6 +700,9 @@ export async function runStylesSlice(
 /**
  * Parse → Process for the `function-index` fact. Returns the assembled corpus
  * fact (every function/method/component from every file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `function-index` corpus fact.
  */
 export async function buildFunctionIndex(files: readonly InputFile[]): Promise<FunctionIndexFact[]> {
   const facts: FunctionIndexFact[] = [];
@@ -613,6 +724,9 @@ export async function buildFunctionIndex(files: readonly InputFile[]): Promise<F
  * (every exported `(name, isDefault)` pair from every file, ASTs already freed).
  * The `conventions/export-shape` rule reads it to resolve a function's export
  * form — the same AST-extracted exports the legacy reducer read as `exportsMap`.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `export-form` corpus fact.
  */
 export async function buildExportForms(files: readonly InputFile[]): Promise<ExportFormFact[]> {
   const facts: ExportFormFact[] = [];
@@ -634,6 +748,9 @@ export async function buildExportForms(files: readonly InputFile[]): Promise<Exp
  * (every import's classified form from every file). The producer reads
  * `.source` (not the AST) via `parseFileImports`, so the AST is freed without
  * being consumed by this producer — but the parse still validates the file.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `import-form` corpus fact.
  */
 export async function buildImportForms(files: readonly InputFile[]): Promise<ImportFormFact[]> {
   const facts: ImportFormFact[] = [];
@@ -653,7 +770,15 @@ export async function buildImportForms(files: readonly InputFile[]): Promise<Imp
 /** Analyze the assembled `function-index` + `mined-conventions` + `export-form` +
  *  `import-form` facts with the five function-index-servable conventions rules
  *  (three `function-index`+`mined-conventions` rules plus the `export-form`-
- *  reading export-shape rule and the `import-form`-reading import-form rule). */
+ *  reading export-shape rule and the `import-form`-reading import-form rule).
+ *
+ *  @param facts - The assembled `function-index` fact to analyze.
+ *  @param conventions - The assembled `mined-conventions` fact to analyze.
+ *  @param exportForms - The assembled `export-form` fact (`export-shape` reads it).
+ *  @param importForms - The assembled `import-form` fact (`import-form` reads it).
+ *  @param thresholds - The conventions rule thresholds (defaults to `{}`).
+ *  @returns The conventions rules' findings over the facts.
+ */
 export async function analyzeConventions(
   facts: FunctionIndexFact[],
   conventions: MinedConvention[],
@@ -679,7 +804,13 @@ export async function analyzeConventions(
   return findings;
 }
 
-/** The conventions slice: parse → function-index + export-form + import-form → mined-conventions → rules → findings. */
+/**
+ * The conventions slice: parse → function-index + export-form + import-form → mined-conventions → rules → findings.
+ *
+ * @param files - The input files to parse and process.
+ * @param thresholds - The conventions rule thresholds (defaults to `{}`).
+ * @returns The conventions rules' findings over the assembled facts.
+ */
 export async function runConventionsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const [facts, exportForms, importForms] = await Promise.all([
     buildFunctionIndex(files),
@@ -699,6 +830,9 @@ export async function runConventionsSlice(files: readonly InputFile[], threshold
 /**
  * Parse → Process for the `imports` fact. Returns the assembled corpus fact
  * (every import statement from every file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `imports` corpus fact.
  */
 export async function buildImports(files: readonly InputFile[]): Promise<ImportFact[]> {
   const facts: ImportFact[] = [];
@@ -718,6 +852,9 @@ export async function buildImports(files: readonly InputFile[]): Promise<ImportF
 /**
  * Parse → Process for the `string-literals` fact. Returns the assembled corpus
  * fact (every string/template-string literal from every file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `string-literals` corpus fact.
  */
 export async function buildStringLiterals(files: readonly InputFile[]): Promise<StringLiteralFact[]> {
   const facts: StringLiteralFact[] = [];
@@ -740,6 +877,9 @@ export async function buildStringLiterals(files: readonly InputFile[]): Promise<
  * producer projects the raw blocks/fragments with no threshold and no dedup;
  * the three block rules re-apply `minLineThreshold`/`similarityThreshold`/
  * `minShapeNames`/`excludePatterns`/check-gates over this plain data.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `code-block` corpus fact.
  */
 export async function buildCodeBlocks(files: readonly InputFile[]): Promise<CodeBlockFact[]> {
   const facts: CodeBlockFact[] = [];
@@ -764,6 +904,12 @@ export async function buildCodeBlocks(files: readonly InputFile[]): Promise<Code
  * `analyzeAST` ran once per file (a block in file A is never compared against a
  * block in file B). `diverging-clone` reads `clone-pair-history`, empty here
  * (the slice test has no index), so it emits nothing.
+ *
+ * @param imports - The assembled `imports` fact to analyze.
+ * @param stringLiterals - The assembled `string-literals` fact to analyze.
+ * @param codeBlocks - The assembled `code-block` fact to analyze.
+ * @param thresholds - The DRY rule thresholds (defaults to `{}`).
+ * @returns The DRY rules' findings over the facts.
  */
 export async function analyzeDry(
   imports: ImportFact[],
@@ -783,7 +929,13 @@ export async function analyzeDry(
   return findings;
 }
 
-/** The dry slice: parse → imports + string-literals + code-block → DRY rules → findings. */
+/**
+ * The dry slice: parse → imports + string-literals + code-block → DRY rules → findings.
+ *
+ * @param files - The input files to parse and process.
+ * @param thresholds - The DRY rule thresholds (defaults to `{}`).
+ * @returns The DRY rules' findings over the assembled facts.
+ */
 export async function runDrySlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
   const [imports, stringLiterals, codeBlocks] = await Promise.all([
     buildImports(files),
@@ -799,6 +951,10 @@ export async function runDrySlice(files: readonly InputFile[], thresholds?: Thre
  * Analyze the assembled `string-literals` fact with the hardcoded-connection
  * rule. `hardcoded-secret` reads a different fact (`secret-candidates`) and is
  * served by `analyzeSecrets` below, not this slice.
+ *
+ * @param stringLiterals - The assembled `string-literals` fact to analyze.
+ * @param thresholds - The security rule thresholds (defaults to `{}`).
+ * @returns The hardcoded-connection rule's findings over the fact.
  */
 export async function analyzeSecurity(
   stringLiterals: StringLiteralFact[],
@@ -827,6 +983,9 @@ export async function runSecuritySlice(files: readonly InputFile[], thresholds?:
 /**
  * Parse → Process for the `secret-candidates` fact. Returns the assembled corpus
  * fact (every credential-position string from every file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `secret-candidates` corpus fact.
  */
 export async function buildSecretCandidates(files: readonly InputFile[]): Promise<SecretCandidate[]> {
   const facts: SecretCandidate[] = [];
@@ -843,7 +1002,13 @@ export async function buildSecretCandidates(files: readonly InputFile[]): Promis
   return facts;
 }
 
-/** Analyze the assembled `secret-candidates` fact with the hardcoded-secret rule. */
+/**
+ * Analyze the assembled `secret-candidates` fact with the hardcoded-secret rule.
+ *
+ * @param candidates - The assembled `secret-candidates` fact to analyze.
+ * @param thresholds - The hardcoded-secret rule thresholds (defaults to `{}`).
+ * @returns The hardcoded-secret rule's findings over the fact.
+ */
 export async function analyzeSecrets(
   candidates: SecretCandidate[],
   thresholds: ThresholdValues = {},
@@ -872,6 +1037,9 @@ export async function runSecretsSlice(files: readonly InputFile[], thresholds?: 
  * Parse → Process for the `security-candidates` fact. Returns the assembled
  * corpus fact (every command-injection/dynamic-require/unescaped-html candidate
  * from every file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `security-candidates` corpus fact.
  */
 export async function buildSecurityCandidates(files: readonly InputFile[]): Promise<SecurityCandidate[]> {
   const facts: SecurityCandidate[] = [];
@@ -888,7 +1056,13 @@ export async function buildSecurityCandidates(files: readonly InputFile[]): Prom
   return facts;
 }
 
-/** Analyze the assembled `security-candidates` fact with the three defect rules. */
+/**
+ * Analyze the assembled `security-candidates` fact with the three defect rules.
+ *
+ * @param candidates - The assembled `security-candidates` fact to analyze.
+ * @param thresholds - The security-defect rule thresholds (defaults to `{}`).
+ * @returns The three defect rules' findings over the fact.
+ */
 export async function analyzeSecurityDefects(
   candidates: SecurityCandidate[],
   thresholds: ThresholdValues = {},
@@ -919,6 +1093,9 @@ export async function runSecurityDefectsSlice(files: readonly InputFile[], thres
  * is `adapter.extractFunctions`' full set — wider than `function-index` — so the
  * `too-many-queries` rule sees the same universe the legacy schema-code visitor
  * walked.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `function-bodies` corpus fact.
  */
 export async function buildFunctionBodies(files: readonly InputFile[]): Promise<FunctionBodyFact[]> {
   const facts: FunctionBodyFact[] = [];
@@ -935,7 +1112,13 @@ export async function buildFunctionBodies(files: readonly InputFile[]): Promise<
   return facts;
 }
 
-/** Analyze the assembled `function-bodies` fact with the too-many-queries rule. */
+/**
+ * Analyze the assembled `function-bodies` fact with the too-many-queries rule.
+ *
+ * @param facts - The assembled `function-bodies` fact to analyze.
+ * @param thresholds - The too-many-queries rule thresholds (defaults to `{}`).
+ * @returns The too-many-queries rule's findings over the fact.
+ */
 export async function analyzeFunctionBodies(
   facts: FunctionBodyFact[],
   thresholds: ThresholdValues = {},
@@ -964,6 +1147,9 @@ export async function runFunctionBodiesSlice(files: readonly InputFile[], thresh
  * Parse → Process for the `react-component` fact. Returns the assembled corpus
  * fact (one scan per file, each a full component universe: metadata, imports,
  * JSX elements, hooks, props, complexity), ASTs already freed.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `react-component` corpus fact.
  */
 export async function buildReactComponents(files: readonly InputFile[]): Promise<ReactComponentScan[]> {
   const facts: ReactComponentScan[] = [];
@@ -980,7 +1166,13 @@ export async function buildReactComponents(files: readonly InputFile[]): Promise
   return facts;
 }
 
-/** Analyze the assembled `react-component` fact with the seven react rules. */
+/**
+ * Analyze the assembled `react-component` fact with the seven react rules.
+ *
+ * @param facts - The assembled `react-component` fact to analyze.
+ * @param thresholds - The react rule thresholds (defaults to `{}`).
+ * @returns The react rules' findings over the fact.
+ */
 export async function analyzeReactComponents(
   facts: ReactComponentScan[],
   thresholds: ThresholdValues = {},
@@ -1008,6 +1200,9 @@ export async function runReactComponentsSlice(files: readonly InputFile[], thres
 /**
  * Parse → Process for the `file-header` fact. Returns the assembled corpus
  * fact (one leading comment projection per file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `file-header` corpus fact.
  */
 export async function buildFileHeaders(files: readonly InputFile[]): Promise<FileHeaderFact[]> {
   const facts: FileHeaderFact[] = [];
@@ -1024,7 +1219,13 @@ export async function buildFileHeaders(files: readonly InputFile[]): Promise<Fil
   return facts;
 }
 
-/** Analyze the assembled `file-header` fact with the file-documentation rule. */
+/**
+ * Analyze the assembled `file-header` fact with the file-documentation rule.
+ *
+ * @param facts - The assembled `file-header` fact to analyze.
+ * @param thresholds - The file-documentation rule thresholds (defaults to `{}`).
+ * @returns The file-documentation rule's findings over the fact.
+ */
 export async function analyzeFileHeaders(
   facts: FileHeaderFact[],
   thresholds: ThresholdValues = {},
@@ -1054,6 +1255,9 @@ export async function runFileHeadersSlice(files: readonly InputFile[], threshold
  * fact (one parsed JSON document per `.json` file, ASTs already freed). The
  * producer reads `.source` (the JsonAdapter has no code constructs), so the
  * parse still validates the file but the fact is the `JSON.parse` value.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The assembled `json-document` corpus fact.
  */
 export async function buildJsonDocuments(files: readonly InputFile[]): Promise<JsonDocumentFact[]> {
   const facts: JsonDocumentFact[] = [];
@@ -1070,7 +1274,13 @@ export async function buildJsonDocuments(files: readonly InputFile[]): Promise<J
   return facts;
 }
 
-/** Analyze the assembled `schema-validations` fact with the 17 schema-json rules. */
+/**
+ * Analyze the assembled `schema-validations` fact with the 17 schema-json rules.
+ *
+ * @param validations - The assembled `schema-validations` fact to analyze.
+ * @param thresholds - The schema-json rule thresholds (defaults to `{}`).
+ * @returns The 17 schema-json rules' findings over the fact.
+ */
 export async function analyzeSchemaJson(
   validations: SchemaValidationFact[],
   thresholds: ThresholdValues = {},

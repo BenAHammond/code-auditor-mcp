@@ -30,7 +30,12 @@ import { passesFileGate } from '../analyzers/universal/schema/discovery.js';
 import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 import { buildProvenanceContext } from '../analyzers/provenance.js';
 
-/** Extract the per-file table usages from one parsed file. */
+/**
+ * Extract the per-file table usages from one parsed file.
+ *
+ * @param file - The parsed file whose table references are projected.
+ * @returns One `SchemaUsageFact` per table reference found in the file.
+ */
 export function extractSchemaUsage(file: AstFile): SchemaUsageFact[] {
   // Build the provenance context exactly as `UniversalSchemaAnalyzer.analyzeAST`
   // does (hybrid detection), so the DB-call extraction sees the same `db.query` /

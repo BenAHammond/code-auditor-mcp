@@ -9,26 +9,60 @@ import { loadConfig } from './config/configLoader.js';
 import path from 'path';
 
 // Custom error types
+
+/**
+ * Base error type for code-index failures, carrying a stable machine-readable code.
+ */
 export class CodeIndexError extends Error {
+  /**
+   * Creates a code index error.
+   *
+   * @param message - The human-readable error message.
+   * @param code - The stable machine-readable error code.
+   */
   constructor(message: string, public code: string) {
     super(message);
     this.name = 'CodeIndexError';
   }
 }
 
+/**
+ * Raised when function metadata fails validation.
+ */
 export class ValidationError extends CodeIndexError {
+  /**
+   * Creates a validation error with the `VALIDATION_ERROR` code.
+   *
+   * @param message - The human-readable validation failure message.
+   */
   constructor(message: string) {
     super(message, 'VALIDATION_ERROR');
   }
 }
 
+/**
+ * Raised when a database operation on the code index fails.
+ */
 export class DatabaseError extends CodeIndexError {
+  /**
+   * Creates a database error with the `DATABASE_ERROR` code.
+   *
+   * @param message - The human-readable database failure message.
+   */
   constructor(message: string) {
     super(message, 'DATABASE_ERROR');
   }
 }
 
+/**
+ * Raised when a search over the code index fails.
+ */
 export class SearchError extends CodeIndexError {
+  /**
+   * Creates a search error with the `SEARCH_ERROR` code.
+   *
+   * @param message - The human-readable search failure message.
+   */
   constructor(message: string) {
     super(message, 'SEARCH_ERROR');
   }
@@ -38,6 +72,9 @@ export class SearchError extends CodeIndexError {
  * Initialize database with schema.
  * Default (no path): same on-disk singleton as CodeIndexDB.getInstance() / MCP.
  * Explicit file path: separate DB instance (tests or advanced use).
+ *
+ * @param dbPath - Optional explicit database file path, or `:memory:`.
+ * @returns The initialized `CodeIndexDB` instance.
  */
 export async function initializeCodeIndex(dbPath?: string): Promise<CodeIndexDB> {
   try {
@@ -63,7 +100,10 @@ export async function getDatabase(): Promise<CodeIndexDB> {
 }
 
 /**
- * Validate function metadata
+ * Validate function metadata.
+ *
+ * @param func - The function metadata to validate.
+ * @returns An error message, or null when the metadata is valid.
  */
 export function validateFunctionMetadata(func: any): string | null {
   if (!func || typeof func !== 'object') {
@@ -102,7 +142,11 @@ export function validateFunctionMetadata(func: any): string | null {
 }
 
 /**
- * Register functions in the index
+ * Register functions in the index.
+ *
+ * @param functions - The function metadata records to register.
+ * @param options - Optional overwrite behavior.
+ * @returns The registration result including any validation errors.
  */
 export async function registerFunctions(
   functions: FunctionMetadata[],
@@ -139,7 +183,10 @@ export async function registerFunctions(
 }
 
 /**
- * Search functions with full-text search
+ * Search functions with full-text search.
+ *
+ * @param searchOptions - The query, filters, and pagination for the search.
+ * @returns The matching functions and metadata.
  */
 export async function searchFunctions(searchOptions: SearchOptions): Promise<SearchResult> {
   const db = await getDatabase();
@@ -152,7 +199,11 @@ export async function searchFunctions(searchOptions: SearchOptions): Promise<Sea
 }
 
 /**
- * Synchronize file index - ensures index matches current file state
+ * Synchronize file index - ensures index matches current file state.
+ *
+ * @param filePath - The file whose index entry is being synced.
+ * @param currentFunctions - The functions currently present in the file.
+ * @returns Counts of added, updated, and removed functions.
  */
 export async function syncFileIndex(
   filePath: string,
@@ -168,7 +219,11 @@ export async function syncFileIndex(
 }
 
 /**
- * Find a specific function definition
+ * Find a specific function definition.
+ *
+ * @param name - The function name to look up.
+ * @param filePath - Optional file path to disambiguate the lookup.
+ * @returns The matching function metadata, or null if not found.
  */
 export async function findDefinition(
   name: string,
@@ -184,7 +239,9 @@ export async function findDefinition(
 }
 
 /**
- * Get index statistics
+ * Get index statistics.
+ *
+ * @returns The current index statistics.
  */
 export async function getIndexStats(): Promise<IndexStats> {
   const db = await getDatabase();
@@ -206,6 +263,8 @@ export async function getIndexStats(): Promise<IndexStats> {
 /**
  * Clear analysis-derived index data (functions, search, audits, code maps, schemas).
  * Does not remove project tasks, analyzer configs, or whitelist entries.
+ *
+ * @returns A promise that resolves once the index is cleared.
  */
 export async function clearIndex(): Promise<void> {
   const db = await getDatabase();
@@ -225,7 +284,10 @@ export async function closeDatabase(): Promise<void> {
 }
 
 /**
- * Update dependency graph for all functions or specific file
+ * Update dependency graph for all functions or a specific file.
+ *
+ * @param filePath - Optional file path to restrict the update to.
+ * @returns A promise that resolves once the graph is updated.
  */
 export async function updateDependencyGraph(filePath?: string): Promise<void> {
   const db = await getDatabase();
@@ -238,7 +300,11 @@ export async function updateDependencyGraph(filePath?: string): Promise<void> {
 }
 
 /**
- * Get transitive dependencies for a function
+ * Get transitive dependencies for a function.
+ *
+ * @param functionName - The function to resolve dependencies for.
+ * @param maxDepth - Maximum traversal depth (default 10).
+ * @returns The transitive dependencies with their depths.
  */
 export async function getTransitiveDependencies(
   functionName: string,
@@ -254,7 +320,11 @@ export async function getTransitiveDependencies(
 }
 
 /**
- * Get transitive callers for a function
+ * Get transitive callers for a function.
+ *
+ * @param functionName - The function to resolve callers for.
+ * @param maxDepth - Maximum traversal depth (default 10).
+ * @returns The transitive callers with their depths.
  */
 export async function getTransitiveCallers(
   functionName: string,
@@ -270,7 +340,9 @@ export async function getTransitiveCallers(
 }
 
 /**
- * Detect circular dependencies in the codebase
+ * Detect circular dependencies in the codebase.
+ *
+ * @returns The detected dependency cycles.
  */
 export async function detectCircularDependencies(): Promise<Array<string[]>> {
   const db = await getDatabase();
@@ -283,7 +355,9 @@ export async function detectCircularDependencies(): Promise<Array<string[]>> {
 }
 
 /**
- * Calculate dependency depths for all functions
+ * Calculate dependency depths for all functions.
+ *
+ * @returns A promise that resolves once depths are calculated.
  */
 export async function calculateDependencyDepths(): Promise<void> {
   const db = await getDatabase();
@@ -296,7 +370,9 @@ export async function calculateDependencyDepths(): Promise<void> {
 }
 
 /**
- * Get all functions from the index
+ * Get all functions from the index.
+ *
+ * @returns All indexed functions with their metadata.
  */
 export async function getAllFunctions(): Promise<EnhancedFunctionMetadata[]> {
   const db = await getDatabase();

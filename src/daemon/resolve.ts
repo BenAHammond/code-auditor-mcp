@@ -46,7 +46,11 @@ function resolveDaemonEntrypoint(): string {
   return path.join(dir, filename);
 }
 
-/** Probe the socket, then ask for status. Never throws; degrades to `absent`. */
+/**
+ * Probe the socket, then ask for status. Never throws; degrades to `absent`.
+ * @param projectRoot - The project root to resolve a daemon for.
+ * @returns The resolution mode and socket path (plus state when reachable).
+ */
 export async function resolveDaemon(projectRoot: string): Promise<ResolvedDaemon> {
   const socketPath = resolveDaemonSocketPath(projectRoot);
   const listening = await isDaemonListening(socketPath);
@@ -59,14 +63,23 @@ export async function resolveDaemon(projectRoot: string): Promise<ResolvedDaemon
   return { mode: 'not-ready', state, socketPath };
 }
 
-/** Read the daemon's full-corpus findings, or `null` if it cannot be reached. */
+/**
+ * Read the daemon's full-corpus findings, or `null` if it cannot be reached.
+ * @param socketPath - The daemon socket to query.
+ * @returns The findings result, or null when the daemon is unreachable.
+ */
 export async function readDaemonFindings(socketPath: string): Promise<DaemonFindingsResult | null> {
   const resp = await sendSocketRequest(socketPath, { id: 2, method: 'findings', params: {} });
   if (!resp || !resp.ok) return null;
   return resp.result as DaemonFindingsResult;
 }
 
-/** Read per-file diagnostics for a specific file set, or `null` if unreachable. */
+/**
+ * Read per-file diagnostics for a specific file set, or `null` if unreachable.
+ * @param socketPath - The daemon socket to query.
+ * @param files - The files to request diagnostics for.
+ * @returns The diagnostics result, or null when the daemon is unreachable.
+ */
 export async function readDaemonDiagnostics(
   socketPath: string,
   files: string[],
@@ -88,6 +101,8 @@ export async function requestDaemonShutdown(socketPath: string): Promise<boolean
  * daemon talks to the ledger, never back to the parent. `spawn` + `unref` (no
  * IPC channel) mirrors the Spec 41 `--detach` pattern — the child survives the
  * parent, not the other way around.
+ * @param projectRoot - The project root to serve.
+ * @param configName - Optional config name to pass to the daemon.
  */
 export function startDaemonDetached(projectRoot: string, configName?: string): void {
   const args = [resolveDaemonEntrypoint(), path.resolve(projectRoot)];

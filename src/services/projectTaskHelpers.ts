@@ -28,6 +28,13 @@ export const PROJECT_TASK_SOURCES: readonly ProjectTaskSource[] = [
 
 const PRIORITIES: readonly ProjectTaskPriority[] = ['low', 'medium', 'high'];
 
+/**
+ * Coerce an unknown value to a known task status, or return the fallback.
+ *
+ * @param value - The value to normalize.
+ * @param fallback - The status to return when the value is unrecognized.
+ * @returns The normalized task status.
+ */
 export function normalizeTaskStatus(
   value: unknown,
   fallback: ProjectTaskStatus
@@ -41,6 +48,13 @@ export function normalizeTaskStatus(
   return fallback;
 }
 
+/**
+ * Coerce an unknown value to a known task source, or return the fallback.
+ *
+ * @param value - The value to normalize.
+ * @param fallback - The source to return when the value is unrecognized.
+ * @returns The normalized task source.
+ */
 export function normalizeTaskSource(
   value: unknown,
   fallback: ProjectTaskSource
@@ -54,6 +68,12 @@ export function normalizeTaskSource(
   return fallback;
 }
 
+/**
+ * Coerce an unknown value to a known task priority.
+ *
+ * @param value - The value to normalize.
+ * @returns The normalized priority, or undefined when unrecognized.
+ */
 export function normalizeTaskPriority(
   value: unknown
 ): ProjectTaskPriority | undefined {
@@ -66,6 +86,12 @@ export function normalizeTaskPriority(
   return undefined;
 }
 
+/**
+ * Normalize an unknown value into a string array, dropping non-strings.
+ *
+ * @param value - The value to normalize.
+ * @returns The string elements of the value (empty array when not an array).
+ */
 export function normalizeStringList(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -73,6 +99,12 @@ export function normalizeStringList(value: unknown): string[] {
   return value.filter((x): x is string => typeof x === 'string');
 }
 
+/**
+ * Coerce an unknown value to a finite sort order number.
+ *
+ * @param value - The value to normalize.
+ * @returns The sort order, or 0 when not a finite number.
+ */
 export function coerceSortOrder(value: unknown): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -86,6 +118,9 @@ export function storedSortOrder(doc: ProjectTaskDocument): number {
 
 /**
  * API shape for stored rows (legacy docs may omit structured fields).
+ *
+ * @param doc - The stored project task document to serialize.
+ * @returns The public project task shape.
  */
 export function serializeProjectTask(doc: ProjectTaskDocument): ProjectTask {
   const { $loki, meta, ...rest } = doc;
@@ -117,6 +152,9 @@ const UPDATE_PATCH_KEYS: (keyof UpdateProjectTaskPatch)[] = [
 
 /**
  * Builds a typed patch from MCP/JSON input — ignores unknown keys (no arbitrary spread onto DB).
+ *
+ * @param raw - The raw update input to sanitize.
+ * @returns A typed patch containing only recognized, validated fields.
  */
 export function sanitizeUpdatePatch(raw: unknown): UpdateProjectTaskPatch {
   if (raw === null || raw === undefined || typeof raw !== 'object') {
@@ -218,6 +256,13 @@ export function sanitizeUpdatePatch(raw: unknown): UpdateProjectTaskPatch {
   return out;
 }
 
+/**
+ * Apply a sanitized patch onto a stored task document, updating its timestamp.
+ *
+ * @param doc - The stored task document to mutate.
+ * @param patch - The sanitized patch fields to apply.
+ * @param nowIso - The ISO timestamp to stamp as the updated time.
+ */
 export function applyProjectTaskPatch(
   doc: ProjectTaskDocument,
   patch: UpdateProjectTaskPatch,

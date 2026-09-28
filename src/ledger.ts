@@ -209,6 +209,17 @@ function getToolGitSha(): string | null {
 
 // ── Writing ───────────────────────────────────────────────────────────────
 
+/**
+ * Write an audit run and its findings to the ledger.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param runInput - The run's input metadata (git, command, surface, scope, target).
+ * @param violations - The violations found during the run.
+ * @param durationMs - The run duration in milliseconds.
+ * @param exitStatus - The process exit status for the run.
+ * @param opts - Optional run ID (attach) and rule coverage data.
+ * @returns The run ID that was written.
+ */
 export function writeAuditToLedger(
   db: SqliteDatabase,
   runInput: LedgerRunInput,
@@ -300,6 +311,11 @@ export function writeAuditToLedger(
 /**
  * Create a detached-run row in `queued` (or another initial) status without
  * findings. Returns the run id, which is the job id for `--detach`/MCP.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param runInput - The run's input metadata.
+ * @param opts - Optional initial status and project root.
+ * @returns The new run ID.
  */
 export function createLedgerRun(
   db: SqliteDatabase,
@@ -332,7 +348,13 @@ export function createLedgerRun(
   return runId;
 }
 
-/** Patch mutable lifecycle columns on a run row. */
+/**
+ * Patch mutable lifecycle columns on a run row.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param runId - The run ID to patch.
+ * @param patch - The lifecycle columns to update.
+ */
 export function patchLedgerRun(
   db: SqliteDatabase,
   runId: string,
@@ -381,7 +403,13 @@ export function patchLedgerRun(
   db.prepare(`UPDATE findings_ledger_runs SET ${sets.join(', ')} WHERE run_id = ?`).run(...values);
 }
 
-/** Update the exit status of a ledger run — called by CLI/MCP after determining it. */
+/**
+ * Update the exit status of a ledger run — called by CLI/MCP after determining it.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param runId - The run ID to update.
+ * @param exitStatus - The exit status to record.
+ */
 export function updateLedgerRunStatus(
   db: SqliteDatabase,
   runId: string,
@@ -451,6 +479,13 @@ export function getLedgerRun(db: SqliteDatabase, runId: string): LedgerRunDetail
   return row ? mapRunRow(row) : null;
 }
 
+/**
+ * List ledger runs, optionally filtered to a project root.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param projectRoot - Optional project root to filter runs by.
+ * @returns The matching runs in reverse chronological order.
+ */
 export function listLedgerRuns(db: SqliteDatabase, projectRoot?: string): LedgerRunDetail[] {
   const params: any[] = [];
   let where = '';
@@ -465,6 +500,14 @@ export function listLedgerRuns(db: SqliteDatabase, projectRoot?: string): Ledger
   return rows.map(mapRunRow);
 }
 
+/**
+ * Query the findings recorded for a ledger run.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param runId - The run whose findings to query.
+ * @param q - Optional filters, grouping, and pagination.
+ * @returns Either the matching findings or grouped counts.
+ */
 export function queryLedgerFindings(
   db: SqliteDatabase,
   runId: string,
@@ -526,6 +569,14 @@ export function queryLedgerFindings(
   }));
 }
 
+/**
+ * Query the rule coverage recorded for a ledger run.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param runId - The run whose coverage to query.
+ * @param q - Optional rule, analyzer, and state filters.
+ * @returns The matching coverage rows.
+ */
 export function queryLedgerCoverage(
   db: SqliteDatabase,
   runId: string,
@@ -562,6 +613,13 @@ export function queryLedgerCoverage(
 
 // ── Spec 41 — Provenance & staleness ───────────────────────────────────────
 
+/**
+ * Hash a set of files into an aggregate content hash and manifest.
+ *
+ * @param files - The file paths to hash.
+ * @param projectRoot - Optional root used to relativize paths.
+ * @returns The aggregate hash, file count, manifest, and newest mtime.
+ */
 export function hashFileSet(files: string[], projectRoot?: string): FileSetHash {
   const hashes: Array<[string, string]> = [];
   let newestMtime: number | null = null;
@@ -598,6 +656,12 @@ export function hashFileSet(files: string[], projectRoot?: string): FileSetHash 
  * Compare a run's recorded content against the working tree. Cheap-first: a
  * stat-only pass (count + newest mtime) gates the full content re-hash; only
  * when those diverge (or `full` is requested) are file contents re-read.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param runId - The run whose recorded content is compared.
+ * @param projectRoot - The project root to compare against.
+ * @param opts - Optional `full` flag to force a full re-hash.
+ * @returns The staleness result with changed files and hashes.
  */
 export function computeStaleness(
   db: SqliteDatabase,
@@ -777,6 +841,11 @@ export interface RunningLeaseEvaluation {
  * runner is busy: a queued job reads the pool and sleeps rather than grabbing
  * `BEGIN IMMEDIATE` every cycle, so it never contends with the running job's
  * write transactions. The actual reclaim/claim write happens later, under lock.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param projectRoot - The project root whose running leases are evaluated.
+ * @param ttlMs - The heartbeat staleness threshold in milliseconds.
+ * @returns The running count, cutoff, and reclaimable candidates.
  */
 export function evaluateStaleRunning(
   db: SqliteDatabase,
@@ -830,6 +899,11 @@ export function evaluateStaleRunning(
  * caller's transaction, so a heartbeat refreshed between evaluation and this
  * write is not wrongly reclaimed. Does not open its own transaction — callers
  * wrap it in one (or rely on it being a single implicit transaction otherwise).
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param reclaimable - The reclaim candidates to mark failed.
+ * @param cutoff - The stale cutoff timestamp used to re-check each row.
+ * @returns The number of runs marked failed.
  */
 export function markRunsFailed(
   db: SqliteDatabase,
@@ -876,6 +950,11 @@ export function reclaimStaleRunning(db: SqliteDatabase, projectRoot: string, ttl
  * Delete all but the newest `keepN` runs for a project root. Findings and
  * coverage cascade via `ON DELETE CASCADE` (foreign_keys is ON). Returns the
  * number of runs pruned.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param projectRoot - The project root whose runs are pruned.
+ * @param keepN - The number of newest runs to keep.
+ * @returns The number of runs pruned.
  */
 export function pruneLedgerRuns(db: SqliteDatabase, projectRoot: string, keepN: number): number {
   const rows = db.prepare(`
@@ -889,6 +968,16 @@ export function pruneLedgerRuns(db: SqliteDatabase, projectRoot: string, keepN: 
 
 // ── Auto-detect git info ──────────────────────────────────────────────────
 
+/**
+ * Build ledger run input by auto-detecting git info for a target.
+ *
+ * @param command - The invoking command name.
+ * @param surface - The invoking surface (cli, mcp, library, hook, daemon).
+ * @param scope - The audit scope.
+ * @param target - The audited project path.
+ * @param toolVersion - The code-auditor package version.
+ * @returns The assembled run input.
+ */
 export function detectRunInput(
   command: string,
   surface: LedgerRunInput['surface'],
@@ -911,6 +1000,12 @@ export function detectRunInput(
 
 // ── Reading ───────────────────────────────────────────────────────────────
 
+/**
+ * List ledger runs as summaries with finding counts.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @returns Run summaries in reverse chronological order.
+ */
 export function listRuns(db: SqliteDatabase): LedgerRunSummary[] {
   const rows = db.prepare(`
     SELECT
@@ -944,6 +1039,13 @@ export function listRuns(db: SqliteDatabase): LedgerRunSummary[] {
   }));
 }
 
+/**
+ * Export ledger runs and their findings, optionally from a timestamp.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param since - Optional ISO timestamp lower bound.
+ * @returns The exported runs and findings.
+ */
 export function exportLedger(
   db: SqliteDatabase,
   since?: string,
@@ -1040,6 +1142,7 @@ export interface TrendReport {
  *
  * @param db        The better-sqlite3 database handle.
  * @param sinceRunId  Only consider runs after this run ID.
+ * @returns The trend report, or null when fewer than 2 comparable runs exist.
  */
 export function getTrends(db: SqliteDatabase, sinceRunId?: string): TrendReport | null {
   // 1. Fetch full-scope runs, optionally filtered by sinceRunId
@@ -1173,6 +1276,12 @@ export function getTrends(db: SqliteDatabase, sinceRunId?: string): TrendReport 
   };
 }
 
+/**
+ * Aggregate per-analyzer and per-rule finding statistics across the ledger.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @returns The aggregated ledger statistics.
+ */
 export function getLedgerStats(db: SqliteDatabase): LedgerStats {
   const totalRuns = (db.prepare('SELECT COUNT(*) AS cnt FROM findings_ledger_runs').get() as any).cnt;
 
@@ -1223,6 +1332,13 @@ export interface D1InterimRun {
   }>;
 }
 
+/**
+ * Import legacy D1 interim JSON run files from a directory into the ledger.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param dirPath - The directory containing the JSON run files.
+ * @returns Counts of imported and skipped runs.
+ */
 export function importLedgerFromDir(db: SqliteDatabase, dirPath: string): { imported: number; skipped: number } {
   if (!existsSync(dirPath)) {
     throw new Error(`Directory not found: ${dirPath}`);

@@ -31,6 +31,8 @@ export function getActiveBackend(): SqliteBackend | undefined {
  * otherwise the last backend an {@link openSqlite} selected, otherwise a
  * capability probe (which builtin is actually loadable on this Node). "none"
  * when neither backend can load.
+ *
+ * @returns The active (or likely) backend name, or "none".
  */
 export function describeSqliteBackend(): string {
   const override = process.env.CODE_AUDITOR_SQLITE_BACKEND;
@@ -59,6 +61,17 @@ function loudFailure(tried: SqliteBackend[], errors: string[]): Error {
   );
 }
 
+/**
+ * Open a SQLite database using the best available backend.
+ *
+ * Prefers the Node built-in `node:sqlite` when it can open a database, and
+ * falls back to `better-sqlite3`. An explicit `CODE_AUDITOR_SQLITE_BACKEND`
+ * override forces one backend, and an invalid value is an error.
+ *
+ * @param dbPath The database file path.
+ * @param opts Open options passed to the selected backend.
+ * @returns An open database, or throws when no backend is usable.
+ */
 export function openSqlite(dbPath: string, opts: OpenSqliteOptions): SqliteDatabase {
   const override = process.env.CODE_AUDITOR_SQLITE_BACKEND;
   if (override !== undefined && override !== 'node-sqlite' && override !== 'better-sqlite3') {

@@ -23,6 +23,11 @@ import { extractHooks } from './reactDetection.js';
 
 /**
  * Detects and categorizes responsibilities within a React component
+ *
+ * @param component - The component AST node to analyze.
+ * @param metadata - Optional precomputed component metadata.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The detected component responsibilities.
  */
 export function detectComponentResponsibilities(
   component: ASTNode,
@@ -67,6 +72,10 @@ export function detectComponentResponsibilities(
 
 /**
  * Identifies data fetching patterns in code
+ *
+ * @param node - The AST node to scan for data-fetching patterns.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns True when data-fetching patterns are present.
  */
 export function containsDataFetching(node: ASTNode, sourceCode: string): boolean {
   let hasDataFetching = false;
@@ -98,6 +107,10 @@ export function containsDataFetching(node: ASTNode, sourceCode: string): boolean
 
 /**
  * Identifies form handling patterns
+ *
+ * @param node - The AST node to scan for form-handling patterns.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns True when form-handling patterns are present.
  */
 export function containsFormHandling(node: ASTNode, sourceCode: string): boolean {
   let hasFormHandling = false;
@@ -131,6 +144,10 @@ export function containsFormHandling(node: ASTNode, sourceCode: string): boolean
 
 /**
  * Identifies business logic patterns
+ *
+ * @param node - The AST node to scan for business-logic patterns.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns True when business-logic patterns are present.
  */
 export function containsBusinessLogic(node: ASTNode, sourceCode: string): boolean {
   let hasBusinessLogic = false;
@@ -182,6 +199,10 @@ export function containsBusinessLogic(node: ASTNode, sourceCode: string): boolea
 
 /**
  * Helper to determine if responsibilities are related
+ *
+ * @param resp1 - The first responsibility type.
+ * @param resp2 - The second responsibility type.
+ * @returns True when the two responsibilities are considered related.
  */
 export function areResponsibilitiesRelated(
   resp1: ResponsibilityType,
@@ -216,6 +237,11 @@ export function areResponsibilitiesRelated(
 
 /**
  * Analyzes hook usage to identify responsibilities
+ *
+ * @param component - The component AST node to analyze.
+ * @param metadata - Optional precomputed component metadata.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns Responsibilities derived from hook usage.
  */
 export function analyzeHookUsage(
   component: ASTNode,
@@ -307,6 +333,10 @@ export function analyzeHookUsage(
 
 /**
  * Analyzes useEffect hooks for side effects and data fetching
+ *
+ * @param component - The component AST node to analyze.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns Responsibilities derived from effect hooks.
  */
 export function analyzeEffects(
   component: ASTNode,
@@ -373,6 +403,10 @@ export function analyzeEffects(
 
 /**
  * Analyzes event handlers in a component
+ *
+ * @param component - The component AST node to analyze.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns Responsibilities derived from event handlers.
  */
 export function analyzeEventHandlers(
   component: ASTNode,
@@ -485,6 +519,10 @@ function calculateHandlerComplexity(node: ASTNode, sourceCode: string): number {
 
 /**
  * Analyzes rendering logic and JSX complexity
+ *
+ * @param component - The component AST node to analyze.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns Responsibilities derived from rendering logic.
  */
 export function analyzeRenderingLogic(
   component: ASTNode,

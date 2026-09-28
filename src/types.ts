@@ -788,6 +788,11 @@ export interface AuditResult {
 /** Thrown when an in-process audit is stopped via AbortSignal (parent cancel or soft budget). */
 export class AuditAbortedError extends Error {
   override readonly name = 'AuditAbortedError';
+  /**
+   * Create an audit-aborted error.
+   *
+   * @param message - Error message (defaults to `Audit aborted`).
+   */
   constructor(message = 'Audit aborted') {
     super(message);
   }

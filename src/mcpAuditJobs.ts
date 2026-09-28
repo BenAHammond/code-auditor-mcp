@@ -145,7 +145,10 @@ async function acquireLease(db: SqliteDatabase, projectRoot: string, jobId: stri
   }
 }
 
-/** Entrypoint for the detached CLI runner (Spec 41 `--detach`). */
+/**
+ * Entrypoint for the detached CLI runner (Spec 41 `--detach`).
+ * @returns The path to the detached runner entrypoint.
+ */
 export function resolveJobRunnerEntrypoint(): string {
   const current = fileURLToPath(import.meta.url);
   const ext = path.extname(current);
@@ -216,6 +219,12 @@ function summarizeAnalyzerResults(analyzerResults: Record<string, AnalyzerResult
   };
 }
 
+/**
+ * Queue an audit job and return its id immediately; the audit runs in the background.
+ * @param args - The tool arguments (path, scope, severities, etc.).
+ * @param defaults - Default severity and code-map flags.
+ * @returns The queued job id, status, and path.
+ */
 export async function startAuditJob(args: any, defaults: StartAuditDefaults): Promise<{
   jobId: string;
   status: 'queued';
@@ -251,6 +260,13 @@ export async function startAuditJob(args: any, defaults: StartAuditDefaults): Pr
   };
 }
 
+/**
+ * Run a queued audit job end-to-end: lease, audit, index, code map, and persist.
+ * @param jobId - The job id to run under.
+ * @param args - The tool arguments for the audit.
+ * @param defaults - Default severity and code-map flags.
+ * @returns A promise that resolves once the job completes or fails.
+ */
 export async function runAuditJob(jobId: string, args: any, defaults: StartAuditDefaults): Promise<void> {
   let jobTimer: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -492,6 +508,11 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
   }
 }
 
+/**
+ * Read the current status of an audit job.
+ * @param jobId - The job id to look up.
+ * @returns The job status record.
+ */
 export async function getAuditJobStatus(jobId: string): Promise<Record<string, unknown>> {
   // Resolve the same DB the writer opened: startAuditJob/runAuditJob set the
   // singleton to the project-scoped DB, so read from the current singleton's
@@ -520,6 +541,8 @@ export async function getAuditJobStatus(jobId: string): Promise<Record<string, u
 
 /**
  * Returns audit results as a SARIF 2.1.0 JSON string (Spec 06 R1.1 — MCP surface).
+ * @param args - The tool arguments carrying the resultId/auditId to fetch.
+ * @returns The SARIF report as a JSON string.
  */
 export async function getAuditResultsAsSarif(args: any): Promise<string> {
   const resultId = (args.resultId as string) || (args.auditId as string);
@@ -573,6 +596,11 @@ export async function getAuditResultsAsSarif(args: any): Promise<string> {
   });
 }
 
+/**
+ * Return one page of audit results with a pagination summary.
+ * @param args - The tool arguments (resultId, limit, offset).
+ * @returns The paginated violations and summary.
+ */
 export async function getAuditResultsPage(args: any): Promise<Record<string, unknown>> {
   const resultId = (args.resultId as string) || (args.auditId as string);
   if (!resultId) {

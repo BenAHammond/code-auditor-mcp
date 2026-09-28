@@ -59,7 +59,12 @@ export interface TelemetryPayload {
 
 // ── Language hint ────────────────────────────────────────────────────────────
 
-/** Coarse language/framework hint from a file path — never a path, just a class. */
+/**
+ * Coarse language/framework hint from a file path — never a path, just a class.
+ *
+ * @param filePath - The file path whose extension determines the hint.
+ * @returns A coarse language/framework class (e.g. `typescript`, `react`, `go`).
+ */
 export function languageHint(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
@@ -90,7 +95,12 @@ export interface TelemetryPayloadInput {
   lang: string;
 }
 
-/** Assemble the payload. Timestamp is stamped at build time. */
+/**
+ * Assemble the payload. Timestamp is stamped at build time.
+ *
+ * @param input - The payload fields (install ID, rule, level, reason, signature, lang).
+ * @returns The complete telemetry payload with a fresh timestamp.
+ */
 export function buildTelemetryPayload(input: TelemetryPayloadInput): TelemetryPayload {
   return {
     schema: TELEMETRY_SCHEMA_VERSION,
@@ -105,7 +115,12 @@ export function buildTelemetryPayload(input: TelemetryPayloadInput): TelemetryPa
   };
 }
 
-/** Human-readable preview, printed before any send so the user can review it. */
+/**
+ * Human-readable preview, printed before any send so the user can review it.
+ *
+ * @param payload - The payload to render.
+ * @returns A multi-line, human-readable preview string.
+ */
 export function formatTelemetryPreview(payload: TelemetryPayload): string {
   return [
     '',
@@ -135,6 +150,9 @@ export interface TelemetryConfig {
  * Resolve opt-in from the user-level config (see `installConfig.ts`): OFF unless
  * the user explicitly enabled it via the `telemetry` MCP tool. `opts.endpoint` is
  * a caller override (e.g. the local-dev `--telemetry-endpoint` flag).
+ *
+ * @param opts - Optional endpoint override and config directory.
+ * @returns The resolved telemetry opt-in configuration.
  */
 export function resolveTelemetryConfig(
   opts: { endpoint?: string; dir?: string } = {},
@@ -157,6 +175,11 @@ export interface TelemetrySendResult {
  * Send a payload to the feedback service. Best-effort: a missing endpoint, a
  * network failure, a timeout, or a non-2xx response all resolve to
  * `{ sent: false }` and never throw — telemetry can never block or fail a gate.
+ *
+ * @param payload - The payload to send.
+ * @param endpoint - The https endpoint to POST to.
+ * @param opts - Optional timeout override.
+ * @returns Whether the payload was sent, plus an optional error description.
  */
 export async function sendTelemetry(
   payload: TelemetryPayload,
@@ -194,6 +217,11 @@ export async function sendTelemetry(
  * file, parses it, and signs the shape at that location. Returns null when the
  * file can't be read/parsed or no node contains the location. Requires
  * `initParsers()` to have been called by the caller.
+ *
+ * @param filePath - File to read, parse, and sign.
+ * @param line - 1-based line of the finding.
+ * @param column - 1-based column of the finding.
+ * @returns The structural signature, or null when read/parse/location fails.
  */
 export function signatureForFinding(
   filePath: string,

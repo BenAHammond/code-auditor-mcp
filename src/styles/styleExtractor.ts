@@ -34,6 +34,7 @@ import { STYLE_MARKUP_EXTENSIONS, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileD
  * @param sourceCode - Raw file content
  * @param ast - Optional pre-parsed AST (avoids re-parsing)
  * @param tailwindTokens - Optional pre-loaded Tailwind tokens (avoids re-loading per file)
+ * @param unreadSources - Output list collecting unread style sources
  */
 export function extractDeclarations(
   filePath: string,
@@ -86,6 +87,10 @@ export function extractDeclarations(
 /**
  * Extract CSS custom property definitions from all CSS/SCSS files
  * and produce design tokens.
+ *
+ * @param filePath - Project-relative file path
+ * @param sourceCode - Raw file content
+ * @returns The CSS custom property tokens.
  */
 export function extractTokens(
   filePath: string,
@@ -118,6 +123,10 @@ export function extractTokens(
 
 /**
  * Load Tailwind tokens, optionally from a cached result.
+ *
+ * @param projectRoot - Project root to load the config from.
+ * @param existing - Optional pre-loaded tokens to return directly.
+ * @returns The Tailwind theme tokens.
  */
 export function getOrLoadTailwindTokens(
   projectRoot: string,
@@ -344,6 +353,17 @@ function stripAllBlockComments(s: string): string {
   return result;
 }
 
+/**
+ * Extract `property: value;` declarations from a CSS block into the given list.
+ *
+ * @param block - The CSS block text to parse.
+ * @param filePath - Project-relative file path (for the declaration).
+ * @param mechanism - The style mechanism the declarations come from.
+ * @param selector - The selector context for the block.
+ * @param variantContext - The variant context, or null when none.
+ * @param declarations - Output list declarations are appended to.
+ * @param baseLine - The source line offset of the block's first line.
+ */
 export function extractDeclarationsFromBlock(
   block: string,
   filePath: string,

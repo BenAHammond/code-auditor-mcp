@@ -21,11 +21,19 @@ export interface SocketFaceOptions {
   socketPath: string;
 }
 
+/**
+ * Face B: the Unix-domain-socket request/response server. Translates JSON request
+ * method names to `DaemonCore` calls and serializes the result.
+ */
 export class SocketFace {
   private server: Server | null = null;
   readonly socketPath: string;
   private readonly core: DaemonCore;
 
+  /**
+   * Binds a core and a socket path for the request/response face.
+   * @param options - The core to serve and the socket path to listen on.
+   */
   constructor(options: SocketFaceOptions) {
     this.core = options.core;
     this.socketPath = options.socketPath;
@@ -36,6 +44,7 @@ export class SocketFace {
    * Callers must already have confirmed no *live* daemon owns the socket
    * (via `isDaemonListening`) before binding, or the live daemon's socket is
    * stolen out from under it.
+   * @returns A promise that resolves once the server is listening.
    */
   async start(): Promise<void> {
     if (existsSync(this.socketPath)) rmSync(this.socketPath, { force: true });
@@ -107,6 +116,10 @@ export class SocketFace {
     }
   }
 
+  /**
+   * Close the server and remove the socket file.
+   * @returns A promise that resolves once the socket is closed and removed.
+   */
   async stop(): Promise<void> {
     if (this.server) {
       await new Promise<void>((resolve) => this.server!.close(() => resolve()));

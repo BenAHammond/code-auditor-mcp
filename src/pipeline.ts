@@ -50,6 +50,7 @@ import { validateFactsDependencies, buildFactsMap } from './pipelineTypes.js';
  * File discovery is eager (separate from parsing) so the total count is
  * available for progress reporting throughout the parse + visit loop.
  *
+ * @param config - Pipeline configuration (project root, files, callbacks).
  * @returns generator (yields tuples), total file count, and a closure to
  *          retrieve aggregate parse/read timing after the generator completes.
  */
@@ -254,6 +255,16 @@ export function runStage1(config: PipelineConfig): {
 
 // ── Stage 2: Per-file visitors ─────────────────────────────────────────────
 
+/**
+ * Stream the stage-1 tuples through every per-file visitor, accumulating
+ * per-analyzer results, facts, and index-fact rows.
+ *
+ * @param tuples - The stage-1 stream of parsed file/AST tuples.
+ * @param visitors - The stage-2 visitors to run over each tuple.
+ * @param config - Pipeline configuration (abort signal, progress callback, etc.).
+ * @param totalFiles - Total file count for progress reporting.
+ * @returns Visitor results, facts, index facts, timing, and the processed file count.
+ */
 export async function runStage2(
   tuples: AsyncIterable<FileASTTuple>,
   visitors: Stage2Visitor[],
@@ -689,7 +700,6 @@ async function runStage4(
  * @param indexHandle Optional DB handle for reducers (in-memory overlay for scoped runs).
  * @returns PipelineResult with analyzerResults and metadata.
  */
-
 export async function runPipeline(
   config: PipelineConfig,
   indexHandle?: IndexHandle,
@@ -1022,6 +1032,9 @@ export async function runPipeline(
  * costs ~0.15–0.22 ms/fact. Wrapping the flush in a single better-sqlite3
  * transaction amortizes the commit to one fsync; a handle with no `rawDb`
  * (in-memory overlay) falls back to the per-fact path unchanged.
+ *
+ * @param handle - Index handle to write through (DB or in-memory overlay).
+ * @param facts - Index-fact entries to flush.
  */
 export function writeIndexFactsToDb(handle: IndexHandle, facts: IndexFactsEntry[]): void {
   if (facts.length === 0) return;
@@ -1098,6 +1111,15 @@ function queryScopedLanguages(
   return rows;
 }
 
+/**
+ * Run the pipeline and then flush collected index facts through the supplied
+ * persister, returning both the pipeline result and the facts.
+ *
+ * @param config - Pipeline configuration with visitors, reducers, and derived reducers.
+ * @param indexHandle - Optional DB handle for reducers (in-memory overlay for scoped runs).
+ * @param writeIndexFacts - Optional persister invoked with the collected index facts.
+ * @returns The pipeline result plus the collected index facts.
+ */
 export async function runPipelineWithIndex(
   config: PipelineConfig,
   indexHandle?: IndexHandle,
@@ -1139,6 +1161,9 @@ export function makeReducerStatus(factsConsumed: number) {
 /**
  * Accessor: extract filesProcessed from any AnalyzerStatus.
  * Returns 0 for non-visitor statuses (reducer-ran, notRun, etc.).
+ *
+ * @param status - The analyzer status to read.
+ * @returns The filesProcessed count, or 0 for non-visitor statuses.
  */
 export function getFilesProcessed(status: AnalyzerStatus): number {
   if (status.status === 'visitor-ran') {
@@ -1150,6 +1175,9 @@ export function getFilesProcessed(status: AnalyzerStatus): number {
 /**
  * Accessor: extract factsConsumed from any AnalyzerStatus.
  * Returns 0 for non-reducer statuses.
+ *
+ * @param status - The analyzer status to read.
+ * @returns The factsConsumed count, or 0 for non-reducer statuses.
  */
 export function getFactsConsumed(status: AnalyzerStatus): number {
   if (status.status === 'reducer-ran') {

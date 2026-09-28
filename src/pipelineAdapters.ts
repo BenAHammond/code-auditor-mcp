@@ -109,6 +109,12 @@ export interface SolidVisitorBundle {
   getSizeSamples: () => Promise<SizeSample[]>;
 }
 
+/**
+ * Create the SOLID stage-2 visitor, which lazily loads the SOLID analyzer and
+ * also exposes its accumulated size samples.
+ *
+ * @returns The SOLID visitor bundle.
+ */
 export function createSolidVisitor(): SolidVisitorBundle {
   const getAnalyzer = lazySingleton<any>(() =>
     import('./analyzers/universal/UniversalSOLIDAnalyzer.js').then(
@@ -161,6 +167,12 @@ export interface DryVisitorBundle {
   }>>;
 }
 
+/**
+ * Create the DRY stage-2 visitor, which lazily loads the DRY analyzer and
+ * exposes its accumulated duplicate-code pairs.
+ *
+ * @returns The DRY visitor bundle.
+ */
 export function createDryVisitor(): DryVisitorBundle {
   const getAnalyzer = lazySingleton<any>(() =>
     import('./analyzers/universal/UniversalDRYAnalyzer.js').then(
@@ -199,6 +211,12 @@ export function createDryVisitor(): DryVisitorBundle {
 
 // ── Data-Access visitor ──────────────────────────────────────────────────────
 
+/**
+ * Create the data-access stage-2 visitor, which analyzes database access
+ * patterns and emits per-query facts for the org-filter reducer.
+ *
+ * @returns The data-access stage-2 visitor.
+ */
 export function createDataAccessVisitor(): Stage2Visitor {
   const getAnalyzer = lazySingleton<any>(() =>
     import('./analyzers/universal/UniversalDataAccessAnalyzer.js').then(
@@ -246,6 +264,8 @@ export function createDataAccessVisitor(): Stage2Visitor {
  *
  * Firing and applicability both derive from {@link buildOrgFilterTierSet}, so
  * they read the identical tier set (Tier 1 config / Tier 2 schema / Tier 3 DDL).
+ *
+ * @returns The data-access org-filter stage-4 reducer.
  */
 export function createOrgFilterReducer(): Stage4Reducer {
   return {
@@ -321,6 +341,12 @@ export function createOrgFilterReducer(): Stage4Reducer {
 
 // ── Documentation visitor ────────────────────────────────────────────────────
 
+/**
+ * Create the documentation stage-2 visitor, which checks documentation
+ * completeness across the corpus.
+ *
+ * @returns The documentation stage-2 visitor.
+ */
 export function createDocumentationVisitor(): Stage2Visitor {
   const getAnalyzer = lazySingleton<any>(() =>
     import('./analyzers/universal/UniversalDocumentationAnalyzer.js').then(
@@ -347,6 +373,12 @@ export function createDocumentationVisitor(): Stage2Visitor {
 
 // ── Secrets visitor ──────────────────────────────────────────────────────────
 
+/**
+ * Create the secrets stage-2 visitor, which detects hardcoded credentials,
+ * API keys, and tokens.
+ *
+ * @returns The secrets stage-2 visitor.
+ */
 export function createSecretsVisitor(): Stage2Visitor {
   const getAnalyzer = lazySingleton<any>(() =>
     import('./analyzers/universal/UniversalSecretsAnalyzer.js').then(
@@ -373,6 +405,12 @@ export function createSecretsVisitor(): Stage2Visitor {
 
 // ── Security visitor (Spec 61 R6) ────────────────────────────────────────────
 
+/**
+ * Create the security stage-2 visitor, which detects command injection,
+ * dynamic require of project paths, and unescaped HTML interpolation.
+ *
+ * @returns The security stage-2 visitor.
+ */
 export function createSecurityVisitor(): Stage2Visitor {
   const getAnalyzer = lazySingleton<any>(() =>
     import('./analyzers/universal/UniversalSecurityAnalyzer.js').then(
@@ -431,6 +469,12 @@ export interface FunctionIndexEntry {
   functionCalls: string[];
 }
 
+/**
+ * Create the function-index stage-2 visitor, which populates the `functions`
+ * and `import_specifiers` index tables for the downstream reducers.
+ *
+ * @returns The function-index stage-2 visitor.
+ */
 export function createFunctionIndexVisitor(): Stage2Visitor {
   return {
     name: 'function-index',
@@ -803,6 +847,12 @@ export interface ReactVisitorBundle {
   finalizeCrossComponent: (config: any) => Promise<Violation[]>;
 }
 
+/**
+ * Create the React stage-2 visitor, which scans React components and exposes
+ * cross-component checks to run after stage 2 completes.
+ *
+ * @returns The React visitor bundle.
+ */
 export function createReactVisitor(): ReactVisitorBundle {
   const scanResults: any[] = [];
 
@@ -900,6 +950,8 @@ export function createReactVisitor(): ReactVisitorBundle {
  * Styles CSS visitor — extracts declarations, tokens, and class usage from
  * tree-sitter-css and tree-sitter-scss parsed ASTs. Replaces the regex-based
  * CSS/SCSS extraction in styleExtractor.ts for .css and .scss files.
+ *
+ * @returns The styles-css stage-2 visitor.
  */
 export function createStylesCssVisitor(): Stage2Visitor {
   return {
@@ -943,6 +995,8 @@ export function createStylesCssVisitor(): Stage2Visitor {
  * emitting a fact (with a content hash) even when it yields no declarations.
  * The reducer uses that fact to (a) drop stale rows for files that *lost* their
  * styles and (b) skip re-writing files whose stored rows are already current.
+ *
+ * @returns The styles-source stage-2 visitor.
  */
 export function createStylesSourceVisitor(): Stage2Visitor {
   // Spec 61 R3.4 — a project tailwind config that exists but cannot be read
@@ -1118,6 +1172,8 @@ function insertSourceStyleFacts(
  * Spec 26 Phase 2: CSS facts from the styles-css visitor are inserted into
  * the DB before the analyzer runs. For .css files, the AST extraction replaces
  * the regex-based styleIndexer path (which now skips .css files).
+ *
+ * @returns The styles stage-3 reducer.
  */
 export function createStylesReducer(): Stage3Reducer {
   return {
@@ -1311,6 +1367,8 @@ export function createStylesReducer(): Stage3Reducer {
  * Conventions reducer — queries conventions table and flags deviations
  * (usage-pair, import-form, error-handling, export-shape, naming).
  * Uses analyzer.analyze([]) with rawDb injected.
+ *
+ * @returns The conventions stage-3 reducer.
  */
 export function createConventionsReducer(): Stage3Reducer {
   return {
@@ -1373,6 +1431,8 @@ export function createConventionsReducer(): Stage3Reducer {
  * Cross-domain reducer — runs written-never-read, read-never-written,
  * transaction-boundary risk, no-validator-reachable, and uncovered-risk detectors.
  * Uses analyzer.analyze([]) with rawDb injected.
+ *
+ * @returns The cross-domain stage-4 reducer.
  */
 export function createCrossDomainReducer(): Stage4Reducer {
   return {
@@ -1947,6 +2007,12 @@ function clExtractGoEntities(
  * plumbing (violations/facts/indexFacts). Emits the same `CrossLanguageEntity[]`
  * the visitor feeds the cross-language analyzers; the per-file imports/exports
  * half of the visitor is the reachability/coverage concern (§8), not this fact.
+ *
+ * @param ast - The parsed file to extract entities from.
+ * @param filePath - The file path stamping each extracted entity.
+ * @param sourceCode - Source text used for names and signatures.
+ * @param lang - The resolved language (`go`, `typescript`, or `javascript`).
+ * @returns The cross-language entities extracted from the file.
  */
 export function extractCrossLanguageEntities(
   ast: AST,
@@ -1964,6 +2030,12 @@ export function extractCrossLanguageEntities(
   return entities;
 }
 
+/**
+ * Create the cross-language-entities stage-2 visitor, which extracts entities
+ * and import/export info for the cross-language analyzers.
+ *
+ * @returns The cross-language-entities stage-2 visitor.
+ */
 export function createCrossLanguageEntityVisitor(): Stage2Visitor {
   return {
     name: 'cross-language-entities',
@@ -2140,6 +2212,11 @@ function clComputeReachability(
  * nothing *and* not a framework entry point. `deadPreException` is the
  * empty-importers count before the entry-point exception, so the drop
  * (`deadPreException - untestedDead`) attributes the entry points exempted.
+ *
+ * @param fileFacts - Per-file import/export info keyed by project-relative path.
+ * @param importersOf - Map of file to the set of files that import it.
+ * @param packageEntrySet - Framework/package entry points exempted from the dead bucket.
+ * @returns The test-coverage classification report.
  */
 export function classifyTestCoverage(
   fileFacts: Map<string, ClFileInfo>,
@@ -2210,6 +2287,9 @@ export function classifyTestCoverage(
  * the same file name appearing in several sibling directories (e.g. two
  * `ErrorState.tsx`, three `services.ts` under separate `reports` folders). Only
  * basenames with ≥2 files become clusters; a singleton dead file is not a duplicate.
+ *
+ * @param deadFiles - Unreferenced module paths to cluster by basename.
+ * @returns Dead-module clusters (only basenames with two or more files).
  */
 export function clusterDeadModules(deadFiles: string[]): DeadCluster[] {
   const byBasename = new Map<string, string[]>();
@@ -2300,6 +2380,12 @@ function clBuildReferences(entities: CrossLanguageEntity[]): CrossReference[] {
 
 // ── schema-validator reducer (Stage 4) ───────────────────────────────────────
 
+/**
+ * Create the schema-validator stage-4 reducer, which compares schemas across
+ * language boundaries (TS interfaces vs Go structs).
+ *
+ * @returns The schema-validator stage-4 reducer.
+ */
 export function createSchemaValidatorReducer(): Stage4Reducer {
   return {
     name: 'schema-validator',
@@ -2357,6 +2443,12 @@ export function createSchemaValidatorReducer(): Stage4Reducer {
 
 // ── api-contract reducer (Stage 4) ───────────────────────────────────────────
 
+/**
+ * Create the api-contract stage-4 reducer, which compares frontend API calls
+ * against backend endpoints across languages.
+ *
+ * @returns The api-contract stage-4 reducer.
+ */
 export function createAPIContractReducer(): Stage4Reducer {
   return {
     name: 'api-contract',
@@ -2394,6 +2486,12 @@ export function createAPIContractReducer(): Stage4Reducer {
 
 // ── dependency-graph reducer (Stage 4) ───────────────────────────────────────
 
+/**
+ * Create the dependency-graph stage-4 reducer, which detects dependency cycles,
+ * hubs, and orphaned nodes.
+ *
+ * @returns The dependency-graph stage-4 reducer.
+ */
 export function createDependencyGraphReducer(): Stage4Reducer {
   return {
     name: 'dependency-graph',
@@ -2647,6 +2745,8 @@ export function createDependencyGraphReducer(): Stage4Reducer {
  * Invariants reducer — enforces user-defined invariant rules from .codeauditor.json.
  * Receives the full file list via context.files and runs the rule engine across
  * all files at once (call-constraint rules inherently need cross-file scope).
+ *
+ * @returns The invariants stage-3 reducer.
  */
 export function createInvariantsReducer(): Stage3Reducer {
   return {
@@ -2747,6 +2847,8 @@ async function _getProvenanceModule() {
  * Schema SQL visitor (.sql files) — extracts ordered DDL operations for the
  * Stage 3 reducer to replay into the known-tables catalog. Emits the parsed
  * ops, not raw source, so the reducer retains only state transitions.
+ *
+ * @returns The schema-sql stage-2 visitor.
  */
 export function createSchemaSqlVisitor(): Stage2Visitor {
   const getMigrationExtractor = lazySingleton(() =>
@@ -2782,6 +2884,8 @@ export function createSchemaSqlVisitor(): Stage2Visitor {
 /**
  * Schema code visitor (.ts/.tsx/.js/.jsx) — per-file analysis for naming conventions,
  * query patterns, SQL injection, table references, and ORM table extraction.
+ *
+ * @returns The schema-code stage-2 visitor.
  */
 export function createSchemaCodeVisitor(): Stage2Visitor {
   const getAnalyzer = lazySingleton<any>(() =>
@@ -2973,6 +3077,8 @@ export function createSchemaCodeVisitor(): Stage2Visitor {
 
 /**
  * Schema Prisma visitor (.prisma files) — extracts model names for known-table catalog.
+ *
+ * @returns The schema-prisma stage-2 visitor.
  */
 export function createSchemaPrismaVisitor(): Stage2Visitor {
   return {
@@ -3014,6 +3120,8 @@ export function createSchemaPrismaVisitor(): Stage2Visitor {
 
 /**
  * Schema JSON visitor (.json files) — parses JSON for the Stage 3 reducer to validate.
+ *
+ * @returns The schema-json stage-2 visitor.
  */
 export function createSchemaJsonVisitor(): Stage2Visitor {
   return {
@@ -3041,6 +3149,8 @@ export function createSchemaJsonVisitor(): Stage2Visitor {
  *
  * Consumes facts from schema-sql, schema-code, schema-prisma, and schema-json visitors.
  * Builds the complete known-tables catalog and checks all table references against it.
+ *
+ * @returns The schema stage-3 reducer.
  */
 export function createSchemaReducer(): Stage3Reducer {
   const getAnalyzer = lazySingleton<any>(() =>

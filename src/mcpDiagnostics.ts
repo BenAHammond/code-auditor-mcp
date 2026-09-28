@@ -32,6 +32,13 @@ function appendFileLine(line: string): void {
     });
 }
 
+/**
+ * Write a diagnostic line to stderr and, when configured, the log file.
+ * @param level - The diagnostic level (info, warn, or debug).
+ * @param phase - The phase or milestone the line describes.
+ * @param message - The message to log.
+ * @param detail - Optional structured detail to append as JSON.
+ */
 export function logMcp(
   level: 'info' | 'warn' | 'debug',
   phase: string,

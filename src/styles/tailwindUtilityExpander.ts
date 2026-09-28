@@ -144,6 +144,8 @@ export class TailwindUtilityExpander {
   /**
    * Initialize the expander with optional project config.
    * Call once per audit. Async because it may compile-probe Tailwind.
+   * @param config The optional expander config.
+   * @returns A promise resolving once initialization completes.
    */
   async init(config: TailwindExpanderConfig = {}): Promise<void> {
     this.customClasses = config.customClasses ?? null;
@@ -262,6 +264,8 @@ export class TailwindUtilityExpander {
    *
    * Returns the full set of all validated classes (including previously
    * cached ones).
+   * @param candidates The class names to validate.
+   * @returns The full set of all validated classes.
    */
   async validateBatch(candidates: string[]): Promise<Set<string>> {
     if (!this.probe?.ready) {
@@ -275,6 +279,8 @@ export class TailwindUtilityExpander {
    * Resolve a single class name against the validation pipeline.
    * Synchronous — only checks cached data + structural patterns.
    * Call validateBatch() first to populate the cache for unknown classes.
+   * @param className The class name to resolve.
+   * @returns The class resolution (valid/tier).
    */
   resolve(className: string): UtilityClassResolution {
     // 1. Check probe cache
@@ -396,6 +402,8 @@ export class TailwindUtilityExpander {
    *       "[&_>_a]:text-blue" → "text-blue" (arbitrary variant)
    *
    * Returns the original if no variant prefix is matched.
+   * @param className The class name to strip a variant prefix from.
+   * @returns The class name with the variant prefix removed, or the original.
    */
   stripVariantPrefix(className: string): string {
     const m = VARIANT_PREFIX_RE.exec(className);
@@ -444,6 +452,11 @@ function findV3ConfigPath(projectRoot: string): string | null {
 
 let _instance: TailwindUtilityExpander | null = null;
 
+/**
+ * Return the shared singleton expander instance, creating it on first use.
+ *
+ * @returns The singleton TailwindUtilityExpander.
+ */
 export function getTailwindExpander(): TailwindUtilityExpander {
   if (!_instance) {
     _instance = new TailwindUtilityExpander();

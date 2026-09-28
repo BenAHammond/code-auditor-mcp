@@ -7,6 +7,12 @@ import { promises as fs } from 'node:fs';
 
 /** Error with structured `context` for MCP JSON responses */
 export class ContextualError extends Error {
+  /**
+   * Creates a contextual error carrying structured context for MCP responses.
+   * @param message - The human-readable error message.
+   * @param context - Structured context to surface to the client.
+   * @param cause - Optional underlying error.
+   */
   constructor(
     message: string,
     public readonly context: Record<string, unknown>,
@@ -17,6 +23,11 @@ export class ContextualError extends Error {
   }
 }
 
+/**
+ * Extract the errno-style `code` string from an error-like value.
+ * @param err - The error to inspect.
+ * @returns The code string, or undefined when absent.
+ */
 export function getErrnoCode(err: unknown): string | undefined {
   if (err && typeof err === 'object' && 'code' in err) {
     const c = (err as NodeJS.ErrnoException).code;
@@ -27,6 +38,8 @@ export function getErrnoCode(err: unknown): string | undefined {
 
 /**
  * Ensure audit `path` exists and is a file or directory; otherwise throw ContextualError.
+ * @param auditPath - The path to validate.
+ * @returns Whether the path is a file (vs a directory).
  */
 export async function assertAuditPathExists(auditPath: string): Promise<{ isFile: boolean }> {
   try {
@@ -68,6 +81,9 @@ export async function assertAuditPathExists(auditPath: string): Promise<{ isFile
 
 /**
  * Shape returned as JSON in MCP CallTool error content.
+ * @param tool - The tool name to attribute the error to.
+ * @param error - The error to format.
+ * @returns The JSON-safe error payload.
  */
 export function formatMcpToolErrorPayload(tool: string, error: unknown): Record<string, unknown> {
   const base: Record<string, unknown> = { tool };

@@ -30,6 +30,10 @@ export interface SignatureOptions {
  * output is safe to transmit.
  *
  * Example: `for_statement ( ) call_expression ( member_expression ( identifier property_identifier ) argument_list ( ) )`
+ *
+ * @param node - The AST node whose subtree shape is encoded.
+ * @param opts - Depth/node-count bounds for the signature.
+ * @returns The parenthesized pre-order encoding of node kinds.
  */
 export function structuralSignature(node: ASTNode, opts: SignatureOptions = {}): string {
   const maxDepth = opts.maxDepth ?? 8;
@@ -112,6 +116,11 @@ function findDeepestNodeAt(root: ASTNode, location: { line: number; column: numb
  * Produce the structural signature for a finding at a 1-based source location.
  * The located node is walked up to its function/class boundary before signing.
  * Returns null when no node contains the location.
+ *
+ * @param ast - The parsed file to search.
+ * @param location - 1-based line/column to anchor the signature at.
+ * @param opts - Depth/node-count bounds for the signature.
+ * @returns The structural signature, or null when no node contains the location.
  */
 export function signatureForLocation(
   ast: AST,

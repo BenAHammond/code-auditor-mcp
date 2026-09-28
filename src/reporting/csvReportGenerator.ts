@@ -30,7 +30,11 @@ const DEFAULT_COLUMNS = [
 ];
 
 /**
- * Generate a CSV report from audit results
+ * Generate a CSV report from audit results.
+ *
+ * @param result - The audit result to report.
+ * @param config - Optional delimiter, column, and custom-column configuration.
+ * @returns The CSV report string.
  */
 export function generateCSVReport(
   result: AuditResult,
@@ -58,7 +62,11 @@ export function generateCSVReport(
 }
 
 /**
- * Generate a summary CSV report
+ * Generate a summary CSV report.
+ *
+ * @param result - The audit result to summarize.
+ * @param config - Optional delimiter configuration.
+ * @returns The summary CSV string.
  */
 export function generateSummaryCSVReport(
   result: AuditResult,
@@ -202,7 +210,10 @@ function escapeCSVValue(value: string, delimiter: string): string {
 }
 
 /**
- * Generate a pivot table style CSV report
+ * Generate a pivot table style CSV report.
+ *
+ * @param result - The audit result to pivot into file-by-severity counts.
+ * @returns The pivot CSV string.
  */
 export function generatePivotCSVReport(result: AuditResult): string {
   const pivot: Record<string, Record<string, number>> = {};

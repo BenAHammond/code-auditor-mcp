@@ -87,6 +87,9 @@ export const WHOLE_PROGRAM_RULES: ReadonlyArray<string> = [
  * on a scoped run. Returns an empty map when the run is unscoped — whole-program
  * rules run normally on a full corpus. Extracted as a pure function so the
  * scoped-suppression wiring is unit-testable without spinning up a full pipeline.
+ * @param isScoped Whether this run is scoped to a subset of files.
+ * @param fileCount The number of files in the scoped run.
+ * @returns A map of rule id to `notApplicable` verdicts, or an empty map when unscoped.
  */
 export function scopedWholeProgramApplicability(
   isScoped: boolean,
@@ -160,6 +163,7 @@ export function evaluateRuleApplicability(
  * @param securityFacts The corpus-wide `security` fact object emitted by the
  *   security visitor (`{ shellProcessSeen, dynamicRequireSeen, htmlSinkSeen }`,
  *   each present only when ≥1 file contained the construct).
+ * @returns A map of rule id to `notApplicable` verdicts for each absent construct.
  */
 export function securityInputApplicability(
   securityFacts: Record<string, unknown> | undefined,

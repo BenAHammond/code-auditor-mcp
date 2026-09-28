@@ -34,7 +34,16 @@ import {
   storedSortOrder
 } from './projectTaskHelpers.js';
 
+/**
+ * Persists project tasks and owns task CRUD and validation logic.
+ */
 export class ProjectTaskRepository {
+  /**
+   * Creates a repository backed by the given tasks collection.
+   *
+   * @param getTasksCollection - Returns the backing tasks collection.
+   * @param persist - Persists in-memory changes to the backing store.
+   */
   constructor(
     private readonly getTasksCollection: () => Collection<ProjectTaskDocument>,
     private readonly persist: () => void
@@ -224,6 +233,12 @@ export class ProjectTaskRepository {
     }
   }
 
+  /**
+   * Create a new project task, validating parent and dependency references.
+   *
+   * @param input - The task creation input.
+   * @returns The created task in its public shape.
+   */
   create(input: CreateProjectTaskInput): ProjectTask {
     const projectPath = path.resolve(input.projectPath);
     const now = new Date().toISOString();
@@ -279,6 +294,12 @@ export class ProjectTaskRepository {
     return serializeProjectTask(doc);
   }
 
+  /**
+   * Fetch a task by its ID.
+   *
+   * @param taskId - The task ID to look up.
+   * @returns The task in its public shape, or null when not found.
+   */
   getById(taskId: string): ProjectTask | null {
     const found = this.getTasksCollection().findOne({ taskId });
     return found ? serializeProjectTask(found) : null;
@@ -287,6 +308,9 @@ export class ProjectTaskRepository {
   /**
    * Find non-closed tasks matching a violation fingerprint.
    * Returns an empty array if fingerprint is null/undefined or no match is found.
+   *
+   * @param fingerprint - The violation fingerprint to match.
+   * @returns The open tasks matching the fingerprint.
    */
   findOpenByFingerprint(fingerprint: string | null | undefined): ProjectTaskDocument[] {
     if (!fingerprint) {
@@ -297,6 +321,13 @@ export class ProjectTaskRepository {
       .filter((doc) => !ProjectTaskRepository.isClosed(doc.status));
   }
 
+  /**
+   * List tasks for a project, applying optional filters and sorting.
+   *
+   * @param projectPath - The project path whose tasks to list.
+   * @param options - Optional filters, search, and pagination.
+   * @returns The matching tasks in their public shape.
+   */
   list(projectPath: string, options?: ListProjectTasksOptions): ProjectTask[] {
     const resolved = path.resolve(projectPath);
     let rows = this.getTasksCollection().find({ projectPath: resolved });
@@ -366,6 +397,13 @@ export class ProjectTaskRepository {
     return rows.slice(0, cap).map((r) => serializeProjectTask(r));
   }
 
+  /**
+   * List tasks as a tree of nodes with descendant statistics.
+   *
+   * @param projectPath - The project path whose tasks to list.
+   * @param options - Optional filters and limit (parent/hasChildren options ignored).
+   * @returns The tree nodes.
+   */
   listTree(
     projectPath: string,
     options?: Omit<ListProjectTasksOptions, 'parentTaskId' | 'hasChildren'>
@@ -450,6 +488,13 @@ export class ProjectTaskRepository {
     return out.slice(0, cap);
   }
 
+  /**
+   * List tasks that are actionable (open dependencies resolved).
+   *
+   * @param projectPath - The project path whose tasks to list.
+   * @param options - Optional filters (actionableOnly is forced on).
+   * @returns The actionable tasks.
+   */
   listActionable(
     projectPath: string,
     options?: Omit<ListProjectTasksOptions, 'actionableOnly'>
@@ -457,6 +502,12 @@ export class ProjectTaskRepository {
     return this.list(projectPath, { ...options, actionableOnly: true });
   }
 
+  /**
+   * Mark a task done after verifying subtasks and dependencies are closed.
+   *
+   * @param taskId - The task to complete.
+   * @returns The completion result, or null when the task is not found.
+   */
   complete(taskId: string): CompleteProjectTaskResult | null {
     const doc = this.getTaskById(taskId);
     if (!doc) {
@@ -497,6 +548,13 @@ export class ProjectTaskRepository {
     };
   }
 
+  /**
+   * Update a task from a raw patch, validating parent and dependency changes.
+   *
+   * @param taskId - The task to update.
+   * @param patch - The raw patch (sanitized internally).
+   * @returns The updated task, or null when the task is not found.
+   */
   update(taskId: string, patch: unknown): ProjectTask | null {
     const doc = this.getTasksCollection().findOne({ taskId });
     if (!doc) {
@@ -550,6 +608,13 @@ export class ProjectTaskRepository {
     }
   }
 
+  /**
+   * Delete a task, handling subtasks per the given mode.
+   *
+   * @param taskId - The task to delete.
+   * @param mode - How to handle subtasks (reject, detach, or cascade).
+   * @returns True when the task was deleted.
+   */
   delete(taskId: string, mode: ProjectTaskDeleteMode = 'reject'): boolean {
     const doc = this.getTasksCollection().findOne({ taskId });
     if (!doc) {

@@ -14,15 +14,30 @@
 
 import { BaseConfigGenerator, ConfigOutput } from './BaseConfigGenerator.js';
 
+/**
+ * MCP config generator for standalone VS Code.
+ */
 export class VSCodeConfigGenerator extends BaseConfigGenerator {
+  /**
+   * Return the display name of the tool.
+   * @returns The tool display name.
+   */
   getToolName(): string {
     return 'VS Code MCP';
   }
 
+  /**
+   * Return the default config file path for the tool.
+   * @returns The default config file path.
+   */
   getFilename(): string {
     return '.vscode/mcp.json';
   }
 
+  /**
+   * Generate the tool's MCP configuration.
+   * @returns The generated config output.
+   */
   generateConfig(): ConfigOutput {
     const config = {
       mcpServers: {
@@ -40,6 +55,10 @@ export class VSCodeConfigGenerator extends BaseConfigGenerator {
     };
   }
 
+  /**
+   * Return setup instructions for the tool.
+   * @returns The setup instructions.
+   */
   getInstructions(): string {
     return `
 VS Code MCP Configuration Instructions:
@@ -57,6 +76,10 @@ auditing. For blocking hooks, use Claude Code or Codex.
 `;
   }
 
+  /**
+   * Return whether the tool requires authentication.
+   * @returns True when the tool requires authentication.
+   */
   requiresAuth(): boolean {
     return false;
   }

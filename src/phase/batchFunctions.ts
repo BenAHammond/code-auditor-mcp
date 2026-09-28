@@ -36,7 +36,12 @@ const FUNCTION_NODE_TYPES = new Set([
   'generator_function_expression',
 ]);
 
-/** One file's batch-containing functions as `BatchFunctionFact[]`. */
+/**
+ * One file's batch-containing functions as `BatchFunctionFact[]`.
+ *
+ * @param file - The parsed file whose AST is walked for `.batch(` commits.
+ * @returns The batch-containing functions in the file.
+ */
 export function extractBatchFunctions(file: AstFile): BatchFunctionFact[] {
   const out: BatchFunctionFact[] = [];
   const walk = (node: ASTNode): void => {

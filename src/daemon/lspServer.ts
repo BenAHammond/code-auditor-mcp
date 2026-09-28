@@ -52,6 +52,10 @@ export interface LspFaceOptions {
   foreground?: boolean;
 }
 
+/**
+ * Face A: the LSP server over stdio. Translates `DaemonCore` state and findings
+ * into LSP diagnostics and status notifications for editor clients.
+ */
 export class LspFace {
   private readonly core: DaemonCore;
   private readonly foreground: boolean;
@@ -61,6 +65,10 @@ export class LspFace {
   private readonly openDocs = new Map<string, string>();
   private started = false;
 
+  /**
+   * Wires the core to a stdio connection and registers the LSP handlers.
+   * @param options - The core to serve and whether to log to stderr.
+   */
   constructor(options: LspFaceOptions) {
     this.core = options.core;
     this.foreground = !!options.foreground;

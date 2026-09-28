@@ -29,6 +29,12 @@ interface DaemonState {
   throughputUnknown: boolean;
 }
 
+/**
+ * Activates the extension: spawns the Code Auditor daemon as a language client
+ * and renders its indexing status in the status bar.
+ *
+ * @param context - The VS Code extension context for subscriptions and configuration.
+ */
 export function activate(context: vscode.ExtensionContext): void {
   if (!vscode.workspace.getConfiguration('codeAuditor').get<boolean>('enable', true)) {
     return;

@@ -62,6 +62,9 @@ interface ExpandedDeclaration {
 /**
  * Normalize a raw CSS value for a given property.
  * Returns null when the value cannot be normalized (e.g. dynamic expressions).
+ * @param rawValue The raw CSS value string.
+ * @param property The CSS property the value belongs to.
+ * @returns The normalized value, or null when it cannot be normalized.
  */
 export function normalizeValue(rawValue: string, property: string): NormalizedValue | null {
   const trimmed = rawValue.trim();
@@ -114,6 +117,9 @@ export function normalizeValue(rawValue: string, property: string): NormalizedVa
  * Returns the original single declaration if property isn't a shorthand
  * or the value can't be meaningfully expanded.
  *
+ * @param property The shorthand CSS property name.
+ * @param rawValue The raw shorthand value string.
+ * @param normalizedValue The already-normalized shorthand value.
  * @returns Array of {property, rawValue, normalizedValue} tuples.
  */
 export function expandShorthand(

@@ -12,6 +12,11 @@ import {
 import { WhitelistType, WhitelistStatus } from '../types/whitelist.js';
 import path from 'path';
 
+/**
+ * Retrieve whitelist entries, optionally filtered by type and status.
+ * @param args - The tool arguments (type, status).
+ * @returns The matching whitelist entries, or an error object.
+ */
 export async function handleWhitelistGet(args: any) {
   const type = args.type as WhitelistType | undefined;
   const status = args.status as WhitelistStatus | undefined;
@@ -40,6 +45,11 @@ export async function handleWhitelistGet(args: any) {
   }
 }
 
+/**
+ * Add a new entry to the whitelist.
+ * @param args - The tool arguments (name, type, description, patterns).
+ * @returns The added entry, or an error object.
+ */
 export async function handleWhitelistAdd(args: any) {
   const { name, type, description, patterns } = args as {
     name: string;
@@ -69,6 +79,11 @@ export async function handleWhitelistAdd(args: any) {
   }
 }
 
+/**
+ * Update the status of an existing whitelist entry.
+ * @param args - The tool arguments (name, status).
+ * @returns A success message, or an error object.
+ */
 export async function handleWhitelistUpdateStatus(args: any) {
   const { name, status } = args as { name: string; status: WhitelistStatus };
   
@@ -86,6 +101,11 @@ export async function handleWhitelistUpdateStatus(args: any) {
   }
 }
 
+/**
+ * Detect whitelist candidates, optionally auto-populating high-confidence entries.
+ * @param args - The tool arguments (path, includePackageJson, autoPopulate).
+ * @returns The detected suggestions, or an error object.
+ */
 export async function handleWhitelistDetect(args: any) {
   const projectPath = (args.path as string) || process.cwd();
   const includePackageJson = (args.includePackageJson as boolean) !== false;

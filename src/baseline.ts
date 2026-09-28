@@ -71,6 +71,9 @@ const INVARIANTS_ANALYZER = 'invariants';
 /**
  * Load an existing baseline file from the project root.
  * Returns null if no baseline file exists or it fails to parse.
+ *
+ * @param projectRoot - Absolute path to the project root containing the baseline file.
+ * @returns The parsed baseline, or null when absent, incompatible, or unparseable.
  */
 export function loadBaseline(projectRoot: string): Baseline | null {
   const filePath = path.join(projectRoot, BASELINE_FILENAME);
@@ -110,6 +113,10 @@ export function saveBaseline(projectRoot: string, baseline: Baseline): void {
 /**
  * Build a Baseline from a set of advisory violations.
  * Invariant findings are excluded — invariants are never baselined.
+ *
+ * @param violations - Advisory violations to snapshot (invariants are filtered out).
+ * @param metadata - Snapshot metadata (tool version, corpus stats).
+ * @returns A Baseline ready to write to `.codeauditor.baseline.json`.
  */
 export function createBaselineFromFindings(
   violations: Violation[],
@@ -153,6 +160,11 @@ export function createBaselineFromFindings(
  *
  * Scoped entries not in the file list are excluded entirely from the result;
  * they are neither new, known, nor fixed for this run.
+ *
+ * @param violations - Findings from this run to classify.
+ * @param baseline - The committed baseline to match against.
+ * @param scopedFiles - Optional file scope (e.g. a `changed` run) that limits the `fixed` computation.
+ * @returns Findings partitioned into new, known, and fixed.
  */
 export function matchFindings(
   violations: Violation[],
@@ -210,6 +222,10 @@ export function matchFindings(
 /**
  * Compare current and previous baselines to compute what changed.
  * Returns counts for reporting during re-snapshot.
+ *
+ * @param previous - The prior baseline snapshot.
+ * @param current - The freshly computed baseline.
+ * @returns Counts of absorbed, fixed, and total findings.
  */
 export function diffBaselines(
   previous: Baseline,

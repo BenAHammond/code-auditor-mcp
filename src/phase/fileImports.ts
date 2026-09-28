@@ -127,6 +127,12 @@ function collectFileInfo(
  * extracted entities (Go has no `export` keyword); the entity extraction is
  * re-used verbatim so the definition of "public" cannot drift from the
  * `cross-language-entities` producer. §6 collapses this to a single parse.
+ *
+ * @param ast - The parsed file's AST to walk for imports and export presence.
+ * @param filePath - The file's path (used for the Go entity extraction and the fact).
+ * @param sourceCode - The file's source text (for node text and Go entities).
+ * @param lang - The file's language key (`'go'` vs TS/JS).
+ * @returns The file's imports, export presence, and unresolved dynamic imports.
  */
 export function extractFileImports(
   ast: AST,

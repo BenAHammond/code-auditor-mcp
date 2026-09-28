@@ -24,6 +24,11 @@ export function registerVisitorFacts(name: string, factsKeys: string[]): void {
 /**
  * Register a reducer's facts consumption.
  * Returns validation errors if any consumed fact isn't produced by an earlier stage.
+ *
+ * @param visitors - Stage-2 visitors whose fact contributions are available.
+ * @param reducers - Stage-3 reducers whose consumption is validated.
+ * @param derivedReducers - Stage-4 reducers whose consumption is validated.
+ * @returns Validation errors (empty means the fact graph is consistent).
  */
 export function validateFactsDependencies(
   visitors: Stage2Visitor[],
@@ -83,6 +88,9 @@ export function validateFactsDependencies(
 /**
  * Build a typed FactsMap from visitor results.
  * Keys are visitor names, values are their facts bags.
+ *
+ * @param visitorResults - Map of visitor name to its result (violations and facts).
+ * @returns Map of visitor name to its facts bag.
  */
 export function buildFactsMap(
   visitorResults: Map<string, { violations: unknown[]; facts: Record<string, unknown> }>,
@@ -96,6 +104,10 @@ export function buildFactsMap(
 
 /**
  * Merge reducer facts into the facts map for downstream consumers.
+ *
+ * @param existing - The facts map built so far.
+ * @param additions - Reducer facts to merge in, keyed by reducer name.
+ * @returns A new facts map with the additions layered on top.
  */
 export function mergeFacts(
   existing: Record<string, unknown>,
@@ -116,6 +128,10 @@ export function mergeFacts(
  *
  * Usage:
  *   const visitor = declareVisitorFacts<StyleExtractFacts>('styles', visitImpl);
+ *
+ * @param name - The visitor name the facts are declared under.
+ * @param visitFn - The visitor's visit implementation to type.
+ * @returns The visit function, typed to the declared facts contribution.
  */
 export function declareVisitorFacts<F extends Record<string, unknown>>(
   name: string,
@@ -127,6 +143,11 @@ export function declareVisitorFacts<F extends Record<string, unknown>>(
 /**
  * Validate that a facts bag has the expected shape at runtime.
  * Returns the bag if valid, throws if keys are missing or have wrong types.
+ *
+ * @param name - The visitor name (used in the error message).
+ * @param facts - The facts bag to validate.
+ * @param expectedKeys - The required keys the bag must contain.
+ * @returns The bag, cast to the declared facts type.
  */
 export function validateFactsBag<F extends Record<string, unknown>>(
   name: string,

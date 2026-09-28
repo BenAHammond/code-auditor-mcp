@@ -37,6 +37,9 @@ export interface CentralityScores {
  *
  * Resolves `callee_name` TEXT → `functions.id` via name join. Edge weight
  * is the count of call sites between the same (caller, callee) pair.
+ *
+ * @param db - The SQLite database to read functions and call records from.
+ * @returns The built call graph plus counts of unresolved calls.
  */
 export function buildCallGraph(db: SqliteDatabase): {
   graph: CallGraph;
@@ -118,6 +121,9 @@ export function buildCallGraph(db: SqliteDatabase): {
 
 /**
  * Build a call graph from the persistent `graph_cache` table (fast path).
+ *
+ * @param db - The SQLite database to read cached call edges from.
+ * @returns The reconstructed call graph plus unresolved-call counts.
  */
 export function buildCallGraphFromCache(db: SqliteDatabase): {
   graph: CallGraph;
@@ -171,6 +177,8 @@ export function buildCallGraphFromCache(db: SqliteDatabase): {
 /**
  * Populate `graph_cache` with call and import graph edges.
  * Called after a full sync or scoped sync.
+ *
+ * @param db - The SQLite database whose `graph_cache` table is populated.
  */
 export function populateCallGraphCache(db: SqliteDatabase): void {
   const txn = db.transaction(() => {
@@ -207,6 +215,12 @@ export function populateCallGraphCache(db: SqliteDatabase): void {
  *
  * Standard iterative algorithm: damping factor 0.85, convergence 1e-6,
  * max 100 iterations.
+ *
+ * @param adjacency - Weighted adjacency map of nodeId to neighbor weights.
+ * @param nodeIds - Set of all node IDs in the graph.
+ * @param damping - Damping factor controlling random-jump probability.
+ * @param convergence - Convergence threshold that stops iteration.
+ * @returns Map of node ID to PageRank score.
  */
 export function computePageRank(
   adjacency: Map<number, Map<number, number>>,
@@ -300,6 +314,10 @@ const BETWEENNESS_PIVOT_COUNT = 200;
  * When `nodeCount <= 2000`, uses exact Brandes.
  * Above that, uses Brandes-Pich pivot sampling with `BETWEENNESS_PIVOT_COUNT` pivots.
  * Returns scores and the number of pivots sampled (0 = exact).
+ *
+ * @param adjacency - Weighted adjacency map of nodeId to neighbor weights.
+ * @param nodeIds - Set of all node IDs in the graph.
+ * @returns Betweenness scores and the number of pivots sampled (0 = exact).
  */
 export function computeBetweenness(
   adjacency: Map<number, Map<number, number>>,
@@ -536,6 +554,13 @@ function isTestFile(filePath: string): boolean {
  * risk = max(pageRank percentile, betweenness percentile)
  *      × complexity percentile
  *      × (1 + untested)  — where untested = 1 if true, 0 otherwise
+ *
+ * @param db - The SQLite database used to read per-function complexity.
+ * @param adjacency - Weighted adjacency map of nodeId to neighbor weights.
+ * @param nodeIds - Set of all node IDs in the graph.
+ * @param nodeNames - Map of node ID to function name.
+ * @param nodePaths - Map of node ID to file path.
+ * @returns Risk entries sorted by risk score descending.
  */
 export function computeRisk(
   db: SqliteDatabase,
@@ -618,6 +643,12 @@ export function computeRisk(
 
 // ── Graph statistics ────────────────────────────────────────────────────
 
+/**
+ * Summarize call and import graph sizes from the cached graph tables.
+ *
+ * @param db - The SQLite database to read graph and function counts from.
+ * @returns Aggregate node, edge, and unresolved-call statistics.
+ */
 export function getGraphStats(db: SqliteDatabase): GraphStats {
   const callRows = db.prepare(
     `SELECT COUNT(*) as cnt FROM graph_cache WHERE graph_type = 'call'`

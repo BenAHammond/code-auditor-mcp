@@ -29,10 +29,17 @@ import { CodexConfigGenerator } from './CodexConfigGenerator.js';
 import { GeminiConfigGenerator } from './GeminiConfigGenerator.js';
 import { ZCodeConfigGenerator } from './ZCodeConfigGenerator.js';
 
+/**
+ * Factory that creates and lists config generators for each supported AI tool.
+ */
 export class ConfigGeneratorFactory {
   private generators: Map<string, () => BaseConfigGenerator>;
   private serverUrl: string;
 
+  /**
+   * Create the factory, registering every supported tool's generator.
+   * @param serverUrl The MCP server URL passed to each generator it creates.
+   */
   constructor(serverUrl: string = DEFAULT_SERVER_URL) {
     this.serverUrl = serverUrl;
     this.generators = new Map([
@@ -69,6 +76,7 @@ export class ConfigGeneratorFactory {
 
   /**
    * Get all generators
+   * @returns A map of tool name to a freshly created generator instance.
    */
   getAllGenerators(): Map<string, BaseConfigGenerator> {
     const result = new Map<string, BaseConfigGenerator>();
@@ -87,6 +95,7 @@ export class ConfigGeneratorFactory {
 
   /**
    * Get tool display information
+   * @returns Display info for every supported tool, one entry per tool.
    */
   getToolInfo(): Array<{ name: string; displayName: string; requiresAuth: boolean }> {
     return this.getAvailableTools().map(tool => {

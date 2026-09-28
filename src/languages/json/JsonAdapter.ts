@@ -287,6 +287,9 @@ class JsonValueParser {
  * root covering the whole file, so a consumer can always continue. Exported so
  * `adapterBridge` (the legacy synchronous facade) can parse `.json` correctly
  * instead of falling through to the tree-sitter TypeScript grammar.
+ *
+ * @param source The JSON source text to parse.
+ * @returns The root node and any parse errors.
  */
 export function parseJsonSource(source: string): { root: ASTNode; errors: AST['errors'] } {
   const parser = new JsonValueParser(source);
@@ -324,10 +327,21 @@ export class JsonAdapter implements LanguageAdapter {
   readonly name = 'json';
   readonly fileExtensions = ['.json'];
 
+  /**
+   * Whether this adapter handles the given file path.
+   * @param filePath The path to check.
+   * @returns True when the path ends in `.json`.
+   */
   supportsFile(filePath: string): boolean {
     return filePath.toLowerCase().endsWith('.json');
   }
 
+  /**
+   * Parse a JSON file's content into a positioned AST.
+   * @param filePath The path of the file being parsed.
+   * @param content The JSON source text.
+   * @returns A positioned AST with language, path, and parse errors.
+   */
   async parse(filePath: string, content: string): Promise<AST> {
     const { root, errors } = parseJsonSource(content);
     return {
@@ -341,6 +355,12 @@ export class JsonAdapter implements LanguageAdapter {
 
   // -- AST navigation -------------------------------------------------------
 
+  /**
+   * Find every node matching a pattern via a depth-first traversal.
+   * @param ast The AST to search.
+   * @param pattern The node pattern to match against.
+   * @returns The list of matching nodes.
+   */
   findNodes(ast: AST, pattern: NodePattern): ASTNode[] {
     const results: ASTNode[] = [];
     const visit = (node: ASTNode) => {
@@ -351,47 +371,133 @@ export class JsonAdapter implements LanguageAdapter {
     return results;
   }
 
+  /**
+   * Return the parent of a node, or null when it has none.
+   * @param node The node to inspect.
+   * @returns The parent node, or null.
+   */
   getParent(node: ASTNode): ASTNode | null {
     return node.parent ?? null;
   }
 
+  /**
+   * Return the children of a node.
+   * @param node The node to inspect.
+   * @returns The node's children, or an empty array.
+   */
   getChildren(node: ASTNode): ASTNode[] {
     return node.children ?? [];
   }
 
   // -- Node information -----------------------------------------------------
 
+  /**
+   * Return the type of a node.
+   * @param node The node to inspect.
+   * @returns The node's type.
+   */
   getNodeType(node: ASTNode): string {
     return node.type;
   }
 
+  /**
+   * Return the source text covered by a node's range.
+   * @param node The node to read.
+   * @param sourceCode The full source text the node came from.
+   * @returns The source slice covered by the node.
+   */
   getNodeText(node: ASTNode, sourceCode: string): string {
     return sourceCode.slice(node.range[0], node.range[1]);
   }
 
+  /**
+   * Return the object key a node's value was stored under, when any.
+   * @param node The node to inspect.
+   * @returns The associated key, or null.
+   */
   getNodeName(node: ASTNode): string | null {
     return keyMap.get(node) ?? null;
   }
 
   // -- Extraction (JSON has no code constructs) -----------------------------
 
+  /**
+   * JSON has no functions, so this always returns an empty list.
+   * @param _ast The (unused) AST.
+   * @returns An empty list.
+   */
   extractFunctions(_ast: AST): FunctionInfo[] { return []; }
+  /**
+   * JSON has no classes, so this always returns an empty list.
+   * @param _ast The (unused) AST.
+   * @returns An empty list.
+   */
   extractClasses(_ast: AST): ClassInfo[] { return []; }
+  /**
+   * JSON has no imports, so this always returns an empty list.
+   * @param _ast The (unused) AST.
+   * @returns An empty list.
+   */
   extractImports(_ast: AST): ImportInfo[] { return []; }
+  /**
+   * JSON has no exports, so this always returns an empty list.
+   * @param _ast The (unused) AST.
+   * @returns An empty list.
+   */
   extractExports(_ast: AST): ExportInfo[] { return []; }
+  /**
+   * JSON has no interfaces, so this always returns an empty list.
+   * @param _ast The (unused) AST.
+   * @returns An empty list.
+   */
   extractInterfaces(_ast: AST): InterfaceInfo[] { return []; }
 
   // -- Predicates (JSON has none of these) ----------------------------------
 
+  /**
+   * JSON has no classes, so this always returns false.
+   * @param _node The (unused) node.
+   * @returns Always false.
+   */
   isClass(_node: ASTNode): boolean { return false; }
+  /**
+   * JSON has no functions, so this always returns false.
+   * @param _node The (unused) node.
+   * @returns Always false.
+   */
   isFunction(_node: ASTNode): boolean { return false; }
+  /**
+   * JSON has no methods, so this always returns false.
+   * @param _node The (unused) node.
+   * @returns Always false.
+   */
   isMethod(_node: ASTNode): boolean { return false; }
+  /**
+   * JSON has no loops, so this always returns false.
+   * @param _node The (unused) node.
+   * @returns Always false.
+   */
   isLoop(_node: ASTNode): boolean { return false; }
+  /**
+   * JSON has no variable declarations, so this always returns false.
+   * @param _node The (unused) node.
+   * @returns Always false.
+   */
   isVariableDeclaration(_node: ASTNode): boolean { return false; }
 
   // -- Advanced -------------------------------------------------------------
 
+  /**
+   * JSON nodes carry no documentation, so this always returns null.
+   * @param _node The (unused) node.
+   * @returns Always null.
+   */
   getDocumentation(_node: ASTNode): string | null { return null; }
+  /**
+   * JSON nodes have no complexity, so this always returns zero.
+   * @param _node The (unused) node.
+   * @returns Always zero.
+   */
   getComplexity(_node: ASTNode): number { return 0; }
 
   private matches(node: ASTNode, pattern: NodePattern): boolean {

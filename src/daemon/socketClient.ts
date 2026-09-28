@@ -15,7 +15,12 @@ export interface SocketClientOptions {
   timeoutMs: number;
 }
 
-/** True if a live daemon is listening at `socketPath`. */
+/**
+ * True if a live daemon is listening at `socketPath`.
+ * @param socketPath - The Unix socket to probe.
+ * @param timeoutMs - How long to wait for a connect before giving up.
+ * @returns A promise resolving true when a daemon accepts the connection.
+ */
 export function isDaemonListening(socketPath: string, timeoutMs = 500): Promise<boolean> {
   return new Promise((resolve) => {
     const sock = connect(socketPath);
@@ -32,6 +37,10 @@ export function isDaemonListening(socketPath: string, timeoutMs = 500): Promise<
 /**
  * Send a single request/response exchange. Resolves with the parsed response, or
  * `null` when the daemon cannot be reached (so the caller falls back in-process).
+ * @param socketPath - The Unix socket to send the request over.
+ * @param request - The request payload to send.
+ * @param timeoutMs - How long to wait for a response before giving up.
+ * @returns A promise resolving to the parsed response, or null on failure.
  */
 export function sendSocketRequest(
   socketPath: string,

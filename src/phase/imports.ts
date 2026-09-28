@@ -10,7 +10,12 @@
 
 import type { AstFile, ImportFact } from './types.js';
 
-/** One file's import statements as `ImportFact[]`. */
+/**
+ * One file's import statements as `ImportFact[]`.
+ *
+ * @param file - The parsed file whose imports are projected.
+ * @returns The file's imports with their 1-based start position.
+ */
 export function extractImports(file: AstFile): ImportFact[] {
   const infos = file.adapter.extractImports(file.ast);
   return infos.map((imp) => ({

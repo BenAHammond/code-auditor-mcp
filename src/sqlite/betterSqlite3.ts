@@ -59,7 +59,11 @@ function loadBetterSqlite3(): typeof Database {
   }
 }
 
-/** Capability probe: can this process load better-sqlite3 (binding included)? */
+/**
+ * Capability probe: can this process load better-sqlite3 (binding included)?
+ *
+ * @returns True when better-sqlite3 (with its native binding) loads.
+ */
 export function isBetterSqlite3Available(): boolean {
   try {
     loadBetterSqlite3();
@@ -69,32 +73,62 @@ export function isBetterSqlite3Available(): boolean {
   }
 }
 
+/**
+ * SQLite database backed by the better-sqlite3 native module.
+ */
 export class BetterSqlite3Database implements SqliteDatabase {
   private readonly db: Database.Database;
 
+  /**
+   * Open (or create) a database through better-sqlite3.
+   * @param dbPath The database file path.
+   * @param opts Open options carrying the busy timeout.
+   */
   constructor(dbPath: string, opts: OpenSqliteOptions) {
     const DatabaseCtor = loadBetterSqlite3();
     this.db = new DatabaseCtor(dbPath, { timeout: opts.timeoutMs });
   }
 
+  /**
+   * Prepare a SQL statement for later execution.
+   * @param sql The SQL to prepare.
+   * @returns A prepared statement.
+   */
   prepare(sql: string): SqliteStatement {
     return this.db.prepare(sql) as SqliteStatement;
   }
 
+  /**
+   * Execute one or more SQL statements directly.
+   * @param sql The SQL to execute.
+   */
   exec(sql: string): void {
     this.db.exec(sql);
   }
 
+  /**
+   * Run a PRAGMA statement and return its result.
+   * @param pragmaSql The PRAGMA body (without the `PRAGMA` prefix).
+   * @returns The pragma result.
+   */
   pragma(pragmaSql: string): unknown {
     return this.db.pragma(pragmaSql);
   }
 
+  /**
+   * Wrap a function in a SQLite transaction.
+   * @param fn The function to run transactionally.
+   * @returns A callable transaction.
+   */
   transaction<Args extends unknown[] = unknown[], R = unknown>(
     fn: (...args: Args) => R
   ): SqliteTransaction<Args, R> {
     return this.db.transaction(fn) as SqliteTransaction<Args, R>;
   }
 
+  /**
+   * Close the underlying database.
+   */
   close(): void {
     this.db.close();
   }

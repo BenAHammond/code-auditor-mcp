@@ -32,6 +32,9 @@ function getValidate(): ValidateFunction {
 /**
  * Validate rules config against the JSON Schema and custom business rules.
  * Returns a list of validation errors (empty = valid).
+ *
+ * @param config - The rules config object to validate.
+ * @returns Validation errors (empty list means valid).
  */
 export function validateRulesConfig(config: unknown): RuleValidationError[] {
   const errors: RuleValidationError[] = [];

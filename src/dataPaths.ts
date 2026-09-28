@@ -21,6 +21,9 @@ import { createHash } from 'node:crypto';
  *     the path is scoped by project hash so sibling packages don't collide.
  *   - Otherwise (non-Node project), fall back to the OS cache directory keyed
  *     by project hash.
+ *
+ * @param projectRoot - Optional project root used to scope the path (and hash) per project.
+ * @returns The on-disk path to the index database.
  */
 export function resolvePersistedIndexPath(projectRoot?: string): string {
   const raw = process.env.CODE_AUDITOR_DATA_DIR?.trim();
@@ -154,6 +157,8 @@ function getFallbackCacheRoot(): string {
  * cache is wiped by clean installs, and a regenerated install ID would break source
  * grouping — this state must survive a cache wipe. This is the OS's designated
  * location for exactly this kind of config, so it adds no new `~/` dotdir.
+ *
+ * @returns The OS-specific per-user config directory for persistent user-scoped state.
  */
 export function getUserConfigRoot(): string {
   const xdg = process.env.XDG_CONFIG_HOME?.trim();

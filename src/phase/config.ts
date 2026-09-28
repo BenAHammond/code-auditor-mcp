@@ -25,6 +25,9 @@ import type { ThresholdValues } from './types.js';
  * Resolve the per-rule threshold map for every migrated rule from the
  * pipeline's per-analyzer config (user overrides only — defaults come from
  * {@link RUNTIME_DEFAULT_CONFIGS}, matching the legacy analyzers' internal merge).
+ *
+ * @param analyzerConfigs - The pipeline's per-analyzer user config overrides.
+ * @returns A `ruleId` → `ThresholdValues` map for every migrated rule.
  */
 export function resolvePhaseThresholds(
   analyzerConfigs: Readonly<Record<string, Readonly<Record<string, unknown>>>>,

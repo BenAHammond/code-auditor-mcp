@@ -54,6 +54,9 @@ export interface ExportInfo {
 
 /**
  * Parse a TypeScript/JavaScript/Go file and return AST.
+ *
+ * @param filePath - The path of the file to parse.
+ * @returns The parsed AST plus any parse errors.
  */
 export async function parseTypeScriptFile(filePath: string): Promise<ParseResult> {
   try {
@@ -90,6 +93,10 @@ export async function parseTypeScriptFile(filePath: string): Promise<ParseResult
 
 /**
  * Extract export statements from an AST.
+ *
+ * @param ast - The parsed AST to walk for export nodes.
+ * @param sourceCode - The original source text for name extraction.
+ * @returns The list of exported declarations.
  */
 export function getExports(ast: AST, sourceCode: string): ExportInfo[] {
   const exports: ExportInfo[] = [];
@@ -153,6 +160,10 @@ export function getExports(ast: AST, sourceCode: string): ExportInfo[] {
 
 /**
  * Find all ASTNode matching a type string (replaces ts.SyntaxKind enum).
+ *
+ * @param ast - The AST node to search within.
+ * @param type - The tree-sitter node type to match.
+ * @returns All matching AST nodes.
  */
 export function findNodesByType(
   ast: ASTNode,
@@ -178,6 +189,10 @@ export function findNodesByType(
 /**
  * Kept for backward compatibility — returns ASTNode[] where each node's type
  * matches one of the provided type strings.
+ *
+ * @param ast - The AST node to search within.
+ * @param kind - The tree-sitter node type to match.
+ * @returns All matching AST nodes.
  */
 export function findNodesByKind(
   ast: ASTNode,
