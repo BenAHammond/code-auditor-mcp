@@ -177,18 +177,20 @@ function finding(
  *  fields are identical, so they live here rather than in each `analyze`. */
 function emitOversized(
   ctx: AnalysisContext<SolidNeeds>,
-  ruleId: string,
-  thresholdKey: string,
-  fallback: number,
-  measure: (fn: FunctionLike) => number,
-  messageFor: (fn: FunctionLike, max: number) => string,
-  resolutionFor: (fn: FunctionLike) => Resolution,
+  spec: {
+    ruleId: string;
+    thresholdKey: string;
+    fallback: number;
+    measure: (fn: FunctionLike) => number;
+    messageFor: (fn: FunctionLike, max: number) => string;
+    resolutionFor: (fn: FunctionLike) => Resolution;
+  },
 ): Finding[] {
-  return collectOversizedFunctionLikes(ctx, thresholdKey, fallback, measure)
+  return collectOversizedFunctionLikes(ctx, spec.thresholdKey, spec.fallback, spec.measure)
     .map(({ fn, max }) => finding(
-      ruleId, 'high', messageFor(fn, max),
+      spec.ruleId, 'high', spec.messageFor(fn, max),
       fn.file, fn.line, fn.column, symbolOf(fn.name, fn.line, fn.column),
-      resolutionFor(fn),
+      spec.resolutionFor(fn),
     ));
 }
 
@@ -368,17 +370,20 @@ const functionLength: RuleDefinition<SolidNeeds> = {
   thresholdRationale: META['function-length'].thresholdRationale,
   samples: META['function-length'].samples,
   analyze(ctx): Finding[] {
-    return emitOversized(
-      ctx, 'function-length', 'maxLinesPerMethod', 200, (fn) => fn.lineCount,
-      (fn, max) => `Function "${fn.name}" has ${fn.lineCount} lines, exceeding the maximum of ${max}. Consider breaking it down.`,
-      (fn) => ({
+    return emitOversized(ctx, {
+      ruleId: 'function-length',
+      thresholdKey: 'maxLinesPerMethod',
+      fallback: 200,
+      measure: (fn) => fn.lineCount,
+      messageFor: (fn, max) => `Function "${fn.name}" has ${fn.lineCount} lines, exceeding the maximum of ${max}. Consider breaking it down.`,
+      resolutionFor: (fn) => ({
         action: 'break-down-function',
         summary: `Break "${fn.name}" (${fn.lineCount} lines) into smaller functions, extracting named helper blocks.`,
         symbols: [fn.name],
         files: [fn.file],
         lines: [fn.line],
       }),
-    );
+    });
   },
 };
 
@@ -395,17 +400,20 @@ const parameterCount: RuleDefinition<SolidNeeds> = {
   thresholdRationale: META['parameter-count'].thresholdRationale,
   samples: META['parameter-count'].samples,
   analyze(ctx): Finding[] {
-    return emitOversized(
-      ctx, 'parameter-count', 'maxParametersPerMethod', 6, (fn) => fn.parameterCount,
-      (fn, max) => `Function "${fn.name}" has ${fn.parameterCount} parameters, exceeding the maximum of ${max}. Consider using an options object.`,
-      (fn) => ({
+    return emitOversized(ctx, {
+      ruleId: 'parameter-count',
+      thresholdKey: 'maxParametersPerMethod',
+      fallback: 6,
+      measure: (fn) => fn.parameterCount,
+      messageFor: (fn, max) => `Function "${fn.name}" has ${fn.parameterCount} parameters, exceeding the maximum of ${max}. Consider using an options object.`,
+      resolutionFor: (fn) => ({
         action: 'bundle-params',
         summary: `Bundle the ${fn.parameterCount} parameters of "${fn.name}" into an options object.`,
         symbols: fn.parameterNames,
         files: [fn.file],
         lines: [fn.line],
       }),
-    );
+    });
   },
 };
 
