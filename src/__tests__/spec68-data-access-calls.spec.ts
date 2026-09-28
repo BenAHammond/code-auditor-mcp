@@ -172,3 +172,46 @@ describe('Spec 68 query-builder shape test', () => {
     expect(out).toEqual([]);
   });
 });
+
+/**
+ * Spec 68 Thing 2 (#313 follow-up) — `hasOrganizationFilter` treats a column as a
+ * filter only when it is a predicate operand or a value key inside a scoping
+ * verb, never a SELECT projection. The bare-`:` match misread
+ * `.select({ organizationId: col })` as a filter, so an unfiltered tenant query
+ * (`sample_ownership`) stayed quiet. The fix scopes the `:` to where/on/set/
+ * values/data objects and must not regress Drizzle `.values({ org_id })`.
+ */
+describe('Spec 68 hasOrganizationFilter — projection vs. predicate', () => {
+  it('does NOT treat a `.select({ organizationId: col })` projection as a filter', () => {
+    const out = calls('/fixture/org-projection.ts', [
+      'appDb.getDb().select({ organizationId: sampleOwnership.organizationId })',
+      '  .from(sampleOwnership).innerJoin(other, eq(sampleOwnership.organizationId, other.organizationId));',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasOrganizationFilter).toBe(false);
+  });
+
+  it('still detects a Drizzle `.where({ organizationId: value })` predicate object', () => {
+    const out = calls('/fixture/org-where-object.ts', [
+      'appDb.getDb().select().from(sampleOwnership).where({ organizationId: orgId });',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasOrganizationFilter).toBe(true);
+  });
+
+  it('still detects a Drizzle `.values({ organization_id })` insert scope (parity)', () => {
+    const out = calls('/fixture/org-values-object.ts', [
+      'appDb.getDb().insert(users).values({ organization_id: orgId, name });',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasOrganizationFilter).toBe(true);
+  });
+
+  it('still detects the Prisma `where: { organizationId: value }` object form', () => {
+    const out = calls('/fixture/org-prisma-where.ts', [
+      'prisma.sampleOwnership.findMany({ where: { organizationId: orgId } });',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasOrganizationFilter).toBe(true);
+  });
+});

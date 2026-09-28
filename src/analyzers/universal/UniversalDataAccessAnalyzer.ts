@@ -1630,14 +1630,33 @@ function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): 
   // an INSERT column list is NOT a filter. This replaces the old substring
   // proxy that treated any occurrence of the column name — a SELECT column, a
   // comment, a property name — as evidence of tenant isolation.
-  const alt = candidates.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  // The candidates are joined with `|`; wrap them in `(?:…)` so the word
+  // boundaries and the operator/key suffix below bind to EVERY alternative, not
+  // just the first (`\borganizationid`) and last (`company_id\b…`) of them. The
+  // un-grouped form let `\borganizationid` match a bare column name with no
+  // operator — which is exactly how a `.select({ organizationId: col })`
+  // projection was misread as a filter (Spec 68 Thing 2 `sample_ownership`).
+  const alt = `(?:${candidates.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`;
 
-  // SQL comparison operand / object-literal key.
+  // SQL comparison operand (`org_id = ?`, `tenant_id IN (...)`).
   const comparisonRe = new RegExp(
-    `\\b${alt}\\b\\s*(?:=|!=|<>|<=|>=|<|>|\\bIS\\b|\\bIN\\b|\\bLIKE\\b|:)`,
+    `\\b${alt}\\b\\s*(?:=|!=|<>|<=|>=|<|>|\\bIS\\b|\\bIN\\b|\\bLIKE\\b)`,
     'i',
   );
   if (comparisonRe.test(text)) return true;
+
+  // Object-literal filter: the column as a value key inside a predicate/set
+  // object (`.where({ org_id: v })`, `.values({ org_id: v })`, Prisma
+  // `where: { org_id: v }`). The colon is a filter signal ONLY inside a
+  // scoping verb; a `.select({ org_id: col })` projection is a SELECT alias,
+  // not a predicate, so a bare `org_id:` must not match (Spec 68 Thing 2
+  // `sample_ownership`). This is strictly narrower than the old bare-`:`
+  // match: it can only stop firing on projections, never start on new text.
+  const objectFilterRe = new RegExp(
+    `\\b(?:where|andWhere|orWhere|whereEq|whereNot|having|on|set|values|data)\\s*(?:\\(|:)\\s*\\{[^{}]*\\b${alt}\\b\\s*:`,
+    'i',
+  );
+  if (objectFilterRe.test(text)) return true;
 
   // Positional ORM where: `.where('org_id', x)` / `.andWhere("org_id", x)`.
   const positionalRe = new RegExp(
