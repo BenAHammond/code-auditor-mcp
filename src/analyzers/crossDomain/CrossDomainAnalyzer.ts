@@ -442,9 +442,38 @@ function nonQueryBuilderTableFilter(fp: { clause: string; params: string[] }): {
  * read. The anchor still sorts the full write set, so `delete` keeps its
  * byte-order edge over `insert` and a mixed write table anchors on the `delete`.
  */
-function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Violation[] {
+/** Deduplicate query rows by table and emit one violation per unique table,
+ *  anchored to the first row encountered. The two read/write-mismatch detectors
+ *  share this tail: their SQL and message/severity/rule differ, but the
+ *  dedup + violation construction is identical. */
+function emitTableViolations(
+  rows: SchemaUsageRow[],
+  rule: string,
+  severity: Violation['severity'],
+  message: (row: SchemaUsageRow) => string,
+): Violation[] {
+  const seen = new Set<string>();
   const violations: Violation[] = [];
+  for (const row of rows) {
+    if (seen.has(row.table_name)) continue;
+    seen.add(row.table_name);
 
+    violations.push({
+      file: row.file_path,
+      line: row.line,
+      column: 0,
+      severity,
+      message: message(row),
+      rule,
+      analyzer: ANALYZER_NAME,
+      symbol: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
+    });
+  }
+
+  return violations;
+}
+
+function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Violation[] {
   const fp = scope.apply('file_path');
   const qb = nonQueryBuilderTableFilter(fp);
 
@@ -462,26 +491,12 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
          )
        ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params, ...fp.params]) as SchemaUsageRow[];
 
-  // Deduplicate by table_name — one violation per table, anchored to
-  // the first writing file encountered.
-  const seen = new Set<string>();
-  for (const row of rows) {
-    if (seen.has(row.table_name)) continue;
-    seen.add(row.table_name);
-
-    violations.push({
-      file: row.file_path,
-      line: row.line,
-      column: 0,
-      severity: 'high',
-      message: `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
-      rule: 'cross-domain/written-never-read',
-      analyzer: ANALYZER_NAME,
-      symbol: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
-    });
-  }
-
-  return violations;
+  return emitTableViolations(
+    rows,
+    'cross-domain/written-never-read',
+    'high',
+    (row) => `Table '${row.table_name}' is written (${row.usage_type}) but never read (SELECT). Consider removing unused writes or adding read paths.`,
+  );
 }
 
 // ── R1: Read-Never-Written ──────────────────────────────────────────────
@@ -492,8 +507,6 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
  * or indicate missing write coverage.
  */
 function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Violation[] {
-  const violations: Violation[] = [];
-
   const fp = scope.apply('file_path');
   const qb = nonQueryBuilderTableFilter(fp);
 
@@ -509,24 +522,12 @@ function detectReadNeverWritten(indexHandle: IndexHandle, scope: FileScope): Vio
          )
        ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params]) as SchemaUsageRow[];
 
-  const seen = new Set<string>();
-  for (const row of rows) {
-    if (seen.has(row.table_name)) continue;
-    seen.add(row.table_name);
-
-    violations.push({
-      file: row.file_path,
-      line: row.line,
-      column: 0,
-      severity: 'severe',
-      message: `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
-      rule: 'cross-domain/read-never-written',
-      analyzer: ANALYZER_NAME,
-      symbol: usageIdentityLabel(row.function_name, row.function_start_line, row.function_start_column),
-    });
-  }
-
-  return violations;
+  return emitTableViolations(
+    rows,
+    'cross-domain/read-never-written',
+    'severe',
+    (row) => `Table '${row.table_name}' is read (SELECT) but never written (INSERT/UPDATE/DELETE). This may be an external/managed table, or indicate missing write coverage.`,
+  );
 }
 
 // ── R1: Transaction-Boundary Risk ───────────────────────────────────────
