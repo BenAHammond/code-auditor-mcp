@@ -22,6 +22,7 @@ import {
   DB_CALL_METHOD_NAMES,
   DB_BINDING_NAMES,
   DB_WRAPPER_NAMES,
+  SQL_TAG_NAMES,
 } from './UniversalSchemaAnalyzer.js';
 import { isSqlKeyword, extractAliasIdentifiers, findEnclosingFunctionIdentity, functionIdentityLabel } from './schema/codeAnalysis.js';
 import { isTestOrSpecPath } from '../../languages/testConventions.js';
@@ -118,6 +119,12 @@ export interface DataAccessAnalyzerConfig {
   /** DB binding names for provenance detection (e.g. env.DB — Cloudflare D1 bindings). */
   dbBindingNames?: string[];
 
+  /** Tagged-template tag names that denote raw SQL (e.g. `sql`, `db`) — the
+   *  `sql\`…\`` / `db\`…\`` Drizzle idiom. Recognized by *name*, independent of
+   *  provenance, so a tag whose receiver is an unresolved local wrapper is not
+   *  invisible to the data-access rules. Defaults to SQL_TAG_NAMES. */
+  sqlTagNames?: string[];
+
   /** Provenance detection mode: 'hybrid' | 'provenance' | 'names'. */
   detection?: { mode: DetectionMode };
 
@@ -185,6 +192,7 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   dbReceiverNames: [...DB_RECEIVER_NAMES],
   dbCallMethods: [...DB_CALL_METHOD_NAMES],
   dbBindingNames: [...DB_BINDING_NAMES],
+  sqlTagNames: [...SQL_TAG_NAMES],
   detection: { mode: 'hybrid' },
   // SQL sanitizer functions — interpolation via escapeSql(x) is not raw.
   sanitizerNames: ['escapeSql'],
@@ -317,21 +325,76 @@ function mapDatabaseImports(
 }
 
 /**
+ * Spec 68 — a tagged-template SQL call (`sql\`…\`` / `db\`…\``) is a data-access
+ * candidate by *tag name*, independent of provenance resolution. Mirrors the
+ * schema analyzer's `extractTaggedTemplateRefs` (keyed on `SQL_TAG_NAMES`), so a
+ * Drizzle raw-SQL fragment is never invisible to the data-access rules even when
+ * its receiver is an unresolved local wrapper (`appDb.getDb().execute(sql\`…\`)`)
+ * or a bound instance member (`this.sql\`…\``) that provenance cannot resolve.
+ */
+function isTaggedTemplateSqlCall(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  tagNames: readonly string[],
+): boolean {
+  if (node.type !== 'call_expression') return false;
+
+  // A tagged-template call carries the template string as a direct child (there
+  // is no `arguments` node), but accept both shapes for robustness.
+  const children = adapter.getChildren(node);
+  const hasTemplate =
+    children.some((c) => isTemplateLiteral(c, adapter)) ||
+    children.some(
+      (c) => adapter.getNodeType(c) === 'arguments' &&
+        adapter.getChildren(c).some((a) => isTemplateLiteral(a, adapter)),
+    );
+  if (!hasTemplate) return false;
+
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee) return false;
+  const calleeType = adapter.getNodeType(callee);
+
+  // Bare tag: `sql\`…\`` / `db\`…\``.
+  if (calleeType === 'identifier') {
+    return tagNames.includes(adapter.getNodeText(callee, sourceCode));
+  }
+
+  // Member tag on `this`: `this.sql\`…\`` — a wrapper re-exposing the tag.
+  if (calleeType === 'member_expression') {
+    const parts = adapter.getChildren(callee);
+    const prop = parts.find((c) => adapter.getNodeType(c) === 'property_identifier');
+    if (!prop || !tagNames.includes(adapter.getNodeText(prop, sourceCode))) return false;
+    const receiver = parts.find((c) => adapter.getNodeType(c) !== 'property_identifier');
+    return !!receiver && adapter.getNodeText(receiver, sourceCode) === 'this';
+  }
+
+  return false;
+}
+
+/**
  * Predicate for the node-discovery pass of extractDatabaseCalls.  A node is a
- * candidate when it is a DB-provenanced function call, a template literal in a
- * DB-provenanced call's arguments, or a variable assignment holding SQL-shaped
- * text (Spec 17 R2 — content scanning is removed in favour of provenance).
+ * candidate when it is a DB-provenanced function call, a tagged-template SQL
+ * call, a template literal in a DB-provenanced call's arguments, or a variable
+ * assignment holding SQL-shaped text (Spec 17 R2 — content scanning is removed
+ * in favour of provenance).
  */
 function isDbCallCandidate(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
   provenanceContext?: ProvenanceContext,
+  tagNames: readonly string[] = SQL_TAG_NAMES,
 ): boolean {
   const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
 
   // Check if it's a function call whose callee is DB-related
   if (provenanceContext && isDBProvenancedFunctionCall(node, adapter, sourceCode, provenanceContext)) {
+    return true;
+  }
+
+  // Tagged-template SQL is a data-access call by tag name — no provenance needed.
+  if (isTaggedTemplateSqlCall(node, adapter, sourceCode, tagNames)) {
     return true;
   }
 
@@ -468,9 +531,10 @@ function extractDatabaseCalls(
   ast: AST,
   scan: DataAccessScanContext,
 ): DatabaseCall[] {
-  const { adapter, sourceCode, provenanceContext } = scan;
+  const { adapter, sourceCode, provenanceContext, config } = scan;
+  const tagNames = config.sqlTagNames ?? SQL_TAG_NAMES;
   const allNodes = adapter.findNodes(ast, {
-    custom: (node) => isDbCallCandidate(node, adapter, sourceCode, provenanceContext),
+    custom: (node) => isDbCallCandidate(node, adapter, sourceCode, provenanceContext, tagNames),
   });
 
   const uniqueNodes = dedupeCandidateNodes(allNodes, adapter);

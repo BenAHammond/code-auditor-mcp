@@ -55,6 +55,40 @@ describe('Spec 68 data-access-calls producer', () => {
     expect(call.hasSqlInjectionRisk).toBe(true);
   });
 
+  it('extracts a bare tagged-template SQL call (`sql`…`) by tag name', () => {
+    const out = calls('/fixture/tag.ts', [
+      'const q = sql`SELECT * FROM users WHERE id = ${id}`;',
+    ].join('\n'));
+
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].tables).toContain('users');
+    expect(out[0].method).toBe('sql');
+  });
+
+  it('extracts a `this.sql` member tag — a wrapper re-exposing the tag', () => {
+    // The receiver (`this.sql`) is not a bare identifier, so provenance alone
+    // cannot resolve it; tag-name recognition is what makes the query visible.
+    const out = calls('/fixture/this-tag.ts', [
+      'class Repo {',
+      '  health() { return this.sql`SELECT * FROM users`; }',
+      '}',
+    ].join('\n'));
+
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].tables).toContain('users');
+    expect(out[0].method).toBe('sql');
+  });
+
+  it('extracts a tagged-template wrapped in a provenanced DB call under the call method', () => {
+    const out = calls('/fixture/wrapped.ts', [
+      'db.execute(sql`SELECT * FROM users`);',
+    ].join('\n'));
+
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].tables).toContain('users');
+    expect(out[0].method).toBe('execute');
+  });
+
   it('returns an empty array for a file with no DB calls', () => {
     const out = calls('/fixture/b.ts', 'export const x = 1;\n');
     expect(out).toEqual([]);
