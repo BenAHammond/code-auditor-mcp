@@ -569,28 +569,15 @@ export function mineImportFormFromFacts(
 
     const modeShare = maxCount / total;
     if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      // List the minority forms (for reference)
-      const minorityForms = [...fc.entries()]
-        .filter(([f]) => f !== dominantForm)
-        .map(([f, c]) => `${f}:${c}`)
-        .join(',');
-
-      const exemplar = exemplars.get(key);
-
-      conventions.push({
+      pushModeConvention(conventions, {
         domain: 'import-form',
-        rule_id: 'conventions/import-form',
         antecedent: source,
         consequent: dominantForm,
-        pattern: minorityForms || null,
+        pattern: minorityLabel(fc, dominantForm) || null,
         directory,
-        file_path: null,
-        line: null,
         support: maxCount,
-        total_cases: total,
-        confidence: Math.round(modeShare * 10000) / 10000,
-        exemplar_file: exemplar?.file ?? null,
-        exemplar_line: exemplar?.line ?? null,
+        total,
+        exemplar: exemplars.get(key),
         hash: computeHash([source, directory, dominantForm, maxCount, total]),
       });
     }
@@ -690,6 +677,59 @@ export interface ExportShapeFuncRow {
 }
 
 /**
+ * Join a group's non-dominant forms into a `form:count,form:count` label. The
+ * import-form, export-shape, and error-handling miners all reduce a
+ * `Map<form, count>` to its dominant form plus a minority reference label; this
+ * is the shared label computation.
+ */
+function minorityLabel(counts: Map<string, number>, dominant: string): string {
+  return [...counts.entries()]
+    .filter(([f]) => f !== dominant)
+    .map(([f, c]) => `${f}:${c}`)
+    .join(',');
+}
+
+/**
+ * Push one dominant-form convention onto `conventions`. The import-form,
+ * export-shape, and error-handling miners each reduce a group's histogram to a
+ * dominant form and emit a single `Convention` whose `file_path`/`line` are
+ * always null, `confidence` is the mode share rounded to 4 decimals, and the
+ * exemplar anchors are null-coalesced — so that tail lives here once and the
+ * three miners pass only their domain-specific fields.
+ */
+function pushModeConvention(
+  conventions: Convention[],
+  fields: {
+    domain: Convention['domain'];
+    antecedent: string | null;
+    consequent: string | null;
+    pattern: string | null;
+    directory: string | null;
+    support: number;
+    total: number;
+    exemplar: { file: string; line: number } | undefined;
+    hash: string;
+  },
+): void {
+  conventions.push({
+    domain: fields.domain,
+    rule_id: `conventions/${fields.domain}`,
+    antecedent: fields.antecedent,
+    consequent: fields.consequent,
+    pattern: fields.pattern,
+    directory: fields.directory,
+    file_path: null,
+    line: null,
+    support: fields.support,
+    total_cases: fields.total,
+    confidence: Math.round((fields.support / fields.total) * 10000) / 10000,
+    exemplar_file: fields.exemplar?.file ?? null,
+    exemplar_line: fields.exemplar?.line ?? null,
+    hash: fields.hash,
+  });
+}
+
+/**
  * Shared histogram → conventions tail for export-shape mining. `dirForms` is
  * directory → Map<form, count> and `dirExemplars` directory → first-seen anchor;
  * both the pure (`mineExportShapeFromFacts`) and DB (`mineExportShape`) miners
@@ -718,27 +758,15 @@ function buildExportShapeConventions(
 
     const modeShare = maxCount / total;
     if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      const minorityForms = [...forms.entries()]
-        .filter(([f]) => f !== dominantForm)
-        .map(([f, c]) => `${f}:${c}`)
-        .join(',');
-
-      const exemplar = dirExemplars.get(directory);
-
-      conventions.push({
+      pushModeConvention(conventions, {
         domain: 'export-shape',
-        rule_id: 'conventions/export-shape',
         antecedent: null,
         consequent: null,
         pattern: dominantForm,
         directory,
-        file_path: null,
-        line: null,
         support: maxCount,
-        total_cases: total,
-        confidence: Math.round(modeShare * 10000) / 10000,
-        exemplar_file: exemplar?.file ?? null,
-        exemplar_line: exemplar?.line ?? null,
+        total,
+        exemplar: dirExemplars.get(directory),
         hash: computeHash([directory, dominantForm, maxCount, total]),
       });
     }
@@ -1071,27 +1099,15 @@ export function mineErrorHandlingFromFacts(
 
     const modeShare = maxCount / total;
     if (modeShare >= config.modeShare && maxCount >= config.minCorpus) {
-      const minorityShapes = [...shapes.entries()]
-        .filter(([s]) => s !== dominantShape)
-        .map(([s, c]) => `${s}:${c}`)
-        .join(',');
-
-      const exemplar = dirExemplars.get(directory);
-
-      conventions.push({
+      pushModeConvention(conventions, {
         domain: 'error-handling',
-        rule_id: 'conventions/error-handling',
         antecedent: null,
         consequent: null,
         pattern: dominantShape,
         directory,
-        file_path: null,
-        line: null,
         support: maxCount,
-        total_cases: total,
-        confidence: Math.round(modeShare * 10000) / 10000,
-        exemplar_file: exemplar?.file ?? null,
-        exemplar_line: exemplar?.line ?? null,
+        total,
+        exemplar: dirExemplars.get(directory),
         hash: computeHash([directory, dominantShape, maxCount, total]),
       });
     }
