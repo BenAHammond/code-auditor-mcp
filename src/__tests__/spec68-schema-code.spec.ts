@@ -91,6 +91,36 @@ describe('Spec 68 ddl-declarations producer', () => {
     expect(out[0].tableColumns).toEqual({ scratch: ['id'] });
   });
 
+  it('extracts tenant columns declared through ADD CONSTRAINT … FOREIGN KEY', () => {
+    // Drizzle's default for `organization_id → organizations.id` is an ALTER
+    // TABLE … ADD CONSTRAINT … FOREIGN KEY ("organization_id") statement, not a
+    // CREATE TABLE column or an ADD COLUMN. Without the FK pass these tenant
+    // tables fall out of the Tier-3 DDL set and `missing-org-filter` reads a
+    // fraction of the real tenant schema.
+    const out = code('/fixture/fk.ts', [
+      'export const up = `',
+      'ALTER TABLE "certifications" ADD CONSTRAINT "certifications_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;',
+      'ALTER TABLE "certifications" ADD CONSTRAINT "certifications_certifier_id_certifiers_id_fk" FOREIGN KEY ("certifier_id") REFERENCES "public"."certifiers"("id");',
+      '`;',
+    ].join('\n'));
+
+    expect(out).toHaveLength(1);
+    expect(out[0].tableColumns).toEqual({
+      certifications: ['organization_id', 'certifier_id'],
+    });
+  });
+
+  it('extracts composite foreign-key column lists', () => {
+    const out = code('/fixture/composite.ts', [
+      'export const up = `',
+      'ALTER TABLE "line_items" ADD CONSTRAINT "line_items_pk" FOREIGN KEY ("invoice_id", "line_no") REFERENCES "public"."invoices"("id", "line_no");',
+      '`;',
+    ].join('\n'));
+
+    expect(out).toHaveLength(1);
+    expect(out[0].tableColumns).toEqual({ line_items: ['invoice_id', 'line_no'] });
+  });
+
   it('returns an empty array for a file with no DDL', () => {
     const out = code('/fixture/c.ts', 'export const x = 1;\n');
     expect(out).toEqual([]);

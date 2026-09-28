@@ -347,9 +347,24 @@ export function extractDdlTableColumns(source: string): Record<string, string[]>
     createRe.lastIndex = closeParen + 1;
   }
 
-  const alterRe = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)/gi;
+  const alterRe = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s+ADD\s+(?!CONSTRAINT\b)(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)/gi;
   while ((match = alterRe.exec(source)) !== null) {
     columnsFor(stripIdentifier(match[1])).add(stripIdentifier(match[2]).toLowerCase());
+  }
+
+  // ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY ("col"[, "col"…]) REFERENCES …
+  // — tables whose tenant-scoping column is declared only through a foreign-key
+  // constraint (Drizzle's default for `organization_id → organizations.id`)
+  // never appear in CREATE TABLE bodies or ADD COLUMN, so without this pass most
+  // tenant tables fall out of the Tier-3 DDL set and `missing-org-filter` reads
+  // a fraction of the real tenant schema (Spec 68 — declared inputs).
+  const fkRe = /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(`[^`]+`|"[^"]+"|\w+)\s+ADD\s+CONSTRAINT\s+(?:`[^`]+`|"[^"]+"|\w+)\s+FOREIGN\s+KEY\s*\(([^)]*)\)\s+REFERENCES/gi;
+  while ((match = fkRe.exec(source)) !== null) {
+    const cols = columnsFor(stripIdentifier(match[1]));
+    for (const col of match[2].split(',')) {
+      const name = stripIdentifier(col.trim()).toLowerCase();
+      if (name) cols.add(name);
+    }
   }
 
   const result: Record<string, string[]> = {};
