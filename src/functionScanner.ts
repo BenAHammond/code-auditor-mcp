@@ -184,76 +184,95 @@ export function extractFunctionsFromSource(
     }
   }
 
-  // Find all function declarations
-  const functionDeclarations = findNodesByKind(root, 'function_declaration');
-  for (const func of functionDeclarations) {
-    const nameNode = findChildOfType(func, 'identifier');
-    if (!nameNode) continue;
-
-    const { line } = getLineAndColumn(func);
-    const endLine = func.location?.end?.line ?? line;
-
-    // Extract function calls
-    const body = findChildOfType(func, 'statement_block');
+  // ── Shared extraction for the three function-like scans ────────────────
+  // Function declarations, arrow functions, and class methods repeat the same
+  // call-extraction + import-usage + unused-import + parameter-count derivation
+  // and the same record push; only the label and kind-specific metadata vary.
+  const deriveFunctionData = (node: ASTNode) => {
+    const body = findChildOfType(node, 'statement_block');
     const functionCalls = body ? extractFunctionCalls(body, content, importMap) : [];
     const normalizedCalls = functionCalls.map(call =>
       normalizeCallTarget(call.callee, filePath, localFunctions)
     );
 
-    // Track which imports this function uses
-    const functionUsageMap = extractIdentifierUsage(func, content, importNames);
+    const functionUsageMap = extractIdentifierUsage(node, content, importNames);
     const usedImports = Array.from(functionUsageMap.keys());
 
-    // Apply unused imports configuration
     const config = options?.unusedImportsConfig;
-    let unusedImports = detailedImports
+    const unusedImports = detailedImports
       .filter(imp => {
-        // Skip side-effect imports - they're never "unused"
+        // Skip side-effect imports - they're never "unused".
         if ((imp.importType as any) === 'side-effect') return false;
-
-        // Check if import is used in this function OR at module level
+        // Used in this function OR at module level.
         if (functionUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
-
-        // Apply type-only configuration
+        // Apply type-only configuration.
         if (!config?.includeTypeOnlyImports && imp.isTypeOnly) return false;
-
-        // Apply ignore patterns
+        // Apply ignore patterns.
         if (config?.ignorePatterns?.some(pattern =>
           imp.localName.match(new RegExp(pattern)))) return false;
-
         return true;
       })
       .map(imp => imp.localName);
 
-    // Get parameter count from formal_parameters
-    const params = findChildOfType(func, 'formal_parameters');
-    const paramCount = params?.children?.filter(c =>
+    const params = findChildOfType(node, 'formal_parameters');
+    const parameterCount = params?.children?.filter(c =>
       c.type === 'required_parameter' || c.type === 'optional_parameter' || c.type === 'rest_parameter'
     ).length ?? 0;
 
+    return {
+      body,
+      functionCalls: normalizedCalls,
+      usedImports,
+      unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
+      parameterCount,
+    };
+  };
+
+  const pushScannedFunction = (
+    name: string,
+    line: number,
+    endLine: number,
+    node: ASTNode,
+    kind: 'function' | 'arrow' | 'method',
+    purpose: string,
+    context: string,
+    extraMetadata: Record<string, unknown>,
+  ) => {
+    const d = deriveFunctionData(node);
     functions.push({
-      name: getNodeText(nameNode, content),
+      name,
       filePath,
       lineNumber: line,
       startLine: line,
       endLine,
       language: getLanguageFromPath(filePath),
       dependencies,
-      purpose: `Function ${getNodeText(nameNode, content)} implementation`,
-      context: `Located in ${path.basename(filePath)}`,
-      body: body ? getNodeText(body, content) : undefined,
+      purpose,
+      context,
+      body: d.body ? getNodeText(d.body, content) : undefined,
       metadata: {
-        kind: 'function',
-        isAsync: hasModifier(func, 'async'),
-        isExported: isExported(func),
-        parameterCount: paramCount,
-        functionCalls: normalizedCalls,
-        usedImports,
-        unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
-        complexity: calculateComplexity(func),
+        kind,
+        ...extraMetadata,
+        parameterCount: d.parameterCount,
+        functionCalls: d.functionCalls,
+        usedImports: d.usedImports,
+        unusedImports: d.unusedImports,
+        complexity: calculateComplexity(node),
         dependencies
       }
     });
+  };
+
+  // Find all function declarations
+  const functionDeclarations = findNodesByKind(root, 'function_declaration');
+  for (const func of functionDeclarations) {
+    const nameNode = findChildOfType(func, 'identifier');
+    if (!nameNode) continue;
+    const { line } = getLineAndColumn(func);
+    const name = getNodeText(nameNode, content);
+    pushScannedFunction(name, line, func.location?.end?.line ?? line, func, 'function',
+      `Function ${name} implementation`, `Located in ${path.basename(filePath)}`,
+      { isAsync: hasModifier(func, 'async'), isExported: isExported(func) });
   }
 
   // Find arrow functions assigned to variables
@@ -264,66 +283,14 @@ export function extractFunctionsFromSource(
   for (const varStmt of varStmts) {
     for (const varDecl of varStmt.children ?? []) {
       if (varDecl.type !== 'variable_declarator') continue;
-
       const nameNode = findChildOfType(varDecl, 'identifier');
       const arrowFunc = varDecl.children?.find(c => c.type === 'arrow_function');
       if (!nameNode || !arrowFunc) continue;
-
       const { line } = getLineAndColumn(varDecl);
-      const endLine = arrowFunc.location?.end?.line ?? line;
-
-      // Extract function calls
-      const body = findChildOfType(arrowFunc, 'statement_block');
-      const functionCalls = body ? extractFunctionCalls(body, content, importMap) : [];
-      const normalizedCalls = functionCalls.map(call =>
-        normalizeCallTarget(call.callee, filePath, localFunctions)
-      );
-
-      // Track which imports this function uses
-      const functionUsageMap = extractIdentifierUsage(arrowFunc, content, importNames);
-      const usedImports = Array.from(functionUsageMap.keys());
-
-      // Apply unused imports configuration
-      const fConfig = options?.unusedImportsConfig;
-      let unusedImports = detailedImports
-        .filter(imp => {
-          if ((imp.importType as any) === 'side-effect') return false;
-          if (functionUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
-          if (!fConfig?.includeTypeOnlyImports && imp.isTypeOnly) return false;
-          if (fConfig?.ignorePatterns?.some(pattern =>
-            imp.localName.match(new RegExp(pattern)))) return false;
-          return true;
-        })
-        .map(imp => imp.localName);
-
-      const arrowParams = findChildOfType(arrowFunc, 'formal_parameters');
-      const arrowParamCount = arrowParams?.children?.filter(c =>
-        c.type === 'required_parameter' || c.type === 'optional_parameter' || c.type === 'rest_parameter'
-      ).length ?? 0;
-
-      functions.push({
-        name: getNodeText(nameNode, content),
-        filePath,
-        lineNumber: line,
-        startLine: line,
-        endLine,
-        language: getLanguageFromPath(filePath),
-        dependencies,
-        purpose: `Arrow function ${getNodeText(nameNode, content)}`,
-        context: `Defined in ${path.basename(filePath)}`,
-        body: body ? getNodeText(body, content) : undefined,
-        metadata: {
-          kind: 'arrow',
-          isAsync: hasModifier(arrowFunc, 'async'),
-          isExported: isExported(varStmt),
-          parameterCount: arrowParamCount,
-          functionCalls: normalizedCalls,
-          usedImports,
-          unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
-          complexity: calculateComplexity(arrowFunc),
-          dependencies
-        }
-      });
+      const name = getNodeText(nameNode, content);
+      pushScannedFunction(name, line, arrowFunc.location?.end?.line ?? line, arrowFunc, 'arrow',
+        `Arrow function ${name}`, `Defined in ${path.basename(filePath)}`,
+        { isAsync: hasModifier(arrowFunc, 'async'), isExported: isExported(varStmt) });
     }
   }
 
@@ -338,64 +305,16 @@ export function extractFunctionsFromSource(
     for (const method of methods) {
       const methodNameNode = findChildOfType(method, 'identifier');
       if (!methodNameNode) continue;
-
       const { line } = getLineAndColumn(method);
-      const endLine = method.location?.end?.line ?? line;
-
-      // Extract function calls
-      const body = findChildOfType(method, 'statement_block');
-      const functionCalls = body ? extractFunctionCalls(body, content, importMap) : [];
-      const normalizedCalls = functionCalls.map(call =>
-        normalizeCallTarget(call.callee, filePath, localFunctions)
-      );
-
-      // Track which imports this method uses
-      const functionUsageMap = extractIdentifierUsage(method, content, importNames);
-      const usedImports = Array.from(functionUsageMap.keys());
-
-      // Apply unused imports configuration
-      const mConfig = options?.unusedImportsConfig;
-      let unusedImports = detailedImports
-        .filter(imp => {
-          if ((imp.importType as any) === 'side-effect') return false;
-          if (functionUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
-          if (!mConfig?.includeTypeOnlyImports && imp.isTypeOnly) return false;
-          if (mConfig?.ignorePatterns?.some(pattern =>
-            imp.localName.match(new RegExp(pattern)))) return false;
-          return true;
-        })
-        .map(imp => imp.localName);
-
-      const methodParams = findChildOfType(method, 'formal_parameters');
-      const methodParamCount = methodParams?.children?.filter(c =>
-        c.type === 'required_parameter' || c.type === 'optional_parameter' || c.type === 'rest_parameter'
-      ).length ?? 0;
-
-      functions.push({
-        name: `${className}.${getNodeText(methodNameNode, content)}`,
-        filePath,
-        lineNumber: line,
-        startLine: line,
-        endLine,
-        language: getLanguageFromPath(filePath),
-        dependencies,
-        purpose: `Method ${getNodeText(methodNameNode, content)} of class ${className}`,
-        context: `Class method in ${path.basename(filePath)}`,
-        body: body ? getNodeText(body, content) : undefined,
-        metadata: {
-          kind: 'method',
+      const methodName = getNodeText(methodNameNode, content);
+      pushScannedFunction(`${className}.${methodName}`, line, method.location?.end?.line ?? line, method, 'method',
+        `Method ${methodName} of class ${className}`, `Class method in ${path.basename(filePath)}`,
+        {
           className,
           isAsync: hasModifier(method, 'async'),
           isStatic: hasModifier(method, 'static'),
-          isPrivate: hasModifier(method, 'private'),
-          parameterCount: methodParamCount,
-          functionCalls: normalizedCalls,
-          usedImports,
-          unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
-          complexity: calculateComplexity(method),
-          dependencies
-        }
-      });
+          isPrivate: hasModifier(method, 'private')
+        });
     }
   }
 
