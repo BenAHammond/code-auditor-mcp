@@ -78,8 +78,10 @@ export function computeImpact(
  * Finds all transitive callers up to MAX_DEPTH.
  */
 function computeImpactFromCache(db: SqliteDatabase, functionIds: number[]): number[] {
-  // Build initial set as comma-separated IDs
-  const idList = functionIds.join(',');
+  // Bind the edited-function IDs as placeholders rather than interpolating
+  // them into the CTE text — the sibling `computeImpactFromCalls` already does
+  // this, and it keeps the query parameterized (no string interpolation).
+  const idPlaceholders = functionIds.map(() => '?').join(',');
 
   // Recursive CTE: follow (neighbor → node) edges in the call graph.
   // In graph_cache, node_key = caller, neighbor_key = callee.
@@ -91,7 +93,7 @@ function computeImpactFromCache(db: SqliteDatabase, functionIds: number[]): numb
         -- Base: start from the edited functions themselves
         SELECT DISTINCT node_key, 0
         FROM graph_cache
-        WHERE graph_type = 'call' AND neighbor_key IN (${idList})
+        WHERE graph_type = 'call' AND neighbor_key IN (${idPlaceholders})
 
         UNION
 
@@ -103,7 +105,7 @@ function computeImpactFromCache(db: SqliteDatabase, functionIds: number[]): numb
           AND callers.depth < ${MAX_DEPTH}
       )
       SELECT DISTINCT id FROM callers
-    `).all() as Array<{ id: string }>;
+    `).all(...functionIds) as Array<{ id: string }>;
 
     return rows.map(r => parseInt(r.id, 10)).filter(id => !isNaN(id));
   } catch {
@@ -132,14 +134,17 @@ function computeImpactFromCalls(db: SqliteDatabase, functionIds: number[]): numb
   // To find callers: find rows where callee_name matches our function,
   // then recursively follow from those callers
   try {
-    const nameList = names.map(n => `'${n.replace(/'/g, "''")}'`).join(',');
+    // Parameterize the callee names rather than quote-escaping them into the
+    // CTE text — the sibling `id IN (${idPlaceholders})` above and the first
+    // query of this function already bind values this way.
+    const namePlaceholders = names.map(() => '?').join(',');
 
     const rows = db.prepare(`
       WITH RECURSIVE callers(id, depth) AS (
         -- Base: functions that directly call our edited functions
         SELECT fc.caller_id, 1
         FROM function_calls fc
-        WHERE fc.callee_name IN (${nameList})
+        WHERE fc.callee_name IN (${namePlaceholders})
 
         UNION
 
@@ -153,7 +158,7 @@ function computeImpactFromCalls(db: SqliteDatabase, functionIds: number[]): numb
         WHERE callers.depth < ${MAX_DEPTH}
       )
       SELECT DISTINCT id FROM callers
-    `).all() as Array<{ id: number }>;
+    `).all(...names) as Array<{ id: number }>;
 
     return rows.map(r => r.id).filter(id => !functionIds.includes(id));
   } catch {

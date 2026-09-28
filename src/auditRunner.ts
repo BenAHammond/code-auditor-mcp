@@ -582,7 +582,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     if (auditIndex) {
       pipelineIndexHandle = {
         query: (sql, params) => auditIndex!.query(sql, params),
-        count: (table, where, params) => auditIndex!.count(table, where, params),
+        count: (table) => auditIndex!.count(table),
         tableHasRows: (table) => auditIndex!.tableHasRows(table),
         run: (sql, params) => auditIndex!.rawDb.prepare(sql).run(...(params ?? [])),
         exec: (sql) => auditIndex!.rawDb.exec(sql),

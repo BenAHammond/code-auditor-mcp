@@ -487,12 +487,8 @@ export function getLedgerRun(db: SqliteDatabase, runId: string): LedgerRunDetail
  * @returns The matching runs in reverse chronological order.
  */
 export function listLedgerRuns(db: SqliteDatabase, projectRoot?: string): LedgerRunDetail[] {
-  const params: any[] = [];
-  let where = '';
-  if (projectRoot) {
-    where = 'WHERE project_root = ?';
-    params.push(projectRoot);
-  }
+  const params: any[] = projectRoot ? [projectRoot] : [];
+  const where = projectRoot ? 'WHERE project_root = ?' : '';
   const rows = db.prepare(`
     SELECT ${RUN_DETAIL_SELECT} FROM findings_ledger_runs ${where}
     ORDER BY timestamp DESC
@@ -1050,12 +1046,8 @@ export function exportLedger(
   db: SqliteDatabase,
   since?: string,
 ): { runs: LedgerRunRecord[]; findings: LedgerFindingRecord[] } {
-  const runParams: any[] = [];
-  let runWhere = '';
-  if (since) {
-    runWhere = 'WHERE timestamp >= ?';
-    runParams.push(since);
-  }
+  const runParams: any[] = since ? [since] : [];
+  const runWhere = since ? 'WHERE timestamp >= ?' : '';
 
   const runs = db.prepare(`
     SELECT

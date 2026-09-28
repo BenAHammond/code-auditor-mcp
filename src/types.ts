@@ -474,7 +474,7 @@ export interface Stage4Reducer {
  */
 export interface IndexHandle {
   query(sql: string, params?: unknown[]): unknown[];
-  count(table: string, where?: string, params?: unknown[]): number;
+  count(table: string): number;
   tableHasRows(table: string): boolean;
   run(sql: string, params?: unknown[]): { changes: number; lastInsertRowid: number | bigint };
   exec(sql: string): void;

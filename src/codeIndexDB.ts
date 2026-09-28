@@ -201,10 +201,13 @@ class SqliteCollectionAdapter {
 
   update(doc: any): void {
     const keys = Object.keys(doc).filter(k => k !== '$loki' && k !== 'meta');
-    for (const k of keys) assertSqlIdentifier(k, 'column name');
-    const sets = keys.map(k => `"${k}" = @${k}`);
+    const sets: string[] = [];
     const params: Record<string, any> = {};
-    for (const k of keys) params[k] = this.bindable(doc[k]);
+    for (const k of keys) {
+      assertSqlIdentifier(k, 'column name');
+      sets.push(`"${k}" = @${k}`);
+      params[k] = this.bindable(doc[k]);
+    }
     params['_rowid'] = doc.$loki;
     this.db.prepare(`UPDATE "${this.tableName}" SET ${sets.join(', ')} WHERE rowid = @_rowid`).run(params);
   }
@@ -1952,8 +1955,12 @@ export class CodeIndexDB {
       const exists = existing.find(e => e.name === func.name && e.line_number === func.lineNumber);
       if (exists) {
         const row = this.functionToRow(func, lastModified);
-        const keys = Object.keys(row);
-        const sets = keys.filter(k => k !== 'name' && k !== 'file_path').map(k => `"${k}" = @${k}`);
+        const sets: string[] = [];
+        for (const k of Object.keys(row)) {
+          if (k === 'name' || k === 'file_path') continue;
+          assertSqlIdentifier(k, 'column name');
+          sets.push(`"${k}" = @${k}`);
+        }
         const params = { ...row, _id: exists.id };
         this.db.prepare(`UPDATE functions SET ${sets.join(', ')} WHERE id = @_id`).run(params);
         stats.updated++;
@@ -4206,18 +4213,15 @@ export class CodeIndexDB {
   }
 
   /**
-   * Count rows in a table, with optional WHERE clause.
+   * Count rows in a table.
    *
    * @param table - The table to count (validated as a SQL identifier).
-   * @param where - Optional WHERE clause (without the keyword).
-   * @param params - Optional bind parameters for the WHERE clause.
    * @returns The row count.
    */
-  count(table: string, where?: string, params?: any[]): number {
+  count(table: string): number {
     this.ensureInitialized();
     assertSqlIdentifier(table, 'table name');
-    const whereClause = where ? ` WHERE ${where}` : '';
-    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM ${table}${whereClause}`).get(...(params ?? [])) as { cnt: number };
+    const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM ${table}`).get() as { cnt: number };
     return row.cnt;
   }
 

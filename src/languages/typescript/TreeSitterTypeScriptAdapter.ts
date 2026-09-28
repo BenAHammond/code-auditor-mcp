@@ -1597,21 +1597,26 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     while (tsCurrent) {
       if (tsCurrent.type === 'for_in_statement') {
         const left = (tsCurrent as any).childForFieldName?.('left') as TreeSitterNode | null;
-        if (left && left.text === idName) {
-          const right = (tsCurrent as any).childForFieldName?.('right') as TreeSitterNode | null;
-          if (right && right.type === 'identifier') {
-            const iterName = right.text;
-            let iterDecl = this.resolveDeclaration(scopeRoot, enclosing, ast, iterName);
-            if (iterDecl) {
-              const iterRaw = getRawNode(iterDecl);
-              const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
-              const iterLine = iterDecl.location.start.line;
-              const iterReassigned = this.hasReassignment(scopeRoot, iterName, iterLine)
-                || (enclosing && enclosing !== ast.root ? this.hasReassignment(ast.root, iterName, iterLine) : false);
-              if (!iterReassigned && this.isStaticValueNode(iterValue)) {
-                const initText = iterValue ? sourceCode.slice(iterValue.startIndex, iterValue.endIndex).trim() : '';
-                return { initText, isStatic: true, declLine: iterDecl.location.start.line };
-              }
+        const right = (tsCurrent as any).childForFieldName?.('right') as TreeSitterNode | null;
+        // Bare loop variable: `for (const t of TABLES)`.
+        const isBare = left && left.type === 'identifier' && left.text === idName;
+        // Destructured loop variable: `for (const [a, b] of TUPLES)`. Every
+        // destructured binding is a compile-time constant when the iterable is a
+        // static array literal (all elements static ⇒ all tuple positions static).
+        const isDestructured = left && left.type === 'array_pattern'
+          && (left.namedChildren ?? []).some((c: TreeSitterNode) => c.type === 'identifier' && c.text === idName);
+        if ((isBare || isDestructured) && right && right.type === 'identifier') {
+          const iterName = right.text;
+          const iterDecl = this.resolveDeclaration(scopeRoot, enclosing, ast, iterName);
+          if (iterDecl) {
+            const iterRaw = getRawNode(iterDecl);
+            const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
+            const iterLine = iterDecl.location.start.line;
+            const iterReassigned = this.hasReassignment(scopeRoot, iterName, iterLine)
+              || (enclosing && enclosing !== ast.root ? this.hasReassignment(ast.root, iterName, iterLine) : false);
+            if (!iterReassigned && this.isStaticValueNode(iterValue)) {
+              const initText = iterValue ? sourceCode.slice(iterValue.startIndex, iterValue.endIndex).trim() : '';
+              return { initText, isStatic: true, declLine: iterDecl.location.start.line };
             }
           }
         }
@@ -1781,6 +1786,55 @@ class TsConstantResolution extends TsDynamicStringConstruction {
       }
     });
     return guarded;
+  }
+
+  /** True when the identifier names a local (non-parameter) variable or loop
+   *  variable that a guard call (assert/validate/check/ensure/guard-prefixed) has
+   *  validated before this use, and which is not reassigned after that guard.
+   *  The whitelist guard throws on invalid input, so a value that has passed it
+   *  cannot carry unvalidated data past the check.  This is the local-variable
+   *  analogue of `isGuardValidatedParameter` (parameters) and
+   *  `isGuardValidatedMember` (class fields) — e.g. `for (const k of keys)
+   *  assertSqlIdentifier(k, 'column name')` then `` `"${k}" = @${k}` ``.
+   *
+   *  Soundness: the guard must sit in the identifier's own enclosing scope (so a
+   *  callback parameter shadowing a guarded outer variable is not blessed), and
+   *  no reassignment may occur after the guard (a guard on an old value does not
+   *  protect a later reassignment). */
+  protected isGuardValidatedLocal(identifierNode: ASTNode, ast: AST): boolean {
+    const idRaw = getRawNode(identifierNode);
+    const name = idRaw.text;
+    const enclosing = this.findEnclosingScope(identifierNode, ast);
+    const scopeRoot = enclosing ?? ast.root;
+    // Parameters are `isGuardValidatedParameter`'s province; a same-name match
+    // here would otherwise reach a shadowed callback binding.
+    if (enclosing && enclosing !== ast.root && this.getParamNames(enclosing).includes(name)) return false;
+
+    let guardLine = -1;
+    let guarded = false;
+    this.walk(scopeRoot, (node) => {
+      if (guarded) return;
+      const raw = getRawNode(node);
+      if (raw.type !== 'call_expression') return;
+      const fn = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
+      if (!fn) return;
+      let calleeName: string | null = null;
+      if (fn.type === 'identifier') calleeName = fn.text;
+      else if (fn.type === 'member_expression') {
+        calleeName = (fn as any).childForFieldName?.('property')?.text ?? null;
+      }
+      if (!calleeName || !/^(assert|validate|check|ensure|guard)([A-Z_]|$)/i.test(calleeName)) return;
+      const argsNode = (raw as any).childForFieldName?.('arguments') as TreeSitterNode | null;
+      const first = argsNode?.namedChildren[0] ?? null;
+      if (first && first.type === 'identifier' && first.text === name
+          && raw.startIndex < idRaw.startIndex) {
+        guarded = true;
+        guardLine = node.location.start.line;
+      }
+    });
+    if (!guarded) return false;
+    // A guard on an old value does not protect a later reassignment.
+    return !this.hasReassignment(scopeRoot, name, guardLine);
   }
 }
 
@@ -1987,6 +2041,9 @@ class TsSafetyAnalysis extends TsConstantResolution {
       return true;
     }
     if (this.isGuardValidatedParameter(node, ctx.ast)) {
+      return true;
+    }
+    if (this.isGuardValidatedLocal(node, ctx.ast)) {
       return true;
     }
     if (this.isParamSafeAtAllCallSites(node, ctx)) {
