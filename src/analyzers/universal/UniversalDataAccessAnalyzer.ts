@@ -1501,7 +1501,12 @@ export function hasWriteVerb(text: string): boolean {
  */
 function hasMassWriteVerb(text: string): boolean {
   const upper = text.toUpperCase();
-  return /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
+  // Statement-aware: `DELETE FROM` / `UPDATE <table> SET` name the DML verb. The
+  // bare `\bDELETE\b` / `\bUPDATE\b` word tests misread a `CREATE TRIGGER`'s
+  // event clause (`… AFTER DELETE ON t`, `… AFTER UPDATE ON t`) as a mass write —
+  // the word sits in DDL, not a statement. `DELETE ON` / `UPDATE ON` therefore no
+  // longer match, while `DELETE FROM` / `UPDATE x SET` still do.
+  return /\bDELETE\s+FROM\b/.test(upper) || /\bUPDATE\s+\S+\s+SET\b/.test(upper)
     // Kysely `deleteFrom`/`updateTable` are mass writes with no SQL keyword word
     // boundary — the camelCase form must be recognized explicitly.
     || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);

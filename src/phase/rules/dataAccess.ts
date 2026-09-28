@@ -80,10 +80,19 @@ function isUpsertForm(text: string): boolean {
 /** True when a statement mutates or deletes existing rows (DELETE/UPDATE) — the
  *  TypeScript `unfiltered-query` mass-write set. INSERT is *not* a mass write:
  *  Spec 55 R5 / Spec 56 R1 made `unfiltered-query` about DELETE/UPDATE with no
- *  row-limiting clause, not about row-adding statements. */
+ *  row-limiting clause, not about row-adding statements.
+ *
+ *  Statement-aware: a mass write is a *leading* `DELETE FROM` or `UPDATE … SET`
+ *  clause. The bare `\bDELETE\b` / `\bUPDATE\b` word tests this once used misread
+ *  the DDL trigger spellings `… AFTER DELETE ON t` / `… AFTER UPDATE ON t` inside
+ *  a `CREATE TRIGGER` block as mass writes — the word DELETE/UPDATE sits in the
+ *  trigger's event clause, not a statement. `DELETE FROM` (vs `DELETE ON`) and
+ *  `UPDATE <table> SET` (vs `UPDATE ON`) name the DML verb, so the DDL case no
+ *  longer matches; the camelCase `deleteFrom`/`updateTable` builder verbs are kept
+ *  via their own spellings below. */
 function hasMassWriteVerb(text: string): boolean {
   const upper = text.toUpperCase();
-  return /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
+  return /\bDELETE\s+FROM\b/.test(upper) || /\bUPDATE\s+\S+\s+SET\b/.test(upper)
     || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
 }
 
