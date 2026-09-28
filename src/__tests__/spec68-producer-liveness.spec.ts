@@ -172,6 +172,7 @@ function assertShape(kind: FactKind, value: unknown): void {
     if (kind === 'table-catalog') {
       const catalog = value as FactShapes['table-catalog'];
       expect(Array.isArray(catalog.tables), `producer for ${kind} must expose .tables array`).toBe(true);
+      expect(catalog.aliases, `producer for ${kind} must expose .aliases object`).toBeTypeOf('object');
     } else if (kind === 'migration-history') {
       const history = value as FactShapes['migration-history'];
       expect(history.dropped, `producer for ${kind} must expose .dropped object`).toBeTypeOf('object');

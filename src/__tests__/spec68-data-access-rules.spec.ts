@@ -164,7 +164,7 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
       const ctx = {
         facts: {
           'data-access-calls': calls,
-          'table-catalog': { tables: [] as Array<{ name: string; source: string; columns: string[] }> },
+          'table-catalog': { tables: [] as Array<{ name: string; source: string; columns: string[] }>, aliases: {} },
         },
         formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
         thresholds,

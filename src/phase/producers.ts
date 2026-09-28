@@ -70,6 +70,7 @@ import { extractLoopQueries } from './loopQueries.js';
 import { extractDynamicSql } from './dynamicSql.js';
 import { extractSchemaUsage } from './schemaUsage.js';
 import { extractSchemaCode } from './schemaCode.js';
+import { extractSchemaObjects } from './schemaObjects.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
 import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 import { mineConventionsFromFunctionIndex } from './conventionMining.js';
@@ -131,6 +132,7 @@ const secretCandidatesProcess = (file: ParsedFile): FactFragment<'secret-candida
 const securityCandidatesProcess = (file: ParsedFile): FactFragment<'security-candidates'> => extractSecurityCandidates(file as AstFile);
 const ddlProcess = (file: ParsedFile): FactFragment<'ddl-declarations'> => extractSchemaCode(file);
 const schemaUsageProcess = (file: ParsedFile): FactFragment<'schema-usage'> => extractSchemaUsage(file as AstFile);
+const schemaObjectsProcess = (file: ParsedFile): FactFragment<'schema-objects'> => extractSchemaObjects(file);
 const styleProcess = (file: ParsedFile): FactFragment<'style-declarations'> => [extractStylesCss(file as AstFile)];
 const styleSourceProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesSource(file as AstFile);
 const styleMarkupProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesMarkup(file);
@@ -214,6 +216,14 @@ export const PRODUCERS = {
     typescript: fileProducer('schema-usage', 'typescript', schemaUsageProcess),
     tsx: fileProducer('schema-usage', 'tsx', schemaUsageProcess),
     javascript: fileProducer('schema-usage', 'javascript', schemaUsageProcess),
+  },
+  // `schema-objects` — ORM `const <id> = pgTable('name', …)` bindings, the
+  // identifier → SQL-name half of the known-table catalog's alias map. Text-only
+  // projection (no AST), like `ddl-declarations`, so it reads `ParsedFile`.
+  'schema-objects': {
+    typescript: fileProducer('schema-objects', 'typescript', schemaObjectsProcess),
+    tsx: fileProducer('schema-objects', 'tsx', schemaObjectsProcess),
+    javascript: fileProducer('schema-objects', 'javascript', schemaObjectsProcess),
   },
   // `style-declarations` was `styles-css` (named for the declaration, not the format).
   'style-declarations': {
@@ -325,7 +335,7 @@ export const CORPUS_PRODUCERS = {
   'table-catalog': {
     id: 'table-catalog',
     produces: 'table-catalog',
-    needs: ['ddl-declarations'],
+    needs: ['ddl-declarations', 'schema-objects'],
     process(facts, ctx?): TableCatalog {
       // The known-table set is the *net* set after replaying DDL across files
       // in migration order — a table dropped in a later migration is a stale
@@ -347,9 +357,17 @@ export const CORPUS_PRODUCERS = {
       for (const t of ctx?.externalTables ?? []) {
         tables.push({ name: t.name, source: t.source, columns: [...t.columns] });
       }
-      return { tables };
+      // The ORM schema-object alias map: `.from(sampleOwnership)` names the JS
+      // identifier, not the SQL table. Resolve it through the pgTable/mysqlTable/
+      // sqliteTable bindings so a query referencing a schema object reaches the
+      // catalog entry (and Tier-3 tenancy) the identifier declares.
+      const aliases: Record<string, string> = {};
+      for (const obj of facts['schema-objects']) {
+        if (!(obj.identifier in aliases)) aliases[obj.identifier] = obj.table;
+      }
+      return { tables, aliases };
     },
-  } satisfies CorpusProcessor<'table-catalog', readonly ['ddl-declarations']>,
+  } satisfies CorpusProcessor<'table-catalog', readonly ['ddl-declarations', 'schema-objects']>,
   // `migration-history` reduces the DDL declarations into the cross-file drop
   // provenance (dropped-table → dropping migration + what it created). `needs`
   // forms the DAG edge ddl-declarations → migration-history, parallel to
@@ -635,6 +653,7 @@ export const FACT_KINDS = {
   'security-candidates': true,
   'ddl-declarations': true,
   'schema-usage': true,
+  'schema-objects': true,
   'style-declarations': true,
   'cross-language-entities': true,
   'data-access-calls': true,

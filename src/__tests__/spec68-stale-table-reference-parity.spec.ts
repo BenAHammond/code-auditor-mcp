@@ -91,7 +91,7 @@ async function parity(files: File[]) {
     .sort();
 
   // New path — the migrated rules over the same facts.
-  const catalog = CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations });
+  const catalog = CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations, 'schema-objects': [] });
   const migrationHistory = CORPUS_PRODUCERS['migration-history'].process({ 'ddl-declarations': declarations });
   const fresh = await analyzeSchemaRules(usages, catalog, migrationHistory);
   const nu = fresh

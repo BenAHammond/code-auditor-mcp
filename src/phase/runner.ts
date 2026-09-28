@@ -47,6 +47,7 @@ import type {
   DynamicSqlFact,
   SchemaUsageFact,
   SchemaDeclaration,
+  SchemaObject,
   TableCatalog,
   MigrationHistory,
   Entity,
@@ -424,6 +425,29 @@ export async function buildDdlDeclarations(files: readonly InputFile[]): Promise
 }
 
 /**
+ * Parse → Process for the `schema-objects` fact (ORM `const <id> = pgTable(
+ * 'name', …)` bindings). Returns the identifier → SQL-name bindings the
+ * `table-catalog` corpus processor folds into its alias map.
+ *
+ * @param files - The input files to parse and process.
+ * @returns The raw `schema-objects` the corpus processor reduces.
+ */
+export async function buildSchemaObjects(files: readonly InputFile[]): Promise<SchemaObject[]> {
+  const objects: SchemaObject[] = [];
+  for (const input of files) {
+    const parsed = await parseOne(input);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor('schema-objects', parsed.format);
+      if (producer) objects.push(...producer.process(parsed) as SchemaObject[]);
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return objects;
+}
+
+/**
  * Reduce the `ddl-declarations` fact through the `table-catalog` corpus
  * processor into the known-table set. The JSON-schema half of the old catalog
  * is config-driven (§10) and not reachable from this simple runner, so it is
@@ -431,8 +455,11 @@ export async function buildDdlDeclarations(files: readonly InputFile[]): Promise
  * corpus processor consumes.
  */
 export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
-  const declarations = await buildDdlDeclarations(files);
-  return CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations });
+  const [declarations, objects] = await Promise.all([
+    buildDdlDeclarations(files),
+    buildSchemaObjects(files),
+  ]);
+  return CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations, 'schema-objects': objects });
 }
 
 /**
@@ -474,11 +501,12 @@ export async function analyzeSchemaRules(
  *  @returns The schema rules' findings over the assembled facts.
  */
 export async function runSchemaSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const [usages, declarations] = await Promise.all([
+  const [usages, declarations, objects] = await Promise.all([
     buildSchemaUsage(files),
     buildDdlDeclarations(files),
+    buildSchemaObjects(files),
   ]);
-  const catalog = CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations });
+  const catalog = CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations, 'schema-objects': objects });
   const migrationHistory = CORPUS_PRODUCERS['migration-history'].process({ 'ddl-declarations': declarations });
   return analyzeSchemaRules(usages, catalog, migrationHistory, thresholds);
 }

@@ -30,7 +30,7 @@ function u(overrides: Partial<SchemaUsageFact> = {}): SchemaUsageFact {
 }
 
 function catalog(names: string[]): TableCatalog {
-  return { tables: names.map((name) => ({ name, source: '/fixture/schema.ts' })) };
+  return { tables: names.map((name) => ({ name, source: '/fixture/schema.ts' })), aliases: {} };
 }
 
 /** `unknown-table` reads `migration-history` to partition dropped tables; these

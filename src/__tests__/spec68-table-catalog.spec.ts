@@ -12,10 +12,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { CORPUS_PRODUCERS } from '../phase/producers.js';
-import type { SchemaDeclaration } from '../phase/types.js';
+import type { SchemaDeclaration, SchemaObject } from '../phase/types.js';
 
-function catalog(decls: SchemaDeclaration[]) {
-  return CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': decls });
+function catalog(decls: SchemaDeclaration[], objects: SchemaObject[] = []) {
+  return CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': decls, 'schema-objects': objects });
 }
 
 describe('Spec 68 table-catalog corpus processor', () => {
@@ -56,5 +56,30 @@ describe('Spec 68 table-catalog corpus processor', () => {
 
   it('returns an empty table set for no schema declarations', () => {
     expect(catalog([]).tables).toEqual([]);
+  });
+
+  it('folds ORM schema-object bindings into the identifier → SQL-name alias map', () => {
+    const objects: SchemaObject[] = [
+      { file: 'database/schema.ts', identifier: 'sampleOwnership', table: 'sample_ownership' },
+      { file: 'database/schema.ts', identifier: 'organizations', table: 'organizations' },
+    ];
+
+    expect(catalog([], objects).aliases).toEqual({
+      sampleOwnership: 'sample_ownership',
+      organizations: 'organizations',
+    });
+  });
+
+  it('keeps the first binding when an identifier is declared twice', () => {
+    const objects: SchemaObject[] = [
+      { file: 'a.ts', identifier: 'users', table: 'users' },
+      { file: 'b.ts', identifier: 'users', table: 'auth_users' },
+    ];
+
+    expect(catalog([], objects).aliases).toEqual({ users: 'users' });
+  });
+
+  it('returns an empty alias map for no schema objects', () => {
+    expect(catalog([]).aliases).toEqual({});
   });
 });

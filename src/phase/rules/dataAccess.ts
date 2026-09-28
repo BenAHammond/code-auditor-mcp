@@ -340,8 +340,9 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
     // into `table-catalog`; Tiers 1–2 come from the config thresholds. The one
     // `buildOrgFilterTierSet` is shared with the applicability predicate, so
     // firing and applicability cannot drift to different tier sets (Spec 62 B).
+    const catalog = ctx.facts['table-catalog'];
     const ddlTableColumns: Record<string, string[]> = {};
-    for (const table of ctx.facts['table-catalog'].tables) {
+    for (const table of catalog.tables) {
       ddlTableColumns[table.name] = [...table.columns];
     }
     const tierSet = buildOrgFilterTierSet(
@@ -358,8 +359,13 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
     const tenantColumnSet = new Set(tierSet.tenantColumns);
 
     for (const call of ctx.facts['data-access-calls']) {
-      if (call.tables.length === 0) continue;
-      if (!tableRequiresOrgFilter(call.tables, tierSet)) continue;
+      // Resolve ORM schema-object identifiers to their declared SQL names
+      // (`.from(sampleOwnership)` → `sample_ownership`) before the tier lookup,
+      // so a query referencing a Drizzle schema object reaches the DDL-declared
+      // catalog entry (and its Tier-3 tenancy) the identifier names.
+      const tables = call.tables.map((t) => catalog.aliases[t] ?? t);
+      if (tables.length === 0) continue;
+      if (!tableRequiresOrgFilter(tables, tierSet)) continue;
 
       const isInsert = isRawSqlInsert(call.queryText);
 
@@ -387,8 +393,8 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
         ruleId: 'missing-org-filter',
         severity: 'critical',
         message: isInsert
-          ? `INSERT into ${call.tables.join(', ')} does not set the organization/tenant column`
-          : `Query on ${call.tables.join(', ')} has no organization/tenant predicate`,
+          ? `INSERT into ${tables.join(', ')} does not set the organization/tenant column`
+          : `Query on ${tables.join(', ')} has no organization/tenant predicate`,
         file: call.file,
         line: call.line,
         column: call.column,
@@ -396,9 +402,9 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
         resolution: {
           action: isInsert ? 'add-tenant-column' : 'add-tenant-predicate',
           summary: isInsert
-            ? `Add the tenant column (organization_id / org_id) to the INSERT column list on ${call.tables.join(', ')} so the row is scoped to the current organization.`
-            : `Add the tenant column (organization_id / org_id) to the WHERE predicate on ${call.tables.join(', ')} so this query is scoped to the current organization, not just by primary key.`,
-          symbols: call.tables,
+            ? `Add the tenant column (organization_id / org_id) to the INSERT column list on ${tables.join(', ')} so the row is scoped to the current organization.`
+            : `Add the tenant column (organization_id / org_id) to the WHERE predicate on ${tables.join(', ')} so this query is scoped to the current organization, not just by primary key.`,
+          symbols: tables,
         },
       });
     }

@@ -60,6 +60,7 @@ export interface FactShapes {
   // holds only what works.
   'ddl-declarations': SchemaDeclaration[];
   'schema-usage': SchemaUsageFact[];
+  'schema-objects': SchemaObject[];
   'style-declarations': StyleDeclarationsFile[];
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
@@ -507,6 +508,25 @@ export type SchemaDeclaration = {
 };
 
 /**
+ * One ORM schema-object declaration: a `const <identifier> = pgTable|mysqlTable|
+ * sqliteTable('<table>', …)` binding. The identifier is the JS name the code
+ * references (`.from(sampleOwnership)`), and `table` is the SQL name the DDL
+ * catalog keys on (`sample_ownership`). The `table-catalog` corpus reducer
+ * builds an alias map from these so a query referencing the identifier reaches
+ * the catalog entry the identifier names — the Drizzle chain that was broken
+ * before: `.from(sampleOwnership)` extracted `sampleOwnership`, which matches no
+ * catalog key (`sample_ownership`), so tenant-scoped tables queried through a
+ * schema object were invisible to `missing-org-filter`.
+ */
+export type SchemaObject = {
+  file: string;
+  /** The JS binding name (`sampleOwnership`). */
+  identifier: string;
+  /** The declared SQL table name (`sample_ownership`). */
+  table: string;
+};
+
+/**
  * The serializable projection of `SchemaUsage` (types.ts). The source type is
  * an `interface`, which does not satisfy §4's `Serializable` index-signature
  * arm; the fact is the same data as a plain object-literal shape.
@@ -670,9 +690,13 @@ export type ResolvedQuery = {
 
 /** The known-table catalog built by the corpus schema processor (§5). Each
  *  table carries its DDL-declared column names so Tier 3 tenant discovery
- *  (`missing-org-filter`) can read tenancy from the corpus, not just config. */
+ *  (`missing-org-filter`) can read tenancy from the corpus, not just config.
+ *  `aliases` maps ORM schema-object identifiers (`sampleOwnership`) to their
+ *  declared SQL names (`sample_ownership`), so a query referencing the
+ *  identifier resolves to the catalog entry it names. */
 export type TableCatalog = {
   tables: ReadonlyArray<{ name: string; source: string; columns: ReadonlyArray<string> }>;
+  aliases: Readonly<Record<string, string>>;
 };
 
 /**
@@ -1348,6 +1372,7 @@ export interface SupplyingFormats {
   'security-candidates': 'typescript' | 'tsx' | 'javascript';
   'ddl-declarations': 'typescript' | 'tsx' | 'javascript' | 'sql';
   'schema-usage': 'typescript' | 'tsx' | 'javascript';
+  'schema-objects': 'typescript' | 'tsx' | 'javascript';
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript' | 'markup';
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
   'data-access-calls': 'typescript' | 'tsx' | 'javascript' | 'go';
