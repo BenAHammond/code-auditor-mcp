@@ -31,6 +31,7 @@ import type {
   ThresholdValues,
   GoFunctionFact,
   GoSwitchFact,
+  AnalysisContext,
 } from '../types.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
@@ -132,6 +133,25 @@ function collectFunctionLikes(symbols: FileSymbols[]): FunctionLike[] {
         out.push({ name: m.name, file: s.file, line: m.line, column: m.column, parameterCount: m.parameterCount, parameterNames: m.parameterNames, lineCount: m.lineCount, complexity: m.complexity, concernGroups: m.concernGroups });
       }
     }
+  }
+  return out;
+}
+
+/** The function-likes exceeding a numeric threshold, with the resolved max.
+ *  `function-length` and `parameter-count` both iterate the same symbol set and
+ *  compare one metric (`lineCount` / `parameterCount`) against a threshold key;
+ *  only the metric, key, and message/resolution prose differ. */
+function collectOversizedFunctionLikes(
+  ctx: AnalysisContext<SolidNeeds>,
+  thresholdKey: string,
+  fallback: number,
+  measure: (fn: FunctionLike) => number,
+): Array<{ fn: FunctionLike; max: number }> {
+  const max = num(ctx.thresholds, thresholdKey, fallback);
+  const out: Array<{ fn: FunctionLike; max: number }> = [];
+  for (const fn of collectFunctionLikes(visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds))) {
+    if (measure(fn) <= max) continue;
+    out.push({ fn, max });
   }
   return out;
 }
@@ -326,11 +346,8 @@ const functionLength: RuleDefinition<SolidNeeds> = {
   thresholdRationale: META['function-length'].thresholdRationale,
   samples: META['function-length'].samples,
   analyze(ctx): Finding[] {
-    const out: Finding[] = [];
-    const max = num(ctx.thresholds, 'maxLinesPerMethod', 200);
-    for (const fn of collectFunctionLikes(visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds))) {
-      if (fn.lineCount <= max) continue;
-      out.push(finding(
+    return collectOversizedFunctionLikes(ctx, 'maxLinesPerMethod', 200, (fn) => fn.lineCount)
+      .map(({ fn, max }) => finding(
         'function-length', 'high',
         `Function "${fn.name}" has ${fn.lineCount} lines, exceeding the maximum of ${max}. Consider breaking it down.`,
         fn.file, fn.line, fn.column, symbolOf(fn.name, fn.line, fn.column),
@@ -342,8 +359,6 @@ const functionLength: RuleDefinition<SolidNeeds> = {
           lines: [fn.line],
         },
       ));
-    }
-    return out;
   },
 };
 
@@ -360,11 +375,8 @@ const parameterCount: RuleDefinition<SolidNeeds> = {
   thresholdRationale: META['parameter-count'].thresholdRationale,
   samples: META['parameter-count'].samples,
   analyze(ctx): Finding[] {
-    const out: Finding[] = [];
-    const max = num(ctx.thresholds, 'maxParametersPerMethod', 6);
-    for (const fn of collectFunctionLikes(visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds))) {
-      if (fn.parameterCount <= max) continue;
-      out.push(finding(
+    return collectOversizedFunctionLikes(ctx, 'maxParametersPerMethod', 6, (fn) => fn.parameterCount)
+      .map(({ fn, max }) => finding(
         'parameter-count', 'high',
         `Function "${fn.name}" has ${fn.parameterCount} parameters, exceeding the maximum of ${max}. Consider using an options object.`,
         fn.file, fn.line, fn.column, symbolOf(fn.name, fn.line, fn.column),
@@ -376,8 +388,6 @@ const parameterCount: RuleDefinition<SolidNeeds> = {
           lines: [fn.line],
         },
       ));
-    }
-    return out;
   },
 };
 
