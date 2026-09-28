@@ -1926,6 +1926,15 @@ function collectLoopQueryCandidates(
     const loopInfo = findEnclosingLoop(node, adapter);
     if (!loopInfo) continue;
 
+    // §13.1 (transaction-batched discriminator): a loop already wrapped in a
+    // `db.transaction(fn)` callback is already batched — better-sqlite3 defers
+    // every write in the callback to a single commit, which is exactly the
+    // "batch the queries" remediation the finding would prescribe. Flagging it as
+    // an N+1 is a false positive: the code already follows the advice. (A
+    // per-iteration `db.transaction(() => …)` *inside* the loop would still fire —
+    // that does not wrap the loop, and each iteration commits separately.)
+    if (isInsideDbTransaction(loopInfo.loopNode, adapter)) continue;
+
     // R4.1 (Spec 46): LLM-pipeline discriminator. A loop whose body invokes an
     // LLM/agent (embedding, model completion, corpus extraction) is an intentional
     // *sequential pipeline* — its per-item DB calls are persistence steps gated by
@@ -2017,6 +2026,33 @@ function loopBodyContainsMessageLifecycleCall(
     if (prop && MESSAGE_LIFECYCLE_METHODS.has(prop)) found = true;
   });
   return found;
+}
+
+/**
+ * §13.1: True when `node` sits inside a `db.transaction(fn)` callback. Walks the
+ * parent chain looking for a `call_expression` whose callee is a
+ * `member_expression` with a `transaction` property. The loop is the input (not
+ * the DB call) so a transaction that wraps only a single per-iteration call —
+ * `for (…) { db.transaction(() => run()) }` — does not read as "batched": there
+ * the loop itself is outside the transaction and every iteration commits
+ * separately, so it must still fire.
+ */
+function isInsideDbTransaction(node: ASTNode, adapter: LanguageAdapter): boolean {
+  let current: ASTNode | null = node;
+  while (current) {
+    const parent = adapter.getParent(current);
+    if (!parent) break;
+    if (adapter.getNodeType(parent) === 'call_expression') {
+      const callee = adapter.getChildren(parent).find(
+        (c) => adapter.getNodeType(c) === 'member_expression',
+      );
+      if (callee && memberPropertyName(callee, adapter, '') === 'transaction') {
+        return true;
+      }
+    }
+    current = parent;
+  }
+  return false;
 }
 
 /** Depth-first walk over an ASTNode subtree (children only, no parent links). */

@@ -787,10 +787,16 @@ export class CodeIndexDB {
         ['files_count', 'INTEGER'],
         ['file_manifest_json', 'TEXT'],
       ];
-      for (const [name, decl] of newRunCols) {
-        if (!hasRunCol(name)) {
-          this.db.exec(`ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`);
-        }
+      const missingCols = newRunCols.filter(([name]) => !hasRunCol(name));
+      if (missingCols.length > 0) {
+        // Batch the ALTERs into one exec: `db.exec` accepts semicolon-separated
+        // statements, so a migration adds every missing column in a single call
+        // rather than issuing one ALTER per column (loop-query / N+1).
+        this.db.exec(
+          missingCols
+            .map(([name, decl]) => `ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`)
+            .join(';\n'),
+        );
       }
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
@@ -824,10 +830,16 @@ export class CodeIndexDB {
         ['runner_pid_started_at', 'TEXT'],
         ['runner_host', 'TEXT'],
       ];
-      for (const [name, decl] of newRunCols) {
-        if (!hasRunCol(name)) {
-          this.db.exec(`ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`);
-        }
+      const missingCols = newRunCols.filter(([name]) => !hasRunCol(name));
+      if (missingCols.length > 0) {
+        // Batch the ALTERs into one exec: `db.exec` accepts semicolon-separated
+        // statements, so a migration adds every missing column in a single call
+        // rather than issuing one ALTER per column (loop-query / N+1).
+        this.db.exec(
+          missingCols
+            .map(([name, decl]) => `ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`)
+            .join(';\n'),
+        );
       }
     }
 
@@ -2633,6 +2645,7 @@ export class CodeIndexDB {
       }
     }
 
+    const stalePaths: string[] = [];
     for (const { file_path: fp } of files) {
       scannedCount++;
       let stale = false;
@@ -2648,10 +2661,22 @@ export class CodeIndexDB {
         }
       }
       if (stale) {
-        const result = this.db.prepare('DELETE FROM functions WHERE file_path = ?').run(fp);
-        removedCount += result.changes;
+        stalePaths.push(fp);
         removedFiles.push(fp);
       }
+    }
+
+    // Batch the deletes — one `IN (…)` per chunk instead of one DELETE per stale
+    // file (loop-query / N+1). Chunked at the SQLite bind-parameter ceiling (900)
+    // so a large stale set can't exceed the variable limit.
+    const SQLITE_MAX_VARIABLES = 900;
+    for (let i = 0; i < stalePaths.length; i += SQLITE_MAX_VARIABLES) {
+      const chunk = stalePaths.slice(i, i + SQLITE_MAX_VARIABLES);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const result = this.db
+        .prepare(`DELETE FROM functions WHERE file_path IN (${placeholders})`)
+        .run(...chunk);
+      removedCount += result.changes;
     }
 
     return { scannedCount, removedCount, removedFiles, errors };
@@ -2727,6 +2752,7 @@ export class CodeIndexDB {
     // existence check.
     const discoveredSet = projectRoot ? new Set(files) : null;
     const allIndexed = this.db.prepare('SELECT DISTINCT file_path FROM functions').all() as Array<{ file_path: string }>;
+    const stalePaths: string[] = [];
     for (const { file_path: fp } of allIndexed) {
       let stale = false;
       if (discoveredSet) {
@@ -2738,12 +2764,19 @@ export class CodeIndexDB {
           stale = true;
         }
       }
-      if (stale) {
-        const result = this.db.prepare('DELETE FROM functions WHERE file_path = ?').run(fp);
-        if (result.changes > 0) {
-          totalRemoved += result.changes;
-        }
-      }
+      if (stale) stalePaths.push(fp);
+    }
+
+    // Batch the deletes — one `IN (…)` per chunk instead of one DELETE per stale
+    // file (loop-query / N+1), chunked at the SQLite bind-parameter ceiling.
+    const SQLITE_MAX_VARIABLES = 900;
+    for (let i = 0; i < stalePaths.length; i += SQLITE_MAX_VARIABLES) {
+      const chunk = stalePaths.slice(i, i + SQLITE_MAX_VARIABLES);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const result = this.db
+        .prepare(`DELETE FROM functions WHERE file_path IN (${placeholders})`)
+        .run(...chunk);
+      totalRemoved += result.changes;
     }
 
     // Spec 13 — Extract git churn data after index is built and stale entries
@@ -2811,22 +2844,41 @@ export class CodeIndexDB {
 
     const { FunctionScanner } = await import('./functionScanner.js');
 
+    // First pass: split the changed set into files that no longer exist (deleted)
+    // and files that are still on disk. The deleted set is handled with one batched
+    // SELECT + DELETE below — a per-file query here was a query-in-loop N+1.
+    const missingFiles: string[] = [];
     for (const filePath of filePaths) {
       try {
         await fs.access(filePath);
       } catch {
-        // File doesn't exist — remove all its functions
-        const removed = this.db.prepare(
-          'SELECT * FROM functions WHERE file_path = ?'
-        ).all(filePath) as any[];
-        if (removed.length > 0) {
-          const parsed = removed.map((r: any) => this.rowToFunction(r));
-          deletedFunctions.push(...parsed);
-          this.db.prepare('DELETE FROM functions WHERE file_path = ?').run(filePath);
-          changedFilePaths.push(filePath);
-        }
-        continue;
+        missingFiles.push(filePath);
       }
+    }
+
+    if (missingFiles.length > 0) {
+      const SQLITE_MAX_VARIABLES = 900;
+      for (let i = 0; i < missingFiles.length; i += SQLITE_MAX_VARIABLES) {
+        const chunk = missingFiles.slice(i, i + SQLITE_MAX_VARIABLES);
+        const placeholders = chunk.map(() => '?').join(', ');
+        const removed = this.db.prepare(
+          `SELECT * FROM functions WHERE file_path IN (${placeholders})`
+        ).all(...chunk) as any[];
+        if (removed.length > 0) {
+          deletedFunctions.push(...removed.map((r: any) => this.rowToFunction(r)));
+          this.db.prepare(
+            `DELETE FROM functions WHERE file_path IN (${placeholders})`
+          ).run(...chunk);
+          const touched = new Set(removed.map((r: any) => r.file_path));
+          changedFilePaths.push(...chunk.filter((fp) => touched.has(fp)));
+        }
+      }
+    }
+
+    const missingSet = new Set(missingFiles);
+
+    for (const filePath of filePaths) {
+      if (missingSet.has(filePath)) continue;
 
       try {
         const scanner = new FunctionScanner();
@@ -3131,19 +3183,23 @@ export class CodeIndexDB {
     const insert = this.db.prepare(`INSERT INTO whitelist (name, type, status, category, description, patterns, added_by, added_at, metadata_json)
       VALUES (@name, @type, @status, @category, @description, @patterns, @added_by, @added_at, @metadata_json)`);
 
-    for (const entry of defaults) {
-      insert.run({
-        name: entry.name,
-        type: entry.type,
-        status: entry.status,
-        category: entry.category ?? null,
-        description: entry.description ?? null,
-        patterns: JSON.stringify(entry.patterns ?? []),
-        added_by: entry.addedBy ?? 'system',
-        added_at: (entry.addedAt ?? new Date()).toISOString(),
-        metadata_json: '{}',
-      });
-    }
+    // Batch the seed rows in one transaction — a single commit instead of one
+    // autocommit INSERT per default entry (loop-query / N+1).
+    this.db.transaction(() => {
+      for (const entry of defaults) {
+        insert.run({
+          name: entry.name,
+          type: entry.type,
+          status: entry.status,
+          category: entry.category ?? null,
+          description: entry.description ?? null,
+          patterns: JSON.stringify(entry.patterns ?? []),
+          added_by: entry.addedBy ?? 'system',
+          added_at: (entry.addedAt ?? new Date()).toISOString(),
+          metadata_json: '{}',
+        });
+      }
+    })();
   }
 
   /**

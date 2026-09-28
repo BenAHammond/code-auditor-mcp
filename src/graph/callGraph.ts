@@ -488,9 +488,9 @@ function brandesBfs(
  * (depth ≤ 2) resides in a file matching test globs.
  */
 function detectUntested(
-  db: SqliteDatabase,
   functionId: number,
-  adjacency: Map<number, Map<number, number>>
+  adjacency: Map<number, Map<number, number>>,
+  filePathById: Map<number, string>
 ): boolean {
   // Perform a 2-hop BFS in the callers direction (who calls this function)
   const visited = new Set<number>();
@@ -512,13 +512,12 @@ function detectUntested(
     const current = queue.shift()!;
     if (current.depth > 2) continue;
 
-    // Check if this caller's file matches test patterns
+    // Check if this caller's file matches test patterns. The file path is read
+    // from the in-memory map the caller built from its single `functions`
+    // SELECT — not a per-BFS-node query (that was a query-in-loop N+1).
     if (current.depth > 0) {
-      const fileRow = db.prepare(
-        'SELECT file_path FROM functions WHERE id = ?'
-      ).get(current.id) as { file_path: string } | undefined;
-
-      if (fileRow && isTestFile(fileRow.file_path)) {
+      const filePath = filePathById.get(current.id);
+      if (filePath && isTestFile(filePath)) {
         return false; // Found a test — NOT untested
       }
     }
@@ -595,8 +594,10 @@ export function computeRisk(
   ).all(...nodes) as Array<{ id: number; complexity: number; name: string; file_path: string }>;
 
   const complexityMap = new Map<number, number>();
+  const filePathById = new Map<number, string>();
   for (const row of complexityRows) {
     complexityMap.set(row.id, row.complexity ?? 0);
+    filePathById.set(row.id, row.file_path);
   }
 
   // Complexity percentile
@@ -621,7 +622,7 @@ export function computeRisk(
     const pr = prPercentile.get(nodeId) ?? 0;
     const bw = bwPercentile.get(nodeId) ?? 0;
     const cx = cxPercentile.get(nodeId) ?? 0;
-    const untested = detectUntested(db, nodeId, adjacency);
+    const untested = detectUntested(nodeId, adjacency, filePathById);
 
     const risk = Math.max(pr, bw) * cx * (1 + (untested ? 1 : 0));
 

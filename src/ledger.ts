@@ -228,8 +228,31 @@ export function writeAuditToLedger(
   exitStatus: number,
   opts?: { runId?: string; coverage?: RuleCoverage[] },
 ): string {
-  const isAttach = !!opts?.runId;
   const runId = opts?.runId ?? randomUUID();
+  db.transaction(() => {
+    writeAuditToLedgerRaw(db, runInput, violations, durationMs, exitStatus, opts, runId);
+  })();
+  return runId;
+}
+
+/**
+ * Transaction-less core of {@link writeAuditToLedger}: runs the run/finding/
+ * coverage inserts without opening its own transaction. `importLedgerFromDir`
+ * wraps its whole file loop in one transaction and calls this per run — calling
+ * {@link writeAuditToLedger} there would nest transactions (better-sqlite3
+ * rejects nesting), and the per-run inserts are already batched by the outer
+ * transaction.
+ */
+function writeAuditToLedgerRaw(
+  db: SqliteDatabase,
+  runInput: LedgerRunInput,
+  violations: Violation[],
+  durationMs: number,
+  exitStatus: number,
+  opts: { runId?: string; coverage?: RuleCoverage[] } | undefined,
+  runId: string,
+): void {
+  const isAttach = !!opts?.runId;
   const timestamp = new Date().toISOString();
 
   const insertRun = db.prepare(`
@@ -250,62 +273,57 @@ export function writeAuditToLedger(
     VALUES (?, ?, ?, ?, ?, ?)
   `);
 
-  const tx = db.transaction(() => {
-    if (isAttach) {
-      // Attach to a pre-existing run (detached lifecycle): record results and
-      // close the lifecycle. The run row itself was created by createLedgerRun.
-      db.prepare(`
-        UPDATE findings_ledger_runs
-        SET duration_ms = ?, exit_status = ?, finished_at = ?, status = 'completed'
-        WHERE run_id = ?
-      `).run(durationMs, exitStatus, timestamp, runId);
-    } else {
-      insertRun.run(
-        runId,
-        timestamp,
-        runInput.gitSha ?? null,
-        runInput.gitDirty ? 1 : 0,
-        runInput.toolVersion,
-        runInput.toolGitSha ?? null,
-        runInput.command,
-        runInput.surface,
-        runInput.scope,
-        runInput.target,
-        durationMs,
-        exitStatus,
-      );
-    }
+  if (isAttach) {
+    // Attach to a pre-existing run (detached lifecycle): record results and
+    // close the lifecycle. The run row itself was created by createLedgerRun.
+    db.prepare(`
+      UPDATE findings_ledger_runs
+      SET duration_ms = ?, exit_status = ?, finished_at = ?, status = 'completed'
+      WHERE run_id = ?
+    `).run(durationMs, exitStatus, timestamp, runId);
+  } else {
+    insertRun.run(
+      runId,
+      timestamp,
+      runInput.gitSha ?? null,
+      runInput.gitDirty ? 1 : 0,
+      runInput.toolVersion,
+      runInput.toolGitSha ?? null,
+      runInput.command,
+      runInput.surface,
+      runInput.scope,
+      runInput.target,
+      durationMs,
+      exitStatus,
+    );
+  }
 
-    for (const v of violations) {
-      const symbol = extractSymbol(v);
-      const fp = fingerprint({
-        analyzer: (v as any).analyzer || 'unknown',
-        rule: (v as any).rule ?? '',
-        file: v.file,
-        symbol,
-      });
-      insertFinding.run(
-        runId,
-        (v as any).analyzer || 'unknown',
-        (v as any).rule ?? '',
-        v.severity,
-        v.message,
-        v.file,
-        v.line ?? null,
-        symbol,
-        fp,
-      );
-    }
+  for (const v of violations) {
+    const symbol = extractSymbol(v);
+    const fp = fingerprint({
+      analyzer: (v as any).analyzer || 'unknown',
+      rule: (v as any).rule ?? '',
+      file: v.file,
+      symbol,
+    });
+    insertFinding.run(
+      runId,
+      (v as any).analyzer || 'unknown',
+      (v as any).rule ?? '',
+      v.severity,
+      v.message,
+      v.file,
+      v.line ?? null,
+      symbol,
+      fp,
+    );
+  }
 
-    if (opts?.coverage) {
-      for (const c of opts.coverage) {
-        insertCoverage.run(runId, c.analyzer, c.ruleId, c.state, c.count, c.reason ?? null);
-      }
+  if (opts?.coverage) {
+    for (const c of opts.coverage) {
+      insertCoverage.run(runId, c.analyzer, c.ruleId, c.state, c.count, c.reason ?? null);
     }
-  });
-
-  tx();
-  return runId;
+  }
 }
 
 /**
@@ -1340,6 +1358,17 @@ export function importLedgerFromDir(db: SqliteDatabase, dirPath: string): { impo
   let imported = 0;
   let skipped = 0;
 
+  // Parse every file first (per-file failure → skip), then write all valid
+  // runs in one transaction. Keeping the writes in a single transaction both
+  // avoids an N+1 query-in-loop and gives the import all-or-nothing atomicity;
+  // the JSON parse errors that normally fail an import are caught here, before
+  // the transaction, so a single malformed file no longer aborts the others.
+  interface ParsedRun {
+    runInput: LedgerRunInput;
+    violations: Violation[];
+  }
+  const parsedRuns: ParsedRun[] = [];
+
   for (const file of files) {
     try {
       const raw = readFileSync(join(dirPath, file), 'utf-8');
@@ -1369,12 +1398,18 @@ export function importLedgerFromDir(db: SqliteDatabase, dirPath: string): { impo
         target: data.target || dirPath,
       };
 
-      writeAuditToLedger(db, runInput, violations, 0, 0);
-      imported++;
+      parsedRuns.push({ runInput, violations });
     } catch {
       skipped++;
     }
   }
+
+  db.transaction(() => {
+    for (const run of parsedRuns) {
+      writeAuditToLedgerRaw(db, run.runInput, run.violations, 0, 0, undefined, randomUUID());
+      imported++;
+    }
+  })();
 
   return { imported, skipped };
 }
