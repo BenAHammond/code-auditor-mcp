@@ -15,7 +15,7 @@
  * the type-checker. It is never imported and emits nothing at runtime.
  */
 
-import type { FactKind, Serializable } from './types.js';
+import type { FactKind, FileProcessor, Serializable } from './types.js';
 import { PRODUCERS, CORPUS_PRODUCERS, type ProducedFactKind, type ProducerMap } from './producers.js';
 import type { ConsumedFactKind } from './consumed.js';
 
@@ -58,3 +58,12 @@ const _incompleteProducers: ProducerMap = {};
 //    build fails.
 // @ts-expect-error — an overlapping kind would make this a non-never type
 const _overlap: keyof typeof PRODUCERS & keyof typeof CORPUS_PRODUCERS = 'table-catalog';
+
+// 6. Producer-side oracle (Spec 69 R1 criterion 1) — `FileProcessor` requires
+//    `oracle`. A processor literal that omits it must not satisfy the type, the
+//    producer-side forcing function mirroring a rule's `needs` (criterion 4's
+//    seeded demonstration in Spec 68). If a future edit makes `oracle` optional,
+//    this literal starts to compile and the `@ts-expect-error` goes unused — the
+//    build fails.
+// @ts-expect-error — a FileProcessor without `oracle` must not satisfy the type
+const _noOracle: FileProcessor<'file-symbols', 'typescript'> = { id: 'file-symbols.typescript', produces: 'file-symbols', format: 'typescript', process: (_file) => [] as never };

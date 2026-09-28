@@ -34,6 +34,7 @@ import type {
   ParsedFile,
   AstFile,
   FactFragment,
+  CompletenessOracle,
   TableCatalog,
   MigrationHistory,
   MinedConvention,
@@ -47,6 +48,7 @@ import type {
   DefinedClassesFact,
   UnreadStyleSourceFact,
 } from './types.js';
+import { countOracle, noOracle, countFileSymbols, countImports, countExportForm } from './oracles.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
 import { extractFunctionBodies } from './functionBodies.js';
@@ -110,8 +112,9 @@ function fileProducer<K extends FileFactKind, F extends SupplyingFormats[K]>(
   kind: K,
   format: F,
   process: (file: ParsedFile) => FactFragment<K>,
+  oracle: CompletenessOracle,
 ): FileProcessor<K, F> {
-  return { id: `${kind}.${format}`, produces: kind, format, process };
+  return { id: `${kind}.${format}`, produces: kind, format, process, oracle };
 }
 
 // The seven per-file extractors, hoisted so each (kind, format) entry reuses the
@@ -156,170 +159,185 @@ const concurrencyPrimitivesProcess = (file: ParsedFile): FactFragment<'concurren
 const channelOperationsProcess = (file: ParsedFile): FactFragment<'channel-operations'> => extractChannelOperations(file as AstFile);
 const batchFunctionsProcess = (file: ParsedFile): FactFragment<'batch-functions'> => extractBatchFunctions(file as AstFile);
 
+// ── Spec 69 R1 — oracle reason groups for producers with no statable count ──
+// Every `none` oracle is enumerated in the run (criterion 3) with the reason
+// below, named, never silently unprovable. The groups are by the *shape* of the
+// absence, not a blanket:
+//   • RAW_WALK — the producer is already a raw node/pattern walk off the tree,
+//     so the "dumber independent count" the oracle exists to be *is the same
+//     walk*; there is no second, cheaper signal to compare against.
+//   • CLASSIFICATION — the fragments are the classification itself (a typed
+//     projection); no count is separable from the extraction.
+//   • SINGLE_OBJECT — the producer emits at most one object per file, so a
+//     per-file fragment count is not the right oracle shape.
+const RAW_WALK = noOracle('the producer is already a raw node walk; the independent count the oracle exists to be is the same walk');
+const CLASSIFICATION = noOracle('the fragments are the classification itself; no count is separable from the extraction');
+const SINGLE_OBJECT = noOracle('emits at most one object per file; a per-file fragment count is not the right oracle shape');
+
 export const PRODUCERS = {
   'file-symbols': {
-    typescript: fileProducer('file-symbols', 'typescript', fileSymbolsProcess),
-    tsx: fileProducer('file-symbols', 'tsx', fileSymbolsProcess),
-    javascript: fileProducer('file-symbols', 'javascript', fileSymbolsProcess),
+    typescript: fileProducer('file-symbols', 'typescript', fileSymbolsProcess, countOracle(countFileSymbols)),
+    tsx: fileProducer('file-symbols', 'tsx', fileSymbolsProcess, countOracle(countFileSymbols)),
+    javascript: fileProducer('file-symbols', 'javascript', fileSymbolsProcess, countOracle(countFileSymbols)),
   },
   'function-index': {
-    typescript: fileProducer('function-index', 'typescript', functionIndexProcess),
-    tsx: fileProducer('function-index', 'tsx', functionIndexProcess),
-    javascript: fileProducer('function-index', 'javascript', functionIndexProcess),
+    typescript: fileProducer('function-index', 'typescript', functionIndexProcess, CLASSIFICATION),
+    tsx: fileProducer('function-index', 'tsx', functionIndexProcess, CLASSIFICATION),
+    javascript: fileProducer('function-index', 'javascript', functionIndexProcess, CLASSIFICATION),
   },
   'function-bodies': {
-    typescript: fileProducer('function-bodies', 'typescript', functionBodiesProcess),
-    tsx: fileProducer('function-bodies', 'tsx', functionBodiesProcess),
-    javascript: fileProducer('function-bodies', 'javascript', functionBodiesProcess),
+    typescript: fileProducer('function-bodies', 'typescript', functionBodiesProcess, CLASSIFICATION),
+    tsx: fileProducer('function-bodies', 'tsx', functionBodiesProcess, CLASSIFICATION),
+    javascript: fileProducer('function-bodies', 'javascript', functionBodiesProcess, CLASSIFICATION),
   },
   'imports': {
-    typescript: fileProducer('imports', 'typescript', importsProcess),
-    tsx: fileProducer('imports', 'tsx', importsProcess),
-    javascript: fileProducer('imports', 'javascript', importsProcess),
-    go: fileProducer('imports', 'go', goImportsProcess),
+    typescript: fileProducer('imports', 'typescript', importsProcess, countOracle(countImports)),
+    tsx: fileProducer('imports', 'tsx', importsProcess, countOracle(countImports)),
+    javascript: fileProducer('imports', 'javascript', importsProcess, countOracle(countImports)),
+    go: fileProducer('imports', 'go', goImportsProcess, RAW_WALK),
   },
   'export-form': {
-    typescript: fileProducer('export-form', 'typescript', exportFormProcess),
-    tsx: fileProducer('export-form', 'tsx', exportFormProcess),
-    javascript: fileProducer('export-form', 'javascript', exportFormProcess),
+    typescript: fileProducer('export-form', 'typescript', exportFormProcess, countOracle(countExportForm)),
+    tsx: fileProducer('export-form', 'tsx', exportFormProcess, countOracle(countExportForm)),
+    javascript: fileProducer('export-form', 'javascript', exportFormProcess, countOracle(countExportForm)),
   },
   'import-form': {
-    typescript: fileProducer('import-form', 'typescript', importFormProcess),
-    tsx: fileProducer('import-form', 'tsx', importFormProcess),
-    javascript: fileProducer('import-form', 'javascript', importFormProcess),
+    typescript: fileProducer('import-form', 'typescript', importFormProcess, CLASSIFICATION),
+    tsx: fileProducer('import-form', 'tsx', importFormProcess, CLASSIFICATION),
+    javascript: fileProducer('import-form', 'javascript', importFormProcess, CLASSIFICATION),
   },
   'string-literals': {
-    typescript: fileProducer('string-literals', 'typescript', stringLiteralsProcess),
-    tsx: fileProducer('string-literals', 'tsx', stringLiteralsProcess),
-    javascript: fileProducer('string-literals', 'javascript', stringLiteralsProcess),
+    typescript: fileProducer('string-literals', 'typescript', stringLiteralsProcess, RAW_WALK),
+    tsx: fileProducer('string-literals', 'tsx', stringLiteralsProcess, RAW_WALK),
+    javascript: fileProducer('string-literals', 'javascript', stringLiteralsProcess, RAW_WALK),
   },
   'secret-candidates': {
-    typescript: fileProducer('secret-candidates', 'typescript', secretCandidatesProcess),
-    tsx: fileProducer('secret-candidates', 'tsx', secretCandidatesProcess),
-    javascript: fileProducer('secret-candidates', 'javascript', secretCandidatesProcess),
+    typescript: fileProducer('secret-candidates', 'typescript', secretCandidatesProcess, CLASSIFICATION),
+    tsx: fileProducer('secret-candidates', 'tsx', secretCandidatesProcess, CLASSIFICATION),
+    javascript: fileProducer('secret-candidates', 'javascript', secretCandidatesProcess, CLASSIFICATION),
   },
   'security-candidates': {
-    typescript: fileProducer('security-candidates', 'typescript', securityCandidatesProcess),
-    tsx: fileProducer('security-candidates', 'tsx', securityCandidatesProcess),
-    javascript: fileProducer('security-candidates', 'javascript', securityCandidatesProcess),
+    typescript: fileProducer('security-candidates', 'typescript', securityCandidatesProcess, CLASSIFICATION),
+    tsx: fileProducer('security-candidates', 'tsx', securityCandidatesProcess, CLASSIFICATION),
+    javascript: fileProducer('security-candidates', 'javascript', securityCandidatesProcess, CLASSIFICATION),
   },
   // `ddl-declarations` was `schema-code`: DDL declarations parsed from code.
   // `sql` is the text-only supplier — the whole file is DDL (a migration), so
   // the same extractor runs over `.source` (it never reads the AST).
   'ddl-declarations': {
-    typescript: fileProducer('ddl-declarations', 'typescript', ddlProcess),
-    tsx: fileProducer('ddl-declarations', 'tsx', ddlProcess),
-    javascript: fileProducer('ddl-declarations', 'javascript', ddlProcess),
-    sql: fileProducer('ddl-declarations', 'sql', ddlProcess),
+    typescript: fileProducer('ddl-declarations', 'typescript', ddlProcess, CLASSIFICATION),
+    tsx: fileProducer('ddl-declarations', 'tsx', ddlProcess, CLASSIFICATION),
+    javascript: fileProducer('ddl-declarations', 'javascript', ddlProcess, CLASSIFICATION),
+    sql: fileProducer('ddl-declarations', 'sql', ddlProcess, CLASSIFICATION),
   },
   'schema-usage': {
-    typescript: fileProducer('schema-usage', 'typescript', schemaUsageProcess),
-    tsx: fileProducer('schema-usage', 'tsx', schemaUsageProcess),
-    javascript: fileProducer('schema-usage', 'javascript', schemaUsageProcess),
+    typescript: fileProducer('schema-usage', 'typescript', schemaUsageProcess, RAW_WALK),
+    tsx: fileProducer('schema-usage', 'tsx', schemaUsageProcess, RAW_WALK),
+    javascript: fileProducer('schema-usage', 'javascript', schemaUsageProcess, RAW_WALK),
   },
   // `schema-objects` — ORM `const <id> = pgTable('name', …)` bindings, the
   // identifier → SQL-name half of the known-table catalog's alias map. Text-only
   // projection (no AST), like `ddl-declarations`, so it reads `ParsedFile`.
   'schema-objects': {
-    typescript: fileProducer('schema-objects', 'typescript', schemaObjectsProcess),
-    tsx: fileProducer('schema-objects', 'tsx', schemaObjectsProcess),
-    javascript: fileProducer('schema-objects', 'javascript', schemaObjectsProcess),
+    typescript: fileProducer('schema-objects', 'typescript', schemaObjectsProcess, CLASSIFICATION),
+    tsx: fileProducer('schema-objects', 'tsx', schemaObjectsProcess, CLASSIFICATION),
+    javascript: fileProducer('schema-objects', 'javascript', schemaObjectsProcess, CLASSIFICATION),
   },
   // `style-declarations` was `styles-css` (named for the declaration, not the format).
   'style-declarations': {
-    css: fileProducer('style-declarations', 'css', styleProcess),
-    scss: fileProducer('style-declarations', 'scss', styleProcess),
-    typescript: fileProducer('style-declarations', 'typescript', styleSourceProcess),
-    tsx: fileProducer('style-declarations', 'tsx', styleSourceProcess),
-    javascript: fileProducer('style-declarations', 'javascript', styleSourceProcess),
-    markup: fileProducer('style-declarations', 'markup', styleMarkupProcess),
+    css: fileProducer('style-declarations', 'css', styleProcess, RAW_WALK),
+    scss: fileProducer('style-declarations', 'scss', styleProcess, RAW_WALK),
+    typescript: fileProducer('style-declarations', 'typescript', styleSourceProcess, RAW_WALK),
+    tsx: fileProducer('style-declarations', 'tsx', styleSourceProcess, RAW_WALK),
+    javascript: fileProducer('style-declarations', 'javascript', styleSourceProcess, RAW_WALK),
+    markup: fileProducer('style-declarations', 'markup', styleMarkupProcess, RAW_WALK),
   },
   'cross-language-entities': {
-    typescript: fileProducer('cross-language-entities', 'typescript', crossLangProcess),
-    tsx: fileProducer('cross-language-entities', 'tsx', crossLangProcess),
-    javascript: fileProducer('cross-language-entities', 'javascript', crossLangProcess),
-    go: fileProducer('cross-language-entities', 'go', crossLangProcess),
+    typescript: fileProducer('cross-language-entities', 'typescript', crossLangProcess, RAW_WALK),
+    tsx: fileProducer('cross-language-entities', 'tsx', crossLangProcess, RAW_WALK),
+    javascript: fileProducer('cross-language-entities', 'javascript', crossLangProcess, RAW_WALK),
+    go: fileProducer('cross-language-entities', 'go', crossLangProcess, RAW_WALK),
   },
   'data-access-calls': {
-    typescript: fileProducer('data-access-calls', 'typescript', dataAccessProcess),
-    tsx: fileProducer('data-access-calls', 'tsx', dataAccessProcess),
-    javascript: fileProducer('data-access-calls', 'javascript', dataAccessProcess),
-    go: fileProducer('data-access-calls', 'go', dataAccessProcess),
+    typescript: fileProducer('data-access-calls', 'typescript', dataAccessProcess, CLASSIFICATION),
+    tsx: fileProducer('data-access-calls', 'tsx', dataAccessProcess, CLASSIFICATION),
+    javascript: fileProducer('data-access-calls', 'javascript', dataAccessProcess, CLASSIFICATION),
+    go: fileProducer('data-access-calls', 'go', dataAccessProcess, CLASSIFICATION),
   },
   'loop-queries': {
-    typescript: fileProducer('loop-queries', 'typescript', loopQueriesProcess),
-    tsx: fileProducer('loop-queries', 'tsx', loopQueriesProcess),
-    javascript: fileProducer('loop-queries', 'javascript', loopQueriesProcess),
+    typescript: fileProducer('loop-queries', 'typescript', loopQueriesProcess, CLASSIFICATION),
+    tsx: fileProducer('loop-queries', 'tsx', loopQueriesProcess, CLASSIFICATION),
+    javascript: fileProducer('loop-queries', 'javascript', loopQueriesProcess, CLASSIFICATION),
   },
   'dynamic-sql': {
-    typescript: fileProducer('dynamic-sql', 'typescript', dynamicSqlProcess),
-    tsx: fileProducer('dynamic-sql', 'tsx', dynamicSqlProcess),
-    javascript: fileProducer('dynamic-sql', 'javascript', dynamicSqlProcess),
+    typescript: fileProducer('dynamic-sql', 'typescript', dynamicSqlProcess, CLASSIFICATION),
+    tsx: fileProducer('dynamic-sql', 'tsx', dynamicSqlProcess, CLASSIFICATION),
+    javascript: fileProducer('dynamic-sql', 'javascript', dynamicSqlProcess, CLASSIFICATION),
   },
   'react-component': {
-    typescript: fileProducer('react-component', 'typescript', reactComponentProcess),
-    tsx: fileProducer('react-component', 'tsx', reactComponentProcess),
-    javascript: fileProducer('react-component', 'javascript', reactComponentProcess),
+    typescript: fileProducer('react-component', 'typescript', reactComponentProcess, SINGLE_OBJECT),
+    tsx: fileProducer('react-component', 'tsx', reactComponentProcess, SINGLE_OBJECT),
+    javascript: fileProducer('react-component', 'javascript', reactComponentProcess, SINGLE_OBJECT),
   },
   'file-header': {
-    typescript: fileProducer('file-header', 'typescript', fileHeaderProcess),
-    tsx: fileProducer('file-header', 'tsx', fileHeaderProcess),
-    javascript: fileProducer('file-header', 'javascript', fileHeaderProcess),
+    typescript: fileProducer('file-header', 'typescript', fileHeaderProcess, SINGLE_OBJECT),
+    tsx: fileProducer('file-header', 'tsx', fileHeaderProcess, SINGLE_OBJECT),
+    javascript: fileProducer('file-header', 'javascript', fileHeaderProcess, SINGLE_OBJECT),
   },
   'code-block': {
-    typescript: fileProducer('code-block', 'typescript', codeBlockProcess),
-    tsx: fileProducer('code-block', 'tsx', codeBlockProcess),
-    javascript: fileProducer('code-block', 'javascript', codeBlockProcess),
+    typescript: fileProducer('code-block', 'typescript', codeBlockProcess, RAW_WALK),
+    tsx: fileProducer('code-block', 'tsx', codeBlockProcess, RAW_WALK),
+    javascript: fileProducer('code-block', 'javascript', codeBlockProcess, RAW_WALK),
   },
   // `json-document` was the Amendment-1 "json is a format" producer: a `.json`
   // file's parsed value, read for the `schema-validations` corpus reduction.
   // It reads `.source` only (the JsonAdapter has no code constructs), so it
   // takes `ParsedFile`, not `AstFile` — like the text-only `sql` DDL producer.
   'json-document': {
-    json: fileProducer('json-document', 'json', jsonDocumentProcess),
+    json: fileProducer('json-document', 'json', jsonDocumentProcess, SINGLE_OBJECT),
   },
   'file-imports': {
-    typescript: fileProducer('file-imports', 'typescript', fileImportsProcess),
-    tsx: fileProducer('file-imports', 'tsx', fileImportsProcess),
-    javascript: fileProducer('file-imports', 'javascript', fileImportsProcess),
-    go: fileProducer('file-imports', 'go', fileImportsProcess),
+    typescript: fileProducer('file-imports', 'typescript', fileImportsProcess, SINGLE_OBJECT),
+    tsx: fileProducer('file-imports', 'tsx', fileImportsProcess, SINGLE_OBJECT),
+    javascript: fileProducer('file-imports', 'javascript', fileImportsProcess, SINGLE_OBJECT),
+    go: fileProducer('file-imports', 'go', fileImportsProcess, SINGLE_OBJECT),
   },
   // §9 — Go named struct/interface declarations, served only for the `go`
   // format (the Go grammar is the only supplier). `struct-size` and the Go arm
   // of `interface-size` read it.
   'type-declarations': {
-    go: fileProducer('type-declarations', 'go', typeDeclarationsProcess),
+    go: fileProducer('type-declarations', 'go', typeDeclarationsProcess, RAW_WALK),
   },
   // §9 — Go function metrics + switch case counts, served only for the `go`
   // format. `function-size` + `liskov-substitution` read `go-functions`;
   // `switch-size` reads `go-switches`.
   'go-functions': {
-    go: fileProducer('go-functions', 'go', goFunctionsProcess),
+    go: fileProducer('go-functions', 'go', goFunctionsProcess, RAW_WALK),
   },
   'go-switches': {
-    go: fileProducer('go-switches', 'go', goSwitchesProcess),
+    go: fileProducer('go-switches', 'go', goSwitchesProcess, RAW_WALK),
   },
   // §9 — the three function-level Go producers (error-binding positions,
   // goroutine-synchronization signal, channel-operation counts). `error-handling`
   // reads `error-bindings`; `concurrency` reads `concurrency-primitives`;
   // `channel-deadlock` reads `channel-operations`.
   'error-bindings': {
-    go: fileProducer('error-bindings', 'go', errorBindingsProcess),
+    go: fileProducer('error-bindings', 'go', errorBindingsProcess, RAW_WALK),
   },
   'concurrency-primitives': {
-    go: fileProducer('concurrency-primitives', 'go', concurrencyPrimitivesProcess),
+    go: fileProducer('concurrency-primitives', 'go', concurrencyPrimitivesProcess, RAW_WALK),
   },
   'channel-operations': {
-    go: fileProducer('channel-operations', 'go', channelOperationsProcess),
+    go: fileProducer('channel-operations', 'go', channelOperationsProcess, RAW_WALK),
   },
   // `batch-functions` — the functions whose full span contains `.batch(` (a
   // Cloudflare D1 / SQLite transaction-batching commit). `multi-table-write`
   // reads it to skip the transaction-boundary flag for batched commits; the
   // producer re-homes the legacy `enclosingFunctionBatches` re-parse.
   'batch-functions': {
-    typescript: fileProducer('batch-functions', 'typescript', batchFunctionsProcess),
-    tsx: fileProducer('batch-functions', 'tsx', batchFunctionsProcess),
-    javascript: fileProducer('batch-functions', 'javascript', batchFunctionsProcess),
+    typescript: fileProducer('batch-functions', 'typescript', batchFunctionsProcess, RAW_WALK),
+    tsx: fileProducer('batch-functions', 'tsx', batchFunctionsProcess, RAW_WALK),
+    javascript: fileProducer('batch-functions', 'javascript', batchFunctionsProcess, RAW_WALK),
   },
 } satisfies ProducerMap;
 
@@ -647,6 +665,25 @@ export function fileProducerFor<K extends FileFactKind>(
 ): FileProcessor<K, SupplyingFormats[K]> | undefined {
   const formats = PRODUCERS[kind] as unknown as Partial<Record<Format, FileProcessor<K, SupplyingFormats[K]>>>;
   return formats[format];
+}
+
+/**
+ * Spec 69 R1 (criterion 3) — every file processor with no statable oracle,
+ * named by its `${kind}.${format}` id with the reason. The run enumerates these
+ * so an unprovable fact is reported, never silently assumed complete. The list
+ * is static because `oracle` is a static property of the processor contract,
+ * not a per-run state: a processor that *could* state an oracle but does not is
+ * caught at compile time (the `oracle` field is required), so this is only ever
+ * the processors that genuinely have none.
+ */
+export function noOracleProcessors(): readonly { processor: string; reason: string }[] {
+  const out: { processor: string; reason: string }[] = [];
+  for (const [kind, formats] of Object.entries(PRODUCERS)) {
+    for (const p of Object.values(formats as Record<string, FileProcessor<FileFactKind, any>>)) {
+      if (p.oracle.status === 'none') out.push({ processor: p.id, reason: p.oracle.reason });
+    }
+  }
+  return out;
 }
 
 /**

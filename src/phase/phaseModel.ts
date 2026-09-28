@@ -28,6 +28,7 @@
 import { promises as fs } from 'fs';
 import { MIGRATED_RULES } from './rules/registry.js';
 import { fileProducerFor, PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
+import { oracleShortfall } from './oracles.js';
 import { formatFor, parseOne, type InputFile } from './runner.js';
 import { loadTailwindConfig, tokensToStyleTokens } from '../styles/tailwindConfigLoader.js';
 import type {
@@ -36,6 +37,7 @@ import type {
   FactKind,
   FileFactKind,
   Finding,
+  OracleShortfall,
   RuleDefinition,
   ThresholdValues,
   StyleDeclarationsFile,
@@ -52,6 +54,11 @@ export interface PhaseModelResult {
   findings: Finding[];
   /** Fact kind → files whose fact is incomplete (parse dropped or producer threw). */
   incompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>>;
+  /** Spec 69 R1 — per-file completeness shortfalls: a counted oracle whose
+   *  processor emitted fewer fragments than expected. Each record names the
+   *  file, the processor, and both numbers. An empty list means every counted
+   *  oracle met its expected count for every file. */
+  oracleShortfalls: readonly OracleShortfall[];
 }
 
 /**
@@ -124,10 +131,10 @@ export async function runPhaseModel(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra?: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map() };
+  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [] };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return { findings: [], incompleteFacts: new Map() };
+  if (active.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [] };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -169,10 +176,11 @@ export async function runPhaseModelOverFiles(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra?: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  const { facts, incompleteFacts } = await buildFacts(files, infra);
+  const { facts, incompleteFacts, oracleShortfalls } = await buildFacts(files, infra);
   return {
     findings: await analyzeAll(facts, thresholdsByRule, infra),
     incompleteFacts,
+    oracleShortfalls,
   };
 }
 
@@ -209,12 +217,13 @@ function neededFactKinds(active: readonly RuleDefinition<any>[] = MIGRATED_RULES
 async function buildFacts(
   files: readonly InputFile[],
   infra?: PhaseInfra,
-): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>> }> {
+): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[] }> {
   const projectRoot = infra?.projectRoot;
   const active = activeRules(infra?.enabledRules);
   const needed = neededFactKinds(active);
   const facts = new Map<FactKind, unknown>();
   const incompleteFacts = new Map<FactKind, Set<string>>();
+  const oracleShortfalls: OracleShortfall[] = [];
 
   const fileKinds = [...needed].filter(
     (k): k is FileFactKind => Object.prototype.hasOwnProperty.call(PRODUCERS, k),
@@ -267,6 +276,7 @@ async function buildFacts(
       facts.set(kind, acc);
     }
     for (const kind of r.incomplete) markIncomplete(kind, r.file);
+    oracleShortfalls.push(...r.shortfalls);
   }
 
   // Corpus-level Tailwind theme tokens (Spec 68 §3.2): the legacy pipeline
@@ -306,7 +316,7 @@ async function buildFacts(
     facts.set(kind, producer.process(upstream as never, corpusCtx));
   }
 
-  return { facts, incompleteFacts };
+  return { facts, incompleteFacts, oracleShortfalls };
 }
 
 /** §6.5 — bounded work queue: run `fn` over `items` with at most `limit` in
@@ -342,17 +352,18 @@ async function processFile(
   fileKinds: readonly FileFactKind[],
   projectRoot: string | undefined,
   infra?: PhaseInfra,
-): Promise<{ file: string; fragments: Map<FileFactKind, unknown[]>; incomplete: FileFactKind[] }> {
+): Promise<{ file: string; fragments: Map<FileFactKind, unknown[]>; incomplete: FileFactKind[]; shortfalls: OracleShortfall[] }> {
   const parsed = await parseOne(input, projectRoot);
   const fragments = new Map<FileFactKind, unknown[]>();
   const incomplete: FileFactKind[] = [];
+  const shortfalls: OracleShortfall[] = [];
 
   if (!parsed) {
     const format = formatFor(input.path);
     for (const kind of fileKinds) {
       if (fileProducerFor(kind, format)) incomplete.push(kind);
     }
-    return { file: input.path, fragments, incomplete };
+    return { file: input.path, fragments, incomplete, shortfalls };
   }
 
   try {
@@ -361,9 +372,12 @@ async function processFile(
       if (!producer) continue;
       try {
         await infra?.beforeProcess?.(kind, input.path);
+        const emitted = producer.process(parsed) as unknown[];
         const acc = fragments.get(kind) ?? [];
-        acc.push(...(producer.process(parsed) as unknown[]));
+        acc.push(...emitted);
         fragments.set(kind, acc);
+        const sf = oracleShortfall(producer.oracle, parsed, emitted.length, producer.id);
+        if (sf) shortfalls.push(sf);
       } catch {
         incomplete.push(kind);
       }
@@ -371,7 +385,7 @@ async function processFile(
   } finally {
     parsed.ast?.dispose?.();
   }
-  return { file: input.path, fragments, incomplete };
+  return { file: input.path, fragments, incomplete, shortfalls };
 }
 
 /** Analyze: run every active migrated rule against exactly its declared facts.

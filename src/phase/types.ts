@@ -1428,6 +1428,41 @@ export interface FileProcessor<K extends FileFactKind, F extends SupplyingFormat
   readonly format: F;
   /** The only place an AST is reachable. */
   process(file: ParsedFile): FactFragment<K>;
+  /** Spec 69 R1 — the completeness oracle. `counted` carries a cheap, independent
+   *  per-file count of the fragments this file *should* yield; `none` states
+   *  there is no statable oracle and why (enumerated in the run, never silently
+   *  unprovable). Required — a processor without one fails compilation, the
+   *  producer-side forcing function mirroring a rule's `needs`. */
+  readonly oracle: CompletenessOracle;
+}
+
+/**
+ * The completeness oracle a {@link FileProcessor} declares (Spec 69 R1). A
+ * `counted` oracle is a cheap, dumb count of what the processor should have
+ * produced, computed from the same input and written for that processor — an
+ * independent upper bound whose emitted shortfall the run records per file.
+ * A `none` oracle states that no such count exists, with the reason; it is an
+ * explicit report, not an exemption — the failure mode being closed is the
+ * silently-unprovable fact.
+ */
+export type CompletenessOracle =
+  | { status: 'counted'; count(file: ParsedFile): number }
+  | { status: 'none'; reason: string };
+
+/**
+ * Spec 69 R1 — one recorded per-file completeness shortfall: the file, the
+ * processor (by its `${kind}.${format}` id), and the oracle's expected count vs
+ * the fragments actually emitted. Only ever recorded for a `counted` oracle
+ * whose emitted count came in below the expected count — the oracle is an upper
+ * bound, so equality and over-emission are not shortfalls (they are the
+ * non-signal). A `none` oracle never produces one; its absence is enumerated
+ * separately, not measured.
+ */
+export interface OracleShortfall {
+  readonly file: string;
+  readonly processor: ProcessorId;
+  readonly expected: number;
+  readonly actual: number;
 }
 
 /**
