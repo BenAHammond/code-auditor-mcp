@@ -442,6 +442,116 @@ export const uiTools: Tool[] = [
   },
 ];
 
+/** Result of the post-audit indexing + code-map step, or null when skipped. */
+interface IndexingAndCodeMap {
+  indexingResult: any;
+  codeMapResult: any;
+}
+
+/**
+ * After a full audit, optionally sync the discovered functions into the code
+ * index and generate a paginated code map. Shared verbatim by `handleAudit` and
+ * `handleAuditHealth` — the two callers differ only in the code-map `maxDepth`
+ * (the full audit uses 10, the health check a smaller 8) and in how they format
+ * the returned `indexingResult`/`codeMapResult` into their response bodies.
+ *
+ * @param auditResult - The completed audit whose metadata holds the file→function map.
+ * @param auditPath - The audited path, passed through to the code-map generator.
+ * @param indexFunctions - Whether function indexing was requested.
+ * @param generateCodeMap - Whether code-map generation was requested.
+ * @param maxDepth - Maximum code-map depth (differs between the two callers).
+ * @returns The indexing and code-map results (null for any skipped step).
+ */
+async function runIndexingAndCodeMap(
+  auditResult: AuditResult,
+  auditPath: string,
+  indexFunctions: boolean,
+  generateCodeMap: boolean,
+  maxDepth: number,
+): Promise<IndexingAndCodeMap> {
+  // Handle function indexing if enabled and functions were collected
+  let indexingResult = null;
+  if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
+    try {
+      const syncStats = { added: 0, updated: 0, removed: 0 };
+
+      // Sync each file's functions to handle additions, updates, and removals
+      for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
+        const fileStats = await syncFileIndex(filePath, functions);
+        syncStats.added += fileStats.added;
+        syncStats.updated += fileStats.updated;
+        syncStats.removed += fileStats.removed;
+      }
+
+      indexingResult = {
+        success: true,
+        registered: syncStats.added + syncStats.updated,
+        failed: 0,
+        syncStats
+      };
+
+      console.error(chalk.blue('[INFO]'), `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`);
+    } catch (error) {
+      console.error(chalk.yellow('[WARN]'), 'Failed to sync functions:', error);
+    }
+  }
+
+  // Generate code map if requested and functions were indexed
+  let codeMapResult = null;
+  if (generateCodeMap && indexingResult && indexingResult.success) {
+    try {
+      const mapGenerator = new CodeMapGenerator();
+      const mapOptions = {
+        includeComplexity: true,
+        includeDocumentation: true,
+        includeDependencies: true,
+        includeUsage: false,
+        groupByDirectory: true,
+        maxDepth,
+        showUnusedImports: true,
+        minComplexity: 7,
+      };
+
+      // Generate documentation metrics
+      let documentation = undefined;
+      try {
+        const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
+        if (files.length > 0) {
+          const docResult = await analyzeDocumentation(files);
+          documentation = docResult.metrics;
+        }
+      } catch (docError) {
+        console.error(chalk.yellow('[WARN]'), 'Failed to analyze documentation:', docError);
+      }
+
+      // Use paginated code map generation
+      const paginatedResult = await mapGenerator.generatePaginatedCodeMap(auditPath, {
+        ...mapOptions,
+        includeDocumentation: !!documentation
+      });
+
+      codeMapResult = {
+        success: true,
+        mapId: paginatedResult.mapId,
+        summary: paginatedResult.summary,
+        quickPreview: paginatedResult.quickPreview,
+        sections: paginatedResult.summary.sectionsAvailable,
+        documentationCoverage: documentation?.coverageScore
+      };
+
+      console.error(chalk.blue('[INFO]'), `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`);
+    } catch (error) {
+      console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
+      codeMapResult = {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to generate code map'
+      };
+    }
+  }
+
+  return { indexingResult, codeMapResult };
+}
+
 /**
  * Shared tool handler implementations
  */
@@ -482,85 +592,10 @@ export class ToolHandlers {
     // Route through the single audit entry point shared with the CLI.
     const auditResult: AuditResult = await createAuditRunner(options).run();
 
-    // Handle function indexing if enabled and functions were collected
-    let indexingResult = null;
-    if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
-      try {
-        const syncStats = { added: 0, updated: 0, removed: 0 };
-        
-        // Sync each file's functions to handle additions, updates, and removals
-        for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
-          const fileStats = await syncFileIndex(filePath, functions);
-          syncStats.added += fileStats.added;
-          syncStats.updated += fileStats.updated;
-          syncStats.removed += fileStats.removed;
-        }
-        
-        indexingResult = {
-          success: true,
-          registered: syncStats.added + syncStats.updated,
-          failed: 0,
-          syncStats
-        };
-        
-        console.error(chalk.blue('[INFO]'), `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`);
-      } catch (error) {
-        console.error(chalk.yellow('[WARN]'), 'Failed to sync functions:', error);
-      }
-    }
-
-    // Generate code map if requested and functions were indexed
-    let codeMapResult = null;
-    if (generateCodeMap && indexingResult && indexingResult.success) {
-      try {
-        const mapGenerator = new CodeMapGenerator();
-        const mapOptions = {
-          includeComplexity: true,
-          includeDocumentation: true,
-          includeDependencies: true,
-          includeUsage: false,
-          groupByDirectory: true,
-          maxDepth: 10,
-          showUnusedImports: true,
-          minComplexity: 7,
-        };
-
-        // Generate documentation metrics
-        let documentation = undefined;
-        try {
-          const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
-          if (files.length > 0) {
-            const docResult = await analyzeDocumentation(files);
-            documentation = docResult.metrics;
-          }
-        } catch (docError) {
-          console.error(chalk.yellow('[WARN]'), 'Failed to analyze documentation:', docError);
-        }
-
-        // Use paginated code map generation
-        const paginatedResult = await mapGenerator.generatePaginatedCodeMap(auditPath, {
-          ...mapOptions,
-          includeDocumentation: !!documentation
-        });
-
-        codeMapResult = {
-          success: true,
-          mapId: paginatedResult.mapId,
-          summary: paginatedResult.summary,
-          quickPreview: paginatedResult.quickPreview,
-          sections: paginatedResult.summary.sectionsAvailable,
-          documentationCoverage: documentation?.coverageScore
-        };
-        
-        console.error(chalk.blue('[INFO]'), `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`);
-      } catch (error) {
-        console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
-        codeMapResult = {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to generate code map'
-        };
-      }
-    }
+    // Handle function indexing + code-map generation (shared with the health check)
+    const { indexingResult, codeMapResult } = await runIndexingAndCodeMap(
+      auditResult, auditPath, indexFunctions, generateCodeMap, 10,
+    );
 
     // Format for MCP
     return {
@@ -615,85 +650,10 @@ export class ToolHandlers {
     const auditResult = await runner.run();
     const healthScore = ToolHandlers.calculateHealthScore(auditResult);
 
-    // Handle function indexing if enabled and functions were collected
-    let indexingResult = null;
-    if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
-      try {
-        const syncStats = { added: 0, updated: 0, removed: 0 };
-        
-        // Sync each file's functions to handle additions, updates, and removals
-        for (const [filePath, functions] of Object.entries(auditResult.metadata.fileToFunctionsMap)) {
-          const fileStats = await syncFileIndex(filePath, functions);
-          syncStats.added += fileStats.added;
-          syncStats.updated += fileStats.updated;
-          syncStats.removed += fileStats.removed;
-        }
-        
-        indexingResult = {
-          success: true,
-          registered: syncStats.added + syncStats.updated,
-          failed: 0,
-          syncStats
-        };
-        
-        console.error(chalk.blue('[INFO]'), `Synced functions: ${syncStats.added} added, ${syncStats.updated} updated, ${syncStats.removed} removed`);
-      } catch (error) {
-        console.error(chalk.yellow('[WARN]'), 'Failed to sync functions:', error);
-      }
-    }
-
-    // Generate code map if requested and functions were indexed
-    let codeMapResult = null;
-    if (generateCodeMap && indexingResult && indexingResult.success) {
-      try {
-        const mapGenerator = new CodeMapGenerator();
-        const mapOptions = {
-          includeComplexity: true,
-          includeDocumentation: true,
-          includeDependencies: true,
-          includeUsage: false,
-          groupByDirectory: true,
-          maxDepth: 8, // Slightly smaller for health check
-          showUnusedImports: true,
-          minComplexity: 7,
-        };
-
-        // Generate documentation metrics
-        let documentation = undefined;
-        try {
-          const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
-          if (files.length > 0) {
-            const docResult = await analyzeDocumentation(files);
-            documentation = docResult.metrics;
-          }
-        } catch (docError) {
-          console.error(chalk.yellow('[WARN]'), 'Failed to analyze documentation:', docError);
-        }
-
-        // Use paginated code map generation for health check too
-        const paginatedResult = await mapGenerator.generatePaginatedCodeMap(auditPath, {
-          ...mapOptions,
-          includeDocumentation: !!documentation
-        });
-
-        codeMapResult = {
-          success: true,
-          mapId: paginatedResult.mapId,
-          summary: paginatedResult.summary,
-          quickPreview: paginatedResult.quickPreview,
-          sections: paginatedResult.summary.sectionsAvailable,
-          documentationCoverage: documentation?.coverageScore
-        };
-        
-        console.error(chalk.blue('[INFO]'), `Generated paginated code map: ${paginatedResult.summary.stats.totalFiles} files, ${paginatedResult.summary.totalSections} sections`);
-      } catch (error) {
-        console.error(chalk.yellow('[WARN]'), 'Failed to generate code map:', error);
-        codeMapResult = {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to generate code map'
-        };
-      }
-    }
+    // Handle function indexing + code-map generation (shared with the full audit)
+    const { indexingResult, codeMapResult } = await runIndexingAndCodeMap(
+      auditResult, auditPath, indexFunctions, generateCodeMap, 8,
+    );
 
     return {
       healthScore,

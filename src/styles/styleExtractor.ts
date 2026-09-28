@@ -34,6 +34,7 @@ import { STYLE_MARKUP_EXTENSIONS, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileD
  * @param ast - Optional pre-parsed AST (avoids re-parsing)
  * @param tailwindTokens - Optional pre-loaded Tailwind tokens (avoids re-loading per file)
  * @param unreadSources - Output list collecting unread style sources
+ * @returns The normalized style declarations extracted from the file (empty for non-style files).
  */
 export function extractDeclarations(
   filePath: string,

@@ -152,10 +152,15 @@ async function withAbortSignal<T>(
     const onAbort = (): void =>
       reject(new RequestAbortedError(`Request aborted during ${phase}`));
     signal.addEventListener('abort', onAbort, { once: true });
-    void op()
-      .then(resolve)
-      .catch(reject)
-      .finally(() => signal.removeEventListener('abort', onAbort));
+    void (async () => {
+      try {
+        resolve(await op());
+      } catch (err) {
+        reject(err);
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
+    })();
   });
 }
 

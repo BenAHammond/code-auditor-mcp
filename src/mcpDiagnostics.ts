@@ -19,17 +19,20 @@ let writeQueue: Promise<void> = Promise.resolve();
 
 function appendFileLine(line: string): void {
   if (!logFilePath) return;
-  // Queue async writes to avoid blocking the MCP event loop.
-  writeQueue = writeQueue
-    .then(
-      () =>
-        new Promise<void>((resolve) => {
-          fs.appendFile(logFilePath, line + '\n', () => resolve());
-        })
-    )
-    .catch(() => {
+  // Queue async writes to avoid blocking the MCP event loop. The previous queued
+  // write is awaited first so the line ordering is preserved; errors are
+  // swallowed so a failed append never breaks the queue for later callers.
+  const prev = writeQueue;
+  writeQueue = (async () => {
+    await prev;
+    try {
+      await new Promise<void>((resolve) => {
+        fs.appendFile(logFilePath, line + '\n', () => resolve());
+      });
+    } catch {
       /* ignore */
-    });
+    }
+  })();
 }
 
 /**
