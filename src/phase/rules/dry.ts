@@ -116,11 +116,36 @@ function detectDuplicateImport(facts: readonly ImportFact[]): Finding[] {
   return findings;
 }
 
+/**
+ * A single identifier-like token is code *vocabulary*, not a duplicated *value*:
+ * `'typescript'`, `'function_declaration'`, `'conventions/usage-pair'`,
+ * `'margin-top'` name concepts in the code's own vocabulary (a format name, a
+ * tree-sitter node type, a rule id, a CSS property) and are correct to repeat
+ * inline — extracting them to a constant adds indirection, not clarity. A magic
+ * string worth naming is a value with *content*: whitespace (a message, a query,
+ * a sentence) or punctuation outside the slug set (an email, a URL, a format
+ * string). This is the precision boundary the legacy `checkDuplicateStrings`
+ * lacked — it flagged any repeated string, so a code-analysis tool's own source
+ * (full of node-type and fact-name literals) read as hundreds of false positives.
+ */
+const VOCABULARY_TOKEN = /^[A-Za-z_$][A-Za-z0-9_$./:-]*$/;
+
+/** A relative module specifier (`'./x.js'`, `'../x.js'`) names a file, not a value. */
+const RELATIVE_MODULE = /^\.\.?\//;
+
+/** True when a quoted literal is a *name*, not a duplicated value: a single
+ *  identifier-like token (vocabulary) or a relative module path. */
+function isNameLiteral(value: string): boolean {
+  const inner = value.replace(/^['"`]/, '').replace(/['"`]$/, '');
+  return VOCABULARY_TOKEN.test(inner) || RELATIVE_MODULE.test(inner);
+}
+
 /** Re-homes `checkDuplicateStrings`, grouping per `(file, value)`. */
 function detectDuplicateStringLiteral(facts: readonly StringLiteralFact[]): Finding[] {
   const byFile = new Map<string, Map<string, { line: number; column: number }[]>>();
   for (const lit of facts) {
     if (lit.value.length <= 10) continue; // non-trivial strings only
+    if (isNameLiteral(lit.value)) continue; // a name (vocabulary/path), not a value
     let fileMap = byFile.get(lit.file);
     if (!fileMap) {
       fileMap = new Map();
