@@ -40,6 +40,21 @@ const program = new Command();
 // "must be one of" list that leaves the user guessing what `advisory` became.
 const LEGACY_SEVERITY_NAMES: Record<string, string> = { advisory: 'high' };
 
+// CLI option descriptions, hoisted so the 30+ subcommands' repeated
+// option() / -p,--path descriptions share one source.
+const OPTION_OUTPUT_AS_JSON = 'Output as JSON';
+const OPTION_PROJECT_PATH = 'Project path';
+const OPTION_PROJECT_ROOT_PATH = 'Project root path';
+const OPTION_PROJECT_ROOT = 'Project root';
+const OPTION_CONFIGURATION_NAME = 'Configuration name';
+const UNKNOWN_ERROR = 'Unknown error';
+
+// "file:line" suffix for a finding row; empty when the finding has no line.
+function lineSuffix(line?: number): string {
+  return line ? `:${line}` : '';
+}
+
+
 // Spec 44 R4 — file accounting summary line + `--explain-skipped` breakdown.
 // The full per-reason file lists live in the JSON report (`metadata.fileAccounting`);
 // the CLI preview is bounded to the first ~20 files per reason.
@@ -109,7 +124,7 @@ program
   .command('audit', { isDefault: true })
   .description('Run code quality audit (default command)')
   .option('-p, --path <path>', 'Path to audit', process.cwd())
-  .option('-c, --config <config>', 'Configuration name')
+  .option('-c, --config <config>', OPTION_CONFIGURATION_NAME)
   .option('-o, --output <dir>', 'Output directory for reports')
   .option('-f, --format <format>', 'Report format: html, json, csv, or sarif')
   .option('--overwrite', 'Overwrite an existing report file at --output (default: refuse)')
@@ -344,7 +359,7 @@ program
               v.severity === 'critical' ? '🔴' :
               v.severity === 'severe' ? '🟠' : '🟡';
             console.log(
-              `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}`
+              `${icon} ${chalk.bold(v.file)}${lineSuffix(v.line)} [${v.severity}] ${v.message}`
             );
           }
         } else {
@@ -624,7 +639,7 @@ program
   .option('--fail-on-zero-files', 'Exit code 2 when any enabled analyzer matches zero source files', true)
   .option('--stdin', 'Read file paths from stdin (one per line)')
   .option('--explain-skipped', 'Print a per-reason breakdown of files dropped from analysis')
-  .option('-p, --path <projectPath>', 'Project root path', process.cwd())
+  .option('-p, --path <projectPath>', OPTION_PROJECT_ROOT_PATH, process.cwd())
   .action(async (paths: string[], options: Record<string, any>) => {
     try {
       const fileSet = new Set<string>();
@@ -785,7 +800,7 @@ program
               ? chalk.dim(' [dismissed]')
               : '';
             console.log(
-              `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}${statusTag}${dismissedTag}`
+              `${icon} ${chalk.bold(v.file)}${lineSuffix(v.line)} [${v.severity}] ${v.message}${statusTag}${dismissedTag}`
             );
           }
         } else {
@@ -947,7 +962,7 @@ program
   .description('Audit the tool\'s own analyzers/ + languages/ source and fail on blocking readings')
   .option('--json', 'Output violations as machine-readable JSON to stdout')
   .option('--stdin', 'Read file paths from stdin (one per line)')
-  .option('-p, --path <projectPath>', 'Project root path', process.cwd())
+  .option('-p, --path <projectPath>', OPTION_PROJECT_ROOT_PATH, process.cwd())
   .option('--fail-on <severity>', 'Blocking severity floor: critical, severe, or high', 'high')
   .action(async (paths: string[], options: Record<string, any>) => {
     try {
@@ -1045,7 +1060,7 @@ program
             v.severity === 'critical' ? '🔴' :
             v.severity === 'severe' ? '🟠' : '🟡';
           console.log(
-            `${icon} ${v.file}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.message}`
+            `${icon} ${v.file}${lineSuffix(v.line)} [${v.severity}] ${v.message}`
           );
         }
       } else {
@@ -1071,8 +1086,8 @@ program
 program
   .command('next-file')
   .description('Audit and return the highest-priority file with readings (file-by-file refactor loop)')
-  .option('-p, --path <projectPath>', 'Project root path', process.cwd())
-  .option('-c, --config <config>', 'Configuration name')
+  .option('-p, --path <projectPath>', OPTION_PROJECT_ROOT_PATH, process.cwd())
+  .option('-c, --config <config>', OPTION_CONFIGURATION_NAME)
   .option('--json', 'Output a single JSON object (or {done:true}) to stdout')
   .action(async (options) => {
     try {
@@ -1184,7 +1199,7 @@ function printNextFile(
     for (const v of ordered) {
       const icon = v.severity === 'critical' ? '🔴' : v.severity === 'severe' ? '🟠' : '🟡';
       console.log(
-        `${icon} ${chalk.bold(relativize(v.file || ''))}${v.line ? `:${v.line}` : ''} [${v.severity}] ${v.rule} — ${v.message}`
+        `${icon} ${chalk.bold(relativize(v.file || ''))}${lineSuffix(v.line)} [${v.severity}] ${v.rule} — ${v.message}`
       );
     }
   }
@@ -1194,8 +1209,8 @@ function printNextFile(
 program
   .command('baseline')
   .description('Snapshot current advisory readings as the baseline (excludes invariants)')
-  .option('-p, --path <path>', 'Project path', process.cwd())
-  .option('--json', 'Output as JSON')
+  .option('-p, --path <path>', OPTION_PROJECT_PATH, process.cwd())
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       await initParsers();
@@ -1270,9 +1285,9 @@ program
   .command('dismiss <fingerprint>')
   .description('Dismiss one finding by fingerprint — a written reason is required')
   .requiredOption('--reason <reason>', 'Why this finding is dismissed (required — a dismissal without a reason is a config error)')
-  .option('-p, --path <path>', 'Project path', process.cwd())
+  .option('-p, --path <path>', OPTION_PROJECT_PATH, process.cwd())
   .option('--telemetry-endpoint <url>', 'Feedback service endpoint override (defaults to the opt-in endpoint recorded by the telemetry tool)')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (fingerprintArg: string, options: Record<string, any>) => {
     try {
       const reason = (options.reason ?? '').trim();
@@ -1398,7 +1413,7 @@ indexCmd
   .command('sync')
   .description('Synchronize index from source files')
   .option('--path <path>', 'Path to a specific file or directory', process.cwd())
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       await initParsers();
@@ -1441,7 +1456,7 @@ indexCmd
 indexCmd
   .command('cleanup')
   .description('Remove index entries for deleted files')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const db = CodeIndexDB.getInstance();
@@ -1462,7 +1477,7 @@ indexCmd
 indexCmd
   .command('reset')
   .description('Clear all analysis data (preserves tasks, config, whitelist)')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const db = CodeIndexDB.getInstance();
@@ -1484,7 +1499,7 @@ indexCmd
 indexCmd
   .command('status')
   .description('Show index health and graph statistics')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const db = CodeIndexDB.getInstance();
@@ -1564,7 +1579,7 @@ configCmd
   .command('rules-list')
   .description('List all configured invariant rules from .codeauditor.json')
   .option('--config-path <path>', 'Path to .codeauditor.json')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const pathModule = await import('path');
@@ -1608,7 +1623,7 @@ configCmd
   .command('rules-check')
   .description('Validate the current .codeauditor.json rules')
   .option('--config-path <path>', 'Path to .codeauditor.json')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const pathModule = await import('path');
@@ -1653,9 +1668,9 @@ configCmd
 configCmd
   .command('profiles')
   .description('Show active path profiles and resolve per-file matching')
-  .option('-p, --path <path>', 'Project path', process.cwd())
+  .option('-p, --path <path>', OPTION_PROJECT_PATH, process.cwd())
   .option('--file <file>', 'Resolve profiles for a specific file')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const fs = await import('fs/promises');
@@ -1752,8 +1767,8 @@ configCmd
 configCmd
   .command('detection')
   .description('Show DB-provenanced and inferred receiver identifiers with per-entry evidence')
-  .option('-p, --path <path>', 'Project path', process.cwd())
-  .option('--json', 'Output as JSON')
+  .option('-p, --path <path>', OPTION_PROJECT_PATH, process.cwd())
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .option('--mode <mode>', 'Detection mode filter (hybrid, provenance, names)')
   .action(async (options) => {
     try {
@@ -2028,7 +2043,7 @@ tasksCmd
   .option('--priority <priority>', 'Filter by priority (low, medium, high)')
   .option('--label <label>', 'Filter by label')
   .option('--limit <limit>', 'Result limit', '50')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const args: Record<string, unknown> = { action: 'list' };
@@ -2056,7 +2071,7 @@ tasksCmd
           }
         }
       } else {
-        console.error(chalk.red(result.error || 'Unknown error'));
+        console.error(chalk.red(result.error || UNKNOWN_ERROR));
         process.exit(1);
       }
     } catch (error) {
@@ -2073,7 +2088,7 @@ tasksCmd
   .option('--priority <priority>', 'Priority (low, medium, high)')
   .option('--status <status>', 'Status (open, in_progress)')
   .option('--labels <labels>', 'Comma-separated labels')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const args: Record<string, unknown> = {
@@ -2094,7 +2109,7 @@ tasksCmd
         const task = (result as any).task || {};
         console.log(chalk.green(`✓ Task created: ${task.title || task.taskId || 'unknown'}`));
       } else {
-        console.error(chalk.red(result.error || 'Unknown error'));
+        console.error(chalk.red(result.error || UNKNOWN_ERROR));
         process.exit(1);
       }
     } catch (error) {
@@ -2106,7 +2121,7 @@ tasksCmd
 tasksCmd
   .command('get <taskId>')
   .description('Get a task by ID')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (taskId, options) => {
     try {
       const { handleProjectTasks } = await import('./mcp-tools/projectTasks.js');
@@ -2126,7 +2141,7 @@ tasksCmd
         if (t.relatedFiles?.length) console.log(`${chalk.bold('Files:')} ${t.relatedFiles.join(', ')}`);
         if (t.fingerprint) console.log(chalk.dim(`\nfingerprint: ${t.fingerprint}`));
       } else {
-        console.error(chalk.red(result.error || 'Unknown error'));
+        console.error(chalk.red(result.error || UNKNOWN_ERROR));
         process.exit(1);
       }
     } catch (error) {
@@ -2143,7 +2158,7 @@ tasksCmd
   .option('--status <status>', 'New status (open, in_progress, completed)')
   .option('--priority <priority>', 'New priority (low, medium, high)')
   .option('--labels <labels>', 'Comma-separated labels')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (taskId, options) => {
     try {
       const patch: Record<string, unknown> = {};
@@ -2166,7 +2181,7 @@ tasksCmd
       } else if (result.success) {
         console.log(chalk.green(`✓ Task updated`));
       } else {
-        console.error(chalk.red(result.error || 'Unknown error'));
+        console.error(chalk.red(result.error || UNKNOWN_ERROR));
         process.exit(1);
       }
     } catch (error) {
@@ -2178,7 +2193,7 @@ tasksCmd
 tasksCmd
   .command('complete <taskId>')
   .description('Mark a task as completed')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (taskId, options) => {
     try {
       const { handleProjectTasks } = await import('./mcp-tools/projectTasks.js');
@@ -2189,7 +2204,7 @@ tasksCmd
       } else if (result.success) {
         console.log(chalk.green(`✓ Task completed`));
       } else {
-        console.error(chalk.red(result.error || 'Unknown error'));
+        console.error(chalk.red(result.error || UNKNOWN_ERROR));
         process.exit(1);
       }
     } catch (error) {
@@ -2201,7 +2216,7 @@ tasksCmd
 tasksCmd
   .command('delete <taskId>')
   .description('Delete a task')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (taskId, options) => {
     try {
       const { handleProjectTasks } = await import('./mcp-tools/projectTasks.js');
@@ -2212,7 +2227,7 @@ tasksCmd
       } else if (result.success) {
         console.log(chalk.green(`✓ Task deleted`));
       } else {
-        console.error(chalk.red(result.error || 'Unknown error'));
+        console.error(chalk.red(result.error || UNKNOWN_ERROR));
         process.exit(1);
       }
     } catch (error) {
@@ -2226,7 +2241,7 @@ tasksCmd
   .description('Populate tasks from audit violations')
   .option('--auditJobId <id>', 'Specific audit result ID')
   .option('--severities <severities>', 'Comma-separated severities (critical,severe,high)', 'critical,severe,high')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const args: Record<string, unknown> = { action: 'from_audit' };
@@ -2250,7 +2265,7 @@ tasksCmd
         // Not a real error — just nothing to convert. Exit 0 so scripts don't break.
         console.log(chalk.yellow(result.error));
       } else {
-        console.error(chalk.red(result.error || 'Unknown error'));
+        console.error(chalk.red(result.error || UNKNOWN_ERROR));
         process.exit(1);
       }
     } catch (error) {
@@ -2267,7 +2282,7 @@ program
   .description('Rank files and functions by hotspot score (churn × complexity)')
   .option('--limit <n>', 'Max entries to show')
   .option('--path <dir>', 'Target directory (triggers spot churn extraction if index is empty)')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const db = CodeIndexDB.getInstance();
@@ -2344,8 +2359,8 @@ program
   .command('risk')
   .description('Rank functions by architectural risk (PageRank × betweenness × complexity × untested)')
   .option('--limit <n>', 'Max entries to show', '20')
-  .option('--path <dir>', 'Project path', process.cwd())
-  .option('--json', 'Output as JSON')
+  .option('--path <dir>', OPTION_PROJECT_PATH, process.cwd())
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .option('--format <format>', 'Output format: dot (call-graph neighborhood of top functions)')
   .action(async (options) => {
     try {
@@ -2435,7 +2450,7 @@ ledgerCmd
   .command('list')
   .description('List recent audit runs')
   .option('--limit <n>', 'Max runs to show', '20')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const { listRuns } = await import('./ledger.js');
@@ -2483,7 +2498,7 @@ ledgerCmd
 ledgerCmd
   .command('stats')
   .description('Show aggregated ledger statistics')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const { getLedgerStats } = await import('./ledger.js');
@@ -2516,7 +2531,7 @@ ledgerCmd
   .command('trends')
   .description('Compare consecutive full-audit runs and report new vs fixed readings per rule')
   .option('--since <runId>', 'Only consider runs after this run ID')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const { getTrends } = await import('./ledger.js');
@@ -2698,7 +2713,7 @@ program
   .command('status <jobId>')
   .description('Show a detached audit job status, progress, and staleness')
   .option('-p, --path <path>', 'Project root containing the job (default: cwd)', process.cwd())
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (jobId: string, options: { path: string; json?: boolean }) => {
     try {
       const { getLedgerRun, reclaimStaleRunning, computeStaleness } = await import('./ledger.js');
@@ -2763,7 +2778,7 @@ program
   .option('--limit <n>', 'Max findings to return (0 = unbounded)', '50')
   .option('--offset <n>', 'Findings offset', '0')
   .option('--stale', 'Force full content re-hash for staleness')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(
     async (
       jobId: string,
@@ -2880,7 +2895,7 @@ program
   .option('--prune', 'Delete all but the newest runs for this project')
   .option('--keep <n>', 'Runs to keep when --prune is set', '10')
   .option('--limit <n>', 'Runs to display (staleness computed for these)', '20')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(
     async (options: { path: string; prune?: boolean; keep: string; limit: string; json?: boolean }) => {
       try {
@@ -2945,7 +2960,7 @@ conventionsCmd
   .command('list')
   .description('List mined conventions from the code index')
   .option('--domain <domain>', 'Filter by domain: usage-pair, import-form, error-handling, export-shape, naming')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const db = CodeIndexDB.getInstance();
@@ -3011,7 +3026,7 @@ conventionsCmd
   .command('propose')
   .description('Emit ready-to-paste .codeauditor.json rules from mined conventions')
   .option('--domain <domain>', 'Filter by domain: naming or import-form (other domains do not map to rule kinds)')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const db = CodeIndexDB.getInstance();
@@ -3135,8 +3150,8 @@ program
 program
   .command('architecture')
   .description('Analyze import graph: community detection, directory purity, Martin instability metrics')
-  .option('--path <dir>', 'Project path', process.cwd())
-  .option('--json', 'Output as JSON')
+  .option('--path <dir>', OPTION_PROJECT_PATH, process.cwd())
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .option('--format <format>', 'Output format: dot or mermaid (import graph colored by community)')
   .action(async (options) => {
     try {
@@ -3356,7 +3371,7 @@ coverageCmd
 coverageCmd
   .command('by-risk', { isDefault: true })
   .description('Show coverage rate by risk decile')
-  .option('--json', 'Output as JSON')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options: { json?: boolean }) => {
     try {
       const { generateCoverageReport } = await import('./coverage/coverageService.js');
@@ -3411,8 +3426,8 @@ coverageCmd
 program
   .command('print-config <file>')
   .description('Print the effective config for a file, naming the source of every value')
-  .option('-p, --path <path>', 'Project path', process.cwd())
-  .option('--json', 'Output as JSON')
+  .option('-p, --path <path>', OPTION_PROJECT_PATH, process.cwd())
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .option('--preset <id>', 'Apply a shareable preset (repeatable)', (v: string, prev: string[]) => prev.concat([v]), [])
   .action(async (file, options) => {
     try {
@@ -3602,7 +3617,7 @@ program
           v.severity === 'critical' ? '🔴' :
           v.severity === 'severe' ? '🟠' : '🟡';
         console.log(
-          `${icon} ${chalk.bold(v.file)}${v.line ? `:${v.line}` : ''} [${v.rule || v.severity}] ${v.message}`
+          `${icon} ${chalk.bold(v.file)}${lineSuffix(v.line)} [${v.rule || v.severity}] ${v.message}`
         );
       }
     } catch (error) {
@@ -3676,8 +3691,8 @@ const daemonCmd = program
 daemonCmd
   .command('start')
   .description('Start the daemon for this project (detached by default)')
-  .option('-p, --path <path>', 'Project root', process.cwd())
-  .option('-c, --config <config>', 'Configuration name')
+  .option('-p, --path <path>', OPTION_PROJECT_ROOT, process.cwd())
+  .option('-c, --config <config>', OPTION_CONFIGURATION_NAME)
   .option('--foreground', 'Run in the foreground (blocking; useful for debugging)')
   .action(async (options) => {
     try {
@@ -3711,7 +3726,7 @@ daemonCmd
 daemonCmd
   .command('stop')
   .description('Ask the daemon to shut down')
-  .option('-p, --path <path>', 'Project root', process.cwd())
+  .option('-p, --path <path>', OPTION_PROJECT_ROOT, process.cwd())
   .action(async (options) => {
     try {
       const { resolveDaemonSocketPath } = await import('./dataPaths.js');
@@ -3733,8 +3748,8 @@ daemonCmd
 daemonCmd
   .command('status')
   .description('Show daemon status')
-  .option('-p, --path <path>', 'Project root', process.cwd())
-  .option('--json', 'Output as JSON')
+  .option('-p, --path <path>', OPTION_PROJECT_ROOT, process.cwd())
+  .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (options) => {
     try {
       const { resolveDaemon } = await import('./daemon/resolve.js');
