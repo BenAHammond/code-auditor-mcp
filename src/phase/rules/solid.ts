@@ -170,28 +170,38 @@ function finding(
   return { ruleId, severity, message, file, line, column, symbol, resolution };
 }
 
-/** Emit a `high` finding for every function-like exceeding a threshold.
- *  `function-length` and `parameter-count` differ only in the metric, threshold
- *  key, message, and resolution; the `.map` onto `finding`, the shared
- *  `file/line/column/symbol` scaffolding, and the `files`/`lines` resolution
- *  fields are identical, so they live here rather than in each `analyze`. */
-function emitOversized(
-  ctx: AnalysisContext<SolidNeeds>,
-  spec: {
-    ruleId: string;
-    thresholdKey: string;
-    fallback: number;
-    measure: (fn: FunctionLike) => number;
-    messageFor: (fn: FunctionLike, max: number) => string;
-    resolutionFor: (fn: FunctionLike) => Resolution;
-  },
-): Finding[] {
-  return collectOversizedFunctionLikes(ctx, spec.thresholdKey, spec.fallback, spec.measure)
-    .map(({ fn, max }) => finding(
-      spec.ruleId, 'high', spec.messageFor(fn, max),
-      fn.file, fn.line, fn.column, symbolOf(fn.name, fn.line, fn.column),
-      spec.resolutionFor(fn),
-    ));
+/** Build the two size rules (`function-length`, `parameter-count`), which differ
+ *  only in the metric, threshold key, message, and resolution. The shared
+ *  `RuleDefinition` scaffolding and the `analyze` body (collect oversized
+ *  function-likes → `finding`) are identical, so they live here once; each rule
+ *  is a `makeSizeRule({ ... })` call carrying only the varying prose. */
+function makeSizeRule(spec: {
+  id: string;
+  thresholdKey: string;
+  fallback: number;
+  measure: (fn: FunctionLike) => number;
+  messageFor: (fn: FunctionLike, max: number) => string;
+  resolutionFor: (fn: FunctionLike) => Resolution;
+}): RuleDefinition<SolidNeeds> {
+  return {
+    id: spec.id,
+    analyzer: 'solid',
+    needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
+    severity: 'high',
+    message: META[spec.id].message,
+    docs: META[spec.id].docs,
+    thresholds: META[spec.id].thresholds,
+    thresholdRationale: META[spec.id].thresholdRationale,
+    samples: META[spec.id].samples,
+    analyze(ctx): Finding[] {
+      return collectOversizedFunctionLikes(ctx, spec.thresholdKey, spec.fallback, spec.measure)
+        .map(({ fn, max }) => finding(
+          spec.id, 'high', spec.messageFor(fn, max),
+          fn.file, fn.line, fn.column, symbolOf(fn.name, fn.line, fn.column),
+          spec.resolutionFor(fn),
+        ));
+    },
+  };
 }
 
 const META = RULE_REGISTRY;
@@ -359,63 +369,37 @@ const singleResponsibility: RuleDefinition<SolidNeeds> = {
 
 // ── function-length ─────────────────────────────────────────────────────────
 
-const functionLength: RuleDefinition<SolidNeeds> = {
+const functionLength = makeSizeRule({
   id: 'function-length',
-  analyzer: 'solid',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
-  severity: 'high',
-  message: META['function-length'].message,
-  docs: META['function-length'].docs,
-  thresholds: META['function-length'].thresholds,
-  thresholdRationale: META['function-length'].thresholdRationale,
-  samples: META['function-length'].samples,
-  analyze(ctx): Finding[] {
-    return emitOversized(ctx, {
-      ruleId: 'function-length',
-      thresholdKey: 'maxLinesPerMethod',
-      fallback: 200,
-      measure: (fn) => fn.lineCount,
-      messageFor: (fn, max) => `Function "${fn.name}" has ${fn.lineCount} lines, exceeding the maximum of ${max}. Consider breaking it down.`,
-      resolutionFor: (fn) => ({
-        action: 'break-down-function',
-        summary: `Break "${fn.name}" (${fn.lineCount} lines) into smaller functions, extracting named helper blocks.`,
-        symbols: [fn.name],
-        files: [fn.file],
-        lines: [fn.line],
-      }),
-    });
-  },
-};
+  thresholdKey: 'maxLinesPerMethod',
+  fallback: 200,
+  measure: (fn) => fn.lineCount,
+  messageFor: (fn, max) => `Function "${fn.name}" has ${fn.lineCount} lines, exceeding the maximum of ${max}. Consider breaking it down.`,
+  resolutionFor: (fn) => ({
+    action: 'break-down-function',
+    summary: `Break "${fn.name}" (${fn.lineCount} lines) into smaller functions, extracting named helper blocks.`,
+    symbols: [fn.name],
+    files: [fn.file],
+    lines: [fn.line],
+  }),
+});
 
 // ── parameter-count ─────────────────────────────────────────────────────────
 
-const parameterCount: RuleDefinition<SolidNeeds> = {
+const parameterCount = makeSizeRule({
   id: 'parameter-count',
-  analyzer: 'solid',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
-  severity: 'high',
-  message: META['parameter-count'].message,
-  docs: META['parameter-count'].docs,
-  thresholds: META['parameter-count'].thresholds,
-  thresholdRationale: META['parameter-count'].thresholdRationale,
-  samples: META['parameter-count'].samples,
-  analyze(ctx): Finding[] {
-    return emitOversized(ctx, {
-      ruleId: 'parameter-count',
-      thresholdKey: 'maxParametersPerMethod',
-      fallback: 6,
-      measure: (fn) => fn.parameterCount,
-      messageFor: (fn, max) => `Function "${fn.name}" has ${fn.parameterCount} parameters, exceeding the maximum of ${max}. Consider using an options object.`,
-      resolutionFor: (fn) => ({
-        action: 'bundle-params',
-        summary: `Bundle the ${fn.parameterCount} parameters of "${fn.name}" into an options object.`,
-        symbols: fn.parameterNames,
-        files: [fn.file],
-        lines: [fn.line],
-      }),
-    });
-  },
-};
+  thresholdKey: 'maxParametersPerMethod',
+  fallback: 6,
+  measure: (fn) => fn.parameterCount,
+  messageFor: (fn, max) => `Function "${fn.name}" has ${fn.parameterCount} parameters, exceeding the maximum of ${max}. Consider using an options object.`,
+  resolutionFor: (fn) => ({
+    action: 'bundle-params',
+    summary: `Bundle the ${fn.parameterCount} parameters of "${fn.name}" into an options object.`,
+    symbols: fn.parameterNames,
+    files: [fn.file],
+    lines: [fn.line],
+  }),
+});
 
 // ── interface-size ──────────────────────────────────────────────────────────
 
