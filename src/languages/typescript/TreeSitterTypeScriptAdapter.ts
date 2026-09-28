@@ -1696,6 +1696,39 @@ class TsConstantResolution extends TsDynamicStringConstruction {
       : '';
   }
 
+  /** Walk `scopeRoot` for the first guard call (assert/validate/check/ensure/
+   *  guard-prefixed) whose first argument satisfies `firstArgMatches` and which
+   *  precedes the use at `idRaw`; return that call's start line, or -1 when no
+   *  such guard exists.  Early-exits on the first match so `guardLine` is the
+   *  FIRST guard's line — the reassignment check in `isGuardValidatedLocal`
+   *  depends on that, not the last. */
+  protected findGuardLine(
+    scopeRoot: ASTNode,
+    idRaw: TreeSitterNode,
+    firstArgMatches: (first: TreeSitterNode) => boolean,
+  ): number {
+    let guardLine = -1;
+    this.walk(scopeRoot, (node) => {
+      if (guardLine !== -1) return;
+      const raw = getRawNode(node);
+      if (raw.type !== 'call_expression') return;
+      const fn = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
+      if (!fn) return;
+      let calleeName: string | null = null;
+      if (fn.type === 'identifier') calleeName = fn.text;
+      else if (fn.type === 'member_expression') {
+        calleeName = (fn as any).childForFieldName?.('property')?.text ?? null;
+      }
+      if (!calleeName || !/^(assert|validate|check|ensure|guard)([A-Z_]|$)/i.test(calleeName)) return;
+      const argsNode = (raw as any).childForFieldName?.('arguments') as TreeSitterNode | null;
+      const first = argsNode?.namedChildren[0] ?? null;
+      if (!first) return;
+      if (raw.startIndex >= idRaw.startIndex) return;
+      if (firstArgMatches(first)) guardLine = node.location.start.line;
+    });
+    return guardLine;
+  }
+
   /** True when the identifier names the enclosing function's parameter AND a
    *  guard call (assert/validate/check/ensure/guard-prefixed) is invoked on it
    *  before its use.  Guards throw on invalid input, so a parameter that has
@@ -1707,28 +1740,11 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     if (!enclosing || enclosing === ast.root) return false;
     if (!this.getParamNames(enclosing).includes(paramName)) return false;
 
-    let guarded = false;
-    this.walk(enclosing, (node) => {
-      if (guarded) return;
-      const raw = getRawNode(node);
-      if (raw.type !== 'call_expression') return;
-      const fn = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
-      if (!fn) return;
-      let calleeName: string | null = null;
-      if (fn.type === 'identifier') calleeName = fn.text;
-      else if (fn.type === 'member_expression') {
-        calleeName = (fn as any).childForFieldName?.('property')?.text ?? null;
-      }
-      if (!calleeName) return;
-      if (!/^(assert|validate|check|ensure|guard)([A-Z_]|$)/i.test(calleeName)) return;
-      const argsNode = (raw as any).childForFieldName?.('arguments') as TreeSitterNode | null;
-      const first = argsNode?.namedChildren[0] ?? null;
-      if (first && first.type === 'identifier' && first.text === paramName
-          && raw.startIndex < idRaw.startIndex) {
-        guarded = true;
-      }
-    });
-    return guarded;
+    return this.findGuardLine(
+      enclosing,
+      idRaw,
+      (first) => first.type === 'identifier' && first.text === paramName,
+    ) !== -1;
   }
 
   /** True when the member expression names a class field (`this.X`) that a
@@ -1762,30 +1778,11 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     });
     if (!classNode) return false;
 
-    let guarded = false;
-    this.walk(classNode, (node) => {
-      if (guarded) return;
-      const r = getRawNode(node);
-      if (r.type !== 'call_expression') return;
-      const fn = (r as any).childForFieldName?.('function') as TreeSitterNode | null;
-      if (!fn) return;
-      let calleeName: string | null = null;
-      if (fn.type === 'identifier') calleeName = fn.text;
-      else if (fn.type === 'member_expression') {
-        calleeName = (fn as any).childForFieldName?.('property')?.text ?? null;
-      }
-      if (!calleeName) return;
-      if (!/^(assert|validate|check|ensure|guard)([A-Z_]|$)/i.test(calleeName)) return;
-      const argsNode = (r as any).childForFieldName?.('arguments') as TreeSitterNode | null;
-      const first = argsNode?.namedChildren[0] ?? null;
-      if (!first || first.type !== 'member_expression') return;
+    return this.findGuardLine(classNode, idRaw, (first) => {
+      if (first.type !== 'member_expression') return false;
       const firstProp = (first as any).childForFieldName?.('property') as TreeSitterNode | null;
-      if (firstProp && firstProp.text === propName
-          && r.startIndex < idRaw.startIndex) {
-        guarded = true;
-      }
-    });
-    return guarded;
+      return firstProp != null && firstProp.text === propName;
+    }) !== -1;
   }
 
   /** True when the identifier names a local (non-parameter) variable or loop
@@ -1810,29 +1807,12 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     // here would otherwise reach a shadowed callback binding.
     if (enclosing && enclosing !== ast.root && this.getParamNames(enclosing).includes(name)) return false;
 
-    let guardLine = -1;
-    let guarded = false;
-    this.walk(scopeRoot, (node) => {
-      if (guarded) return;
-      const raw = getRawNode(node);
-      if (raw.type !== 'call_expression') return;
-      const fn = (raw as any).childForFieldName?.('function') as TreeSitterNode | null;
-      if (!fn) return;
-      let calleeName: string | null = null;
-      if (fn.type === 'identifier') calleeName = fn.text;
-      else if (fn.type === 'member_expression') {
-        calleeName = (fn as any).childForFieldName?.('property')?.text ?? null;
-      }
-      if (!calleeName || !/^(assert|validate|check|ensure|guard)([A-Z_]|$)/i.test(calleeName)) return;
-      const argsNode = (raw as any).childForFieldName?.('arguments') as TreeSitterNode | null;
-      const first = argsNode?.namedChildren[0] ?? null;
-      if (first && first.type === 'identifier' && first.text === name
-          && raw.startIndex < idRaw.startIndex) {
-        guarded = true;
-        guardLine = node.location.start.line;
-      }
-    });
-    if (!guarded) return false;
+    const guardLine = this.findGuardLine(
+      scopeRoot,
+      idRaw,
+      (first) => first.type === 'identifier' && first.text === name,
+    );
+    if (guardLine === -1) return false;
     // A guard on an old value does not protect a later reassignment.
     return !this.hasReassignment(scopeRoot, name, guardLine);
   }
