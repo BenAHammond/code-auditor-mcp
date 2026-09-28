@@ -121,6 +121,19 @@ function cpuDurationMs(start: NodeJS.CpuUsage): number {
   return (cpu.user + cpu.system) / 1000;
 }
 
+/** An empty visitor result for an analyzer that emitted nothing this run. The
+ *  call sites below shared the same four-field object literal (violations,
+ *  status, executionTime, analyzerName); this factory keeps the shape in one
+ *  place so a new field can't drift between them. */
+function makeEmptyAnalyzerResult(analyzerName: string, filesProcessed: number): AnalyzerResult {
+  return {
+    violations: [],
+    status: makeVisitorStatus(filesProcessed),
+    executionTime: 0,
+    analyzerName,
+  };
+}
+
 /**
  * Spec 68 §15 — the full pipeline stage set, always run. Derived from the
  * migrated rules' own `analyzer` labels (each `RuleDefinition` carries the
@@ -1080,10 +1093,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
                 analyzerResults[analyzer].violations.push(...violations);
               } else {
                 analyzerResults[analyzer] = {
+                  ...makeEmptyAnalyzerResult(analyzer, phaseFiles.length),
                   violations,
-                  status: makeVisitorStatus(phaseFiles.length),
-                  executionTime: 0,
-                  analyzerName: analyzer,
                 };
               }
             }
@@ -1099,12 +1110,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
             // the diagnostic; the latter still runs as a legacy visitor).
             for (const analyzer of new Set(RULE_ANALYZER.values())) {
               if (!analyzerResults[analyzer]) {
-                analyzerResults[analyzer] = {
-                  violations: [],
-                  status: makeVisitorStatus(phaseFiles.length),
-                  executionTime: 0,
-                  analyzerName: analyzer,
-                };
+                analyzerResults[analyzer] = makeEmptyAnalyzerResult(analyzer, phaseFiles.length);
               }
             }
 
@@ -1164,10 +1170,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
         for (const name of pipelineAnalyzerNames) {
           if (!analyzerResults[name]) {
             analyzerResults[name] = {
-              violations: [],
-              status: makeVisitorStatus(0),
-              executionTime: 0,
-              analyzerName: name,
+              ...makeEmptyAnalyzerResult(name, 0),
               errors: [{ file: 'pipeline', error: (error as Error).message }],
             };
           }

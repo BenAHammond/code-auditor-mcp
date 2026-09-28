@@ -1373,6 +1373,27 @@ export function createStylesReducer(): Stage3Reducer {
 // ── Conventions reducer (stage 3) ────────────────────────────────────────────
 
 /**
+ * Builds the shared analyzer-config bag for reducers that query the code
+ * index: the reducer's own namespaced config spread over the index handle,
+ * project root, in-scope file set, and scope flag. Reducers that need extra
+ * inputs (`readSource`, `exportsMap`) spread this and layer them on top.
+ *
+ * Scoped/diff audits thread `_infra.files` (absolute) as `scopedFiles` so the
+ * analyzer scopes its function/file queries to only the changed files;
+ * `functions.file_path` is also absolute, so the IN clause matches directly.
+ */
+function makeIndexAnalyzerConfig(context: ReducerContext): Record<string, unknown> {
+  const scopedFiles = context.isScoped ? ((context.config as any).files as string[] ?? []) : undefined;
+  return {
+    ...context.config,
+    indexHandle: context.indexHandle,
+    projectRoot: context.projectRoot,
+    scopedFiles,
+    isScoped: context.isScoped,
+  };
+}
+
+/**
  * Conventions reducer — queries conventions table and flags deviations
  * (usage-pair, import-form, error-handling, export-shape, naming).
  * Uses analyzer.analyze([]) with rawDb injected.
@@ -1404,12 +1425,7 @@ export function createConventionsReducer(): Stage3Reducer {
             )
           : undefined;
 
-        // Scoped/diff audits: thread the in-scope file set so the analyzer scopes
-        // its function/file queries to only the changed files. `_infra.files` are
-        // absolute; `functions.file_path` is also absolute (function-index visitor
-        // stores `context.filePath`), so the IN clause matches directly.
-        const scopedFiles = context.isScoped ? ((context.config as any).files as string[] ?? []) : undefined;
-        const config = { ...context.config, indexHandle: context.indexHandle, projectRoot: context.projectRoot, readSource: context.readSource, exportsMap, scopedFiles, isScoped: context.isScoped };
+        const config = { ...makeIndexAnalyzerConfig(context), readSource: context.readSource, exportsMap };
         const result = await analyzer.analyze([], config);
         // Count the INPUT the conventions analyzer reads (the function index the
         // function-index visitor populated), not the derived `conventions` table it
@@ -1455,11 +1471,7 @@ export function createCrossDomainReducer(): Stage4Reducer {
           './analyzers/crossDomain/CrossDomainAnalyzer.js'
         );
         const analyzer = new CrossDomainAnalyzer();
-        // Thread the in-scope file set (absolute, from _infra.files) so detectors
-        // anchor to changed files on diff audits; full audits keep the root-LIKE
-        // scope (resolveFileScope falls back when isScoped is false).
-        const scopedFiles = context.isScoped ? ((context.config as any).files as string[] ?? []) : undefined;
-        const config = { ...context.config, indexHandle: context.indexHandle, projectRoot: context.projectRoot, scopedFiles, isScoped: context.isScoped };
+        const config = makeIndexAnalyzerConfig(context);
         const result = await analyzer.analyze([], config);
         // Count DB rows consumed across primary cross-domain tables
         let factsConsumed = 0;

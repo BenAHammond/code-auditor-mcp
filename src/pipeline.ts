@@ -27,6 +27,7 @@ import {
   type InputPresence,
   type PipelineConfig,
   type PipelineResult,
+  type ReducerContext,
   type Stage2Visitor,
   type Stage3Reducer,
   type Stage4Reducer,
@@ -486,6 +487,26 @@ export async function runStage2(
 
 // ── Stage 3: Corpus reducers ───────────────────────────────────────────────
 
+/**
+ * Builds the common `ReducerContext` fields shared by stage-3 and stage-4
+ * reducers. Stage 3 layers an on-demand `readSource` closure on top; stage 4
+ * uses the base context as-is.
+ */
+function makeReducerContext(
+  config: PipelineConfig,
+  indexHandle: IndexHandle | undefined,
+  reducerConfig: Record<string, unknown>,
+): ReducerContext {
+  return {
+    projectRoot: config.projectRoot,
+    config: reducerConfig,
+    indexHandle,
+    abortSignal: config.abortSignal,
+    isScoped: config.isScoped,
+    styleContributingFiles: config.styleContributingFiles,
+  };
+}
+
 async function runStage3(
   allFacts: Map<string, Record<string, unknown>>,
   reducers: Stage3Reducer[],
@@ -530,14 +551,9 @@ async function runStage3(
         return undefined;
       }
     };
-    const reducerContext = {
-      projectRoot: config.projectRoot,
-      config: reducerConfig,
-      indexHandle,
-      abortSignal: config.abortSignal,
+    const reducerContext: ReducerContext = {
+      ...makeReducerContext(config, indexHandle, reducerConfig),
       readSource,
-      isScoped: config.isScoped,
-      styleContributingFiles: config.styleContributingFiles,
     };
 
     try {
@@ -630,14 +646,7 @@ async function runStage4(
 
     // Per-reducer namespaced config: analyzer namespace + infrastructure
     const reducerConfig = { ...(rawConfig[dr.name] ?? {}), ...infra };
-    const reducerContext = {
-      projectRoot: config.projectRoot,
-      config: reducerConfig,
-      indexHandle,
-      abortSignal: config.abortSignal,
-      isScoped: config.isScoped,
-      styleContributingFiles: config.styleContributingFiles,
-    };
+    const reducerContext = makeReducerContext(config, indexHandle, reducerConfig);
 
     try {
       const r0 = performance.now();
