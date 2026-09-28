@@ -78,11 +78,17 @@ function runGate() {
     },
   );
   if (result.error) {
-    return { gateMs: null, stderr: '', error: result.error.message };
+    return { gateMs: null, gateWallMs: null, stderr: '', error: result.error.message };
   }
   const stderr = result.stderr ?? '';
   const gateMatch = stderr.match(/gate cpu-time:\s*([\d.]+)\s*ms/);
-  return { gateMs: gateMatch ? parseFloat(gateMatch[1]) : null, stderr, error: null };
+  const wallMatch = stderr.match(/gate wall-clock:\s*([\d.]+)\s*ms/);
+  return {
+    gateMs: gateMatch ? parseFloat(gateMatch[1]) : null,
+    gateWallMs: wallMatch ? parseFloat(wallMatch[1]) : null,
+    stderr,
+    error: null,
+  };
 }
 
 function reportParseFailure(label, stderr) {
@@ -108,8 +114,8 @@ if (warm.error) {
 }
 if (warm.gateMs === null) reportParseFailure('warm', warm.stderr);
 
-console.log(`cold gate cpu-time: ${cold.gateMs.toFixed(1)} ms (unasserted — page-cache cold)`);
-console.log(`warm gate cpu-time: ${warm.gateMs.toFixed(1)} ms (budget ${BUDGET_MS} ms)`);
+console.log(`cold gate wall-clock: ${cold.gateWallMs.toFixed(1)} ms, cpu-time: ${cold.gateMs.toFixed(1)} ms (unasserted — page-cache cold)`);
+console.log(`warm gate wall-clock: ${warm.gateWallMs.toFixed(1)} ms, cpu-time: ${warm.gateMs.toFixed(1)} ms (budget ${BUDGET_MS} ms)`);
 
 // Re-emit the per-rule breakdown (slowest first) from the warm run so a slow
 // rule is visible.

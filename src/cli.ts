@@ -803,9 +803,13 @@ program
           | Array<{ ruleId: string; totalMs: number; calls: number }>
           | undefined;
         const gateMs = (result.metadata as any)?.auditCpuMs as number | undefined;
+        const gateWallMs = (result.metadata as any)?.auditDuration as number | undefined;
         const lines: string[] = [];
         lines.push('');
-        lines.push(`⏱  gate cpu-time: ${(gateMs ?? 0).toFixed(1)} ms (budget 350 ms)`);
+        // §16 criterion 16 — report both wall-clock (what the hook's user feels)
+        // and CPU (what the rule actually burned); the budget asserts on CPU.
+        lines.push(`⏱  gate wall-clock: ${(gateWallMs ?? 0).toFixed(1)} ms`);
+        lines.push(`⏱  gate cpu-time: ${(gateMs ?? 0).toFixed(1)} ms (budget 400 ms)`);
         lines.push('── per-rule timing (slowest first) ──');
         if (ruleTiming && ruleTiming.length > 0) {
           for (const t of ruleTiming) {
