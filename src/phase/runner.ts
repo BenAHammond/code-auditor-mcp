@@ -53,6 +53,7 @@ import type {
   Format,
   ThresholdValues,
   Finding,
+  RuleDefinition,
   StyleDeclarationsFile,
   FunctionIndexFact,
   MinedConvention,
@@ -154,6 +155,31 @@ export async function buildFileSymbols(files: readonly InputFile[]): Promise<Fil
   return symbols;
 }
 
+/**
+ * Run one rule array over an assembled fact context and collect its findings.
+ * Every `analyzeX` slice reduces to this single loop — the only per-slice
+ * difference is which rules, facts, and formats are handed in — so the loop
+ * lives here once instead of being duplicated across the ~19 analyze arms.
+ *
+ * @param rules - The rule array to run.
+ * @param facts - The assembled fact context (declared `needs`, union-shaped).
+ * @param formats - The format union the rules may read.
+ * @param thresholds - The resolved thresholds (defaults to `{}`).
+ * @returns The rules' findings over the facts.
+ */
+async function analyzeWithRules(
+  rules: readonly RuleDefinition<any>[],
+  facts: Record<string, unknown>,
+  formats: readonly Format[],
+  thresholds: ThresholdValues,
+): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  for (const rule of rules) {
+    findings.push(...(await rule.analyze({ facts, formats, thresholds } as never)));
+  }
+  return findings;
+}
+
 /** Analyze the assembled `file-symbols` fact with the SOLID rules. The union
  *  context carries the §9 Go facts as `[]` and widens `formats` to include `go`
  *  so the Go arms (`interface-size`'s Go branch, `struct-size`, `function-size`,
@@ -166,21 +192,12 @@ export async function buildFileSymbols(files: readonly InputFile[]): Promise<Fil
  *  @returns The SOLID rules' findings over the fact.
  */
 export async function analyzeFileSymbols(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
-  const ctx = {
-    facts: {
-      'file-symbols': symbols,
-      'type-declarations': [] as TypeDeclarationsFact[],
-      'go-functions': [] as GoFunctionFact[],
-      'go-switches': [] as GoSwitchFact[],
-    },
-    formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of solidRules) {
-    findings.push(...(await rule.analyze(ctx as never)));
-  }
-  return findings;
+  return analyzeWithRules(solidRules, {
+    'file-symbols': symbols,
+    'type-declarations': [] as TypeDeclarationsFact[],
+    'go-functions': [] as GoFunctionFact[],
+    'go-switches': [] as GoSwitchFact[],
+  }, ['typescript', 'tsx', 'javascript', 'go'], thresholds);
 }
 
 /** The whole vertical slice: parse → file-symbols → SOLID rules → findings. */
@@ -199,16 +216,7 @@ export async function runFileSymbolsSlice(files: readonly InputFile[], threshold
  * @returns The documentation rules' findings over the fact.
  */
 export async function analyzeDocumentation(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'file-symbols': symbols },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of documentationRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(documentationRules, { 'file-symbols': symbols }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The documentation slice: parse → file-symbols → documentation rules → findings. */
@@ -256,16 +264,7 @@ export async function analyzeDataAccessCalls(
   catalog: TableCatalog,
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'data-access-calls': calls, 'table-catalog': catalog },
-    formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of dataAccessRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(dataAccessRules, { 'data-access-calls': calls, 'table-catalog': catalog }, ['typescript', 'tsx', 'javascript', 'go'], thresholds);
 }
 
 /**
@@ -320,16 +319,7 @@ export async function analyzeLoopQueries(
   facts: LoopQueryFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'loop-queries': facts },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of loopQueryRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(loopQueryRules, { 'loop-queries': facts }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The loop-queries slice: parse → loop-queries → loop-query → findings. */
@@ -376,16 +366,7 @@ export async function analyzeDynamicSql(
   facts: DynamicSqlFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'dynamic-sql': facts },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of dynamicSqlRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(dynamicSqlRules, { 'dynamic-sql': facts }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The dynamic-sql slice: parse → dynamic-sql → dynamic-sql-construction → findings. */
@@ -482,16 +463,7 @@ export async function analyzeSchemaRules(
   migrationHistory: MigrationHistory,
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'schema-usage': usages, 'table-catalog': catalog, 'migration-history': migrationHistory },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of schemaRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(schemaRules, { 'schema-usage': usages, 'table-catalog': catalog, 'migration-history': migrationHistory }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The schema slice: parse → schema-usage + table-catalog + migration-history →
@@ -524,16 +496,7 @@ export async function runSchemaSlice(files: readonly InputFile[], thresholds?: T
  * @returns The cross-domain lifecycle rules' findings over the fact.
  */
 export async function analyzeCrossDomain(usages: SchemaUsageFact[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'schema-usage': usages },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of crossDomainRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(crossDomainRules, { 'schema-usage': usages }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The cross-domain slice: parse → schema-usage → lifecycle rules → findings. */
@@ -576,16 +539,7 @@ export async function buildCrossLanguageEntities(files: readonly InputFile[]): P
  * @returns The dependency-graph rules' findings over the fact.
  */
 export async function analyzeDependencyGraph(entities: Entity[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'cross-language-entities': entities },
-    formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of dependencyGraphRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(dependencyGraphRules, { 'cross-language-entities': entities }, ['typescript', 'tsx', 'javascript', 'go'], thresholds);
 }
 
 /** The dependency-graph slice: parse → cross-language-entities → graph rules → findings. */
@@ -607,16 +561,7 @@ export async function runDependencyGraphSlice(files: readonly InputFile[], thres
  * @returns The schema-validator rules' findings over the fact.
  */
 export async function analyzeSchemaValidator(entities: Entity[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'cross-language-entities': entities },
-    formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of schemaValidatorRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(schemaValidatorRules, { 'cross-language-entities': entities }, ['typescript', 'tsx', 'javascript', 'go'], thresholds);
 }
 
 /** The schema-validator slice: parse → cross-language-entities → validator rules → findings. */
@@ -666,16 +611,7 @@ export async function analyzeStyles(
   facts: StyleDeclarationsFile[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'style-declarations': facts },
-    formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of stylesRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(stylesRules, { 'style-declarations': facts }, ['css', 'scss', 'typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /**
@@ -787,21 +723,17 @@ export async function analyzeConventions(
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
   const ctx = {
-    facts: { 'function-index': facts, 'mined-conventions': conventions, 'export-form': exportForms, 'import-form': importForms },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
+    'function-index': facts,
+    'mined-conventions': conventions,
+    'export-form': exportForms,
+    'import-form': importForms,
   };
-  const findings: Finding[] = [];
-  for (const rule of conventionsRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  for (const rule of conventionsExportShapeRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  for (const rule of conventionsImportFormRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  const formats: readonly Format[] = ['typescript', 'tsx', 'javascript'];
+  return [
+    ...(await analyzeWithRules(conventionsRules, ctx, formats, thresholds)),
+    ...(await analyzeWithRules(conventionsExportShapeRules, ctx, formats, thresholds)),
+    ...(await analyzeWithRules(conventionsImportFormRules, ctx, formats, thresholds)),
+  ];
 }
 
 /**
@@ -917,16 +849,7 @@ export async function analyzeDry(
   codeBlocks: CodeBlockFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'imports': imports, 'string-literals': stringLiterals, 'code-block': codeBlocks, 'clone-pair-history': [] },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of dryRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(dryRules, { 'imports': imports, 'string-literals': stringLiterals, 'code-block': codeBlocks, 'clone-pair-history': [] }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /**
@@ -960,16 +883,7 @@ export async function analyzeSecurity(
   stringLiterals: StringLiteralFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'string-literals': stringLiterals },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of securityRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(securityRules, { 'string-literals': stringLiterals }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The security slice: parse → string-literals → hardcoded-credential rules → findings. */
@@ -1013,16 +927,7 @@ export async function analyzeSecrets(
   candidates: SecretCandidate[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'secret-candidates': candidates },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of secretsRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(secretsRules, { 'secret-candidates': candidates }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The secret-candidates slice: parse → secret-candidates → hardcoded-secret → findings. */
@@ -1067,16 +972,7 @@ export async function analyzeSecurityDefects(
   candidates: SecurityCandidate[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'security-candidates': candidates },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of securityDefectRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(securityDefectRules, { 'security-candidates': candidates }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The security-candidates slice: parse → security-candidates → defect rules → findings. */
@@ -1123,16 +1019,7 @@ export async function analyzeFunctionBodies(
   facts: FunctionBodyFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'function-bodies': facts },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of functionBodyRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(functionBodyRules, { 'function-bodies': facts }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The function-bodies slice: parse → function-bodies → too-many-queries → findings. */
@@ -1177,16 +1064,7 @@ export async function analyzeReactComponents(
   facts: ReactComponentScan[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'react-component': facts },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of reactRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(reactRules, { 'react-component': facts }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The react slice: parse → react-component → react rules → findings. */
@@ -1230,16 +1108,7 @@ export async function analyzeFileHeaders(
   facts: FileHeaderFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'file-header': facts },
-    formats: ['typescript', 'tsx', 'javascript'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of fileDocumentationRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(fileDocumentationRules, { 'file-header': facts }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /** The file-header slice: parse → file-header → file-documentation → findings. */
@@ -1285,14 +1154,5 @@ export async function analyzeSchemaJson(
   validations: SchemaValidationFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  const ctx = {
-    facts: { 'schema-validations': validations },
-    formats: ['json'] as const,
-    thresholds,
-  };
-  const findings: Finding[] = [];
-  for (const rule of schemaJsonRules) {
-    findings.push(...(await rule.analyze(ctx)));
-  }
-  return findings;
+  return analyzeWithRules(schemaJsonRules, { 'schema-validations': validations }, ['json'], thresholds);
 }
