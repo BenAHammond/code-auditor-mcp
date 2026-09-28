@@ -496,6 +496,38 @@ function extractFromTypeScript(
 // Tailwind (className/class)
 // ---------------------------------------------------------------------------
 
+/** Record a `className` token list as tailwind declarations: expand each
+ *  utility against the theme tokens when present, otherwise record the raw
+ *  literal for later token resolution. Shared by the JSX and HTML extractors. */
+function recordTailwindClasses(
+  classNames: string[],
+  tailwindTokens: TailwindThemeTokens | undefined,
+  filePath: string,
+  line: number,
+  declarations: NormalizedDeclaration[],
+): void {
+  if (tailwindTokens) {
+    for (const className of classNames) {
+      const expanded = expandUtility(className, tailwindTokens, filePath, line);
+      declarations.push(...expanded);
+    }
+  } else {
+    for (const className of classNames) {
+      declarations.push({
+        property: 'class',
+        rawValue: className,
+        normalizedValue: { type: 'literal', value: className },
+        mechanism: 'tailwind',
+        filePath,
+        line,
+        context: null,
+        variantContext: null,
+        tokenRef: null,
+      });
+    }
+  }
+}
+
 function extractFromClassName(
   node: ASTNode,
   sourceCode: string,
@@ -523,27 +555,7 @@ function extractFromClassName(
     const classNames = rawValue.split(/\s+/).filter(Boolean);
     const line = getLine(sourceCode, valueNode.range[0]);
 
-    if (tailwindTokens) {
-      for (const className of classNames) {
-        const expanded = expandUtility(className, tailwindTokens, filePath, line);
-        declarations.push(...expanded);
-      }
-    } else {
-      // Without tokens, record class usage for later token resolution
-      for (const className of classNames) {
-        declarations.push({
-          property: 'class',
-          rawValue: className,
-          normalizedValue: { type: 'literal', value: className },
-          mechanism: 'tailwind',
-          filePath,
-          line,
-          context: null,
-          variantContext: null,
-          tokenRef: null,
-        });
-      }
-    }
+    recordTailwindClasses(classNames, tailwindTokens, filePath, line, declarations);
   } else {
     // Dynamic expression: className={clsx(...)} or className={`...`}
     const exprNode = findChildByType(node, 'jsx_expression');
@@ -746,26 +758,7 @@ function extractFromHTML(
     const line = sourceCode.slice(0, match.index).split('\n').length;
     const classNames = classValue.split(/\s+/).filter(Boolean);
 
-    if (tailwindTokens) {
-      for (const className of classNames) {
-        const expanded = expandUtility(className, tailwindTokens, filePath, line);
-        declarations.push(...expanded);
-      }
-    } else {
-      for (const className of classNames) {
-        declarations.push({
-          property: 'class',
-          rawValue: className,
-          normalizedValue: { type: 'literal', value: className },
-          mechanism: 'tailwind',
-          filePath,
-          line,
-          context: null,
-          variantContext: null,
-          tokenRef: null,
-        });
-      }
-    }
+    recordTailwindClasses(classNames, tailwindTokens, filePath, line, declarations);
   }
 
   // Inline style attributes
