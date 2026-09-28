@@ -335,6 +335,16 @@ function extractPropsFromObjectPattern(
   return out;
 }
 
+/**
+ * Extract the props a React component declares, across the three declaration
+ * forms: `const C: React.FC<Props> = ...`, a plain function/arrow component
+ * whose first parameter is a destructured object or type-annotated object, and
+ * a class component whose `extends` clause carries a `Props` reference.
+ *
+ * @param node - The component node to extract prop types from.
+ * @param sourceCode - The original source text for type extraction.
+ * @returns The extracted prop definitions.
+ */
 export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinition[] {
   const props: PropDefinition[] = [];
 

@@ -2425,20 +2425,6 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
   }
 }
 
-/**
- * Spec 68 §3.2 — the `data-access-calls` FileProcessor extraction, factored out
- * of `analyzeWithFacts` so the phase-model producer can obtain the per-file
- * resolved calls synchronously (the analyzer method is `async` but does no real
- * awaits — its body is entirely synchronous). Returns the `DatabaseCall[]` the
- * missing-org-filter / unfiltered-query / sql-injection-risk rules read, with no
- * violation production and no side effects. Config is the §10 tuning surface;
- * omitted here, the extraction runs on {@link DEFAULT_DATA_ACCESS_CONFIG}.
- * @param ast The parsed file AST.
- * @param adapter The language adapter for the file's syntax.
- * @param sourceCode The raw source text.
- * @param config The data-access analyzer config (defaults when omitted).
- * @returns The database calls extracted from the file.
- */
 /** Build the shared data-access scan context (config + provenance + imports). */
 function buildDataAccessScan(
   ast: AST,
@@ -2464,6 +2450,20 @@ function buildDataAccessScan(
   };
 }
 
+/**
+ * Spec 68 §3.2 — the `data-access-calls` FileProcessor extraction, factored out
+ * of `analyzeWithFacts` so the phase-model producer can obtain the per-file
+ * resolved calls synchronously (the analyzer method is `async` but does no real
+ * awaits — its body is entirely synchronous). Returns the `DatabaseCall[]` the
+ * missing-org-filter / unfiltered-query / sql-injection-risk rules read, with no
+ * violation production and no side effects. Config is the §10 tuning surface;
+ * omitted here, the extraction runs on {@link DEFAULT_DATA_ACCESS_CONFIG}.
+ * @param ast The parsed file AST.
+ * @param adapter The language adapter for the file's syntax.
+ * @param sourceCode The raw source text.
+ * @param config The data-access analyzer config (defaults when omitted).
+ * @returns The database calls extracted from the file.
+ */
 export function extractDataAccessCalls(
   ast: AST,
   adapter: LanguageAdapter,

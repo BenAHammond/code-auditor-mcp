@@ -1087,31 +1087,6 @@ function withBatchWrite(handle: IndexHandle, write: () => void): void {
 }
 
 /**
- * Distinct `functions.language` values for the in-scope file set, chunked at the
- * SQLite bind-parameter ceiling so a large changed-file list can't exceed the
- * limit. Used by the Spec 64 R1 handled-languages gate on scoped runs, where a
- * whole-table `SELECT DISTINCT language` would break the O(changed files) scope.
- */
-function queryScopedLanguages(
-  indexHandle: IndexHandle,
-  files: string[],
-): Array<{ language: string | null }> {
-  const SQLITE_MAX_VARIABLES = 900;
-  const rows: Array<{ language: string | null }> = [];
-  for (let i = 0; i < files.length; i += SQLITE_MAX_VARIABLES) {
-    const chunk = files.slice(i, i + SQLITE_MAX_VARIABLES);
-    const placeholders = chunk.map(() => '?').join(', ');
-    rows.push(
-      ...(indexHandle.query(
-        `SELECT DISTINCT language FROM functions WHERE file_path IN (${placeholders})`,
-        chunk,
-      ) as Array<{ language: string | null }>),
-    );
-  }
-  return rows;
-}
-
-/**
  * Run the pipeline and then flush collected index facts through the supplied
  * persister, returning both the pipeline result and the facts.
  *
