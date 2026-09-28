@@ -182,4 +182,23 @@ describe('Spec 68 SOLID parity (new analyze(ctx) === old UniversalSOLIDAnalyzer)
     expect(nu).toEqual(old);
     expect(nu.length).toBeGreaterThan(0);
   });
+
+  it('solid/dependency-inversion skips the abstraction boundary (adapter/factory/facade)', async () => {
+    // A class whose name declares it the abstraction boundary is the *correct*
+    // place to instantiate a concretion — not a DI violation. Only `Service`
+    // (a plain consumer) should fire. The legacy analyzer still flags all four,
+    // so this pins the phase rule's precision fix directly (no parity()).
+    const fresh = await runFileSymbolsSlice([{
+      path: 'di.ts',
+      content: [
+        'class PostgresAdapter { constructor() { this.db = new DatabaseCtor(); } }',
+        'class ConfigFactory { make() { return new Widget(); } }',
+        'class LspFace { constructor() { this.docs = new TextDocuments(); } }',
+        'class Service { constructor() { this.repo = new PostgresRepo(); } }',
+        '',
+      ].join('\n'),
+    }], {});
+    const fired = fresh.filter((f) => f.ruleId === 'solid/dependency-inversion').map((f) => f.symbol);
+    expect(fired).toEqual(['Service']);
+  });
 });

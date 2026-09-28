@@ -576,6 +576,16 @@ const liskovSubstitution: RuleDefinition<SolidNeeds> = {
 
 // ── solid/dependency-inversion ──────────────────────────────────────────────
 
+/** True when a class name declares the class to be the *abstraction boundary*
+ *  — the one place that is *supposed* to instantiate a concretion. An adapter
+ *  wraps a concrete third-party library, a factory produces concrete products,
+ *  a facade wraps a subsystem. Flagging these for `new`ing a concrete type is a
+ *  false positive: the DI principle is satisfied because every *other* class
+ *  depends on these abstractions, not on the concretions behind them. */
+function isAbstractionBoundary(name: string): boolean {
+  return /(?:Adapter|Factory|Facade|Face|Wrapper|Database|Driver)$/.test(name);
+}
+
 const dependencyInversion: RuleDefinition<SolidNeeds> = {
   id: 'solid/dependency-inversion',
   analyzer: 'solid',
@@ -591,6 +601,7 @@ const dependencyInversion: RuleDefinition<SolidNeeds> = {
       if (s.kind !== 'class') continue;
       const cls = s as FileClassSymbol;
       if (!cls.hasHeldDirectInstantiation) continue;
+      if (isAbstractionBoundary(cls.name)) continue;
       out.push(finding(
         'solid/dependency-inversion', 'high',
         `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,

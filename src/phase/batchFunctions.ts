@@ -10,12 +10,17 @@
  * A `.batch(` commit is the transaction scope (Cloudflare D1 / SQLite batching):
  * writes accumulated into prepared statements and committed in one batch carry
  * no transaction-boundary risk, so `multi-table-write` must not flag them. The
- * producer runs the *same* node set and the *same* span test as the legacy walk
- * — `FUNCTION_NODE_TYPES` (including `generator_function_expression`, which the
- * adapter's `extractFunctions` set omits) and `source.slice(range).includes(
- * '.batch(')` over the node's full byte range — so a batch in a nested callback
- * still clears the enclosing outer function, exactly as the legacy ancestor walk
- * did.
+ * same holds for `.transaction(` — better-sqlite3's `db.transaction(fn)` wraps
+ * its callback's statements in a single atomic transaction, so a multi-table
+ * write inside it has no partial-failure boundary either (`clearIndex`'s
+ * transaction-wrapped `DELETE FROM` sequence is the self-audit case). Both
+ * commit forms are recognised here as one "transaction-scope" signal.
+ *
+ * The producer runs the *same* node set and the *same* span test as the legacy
+ * walk — `FUNCTION_NODE_TYPES` (including `generator_function_expression`, which
+ * the adapter's `extractFunctions` set omits) and a substring test over the
+ * node's full byte range — so a batch/transaction in a nested callback still
+ * clears the enclosing outer function, exactly as the legacy ancestor walk did.
  *
  * The fact carries the location span (`startLine`/`endLine`), not the range: the
  * legacy walk located the enclosing function by `loc.start.line <= writeLine <=
@@ -48,8 +53,11 @@ export function extractBatchFunctions(file: AstFile): BatchFunctionFact[] {
     if (FUNCTION_NODE_TYPES.has(node.type)) {
       const loc = node.location;
       const range = node.range;
-      if (loc && range && file.source.slice(range[0], range[1]).includes('.batch(')) {
-        out.push({ file: file.file, startLine: loc.start.line, endLine: loc.end.line });
+      if (loc && range) {
+        const span = file.source.slice(range[0], range[1]);
+        if (span.includes('.batch(') || span.includes('.transaction(')) {
+          out.push({ file: file.file, startLine: loc.start.line, endLine: loc.end.line });
+        }
       }
     }
     for (const child of node.children ?? []) walk(child);

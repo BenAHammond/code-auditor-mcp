@@ -436,6 +436,33 @@ describe('Spec 68 cross-domain parity — multi-table-write', () => {
     }) as Finding[];
     expect(fresh.map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))).toEqual([]);
   });
+
+  it('does not fire on DDL-only (create) writes — a schema definition, not a boundary hazard', () => {
+    // `runMigrations` / `createSchema` emit `CREATE TABLE`/`CREATE INDEX` (DDL).
+    // DDL mutates no data, so a function whose writes are all `create` carries no
+    // transaction-boundary risk — even across 29 tables. The rule excludes
+    // `create` from its write set (a precision fix, not a parity assertion: the
+    // legacy SQL also counted `create`, and this is where the two diverge).
+    const facts: SchemaUsageFact[] = ['a', 'b', 'c', 'd', 'e'].map((tableName) => ({
+      tableName,
+      filePath: '/p/src/migrate.ts',
+      functionName: 'createSchema',
+      functionStartLine: 1,
+      functionStartColumn: 1,
+      usageType: 'create',
+      line: 10,
+    }));
+    const fresh = multiTableWriteRule.analyze({
+      facts: {
+        'schema-usage': facts,
+        'call-graph': { functions: [], callEdges: [] },
+        'batch-functions': [],
+      },
+      formats: ['typescript', 'tsx', 'javascript'],
+      thresholds: { schemaLifecycle: { txnTableMax: 4 } },
+    }) as Finding[];
+    expect(fresh.filter((f) => f.ruleId === 'cross-domain/multi-table-write')).toEqual([]);
+  });
 });
 
 // ── no-validator-reachable (validation bypass) ──────────────────────────────

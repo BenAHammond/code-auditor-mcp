@@ -95,6 +95,17 @@ const META = RULE_REGISTRY;
 const WRITE_TYPES = new Set(['insert', 'update', 'delete', 'create']);
 
 /**
+ * The write verbs that carry transaction-boundary risk. `create` (DDL) is
+ * deliberately excluded: a `CREATE TABLE` / `CREATE INDEX` defines a schema
+ * rather than mutating data, and migrations run it idempotently and atomically —
+ * there is no partial-failure data-integrity risk the way a multi-table
+ * INSERT/UPDATE/DELETE spanning transaction boundaries has. A function whose
+ * writes are all DDL (`runMigrations`, `createSchema`) is a schema definition,
+ * not a transaction-boundary hazard.
+ */
+const TXN_WRITE_TYPES = new Set(['insert', 'update', 'delete']);
+
+/**
  * The "data flows in" verbs a `written-never-read` table must have at least one
  * of to qualify. `create` (DDL) defines a schema rather than populating it — a
  * table that is only ever `CREATE TABLE`-ed is "defined but never populated",
@@ -329,7 +340,7 @@ function cmpWriterGroup(a: WriterGroup, b: WriterGroup): number {
 function groupWriteRows(usages: SchemaUsageFact[]): WriterGroup[] {
   const grouped = new Map<string, WriterGroup>();
   for (const u of usages) {
-    if (!WRITE_TYPES.has(u.usageType)) continue;
+    if (!TXN_WRITE_TYPES.has(u.usageType)) continue;
     const gkey = JSON.stringify([u.filePath, u.functionStartLine ?? null, u.functionStartColumn ?? null, u.tableName]);
     const existing = grouped.get(gkey);
     if (existing) {
@@ -387,7 +398,7 @@ function expandWrittenTablesFact(
     for (const cf of graph.functions) {
       if (cf.id !== edge.toId) continue;
       for (const u of usages) {
-        if (WRITE_TYPES.has(u.usageType) && u.functionName === cf.name && u.filePath === cf.filePath) {
+        if (TXN_WRITE_TYPES.has(u.usageType) && u.functionName === cf.name && u.filePath === cf.filePath) {
           allTables.add(u.tableName);
         }
       }
