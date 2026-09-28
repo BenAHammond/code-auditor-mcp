@@ -434,6 +434,13 @@ function nonQueryBuilderTableFilter(fp: { clause: string; params: string[] }): {
 /**
  * Detect tables that are written to (INSERT/UPDATE/DELETE/CREATE) but
  * never read from (SELECT). These might be dead writes or missed read paths.
+ *
+ * A table must have at least one `insert`/`update` ("data flows in") usage to
+ * qualify — a table whose only visible writes are `create` (DDL) or `delete`
+ * (truncate) is not a dead write path, because its `insert`/`select` live in a
+ * file the extractor does not scan (an out-of-scope receiver) or a dynamic-SQL
+ * read. The anchor still sorts the full write set, so `delete` keeps its
+ * byte-order edge over `insert` and a mixed write table anchors on the `delete`.
  */
 function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Violation[] {
   const violations: Violation[] = [];
@@ -450,7 +457,10 @@ function detectWrittenNeverRead(indexHandle: IndexHandle, scope: FileScope): Vio
          AND table_name NOT IN (
            SELECT DISTINCT table_name FROM schema_usage WHERE usage_type = 'select' ${fp.clause}
          )
-       ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params]) as SchemaUsageRow[];
+         AND table_name IN (
+           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type IN ('insert', 'update') ${fp.clause}
+         )
+       ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params, ...fp.params]) as SchemaUsageRow[];
 
   // Deduplicate by table_name — one violation per table, anchored to
   // the first writing file encountered.

@@ -205,6 +205,20 @@ describe('Spec 68 cross-domain parity (new analyze(ctx) === old CrossDomainAnaly
     ].sort());
   });
 
+  it('written-never-read does NOT fire on a create-only or delete-only table', async () => {
+    // A table whose only visible writes are DDL (`create`) or a truncate
+    // (`delete`) has no "data flows in" (`insert`/`update`) usage — its
+    // `insert`/`select` live in a file the extractor does not scan (an
+    // out-of-scope receiver) or a dynamic-SQL read, so it is not a dead write
+    // path. Both the legacy detector and the new rule skip it.
+    const perRule = await parity([
+      { tableName: 'phase_facts', filePath: '/p/src/migrate.ts', functionName: 'migrate', functionStartLine: 1, functionStartColumn: 1, usageType: 'create', line: 2 },
+      { tableName: 'file_churn', filePath: '/p/src/index.ts', functionName: 'clearIndex', functionStartLine: 1, functionStartColumn: 1, usageType: 'delete', line: 2549 },
+    ]);
+    expect(perRule['cross-domain/written-never-read']).toEqual([]);
+    expect(perRule['cross-domain/read-never-written']).toEqual([]);
+  });
+
   it('written-never-read does NOT fire when a write is balanced by a read', async () => {
     const perRule = await parity([
       { tableName: 'users', filePath: '/p/src/x.ts', functionName: 'f', functionStartLine: 1, functionStartColumn: 1, usageType: 'insert', line: 2 },

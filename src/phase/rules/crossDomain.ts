@@ -94,6 +94,35 @@ const META = RULE_REGISTRY;
 /** The write verbs a one-sided write lifecycle treats as "written". */
 const WRITE_TYPES = new Set(['insert', 'update', 'delete', 'create']);
 
+/**
+ * The "data flows in" verbs a `written-never-read` table must have at least one
+ * of to qualify. `create` (DDL) defines a schema rather than populating it — a
+ * table that is only ever `CREATE TABLE`-ed is "defined but never populated",
+ * not "written and never read". `delete` — especially the no-`WHERE` truncate
+ * form (`DELETE FROM t`) that `unfiltered-query` already flags — clears data
+ * rather than writing it in, so a `delete`-only table (a cache cleared between
+ * runs, whose `insert`/`select` live in a file the extractor does not scan) is
+ * not a dead write path either. `insert` and `update` are the unambiguous "data
+ * flows in" verbs, so a table with at least one of them *is* a write path.
+ *
+ * Note this is a *qualification* gate, not the anchor set: the anchor still
+ * sorts the full `WRITE_TYPES` set, so a `users` table written
+ * INSERT/UPDATE/DELETE/INSERT/UPDATE still anchors on the `delete` (byte-order
+ * `delete` < `insert`), preserving the legacy tiebreak. `read-never-written` is
+ * deliberately *not* narrowed the same way: its `writeTables` still counts
+ * `create` and `delete`, so a `create`+`select` table stays "written" and does
+ * not flip to `read-never-written`.
+ */
+const DATA_WRITE_TYPES = new Set(['insert', 'update']);
+
+/** FTS5 virtual tables (conventional `_fts` suffix) are read via `MATCH`, not a
+ *  statically-visible `SELECT`, and their INSERTs are trigger maintenance. A
+ *  "written never read" flag on one is almost always the dynamic-SQL read being
+ *  invisible to the extractor, not a dead write path. */
+function isFts5Table(name: string): boolean {
+  return name.endsWith('_fts');
+}
+
 // ── Ordering (re-homes the SQL DISTINCT + ORDER BY tiebreak) ────────────────
 
 /**
@@ -182,13 +211,34 @@ function writeTables(usages: SchemaUsageFact[]): Set<string> {
   return tables;
 }
 
-/** Tables written (INSERT/UPDATE/DELETE/CREATE) but never read (SELECT). */
+/** The tables with at least one "data flows in" usage — an `insert` or `update`
+ *  (origin-agnostic). A `written-never-read` flag requires one of these; a table
+ *  whose only visible writes are `create` (DDL) or `delete` (truncate) is not a
+ *  dead write path, because its `insert`/`select` live in a file the extractor
+ *  does not scan (out-of-scope receiver) or a dynamic-SQL read. */
+function dataWrittenTables(usages: SchemaUsageFact[]): Set<string> {
+  const tables = new Set<string>();
+  for (const u of usages) {
+    if (DATA_WRITE_TYPES.has(u.usageType)) tables.add(u.tableName);
+  }
+  return tables;
+}
+
+/** Tables written (INSERT/UPDATE/DELETE) but never read (SELECT). */
 function detectWrittenNeverRead(usages: SchemaUsageFact[]): Finding[] {
   const nonQb = nonQueryBuilderTables(usages);
   const selects = selectTables(usages);
+  const dataWritten = dataWrittenTables(usages);
 
   const candidates = usages
-    .filter((u) => WRITE_TYPES.has(u.usageType) && nonQb.has(u.tableName) && !selects.has(u.tableName))
+    .filter(
+      (u) =>
+        WRITE_TYPES.has(u.usageType) &&
+        nonQb.has(u.tableName) &&
+        !selects.has(u.tableName) &&
+        dataWritten.has(u.tableName) &&
+        !isFts5Table(u.tableName),
+    )
     .sort(cmpUsage);
 
   const seen = new Set<string>();
