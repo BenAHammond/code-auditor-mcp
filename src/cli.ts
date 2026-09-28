@@ -1453,47 +1453,55 @@ indexCmd
     }
   });
 
-indexCmd
-  .command('cleanup')
-  .description('Remove index entries for deleted files')
-  .option('--json', OPTION_OUTPUT_AS_JSON)
-  .action(async (options) => {
-    try {
-      const db = CodeIndexDB.getInstance();
-      await db.initialize();
-      const result = await db.bulkCleanup();
-      if (options.json) {
-        process.stdout.write(JSON.stringify({ mode: 'cleanup', success: true, ...result }) + '\n');
-      } else {
-        console.log(chalk.green('✓ Cleanup complete'));
-        console.log(chalk.gray(`Removed ${result.removedCount} entries from ${result.removedFiles.length} deleted files`));
+/** Register a simple `index` subcommand that runs one mutation on the
+ *  initialized index and prints the outcome (JSON or console). `cleanup` and
+ *  `reset` share the get-instance/initialize/json-vs-console/try-catch
+ *  scaffolding; only the mutation and its result prose differ, so they live
+ *  here once and each command is a thin `defineIndexMutationCommand(...)` call. */
+function defineIndexMutationCommand(
+  name: string,
+  description: string,
+  work: (db: CodeIndexDB) => Promise<{ extra: Record<string, unknown>; greenLine: string; grayLine: string }>,
+): void {
+  indexCmd
+    .command(name)
+    .description(description)
+    .option('--json', OPTION_OUTPUT_AS_JSON)
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const db = CodeIndexDB.getInstance();
+        await db.initialize();
+        const { extra, greenLine, grayLine } = await work(db);
+        if (options.json) {
+          process.stdout.write(JSON.stringify({ mode: name, success: true, ...extra }) + '\n');
+        } else {
+          console.log(chalk.green(greenLine));
+          console.log(chalk.gray(grayLine));
+        }
+      } catch (error) {
+        console.error(chalk.red('Error:'), error);
+        process.exit(1);
       }
-    } catch (error) {
-      console.error(chalk.red('Error:'), error);
-      process.exit(1);
-    }
-  });
+    });
+}
 
-indexCmd
-  .command('reset')
-  .description('Clear all analysis data (preserves tasks, config, whitelist)')
-  .option('--json', OPTION_OUTPUT_AS_JSON)
-  .action(async (options) => {
-    try {
-      const db = CodeIndexDB.getInstance();
-      await db.initialize();
-      await db.clearIndex();
-      if (options.json) {
-        process.stdout.write(JSON.stringify({ mode: 'reset', success: true, message: 'All analysis data cleared' }) + '\n');
-      } else {
-        console.log(chalk.green('✓ Index reset complete'));
-        console.log(chalk.gray('All analysis-derived data cleared (tasks, config, and whitelist preserved)'));
-      }
-    } catch (error) {
-      console.error(chalk.red('Error:'), error);
-      process.exit(1);
-    }
-  });
+defineIndexMutationCommand('cleanup', 'Remove index entries for deleted files', async (db) => {
+  const result = await db.bulkCleanup();
+  return {
+    extra: result,
+    greenLine: '✓ Cleanup complete',
+    grayLine: `Removed ${result.removedCount} entries from ${result.removedFiles.length} deleted files`,
+  };
+});
+
+defineIndexMutationCommand('reset', 'Clear all analysis data (preserves tasks, config, whitelist)', async (db) => {
+  await db.clearIndex();
+  return {
+    extra: { message: 'All analysis data cleared' },
+    greenLine: '✓ Index reset complete',
+    grayLine: 'All analysis-derived data cleared (tasks, config, and whitelist preserved)',
+  };
+});
 
 // ── Index status command (Spec 14 R1) ──────────────────────────
 indexCmd
