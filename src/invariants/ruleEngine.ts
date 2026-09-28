@@ -260,22 +260,25 @@ function checkCallConstraint(
 
   if (matchingCallers.length === 0) return violations;
 
+  const push = (call: { filePath: string; callerName: string; calleeName: string }, filePath: string, fallback: string): void => {
+    violations.push({
+      ruleId: rule.id,
+      kind: 'call-constraint',
+      severity: rule.severity,
+      message: rule.message || fallback,
+      file: filePath,
+      symbol: call.callerName,
+      callee: call.calleeName,
+      caller: call.callerName,
+    });
+  };
+
   if (rule.allowFrom) {
     // Only allowFrom files may call — all others are violations
     for (const call of matchingCallers) {
       const filePath = normalize(call.filePath);
       if (matchesNone(rule.allowFrom, filePath)) {
-        violations.push({
-          ruleId: rule.id,
-          kind: 'call-constraint',
-          severity: rule.severity,
-          message: rule.message ||
-            `Caller "${call.callerName}" in "${filePath}" is not in the allow-list for callee "${call.calleeName}"`,
-          file: filePath,
-          symbol: call.callerName,
-          callee: call.calleeName,
-          caller: call.callerName,
-        });
+        push(call, filePath, `Caller "${call.callerName}" in "${filePath}" is not in the allow-list for callee "${call.calleeName}"`);
       }
     }
   } else if (rule.denyFrom) {
@@ -283,17 +286,7 @@ function checkCallConstraint(
     for (const call of matchingCallers) {
       const filePath = normalize(call.filePath);
       if (matchesAny(rule.denyFrom, filePath)) {
-        violations.push({
-          ruleId: rule.id,
-          kind: 'call-constraint',
-          severity: rule.severity,
-          message: rule.message ||
-            `Caller "${call.callerName}" in "${filePath}" is denied from calling "${call.calleeName}"`,
-          file: filePath,
-          symbol: call.callerName,
-          callee: call.calleeName,
-          caller: call.callerName,
-        });
+        push(call, filePath, `Caller "${call.callerName}" in "${filePath}" is denied from calling "${call.calleeName}"`);
       }
     }
   }

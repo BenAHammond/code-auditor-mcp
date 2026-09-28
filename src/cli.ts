@@ -2190,19 +2190,17 @@ tasksCmd
     }
   });
 
-tasksCmd
-  .command('complete <taskId>')
-  .description('Mark a task as completed')
-  .option('--json', OPTION_OUTPUT_AS_JSON)
-  .action(async (taskId, options) => {
+/** Run a single-taskId tasks subcommand and print its result. */
+function makeTaskIdAction(action: string, successLabel: string) {
+  return async (taskId: string, options: { json?: boolean }) => {
     try {
       const { handleProjectTasks } = await import('./mcp-tools/projectTasks.js');
-      const result = await handleProjectTasks({ action: 'complete_task', taskId });
+      const result = await handleProjectTasks({ action, taskId });
 
       if (options.json) {
         process.stdout.write(JSON.stringify(result, null, 2) + '\n');
       } else if (result.success) {
-        console.log(chalk.green(`✓ Task completed`));
+        console.log(chalk.green(`✓ ${successLabel}`));
       } else {
         console.error(chalk.red(result.error || UNKNOWN_ERROR));
         process.exit(1);
@@ -2211,30 +2209,20 @@ tasksCmd
       console.error(chalk.red('Error:'), error);
       process.exit(1);
     }
-  });
+  };
+}
+
+tasksCmd
+  .command('complete <taskId>')
+  .description('Mark a task as completed')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
+  .action(makeTaskIdAction('complete_task', 'Task completed'));
 
 tasksCmd
   .command('delete <taskId>')
   .description('Delete a task')
   .option('--json', OPTION_OUTPUT_AS_JSON)
-  .action(async (taskId, options) => {
-    try {
-      const { handleProjectTasks } = await import('./mcp-tools/projectTasks.js');
-      const result = await handleProjectTasks({ action: 'delete', taskId });
-
-      if (options.json) {
-        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-      } else if (result.success) {
-        console.log(chalk.green(`✓ Task deleted`));
-      } else {
-        console.error(chalk.red(result.error || UNKNOWN_ERROR));
-        process.exit(1);
-      }
-    } catch (error) {
-      console.error(chalk.red('Error:'), error);
-      process.exit(1);
-    }
-  });
+  .action(makeTaskIdAction('delete', 'Task deleted'));
 
 tasksCmd
   .command('from-audit')

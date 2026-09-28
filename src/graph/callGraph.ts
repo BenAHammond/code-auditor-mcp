@@ -347,6 +347,32 @@ export function computeBetweenness(
 }
 
 /**
+ * Accumulate Brandes dependencies from a BFS stack into the betweenness array.
+ */
+function accumulateBrandes(
+  stack: number[],
+  pred: number[][],
+  sigma: Float64Array,
+  delta: Float64Array,
+  nodeIndex: Map<number, number>,
+  bc: Float64Array,
+  s: number,
+): void {
+  while (stack.length > 0) {
+    const w = stack.pop()!;
+    const wIdx = nodeIndex.get(w)!;
+    for (const v of pred[wIdx]) {
+      const vIdx = nodeIndex.get(v)!;
+      const weight = sigma[vIdx] / sigma[wIdx];
+      delta[vIdx] += weight * (1 + delta[wIdx]);
+    }
+    if (w !== s) {
+      bc[wIdx] += delta[wIdx];
+    }
+  }
+}
+
+/**
  * Exact Brandes betweenness on all nodes.
  */
 function brandesExact(
@@ -358,21 +384,8 @@ function brandesExact(
   const bc = new Float64Array(N);
 
   for (const s of nodes) {
-    const { stack, pred, sigma, dist, delta } = brandesBfs(adjacency, nodeIndex, N, s);
-
-    // Accumulate dependencies (reverse BFS order)
-    while (stack.length > 0) {
-      const w = stack.pop()!;
-      const wIdx = nodeIndex.get(w)!;
-      for (const v of pred[wIdx]) {
-        const vIdx = nodeIndex.get(v)!;
-        const weight = sigma[vIdx] / sigma[wIdx];
-        delta[vIdx] += weight * (1 + delta[wIdx]);
-      }
-      if (w !== s) {
-        bc[wIdx] += delta[wIdx];
-      }
-    }
+    const { stack, pred, sigma, delta } = brandesBfs(adjacency, nodeIndex, N, s);
+    accumulateBrandes(stack, pred, sigma, delta, nodeIndex, bc, s);
   }
 
   // Undirected normalization: divide by 2
@@ -398,20 +411,8 @@ function brandesSampled(
   const bc = new Float64Array(N);
 
   for (const s of pivots) {
-    const { stack, pred, sigma, dist, delta } = brandesBfs(adjacency, nodeIndex, N, s);
-
-    while (stack.length > 0) {
-      const w = stack.pop()!;
-      const wIdx = nodeIndex.get(w)!;
-      for (const v of pred[wIdx]) {
-        const vIdx = nodeIndex.get(v)!;
-        const weight = sigma[vIdx] / sigma[wIdx];
-        delta[vIdx] += weight * (1 + delta[wIdx]);
-      }
-      if (w !== s) {
-        bc[wIdx] += delta[wIdx];
-      }
-    }
+    const { stack, pred, sigma, delta } = brandesBfs(adjacency, nodeIndex, N, s);
+    accumulateBrandes(stack, pred, sigma, delta, nodeIndex, bc, s);
   }
 
   // Scale: multiply by N / pivotCount to estimate the full values
