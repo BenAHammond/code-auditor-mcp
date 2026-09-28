@@ -355,12 +355,12 @@ function stripAllBlockComments(s: string): string {
  * Extract `property: value;` declarations from a CSS block into the given list.
  *
  * @param block - The CSS block text to parse.
- * @param filePath - Project-relative file path (for the declaration).
- * @param mechanism - The style mechanism the declarations come from.
- * @param selector - The selector context for the block.
- * @param variantContext - The variant context, or null when none.
  * @param declarations - Output list declarations are appended to.
- * @param baseLine - The source line offset of the block's first line.
+ * @param ctx - Extraction context: `filePath` (project-relative path for the
+ *   declaration), `mechanism` (the style mechanism the declarations come from),
+ *   `selector` (the selector context for the block), `variantContext` (the
+ *   variant context, or null when none), and `baseLine` (the source line offset
+ *   of the block's first line).
  */
 export function extractDeclarationsFromBlock(
   block: string,
