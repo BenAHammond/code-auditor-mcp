@@ -133,11 +133,34 @@ const VOCABULARY_TOKEN = /^[A-Za-z_$][A-Za-z0-9_$./:-]*$/;
 /** A relative module specifier (`'./x.js'`, `'../x.js'`) names a file, not a value. */
 const RELATIVE_MODULE = /^\.\.?\//;
 
+/** A CLI flag/option spec (`--overwrite`, `-p, --path <path>`, `--limit <n>`):
+ *  the commander `.option()` signature string, repeated verbatim across the
+ *  option definition, help text and docs. A flag *name* (with an optional
+ *  `<arg>`/`[arg]` placeholder), not a duplicated value — extracting it to a
+ *  constant adds indirection, not clarity (the same rationale as a vocabulary
+ *  token). */
+const CLI_OPTION = /^--?[A-Za-z][\w-]*(?:, --?[A-Za-z][\w-]*)*(?:\s+<[^>]+>|\s+\[[^\]]+\])*$/;
+
+/** A decorative separator — a run of box-drawing/punctuation with no alphanumeric
+ *  content (`════…`, `──…`). Pure presentation, never a value worth extracting. */
+const SEPARATOR_ONLY = /^[^A-Za-z0-9]*$/;
+
+/** A dotted/versioned name or IP literal (`.codeauditor.json`, `127.0.0.1`,
+ *  `v1.2.3`): an identifier-like token whose first character is a digit or dot
+ *  rather than a letter, so `VOCABULARY_TOKEN` (which starts `[A-Za-z_$]`) misses
+ *  it. A filename or constant address is a *name*, not a duplicated value. */
+const DOTTED_NAME = /^\.?[A-Za-z0-9_$][A-Za-z0-9_$./:-]*$/;
+
 /** True when a quoted literal is a *name*, not a duplicated value: a single
- *  identifier-like token (vocabulary) or a relative module path. */
+ *  identifier-like token (vocabulary), a relative module path, a CLI flag spec,
+ *  a decorative separator, or a dotted filename/IP. */
 function isNameLiteral(value: string): boolean {
   const inner = value.replace(/^['"`]/, '').replace(/['"`]$/, '');
-  return VOCABULARY_TOKEN.test(inner) || RELATIVE_MODULE.test(inner);
+  return VOCABULARY_TOKEN.test(inner)
+    || RELATIVE_MODULE.test(inner)
+    || CLI_OPTION.test(inner)
+    || SEPARATOR_ONLY.test(inner)
+    || DOTTED_NAME.test(inner);
 }
 
 /** Re-homes `checkDuplicateStrings`, grouping per `(file, value)`. */

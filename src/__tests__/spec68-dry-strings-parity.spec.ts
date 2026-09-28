@@ -149,4 +149,49 @@ describe('Spec 68 dry parity (new analyze(ctx) === old checkDuplicateStrings)', 
     ], { checkStrings: true });
     expect(fresh.filter((f) => f.ruleId === 'duplicate-string-literal')).toEqual([]);
   });
+
+  it('does not fire on a repeated CLI option spec (a flag name, not a value)', async () => {
+    const source = [
+      "program.option('-p, --path <path>');",
+      "program.option('-p, --path <path>');",
+      "program.option('-p, --path <path>');",
+      "program.option('--overwrite');",
+      "program.option('--overwrite');",
+      "program.option('--overwrite');",
+      "program.option('--limit <n>');",
+      "program.option('--limit <n>');",
+      "program.option('--limit <n>');",
+      '',
+    ].join('\n');
+    const fresh = await runDrySlice([{ path: 'cli.ts', content: source }], { checkStrings: true });
+    expect(fresh.filter((f) => f.ruleId === 'duplicate-string-literal')).toEqual([]);
+  });
+
+  it('does not fire on a repeated decorative separator (no alphanumeric content)', async () => {
+    const source = [
+      "const a = '═════════════════════════';",
+      "const b = '═════════════════════════';",
+      "const c = '═════════════════════════';",
+      "const d = '──────────────────────────';",
+      "const e = '──────────────────────────';",
+      "const f = '──────────────────────────';",
+      '',
+    ].join('\n');
+    const fresh = await runDrySlice([{ path: 'sep.ts', content: source }], { checkStrings: true });
+    expect(fresh.filter((f) => f.ruleId === 'duplicate-string-literal')).toEqual([]);
+  });
+
+  it('does not fire on a repeated dotted filename or IP literal (a name, not a value)', async () => {
+    const source = [
+      "const a = '.codeauditor.json';",
+      "const b = '.codeauditor.json';",
+      "const c = '.codeauditor.json';",
+      "const d = '127.0.0.1';",
+      "const e = '127.0.0.1';",
+      "const f = '127.0.0.1';",
+      '',
+    ].join('\n');
+    const fresh = await runDrySlice([{ path: 'names.ts', content: source }], { checkStrings: true });
+    expect(fresh.filter((f) => f.ruleId === 'duplicate-string-literal')).toEqual([]);
+  });
 });
