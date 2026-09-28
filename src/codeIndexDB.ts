@@ -582,19 +582,39 @@ export class CodeIndexDB {
 
     const currentVersion = row ? parseInt(row.value, 10) : 0;
 
+    // Run a schema script only when the stored version precedes the target.
+    const migrate = (targetVersion: number, sql: string): void => {
+      if (currentVersion < targetVersion) this.db.exec(sql);
+    };
+
+    // Add missing columns to findings_ledger_runs, batching the ALTERs into one
+    // exec (loop-query / N+1). Reused by the two run-lifecycle migrations.
+    const addRunColumns = (targetVersion: number, newRunCols: Array<[string, string]>): void => {
+      if (currentVersion >= targetVersion) return;
+      const runCols = this.db
+        .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
+        .all() as Array<{ name: string }>;
+      const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
+      const missingCols = newRunCols.filter(([name]) => !hasRunCol(name));
+      if (missingCols.length > 0) {
+        this.db.exec(
+          missingCols
+            .map(([name, decl]) => `ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`)
+            .join(';\n'),
+        );
+      }
+    };
+
     // Migration 1 → 2: Unique index on (name, file_path, line_number)
     // Previously the unique index was on (name, file_path) only, which caused
     // same-named functions at different lines in the same file to collide.
-    if (currentVersion < 2) {
-      this.db.exec(`
+    migrate(2, `
         DROP INDEX IF EXISTS idx_functions_name_file;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
       `);
-    }
 
     // Migration 2 → 3: Style intelligence tables (Spec 10)
-    if (currentVersion < 3) {
-      this.db.exec(`
+    migrate(3, `
         CREATE TABLE IF NOT EXISTS style_declarations (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,
           property        TEXT NOT NULL,
@@ -644,11 +664,9 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_style_class_usage_file   ON style_class_usage(file_path);
         CREATE INDEX IF NOT EXISTS idx_style_class_usage_unres  ON style_class_usage(unresolvable);
       `);
-    }
 
     // Migration 3 → 4: Convention mining tables (Spec 12)
-    if (currentVersion < 4) {
-      this.db.exec(`
+    migrate(4, `
         CREATE TABLE IF NOT EXISTS conventions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           domain TEXT NOT NULL,
@@ -672,11 +690,9 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_conv_directory ON conventions(directory);
         CREATE INDEX IF NOT EXISTS idx_conv_hash ON conventions(hash);
       `);
-    }
 
     // Migration 4 → 5: Hotspots & temporal analysis (Spec 13)
-    if (currentVersion < 5) {
-      this.db.exec(`
+    migrate(5, `
         CREATE TABLE IF NOT EXISTS file_churn (
           file_path            TEXT PRIMARY KEY,
           commit_count         INTEGER NOT NULL DEFAULT 0,
@@ -737,11 +753,9 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_dph_fingerprint ON dry_pair_history(pair_fingerprint);
         CREATE INDEX IF NOT EXISTS idx_dph_run ON dry_pair_history(run_id);
       `);
-    }
 
     // Migration 5 → 6: Graph cache for call/import graph construction (Spec 14)
-    if (currentVersion < 6) {
-      this.db.exec(`
+    migrate(6, `
         CREATE TABLE IF NOT EXISTS graph_cache (
           graph_type   TEXT NOT NULL,
           node_key     TEXT NOT NULL,
@@ -752,11 +766,9 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_gc_type_node ON graph_cache(graph_type, node_key);
         CREATE INDEX IF NOT EXISTS idx_gc_type_neighbor ON graph_cache(graph_type, neighbor_key);
       `);
-    }
 
     // Migration 6 → 7: Coverage data for cross-domain analysis (Spec 15)
-    if (currentVersion < 7) {
-      this.db.exec(`
+    migrate(7, `
         CREATE TABLE IF NOT EXISTS coverage_data (
           id            INTEGER PRIMARY KEY AUTOINCREMENT,
           function_name TEXT NOT NULL,
@@ -772,7 +784,6 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_cov_covered ON coverage_data(covered);
         CREATE INDEX IF NOT EXISTS idx_cov_function ON coverage_data(function_name);
       `);
-    }
 
     // Migration 7 → 8: export_kind on conventions (Spec 22 R5.1)
     if (currentVersion < 8) {
@@ -789,36 +800,20 @@ export class CodeIndexDB {
     // provenance, lease heartbeat, progress, stderr log); the one genuinely new
     // table is `findings_ledger_coverage` (per-rule state + reason rows that
     // `writeAuditToLedger` previously dropped).
-    if (currentVersion < 9) {
-      const runCols = this.db
-        .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
-        .all() as Array<{ name: string }>;
-      const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
-      const newRunCols: Array<[string, string]> = [
-        ['status', "TEXT NOT NULL DEFAULT 'completed'"],
-        ['project_root', 'TEXT'],
-        ['started_at', 'TEXT'],
-        ['heartbeat_at', 'TEXT'],
-        ['finished_at', 'TEXT'],
-        ['error', 'TEXT'],
-        ['progress_json', 'TEXT'],
-        ['stderr_log', 'TEXT'],
-        ['content_hash', 'TEXT'],
-        ['files_count', 'INTEGER'],
-        ['file_manifest_json', 'TEXT'],
-      ];
-      const missingCols = newRunCols.filter(([name]) => !hasRunCol(name));
-      if (missingCols.length > 0) {
-        // Batch the ALTERs into one exec: `db.exec` accepts semicolon-separated
-        // statements, so a migration adds every missing column in a single call
-        // rather than issuing one ALTER per column (loop-query / N+1).
-        this.db.exec(
-          missingCols
-            .map(([name, decl]) => `ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`)
-            .join(';\n'),
-        );
-      }
-      this.db.exec(`
+    addRunColumns(9, [
+      ['status', "TEXT NOT NULL DEFAULT 'completed'"],
+      ['project_root', 'TEXT'],
+      ['started_at', 'TEXT'],
+      ['heartbeat_at', 'TEXT'],
+      ['finished_at', 'TEXT'],
+      ['error', 'TEXT'],
+      ['progress_json', 'TEXT'],
+      ['stderr_log', 'TEXT'],
+      ['content_hash', 'TEXT'],
+      ['files_count', 'INTEGER'],
+      ['file_manifest_json', 'TEXT'],
+    ]);
+    migrate(9, `
         CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
           run_id    TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
           analyzer  TEXT NOT NULL,
@@ -830,7 +825,6 @@ export class CodeIndexDB {
         );
         CREATE INDEX IF NOT EXISTS idx_ledger_coverage_run ON findings_ledger_coverage(run_id);
       `);
-    }
 
     // Migration 9 → 10: PID-based lease liveness (Spec 41 Amendment B).
     // The heartbeat is no longer the primary liveness signal for the common
@@ -840,35 +834,17 @@ export class CodeIndexDB {
     // then skips any `running` row whose PID is still the same live process, and
     // only reclaims when the process is genuinely gone (or on a foreign host,
     // where the PID means nothing and the heartbeat stays the fallback).
-    if (currentVersion < 10) {
-      const runCols = this.db
-        .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
-        .all() as Array<{ name: string }>;
-      const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
-      const newRunCols: Array<[string, string]> = [
-        ['runner_pid', 'INTEGER'],
-        ['runner_pid_started_at', 'TEXT'],
-        ['runner_host', 'TEXT'],
-      ];
-      const missingCols = newRunCols.filter(([name]) => !hasRunCol(name));
-      if (missingCols.length > 0) {
-        // Batch the ALTERs into one exec: `db.exec` accepts semicolon-separated
-        // statements, so a migration adds every missing column in a single call
-        // rather than issuing one ALTER per column (loop-query / N+1).
-        this.db.exec(
-          missingCols
-            .map(([name, decl]) => `ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`)
-            .join(';\n'),
-        );
-      }
-    }
+    addRunColumns(10, [
+      ['runner_pid', 'INTEGER'],
+      ['runner_pid_started_at', 'TEXT'],
+      ['runner_host', 'TEXT'],
+    ]);
 
     // Migration 10 → 11: unread stylesheet sources (Spec 45 R5).
     // Records stylesheets whose dialect the style indexer cannot read, so
     // styles/undefined-class findings can carry them as incomplete-definition
     // context instead of asserting a class is undefined against the whole project.
-    if (currentVersion < 11) {
-      this.db.exec(`
+    migrate(11, `
         CREATE TABLE IF NOT EXISTS style_unread_sources (
           id         INTEGER PRIMARY KEY AUTOINCREMENT,
           file_path  TEXT NOT NULL UNIQUE,
@@ -876,7 +852,6 @@ export class CodeIndexDB {
           created_at TEXT DEFAULT (datetime('now'))
         );
       `);
-    }
 
     // Migration 11 → 12: defined-class catalog (Spec 45 — styles/undefined-class).
     // A dedicated (class_name, file_path) table so the undefined-class detector
@@ -920,20 +895,18 @@ export class CodeIndexDB {
     // `classification` is free TEXT, no constraint, so no further migration).
     // Nothing consumes it yet (Spec 61 persists edges; Spec 62 derives coverage).
     // Flat — resolved_path inline, no lookup table, no join.
-    if (currentVersion < 13) {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS import_specifiers (
-          file_path       TEXT NOT NULL,
-          specifier       TEXT NOT NULL,
-          classification  TEXT NOT NULL,
-          resolved_path   TEXT,
-          line            INTEGER,
-          PRIMARY KEY (file_path, specifier, line)
-        );
-        CREATE INDEX IF NOT EXISTS idx_import_specifiers_class ON import_specifiers(classification);
-        CREATE INDEX IF NOT EXISTS idx_import_specifiers_resolved ON import_specifiers(resolved_path);
-      `);
-    }
+    migrate(13, `
+      CREATE TABLE IF NOT EXISTS import_specifiers (
+        file_path       TEXT NOT NULL,
+        specifier       TEXT NOT NULL,
+        classification  TEXT NOT NULL,
+        resolved_path   TEXT,
+        line            INTEGER,
+        PRIMARY KEY (file_path, specifier, line)
+      );
+      CREATE INDEX IF NOT EXISTS idx_import_specifiers_class ON import_specifiers(classification);
+      CREATE INDEX IF NOT EXISTS idx_import_specifiers_resolved ON import_specifiers(resolved_path);
+    `);
 
     // Migration 13 → 14: schema_usage identity becomes a coordinate (Spec 61
     // Amendment A). function_name stops holding source text and becomes the
@@ -981,14 +954,7 @@ export class CodeIndexDB {
     // records the *code-auditor* commit so a count change is attributable to a
     // tool commit, not just a version. NULL when running from a published
     // install (no .git) — best-effort, and tool_version stays always-present.
-    if (currentVersion < 15) {
-      const runCols = this.db
-        .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
-        .all() as Array<{ name: string }>;
-      if (!runCols.some((c) => c.name === 'tool_git_sha')) {
-        this.db.exec(`ALTER TABLE findings_ledger_runs ADD COLUMN tool_git_sha TEXT`);
-      }
-    }
+    addRunColumns(15, [['tool_git_sha', 'TEXT']]);
 
     // Migration 15 → 16: schema_usage gains an `origin` column. Rows produced by
     // the knex-style fluent-builder read extractor carry `origin = 'query-builder'`;
@@ -1080,18 +1046,16 @@ export class CodeIndexDB {
     // here in batched transactions, and corpus processors + rules read them back
     // read-only under WAL (§6.2/§6.3). One row per (fact_kind, file_path); corpus
     // facts (e.g. `table-catalog`, `reachability`) carry a NULL file_path.
-    if (currentVersion < 18) {
-      this.db.exec(`
-        CREATE TABLE IF NOT EXISTS phase_facts (
-          id          INTEGER PRIMARY KEY AUTOINCREMENT,
-          fact_kind   TEXT NOT NULL,
-          file_path   TEXT,
-          payload     TEXT NOT NULL,
-          created_at  TEXT DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_phase_facts_kind_file ON phase_facts(fact_kind, file_path);
-      `);
-    }
+    migrate(18, `
+      CREATE TABLE IF NOT EXISTS phase_facts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        fact_kind   TEXT NOT NULL,
+        file_path   TEXT,
+        payload     TEXT NOT NULL,
+        created_at  TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_phase_facts_kind_file ON phase_facts(fact_kind, file_path);
+    `);
 
   }
 
