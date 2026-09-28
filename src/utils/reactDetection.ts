@@ -303,6 +303,38 @@ function extractPropsFromTypeLiteral(typeLiteral: ASTNode, sourceCode: string): 
  * @param sourceCode - The original source text for type extraction.
  * @returns The extracted prop definitions.
  */
+function extractPropsFromObjectPattern(
+  pattern: ASTNode,
+  sourceCode: string,
+  allowPairPattern: boolean,
+): PropDefinition[] {
+  const out: PropDefinition[] = [];
+  for (const element of pattern.children ?? []) {
+    if (element.type !== 'binding_element' &&
+        element.type !== 'shorthand_property_identifier_pattern' &&
+        !(allowPairPattern && element.type === 'pair_pattern')) continue;
+
+    // shorthand_property_identifier_pattern has no children — the name IS the node
+    const nameNode = element.type === 'shorthand_property_identifier_pattern'
+      ? element
+      : element.children?.find(c =>
+          c.type === 'identifier' || c.type === 'property_identifier');
+
+    if (!nameNode) continue;
+
+    const hasRest = hasModifier(element, '...');
+    const hasDefault = element.children?.some(c => c.type !== 'identifier' && c.type !== 'property_identifier') ?? false;
+
+    out.push({
+      name: getNodeText(nameNode, sourceCode),
+      type: 'any',
+      required: !hasRest && !hasDefault,
+      hasDefault
+    });
+  }
+  return out;
+}
+
 export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinition[] {
   const props: PropDefinition[] = [];
 
@@ -322,28 +354,7 @@ export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinit
           const pattern = findChildOfType(firstParam, 'object_pattern') ??
             findChildOfType(firstParam, 'object_binding_pattern');
           if (pattern) {
-            for (const element of pattern.children ?? []) {
-              if (element.type !== 'binding_element' && element.type !== 'pair_pattern' &&
-                  element.type !== 'shorthand_property_identifier_pattern') continue;
-
-              // shorthand_property_identifier_pattern has no children — the name IS the node
-              const nameNode = element.type === 'shorthand_property_identifier_pattern'
-                ? element
-                : element.children?.find(c =>
-                    c.type === 'identifier' || c.type === 'property_identifier');
-
-              if (!nameNode) continue;
-
-              const hasRest = hasModifier(element, '...');
-              const hasDefault = element.children?.some(c => c.type !== 'identifier' && c.type !== 'property_identifier') ?? false;
-
-              props.push({
-                name: getNodeText(nameNode, sourceCode),
-                type: 'any',
-                required: !hasRest && !hasDefault,
-                hasDefault
-              });
-            }
+            props.push(...extractPropsFromObjectPattern(pattern, sourceCode, true));
           }
         }
       }
@@ -360,27 +371,7 @@ export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinit
         const pattern = findChildOfType(firstParam, 'object_pattern') ??
           findChildOfType(firstParam, 'object_binding_pattern');
         if (pattern) {
-          for (const element of pattern.children ?? []) {
-            if (element.type !== 'binding_element' && element.type !== 'shorthand_property_identifier_pattern') continue;
-
-            // shorthand_property_identifier_pattern has no children — the name IS the node
-            const nameNode = element.type === 'shorthand_property_identifier_pattern'
-              ? element
-              : element.children?.find(c =>
-                  c.type === 'identifier' || c.type === 'property_identifier');
-
-            if (!nameNode) continue;
-
-            const hasRest = hasModifier(element, '...');
-            const hasDefault = element.children?.some(c => c.type !== 'identifier' && c.type !== 'property_identifier') ?? false;
-
-            props.push({
-              name: getNodeText(nameNode, sourceCode),
-              type: 'any',
-              required: !hasRest && !hasDefault,
-              hasDefault
-            });
-          }
+          props.push(...extractPropsFromObjectPattern(pattern, sourceCode, false));
         }
 
         // Extract props from type annotation on parameter.

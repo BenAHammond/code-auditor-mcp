@@ -240,9 +240,7 @@ export class WhitelistService {
       'typescript', '@types/node'
     ];
 
-    return frameworks.some(framework => 
-      dep === framework || dep.startsWith(`${framework}/`) || dep.startsWith(`@${framework}/`)
-    );
+    return matchesLibrary(dep, frameworks);
   }
 
   /**
@@ -273,10 +271,17 @@ export class WhitelistService {
       'markdown-it', 'marked', 'remark'
     ];
 
-    return sharedLibs.some(lib => 
-      dep === lib || dep.startsWith(`${lib}/`) || dep.startsWith(`@${lib}/`)
-    );
+    return matchesLibrary(dep, sharedLibs);
   }
+}
+
+/**
+ * True when `dep` is the library or a subpath / scoped subpath of it.
+ */
+function matchesLibrary(dep: string, libs: readonly string[]): boolean {
+  return libs.some(lib =>
+    dep === lib || dep.startsWith(`${lib}/`) || dep.startsWith(`@${lib}/`)
+  );
 }
 
 // Export singleton instance methods for convenience
