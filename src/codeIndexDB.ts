@@ -92,6 +92,25 @@ interface LokiFindQuery {
 
 const SQL_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+// ── Hoisted SQL / identifier constants ─────────────────────────────────
+// Extracted so the SqliteCollectionAdapter query builder, the PRAGMA setup,
+// and the index-maintenance statements cannot drift on a shared literal.
+const ASSERT_TABLE_NAME = 'table name';
+const ASSERT_COLUMN_NAME = 'column name';
+const PRAGMA_JOURNAL_WAL = 'journal_mode = WAL';
+const PRAGMA_FOREIGN_KEYS_ON = 'foreign_keys = ON';
+const PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS = "PRAGMA table_info('findings_ledger_runs')";
+const SQL_DISTINCT_FILE_PATHS = 'SELECT DISTINCT file_path FROM functions';
+const SQL_DELETE_FUNCTIONS_IN_FILEPATHS = 'DELETE FROM functions WHERE file_path IN (SELECT value FROM json_each(?))';
+
+function isNullClause(key: string): string {
+  return `"${key}" IS NULL`;
+}
+function eqClause(key: string): string {
+  return `"${key}" = @${key}`;
+}
+
+
 /** Reject a value that is not a plain SQL identifier. Table and column names are
  *  interpolated into SQL (SQLite cannot parameterize identifiers), so a value that
  *  fails this check is a would-be injection surface and is refused, never run.
@@ -113,7 +132,7 @@ class SqliteCollectionAdapter {
     private db: SqliteDatabase,
     private tableName: string
   ) {
-    assertSqlIdentifier(this.tableName, 'table name');
+    assertSqlIdentifier(this.tableName, ASSERT_TABLE_NAME);
   }
 
   /** Return all rows, or rows matching the query. */
@@ -125,9 +144,9 @@ class SqliteCollectionAdapter {
     const clauses: string[] = [];
     const params: Record<string, any> = {};
     for (const [key, value] of Object.entries(query)) {
-      if (key !== '$loki') assertSqlIdentifier(key, 'column name');
+      if (key !== '$loki') assertSqlIdentifier(key, ASSERT_COLUMN_NAME);
       if (value === null || value === undefined) {
-        clauses.push(`"${key}" IS NULL`);
+        clauses.push(isNullClause(key));
       } else if (key === '$loki' && typeof value === 'object' && value.$in) {
         // Handle $loki: { $in: [...] }
         const placeholders = value.$in.map((_: any, i: number) => `@in_${i}`);
@@ -140,7 +159,7 @@ class SqliteCollectionAdapter {
         clauses.push(`"timestamp" < @timestamp`);
         params['timestamp'] = value.$lt instanceof Date ? value.$lt.toISOString() : String(value.$lt);
       } else {
-        clauses.push(`"${key}" = @${key}`);
+        clauses.push(eqClause(key));
         params[key] = this.bindable(value);
       }
     }
@@ -152,11 +171,11 @@ class SqliteCollectionAdapter {
     const clauses: string[] = [];
     const params: Record<string, any> = {};
     for (const [key, value] of Object.entries(query)) {
-      if (key !== '$loki') assertSqlIdentifier(key, 'column name');
+      if (key !== '$loki') assertSqlIdentifier(key, ASSERT_COLUMN_NAME);
       if (value === null || value === undefined) {
-        clauses.push(`"${key}" IS NULL`);
+        clauses.push(isNullClause(key));
       } else {
-        clauses.push(`"${key}" = @${key}`);
+        clauses.push(eqClause(key));
         params[key] = this.bindable(value);
       }
     }
@@ -191,7 +210,7 @@ class SqliteCollectionAdapter {
 
   insert(doc: any): any {
     const keys = Object.keys(doc);
-    for (const k of keys) assertSqlIdentifier(k, 'column name');
+    for (const k of keys) assertSqlIdentifier(k, ASSERT_COLUMN_NAME);
     const vals = keys.map(k => `@${k}`);
     const sql = `INSERT INTO "${this.tableName}" ("${keys.join('", "')}") VALUES (${vals.join(', ')})`;
     const params: Record<string, unknown> = {};
@@ -205,7 +224,7 @@ class SqliteCollectionAdapter {
     const sets: string[] = [];
     const params: Record<string, any> = {};
     for (const k of keys) {
-      assertSqlIdentifier(k, 'column name');
+      assertSqlIdentifier(k, ASSERT_COLUMN_NAME);
       sets.push(`"${k}" = @${k}`);
       params[k] = this.bindable(doc[k]);
     }
@@ -224,14 +243,14 @@ class SqliteCollectionAdapter {
     const clauses: string[] = [];
     const params: Record<string, any> = {};
     for (const [key, value] of Object.entries(query)) {
-      if (key !== '$loki') assertSqlIdentifier(key, 'column name');
+      if (key !== '$loki') assertSqlIdentifier(key, ASSERT_COLUMN_NAME);
       if (value === null || value === undefined) {
-        clauses.push(`"${key}" IS NULL`);
+        clauses.push(isNullClause(key));
       } else if (key === 'timestamp' && typeof value === 'object' && value.$lt) {
         clauses.push(`"timestamp" < @timestamp`);
         params['timestamp'] = value.$lt instanceof Date ? value.$lt.toISOString() : String(value.$lt);
       } else {
-        clauses.push(`"${key}" = @${key}`);
+        clauses.push(eqClause(key));
         params[key] = value;
       }
     }
@@ -479,8 +498,8 @@ export class CodeIndexDB {
     let retried = false;
     try {
       this.db = openSqlite(this.dbPath, { timeoutMs: DB_BUSY_TIMEOUT_MS });
-      this.db.pragma('journal_mode = WAL');
-      this.db.pragma('foreign_keys = ON');
+      this.db.pragma(PRAGMA_JOURNAL_WAL);
+      this.db.pragma(PRAGMA_FOREIGN_KEYS_ON);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       // No usable backend (e.g. node:sqlite absent and better-sqlite3's binding
@@ -499,8 +518,8 @@ export class CodeIndexDB {
         retried = true;
         try { await fs.unlink(this.dbPath); } catch { /* ignore */ }
         this.db = openSqlite(this.dbPath, { timeoutMs: DB_BUSY_TIMEOUT_MS });
-        this.db.pragma('journal_mode = WAL');
-        this.db.pragma('foreign_keys = ON');
+        this.db.pragma(PRAGMA_JOURNAL_WAL);
+        this.db.pragma(PRAGMA_FOREIGN_KEYS_ON);
       } else {
         const code = getErrnoCode(e);
         throw new ContextualError(
@@ -772,7 +791,7 @@ export class CodeIndexDB {
     // `writeAuditToLedger` previously dropped).
     if (currentVersion < 9) {
       const runCols = this.db
-        .prepare(`PRAGMA table_info('findings_ledger_runs')`)
+        .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
         .all() as Array<{ name: string }>;
       const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
       const newRunCols: Array<[string, string]> = [
@@ -823,7 +842,7 @@ export class CodeIndexDB {
     // where the PID means nothing and the heartbeat stays the fallback).
     if (currentVersion < 10) {
       const runCols = this.db
-        .prepare(`PRAGMA table_info('findings_ledger_runs')`)
+        .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
         .all() as Array<{ name: string }>;
       const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
       const newRunCols: Array<[string, string]> = [
@@ -964,7 +983,7 @@ export class CodeIndexDB {
     // install (no .git) — best-effort, and tool_version stays always-present.
     if (currentVersion < 15) {
       const runCols = this.db
-        .prepare(`PRAGMA table_info('findings_ledger_runs')`)
+        .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
         .all() as Array<{ name: string }>;
       if (!runCols.some((c) => c.name === 'tool_git_sha')) {
         this.db.exec(`ALTER TABLE findings_ledger_runs ADD COLUMN tool_git_sha TEXT`);
@@ -1619,8 +1638,8 @@ export class CodeIndexDB {
       require('fs').renameSync(this.dbPath, bakPath);
 
       const migDb = openSqlite(this.dbPath, { timeoutMs: DB_BUSY_TIMEOUT_MS });
-      migDb.pragma('journal_mode = WAL');
-      migDb.pragma('foreign_keys = ON');
+      migDb.pragma(PRAGMA_JOURNAL_WAL);
+      migDb.pragma(PRAGMA_FOREIGN_KEYS_ON);
 
       // User-authored tables only (function index gets rebuilt by sync).
       // whitelist + analyzer_configs use snake_case (matching raw SQL queries in the main code).
@@ -1971,7 +1990,7 @@ export class CodeIndexDB {
         const sets: string[] = [];
         for (const k of Object.keys(row)) {
           if (k === 'name' || k === 'file_path') continue;
-          assertSqlIdentifier(k, 'column name');
+          assertSqlIdentifier(k, ASSERT_COLUMN_NAME);
           sets.push(`"${k}" = @${k}`);
         }
         const params = { ...row, _id: exists.id };
@@ -2622,7 +2641,7 @@ export class CodeIndexDB {
   }> {
     this.ensureInitialized();
 
-    const files = this.db.prepare('SELECT DISTINCT file_path FROM functions').all() as Array<{ file_path: string }>;
+    const files = this.db.prepare(SQL_DISTINCT_FILE_PATHS).all() as Array<{ file_path: string }>;
     const removedFiles: string[] = [];
     const errors: Array<{ file: string; error: string }> = [];
     let removedCount = 0;
@@ -2673,7 +2692,7 @@ export class CodeIndexDB {
     // can't exceed the SQLite bind-parameter ceiling.
     if (stalePaths.length > 0) {
       const result = this.db
-        .prepare(`DELETE FROM functions WHERE file_path IN (SELECT value FROM json_each(?))`)
+        .prepare(SQL_DELETE_FUNCTIONS_IN_FILEPATHS)
         .run(JSON.stringify(stalePaths));
       removedCount += result.changes;
     }
@@ -2716,7 +2735,7 @@ export class CodeIndexDB {
       files = discovered.sort();
     } else {
       // Fallback: sync files already in the index
-      const rows = this.db.prepare('SELECT DISTINCT file_path FROM functions').all() as Array<{ file_path: string }>;
+      const rows = this.db.prepare(SQL_DISTINCT_FILE_PATHS).all() as Array<{ file_path: string }>;
       files = rows.map(r => r.file_path);
     }
 
@@ -2750,7 +2769,7 @@ export class CodeIndexDB {
     // project root (files came from the index itself), fall back to the on-disk
     // existence check.
     const discoveredSet = projectRoot ? new Set(files) : null;
-    const allIndexed = this.db.prepare('SELECT DISTINCT file_path FROM functions').all() as Array<{ file_path: string }>;
+    const allIndexed = this.db.prepare(SQL_DISTINCT_FILE_PATHS).all() as Array<{ file_path: string }>;
     const stalePaths: string[] = [];
     for (const { file_path: fp } of allIndexed) {
       let stale = false;
@@ -2772,7 +2791,7 @@ export class CodeIndexDB {
     // exceed the SQLite bind-parameter ceiling.
     if (stalePaths.length > 0) {
       const result = this.db
-        .prepare(`DELETE FROM functions WHERE file_path IN (SELECT value FROM json_each(?))`)
+        .prepare(SQL_DELETE_FUNCTIONS_IN_FILEPATHS)
         .run(JSON.stringify(stalePaths));
       totalRemoved += result.changes;
     }
@@ -2861,7 +2880,7 @@ export class CodeIndexDB {
       if (removed.length > 0) {
         deletedFunctions.push(...removed.map((r: any) => this.rowToFunction(r)));
         this.db.prepare(
-          `DELETE FROM functions WHERE file_path IN (SELECT value FROM json_each(?))`
+          SQL_DELETE_FUNCTIONS_IN_FILEPATHS
         ).run(JSON.stringify(missingFiles));
         const touched = new Set(removed.map((r: any) => r.file_path));
         changedFilePaths.push(...missingFiles.filter((fp) => touched.has(fp)));
@@ -4282,7 +4301,7 @@ export class CodeIndexDB {
    */
   count(table: string): number {
     this.ensureInitialized();
-    assertSqlIdentifier(table, 'table name');
+    assertSqlIdentifier(table, ASSERT_TABLE_NAME);
     const row = this.db.prepare(`SELECT COUNT(*) as cnt FROM ${table}`).get() as { cnt: number };
     return row.cnt;
   }
@@ -4295,7 +4314,7 @@ export class CodeIndexDB {
    */
   tableHasRows(table: string): boolean {
     this.ensureInitialized();
-    assertSqlIdentifier(table, 'table name');
+    assertSqlIdentifier(table, ASSERT_TABLE_NAME);
     const row = this.db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get();
     return row !== undefined;
   }
