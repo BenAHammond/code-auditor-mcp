@@ -110,6 +110,26 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
       expect(out).toEqual([]);
     });
 
+    it('treats Go writes format-agnostically — UPDATE fires, DELETE/INSERT do not (Spec 68 §9)', () => {
+      const goFile = { file: '/fixture/app.go' };
+
+      const update = analyze('unfiltered-query', [
+        q({ queryText: 'UPDATE users SET active = 0', tables: ['users'], hasFilter: false, method: 'db.run', ...goFile }),
+      ]);
+      expect(update).toHaveLength(1);
+      expect(update[0].message).toContain('Unfiltered write');
+
+      const deleteAll = analyze('unfiltered-query', [
+        q({ queryText: 'DELETE FROM users', tables: ['users'], hasFilter: false, method: 'db.run', ...goFile }),
+      ]);
+      expect(deleteAll).toEqual([]);
+
+      const insert = analyze('unfiltered-query', [
+        q({ queryText: 'INSERT INTO users (name) VALUES (?)', tables: ['users'], hasFilter: false, method: 'db.run', ...goFile }),
+      ]);
+      expect(insert).toEqual([]);
+    });
+
     it('flags a filterless read of a declared tenant table as a read', () => {
       const out = analyze(
         'unfiltered-query',

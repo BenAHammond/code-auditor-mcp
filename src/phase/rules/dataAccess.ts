@@ -106,26 +106,23 @@ function isInsertForm(text: string): boolean {
     || /\bINSERTINTO\b/.test(upper);
 }
 
-/** True when the call came from a Go file. The Go subprocess classified a write
- *  as INSERT/UPDATE/DELETE, so Go's `unfiltered-query` counts a filterless
- *  INSERT as a write; the TypeScript analyzer (Spec 55 R5 / Spec 56 R1, Spec 68
- *  disposition (a)) narrowed its write set to UPDATE-only — a bare DELETE is
- *  whole-table maintenance, not a missing filter. Spec 68 §9 serves both from
- *  this one rule and preserves the Go corpus's pinned count, so the write set is
- *  format-aware. */
+/** True when the call came from a Go file. Now used only by `missing-org-filter`
+ *  (below), which reproduces the deleted Go subprocess's `verb != "INSERT"` skip:
+ *  a row-adding statement carries the tenant column as a value, not a WHERE
+ *  predicate. `unfiltered-query` is format-agnostic — its write set is UPDATE-only
+ *  for Go and TypeScript alike (§9 serves both from this one rule). */
 function isGoCall(call: ResolvedQuery): boolean {
   return call.file.endsWith('.go');
 }
 
-/** True when a call is an unfiltered write: a write verb with no filter, where
- *  the write set depends on the source format (Go: INSERT/UPDATE/DELETE;
- *  TypeScript: UPDATE only). Upsert forms are excluded by `isUpsertForm`. */
+/** True when a call is an unfiltered write: a mass-write verb (`UPDATE … SET`)
+ *  with no row-limiting filter. The write set is UPDATE-only for every format —
+ *  a bare `DELETE FROM t` is whole-table maintenance (disposition (a)) and INSERT
+ *  is row-adding, so neither is a missing-filter defect, Go or TypeScript (§9
+ *  serves both from this one rule). Upsert forms are excluded by `isUpsertForm`. */
 function isUnfilteredWrite(call: ResolvedQuery): boolean {
   if (isUpsertForm(call.queryText)) return false;
-  const isWrite = isGoCall(call)
-    ? hasWriteVerb(call.queryText)
-    : hasMassWriteVerb(call.queryText);
-  return isWrite && !call.hasFilter;
+  return hasMassWriteVerb(call.queryText) && !call.hasFilter;
 }
 
 /**
