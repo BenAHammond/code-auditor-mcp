@@ -95,24 +95,27 @@ function hasMassWriteVerb(text: string): boolean {
   return /\bUPDATE\s+\S+\s+SET\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
 }
 
-/** True when the statement adds rows (INSERT / REPLACE INTO). A row-adding
- *  statement carries the tenant column as a *value*, never as a WHERE
- *  predicate, so `missing-org-filter` (which claims "no tenant predicate")
- *  excludes it — the Go subprocess pinned this as `verb != "INSERT"`. */
-function isInsertForm(text: string): boolean {
+/** True when the statement is a raw-SQL row-adding statement — `INSERT … INTO`
+ *  (optionally `OR IGNORE`/`OR REPLACE`) or `REPLACE … INTO`. Unlike the loose
+ *  `\bINSERT\b` word test this replaces, it does *not* match the ORM builder verb
+ *  `.insert(table)` (`db.insert(users).values(...)`), whose tenant column rides in
+ *  the values object rather than a SQL column list. */
+function isRawSqlInsert(text: string): boolean {
   const upper = text.toUpperCase();
-  return /\bINSERT\b/.test(upper)
-    || /\bREPLACE\s+INTO\b/.test(upper)
-    || /\bINSERTINTO\b/.test(upper);
+  return /\bINSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO\b/.test(upper)
+    || /\bREPLACE\s+INTO\b/.test(upper);
 }
 
-/** True when the call came from a Go file. Now used only by `missing-org-filter`
- *  (below), which reproduces the deleted Go subprocess's `verb != "INSERT"` skip:
- *  a row-adding statement carries the tenant column as a value, not a WHERE
- *  predicate. `unfiltered-query` is format-agnostic — its write set is UPDATE-only
- *  for Go and TypeScript alike (§9 serves both from this one rule). */
-function isGoCall(call: ResolvedQuery): boolean {
-  return call.file.endsWith('.go');
+/** The explicit column list of a raw-SQL INSERT/REPLACE, lowercased, or `null`
+ *  when the statement has none. A positional `INSERT INTO t VALUES (…)` with no
+ *  column list sets every column — tenant included — so the caller treats `null`
+ *  as "sets the tenant column" (conservative: no finding). */
+function rawInsertColumnList(text: string): string[] | null {
+  const m =
+    /\bINSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO\s+\S+\s*\(([^)]*)\)/i.exec(text)
+    || /\bREPLACE\s+INTO\s+\S+\s*\(([^)]*)\)/i.exec(text);
+  if (!m) return null;
+  return m[1].split(',').map((c) => c.trim().toLowerCase()).filter(Boolean);
 }
 
 /** True when a call is an unfiltered write: a mass-write verb (`UPDATE … SET`)
@@ -350,35 +353,51 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
       ddlTableColumns,
     );
 
+    // The tenant-scoping column names this config treats as evidence (lowercased
+    // by `buildOrgFilterTierSet`), matched against a raw-SQL INSERT column list.
+    const tenantColumnSet = new Set(tierSet.tenantColumns);
+
     for (const call of ctx.facts['data-access-calls']) {
-      // The claim is "no organization/tenant *predicate*", not "no filter": a
-      // query scoped by primary key still fires (it is scoped by id, not by
-      // tenant). `hasOrganizationFilter` is false for the PK-scoped case, so
-      // this predicate reproduces the legacy reducer's firing exactly.
-      if (call.hasOrganizationFilter) continue;
-      // INSERT / REPLACE INTO carry the tenant column as a value, not a WHERE
-      // predicate. The Go subprocess pinned `verb != "INSERT"` — a row-adding
-      // statement is excluded there, firing as an unfiltered write instead. The
-      // legacy TypeScript reducer had no such skip: an INSERT-only tenant table
-      // (audit_log in the insert-delete-tables fixture) still fires, because the
-      // write omits the tenant predicate on a table that requires it. The
-      // format-aware guard reproduces both (Spec 68 §9 / §3.2 parity).
-      if (isGoCall(call) && isInsertForm(call.queryText)) continue;
       if (call.tables.length === 0) continue;
       if (!tableRequiresOrgFilter(call.tables, tierSet)) continue;
+
+      const isInsert = isRawSqlInsert(call.queryText);
+
+      // For a read/mutation the claim is "no organization/tenant *predicate*": a
+      // query scoped by primary key still fires (scoped by id, not tenant). For a
+      // raw-SQL row-adding statement (INSERT/REPLACE) there is no WHERE predicate
+      // at all — the tenant column is a *value* in the column list — so the check
+      // is "does the column list set the tenant column?", format-agnostic for Go
+      // and TypeScript alike (Spec 68 §9). The ORM builder verb `.insert(t).values(...)`
+      // is not raw SQL, so it stays on the predicate path, where
+      // `hasOrganizationFilter` already detects `org_id:` value keys.
+      if (isInsert) {
+        const columns = rawInsertColumnList(call.queryText);
+        // `null` = positional INSERT (`INSERT INTO t VALUES (…)`, no column list)
+        // — every column is set, tenant included.
+        const setsTenant = columns === null
+          || columns.some((c) => tenantColumnSet.has(c));
+        if (setsTenant) continue;
+      } else if (call.hasOrganizationFilter) {
+        continue;
+      }
 
       const symbol = `${call.enclosingFunction ?? 'top-level'}:${call.method}`;
       out.push({
         ruleId: 'missing-org-filter',
         severity: 'critical',
-        message: `Query on ${call.tables.join(', ')} has no organization/tenant predicate`,
+        message: isInsert
+          ? `INSERT into ${call.tables.join(', ')} does not set the organization/tenant column`
+          : `Query on ${call.tables.join(', ')} has no organization/tenant predicate`,
         file: call.file,
         line: call.line,
         column: call.column,
         symbol,
         resolution: {
-          action: 'add-tenant-predicate',
-          summary: `Add the tenant column (organization_id / org_id) to the WHERE predicate on ${call.tables.join(', ')} so this query is scoped to the current organization, not just by primary key.`,
+          action: isInsert ? 'add-tenant-column' : 'add-tenant-predicate',
+          summary: isInsert
+            ? `Add the tenant column (organization_id / org_id) to the INSERT column list on ${call.tables.join(', ')} so the row is scoped to the current organization.`
+            : `Add the tenant column (organization_id / org_id) to the WHERE predicate on ${call.tables.join(', ')} so this query is scoped to the current organization, not just by primary key.`,
           symbols: call.tables,
         },
       });

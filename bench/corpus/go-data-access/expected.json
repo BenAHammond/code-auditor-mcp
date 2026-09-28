@@ -11,10 +11,15 @@
       "file": "src/parameterized.go",
       "rule": "missing-org-filter",
       "severity": "critical"
+    },
+    {
+      "file": "src/parameterized.go",
+      "rule": "missing-org-filter",
+      "severity": "critical"
     }
   ],
   "nearMissFiles": [
     "src/no-db.go"
   ],
-  "description": "Tests for the data-access analyzer on Go code — fmt.Sprintf SQL injection vs $1 parameterized queries. Tenancy is declared in .codeauditor.json (analyzerConfigs.data-access.orgFilterTables: [\"users\"]), so missing-org-filter has a declared tenant table to check: parameterized.go's SELECT on users fires missing-org-filter (critical), while its INSERT on users is excluded by design (an insert carries the tenant column as a value, not a predicate). The INSERT is also not an unfiltered write — Spec 68 disposition (a) makes the write set UPDATE-only for Go and TypeScript alike: INSERT is row-adding and a bare DELETE is whole-table maintenance, so neither is a missing-filter defect. Without the declaration the rule's input is absent and the finding would silently read clean instead of firing."
+  "description": "Tests for the data-access analyzer on Go code — fmt.Sprintf SQL injection vs $1 parameterized queries. Tenancy is declared in .codeauditor.json (analyzerConfigs.data-access.orgFilterTables: [\"users\"]), so missing-org-filter has a declared tenant table to check. parameterized.go fires missing-org-filter twice (both critical): its SELECT on users has no org predicate, and its INSERT `(name, email)` omits the tenant column from the column list — Spec 68 §9 makes the INSERT check a column-list predicate (fire only when the row-adding statement does not set the tenant column), format-agnostic for Go and TypeScript alike. The INSERT is still not an unfiltered-query — Spec 68 disposition (a) makes that write set UPDATE-only (a bare DELETE is whole-table maintenance, INSERT is row-adding). Without the declaration the rule's input is absent and the finding would silently read clean instead of firing."
 }

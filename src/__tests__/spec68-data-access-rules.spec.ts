@@ -155,4 +155,70 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
       expect(out).toEqual([]);
     });
   });
+
+  describe('missing-org-filter (INSERT column-list — Spec 68 §9)', () => {
+    /** `missing-org-filter` additionally reads the `table-catalog` fact; Tier 1
+     *  tenancy comes from the `orgFilterTables` threshold, so the catalog is empty. */
+    function analyzeOrg(ruleId: string, calls: ResolvedQuery[], thresholds: ThresholdValues = {}): Finding[] {
+      const rule = dataAccessRules.find((r) => r.id === ruleId)!;
+      const ctx = {
+        facts: {
+          'data-access-calls': calls,
+          'table-catalog': { tables: [] as Array<{ name: string; source: string; columns: string[] }> },
+        },
+        formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
+        thresholds,
+      };
+      return [...rule.analyze(ctx)];
+    }
+
+    const tenant = { orgFilterTables: ['users'] };
+
+    it('raw-SQL INSERT that sets the tenant column in its column list is quiet', () => {
+      const out = analyzeOrg('missing-org-filter', [
+        q({ queryText: 'INSERT INTO users (organization_id, name) VALUES ($1, $2)', tables: ['users'], method: 'db.run' }),
+      ], tenant);
+      expect(out).toEqual([]);
+    });
+
+    it('raw-SQL INSERT that omits the tenant column fires (row would be unscoped)', () => {
+      const out = analyzeOrg('missing-org-filter', [
+        q({ queryText: 'INSERT INTO users (name, email) VALUES ($1, $2)', tables: ['users'], method: 'db.run' }),
+      ], tenant);
+      expect(out).toHaveLength(1);
+      expect(out[0].message).toContain('does not set the organization/tenant column');
+      expect(out[0].resolution?.action).toBe('add-tenant-column');
+    });
+
+    it('a positional INSERT with no column list is quiet (every column is set)', () => {
+      const out = analyzeOrg('missing-org-filter', [
+        q({ queryText: 'INSERT INTO users VALUES ($1, $2, $3)', tables: ['users'], method: 'db.run' }),
+      ], tenant);
+      expect(out).toEqual([]);
+    });
+
+    it('a Go raw-SQL INSERT omitting the tenant column fires — format-agnostic (§9)', () => {
+      const out = analyzeOrg('missing-org-filter', [
+        q({ queryText: 'INSERT INTO users (name, email) VALUES ($1, $2)', tables: ['users'], method: 'db.Exec', file: '/fixture/app.go' }),
+      ], tenant);
+      expect(out).toHaveLength(1);
+      expect(out[0].message).toContain('does not set the organization/tenant column');
+    });
+
+    it('an ORM builder insert without the tenant key still fires via the predicate path', () => {
+      const out = analyzeOrg('missing-org-filter', [
+        q({ queryText: 'db.insert(users).values({ name, email })', tables: ['users'], method: 'db.insert' }),
+      ], tenant);
+      expect(out).toHaveLength(1);
+      expect(out[0].message).toContain('has no organization/tenant predicate');
+      expect(out[0].resolution?.action).toBe('add-tenant-predicate');
+    });
+
+    it('an ORM builder insert that sets the tenant key is quiet', () => {
+      const out = analyzeOrg('missing-org-filter', [
+        q({ queryText: 'db.insert(users).values({ organization_id: orgId, name })', tables: ['users'], method: 'db.insert', hasOrganizationFilter: true }),
+      ], tenant);
+      expect(out).toEqual([]);
+    });
+  });
 });
