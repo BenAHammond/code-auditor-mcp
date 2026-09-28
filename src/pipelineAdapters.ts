@@ -1046,6 +1046,20 @@ export function createStylesSourceVisitor(): Stage2Visitor {
   };
 }
 
+// Style-table SQL, hoisted so the two inserters (source CSS-in-JS facts and
+// compiled-CSS facts) and each one's prepare-once fast path + `indexHandle.run`
+// fallback cannot drift on a statement string.
+const SQL_STYLE_GET_HASH = 'SELECT content_hash FROM style_declarations WHERE file_path = ? LIMIT 1';
+const SQL_STYLE_DEL_DECL = 'DELETE FROM style_declarations WHERE file_path = ?';
+const SQL_STYLE_DEL_USAGE = 'DELETE FROM style_class_usage WHERE file_path = ?';
+const SQL_STYLE_DEL_TOKEN = 'DELETE FROM style_tokens WHERE file_path = ?';
+const SQL_STYLE_DEL_UNREAD = 'DELETE FROM style_unread_sources WHERE file_path = ?';
+const SQL_STYLE_DEL_CLASS = 'DELETE FROM style_defined_classes WHERE file_path = ?';
+const SQL_STYLE_INS_DECL = 'INSERT INTO style_declarations (property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+const SQL_STYLE_INS_CLASS = 'INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)';
+const SQL_STYLE_INS_USAGE = 'INSERT INTO style_class_usage (class_name, file_path, line, mechanism, unresolvable) VALUES (?, ?, ?, ?, ?)';
+const SQL_STYLE_INS_TOKEN = 'INSERT INTO style_tokens (name, value, file_path, mechanism) VALUES (?, ?, ?, ?)';
+
 /**
  * Insert TS/JS CSS-in-JS facts (from the styles-source visitor) into the
  * style_* tables. Mirrors the TS/JS branch the style indexer used to run
@@ -1088,15 +1102,15 @@ function insertSourceStyleFacts(
 
   const stmts = rawDb
     ? {
-        getHash: rawDb.prepare('SELECT content_hash FROM style_declarations WHERE file_path = ? LIMIT 1'),
-        delDecl: rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?'),
-        delUsage: rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?'),
-        delTok: rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?'),
-        delUnread: rawDb.prepare('DELETE FROM style_unread_sources WHERE file_path = ?'),
-        delClass: rawDb.prepare('DELETE FROM style_defined_classes WHERE file_path = ?'),
-        insDecl: rawDb.prepare('INSERT INTO style_declarations (property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
-        insClass: rawDb.prepare('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)'),
-        insUsage: rawDb.prepare('INSERT INTO style_class_usage (class_name, file_path, line, mechanism, unresolvable) VALUES (?, ?, ?, ?, ?)'),
+        getHash: rawDb.prepare(SQL_STYLE_GET_HASH),
+        delDecl: rawDb.prepare(SQL_STYLE_DEL_DECL),
+        delUsage: rawDb.prepare(SQL_STYLE_DEL_USAGE),
+        delTok: rawDb.prepare(SQL_STYLE_DEL_TOKEN),
+        delUnread: rawDb.prepare(SQL_STYLE_DEL_UNREAD),
+        delClass: rawDb.prepare(SQL_STYLE_DEL_CLASS),
+        insDecl: rawDb.prepare(SQL_STYLE_INS_DECL),
+        insClass: rawDb.prepare(SQL_STYLE_INS_CLASS),
+        insUsage: rawDb.prepare(SQL_STYLE_INS_USAGE),
       }
     : null;
 
@@ -1110,7 +1124,7 @@ function insertSourceStyleFacts(
     if (!isScoped) {
       const stored = stmts
         ? (stmts.getHash.get(filePath) as { content_hash: string } | undefined)
-        : (indexHandle.query('SELECT content_hash FROM style_declarations WHERE file_path = ? LIMIT 1', [filePath])[0] as { content_hash: string } | undefined);
+        : (indexHandle.query(SQL_STYLE_GET_HASH, [filePath])[0] as { content_hash: string } | undefined);
       if (stored?.content_hash === facts.contentHash) return;
     }
 
@@ -1123,11 +1137,11 @@ function insertSourceStyleFacts(
       stmts.delUnread.run(filePath);
       stmts.delClass.run(filePath);
     } else {
-      indexHandle.run('DELETE FROM style_declarations WHERE file_path = ?', [filePath]);
-      indexHandle.run('DELETE FROM style_class_usage WHERE file_path = ?', [filePath]);
-      indexHandle.run('DELETE FROM style_tokens WHERE file_path = ?', [filePath]);
-      indexHandle.run('DELETE FROM style_unread_sources WHERE file_path = ?', [filePath]);
-      indexHandle.run('DELETE FROM style_defined_classes WHERE file_path = ?', [filePath]);
+      indexHandle.run(SQL_STYLE_DEL_DECL, [filePath]);
+      indexHandle.run(SQL_STYLE_DEL_USAGE, [filePath]);
+      indexHandle.run(SQL_STYLE_DEL_TOKEN, [filePath]);
+      indexHandle.run(SQL_STYLE_DEL_UNREAD, [filePath]);
+      indexHandle.run(SQL_STYLE_DEL_CLASS, [filePath]);
     }
 
     // Insert declarations (and their defined-class catalog entries).
@@ -1136,14 +1150,14 @@ function insertSourceStyleFacts(
         stmts.insDecl.run(decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash);
       } else {
         indexHandle.run(
-          'INSERT INTO style_declarations (property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          SQL_STYLE_INS_DECL,
           [decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash],
         );
       }
       if (decl.context) {
         for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
           if (stmts) stmts.insClass.run(m[1], decl.filePath);
-          else indexHandle.run('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)', [m[1], decl.filePath]);
+          else indexHandle.run(SQL_STYLE_INS_CLASS, [m[1], decl.filePath]);
         }
       }
     }
@@ -1152,7 +1166,7 @@ function insertSourceStyleFacts(
     for (const cu of facts.classUsage) {
       if (stmts) stmts.insUsage.run(cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0);
       else indexHandle.run(
-        'INSERT INTO style_class_usage (class_name, file_path, line, mechanism, unresolvable) VALUES (?, ?, ?, ?, ?)',
+        SQL_STYLE_INS_USAGE,
         [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0],
       );
     }
@@ -1254,14 +1268,14 @@ export function createStylesReducer(): Stage3Reducer {
           } | undefined;
           const stmts = rawDb
             ? {
-                delDecl: rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?'),
-                delTok: rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?'),
-                delUsage: rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?'),
-                delClass: rawDb.prepare('DELETE FROM style_defined_classes WHERE file_path = ?'),
-                insDecl: rawDb.prepare('INSERT INTO style_declarations (property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
-                insClass: rawDb.prepare('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)'),
-                insTok: rawDb.prepare('INSERT INTO style_tokens (name, value, file_path, mechanism) VALUES (?, ?, ?, ?)'),
-                insUsage: rawDb.prepare('INSERT INTO style_class_usage (class_name, file_path, line, mechanism, unresolvable) VALUES (?, ?, ?, ?, ?)'),
+                delDecl: rawDb.prepare(SQL_STYLE_DEL_DECL),
+                delTok: rawDb.prepare(SQL_STYLE_DEL_TOKEN),
+                delUsage: rawDb.prepare(SQL_STYLE_DEL_USAGE),
+                delClass: rawDb.prepare(SQL_STYLE_DEL_CLASS),
+                insDecl: rawDb.prepare(SQL_STYLE_INS_DECL),
+                insClass: rawDb.prepare(SQL_STYLE_INS_CLASS),
+                insTok: rawDb.prepare(SQL_STYLE_INS_TOKEN),
+                insUsage: rawDb.prepare(SQL_STYLE_INS_USAGE),
               }
             : null;
 
@@ -1274,10 +1288,10 @@ export function createStylesReducer(): Stage3Reducer {
                 stmts.delUsage.run(filePath);
                 stmts.delClass.run(filePath);
               } else {
-                indexHandle.run('DELETE FROM style_declarations WHERE file_path = ?', [filePath]);
-                indexHandle.run('DELETE FROM style_tokens WHERE file_path = ?', [filePath]);
-                indexHandle.run('DELETE FROM style_class_usage WHERE file_path = ?', [filePath]);
-                indexHandle.run('DELETE FROM style_defined_classes WHERE file_path = ?', [filePath]);
+                indexHandle.run(SQL_STYLE_DEL_DECL, [filePath]);
+                indexHandle.run(SQL_STYLE_DEL_TOKEN, [filePath]);
+                indexHandle.run(SQL_STYLE_DEL_USAGE, [filePath]);
+                indexHandle.run(SQL_STYLE_DEL_CLASS, [filePath]);
               }
 
               // Compute content hash for the file
@@ -1290,7 +1304,7 @@ export function createStylesReducer(): Stage3Reducer {
                   stmts.insDecl.run(decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash);
                 } else {
                   indexHandle.run(
-                    'INSERT INTO style_declarations (property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    SQL_STYLE_INS_DECL,
                     [decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash],
                   );
                 }
@@ -1301,7 +1315,7 @@ export function createStylesReducer(): Stage3Reducer {
                 if (decl.context) {
                   for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
                     if (stmts) stmts.insClass.run(m[1], decl.filePath);
-                    else indexHandle.run('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)', [m[1], decl.filePath]);
+                    else indexHandle.run(SQL_STYLE_INS_CLASS, [m[1], decl.filePath]);
                   }
                 }
               }
@@ -1310,7 +1324,7 @@ export function createStylesReducer(): Stage3Reducer {
               for (const tok of facts.tokens) {
                 if (stmts) stmts.insTok.run(tok.name, tok.value, tok.filePath, tok.mechanism);
                 else indexHandle.run(
-                  'INSERT INTO style_tokens (name, value, file_path, mechanism) VALUES (?, ?, ?, ?)',
+                  SQL_STYLE_INS_TOKEN,
                   [tok.name, tok.value, tok.filePath, tok.mechanism],
                 );
               }
@@ -1319,7 +1333,7 @@ export function createStylesReducer(): Stage3Reducer {
               for (const cu of facts.classUsage) {
                 if (stmts) stmts.insUsage.run(cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0);
                 else indexHandle.run(
-                  'INSERT INTO style_class_usage (class_name, file_path, line, mechanism, unresolvable) VALUES (?, ?, ?, ?, ?)',
+                  SQL_STYLE_INS_USAGE,
                   [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0],
                 );
               }
