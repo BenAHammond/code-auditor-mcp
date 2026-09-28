@@ -53,10 +53,10 @@ export function sweep(ids: string[]) {
 }
 `;
 
-/** An unfiltered DELETE — a mass-mutation foot-gun, fires unfiltered-query. */
+/** An unfiltered UPDATE — a mass-mutation foot-gun, fires unfiltered-query. */
 const UNFILTERED = `import { db } from './db';
 export function nuke() {
-  return db.exec("DELETE FROM users");
+  return db.exec("UPDATE users SET active = 0");
 }
 `;
 

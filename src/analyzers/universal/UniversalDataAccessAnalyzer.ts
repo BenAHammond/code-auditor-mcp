@@ -23,7 +23,7 @@ import {
   DB_BINDING_NAMES,
   DB_WRAPPER_NAMES,
 } from './UniversalSchemaAnalyzer.js';
-import { isSqlKeyword, findEnclosingFunctionIdentity, functionIdentityLabel } from './schema/codeAnalysis.js';
+import { isSqlKeyword, extractAliasIdentifiers, findEnclosingFunctionIdentity, functionIdentityLabel } from './schema/codeAnalysis.js';
 import { isTestOrSpecPath } from '../../languages/testConventions.js';
 import { buildOrgFilterTierSet, tableRequiresOrgFilter } from '../orgFilterTiers.js';
 
@@ -1400,7 +1400,18 @@ export function extractTables(text: string, config: DataAccessAnalyzerConfig): s
   // Drop SQL keywords/aggregates captured as tables — `FROM MIN(...)` in
   // `EXTRACT(YEAR FROM MIN(...))` yields `MIN`, and `FOR UPDATE SKIP LOCKED`
   // yields `SKIP`; neither is a table.
-  return Array.from(tables).filter(t => !isSqlKeyword(t));
+  //
+  // Also drop CTE/table aliases: `WITH recent_orders AS (…) … FROM recent_orders`
+  // captures the CTE name `recent_orders` via the generic FROM pattern, but a
+  // CTE name is a named result set, not a stored table — counting it inflates
+  // the table count (`complex-query`) and the org-filter/unknown-table lookups.
+  // `extractAliasIdentifiers` is the same alias scan the schema analyzer uses
+  // (CTE incl. RECURSIVE/column-list/comma-siblings, explicit `AS t`, bare and
+  // subquery aliases, RENAME TO targets), so the two table counts cannot drift.
+  const aliasIds = extractAliasIdentifiers(text);
+  return Array.from(tables)
+    .filter(t => !isSqlKeyword(t))
+    .filter(t => !aliasIds.has(t.toLowerCase()));
 }
 
 function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): boolean {
@@ -1494,22 +1505,24 @@ export function hasWriteVerb(text: string): boolean {
 }
 
 /**
- * True when a statement mutates or deletes existing rows — `DELETE` or `UPDATE`.
- * These are the verbs whose mass effect is a foot-gun when unconstrained;
+ * True when a statement mass-mutates existing rows without a row-limiting
+ * clause — `UPDATE … SET`. `DELETE` is deliberately *not* a mass write here
+ * (Spec 68 disposition (a)): a bare `DELETE FROM t` with no WHERE is whole-table
+ * maintenance (the clear-and-rebuild idiom), not a missing-filter defect.
  * `INSERT` / `REPLACE INTO` always target specific rows and are not "unfiltered"
  * in the dangerous sense.
  */
 function hasMassWriteVerb(text: string): boolean {
   const upper = text.toUpperCase();
-  // Statement-aware: `DELETE FROM` / `UPDATE <table> SET` name the DML verb. The
-  // bare `\bDELETE\b` / `\bUPDATE\b` word tests misread a `CREATE TRIGGER`'s
-  // event clause (`… AFTER DELETE ON t`, `… AFTER UPDATE ON t`) as a mass write —
-  // the word sits in DDL, not a statement. `DELETE ON` / `UPDATE ON` therefore no
-  // longer match, while `DELETE FROM` / `UPDATE x SET` still do.
-  return /\bDELETE\s+FROM\b/.test(upper) || /\bUPDATE\s+\S+\s+SET\b/.test(upper)
-    // Kysely `deleteFrom`/`updateTable` are mass writes with no SQL keyword word
-    // boundary — the camelCase form must be recognized explicitly.
-    || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
+  // Statement-aware: `UPDATE <table> SET` names the DML verb. The bare
+  // `\bUPDATE\b` word test misreads a `CREATE TRIGGER`'s event clause
+  // (`… AFTER UPDATE ON t`) as a mass write — the word sits in DDL, not a
+  // statement. `UPDATE ON` therefore no longer matches, while `UPDATE x SET`
+  // still does.
+  return /\bUPDATE\s+\S+\s+SET\b/.test(upper)
+    // Kysely `updateTable` is a mass write with no SQL keyword word boundary —
+    // the camelCase form must be recognized explicitly.
+    || /\bUPDATETABLE\b/.test(upper);
 }
 
 /**

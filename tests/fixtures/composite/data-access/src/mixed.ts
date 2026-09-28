@@ -4,7 +4,7 @@
  *
  *  1. loop accumulating `prepare()` into a `batch()` — one round-trip, not N+1.
  *  2. genuine N+1 — eager execution inside a loop over input.
- *  3. bare `DELETE` with no WHERE — a mass-mutation foot-gun.
+ *  3. bare `UPDATE` with no WHERE — a mass-mutation foot-gun.
  *  4. `INSERT … ON CONFLICT` upsert — keyed by construction, not unfiltered.
  *  5. filtered write — `WHERE` scopes the mutation, not unfiltered.
  *  6. non-SQL method named `update()` — no table, not unfiltered.
@@ -32,10 +32,10 @@ export function backfillNames(ids: number[]): void {
   }
 }
 
-/** 3. Bare DELETE — mass mutation, no row-limiting clause. */
+/** 3. Bare UPDATE — mass mutation, no row-limiting clause. */
 export function purgeUsers(): void {
   const db = getDB();
-  db.exec(`DELETE FROM users`);
+  db.exec(`UPDATE users SET purged = 1`);
 }
 
 /** 4. Upsert — keyed by its conflict target, not an unfiltered write. */

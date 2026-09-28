@@ -19,7 +19,7 @@
  *   - complex-query: 1 (line 12 in complex-query.ts — 9 tables)
  *   - loop-query: 2 (loop-query.ts:18 direct, loop-query.ts:30 helper-in-loop)
  *   - missing-org-filter: 4 (complex-query.ts:32, loop-query.ts:18/24, missing-org-filter.ts:12)
- *   - unfiltered-query: 2 (unfiltered-query.ts:13 — the unfiltered DELETE write;
+ *   - unfiltered-query: 2 (unfiltered-query.ts:16 — the unfiltered UPDATE write;
  *     missing-org-filter.ts:12 — the A1.4 tenant-scoped *read* case, a filterless
  *     full-table SELECT of `projects`)
  */
@@ -93,21 +93,21 @@ describe('data-access-rules fixture', () => {
   // ══════════════════════════════════════════════════════════════════
 
   describe('unfiltered-query rule', () => {
-    it('true positive: unfiltered DELETE (no WHERE/HAVING/LIMIT) triggers unfiltered-query', () => {
+    it('true positive: unfiltered UPDATE (no WHERE/HAVING/LIMIT) triggers unfiltered-query', () => {
       const violations = runAndGetViolations(testDir);
       expect(ruleCount(violations, 'unfiltered-query.ts', 'unfiltered-query')).toBe(1);
     });
 
-    it('near-miss negative: filtered DELETE (WHERE id = ?) does NOT trigger unfiltered-query', () => {
+    it('near-miss negative: filtered UPDATE (WHERE id = ?) does NOT trigger unfiltered-query', () => {
       const violations = runAndGetViolations(testDir);
-      // The near-miss function at line 19 uses `DELETE FROM audit_log WHERE id = ?`.
+      // The near-miss function at line 22 uses `UPDATE audit_log SET archived = 1 WHERE id = ?`.
       // The WHERE clause is a real row-limiting predicate, so it is not "unfiltered".
-      // The only unfiltered-query in this file is the true-positive DELETE at line 13.
+      // The only unfiltered-query in this file is the true-positive UPDATE at line 16.
       const fileV = fileViolations(violations, 'unfiltered-query.ts');
       const ufViolations = fileV.filter((v: any) => v.rule === 'unfiltered-query');
       // Only 1 unfiltered-query violation — from true positive, not near-miss
       expect(ufViolations.length).toBe(1);
-      expect(ufViolations[0].line).toBe(13);
+      expect(ufViolations[0].line).toBe(16);
     });
   });
 

@@ -32,7 +32,6 @@ export interface SOLIDAnalyzerConfig {
   // R5.2: Class-level aggregation thresholds
   classMethodsThreshold?: number;
   classAggregateComplexity?: number;
-  checkDependencyInversion?: boolean;
   checkInterfaceSize?: boolean;
   checkLiskovSubstitution?: boolean;
   skipTestFiles?: boolean;
@@ -58,18 +57,16 @@ export const DEFAULT_SOLID_CONFIG: SOLIDAnalyzerConfig = {
   // R5.2: Class-level aggregation
   classMethodsThreshold: 20,
   classAggregateComplexity: 150,
-  checkDependencyInversion: true,
   checkInterfaceSize: true,
   checkLiskovSubstitution: true,
   skipTestFiles: true
 };
 
 /**
- * Builtin / standard-library type names excluded from the open-closed and
- * dependency-inversion checks. These are platform primitives and runtime error
- * types, not application types a class should abstract over. `instanceof` or
- * `new` against one of these is a legitimate runtime concern, not an
- * extensibility (OCP) or coupling (DIP) signal.
+ * Builtin / standard-library type names excluded from the open-closed check.
+ * These are platform primitives and runtime error types, not application types a
+ * class should abstract over. `instanceof` against one of these is a legitimate
+ * runtime concern, not an extensibility (OCP) signal.
  */
 const BUILTIN_TYPES = new Set<string>([
   // Primitives & boxed types
@@ -96,8 +93,8 @@ const BUILTIN_TYPES = new Set<string>([
  * annotation, not responsibilities, so they never vote — "shape and send",
  * "shape and render", and "fetch and log" are each one job. A repository method
  * (load + shape) is one group; a handler that queries *and* emails is two. This
- * is a qualitative heuristic with no config key, like the open-closed and
- * dependency-inversion checks — see `functionConcerns.ts` for the taxonomy.
+ * is a qualitative heuristic with no config key, like the open-closed check —
+ * see `functionConcerns.ts` for the taxonomy.
  */
 const MIN_MIXED_CONCERN_GROUPS = 2;
 
@@ -235,7 +232,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     if (ctx.config.checkLiskovSubstitution && cls.extends) {
       violations.push(...this.checkLiskovSubstitution(cls, ctx));
     }
-    this.checkDependencyInversion(cls, ctx, violations);
 
     return violations;
   }
@@ -628,86 +624,6 @@ export class UniversalSOLIDAnalyzer extends UniversalAnalyzer {
     });
     return hasThrow;
   }
-  
-  /**
-   * Check Dependency Inversion Principle
-   */
-  private checkDependencyInversion(cls: ClassInfo, ctx: SolidContext, violations: Violation[]): void {
-    const classNode = findNodeByLocation(ctx.ast.root, cls.location.start);
-    if (!classNode) {
-      return;
-    }
-
-    if (this.hasDirectInstantiation(cls, classNode, ctx)) {
-      violations.push(this.createViolation(
-        ctx.ast.filePath,
-        cls.location.start,
-        `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
-        { severity: 'high', rule: 'solid/dependency-inversion', symbol: cls.name }
-      ));
-    }
-  }
-
-  /**
-   * True if the class body directly instantiates a concrete type (`new Foo()`)
-   * that it *holds* — which is the dependency-inversion signal.
-   *
-   * The signal is a *bare* construction of a PascalCase type name, regardless of
-   * where the type comes from — a statically-imported class, a CommonJS
-   * `require()` binding, or a class defined locally in the same file. The prior
-   * implementation gated on a statically-imported-name table, which made the rule
-   * dead on locally-defined classes (the common case — `AppGenerator`,
-   * `ResetPasswordError`, …) and on every `require()`-based codebase. Provenance is
-   * not a DIP concern: instantiating a concrete type violates the principle whether
-   * the type was imported or defined next door.
-   *
-   * What a construction is *for* is the concern: a value that escapes — thrown
-   * (`throw new AppError(...)`) or returned (`return new Result(...)`) — is a value
-   * type, not a collaborator the class depends on. DIP is about what a class
-   * *holds* (a database client assigned to `this.db`); an error constructed and
-   * thrown, or a DTO returned to the caller, is not a dependency. An escaping
-   * construction is therefore not a signal.
-   */
-  private hasDirectInstantiation(cls: ClassInfo, classNode: ASTNode, ctx: SolidContext): boolean {
-    const { adapter, sourceCode } = ctx;
-
-    let hasDirectInstantiation = false;
-    walkASTWithAncestors(classNode, (node, ancestors) => {
-      if (node.type !== 'new_expression') return;
-
-      // Escapes vs. held: a construction whose value is thrown or returned —
-      // even through a transparent wrapper (`return new Foo() as Bar`,
-      // `throw (new AppError())`) — is a value type, not a dependency. Only a
-      // value the class retains (a field, a local it works through) is a
-      // coupling signal.
-      if (constructionEscapes(ancestors)) {
-        return;
-      }
-
-      // The constructor is the direct child that is neither the argument list
-      // nor a type-argument clause. It must be a bare `identifier`: a member
-      // access (`new this.Foo()`, `new ns.Foo()`), a parenthesized expression
-      // (`new (ctor())()`), or a call are not a concrete-type signal.
-      const ctor = (node.children ?? []).find(
-        c => c.type !== 'arguments' && c.type !== 'type_arguments'
-      );
-      if (!ctor || ctor.type !== 'identifier') return;
-
-      const ctorName = adapter.getNodeText(ctor, sourceCode).trim();
-      // A lowercase binding is an instance, not a type; only PascalCase names
-      // are treated as concrete classes (the JS/TS naming convention).
-      if (!/^[A-Z]/.test(ctorName)) return;
-      // Platform primitives / error types are not application dependencies.
-      if (BUILTIN_TYPES.has(ctorName)) return;
-      // A class instantiating itself (singleton `new ThisClass()`) is not a
-      // dependency.
-      if (ctorName === cls.name) return;
-
-      hasDirectInstantiation = true;
-    });
-
-    return hasDirectInstantiation;
-  }
 }
 
 // --- Module-level helpers (pure tree/path utilities, no `this`) ---------------
@@ -782,56 +698,4 @@ function walkAST(node: ASTNode, callback: (node: ASTNode) => void): void {
       walkAST(child, callback);
     }
   }
-}
-
-/**
- * Depth-first walk over a subtree that also passes each node's ancestor chain to
- * `callback`: `ancestors[0]` is the walk root, `ancestors[ancestors.length - 1]`
- * is the immediate parent (empty for the root itself). Used where the enclosing
- * context matters — e.g. distinguishing a `new_expression` that escapes via
- * `throw`/`return` (possibly through a transparent cast/parenthesis wrapper)
- * from one the class holds.
- */
-function walkASTWithAncestors(
-  node: ASTNode,
-  callback: (node: ASTNode, ancestors: ASTNode[]) => void,
-  ancestors: ASTNode[] = []
-): void {
-  callback(node, ancestors);
-  if (node.children) {
-    const next = [...ancestors, node];
-    for (const child of node.children) {
-      walkASTWithAncestors(child, callback, next);
-    }
-  }
-}
-
-/**
- * Expression wrappers that pass their operand through to an enclosing statement
- * without changing its runtime value — a parenthesized expression or a type
- * assertion/cast. A `new` expression under one of these still escapes if the
- * *wrapping* statement throws or returns it.
- */
-const ESCAPE_WRAPPERS = new Set([
-  'parenthesized_expression',
-  'as_expression',
-  'type_assertion',
-  'satisfies_expression',
-  'non_null_expression',
-]);
-
-/**
- * True when the `new` expression whose ancestors are `ancestors` is thrown or
- * returned (the value escapes the class) rather than held. Walks up through
- * transparent wrappers only — the first non-wrapper ancestor decides: a
- * `throw_statement`/`return_statement` means escape; anything else (an
- * assignment, a call argument, a field initializer) means the value is held.
- */
-function constructionEscapes(ancestors: ASTNode[]): boolean {
-  for (let i = ancestors.length - 1; i >= 0; i--) {
-    const type = ancestors[i].type;
-    if (type === 'throw_statement' || type === 'return_statement') return true;
-    if (!ESCAPE_WRAPPERS.has(type)) return false;
-  }
-  return false;
 }

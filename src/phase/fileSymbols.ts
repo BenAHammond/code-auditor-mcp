@@ -5,13 +5,11 @@
  * folds `adapter.extractFunctions` / `extractClasses` / `extractInterfaces`
  * into a serializable `FileSymbols` per symbol, pre-computing every metric a
  * symbol-level rule needs (complexity, concern groups, line/param counts, the
- * open-closed `instanceof` signal, the dependency-inversion `new` signal, the
- * LSP `throws` signal). The tree dies with the file; `analyze` sees only these
- * plain-data records.
+ * open-closed `instanceof` targets, the LSP `throws` signal). The tree dies
+ * with the file; `analyze` sees only these plain-data records.
  *
  * This is a temporary re-homing of the SOLID analyzer's private helpers
- * (`BUILTIN_TYPES`, `walkASTWithAncestors`, `constructionEscapes`,
- * `findNodeByLocation`, `methodThrows`, …). They live in
+ * (`BUILTIN_TYPES`, `findNodeByLocation`, `methodThrows`, …). They live in
  * `UniversalSOLIDAnalyzer.ts` today and are deleted with that analyzer in §15;
  * importing them across the phase boundary would couple the new pipeline to a
  * class that is about to be removed, so they are re-declared here instead.
@@ -19,14 +17,14 @@
 
 import type { AstFile, FileSymbols, FileFunctionSymbol, FileClassSymbol } from './types.js';
 import type { ASTNode, ClassInfo, FunctionInfo } from '../languages/types.js';
-import { walkAST, getNodeText } from '../languages/adapterBridge.js';
+import { walkAST } from '../languages/adapterBridge.js';
 import { detectFunctionConcerns, votingConcerns, CONCERN_LABELS, isFunctionNodeType } from '../analyzers/universal/functionConcerns.js';
 
 /**
- * Builtin / standard-library type names excluded from the open-closed and
- * dependency-inversion signals (mirrors UniversalSOLIDAnalyzer's set). Platform
- * primitives and error types are legitimate runtime concerns, not extensibility
- * (OCP) or coupling (DIP) signals.
+ * Builtin / standard-library type names excluded from the open-closed
+ * `instanceof` signal (mirrors UniversalSOLIDAnalyzer's set). Platform
+ * primitives, error types, and web globals are legitimate runtime concerns, not
+ * extensibility (OCP) signals.
  */
 const BUILTIN_TYPES = new Set<string>([
   'Date', 'Array', 'Object', 'Map', 'Set', 'WeakMap', 'WeakSet',
@@ -40,15 +38,11 @@ const BUILTIN_TYPES = new Set<string>([
   'BigInt64Array', 'BigUint64Array', 'Uint8ClampedArray',
   'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder', 'Buffer',
   'FormData', 'Blob', 'AbortController', 'AbortSignal',
-]);
-
-/** Expression wrappers that pass their operand through to the enclosing statement. */
-const ESCAPE_WRAPPERS = new Set([
-  'parenthesized_expression',
-  'as_expression',
-  'type_assertion',
-  'satisfies_expression',
-  'non_null_expression',
+  // Web platform globals (Fetch + Streams API) — `instanceof Response` /
+  // `instanceof ReadableStream` are platform type-checks, not extensibility
+  // (OCP) signals, exactly like `instanceof Date` / `instanceof Error` above.
+  'Request', 'Response', 'Headers',
+  'ReadableStream', 'WritableStream', 'TransformStream',
 ]);
 
 /**
@@ -124,8 +118,7 @@ function extractClass(file: AstFile, cls: ClassInfo): FileClassSymbol {
     extends: cls.extends,
     methodCount: cls.methods.length,
     aggregateComplexity,
-    hasInstanceofAgainstUserType: classNode ? hasTypeChecking(classNode, adapter, source) : false,
-    hasHeldDirectInstantiation: classNode ? hasHeldInstantiation(cls.name, classNode, adapter, source) : false,
+    instanceofTargets: classNode ? extractInstanceofTargets(classNode, adapter, source) : [],
     methods,
     jsDoc: cls.jsDoc ?? null,
   };
@@ -320,67 +313,23 @@ function getFirstChildOfType(node: ASTNode, types: string[]): ASTNode | null {
   return null;
 }
 
-/** True when the class body uses `instanceof` against a user-defined type. */
-function hasTypeChecking(
+/** The non-builtin `instanceof` target names in the class body. The rule
+ *  resolves these against the corpus-wide class declarations to separate a
+ *  genuine OCP `instanceof` (a domain type) from an Error-subclass
+ *  catch-dispatch, which is not an extensibility signal. */
+function extractInstanceofTargets(
   classNode: ASTNode,
   adapter: AstFile['adapter'],
   sourceCode: string,
-): boolean {
-  let has = false;
+): string[] {
+  const targets = new Set<string>();
   walkAST(classNode, (node) => {
     if (node.type !== 'binary_expression') return;
     const text = adapter.getNodeText(node, sourceCode);
     const m = /\binstanceof\s+([A-Za-z_$][\w$]*)/.exec(text);
-    if (m && !BUILTIN_TYPES.has(m[1])) has = true;
+    if (m && !BUILTIN_TYPES.has(m[1])) targets.add(m[1]);
   });
-  return has;
-}
-
-/** True when the class body holds (does not escape) a `new PascalCaseType()`. */
-function hasHeldInstantiation(
-  className: string,
-  classNode: ASTNode,
-  adapter: AstFile['adapter'],
-  sourceCode: string,
-): boolean {
-  let has = false;
-  walkASTWithAncestors(classNode, (node, ancestors) => {
-    if (node.type !== 'new_expression') return;
-    if (constructionEscapes(ancestors)) return;
-    const ctor = (node.children ?? []).find(
-      (c) => c.type !== 'arguments' && c.type !== 'type_arguments',
-    );
-    if (!ctor || ctor.type !== 'identifier') return;
-    const ctorName = getNodeText(ctor, sourceCode).trim();
-    if (!/^[A-Z]/.test(ctorName)) return;
-    if (BUILTIN_TYPES.has(ctorName)) return;
-    if (ctorName === className) return;
-    has = true;
-  });
-  return has;
-}
-
-/** True when the `new` expression escapes via throw/return (not a held dependency). */
-function constructionEscapes(ancestors: ASTNode[]): boolean {
-  for (let i = ancestors.length - 1; i >= 0; i--) {
-    const type = ancestors[i].type;
-    if (type === 'throw_statement' || type === 'return_statement') return true;
-    if (!ESCAPE_WRAPPERS.has(type)) return false;
-  }
-  return false;
-}
-
-/** Depth-first walk that also passes each node's ancestor chain. */
-function walkASTWithAncestors(
-  node: ASTNode,
-  callback: (node: ASTNode, ancestors: ASTNode[]) => void,
-  ancestors: ASTNode[] = [],
-): void {
-  callback(node, ancestors);
-  if (node.children) {
-    const next = [...ancestors, node];
-    for (const child of node.children) walkASTWithAncestors(child, callback, next);
-  }
+  return [...targets];
 }
 
 /** BFS for the node whose start position matches `location`. */

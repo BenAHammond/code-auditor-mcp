@@ -443,22 +443,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
     },
   },
-  'solid/dependency-inversion': {
-    input: ['files'],
-    resolvable: false,
-    message: 'Module "{name}" violates the Dependency Inversion Principle.',
-    docs: 'solid/dependency-inversion',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'class Service {\n  constructor(repo) { this.repo = repo; }\n}', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'class Service {\n  constructor() { this.repo = new PostgresRepo(); }\n}' },
-      ],
-    },
-  },
-
   // ── dry (UniversalDRYAnalyzer) ──────────────────────────────────────────
   'dry/duplicate': {
     input: ['files'],
@@ -661,10 +645,10 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     samples: {
       valid: [
         { code: 'db.query("SELECT * FROM users")', nearMiss: true },
-        { code: 'db.query("DELETE FROM users WHERE id = ?", [id])', nearMiss: true },
+        { code: 'db.query("UPDATE users SET active = 0 WHERE id = ?")', nearMiss: true },
       ],
       invalid: [
-        { code: 'db.query("DELETE FROM users")' },
+        { code: 'db.query("UPDATE users SET active = 0")' },
       ],
     },
   },
@@ -1427,36 +1411,6 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
       ],
       invalid: [
         { code: 'import { a, b, c, d, e, f, g, h } from "./u";' },
-      ],
-    },
-  },
-  'hub-nodes': {
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Hub node "{node}" has {count} dependencies.',
-    docs: 'hub-nodes',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'export function small() {}', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'export function hub() {\n  a(); b(); c(); d(); e(); f(); g(); h(); i(); j();\n}' },
-      ],
-    },
-  },
-  'split-responsibilities': {
-    input: ['cross-language-entities'],
-    resolvable: false,
-    message: 'Split responsibilities of node "{node}".',
-    docs: 'split-responsibilities',
-    thresholds: [],
-    samples: {
-      valid: [
-        { code: 'export function focused() { return a(); }', nearMiss: true },
-      ],
-      invalid: [
-        { code: 'export function multi() {\n  readDb(); writeLog(); renderUi(); sendMail();\n}' },
       ],
     },
   },

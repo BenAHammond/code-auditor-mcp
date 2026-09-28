@@ -104,9 +104,9 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
   // therefore a current registry key, not a retired name — a rename alias here
   // would assert a split identity and fail the Spec 38 R5 registry test.
   'dependency-inversion': {
-    to: 'solid/dependency-inversion',
+    to: null,
     reason:
-      SOLID_PREFIX_RENAME_REASON,
+      'Removed — the concrete-instantiation signal does not isolate genuine Dependency Inversion violations; it fires on value objects/DTOs and factory-builder patterns where the concrete type is itself the abstraction.',
   },
   // Rename: cross-domain/transaction-boundary → cross-domain/multi-table-write (Spec-49).
   // The old ID asserted a transaction boundary the code never computes — it only
@@ -184,6 +184,27 @@ export const RULE_ALIASES: Record<string, RuleAlias> = {
     to: null,
     reason:
       'Removed — extractEndpoints never set authentication, the input this rule read, so it could not fire.',
+  },
+  // ── Spec 68 removal — three rules whose measurement did not isolate a real defect ──
+  // `dependency-inversion` fired on any non-builtin `new PascalCaseType()`, which
+  // flags value objects, DTOs, and factory-builder patterns (the concrete type is
+  // the abstraction the caller is meant to depend on) as DIP violations. `hub-nodes`
+  // fired only through out-degree outliers that were name-collision artifacts, and
+  // `split-responsibilities` was its action form with no independent predicate.
+  'solid/dependency-inversion': {
+    to: null,
+    reason:
+      'Removed — the concrete-instantiation signal does not isolate genuine Dependency Inversion violations; it fires on value objects/DTOs and factory-builder patterns.',
+  },
+  'hub-nodes': {
+    to: null,
+    reason:
+      'Removed — the out-degree-outlier heuristic fired on name-collision artifacts, not genuine hub architecture.',
+  },
+  'split-responsibilities': {
+    to: null,
+    reason:
+      'Removed — the action form of hub-nodes; no independent predicate of its own.',
   },
 };
 

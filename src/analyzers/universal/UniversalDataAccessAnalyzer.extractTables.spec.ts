@@ -36,4 +36,29 @@ describe('extractTables — JS .from / SQL-keyword guards', () => {
     const text = "baseQuery.where(sql`${sql.join(conditions, sql` AND `)}`)";
     expect(extractTables(text, DEFAULT_DATA_ACCESS_CONFIG)).toEqual([]);
   });
+
+  it('does not count a CTE alias as a table (WITH recent_orders AS … FROM recent_orders)', () => {
+    const text = `WITH recent_orders AS (
+      SELECT * FROM orders WHERE created_at > '2024-01-01'
+    )
+    SELECT * FROM recent_orders JOIN customers c ON c.id = recent_orders.customer_id`;
+    expect(extractTables(text, DEFAULT_DATA_ACCESS_CONFIG)).toEqual(['orders', 'customers']);
+  });
+
+  it('does not count a RECURSIVE CTE name with a column list as a table', () => {
+    const text = `WITH RECURSIVE deps(id, name) AS (
+      SELECT 1, 'a'
+      UNION ALL
+      SELECT deps.id + 1, 'b' FROM deps
+    )
+    SELECT * FROM deps`;
+    expect(extractTables(text, DEFAULT_DATA_ACCESS_CONFIG)).toEqual([]);
+  });
+
+  it('does not count a comma-separated CTE sibling as a table', () => {
+    const text = `WITH ranked AS (SELECT * FROM functions f),
+      coverage AS (SELECT * FROM coverage_data WHERE covered = 1)
+    SELECT * FROM ranked r LEFT JOIN coverage c ON c.id = r.id`;
+    expect(extractTables(text, DEFAULT_DATA_ACCESS_CONFIG)).toEqual(['functions', 'coverage_data']);
+  });
 });

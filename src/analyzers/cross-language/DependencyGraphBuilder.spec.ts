@@ -163,10 +163,8 @@ describe('DependencyGraphBuilder rendered finding data (Spec 44 render)', () => 
     expect(cycles.some(c => c.path.includes('alpha → beta'))).toBe(true);
   });
 
-  it('renders hub node name + out-degree, and orphan names', async () => {
-    // hub has out-edges to 12 sinks → a hub (out-degree 12 ≫ the mean, which is
-    // ~1.9 once the sinks form a chain). deadcode is a private function with no
-    // edges and no name reference → orphaned.
+  it('renders orphan names', async () => {
+    // deadcode is a private function with no edges and no name reference → orphaned.
     const entities = [
       entity('hub', 'hub', { visibility: 'private' }),
       ...Array.from({ length: 12 }, (_, i) => entity(`s${i}`, `sink${i}`, { visibility: 'private' })),
@@ -174,19 +172,12 @@ describe('DependencyGraphBuilder rendered finding data (Spec 44 render)', () => 
     ];
     const references = [
       ...Array.from({ length: 12 }, (_, i) => ref('hub', `s${i}`)),
-      // sink0 → sink1 → … → sink11: every sink has out-degree 1, so the hub's
-      // out-degree 12 is a genuine outlier above 3×mean rather than the whole graph.
       ...Array.from({ length: 11 }, (_, i) => ref(`s${i}`, `s${i + 1}`)),
     ];
 
     const builder = new DependencyGraphBuilder({ includeTestFiles: false });
     const graph = await builder.buildGraph(entities, references);
     const health = await builder.analyzeDependencyHealth(graph);
-
-    const hub = health.issues.find(i => i.type === 'hub-nodes');
-    expect(hub).toBeDefined();
-    expect(hub!.description).toMatch(/hub \(12\)/);
-    expect(hub!.details).toEqual({ hubs: [{ id: 'hub', name: 'hub', outDegree: 12 }] });
 
     const orphan = health.issues.find(i => i.type === 'orphaned-nodes');
     expect(orphan).toBeDefined();

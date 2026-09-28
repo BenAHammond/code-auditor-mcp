@@ -77,23 +77,22 @@ function isUpsertForm(text: string): boolean {
     || /\bON\s+DUPLICATE\s+KEY\b/.test(upper);
 }
 
-/** True when a statement mutates or deletes existing rows (DELETE/UPDATE) — the
- *  TypeScript `unfiltered-query` mass-write set. INSERT is *not* a mass write:
- *  Spec 55 R5 / Spec 56 R1 made `unfiltered-query` about DELETE/UPDATE with no
- *  row-limiting clause, not about row-adding statements.
+/** True when a statement mass-mutates existing rows without a row-limiting
+ *  clause (`UPDATE … SET`) — the TypeScript `unfiltered-query` mass-write set.
+ *  `DELETE` is deliberately *not* a mass write here (Spec 68 disposition (a)): a
+ *  bare `DELETE FROM t` with no WHERE is whole-table maintenance (the clear-and-
+ *  rebuild idiom), not a missing-filter defect. INSERT is not a mass write
+ *  (row-adding) either (Spec 55 R5 / Spec 56 R1).
  *
- *  Statement-aware: a mass write is a *leading* `DELETE FROM` or `UPDATE … SET`
- *  clause. The bare `\bDELETE\b` / `\bUPDATE\b` word tests this once used misread
- *  the DDL trigger spellings `… AFTER DELETE ON t` / `… AFTER UPDATE ON t` inside
- *  a `CREATE TRIGGER` block as mass writes — the word DELETE/UPDATE sits in the
- *  trigger's event clause, not a statement. `DELETE FROM` (vs `DELETE ON`) and
- *  `UPDATE <table> SET` (vs `UPDATE ON`) name the DML verb, so the DDL case no
- *  longer matches; the camelCase `deleteFrom`/`updateTable` builder verbs are kept
- *  via their own spellings below. */
+ *  Statement-aware: a mass write is a *leading* `UPDATE <table> SET` clause. The
+ *  bare `\bUPDATE\b` word test this once used misread the DDL trigger spelling
+ *  `… AFTER UPDATE ON t` inside a `CREATE TRIGGER` block as a mass write — the
+ *  word sits in the trigger's event clause, not a statement. `UPDATE <table> SET`
+ *  (vs `UPDATE ON`) names the DML verb, so the DDL case no longer matches; the
+ *  camelCase `updateTable` builder verb is kept via its own spelling below. */
 function hasMassWriteVerb(text: string): boolean {
   const upper = text.toUpperCase();
-  return /\bDELETE\s+FROM\b/.test(upper) || /\bUPDATE\s+\S+\s+SET\b/.test(upper)
-    || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
+  return /\bUPDATE\s+\S+\s+SET\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
 }
 
 /** True when the statement adds rows (INSERT / REPLACE INTO). A row-adding
@@ -109,16 +108,18 @@ function isInsertForm(text: string): boolean {
 
 /** True when the call came from a Go file. The Go subprocess classified a write
  *  as INSERT/UPDATE/DELETE, so Go's `unfiltered-query` counts a filterless
- *  INSERT as a write; the TypeScript analyzer (Spec 55 R5 / Spec 56 R1) narrowed
- *  its write set to DELETE/UPDATE. Spec 68 §9 serves both from this one rule and
- *  preserves the Go corpus's pinned count, so the write set is format-aware. */
+ *  INSERT as a write; the TypeScript analyzer (Spec 55 R5 / Spec 56 R1, Spec 68
+ *  disposition (a)) narrowed its write set to UPDATE-only — a bare DELETE is
+ *  whole-table maintenance, not a missing filter. Spec 68 §9 serves both from
+ *  this one rule and preserves the Go corpus's pinned count, so the write set is
+ *  format-aware. */
 function isGoCall(call: ResolvedQuery): boolean {
   return call.file.endsWith('.go');
 }
 
 /** True when a call is an unfiltered write: a write verb with no filter, where
  *  the write set depends on the source format (Go: INSERT/UPDATE/DELETE;
- *  TypeScript: DELETE/UPDATE). Upsert forms are excluded by `isUpsertForm`. */
+ *  TypeScript: UPDATE only). Upsert forms are excluded by `isUpsertForm`. */
 function isUnfilteredWrite(call: ResolvedQuery): boolean {
   if (isUpsertForm(call.queryText)) return false;
   const isWrite = isGoCall(call)

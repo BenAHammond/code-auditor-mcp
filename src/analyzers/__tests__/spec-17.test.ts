@@ -376,8 +376,8 @@ describe('Spec-17 R5 — SOLID Analyzer', () => {
 // If tree-sitter ever renames its node types (as it did in Spec 08 with the
 // PascalCase→snake_case migration), these tests MUST fail. Without them,
 // isSignificantBlock / isStringLiteral / hasModificationPatterns /
-// checkLiskovSubstitution / checkDependencyInversion all silently match
-// nothing and produce zero findings — a green suite hiding a dead analyzer.
+// checkLiskovSubstitution all silently match nothing and produce zero
+// findings — a green suite hiding a dead analyzer.
 
 describe('Spec-17 R8 — Node-type regression guards', () => {
   const fixture = join(FIXTURES, 'node-type-regression.ts');
@@ -433,7 +433,7 @@ describe('Spec-17 R8 — Node-type regression guards', () => {
 
     function walk(node: ASTNode): void {
       // These are the exact node-type checks used in UniversalSOLIDAnalyzer
-      // hasModificationPatterns, checkLiskovSubstitution, checkDependencyInversion
+      // hasModificationPatterns, checkLiskovSubstitution
       if (node.type === 'switch_statement') found.add('switch_statement');
       if (node.type === 'binary_expression' &&
           adapter.getNodeText(node, src).includes('instanceof')) {

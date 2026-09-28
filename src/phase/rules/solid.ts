@@ -7,7 +7,7 @@
  * comparison. No AST, no adapter, no source code reaches a rule — the tree died
  * with the file.
  *
- * Nine TypeScript rules migrate here. The Go size rules are re-declared against
+ * Eight TypeScript rules migrate here. The Go size rules are re-declared against
  * the Go facts in §9: `struct-size` and `interface-size`'s Go arm read the
  * `type-declarations` fact (§9); `switch-size`, `function-size` and the Go
  * `liskov-substitution` read the §9 Go facts added in their own slices. The
@@ -183,7 +183,13 @@ function makeSizeRule(spec: {
   measure: (fn: FunctionLike) => number;
   messageFor: (fn: FunctionLike, max: number) => string;
   resolutionFor: (fn: FunctionLike) => Resolution;
+  /** Symbol-level exemptions, keyed by the function/method name, with the reason
+   *  each is exempt (recorded so an exemption is a reviewed decision, not a
+   *  silent skip). A name is unambiguous enough here: the size rules iterate the
+   *  whole corpus, so a collision would be caught in review. */
+  exemptions?: Readonly<Record<string, string>>;
 }): RuleDefinition<SolidNeeds> {
+  const exemptions = spec.exemptions ?? {};
   return {
     id: spec.id,
     analyzer: 'solid',
@@ -196,6 +202,7 @@ function makeSizeRule(spec: {
     samples: META[spec.id].samples,
     analyze(ctx): Finding[] {
       return collectOversizedFunctionLikes(ctx, spec.thresholdKey, spec.fallback, spec.measure)
+        .filter(({ fn }) => !(fn.name in exemptions))
         .map(({ fn, max }) => finding({
           ruleId: spec.id, severity: 'high', message: spec.messageFor(fn, max),
           file: fn.file, line: fn.line, column: fn.column, symbol: symbolOf(fn.name, fn.line, fn.column),
@@ -309,6 +316,38 @@ const methodComplexity: RuleDefinition<SolidNeeds> = {
 
 // ── solid/open-closed ───────────────────────────────────────────────────────
 
+/** The built-in error types an `extends` chain can terminate at. A class whose
+ *  `extends` resolves (transitively, against repo declarations) to one of these
+ *  is an error type, and an `instanceof` against it is a catch-dispatch guard,
+ *  not an extensibility (OCP) violation. */
+const BUILTIN_ERRORS = new Set([
+  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError',
+  'EvalError', 'URIError', 'AggregateError',
+]);
+
+/** True when `name` is an Error subclass, resolved transitively against the
+ *  corpus-wide class declarations. Resolution is unique-global (case-insensitive):
+ *  a name that matches zero or many classes does not resolve, so a missing or
+ *  ambiguous declaration is "not an error" and the `instanceof` still fires —
+ *  the conservative direction (a missing edge is safer than a fabricated one).
+ *  This is NOT a `/Error$/` name test: it walks the `extends` chain, so a
+ *  domain class whose name merely ends in "Error" does not pass, and an error
+ *  whose name does not (e.g. a custom `extends Error`) does. */
+function isErrorSubclass(name: string, classes: FileClassSymbol[]): boolean {
+  const seen = new Set<string>();
+  let current = name;
+  while (current) {
+    if (BUILTIN_ERRORS.has(current)) return true;
+    const key = current.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    const matches = classes.filter((c) => c.name.toLowerCase() === key);
+    if (matches.length !== 1) return false;
+    current = matches[0].extends ?? '';
+  }
+  return false;
+}
+
 const openClosed: RuleDefinition<SolidNeeds> = {
   id: 'solid/open-closed',
   analyzer: 'solid',
@@ -320,10 +359,16 @@ const openClosed: RuleDefinition<SolidNeeds> = {
   samples: META['solid/open-closed'].samples,
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
-    for (const s of visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds)) {
-      if (s.kind !== 'class') continue;
-      const cls = s as FileClassSymbol;
-      if (!cls.hasInstanceofAgainstUserType) continue;
+    const symbols = visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds);
+    const classes = symbols.filter((s): s is FileClassSymbol => s.kind === 'class');
+
+    for (const cls of classes) {
+      if (cls.instanceofTargets.length === 0) continue;
+      // An `instanceof` against an Error subclass is a catch-dispatch guard
+      // (resolve the target up its extends chain), not an OCP violation. Only a
+      // remaining domain type fires.
+      const domainTargets = cls.instanceofTargets.filter((t) => !isErrorSubclass(t, classes));
+      if (domainTargets.length === 0) continue;
       out.push(finding({
         ruleId: 'solid/open-closed', severity: 'high',
         message: `Class "${cls.name}" uses instanceof against a user-defined type. Consider composition or inheritance for extension.`,
@@ -400,6 +445,15 @@ const parameterCount = makeSizeRule({
     files: [fn.file],
     lines: [fn.line],
   }),
+  exemptions: {
+    // `accumulateBrandes` (src/graph/callGraph.ts) is the Brandes betweenness
+    // centrality inner loop — called once per BFS vertex inside `brandesExact` /
+    // `brandesSampled`. Its seven positional parameters are a hot-loop register
+    // allocation (stack/pred/sigma/delta/nodeIndex/bc/source), not a caller-facing
+    // API; re-packing them into an options object would allocate once per vertex
+    // iteration for no ergonomic gain. This is the one size-rule exemption.
+    accumulateBrandes: 'Brandes betweenness inner loop — 7 positional params are hot-loop register allocation, not a caller API',
+  },
 });
 
 // ── interface-size ──────────────────────────────────────────────────────────
@@ -599,45 +653,7 @@ const liskovSubstitution: RuleDefinition<SolidNeeds> = {
   },
 };
 
-// ── solid/dependency-inversion ──────────────────────────────────────────────
-
-/** True when a class name declares the class to be the *abstraction boundary*
- *  — the one place that is *supposed* to instantiate a concretion. An adapter
- *  wraps a concrete third-party library, a factory produces concrete products,
- *  a facade wraps a subsystem. Flagging these for `new`ing a concrete type is a
- *  false positive: the DI principle is satisfied because every *other* class
- *  depends on these abstractions, not on the concretions behind them. */
-function isAbstractionBoundary(name: string): boolean {
-  return /(?:Adapter|Factory|Facade|Face|Wrapper|Database|Driver)$/.test(name);
-}
-
-const dependencyInversion: RuleDefinition<SolidNeeds> = {
-  id: 'solid/dependency-inversion',
-  analyzer: 'solid',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
-  severity: 'high',
-  message: META['solid/dependency-inversion'].message,
-  docs: META['solid/dependency-inversion'].docs,
-  thresholds: META['solid/dependency-inversion'].thresholds,
-  samples: META['solid/dependency-inversion'].samples,
-  analyze(ctx): Finding[] {
-    const out: Finding[] = [];
-    for (const s of visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds)) {
-      if (s.kind !== 'class') continue;
-      const cls = s as FileClassSymbol;
-      if (!cls.hasHeldDirectInstantiation) continue;
-      if (isAbstractionBoundary(cls.name)) continue;
-      out.push(finding({
-        ruleId: 'solid/dependency-inversion', severity: 'high',
-        message: `Class "${cls.name}" directly instantiates a concrete dependency. Consider depending on abstractions.`,
-        file: cls.file, line: cls.line, column: cls.column, symbol: cls.name,
-      }));
-    }
-    return out;
-  },
-};
-
-/** The nine TypeScript SOLID rules plus the §9 Go re-declarations, in registry
+/** The eight TypeScript SOLID rules plus the §9 Go re-declarations, in registry
  *  order. The element type is the *union* of each rule's `RuleDefinition<N>`
  *  (not `any`) so the consumed-set check can recover the Go facts each declares;
  *  a slice runner that feeds one broad context casts at the call site. */
@@ -650,7 +666,6 @@ export const solidRules = [
   parameterCount,
   interfaceSize,
   liskovSubstitution,
-  dependencyInversion,
   structSize,
   functionSize,
   switchSize,

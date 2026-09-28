@@ -51,9 +51,9 @@ import { goRules } from './goRules.js';
  * re-emission (`table-naming-convention → schema-code`), matching the legacy
  * schema-code visitor's result key.
  *
- * The 8 dependency-graph rules (`circular-dependency`, `break-cycles`,
- * `tight-coupling`, `reduce-coupling`, `hub-nodes`, `split-responsibilities`,
- * `orphaned-nodes`, `review-orphans`) read the `cross-language-entities` fact
+ * The 6 dependency-graph rules (`circular-dependency`, `break-cycles`,
+ * `tight-coupling`, `reduce-coupling`, `orphaned-nodes`, `review-orphans`)
+ * read the `cross-language-entities` fact
  * through `DependencyGraphBuilder` — the same class the legacy Stage-4 reducer
  * ran — so their full-pipeline output is byte-for-byte the reducer's.
  *
@@ -63,12 +63,12 @@ import { goRules } from './goRules.js';
  * emits the `parameters`/`metadata.fields` they read, so they need no shape
  * enrichment.
  *
- * The 9th dependency-graph rule, `unreferenced-module` (file-level
+ * The 7th dependency-graph rule, `unreferenced-module` (file-level
  * imports/reachability — RENEW, §8), reads the `file-imports` + `reachability`
  * facts and lands as its own rule in `unreferencedModule.ts`.
  *
  * The remaining 74 land one fact kind at a time (§11.3), and the size drives
- * spec68-registry-size.spec.ts (0 → … → 100).
+ * spec68-registry-size.spec.ts (0 → … → 97).
  */
 export const MIGRATED_RULES = [
   ...solidRules,

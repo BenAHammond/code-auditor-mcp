@@ -142,9 +142,9 @@ export interface Needs {
  *
  * §3.2 vertical slice (this landing's first fact kind) migrates the SOLID
  * rules onto the `function`/`class`/`interface` arms; `concernGroups`,
- * `hasInstanceofAgainstUserType`, `hasHeldDirectInstantiation`, `throws` and
- * `aggregateComplexity` are the pre-computed signals those rules used to walk
- * the AST to obtain. `jsDoc` (the comment *text*, not a boolean) and
+ * `instanceofTargets`, `throws` and `aggregateComplexity` are the pre-computed
+ * signals those rules used to walk the AST to obtain. `jsDoc` (the comment
+ * *text*, not a boolean) and
  * `returnType` serve the documentation rules; the DRY / security / react rules
  * that currently declare `file-symbols` are re-declared against their own facts
  * in the "repeat for the other twelve" step, not served by this shape.
@@ -211,10 +211,9 @@ export type FileClassSymbol = {
   methodCount: number;
   /** Σ of method cyclomatic complexity (class-size's second threshold). */
   aggregateComplexity: number;
-  /** `instanceof` against a user-defined type anywhere in the class body. */
-  hasInstanceofAgainstUserType: boolean;
-  /** A held (non-escaping) `new Foo()` of a concrete type in the class body. */
-  hasHeldDirectInstantiation: boolean;
+  /** The non-builtin `instanceof` target names in the class body (open-closed
+   *  resolves these against repo declarations to skip Error subclasses). */
+  instanceofTargets: string[];
   methods: FileMethodSymbol[];
   /** JSDoc comment text, or null when absent (class-documentation reads it). */
   jsDoc: string | null;

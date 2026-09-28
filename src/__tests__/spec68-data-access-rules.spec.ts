@@ -88,17 +88,24 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
   });
 
   describe('unfiltered-query', () => {
-    it('flags a filterless DELETE as an unfiltered write', () => {
+    it('flags a filterless UPDATE as an unfiltered write', () => {
       const out = analyze('unfiltered-query', [
-        q({ queryText: 'DELETE FROM users', tables: ['users'], hasFilter: false, method: 'db.run' }),
+        q({ queryText: 'UPDATE users SET active = 0', tables: ['users'], hasFilter: false, method: 'db.run' }),
       ]);
       expect(out).toHaveLength(1);
       expect(out[0].message).toContain('Unfiltered write');
     });
 
-    it('stays quiet on a DELETE carrying a WHERE clause', () => {
+    it('stays quiet on an UPDATE carrying a WHERE clause', () => {
       const out = analyze('unfiltered-query', [
-        q({ queryText: 'DELETE FROM users WHERE id = ?', tables: ['users'], hasFilter: true }),
+        q({ queryText: 'UPDATE users SET active = 0 WHERE id = ?', tables: ['users'], hasFilter: true }),
+      ]);
+      expect(out).toEqual([]);
+    });
+
+    it('stays quiet on a bare DELETE — whole-table maintenance is exempt (Spec 68 disposition (a))', () => {
+      const out = analyze('unfiltered-query', [
+        q({ queryText: 'DELETE FROM users', tables: ['users'], hasFilter: false, method: 'db.run' }),
       ]);
       expect(out).toEqual([]);
     });
@@ -123,7 +130,7 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
 
     it('skips test/spec files (Spec 55 R3)', () => {
       const out = analyze('unfiltered-query', [
-        q({ queryText: 'DELETE FROM users', tables: ['users'], hasFilter: false, file: '/fixture/app.test.ts' }),
+        q({ queryText: 'UPDATE users SET active = 0', tables: ['users'], hasFilter: false, file: '/fixture/app.test.ts' }),
       ]);
       expect(out).toEqual([]);
     });

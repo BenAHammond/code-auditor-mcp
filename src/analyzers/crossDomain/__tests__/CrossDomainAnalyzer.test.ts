@@ -182,7 +182,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       expect(violations).toHaveLength(0);
     });
 
-    it('flags tables written via update/delete/create', async () => {
+    it('flags only data-flowing writes (update), not create/delete-only tables', async () => {
       const projectRoot = '/test/project';
       seedSchemaUsage(db, [
         {
@@ -216,10 +216,14 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       const violations = result.violations.filter(
         v => v.rule === 'cross-domain/written-never-read',
       );
-      // All three tables are written but never read
-      expect(violations).toHaveLength(3);
+      // Only `queue` (update) qualifies: written-never-read requires at least
+      // one insert/update ("data flows in") usage. `archive` (delete-only) and
+      // `metrics` (create-only) have no visible data inflow — their insert/select
+      // live in an out-of-scope receiver or dynamic SQL — so they are not dead
+      // write paths and must not fire.
+      expect(violations).toHaveLength(1);
       const tables = violations.map(v => v.message.match(/Table '([^']+)'/)?.[1]).sort();
-      expect(tables).toEqual(['archive', 'metrics', 'queue']);
+      expect(tables).toEqual(['queue']);
     });
 
     it('deduplicates multiple writes to the same table', async () => {

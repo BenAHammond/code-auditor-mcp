@@ -86,15 +86,14 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
   //                  (eager .run() per row) MUST fire loop-query.
   //   upsert.ts      R2 — `INSERT … ON CONFLICT DO UPDATE` is a write keyed by
   //                  its conflict target, NOT an unfiltered write.
-  //   escapes.ts     dependency-inversion — `throw new AppError(...)` and
-  //                  `return new QueryBuilder(this)` are escaping value types,
-  //                  NOT held collaborators.
+  //   escapes.ts     (dependency-inversion removed in Spec 68 — the file now
+  //                  only exercises the unconditional documentation rules.)
   //
   // The two declared findings are the positive control (`loop-query`) and one
   // accurate cross-cutting fact: `users` is written (INSERT/UPDATE/ON CONFLICT)
   // but never read, so `written-never-read` fires. Everything else stays silent
   // — no loop-query on the batched/Promise.all constructions, no unfiltered-query
-  // on the upsert, no dependency-inversion on the escapes.
+  // on the upsert.
   // ─────────────────────────────────────────────────────────────────────
   describe('d1-workers', () => {
     it('fires only the eager-N+1 control and the never-read write', async () => {
@@ -133,7 +132,7 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
   // lifecycle finding fires.
   // ─────────────────────────────────────────────────────────────────────
   describe('crowd-answer-game', () => {
-    it('fires only the bare-DELETE unfiltered write', async () => {
+    it('fires only the bare-UPDATE unfiltered write', async () => {
       await expectCompleteSet('crowd-answer-game', [
         'data-access::unfiltered-query@src/writes.ts:21',
         'documentation::return-documentation@src/db.ts:18',

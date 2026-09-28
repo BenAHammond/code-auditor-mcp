@@ -1,7 +1,7 @@
 /**
  * Spec 68 §3.2 — the dependency-graph rules, migrated to `analyze(ctx)`.
  *
- * The eight rules here read the `cross-language-entities` fact (a flat array of
+ * The six rules here read the `cross-language-entities` fact (a flat array of
  * `Entity`) and reduce it through `DependencyGraphBuilder` — the same pure class
  * the legacy Stage-4 reducer ran. The reducer (`createDependencyGraphReducer`
  * in pipelineAdapters.ts) already took `entities` + built references + called
@@ -12,7 +12,6 @@
  *   issue type        → rule                suggestion type     → rule
  *   circular-dependency → circular-dependency  break-cycles        → break-cycles
  *   tight-coupling    → tight-coupling        reduce-coupling     → reduce-coupling
- *   hub-nodes         → hub-nodes             split-responsibilities → split-responsibilities
  *   orphaned-nodes    → orphaned-nodes        review-orphans      → review-orphans
  *
  * Each rule re-derives the graph from the fact (the phase model hands every
@@ -26,7 +25,7 @@
  * in §15. `DependencyGraphBuilder` itself survives §15 — it imports no analyzer
  * class and no pipeline, so the rules import it directly.
  *
- * The ninth dependency-graph rule, `unreferenced-module`, is not here: it reads
+ * The seventh dependency-graph rule, `unreferenced-module`, is not here: it reads
  * the file-level `imports`/`hasExports` half of the cross-language visitor, a
  * `file-imports` fact the current producer does not emit (RENEW — lands with
  * §8's reachability fact). The 3 schema-validator rules (`schema-field-mismatch`,
@@ -44,7 +43,7 @@ import {
 } from '../../analyzers/cross-language/DependencyGraphBuilder.js';
 import type { CrossLanguageEntity, CrossReference } from '../../types/crossLanguage.js';
 
-/** The shared declaration for the eight dependency-graph rules. */
+/** The shared declaration for the six dependency-graph rules. */
 type DependencyGraphNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript', 'go'];
   readonly facts: readonly ['cross-language-entities'];
@@ -56,7 +55,6 @@ const META = RULE_REGISTRY;
 const SUGGESTION_SEVERITY: Record<DependencySuggestion['type'], Severity> = {
   'break-cycles': 'severe',
   'reduce-coupling': 'high',
-  'split-responsibilities': 'high',
   'review-orphans': 'severe',
 };
 
@@ -215,42 +213,6 @@ const tightCoupling: RuleDefinition<DependencyGraphNeeds> = {
   },
 };
 
-// ── hub-nodes ────────────────────────────────────────────────────────────────
-
-const hubNodes: RuleDefinition<DependencyGraphNeeds> = {
-  id: 'hub-nodes',
-  analyzer: 'dependency-graph',
-  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
-  severity: 'high',
-  message: META['hub-nodes'].message,
-  docs: META['hub-nodes'].docs,
-  thresholds: META['hub-nodes'].thresholds,
-  samples: META['hub-nodes'].samples,
-  async analyze(ctx): Promise<Finding[]> {
-    const { issues, idToEntity } = await computeGraph(ctx.facts['cross-language-entities']);
-    const out: Finding[] = [];
-    for (const issue of issues) {
-      if (issue.type !== 'hub-nodes') continue;
-      const hubs = Array.isArray(issue.details?.hubs)
-        ? (issue.details.hubs as Array<{ id: string; name: string; outDegree: number }>)
-        : [];
-      for (const hub of hubs) {
-        const entity = idToEntity.get(hub.id);
-        if (!entity) continue;
-        out.push({
-          ruleId: 'hub-nodes',
-          severity: issue.severity,
-          message: `Hub node "${hub.name}" has ${hub.outDegree} dependencies.`,
-          file: entity.file,
-          line: entity.startLine,
-          symbol: hub.name,
-        });
-      }
-    }
-    return out;
-  },
-};
-
 // ── orphaned-nodes ───────────────────────────────────────────────────────────
 
 const orphanedNodes: RuleDefinition<DependencyGraphNeeds> = {
@@ -316,22 +278,6 @@ const reduceCoupling: RuleDefinition<DependencyGraphNeeds> = {
   },
 };
 
-// ── split-responsibilities ───────────────────────────────────────────────────
-
-const splitResponsibilities: RuleDefinition<DependencyGraphNeeds> = {
-  id: 'split-responsibilities',
-  analyzer: 'dependency-graph',
-  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['cross-language-entities'] },
-  severity: 'high',
-  message: META['split-responsibilities'].message,
-  docs: META['split-responsibilities'].docs,
-  thresholds: META['split-responsibilities'].thresholds,
-  samples: META['split-responsibilities'].samples,
-  async analyze(ctx): Promise<Finding[]> {
-    return suggestionToFindings(ctx.facts['cross-language-entities'], 'split-responsibilities', 'split-responsibilities');
-  },
-};
-
 // ── review-orphans ───────────────────────────────────────────────────────────
 
 const reviewOrphans: RuleDefinition<DependencyGraphNeeds> = {
@@ -348,14 +294,12 @@ const reviewOrphans: RuleDefinition<DependencyGraphNeeds> = {
   },
 };
 
-/** The eight dependency-graph rules this slice migrates, in registry order. */
+/** The six dependency-graph rules this slice migrates, in registry order. */
 export const dependencyGraphRules: readonly RuleDefinition<DependencyGraphNeeds>[] = [
   circularDependency,
   breakCycles,
   tightCoupling,
   reduceCoupling,
-  hubNodes,
-  splitResponsibilities,
   orphanedNodes,
   reviewOrphans,
 ];

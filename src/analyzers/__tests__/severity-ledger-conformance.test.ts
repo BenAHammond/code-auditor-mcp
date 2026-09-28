@@ -211,11 +211,11 @@ function extractFindingCalls(src: string): Array<{ rule: string; severity: Sever
   return out;
 }
 
-/** HEALTH_SEVERITY map — the four dependency-graph action rules whose severity
+/** HEALTH_SEVERITY map — the three dependency-graph action rules whose severity
  *  lives only in the pipeline reducer, not the builder. */
 function extractHealthSeverity(src: string): Array<{ rule: string; severity: Severity }> {
   const out: Array<{ rule: string; severity: Severity }> = [];
-  const re = /['"](break-cycles|reduce-coupling|split-responsibilities|review-orphans)['"]:\s*['"](severe|high)['"]/g;
+  const re = /['"](break-cycles|reduce-coupling|review-orphans)['"]:\s*['"](severe|high)['"]/g;
   for (let m; (m = re.exec(src)); ) out.push({ rule: m[1], severity: m[2] as Severity });
   return out;
 }

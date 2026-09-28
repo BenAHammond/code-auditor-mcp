@@ -5,12 +5,14 @@
  * on full-set reads (`SELECT … FROM totals`, `SELECT DISTINCT … FROM leaderboard`)
  * as false positives: a query with no WHERE is not inherently a defect — loading
  * a full working set is often the intended design. The genuine foot-gun is an
- * unfiltered *write*: `DELETE FROM t` or `UPDATE t SET …` with no row-limiting
- * clause mutates or deletes every row.
+ * unfiltered *write*: `UPDATE t SET …` with no row-limiting clause mutates
+ * every row.
  *
- * The honest contract: `unfiltered-query` fires on a DELETE/UPDATE with no
- * WHERE (carrying a real predicate), HAVING, or LIMIT. Unfiltered reads are out
- * of scope. This supersedes the Spec-49 "unfiltered read" contract.
+ * The honest contract: `unfiltered-query` fires on an UPDATE with no WHERE
+ * (carrying a real predicate), HAVING, or LIMIT. A bare `DELETE FROM t` with no
+ * WHERE is whole-table maintenance (the clear-and-rebuild idiom) and is exempt
+ * (Spec 68 disposition (a)). Unfiltered reads are out of scope. This supersedes
+ * the Spec-49 "unfiltered read" contract.
  *
  * These tests run the real `UniversalDataAccessAnalyzer` via `analyzeAST`.
  */
@@ -47,7 +49,7 @@ async function unfilteredViolations(code: string, name: string): Promise<any[]> 
   return vs.filter((v) => v.rule === 'unfiltered-query');
 }
 
-/** An unfiltered DELETE — deletes every row, the foot-gun. */
+/** A bare DELETE — whole-table maintenance, exempt (Spec 68 disposition (a)). */
 const DELETE_ALL = `import { db } from './db';
 export function nuke() {
   return db.exec("DELETE FROM users");
@@ -115,7 +117,7 @@ export function mysqlUpsert(id: number, value: number) {
 }
 `;
 
-/** Kysely builder-chain unfiltered DELETE — `db.deleteFrom('users').execute()`. */
+/** Kysely builder-chain bare DELETE — `db.deleteFrom('users').execute()`, exempt (disposition (a)). */
 const KYSELY_DELETE_ALL = `import { Kysely } from 'kysely';
 const db = new Kysely<{ users: { id: number } }>({} as any);
 export function nuke() {
@@ -131,10 +133,10 @@ export function one(id: string) {
 }
 `;
 
-describe('unfiltered-query — an unfiltered write (DELETE/UPDATE with no WHERE/HAVING/LIMIT)', () => {
-  it('flags an unfiltered DELETE (positive)', async () => {
+describe('unfiltered-query — an unfiltered write (UPDATE with no WHERE/HAVING/LIMIT)', () => {
+  it('does NOT flag a bare DELETE — whole-table maintenance is exempt (disposition (a))', async () => {
     const vs = await unfilteredViolations(DELETE_ALL, 'delete-all');
-    expect(vs.length).toBeGreaterThanOrEqual(1);
+    expect(vs).toHaveLength(0);
   });
 
   it('flags an unfiltered UPDATE (positive)', async () => {
@@ -142,9 +144,9 @@ describe('unfiltered-query — an unfiltered write (DELETE/UPDATE with no WHERE/
     expect(vs.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('flags a Kysely builder-chain unfiltered DELETE (deleteFrom + execute)', async () => {
+  it('does NOT flag a Kysely builder-chain bare DELETE (deleteFrom + execute) — exempt (disposition (a))', async () => {
     const vs = await unfilteredViolations(KYSELY_DELETE_ALL, 'kysely-delete-all');
-    expect(vs.length).toBeGreaterThanOrEqual(1);
+    expect(vs).toHaveLength(0);
   });
 
   it('does NOT flag a Kysely builder-chain filtered DELETE (near-miss)', async () => {

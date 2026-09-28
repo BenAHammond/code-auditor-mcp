@@ -95,12 +95,12 @@ describe('Spec 68 data-access parity (new analyze(ctx) === old UniversalDataAcce
     expect(nu.length).toBeGreaterThan(0);
   });
 
-  it('unfiltered-query (filterless DELETE)', async () => {
+  it('unfiltered-query (filterless UPDATE)', async () => {
     const { old, nu } = await parity(
       'unfiltered-query',
       'import { db } from "./db";\n' +
       'export function nuke() {\n' +
-      '  return db.exec("DELETE FROM users");\n' +
+      '  return db.exec("UPDATE users SET active = 0");\n' +
       '}\n',
     );
     expect(nu).toEqual(old);

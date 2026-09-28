@@ -5,7 +5,7 @@
  * `unfiltered-query` targeting reads instead of writes. The rule now fires on an
  * unfiltered *write* (DELETE/UPDATE with no WHERE/HAVING/LIMIT), not a read.
  *
- *  - `purgeOrders` — bare DELETE, no row-limiting clause → **unfiltered-query**
+ *  - `purgeOrders` — bare UPDATE, no row-limiting clause → **unfiltered-query**
  *    (positive control).
  *  - `shipOrder`   — UPDATE scoped by `WHERE id = ?` → **no** unfiltered-query.
  *
@@ -15,10 +15,10 @@
  */
 import { getDB } from './db';
 
-/** Bare DELETE — deletes every row, the foot-gun. Expected: unfiltered-query. */
+/** Bare UPDATE — mutates every row, the foot-gun. Expected: unfiltered-query. */
 export function purgeOrders(): void {
   const db = getDB();
-  db.exec(`DELETE FROM orders`);
+  db.exec(`UPDATE orders SET purged = 1`);
 }
 
 /** Filtered UPDATE — WHERE scopes the mutation. Expected: no unfiltered-query. */

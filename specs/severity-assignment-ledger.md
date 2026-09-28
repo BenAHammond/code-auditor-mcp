@@ -73,7 +73,7 @@ emit-site severity`, because that is what the tool actually reports today.
 
 Emit-site severities come from `UniversalSOLIDAnalyzer.ts` (TS rules) and
 `src/languages/go/analyzer-src/solid.go` (Go rules). Effective severities fold in
-`severityOverrides` (`solid/class-size`→warning, `solid/dependency-inversion`→warning).
+`severityOverrides` (`solid/class-size`→warning).
 
 | Rule | Current (effective) | New level | Reason | Disagrees |
 |---|---|---|---|---|
@@ -85,7 +85,6 @@ Emit-site severities come from `UniversalSOLIDAnalyzer.ts` (TS rules) and
 | `parameter-count` | warning | high | Too many parameters is off-scale — anchored high. | yes |
 | `interface-size` | warning | high | Oversized interface is off-scale — anchored high. | yes |
 | `solid/liskov-substitution` | suggestion | severe | Override throws where the base does not — a contract break that surfaces at runtime. | yes |
-| `solid/dependency-inversion` | warning | high | High-level coupling to a low-level detail is architectural debt that has not bitten. | yes |
 | `switch-size` | suggestion | high | Oversized switch is off-scale — anchored high. | no |
 | `function-size` | warning | high | Go function off-scale size — anchored high. | yes |
 | `struct-size` | warning | high | Go struct off-scale size — anchored high. | yes |
@@ -239,8 +238,6 @@ finding, same level.
 | `break-cycles` | warning | severe | The action form of `circular-dependency`; same finding. | no |
 | `tight-coupling` | warning | high | Tight coupling is design debt that has not bitten. | yes |
 | `reduce-coupling` | warning | high | The action form of `tight-coupling`; same finding. | yes |
-| `hub-nodes` | warning | high | A hub node is a maintainability smell that has not bitten. | yes |
-| `split-responsibilities` | warning | high | The action form of `hub-nodes`; same finding. | yes |
 | `orphaned-nodes` | suggestion | severe | A node nothing connects to is dead code — same class as `unreferenced-module`. | yes |
 | `review-orphans` | suggestion | severe | The action form of `orphaned-nodes`; same finding. | yes |
 | `unreferenced-module` | warning | severe | A module nothing imports is dead code — anchored severe. | no |

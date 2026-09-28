@@ -280,37 +280,6 @@ class DependencyGraphBuilderCore {
   }
 
   /**
-   * Find hub nodes with too many dependencies.
-   *
-   * Returns each hub together with its out-degree so the reducer can render the
-   * degree in the finding — the previous signature dropped it, forcing the
-   * message to read "Found N hub nodes" with no way to see which node or how
-   * dependent it was.
-   */
-  protected findHubNodes(graph: DependencyGraph): Array<{ node: DependencyNode; outDegree: number }> {
-    const outDegree = new Map<string, number>();
-
-    for (const edge of graph.edges) {
-      outDegree.set(edge.from, (outDegree.get(edge.from) || 0) + 1);
-    }
-
-    // Derive the hub threshold from the actual out-degree distribution rather
-    // than a fixed fraction of corpus size. The old `max(5, N×0.1)` required
-    // >830 outgoing edges on an ~8306-node corpus — effectively unreachable, so
-    // hub-nodes could never fire (and when it did, only via name collisions).
-    // A hub is an outlier: out-degree above a small multiple of the mean.
-    const degrees = [...outDegree.values()];
-    const mean = degrees.length
-      ? degrees.reduce((sum, d) => sum + d, 0) / degrees.length
-      : 0;
-    const threshold = Math.max(10, Math.ceil(mean * 3));
-
-    return graph.nodes
-      .map(node => ({ node, outDegree: outDegree.get(node.id) || 0 }))
-      .filter(({ outDegree: d }) => d > threshold);
-  }
-
-  /**
    * Find orphaned nodes with no dependencies.
    *
    * A node is only genuinely orphaned when all three hold: it has no edges in
@@ -698,7 +667,6 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
 
     this.recordCycleCheck(sink, graph, idToName);
     this.recordClusterCheck(sink, graph, idToName);
-    this.recordHubCheck(sink, graph);
     this.recordOrphanCheck(sink, graph);
 
     return {
@@ -736,21 +704,6 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
       implementation: 'Extract common interfaces and use dependency injection',
       details: {
         clusters: clusters.map(c => ({ nodes: c.nodes, coupling: c.coupling })),
-      },
-    });
-  }
-
-  /** Record the hub-node check. */
-  private recordHubCheck(sink: CheckSink, graph: DependencyGraph): void {
-    const hubNodes = this.findHubNodes(graph);
-    this.recordCheck(sink, hubNodes.length, hubNodes.map(h => h.node.id), {
-      issueType: 'hub-nodes', severity: 'high', impact: 'medium',
-      issueDesc: () => hubNodes.map(h => `${h.node.name} (${h.outDegree})`).join(', '),
-      suggestionType: 'split-responsibilities', priority: 'medium',
-      suggestionDesc: 'Split large modules to reduce their dependency burden',
-      implementation: 'Apply Single Responsibility Principle to break down large modules',
-      details: {
-        hubs: hubNodes.map(h => ({ id: h.node.id, name: h.node.name, outDegree: h.outDegree })),
       },
     });
   }
@@ -875,17 +828,17 @@ interface ReferenceIndex {
 }
 
 export interface DependencyIssue {
-  type: 'circular-dependency' | 'tight-coupling' | 'hub-nodes' | 'orphaned-nodes';
+  type: 'circular-dependency' | 'tight-coupling' | 'orphaned-nodes';
   severity: 'critical' | 'severe' | 'high';
   description: string;
   affectedNodes: string[];
   impact: 'high' | 'medium' | 'low';
-  /** Structured resolution data (cycle paths, cluster coupling, hub degrees, orphan names). */
+  /** Structured resolution data (cycle paths, cluster coupling, orphan names). */
   details?: Record<string, unknown>;
 }
 
 export interface DependencySuggestion {
-  type: 'break-cycles' | 'reduce-coupling' | 'split-responsibilities' | 'review-orphans';
+  type: 'break-cycles' | 'reduce-coupling' | 'review-orphans';
   priority: 'high' | 'medium' | 'low';
   description: string;
   implementation: string;

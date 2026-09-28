@@ -92,9 +92,9 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
   // `written-never-read`. The context-aware FROM no longer does.
   // ─────────────────────────────────────────────────────────────────────
   describe('data-access', () => {
-    it('fires exactly the N+1, the bare DELETE, and the never-read write', async () => {
+    it('fires exactly the N+1, the bare UPDATE, and the never-read write', async () => {
       await expectCompleteSet('data-access', [
-        'cross-domain::cross-domain/written-never-read@src/mixed.ts:38',
+        'cross-domain::cross-domain/written-never-read@src/mixed.ts:22',
         'data-access::loop-query@src/mixed.ts:31',
         'data-access::unfiltered-query@src/mixed.ts:38',
         'documentation::parameter-documentation@src/mixed.ts:18',
@@ -105,17 +105,17 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  // 2. Class structure — five SOLID constructs stacked in one file.
+  // 2. Class structure — four SOLID constructs stacked in one file.
   //
   // Target rules: class-size (god class), liskov-substitution (override that
   // throws where the parent does not), open-closed (instanceof a user type
-  // inside a class method), dependency-inversion (concrete `new` held), and
-  // parameter-count (seven params). §10 made parameter-documentation and
-  // return-documentation unconditional, so the members' JSDoc (descriptions
-  // only, no exhaustive @param/@returns tags) now also fires those two rules.
+  // inside a class method), and parameter-count (seven params). §10 made
+  // parameter-documentation and return-documentation unconditional, so the
+  // members' JSDoc (descriptions only, no exhaustive @param/@returns tags)
+  // now also fires those two rules.
   // ─────────────────────────────────────────────────────────────────────
   describe('class-structure', () => {
-    it('fires the five SOLID rules and the now-unconditional documentation rules', async () => {
+    it('fires the four SOLID rules and the now-unconditional documentation rules', async () => {
       await expectCompleteSet('class-structure', [
         'documentation::parameter-documentation@src/classes.ts:27',
         'documentation::parameter-documentation@src/classes.ts:64',
@@ -129,7 +129,6 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
         'documentation::return-documentation@src/classes.ts:27',
         'documentation::return-documentation@src/classes.ts:64',
         'solid::solid/liskov-substitution@src/classes.ts:27',
-        'solid::solid/dependency-inversion@src/classes.ts:41',
         'solid::solid/open-closed@src/classes.ts:62',
         'solid::parameter-count@src/classes.ts:73',
         'solid::solid/class-size@src/classes.ts:86',

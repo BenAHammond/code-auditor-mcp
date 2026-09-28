@@ -138,9 +138,9 @@ describe('registry ↔ ledger membership', () => {
     return [...ledger].filter((id) => !registry.has(toRegistryId(id))).sort();
   }
 
-  it('parses the full registry (100) and both ledgers', () => {
-    expect(registry.size).toBe(100);
-    expect(auth.size).toBeGreaterThanOrEqual(90);
+  it('parses the full registry (97) and both ledgers', () => {
+    expect(registry.size).toBe(97);
+    expect(auth.size).toBeGreaterThanOrEqual(87);
     expect(severity.size).toBeGreaterThanOrEqual(100);
   });
 

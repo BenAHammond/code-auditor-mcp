@@ -8,8 +8,8 @@
  * file produces nothing.
  *
  * Size rules are exercised with tightened thresholds so the fixtures stay
- * short; the structural rules (open-closed, single-responsibility, Liskov,
- * dependency-inversion) use the real defaults, since they have no tunable knob.
+ * short; the structural rules (open-closed, single-responsibility, Liskov)
+ * use the real defaults, since they have no tunable knob.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -100,12 +100,5 @@ describe('Spec 68 §3.2 vertical slice', () => {
     const f = findings.find((x) => x.ruleId === 'solid/liskov-substitution')!;
     expect(f.severity).toBe('severe');
     expect(f.symbol).toBe('Ostrich.fly');
-  });
-
-  it('solid/dependency-inversion fires when a class holds a concrete dependency', async () => {
-    const findings = await runFileSymbolsSlice([
-      ts('class Service {\n  constructor() { this.repo = new PostgresRepo(); }\n}\n'),
-    ]);
-    expect(findings.map((f) => f.ruleId)).toContain('solid/dependency-inversion');
   });
 });

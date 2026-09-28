@@ -12,8 +12,8 @@
  * path is deleted only after this test goes green.
  *
  * Size rules use tightened thresholds so the fixtures stay short; structural
- * rules (open-closed, single-responsibility, Liskov, dependency-inversion) use
- * their defaults (no tunable knob).
+ * rules (open-closed, single-responsibility, Liskov) use their defaults (no
+ * tunable knob).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -65,7 +65,7 @@ async function parity(ruleId: string, source: string, config: ThresholdValues) {
 const RULE_IDS = solidRules.map((r) => r.id);
 
 describe('Spec 68 SOLID parity (new analyze(ctx) === old UniversalSOLIDAnalyzer)', () => {
-  it('covers exactly the thirteen SOLID rules in registry order', () => {
+  it('covers exactly the twelve SOLID rules in registry order', () => {
     expect(RULE_IDS).toEqual([
       'solid/class-size',
       'solid/method-complexity',
@@ -75,7 +75,6 @@ describe('Spec 68 SOLID parity (new analyze(ctx) === old UniversalSOLIDAnalyzer)
       'parameter-count',
       'interface-size',
       'solid/liskov-substitution',
-      'solid/dependency-inversion',
       'struct-size',
       'function-size',
       'switch-size',
@@ -171,34 +170,5 @@ describe('Spec 68 SOLID parity (new analyze(ctx) === old UniversalSOLIDAnalyzer)
     );
     expect(nu).toEqual(old);
     expect(nu.length).toBeGreaterThan(0);
-  });
-
-  it('solid/dependency-inversion (held concrete dependency)', async () => {
-    const { old, nu } = await parity(
-      'solid/dependency-inversion',
-      'class Service {\n  constructor() { this.repo = new PostgresRepo(); }\n}\n',
-      {},
-    );
-    expect(nu).toEqual(old);
-    expect(nu.length).toBeGreaterThan(0);
-  });
-
-  it('solid/dependency-inversion skips the abstraction boundary (adapter/factory/facade)', async () => {
-    // A class whose name declares it the abstraction boundary is the *correct*
-    // place to instantiate a concretion — not a DI violation. Only `Service`
-    // (a plain consumer) should fire. The legacy analyzer still flags all four,
-    // so this pins the phase rule's precision fix directly (no parity()).
-    const fresh = await runFileSymbolsSlice([{
-      path: 'di.ts',
-      content: [
-        'class PostgresAdapter { constructor() { this.db = new DatabaseCtor(); } }',
-        'class ConfigFactory { make() { return new Widget(); } }',
-        'class LspFace { constructor() { this.docs = new TextDocuments(); } }',
-        'class Service { constructor() { this.repo = new PostgresRepo(); } }',
-        '',
-      ].join('\n'),
-    }], {});
-    const fired = fresh.filter((f) => f.ruleId === 'solid/dependency-inversion').map((f) => f.symbol);
-    expect(fired).toEqual(['Service']);
   });
 });

@@ -222,7 +222,6 @@ const RUNNERS: Record<string, Runner> = {
   'parameter-count': runSolid,
   'interface-size': runSolid,
   'solid/liskov-substitution': runSolid,
-  'solid/dependency-inversion': runSolid,
   // dry
   // dry/diverging-clone is cross-run (dry_pair_history) — classified in SKIP_RULES below.
   'dry/duplicate': runDry,
@@ -408,15 +407,13 @@ const LIVENESS_POINTERS: Record<string, string> = {
   'missing-field': 'cross-language/missingField.spec.ts — required value-type field absent fires',
   'extra-field': 'cross-language/SchemaValidator.spec.ts — extra field fires',
 
-  // ── dependency-graph (9) ───────────────────────────────────────────────────
+  // ── dependency-graph (7) ───────────────────────────────────────────────────
   'circular-dependency': 'DependencyGraphBuilder.spec.ts — renders a 2-cycle path',
   'tight-coupling': 'DependencyGraphBuilder.spec.ts — flags a 3-node mutually-calling cluster',
-  'hub-nodes': 'DependencyGraphBuilder.spec.ts — flags a 12-out-degree hub',
   'orphaned-nodes': 'DependencyGraphBuilder.spec.ts + pipelineAdapters.reachability.spec.ts — flags a private unreferenced node',
   'unreferenced-module': 'pipelineAdapters.reachability.spec.ts — flags an exported-but-unimported file',
   'break-cycles': 'UNCOVERED — emitted as advisory suggestionType, not a gating violation; no test asserts it',
   'reduce-coupling': 'UNCOVERED — emitted as advisory suggestionType, not a gating violation; no test asserts it',
-  'split-responsibilities': 'UNCOVERED — emitted as advisory suggestionType, not a gating violation; no test asserts it',
   'review-orphans': 'UNCOVERED — emitted as advisory suggestionType, not a gating violation; no test asserts it',
 
   // ── styles (9) ─────────────────────────────────────────────────────────────

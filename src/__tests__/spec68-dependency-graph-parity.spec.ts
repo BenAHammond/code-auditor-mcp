@@ -11,13 +11,9 @@
  * that lets §15 delete the reducer without losing the golden reference.
  *
  * The fixture is a two-file cycle (foo ⇄ bar) plus one unexported dead function
- * (`orphan`). That reliably fires the six of the eight rules that a small
- * graph can reach — circular-dependency/break-cycles (the cycle),
- * tight-coupling/reduce-coupling (both files share the `cycle` cluster at
- * cohesion 1.0), orphaned-nodes/review-orphans (the dead function). hub-nodes
- * and split-responsibilities need an out-degree outlier (>10 on a tiny graph)
- * and are intentionally not exercised here; the full-multiset equality still
- * pins their empty-vs-empty case.
+ * (`orphan`). That reliably fires all six rules — circular-dependency/break-cycles
+ * (the cycle), tight-coupling/reduce-coupling (both files share the `cycle`
+ * cluster at cohesion 1.0), orphaned-nodes/review-orphans (the dead function).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -84,14 +80,12 @@ function buildFacts() {
 }
 
 describe('Spec 68 dependency-graph parity (new analyze(ctx) === old reducer)', () => {
-  it('covers exactly the eight migrated dependency-graph rules', () => {
+  it('covers exactly the six migrated dependency-graph rules', () => {
     expect(dependencyGraphRules.map((r) => r.id)).toEqual([
       'circular-dependency',
       'break-cycles',
       'tight-coupling',
       'reduce-coupling',
-      'hub-nodes',
-      'split-responsibilities',
       'orphaned-nodes',
       'review-orphans',
     ]);
