@@ -12,6 +12,14 @@ import type {
   ProjectTaskStatus
 } from '../types/projectTask.js';
 
+const TASKS_REQUEST_ABORTED = 'tasks request aborted';
+
+function taskNotFound(taskId: string): string {
+  return `Task not found: ${taskId}`;
+}
+
+
+
 const inFlightReadOps = new Map<string, Promise<unknown>>();
 
 function buildReadDedupKey(
@@ -115,7 +123,7 @@ export async function handleProjectTasks(
   options?: { signal?: AbortSignal }
 ) {
   if (options?.signal?.aborted) {
-    throw new Error('tasks request aborted');
+    throw new Error(TASKS_REQUEST_ABORTED);
   }
   const action = String(args.action ?? '')
     .toLowerCase()
@@ -127,7 +135,7 @@ export async function handleProjectTasks(
     switch (action) {
       case 'list': {
         if (options?.signal?.aborted) {
-          throw new Error('tasks request aborted');
+          throw new Error(TASKS_REQUEST_ABORTED);
         }
         const { projectPath, projectPathDefaulted } = resolveProjectPathForTasks(args);
         const dedupKey = buildReadDedupKey(action, args, projectPath);
@@ -146,7 +154,7 @@ export async function handleProjectTasks(
       }
       case 'list_tree': {
         if (options?.signal?.aborted) {
-          throw new Error('tasks request aborted');
+          throw new Error(TASKS_REQUEST_ABORTED);
         }
         const { projectPath, projectPathDefaulted } = resolveProjectPathForTasks(args);
         const listOptions = parseListTaskOptions(args);
@@ -164,7 +172,7 @@ export async function handleProjectTasks(
       }
       case 'create': {
         if (options?.signal?.aborted) {
-          throw new Error('tasks request aborted');
+          throw new Error(TASKS_REQUEST_ABORTED);
         }
         const { projectPath, projectPathDefaulted } = resolveProjectPathForTasks(args);
         const title =
@@ -209,7 +217,7 @@ export async function handleProjectTasks(
       }
       case 'get': {
         if (options?.signal?.aborted) {
-          throw new Error('tasks request aborted');
+          throw new Error(TASKS_REQUEST_ABORTED);
         }
         const taskId = args.taskId as string | undefined;
         if (!taskId) {
@@ -218,13 +226,13 @@ export async function handleProjectTasks(
         const dedupKey = buildReadDedupKey(action, args);
         const task = await withReadDedup(dedupKey, () => db.getProjectTask(taskId));
         if (!task) {
-          return { success: false, error: `Task not found: ${taskId}` };
+          return { success: false, error: taskNotFound(taskId) };
         }
         return { success: true, task };
       }
       case 'update': {
         if (options?.signal?.aborted) {
-          throw new Error('tasks request aborted');
+          throw new Error(TASKS_REQUEST_ABORTED);
         }
         const taskId = args.taskId as string | undefined;
         if (!taskId) {
@@ -232,13 +240,13 @@ export async function handleProjectTasks(
         }
         const task = await db.updateProjectTask(taskId, args.patch);
         if (!task) {
-          return { success: false, error: `Task not found: ${taskId}` };
+          return { success: false, error: taskNotFound(taskId) };
         }
         return { success: true, task };
       }
       case 'complete_task': {
         if (options?.signal?.aborted) {
-          throw new Error('tasks request aborted');
+          throw new Error(TASKS_REQUEST_ABORTED);
         }
         const taskId = args.taskId as string | undefined;
         if (!taskId) {
@@ -246,13 +254,13 @@ export async function handleProjectTasks(
         }
         const result = await db.completeProjectTask(taskId);
         if (!result) {
-          return { success: false, error: `Task not found: ${taskId}` };
+          return { success: false, error: taskNotFound(taskId) };
         }
         return { success: true, ...result };
       }
       case 'delete': {
         if (options?.signal?.aborted) {
-          throw new Error('tasks request aborted');
+          throw new Error(TASKS_REQUEST_ABORTED);
         }
         const taskId = args.taskId as string | undefined;
         if (!taskId) {
@@ -268,7 +276,7 @@ export async function handleProjectTasks(
       }
       case 'from_audit': {
         if (options?.signal?.aborted) {
-          throw new Error('tasks request aborted');
+          throw new Error(TASKS_REQUEST_ABORTED);
         }
         const { fingerprint: computeFingerprint, buildFingerprintInput } = await import(
           '../fingerprint.js'

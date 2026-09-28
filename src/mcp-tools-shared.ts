@@ -25,6 +25,9 @@ import path from 'node:path';
 import chalk from 'chalk';
 import { assertAuditPathExists } from './mcpToolErrors.js';
 
+const GET_ALL_TABLES_VIEWS_DESC = 'Get all tables and views';
+
+
 export interface ToolParameter {
   name: string;
   type: 'string' | 'number' | 'boolean' | 'object' | 'array';
@@ -1022,7 +1025,7 @@ export class ToolHandlers {
                 FROM information_schema.tables 
                 WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ${tableFilter}
                 ORDER BY table_schema, table_name;`,
-          description: 'Get all tables and views'
+          description: GET_ALL_TABLES_VIEWS_DESC
         });
 
         queries.push({
@@ -1069,7 +1072,7 @@ export class ToolHandlers {
                 FROM information_schema.tables 
                 WHERE table_schema = DATABASE() ${tableFilter}
                 ORDER BY table_name;`,
-          description: 'Get all tables and views'
+          description: GET_ALL_TABLES_VIEWS_DESC
         });
 
         queries.push({
@@ -1103,7 +1106,7 @@ export class ToolHandlers {
                 FROM sqlite_master 
                 WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
                 ORDER BY name;`,
-          description: 'Get all tables and views'
+          description: GET_ALL_TABLES_VIEWS_DESC
         });
 
         queries.push({

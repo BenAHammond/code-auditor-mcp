@@ -34,6 +34,15 @@ import type {
 // visitors regardless, so the indexer no longer re-parses them here — that
 // second parse was ~55ms of the scoped short-circuit gate's remaining cost.
 const PIPELINE_SOURCE_EXTENSIONS = new Set([...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS]);
+// Style-table clear statements, hoisted so the clear-source (full-file) and
+// clear-missing (per-removed-file) paths cannot drift on a statement string.
+const SQL_STYLE_CLEAR_DECL = 'DELETE FROM style_declarations WHERE file_path = ?';
+const SQL_STYLE_CLEAR_USAGE = 'DELETE FROM style_class_usage WHERE file_path = ?';
+const SQL_STYLE_CLEAR_TOKEN = 'DELETE FROM style_tokens WHERE file_path = ?';
+const SQL_STYLE_CLEAR_UNREAD = 'DELETE FROM style_unread_sources WHERE file_path = ?';
+const SQL_STYLE_CLEAR_CLASS = 'DELETE FROM style_defined_classes WHERE file_path = ?';
+
+
 
 // ---------------------------------------------------------------------------
 // Types
@@ -402,11 +411,11 @@ function getStoredHash(rawDb: SqliteDatabase, filePath: string): string | null {
 }
 
 function deleteFileEntries(rawDb: SqliteDatabase, filePath: string): void {
-  rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?').run(filePath);
-  rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(filePath);
-  rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(filePath);
-  rawDb.prepare('DELETE FROM style_unread_sources WHERE file_path = ?').run(filePath);
-  rawDb.prepare('DELETE FROM style_defined_classes WHERE file_path = ?').run(filePath);
+  rawDb.prepare(SQL_STYLE_CLEAR_DECL).run(filePath);
+  rawDb.prepare(SQL_STYLE_CLEAR_USAGE).run(filePath);
+  rawDb.prepare(SQL_STYLE_CLEAR_TOKEN).run(filePath);
+  rawDb.prepare(SQL_STYLE_CLEAR_UNREAD).run(filePath);
+  rawDb.prepare(SQL_STYLE_CLEAR_CLASS).run(filePath);
 }
 
 function removeStaleEntries(rawDb: SqliteDatabase, currentFiles: string[]): number {
@@ -427,10 +436,10 @@ function removeStaleEntries(rawDb: SqliteDatabase, currentFiles: string[]): numb
   let removed = 0;
   for (const { file_path } of allIndexed) {
     if (!filesSet.has(file_path)) {
-      rawDb.prepare('DELETE FROM style_declarations WHERE file_path = ?').run(file_path);
-      rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(file_path);
-      rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(file_path);
-      rawDb.prepare('DELETE FROM style_defined_classes WHERE file_path = ?').run(file_path);
+      rawDb.prepare(SQL_STYLE_CLEAR_DECL).run(file_path);
+      rawDb.prepare(SQL_STYLE_CLEAR_USAGE).run(file_path);
+      rawDb.prepare(SQL_STYLE_CLEAR_TOKEN).run(file_path);
+      rawDb.prepare(SQL_STYLE_CLEAR_CLASS).run(file_path);
       removed++;
     }
   }
@@ -490,7 +499,7 @@ function upsertTokens(
   tokens: StyleToken[],
 ): void {
   // Delete existing tokens from this file first, then insert fresh
-  rawDb.prepare('DELETE FROM style_tokens WHERE file_path = ?').run(filePath);
+  rawDb.prepare(SQL_STYLE_CLEAR_TOKEN).run(filePath);
 
   const insert = rawDb.prepare(`
     INSERT INTO style_tokens (name, value, file_path, mechanism)
@@ -517,7 +526,7 @@ function upsertClassUsage(
   usage: StyleClassUsage[],
 ): void {
   // Delete existing class usage for this file first
-  rawDb.prepare('DELETE FROM style_class_usage WHERE file_path = ?').run(filePath);
+  rawDb.prepare(SQL_STYLE_CLEAR_USAGE).run(filePath);
 
   const insert = rawDb.prepare(`
     INSERT INTO style_class_usage

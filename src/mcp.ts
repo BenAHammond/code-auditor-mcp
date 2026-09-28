@@ -95,6 +95,12 @@ import { initParsers } from './languages/index.js';
 // ── Console / logging setup ──────────────────────────────────────────────────
 const originalConsoleError = console.error;
 
+// Tool input-schema descriptions, hoisted so the repeated schema entries
+// share one source.
+const OPTION_ANALYZER_OVERRIDES = 'Analyzer-specific configuration overrides.';
+const PROJECT_ROOT_DESCRIPTION = 'Project root.';
+
+
 let logStream: any = null;
 if (IS_DEV_MODE) {
   // Dev mode is opt-in (`--dev`); even so, the log lives in the OS cache, never
@@ -277,7 +283,7 @@ export function registerAllTools(registry: ToolRegistry): void {
           name: 'analyzerConfigs',
           type: 'object',
           required: false,
-          description: 'Analyzer-specific configuration overrides.',
+          description: OPTION_ANALYZER_OVERRIDES,
         },
         {
           name: 'scope',
@@ -370,7 +376,7 @@ export function registerAllTools(registry: ToolRegistry): void {
           name: 'analyzerConfigs',
           type: 'object',
           required: false,
-          description: 'Analyzer-specific configuration overrides.',
+          description: OPTION_ANALYZER_OVERRIDES,
         },
         {
           name: 'scope',
@@ -493,7 +499,7 @@ export function registerAllTools(registry: ToolRegistry): void {
           name: 'analyzerConfigs',
           type: 'object',
           required: false,
-          description: 'Analyzer-specific configuration overrides.',
+          description: OPTION_ANALYZER_OVERRIDES,
         },
         {
           name: 'generateCodeMap',
@@ -1395,7 +1401,7 @@ export function registerAllTools(registry: ToolRegistry): void {
         name: 'create',
         description: 'Create a new task.',
         parameters: [
-          { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
+          { name: 'projectPath', type: 'string', required: false, description: PROJECT_ROOT_DESCRIPTION },
           { name: 'title', type: 'string', required: true, description: 'Task title.' },
           { name: 'description', type: 'string', required: false, description: 'Longer description.' },
           { name: 'status', type: 'string', required: false, description: 'Initial status.', enum: ['pending', 'in_progress', 'blocked', 'done', 'cancelled'] },
@@ -1419,7 +1425,7 @@ export function registerAllTools(registry: ToolRegistry): void {
         name: 'list',
         description: 'List tasks (flat). Supports filtering by status, priority, labels, source, query text search.',
         parameters: [
-          { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
+          { name: 'projectPath', type: 'string', required: false, description: PROJECT_ROOT_DESCRIPTION },
           { name: 'status', type: 'string', required: false, description: 'Filter by status.', enum: ['pending', 'in_progress', 'blocked', 'done', 'cancelled'] },
           { name: 'priority', type: 'string', required: false, description: 'Filter by priority.', enum: ['low', 'medium', 'high'] },
           { name: 'label', type: 'string', required: false, description: 'Filter by label.' },
@@ -1439,7 +1445,7 @@ export function registerAllTools(registry: ToolRegistry): void {
         name: 'list_tree',
         description: 'List tasks as a tree (parent-child hierarchy).',
         parameters: [
-          { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
+          { name: 'projectPath', type: 'string', required: false, description: PROJECT_ROOT_DESCRIPTION },
           { name: 'status', type: 'string', required: false, description: 'Filter by status.', enum: ['pending', 'in_progress', 'blocked', 'done', 'cancelled'] },
           { name: 'limit', type: 'number', required: false, description: 'Max tasks (default 500).' },
         ],
@@ -1452,7 +1458,7 @@ export function registerAllTools(registry: ToolRegistry): void {
         name: 'get',
         description: 'Get a single task by ID.',
         parameters: [
-          { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
+          { name: 'projectPath', type: 'string', required: false, description: PROJECT_ROOT_DESCRIPTION },
           { name: 'taskId', type: 'string', required: true, description: 'Task ID.' },
         ],
         handler: async (args, signal) => {
@@ -1464,7 +1470,7 @@ export function registerAllTools(registry: ToolRegistry): void {
         name: 'update',
         description: 'Update a task with a patch of partial fields.',
         parameters: [
-          { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
+          { name: 'projectPath', type: 'string', required: false, description: PROJECT_ROOT_DESCRIPTION },
           { name: 'taskId', type: 'string', required: true, description: 'Task ID.' },
           { name: 'patch', type: 'object', required: true, description: 'Partial fields to update.' },
         ],
@@ -1477,7 +1483,7 @@ export function registerAllTools(registry: ToolRegistry): void {
         name: 'complete',
         description: 'Mark a task as completed.',
         parameters: [
-          { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
+          { name: 'projectPath', type: 'string', required: false, description: PROJECT_ROOT_DESCRIPTION },
           { name: 'taskId', type: 'string', required: true, description: 'Task ID.' },
         ],
         handler: async (args, signal) => {
@@ -1489,7 +1495,7 @@ export function registerAllTools(registry: ToolRegistry): void {
         name: 'delete',
         description: 'Delete a task. Mode: reject (default, refuse if subtasks exist), detach (move subtasks up), cascade (delete subtree).',
         parameters: [
-          { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
+          { name: 'projectPath', type: 'string', required: false, description: PROJECT_ROOT_DESCRIPTION },
           { name: 'taskId', type: 'string', required: true, description: 'Task ID.' },
           { name: 'mode', type: 'string', required: false, description: 'Delete mode.', enum: ['reject', 'detach', 'cascade'] },
         ],
@@ -1503,7 +1509,7 @@ export function registerAllTools(registry: ToolRegistry): void {
         description:
           'Create tasks from audit violations with deduplication. Each violation gets a stable fingerprint; violations matching existing open tasks are skipped.',
         parameters: [
-          { name: 'projectPath', type: 'string', required: false, description: 'Project root.' },
+          { name: 'projectPath', type: 'string', required: false, description: PROJECT_ROOT_DESCRIPTION },
           { name: 'auditJobId', type: 'string', required: false, description: 'Audit job ID. Omit to use most recent completed audit.' },
           { name: 'severities', type: 'array', required: false, description: 'Severities to include (default: critical, severe).' },
           { name: 'paths', type: 'array', required: false, description: 'Filter violations by file path globs.' },
