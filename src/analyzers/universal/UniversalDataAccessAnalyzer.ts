@@ -1821,6 +1821,60 @@ function isSafeDynamicPart(
   return false;
 }
 
+/**
+ * The tagged-template call node when `node` is (or wraps) a drizzle `sql`/`db`
+ * tagged template; null otherwise. Handles both candidate shapes: a bare
+ * `sql\`…\`` (the candidate node IS the tag) and `db.execute(sql\`…\`)` (the
+ * tag is the enclosing call's argument).
+ */
+function findTaggedTemplateCall(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  tagNames: readonly string[],
+): ASTNode | null {
+  if (isTaggedTemplateSqlCall(node, adapter, sourceCode, tagNames)) return node;
+  const args = adapter.getChildren(node).find((c) => adapter.getNodeType(c) === 'arguments');
+  if (!args) return null;
+  for (const arg of adapter.getChildren(args)) {
+    const t = adapter.getNodeType(arg);
+    if (t === '(' || t === ')' || t === ',') continue;
+    if (isTaggedTemplateSqlCall(arg, adapter, sourceCode, tagNames)) return arg;
+  }
+  return null;
+}
+
+/**
+ * True when `node` is (or wraps) a drizzle `sql`/`db` tagged template whose
+ * `${…}` interpolations are all bare identifiers — the parameterized-by-
+ * construction form. Drizzle's `sql` tag turns a clean `${id}` into a `?`
+ * placeholder, so a bare-identifier interpolation is not an injection vector.
+ *
+ * A non-identifier interpolation — string concatenation (`${'%' + x + '%'}`), a
+ * call (`${fn(x)}`), a member access (`${session.id}`) — is raw assembly, NOT a
+ * bound parameter, so it is deliberately excluded and falls through to the
+ * dynamic-string construction path (§69 Fix 2).
+ */
+function isParameterizedTaggedTemplate(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  tagNames: readonly string[],
+): boolean {
+  const tagCall = findTaggedTemplateCall(node, adapter, sourceCode, tagNames);
+  if (!tagCall) return false;
+  const template = adapter.getChildren(tagCall).find((c) => isTemplateLiteral(c, adapter));
+  if (!template) return false;
+  for (const child of adapter.getChildren(template)) {
+    if (adapter.getNodeType(child) !== 'template_substitution') continue;
+    const inner = adapter.getChildren(child).find(
+      (c) => adapter.getNodeType(c) !== 'template_substitution',
+    );
+    if (!inner || adapter.getNodeType(inner) !== 'identifier') return false;
+  }
+  return true;
+}
+
 function checkQuerySecurity(
   node: ASTNode,
   text: string,
@@ -1832,6 +1886,12 @@ function checkQuerySecurity(
   // Parameterized chains (.prepare().bind(), .exec() spread, D1 convenience,
   // DB wrappers) and explicit parameterization are always safe.
   if (isParameterizedByChain(node, adapter, sourceCode, config, effectiveWrapperNames(scan))) {
+    return { parameterized: true, injectionRisk: false, escaped: false };
+  }
+  // A drizzle `sql`/`db` tagged template parameterizes bare `${id}` interpolations
+  // into `?` placeholders by construction — the "right reason" a clean tagged
+  // template is quiet (§69 Fix 2), not the broken recursion that used to hide it.
+  if (isParameterizedTaggedTemplate(node, adapter, sourceCode, config.sqlTagNames ?? SQL_TAG_NAMES)) {
     return { parameterized: true, injectionRisk: false, escaped: false };
   }
   if ((config.securityPatterns?.parameterizedQueries || []).some(p => text.includes(p))) {

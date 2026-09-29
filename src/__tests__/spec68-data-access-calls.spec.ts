@@ -252,3 +252,47 @@ describe('Spec 68 hasOrganizationFilter — projection vs. predicate', () => {
     expect(out[0].hasOrganizationFilter).toBe(true);
   });
 });
+
+/**
+ * Spec 69 Fix 2 — tagged templates recurse for interpolation. A `sql` tag's
+ * template is a direct child of the call (no `arguments` node), which the old
+ * `isDynamicStringConstruction` never recursed into — so a real interpolation
+ * inside a tag was an invisible `sql-injection-risk` false negative. The fix
+ * makes the recursion happen, and recognizes a drizzle `sql`/`db` tag whose
+ * `${…}` interpolations are all bare identifiers as parameterized-by-
+ * construction (the "right reason" a clean tag is quiet). A string-
+ * concatenation interpolation (`${'%' + x + '%'}`) is raw assembly and fires.
+ */
+describe('Spec 69 Fix 2 — tagged-template interpolation recursion', () => {
+  it('treats a clean `${id}` interpolation in a `sql` tag as parameterized', () => {
+    const out = calls('/fixture/tag-clean.ts', [
+      'export function f(id: string) {',
+      '  return sql`SELECT * FROM products WHERE id = ${id}`;',
+      '}',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasSqlInjectionRisk).toBe(false);
+    expect(out[0].hasParameterizedQuery).toBe(true);
+  });
+
+  it('fires on a string-concatenation interpolation in a `sql` tag', () => {
+    const out = calls('/fixture/tag-concat.ts', [
+      'export function f(userInput: string) {',
+      "  return sql`SELECT * FROM products WHERE name LIKE ${'%' + userInput + '%'}`;",
+      '}',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasSqlInjectionRisk).toBe(true);
+  });
+
+  it('treats `db.execute(sql`…${id}…`)` as parameterized (right reason, not broken recursion)', () => {
+    const out = calls('/fixture/tag-execute.ts', [
+      'export function f(id: string) {',
+      '  return db.execute(sql`SELECT * FROM products WHERE id = ${id}`);',
+      '}',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasSqlInjectionRisk).toBe(false);
+    expect(out[0].hasParameterizedQuery).toBe(true);
+  });
+});

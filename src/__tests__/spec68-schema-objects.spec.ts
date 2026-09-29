@@ -134,7 +134,13 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
   });
 
   it('stays quiet when the same query carries an organization predicate', () => {
-    const scoped = { ...call(['sampleOwnership']), hasOrganizationFilter: true };
+    // §69 Fix 1 — the rule re-derives the predicate from `queryText` + thresholds,
+    // not the producer's `hasOrganizationFilter` fact field (baked with the default
+    // config). The predicate must live in the text to stay quiet.
+    const scoped = {
+      ...call(['sampleOwnership']),
+      queryText: 'SELECT * FROM sample_ownership WHERE organization_id = $1',
+    };
     expect(analyzeOrg([scoped], catalog)).toEqual([]);
   });
 
@@ -161,15 +167,20 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
   });
 
   it('still fires when the filter is NOT on a natural UNIQUE column', () => {
+    // `name` is neither a tenant column (no org-predicate quiet) nor a natural
+    // UNIQUE column (no bootstrap quiet) — a filter on it scopes the query by
+    // neither tenant nor key. (`workspaceId` would be the tenant column here, so
+    // it is *correctly* quiet after §69 Fix 1; this test needs a non-tenant
+    // non-unique column to keep firing.)
     const idOnlyCatalog: TableCatalog = {
       tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: ['workspace_id'], uniqueColumns: [] }],
       aliases: { apiKey: 'api_key' },
     };
-    const byWorkspace = {
+    const byName = {
       ...call(['apiKey']),
-      queryText: 'db.select().from(apiKey).where(eq(apiKey.workspaceId, wsId))',
+      queryText: 'db.select().from(apiKey).where(eq(apiKey.name, name))',
     };
-    expect(analyzeOrg([byWorkspace], idOnlyCatalog)).toHaveLength(1);
+    expect(analyzeOrg([byName], idOnlyCatalog)).toHaveLength(1);
   });
 
   it('still fires when the filter is on a PRIMARY-KEY column (surrogate id = IDOR surface)', () => {

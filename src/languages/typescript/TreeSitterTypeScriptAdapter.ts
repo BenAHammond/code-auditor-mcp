@@ -1356,6 +1356,14 @@ class TsDynamicStringConstruction extends TsScopeStatic {
       const text = (getRawNode(node)).text;
       if (text.includes('.concat(') || text.includes('?.concat(')) return true;
 
+      // A tagged template (`sql`…``) carries its template string as a DIRECT
+      // child — the `arguments` field *is* the template, with no `arguments`
+      // node — so the argument recursion below never sees it. Recurse into it
+      // here: a tagged template is dynamic exactly when its template has a
+      // `${…}` substitution.
+      const tagged = this.taggedTemplateChild(node);
+      if (tagged && this.isDynamicStringConstruction(tagged)) return true;
+
       // Recurse into arguments: query(binaryExpression) where the argument
       // itself is a dynamic string construction.
       for (const child of node.children ?? []) {
@@ -1382,6 +1390,10 @@ class TsDynamicStringConstruction extends TsScopeStatic {
   getDynamicParts(node: ASTNode, sourceCode: string): DynamicPart[] {
     const type = (getRawNode(node)).type;
     if (type === 'call_expression') {
+      // A tagged template (`sql`…``): the template string is a direct child, so
+      // its `${…}` substitutions are the dynamic parts (no `arguments` node).
+      const tagged = this.taggedTemplateChild(node);
+      if (tagged) return this.getTemplateStringParts(tagged, sourceCode);
       const nested = this.getNestedDynamicCallParts(node, sourceCode);
       if (nested) return nested;
       return this.getCallArgParts(node);
@@ -1389,6 +1401,17 @@ class TsDynamicStringConstruction extends TsScopeStatic {
     if (type === 'template_string') return this.getTemplateStringParts(node, sourceCode);
     if (type === 'binary_expression') return this.getBinaryExpressionParts(node, sourceCode);
     return [];
+  }
+
+  /** The tagged template's `template_string` when this call_expression is a
+   *  tagged template (`sql`…``) — i.e. the template is a DIRECT child (the
+   *  `arguments` field is the template, no `arguments` node). Null for a normal
+   *  call (`foo(`…`)`), whose template sits under an `arguments` node. */
+  private taggedTemplateChild(node: ASTNode): ASTNode | null {
+    for (const child of node.children ?? []) {
+      if ((getRawNode(child)).type === 'template_string') return child;
+    }
+    return null;
   }
 
   /** For a non-`.concat()` call, recurse into the first argument that is itself

@@ -28,7 +28,7 @@
  *   @fires sql-injection-risk 97:critical — string concatenation with `+`
  *   @fires sql-injection-risk 102:critical — `.concat()` concatenation
  *   @quiet sql-injection-risk 107 — `.prepare().bind()` chain is parameterized
- *   @quiet sql-injection-risk 113 — drizzle sql`…` tagged template is parameterized by construction — correctly quiet
+ *   @quiet sql-injection-risk 116 — drizzle sql`…` tagged template (bare-id) is parameterized by construction
  */
 
 import { sql } from 'drizzle-orm';
@@ -114,4 +114,14 @@ export function findProductPrepared(sku: string) {
  *  interpolation inside a tag would be missed the same way. */
 export function findProductTagged(id: number) {
   return db.execute(sql`SELECT * FROM products WHERE id = ${id}`);
+}
+
+/** Drizzle tagged template with a string-concatenation interpolation — the
+ *  Fix 2 must-fire case. The tag's template now recurses into its `${…}`
+ *  substitutions, and `${'%' + userInput + '%'}` is raw string assembly (not a
+ *  bare identifier), so it is NOT parameterized-by-construction and fires.
+ *  @fires sql-injection-risk 126:critical
+ */
+export function searchProductsTaggedConcat(userInput: string) {
+  return db.execute(sql`SELECT * FROM products WHERE name LIKE ${'%' + userInput + '%'}`);
 }
