@@ -64,7 +64,7 @@ async function collectSourceFiles(dir: string): Promise<string[]> {
 }
 
 const DIRECTIVE_RE =
-  /@(fires|quiet)\s+([A-Za-z0-9-]+)\s+(\d+)(?::([A-Za-z]+))?\s*(?:—\s*(.*))?$/;
+  /@(fires|quiet)\s+([A-Za-z0-9/-]+)\s+(\d+)(?::([A-Za-z]+))?\s*(?:—\s*(.*))?$/;
 
 async function parseHeader(file: string): Promise<Directive[]> {
   const content = await readFile(file, 'utf8');

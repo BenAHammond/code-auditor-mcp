@@ -109,3 +109,30 @@ CREATE TABLE product_reviews (
   body TEXT,
   summary TEXT
 );
+
+-- More non-tenant catalog tables — the join-heavy analytics layer (Slice 2,
+-- `complex-query`) joins these against `products`/`product_reviews`. Still no
+-- tenant column, so a read against them never trips `missing-org-filter` or the
+-- `unfiltered-query` read half.
+CREATE TABLE categories (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+
+CREATE TABLE suppliers (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+
+CREATE TABLE warehouses (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  region TEXT NOT NULL
+);
+
+CREATE TABLE inventory (
+  id INTEGER PRIMARY KEY,
+  product_id INTEGER NOT NULL,
+  warehouse_id INTEGER NOT NULL,
+  quantity INTEGER NOT NULL
+);
