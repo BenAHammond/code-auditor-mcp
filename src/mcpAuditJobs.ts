@@ -344,65 +344,12 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
 
     let indexingResult: any = null;
     if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
-      if (ac.signal.aborted) {
-        throw ac.signal.reason instanceof Error
-          ? ac.signal.reason
-          : new Error(String(ac.signal.reason || 'Audit job was cancelled during indexing'));
-      }
-      // Batch all per-file upserts into a single transaction (Amendment B2).
-      const entries = Object.entries(auditResult.metadata.fileToFunctionsMap).map(
-        ([filePath, functions]) => ({ filePath, currentFunctions: functions as FunctionMetadata[] })
-      );
-      const syncStats = await db.syncFileIndexBatch(entries);
-      indexingResult = {
-        success: true,
-        registered: syncStats.added + syncStats.updated,
-        failed: 0,
-        syncStats,
-      };
+      indexingResult = await indexJobFunctions(auditResult, db, ac.signal);
     }
 
     let codeMapResult: any = null;
     if (generateCodeMap && indexingResult && indexingResult.success) {
-      if (ac.signal.aborted) {
-        throw ac.signal.reason instanceof Error
-          ? ac.signal.reason
-          : new Error(String(ac.signal.reason || 'Audit job was cancelled before code map generation'));
-      }
-      try {
-        const mapGenerator = new CodeMapGenerator();
-        const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
-        let documentation: any = undefined;
-        if (files.length > 0) {
-          const docResult = await analyzeDocumentation(files);
-          documentation = docResult.metrics;
-        }
-
-        const paginatedResult = await mapGenerator.generatePaginatedCodeMap(
-          isFile ? path.dirname(auditPath) : auditPath,
-          {
-            includeComplexity: true,
-            includeDocumentation: !!documentation,
-            includeDependencies: true,
-            includeUsage: false,
-            groupByDirectory: true,
-            maxDepth: 10,
-            showUnusedImports: true,
-            minComplexity: 7,
-          }
-        );
-
-        codeMapResult = {
-          success: true,
-          mapId: paginatedResult.mapId,
-          summary: paginatedResult.summary,
-          quickPreview: paginatedResult.quickPreview,
-          sections: paginatedResult.summary.sectionsAvailable,
-          documentationCoverage: documentation?.coverageScore,
-        };
-      } catch (e) {
-        mcpDebugStderr(chalk.yellow('[WARN]'), 'Code map generation failed in background audit:', e);
-      }
+      codeMapResult = await generateJobCodeMap(auditResult, isFile, auditPath, ac.signal);
     }
 
     const projectRootForStore = projectRoot;
@@ -469,6 +416,85 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
     if (jobTimer !== undefined) {
       clearTimeout(jobTimer);
     }
+  }
+}
+
+/**
+ * Batch the per-file function index upserts into a single transaction.
+ */
+async function indexJobFunctions(
+  auditResult: AuditResult,
+  db: CodeIndexDB,
+  signal: AbortSignal,
+): Promise<any> {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error(String(signal.reason || 'Audit job was cancelled during indexing'));
+  }
+  // Batch all per-file upserts into a single transaction (Amendment B2).
+  const entries = Object.entries(auditResult.metadata.fileToFunctionsMap || {}).map(
+    ([filePath, functions]) => ({ filePath, currentFunctions: functions as FunctionMetadata[] })
+  );
+  const syncStats = await db.syncFileIndexBatch(entries);
+  return {
+    success: true,
+    registered: syncStats.added + syncStats.updated,
+    failed: 0,
+    syncStats,
+  };
+}
+
+/**
+ * Generate a paginated code map for a completed audit job. Returns `null` when
+ * code map generation fails (best-effort — the audit still completes) and
+ * throws if the job was cancelled before generation ran.
+ */
+async function generateJobCodeMap(
+  auditResult: AuditResult,
+  isFile: boolean,
+  auditPath: string,
+  signal: AbortSignal,
+): Promise<any> {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error(String(signal.reason || 'Audit job was cancelled before code map generation'));
+  }
+  try {
+    const mapGenerator = new CodeMapGenerator();
+    const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
+    let documentation: any = undefined;
+    if (files.length > 0) {
+      const docResult = await analyzeDocumentation(files);
+      documentation = docResult.metrics;
+    }
+
+    const paginatedResult = await mapGenerator.generatePaginatedCodeMap(
+      isFile ? path.dirname(auditPath) : auditPath,
+      {
+        includeComplexity: true,
+        includeDocumentation: !!documentation,
+        includeDependencies: true,
+        includeUsage: false,
+        groupByDirectory: true,
+        maxDepth: 10,
+        showUnusedImports: true,
+        minComplexity: 7,
+      }
+    );
+
+    return {
+      success: true,
+      mapId: paginatedResult.mapId,
+      summary: paginatedResult.summary,
+      quickPreview: paginatedResult.quickPreview,
+      sections: paginatedResult.summary.sectionsAvailable,
+      documentationCoverage: documentation?.coverageScore,
+    };
+  } catch (e) {
+    mcpDebugStderr(chalk.yellow('[WARN]'), 'Code map generation failed in background audit:', e);
+    return null;
   }
 }
 
