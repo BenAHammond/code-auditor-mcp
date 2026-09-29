@@ -1,30 +1,32 @@
 /**
- * Spec 69 R3 — motivating fixtures (Fix 6, §69 item 6).
+ * Spec 69 R3 — local binding resolution (#316, criterion 9).
  *
- * Three minimal reproductions of the local-binding-resolution defect Spec 69 R3
- * (#316) fixes. Each pins the *current* false positive: the `data-access-calls`
- * producer emits a fact whose `queryText` / `hasFilter` / `sqlEscaped` does NOT
- * reflect a predicate or escape assembled in a *prior statement*, so the rule
- * fires (or over-reports) even though the source is scoped / escaped.
+ * A `.where(and(...conditions))` predicate hides its elements from `queryText`:
+ * the `data-access-calls` producer extracts the candidate node's own text, which
+ * mentions `conditions` but not the `eq(orders.organizationId, …)` elements
+ * assembled in prior statements. R3 resolves the local `const`/`let` array
+ * binding within the enclosing function and classifies each element all-paths
+ * vs some-paths — `missing-org-filter` goes quiet only on an all-paths tenant
+ * predicate; a some-paths predicate still fires, naming the branch where the
+ * guard is absent.
  *
- * These are the motivating fixtures for R3. They assert the defect *as it
- * stands today*, not the desired outcome, so they stay green until R3 lands and
- * the flip is the acceptance signal. When local binding resolution lands, flip
- * each `// FLIP` assertion to the desired end state:
+ * Two fixtures pin criterion 9's acceptance pair:
  *
- *   - conditions array built across statements → `missing-org-filter` FP
- *       today: fires critical   FLIP: quiet
- *   - generic scoping wrapper (`withOrgScope`) → `missing-org-filter` +
- *       `unfiltered-query` FP
- *       today: fires critical / high   FLIP: quiet / quiet
- *   - quote-doubling hoisted into `const safe` → `sql-injection-risk` over-report
- *       today: critical   FLIP: high (escaped, not raw)
+ *   - `listOrders` — the predicate pushed unconditionally across statements →
+ *       all-paths → quiet.
+ *   - `listOrdersScoped` — the predicate pushed under `if (organizationId)` →
+ *       some-paths → fires, message names `organizationId`.
  *
- * The R3 root cause (§ spec-69 lines 64–76) is local binding: a fact assembled
- * in a prior statement that the rule reads only at the candidate node. This file
- * is deliberately small and single-purpose — the production-scale versions live
- * in `specs/rule-evidence-corpus` (`tenant-scoping.ts`, `sql-injection-surface.ts`),
- * whose directives pin the same three cases end to end.
+ * The two remaining motivating fixtures from Fix 6 are out of R3's ceiling and
+ * stay asserted as they stand:
+ *
+ *   - `withOrgScope` wrapper → cross-function, out of the R3 "within a function
+ *       body" ceiling — still fires `missing-org-filter` + `unfiltered-query`.
+ *   - quote-doubling hoisted into `const safe` → `sql-injection-risk` (a
+ *       different rule than the local-binding resolution) — still over-reports.
+ *
+ * Production-scale versions live in `specs/rule-evidence-corpus`
+ * (`tenant-scoping.ts`), whose directives pin the same cases end to end.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -98,20 +100,56 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', (
       '}',
     ].join('\n');
 
-    it('pins the defect: the producer leaves the pushed predicate out of queryText', () => {
+    it('resolves the pushed predicate into the fact, all-paths', () => {
       const out = calls('/fixture/r3-conditions.ts', source);
       expect(out).toHaveLength(1);
       expect(out[0].queryText).toBe('db.select().from(orders).where(and(...conditions))');
       expect(out[0].hasOrganizationFilter).toBe(false);
       expect(out[0].hasFilter).toBe(true);
+      // R3: the spread binding resolves to its unconditional push, all-paths.
+      expect(out[0].resolvedWhere?.elements).toEqual([
+        { text: 'eq(orders.organizationId, session.orgId)', allPaths: true },
+      ]);
     });
 
-    it('and the rule over-fires critical — FLIP to quiet when R3 resolves `conditions`', () => {
+    it('the rule stays quiet — the predicate is present and unconditional', () => {
       const out = analyze('missing-org-filter', calls('/fixture/r3-conditions.ts', source), TENANT);
-      // FLIP (R3): expect(out).toEqual([]); — the predicate is present and unconditional.
+      expect(out).toEqual([]);
+    });
+  });
+
+  describe('predicate pushed under an `if` → some-paths stays firing (criterion 9)', () => {
+    const source = [
+      'export function listOrdersScoped(userId, organizationId) {',
+      "  const conditions = [eq(orders.id, userId), eq(orders.role, 'admin')];",
+      '  if (organizationId) {',
+      '    conditions.push(eq(orders.organizationId, organizationId));',
+      '  }',
+      '  return db.select().from(orders).where(and(...conditions));',
+      '}',
+    ].join('\n');
+
+    it('resolves the pushed predicate as some-paths, branch named', () => {
+      const out = calls('/fixture/r3-some-paths.ts', source);
+      expect(out).toHaveLength(1);
+      expect(out[0].resolvedWhere?.elements).toEqual([
+        { text: 'eq(orders.id, userId)', allPaths: true },
+        { text: "eq(orders.role, 'admin')", allPaths: true },
+        {
+          text: 'eq(orders.organizationId, organizationId)',
+          allPaths: false,
+          branch: 'organizationId',
+        },
+      ]);
+    });
+
+    it('still fires critical, message names the absent branch', () => {
+      const out = analyze('missing-org-filter', calls('/fixture/r3-some-paths.ts', source), TENANT);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');
       expect(out[0].ruleId).toBe('missing-org-filter');
+      expect(out[0].message).toContain('organizationId');
+      expect(out[0].message).toContain('is absent');
     });
   });
 

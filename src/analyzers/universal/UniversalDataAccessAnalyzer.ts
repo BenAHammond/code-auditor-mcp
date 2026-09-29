@@ -32,6 +32,8 @@ import {
   DEFAULT_ORG_PREDICATE_PATTERNS,
   hasOrganizationFilter,
 } from '../orgFilterTiers.js';
+import { resolveWhereBinding } from '../../phase/localBinding.js';
+import type { ResolvedWhere } from '../../phase/types.js';
 
 /**
  * SQL keywords recognized as evidence that a string is a SQL query.
@@ -218,6 +220,9 @@ export interface DatabaseCall {
   sqlEscaped: boolean;
   /** Enclosing function name for stable fingerprinting (Spec 18 Gap 2). */
   enclosingFunction?: string;
+  /** Spec 69 R3 — the resolved WHERE predicate when the `.where(...)` spreads a
+   *  local array binding (`and(...conditions)`); null/undefined otherwise. */
+  resolvedWhere?: ResolvedWhere;
 }
 
 interface QueryAnalysis {
@@ -620,6 +625,7 @@ function buildDatabaseCall(
     hasSqlInjectionRisk: security.injectionRisk,
     sqlEscaped: security.escaped,
     enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
+    resolvedWhere: resolveWhereBinding(node, sourceCode, adapter) ?? undefined,
   };
 }
 

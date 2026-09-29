@@ -685,6 +685,29 @@ export type Entity = {
  * `type` is the call's kind label (`db.query` / `db.execute` / …), not a SQL
  * verb — the write/read verb is derived at analysis time from `queryText`.
  */
+/** One predicate element of a local array binding resolved into a `.where(...)`
+ *  (Spec 69 R3). The element's own source text is carried verbatim so the rule
+ *  re-derives the org-predicate signal with *its* vocabulary (the §69 Fix-1
+ *  "one vocabulary, two consumers" invariant) rather than trusting a boolean the
+ *  producer baked with the default config. */
+export type ResolvedPredicateElement = {
+  /** The element's source text (`eq(orders.organizationId, …)`, …). */
+  text: string;
+  /** True when the element is present on every path to the query (an initializer
+   *  element, or a `.push(...)` not gated by a conditional/loop/`&&`). */
+  allPaths: boolean;
+  /** When `allPaths` is false, the enclosing branch condition the element is
+   *  gated behind (`if (organizationId)`, a ternary/`&&` guard, …). */
+  branch?: string;
+};
+
+/** The local-binding resolution of a `.where(and(...conditions))` predicate.
+ *  Present only when the `.where(...)` spread resolves to a local `const`/`let`
+ *  array binding within the same function body. */
+export type ResolvedWhere = {
+  elements: ResolvedPredicateElement[];
+};
+
 export type ResolvedQuery = {
   type: string;
   method: string;
@@ -704,6 +727,9 @@ export type ResolvedQuery = {
   enclosingFunction?: string;
   /** True when the call is inside a loop (loop-query reads this). */
   insideLoop?: boolean;
+  /** Spec 69 R3 — the resolved WHERE predicate when the `.where(...)` spreads a
+   *  local array binding (`and(...conditions)`). */
+  resolvedWhere?: ResolvedWhere;
 };
 
 /** The known-table catalog built by the corpus schema processor (§5). Each

@@ -456,6 +456,20 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
 
       const isInsert = isRawSqlInsert(call.queryText);
 
+      // Spec 69 R3 — a `.where(and(...conditions))` predicate hides its elements
+      // from `queryText`; read the resolved binding instead. An all-paths tenant
+      // predicate quiets the rule (the isolation is unconditional); a some-paths
+      // predicate fires, naming the branch where the guard is absent. The
+      // predicate detector runs on the same `predicateConfig` vocabulary, so
+      // resolution and discovery can never read two vocabularies (§69 Fix 1).
+      const resolvedElements = call.resolvedWhere?.elements ?? [];
+      const allPathsOrg = resolvedElements.some(
+        (e) => e.allPaths && hasOrganizationFilter(e.text, predicateConfig),
+      );
+      const somePathsOrg = resolvedElements.filter(
+        (e) => !e.allPaths && hasOrganizationFilter(e.text, predicateConfig),
+      );
+
       // For a read/mutation the claim is "no organization/tenant *predicate*": a
       // query scoped by primary key still fires (scoped by id, not tenant). For a
       // raw-SQL row-adding statement (INSERT/REPLACE) there is no WHERE predicate
@@ -473,6 +487,10 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
         if (setsTenant) continue;
       } else if (hasOrganizationFilter(call.queryText, predicateConfig)) {
         continue;
+      } else if (allPathsOrg) {
+        // The tenant predicate is present on every path (array initializer or an
+        // unconditional push) — the isolation is unconditional, so no finding.
+        continue;
       } else if (hasUniqueColumnFilter(call.queryText, uniqueColumnsForTables(tables, catalog))) {
         // A predicate bound to a UNIQUE / PRIMARY-KEY column returns at most one
         // row — the bootstrap-lookup shape (`eq(apiKey.prefix, …)`). Scoping by
@@ -480,13 +498,19 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
         continue;
       }
 
+      const conditionalBranch = somePathsOrg.length > 0
+        ? somePathsOrg.map((e) => e.branch ?? 'a conditional branch').join(' / ')
+        : null;
+
       const symbol = `${call.enclosingFunction ?? 'top-level'}:${call.method}`;
       out.push({
         ruleId: 'missing-org-filter',
         severity: 'critical',
         message: isInsert
           ? `INSERT into ${tables.join(', ')} does not set the organization/tenant column`
-          : `Query on ${tables.join(', ')} has no organization/tenant predicate`,
+          : conditionalBranch
+            ? `Query on ${tables.join(', ')} has no organization/tenant predicate when ${conditionalBranch} is absent`
+            : `Query on ${tables.join(', ')} has no organization/tenant predicate`,
         file: call.file,
         line: call.line,
         column: call.column,
@@ -495,7 +519,9 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
           action: isInsert ? 'add-tenant-column' : 'add-tenant-predicate',
           summary: isInsert
             ? `Add the tenant column (organization_id / org_id) to the INSERT column list on ${tables.join(', ')} so the row is scoped to the current organization.`
-            : `Add the tenant column (organization_id / org_id) to the WHERE predicate on ${tables.join(', ')} so this query is scoped to the current organization, not just by primary key.`,
+            : conditionalBranch
+              ? `Add the tenant column (organization_id / org_id) to the WHERE predicate unconditionally on ${tables.join(', ')} — it is currently applied only when ${conditionalBranch} is present, so the query runs unscoped otherwise.`
+              : `Add the tenant column (organization_id / org_id) to the WHERE predicate on ${tables.join(', ')} so this query is scoped to the current organization, not just by primary key.`,
           symbols: tables,
         },
       });
