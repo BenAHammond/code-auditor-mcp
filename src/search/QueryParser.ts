@@ -120,6 +120,15 @@ export class QueryParser {
     'token:': 'styleToken'
   } as const;
 
+  // Operator keys that write straight through to `filters.metadata[<key>] = value`.
+  // Collapsed into one generic branch in applyOperatorFilters so the switch does
+  // not carry a dozen near-identical setter cases.
+  private static readonly METADATA_FILTER_KEYS: ReadonlySet<string> = new Set([
+    'componentType', 'hasHook', 'hasProp', 'entityType', 'usesDependency',
+    'callsFunction', 'calledByFunction', 'dependsOnModule',
+    'cssProperty', 'cssValue', 'styleMechanism', 'styleToken',
+  ]);
+
   /**
    * Parse a search query string into a structured ParsedQuery object
    * @param query The raw search query string
@@ -371,6 +380,14 @@ export class QueryParser {
   ): void {
     operators.forEach((value, operator) => {
       const filterKey = QueryParser.OPERATORS[operator as keyof typeof QueryParser.OPERATORS];
+
+      if (QueryParser.METADATA_FILTER_KEYS.has(filterKey)) {
+        if (!parsedQuery.filters.metadata) {
+          parsedQuery.filters.metadata = {};
+        }
+        (parsedQuery.filters.metadata as Record<string, string>)[filterKey] = value;
+        return;
+      }
       
       switch (filterKey) {
         case 'fileType':
@@ -465,70 +482,6 @@ export class QueryParser {
           parsedQuery.terms.push(value);
           break;
           
-        case 'componentType':
-          // Filter by React component type
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.componentType = value;
-          break;
-          
-        case 'hasHook':
-          // Search for components using specific hooks
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.hasHook = value;
-          break;
-          
-        case 'hasProp':
-          // Search for components with specific props
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.hasProp = value;
-          break;
-          
-        case 'entityType':
-          // Filter by entity type (function vs component)
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.entityType = value;
-          break;
-          
-        case 'usesDependency':
-          // Filter by external dependency usage
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.usesDependency = value;
-          break;
-          
-        case 'callsFunction':
-          // Filter by functions that this function calls
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.callsFunction = value;
-          break;
-          
-        case 'calledByFunction':
-          // Filter by functions that call this function
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.calledByFunction = value;
-          break;
-          
-        case 'dependsOnModule':
-          // Filter by module/file dependencies
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.dependsOnModule = value;
-          break;
-          
         case 'hasUnusedImports':
           // Special filter for unused imports (boolean)
           if (!parsedQuery.filters.metadata) {
@@ -537,34 +490,6 @@ export class QueryParser {
           parsedQuery.filters.metadata.hasUnusedImports = true;
           break;
 
-        // Style intelligence operators (Spec 10)
-        case 'cssProperty':
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.cssProperty = value;
-          break;
-
-        case 'cssValue':
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.cssValue = value;
-          break;
-
-        case 'styleMechanism':
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.styleMechanism = value;
-          break;
-
-        case 'styleToken':
-          if (!parsedQuery.filters.metadata) {
-            parsedQuery.filters.metadata = {};
-          }
-          parsedQuery.filters.metadata.styleToken = value;
-          break;
       }
     });
   }
