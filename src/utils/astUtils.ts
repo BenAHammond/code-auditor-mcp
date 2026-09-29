@@ -700,6 +700,18 @@ const DECLARATION_TYPES = new Set([
 /** Set of node types that represent spreads */
 const SPREAD_TYPES = new Set(['spread_element', 'rest_parameter']);
 
+/** Node types whose direct `type_annotation` child holds an identifier's type
+ *  position — parameters, property signatures, index signatures, and type
+ *  assertions. Collapsed into one generic check in isTypeOnlyUsage. */
+const DIRECT_TYPE_ANNOTATION_PARENTS = new Set([
+  'required_parameter',
+  'optional_parameter',
+  'property_signature',
+  'class_property',
+  'index_signature',
+  'type_assertion',
+]);
+
 /**
  * Recursively check if the identifier node is contained within the given type node.
  */
@@ -822,9 +834,12 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
     const typeNode = parent.children?.find(c => c.type !== 'identifier' && c.type !== 'as');
     if (typeNode && isNodeInTypePosition(identifier, typeNode)) return true;
   }
-  if (parent.type === 'type_assertion') {
-    const typeNode = findChildOfType(parent, 'type_annotation');
-    if (typeNode && isNodeInTypePosition(identifier, typeNode)) return true;
+
+  // Parameter / property / index-signature / type-assertion parents: a direct
+  // `type_annotation` child holds the type position.
+  if (DIRECT_TYPE_ANNOTATION_PARENTS.has(parent.type)) {
+    const typeAnnot = findChildOfType(parent, 'type_annotation');
+    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
   }
 
   // Type parameters/arguments: `Array<SomeType>`, `Promise<SomeType>`
@@ -839,24 +854,6 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
 
   // Return type annotations: `function test(): SomeType`
   if (DECLARATION_TYPES.has(parent.type)) {
-    const typeAnnot = findChildOfType(parent, 'type_annotation');
-    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
-  }
-
-  // Parameter type annotations: `function test(x: SomeType)`
-  if (parent.type === 'required_parameter' || parent.type === 'optional_parameter') {
-    const typeAnnot = findChildOfType(parent, 'type_annotation');
-    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
-  }
-
-  // Property type annotations: `{ prop: SomeType }` or `class { prop: SomeType }`
-  if (parent.type === 'property_signature' || parent.type === 'class_property') {
-    const typeAnnot = findChildOfType(parent, 'type_annotation');
-    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
-  }
-
-  // Index signature: `{ [key: string]: SomeType }`
-  if (parent.type === 'index_signature') {
     const typeAnnot = findChildOfType(parent, 'type_annotation');
     if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
   }
