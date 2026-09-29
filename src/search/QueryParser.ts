@@ -595,6 +595,14 @@ function escapeFTS5(value: string): string {
   return value.replace(/"/g, '""');
 }
 
+/** Build an `EXISTS (SELECT 1 FROM <table> [<alias>] WHERE <condition>)` fragment.
+ *  Shared by every entity/property filter in {@link compileToSQL} so the one SQL
+ *  keyword lives here instead of being repeated at each call site. */
+function existsSubquery(table: string, alias: string, condition: string): string {
+  const target = alias ? `${table} ${alias}` : table;
+  return `EXISTS (SELECT 1 FROM ${target} WHERE ${condition})`;
+}
+
 /**
  * Compile a parsed query into SQL fragments for the SQLite-backed CodeIndexDB.
  *
@@ -675,7 +683,7 @@ export function compileToSQL(
   // hook: useState / hooks: useEffect
   if (f.metadata?.hasHook) {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM json_each(hooks) WHERE LOWER(json_extract(value, \'$.name\')) = LOWER(@hookName))',
+      existsSubquery('json_each(hooks)', '', "LOWER(json_extract(value, '$.name')) = LOWER(@hookName)"),
     );
     params.hookName = f.metadata.hasHook;
   }
@@ -683,7 +691,7 @@ export function compileToSQL(
   // prop: / props: <name>
   if (f.metadata?.hasProp) {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM json_each(props) WHERE LOWER(json_extract(value, \'$.name\')) = LOWER(@propName))',
+      existsSubquery('json_each(props)', '', "LOWER(json_extract(value, '$.name')) = LOWER(@propName)"),
     );
     params.propName = f.metadata.hasProp;
   }
@@ -691,7 +699,7 @@ export function compileToSQL(
   // dep: / dependency: / uses: <name>
   if (f.metadata?.usesDependency) {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM function_dependencies fd WHERE fd.function_id = f.id AND fd.dependency = @depName)',
+      existsSubquery('function_dependencies', 'fd', 'fd.function_id = f.id AND fd.dependency = @depName'),
     );
     params.depName = f.metadata.usesDependency;
   }
@@ -706,7 +714,7 @@ export function compileToSQL(
   // calledby: / dependents-of: / used-by: <name>
   if (f.metadata?.calledByFunction) {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM function_calls fc2 WHERE fc2.callee_name = f.name AND fc2.caller_id IN (SELECT id FROM functions WHERE name = @calledByName))',
+      existsSubquery('function_calls', 'fc2', 'fc2.callee_name = f.name AND fc2.caller_id IN (SELECT id FROM functions WHERE name = @calledByName)'),
     );
     params.calledByName = f.metadata.calledByFunction;
   }
@@ -714,7 +722,7 @@ export function compileToSQL(
   // depends-on: / imports-from: <module>
   if (f.metadata?.dependsOnModule) {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM function_dependencies fd2 WHERE fd2.function_id = f.id AND fd2.dependency LIKE @modulePattern)',
+      existsSubquery('function_dependencies', 'fd2', 'fd2.function_id = f.id AND fd2.dependency LIKE @modulePattern'),
     );
     params.modulePattern = `%${f.metadata.dependsOnModule}%`;
   }
@@ -778,28 +786,28 @@ export function compileToSQL(
 
   if (typeof f.metadata?.cssProperty === 'string') {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM style_declarations sd WHERE sd.file_path = f.file_path AND sd.property = @cssProperty)',
+      existsSubquery('style_declarations', 'sd', 'sd.file_path = f.file_path AND sd.property = @cssProperty'),
     );
     params.cssProperty = f.metadata.cssProperty;
   }
 
   if (typeof f.metadata?.cssValue === 'string') {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM style_declarations sd WHERE sd.file_path = f.file_path AND sd.normalized_value = @cssValue)',
+      existsSubquery('style_declarations', 'sd', 'sd.file_path = f.file_path AND sd.normalized_value = @cssValue'),
     );
     params.cssValue = f.metadata.cssValue;
   }
 
   if (typeof f.metadata?.styleMechanism === 'string') {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM style_declarations sd WHERE sd.file_path = f.file_path AND sd.mechanism = @styleMechanism)',
+      existsSubquery('style_declarations', 'sd', 'sd.file_path = f.file_path AND sd.mechanism = @styleMechanism'),
     );
     params.styleMechanism = f.metadata.styleMechanism;
   }
 
   if (typeof f.metadata?.styleToken === 'string') {
     whereClauses.push(
-      'EXISTS (SELECT 1 FROM style_declarations sd WHERE sd.file_path = f.file_path AND sd.token_ref = @styleToken)',
+      existsSubquery('style_declarations', 'sd', 'sd.file_path = f.file_path AND sd.token_ref = @styleToken'),
     );
     params.styleToken = f.metadata.styleToken;
   }

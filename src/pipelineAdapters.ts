@@ -1105,6 +1105,37 @@ const SQL_STYLE_INS_CLASS = 'INSERT OR IGNORE INTO style_defined_classes (class_
 const SQL_STYLE_INS_USAGE = 'INSERT INTO style_class_usage (class_name, file_path, line, mechanism, unresolvable) VALUES (?, ?, ?, ?, ?)';
 const SQL_STYLE_INS_TOKEN = 'INSERT INTO style_tokens (name, value, file_path, mechanism) VALUES (?, ?, ?, ?)';
 
+/** A prepared write statement (the shape `rawDb.prepare(sql)` returns). */
+type StyleWriteStmt = { run(...params: unknown[]): unknown };
+
+/** Run a style write through the prepared statement when available, else the
+ *  index handle's prepare-per-call `run`. Collapses the dual-path dispatch
+ *  (prepare-once vs. per-call) that `insertSourceStyleFacts` and the styles
+ *  reducer both perform, so each write is a single call site instead of two. */
+function runStyleWrite(
+  stmts: Record<string, StyleWriteStmt> | null,
+  stmtKey: string,
+  sql: string,
+  params: unknown[],
+  indexHandle: IndexHandle,
+): void {
+  const stmt = stmts?.[stmtKey];
+  if (stmt) stmt.run(...params);
+  else indexHandle.run(sql, params);
+}
+
+/** Read a file's stored style content hash through the prepared statement when
+ *  available, else the index handle's `query`. */
+function getStyleHash(
+  stmts: Record<string, StyleWriteStmt & { get(...params: unknown[]): unknown }> | null,
+  filePath: string,
+  indexHandle: IndexHandle,
+): { content_hash: string } | undefined {
+  return (stmts
+    ? stmts.getHash!.get(filePath)
+    : indexHandle.query(SQL_STYLE_GET_HASH, [filePath])[0]) as { content_hash: string } | undefined;
+}
+
 /**
  * Insert TS/JS CSS-in-JS facts (from the styles-source visitor) into the
  * style_* tables. Mirrors the TS/JS branch the style indexer used to run
@@ -1167,53 +1198,31 @@ function insertSourceStyleFacts(
     // Full-run content-hash skip: leave already-current rows untouched. Scoped
     // runs always re-write, matching the old style indexer's `if (!scoped)` guard.
     if (!isScoped) {
-      const stored = stmts
-        ? (stmts.getHash.get(filePath) as { content_hash: string } | undefined)
-        : (indexHandle.query(SQL_STYLE_GET_HASH, [filePath])[0] as { content_hash: string } | undefined);
+      const stored = getStyleHash(stmts, filePath, indexHandle);
       if (stored?.content_hash === facts.contentHash) return;
     }
 
     // Delete stale rows — all five tables, mirroring the old deleteFileEntries
     // so a file that *lost* its styles also loses its stale unread-sources row.
-    if (stmts) {
-      stmts.delDecl.run(filePath);
-      stmts.delUsage.run(filePath);
-      stmts.delTok.run(filePath);
-      stmts.delUnread.run(filePath);
-      stmts.delClass.run(filePath);
-    } else {
-      indexHandle.run(SQL_STYLE_DEL_DECL, [filePath]);
-      indexHandle.run(SQL_STYLE_DEL_USAGE, [filePath]);
-      indexHandle.run(SQL_STYLE_DEL_TOKEN, [filePath]);
-      indexHandle.run(SQL_STYLE_DEL_UNREAD, [filePath]);
-      indexHandle.run(SQL_STYLE_DEL_CLASS, [filePath]);
-    }
+    runStyleWrite(stmts, 'delDecl', SQL_STYLE_DEL_DECL, [filePath], indexHandle);
+    runStyleWrite(stmts, 'delUsage', SQL_STYLE_DEL_USAGE, [filePath], indexHandle);
+    runStyleWrite(stmts, 'delTok', SQL_STYLE_DEL_TOKEN, [filePath], indexHandle);
+    runStyleWrite(stmts, 'delUnread', SQL_STYLE_DEL_UNREAD, [filePath], indexHandle);
+    runStyleWrite(stmts, 'delClass', SQL_STYLE_DEL_CLASS, [filePath], indexHandle);
 
     // Insert declarations (and their defined-class catalog entries).
     for (const decl of facts.declarations) {
-      if (stmts) {
-        stmts.insDecl.run(decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash);
-      } else {
-        indexHandle.run(
-          SQL_STYLE_INS_DECL,
-          [decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash],
-        );
-      }
+      runStyleWrite(stmts, 'insDecl', SQL_STYLE_INS_DECL, [decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash], indexHandle);
       if (decl.context) {
         for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-          if (stmts) stmts.insClass.run(m[1], decl.filePath);
-          else indexHandle.run(SQL_STYLE_INS_CLASS, [m[1], decl.filePath]);
+          runStyleWrite(stmts, 'insClass', SQL_STYLE_INS_CLASS, [m[1], decl.filePath], indexHandle);
         }
       }
     }
 
     // Insert class usage.
     for (const cu of facts.classUsage) {
-      if (stmts) stmts.insUsage.run(cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0);
-      else indexHandle.run(
-        SQL_STYLE_INS_USAGE,
-        [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0],
-      );
+      runStyleWrite(stmts, 'insUsage', SQL_STYLE_INS_USAGE, [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0], indexHandle);
     }
   };
 
@@ -1327,17 +1336,10 @@ export function createStylesReducer(): Stage3Reducer {
           const insertAll = (): void => {
             for (const [filePath, facts] of Object.entries(cssFacts)) {
               // Delete old entries for this file (replaces the styleIndexer path)
-              if (stmts) {
-                stmts.delDecl.run(filePath);
-                stmts.delTok.run(filePath);
-                stmts.delUsage.run(filePath);
-                stmts.delClass.run(filePath);
-              } else {
-                indexHandle.run(SQL_STYLE_DEL_DECL, [filePath]);
-                indexHandle.run(SQL_STYLE_DEL_TOKEN, [filePath]);
-                indexHandle.run(SQL_STYLE_DEL_USAGE, [filePath]);
-                indexHandle.run(SQL_STYLE_DEL_CLASS, [filePath]);
-              }
+              runStyleWrite(stmts, 'delDecl', SQL_STYLE_DEL_DECL, [filePath], indexHandle);
+              runStyleWrite(stmts, 'delTok', SQL_STYLE_DEL_TOKEN, [filePath], indexHandle);
+              runStyleWrite(stmts, 'delUsage', SQL_STYLE_DEL_USAGE, [filePath], indexHandle);
+              runStyleWrite(stmts, 'delClass', SQL_STYLE_DEL_CLASS, [filePath], indexHandle);
 
               // Compute content hash for the file
               const contentStr = JSON.stringify({ declarations: facts.declarations.length, tokens: facts.tokens.length, classUsage: facts.classUsage.length });
@@ -1345,42 +1347,26 @@ export function createStylesReducer(): Stage3Reducer {
 
               // Insert declarations
               for (const decl of facts.declarations) {
-                if (stmts) {
-                  stmts.insDecl.run(decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash);
-                } else {
-                  indexHandle.run(
-                    SQL_STYLE_INS_DECL,
-                    [decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash],
-                  );
-                }
+                runStyleWrite(stmts, 'insDecl', SQL_STYLE_INS_DECL, [decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash], indexHandle);
                 // Populate the defined-class catalog (Spec 45) from any class
                 // selectors in the rule's context so styles/undefined-class can
                 // resolve names via `style_defined_classes` instead of a
                 // full-corpus regex scan over every declaration.
                 if (decl.context) {
                   for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-                    if (stmts) stmts.insClass.run(m[1], decl.filePath);
-                    else indexHandle.run(SQL_STYLE_INS_CLASS, [m[1], decl.filePath]);
+                    runStyleWrite(stmts, 'insClass', SQL_STYLE_INS_CLASS, [m[1], decl.filePath], indexHandle);
                   }
                 }
               }
 
               // Insert tokens
               for (const tok of facts.tokens) {
-                if (stmts) stmts.insTok.run(tok.name, tok.value, tok.filePath, tok.mechanism);
-                else indexHandle.run(
-                  SQL_STYLE_INS_TOKEN,
-                  [tok.name, tok.value, tok.filePath, tok.mechanism],
-                );
+                runStyleWrite(stmts, 'insTok', SQL_STYLE_INS_TOKEN, [tok.name, tok.value, tok.filePath, tok.mechanism], indexHandle);
               }
 
               // Insert class usage
               for (const cu of facts.classUsage) {
-                if (stmts) stmts.insUsage.run(cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0);
-                else indexHandle.run(
-                  SQL_STYLE_INS_USAGE,
-                  [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0],
-                );
+                runStyleWrite(stmts, 'insUsage', SQL_STYLE_INS_USAGE, [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0], indexHandle);
               }
             }
           };

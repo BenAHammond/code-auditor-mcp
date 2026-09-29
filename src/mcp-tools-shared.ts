@@ -556,6 +556,121 @@ async function runIndexingAndCodeMap(
   return { indexingResult, codeMapResult };
 }
 
+/** Discovery SQL for PostgreSQL information_schema / pg_catalog. */
+function postgresDiscoveryQueries(
+  tableFilter: string,
+  includeIndexes: boolean,
+  includeConstraints: boolean,
+): { name: string; sql: string; description: string }[] {
+  const queries: { name: string; sql: string; description: string }[] = [];
+  queries.push({
+    name: 'tables',
+    sql: `SELECT table_name, table_type, table_schema
+          FROM information_schema.tables
+          WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ${tableFilter}
+          ORDER BY table_schema, table_name;`,
+    description: GET_ALL_TABLES_VIEWS_DESC
+  });
+
+  queries.push({
+    name: 'columns',
+    sql: `SELECT table_name, column_name, data_type, is_nullable, column_default,
+                 character_maximum_length, numeric_precision, numeric_scale
+          FROM information_schema.columns
+          WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ${tableFilter}
+          ORDER BY table_name, ordinal_position;`,
+    description: 'Get all columns with types and constraints'
+  });
+
+  if (includeConstraints) {
+    queries.push({
+      name: 'foreign_keys',
+      sql: `SELECT tc.table_name, kcu.column_name, ccu.table_name AS foreign_table_name,
+                   ccu.column_name AS foreign_column_name, rc.delete_rule, rc.update_rule
+            FROM information_schema.table_constraints AS tc
+            JOIN information_schema.key_column_usage AS kcu ON tc.constraint_name = kcu.constraint_name
+            JOIN information_schema.constraint_column_usage AS ccu ON ccu.constraint_name = tc.constraint_name
+            JOIN information_schema.referential_constraints AS rc ON tc.constraint_name = rc.constraint_name
+            WHERE tc.constraint_type = 'FOREIGN KEY' ${tableFilter.replace('table_name', 'tc.table_name')}
+            ORDER BY tc.table_name, kcu.column_name;`,
+      description: 'Get foreign key relationships'
+    });
+  }
+
+  if (includeIndexes) {
+    queries.push({
+      name: 'indexes',
+      sql: `SELECT tablename, indexname, indexdef
+            FROM pg_indexes
+            WHERE schemaname NOT IN ('information_schema', 'pg_catalog') ${tableFilter.replace('table_name', 'tablename')}
+            ORDER BY tablename, indexname;`,
+      description: 'Get all indexes'
+    });
+  }
+  return queries;
+}
+
+/** Discovery SQL for MySQL information_schema. */
+function mysqlDiscoveryQueries(
+  tableFilter: string,
+  includeConstraints: boolean,
+): { name: string; sql: string; description: string }[] {
+  const queries: { name: string; sql: string; description: string }[] = [];
+  queries.push({
+    name: 'tables',
+    sql: `SELECT table_name, table_type, table_schema
+          FROM information_schema.tables
+          WHERE table_schema = DATABASE() ${tableFilter}
+          ORDER BY table_name;`,
+    description: GET_ALL_TABLES_VIEWS_DESC
+  });
+
+  queries.push({
+    name: 'columns',
+    sql: `SELECT table_name, column_name, data_type, is_nullable, column_default,
+                 character_maximum_length, numeric_precision, numeric_scale,
+                 column_key, extra
+          FROM information_schema.columns
+          WHERE table_schema = DATABASE() ${tableFilter}
+          ORDER BY table_name, ordinal_position;`,
+    description: 'Get all columns with types and constraints'
+  });
+
+  if (includeConstraints) {
+    queries.push({
+      name: 'foreign_keys',
+      sql: `SELECT table_name, column_name, referenced_table_name, referenced_column_name,
+                   delete_rule, update_rule
+            FROM information_schema.key_column_usage
+            WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL ${tableFilter}
+            ORDER BY table_name, column_name;`,
+      description: 'Get foreign key relationships'
+    });
+  }
+  return queries;
+}
+
+/** Discovery SQL for SQLite sqlite_master. */
+function sqliteDiscoveryQueries(): { name: string; sql: string; description: string }[] {
+  const queries: { name: string; sql: string; description: string }[] = [];
+  queries.push({
+    name: 'tables',
+    sql: `SELECT name as table_name, type as table_type
+          FROM sqlite_master
+          WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
+          ORDER BY name;`,
+    description: GET_ALL_TABLES_VIEWS_DESC
+  });
+
+  queries.push({
+    name: 'table_info',
+    sql: `-- Run this for each table: PRAGMA table_info(table_name);
+          -- This will give you column information for each table`,
+    description: 'Get column information (run PRAGMA table_info for each table)'
+  });
+  return queries;
+}
+
 /**
  * Shared tool handler implementations
  */
@@ -1007,7 +1122,6 @@ export class ToolHandlers {
     includeConstraints: boolean,
     specificTables?: string[]
   ): { name: string; sql: string; description: string }[] {
-    const queries: { name: string; sql: string; description: string }[] = [];
     // Identifiers are interpolated into generated SQL text (run by the agent,
     // never this tool), so a name that is not a plain identifier is dropped —
     // a quoted name could otherwise escape the string literal and inject SQL.
@@ -1019,106 +1133,14 @@ export class ToolHandlers {
 
     switch (databaseType.toLowerCase()) {
       case 'postgresql':
-        queries.push({
-          name: 'tables',
-          sql: `SELECT table_name, table_type, table_schema 
-                FROM information_schema.tables 
-                WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ${tableFilter}
-                ORDER BY table_schema, table_name;`,
-          description: GET_ALL_TABLES_VIEWS_DESC
-        });
-
-        queries.push({
-          name: 'columns',
-          sql: `SELECT table_name, column_name, data_type, is_nullable, column_default, 
-                       character_maximum_length, numeric_precision, numeric_scale
-                FROM information_schema.columns 
-                WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ${tableFilter}
-                ORDER BY table_name, ordinal_position;`,
-          description: 'Get all columns with types and constraints'
-        });
-
-        if (includeConstraints) {
-          queries.push({
-            name: 'foreign_keys',
-            sql: `SELECT tc.table_name, kcu.column_name, ccu.table_name AS foreign_table_name,
-                         ccu.column_name AS foreign_column_name, rc.delete_rule, rc.update_rule
-                  FROM information_schema.table_constraints AS tc 
-                  JOIN information_schema.key_column_usage AS kcu ON tc.constraint_name = kcu.constraint_name
-                  JOIN information_schema.constraint_column_usage AS ccu ON ccu.constraint_name = tc.constraint_name
-                  JOIN information_schema.referential_constraints AS rc ON tc.constraint_name = rc.constraint_name
-                  WHERE tc.constraint_type = 'FOREIGN KEY' ${tableFilter.replace('table_name', 'tc.table_name')}
-                  ORDER BY tc.table_name, kcu.column_name;`,
-            description: 'Get foreign key relationships'
-          });
-        }
-
-        if (includeIndexes) {
-          queries.push({
-            name: 'indexes',
-            sql: `SELECT tablename, indexname, indexdef 
-                  FROM pg_indexes 
-                  WHERE schemaname NOT IN ('information_schema', 'pg_catalog') ${tableFilter.replace('table_name', 'tablename')}
-                  ORDER BY tablename, indexname;`,
-            description: 'Get all indexes'
-          });
-        }
-        break;
-
+        return postgresDiscoveryQueries(tableFilter, includeIndexes, includeConstraints);
       case 'mysql':
-        queries.push({
-          name: 'tables',
-          sql: `SELECT table_name, table_type, table_schema 
-                FROM information_schema.tables 
-                WHERE table_schema = DATABASE() ${tableFilter}
-                ORDER BY table_name;`,
-          description: GET_ALL_TABLES_VIEWS_DESC
-        });
-
-        queries.push({
-          name: 'columns',
-          sql: `SELECT table_name, column_name, data_type, is_nullable, column_default,
-                       character_maximum_length, numeric_precision, numeric_scale,
-                       column_key, extra
-                FROM information_schema.columns 
-                WHERE table_schema = DATABASE() ${tableFilter}
-                ORDER BY table_name, ordinal_position;`,
-          description: 'Get all columns with types and constraints'
-        });
-
-        if (includeConstraints) {
-          queries.push({
-            name: 'foreign_keys',
-            sql: `SELECT table_name, column_name, referenced_table_name, referenced_column_name,
-                         delete_rule, update_rule
-                  FROM information_schema.key_column_usage 
-                  WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL ${tableFilter}
-                  ORDER BY table_name, column_name;`,
-            description: 'Get foreign key relationships'
-          });
-        }
-        break;
-
+        return mysqlDiscoveryQueries(tableFilter, includeConstraints);
       case 'sqlite':
-        queries.push({
-          name: 'tables',
-          sql: `SELECT name as table_name, type as table_type 
-                FROM sqlite_master 
-                WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
-                ORDER BY name;`,
-          description: GET_ALL_TABLES_VIEWS_DESC
-        });
-
-        queries.push({
-          name: 'table_info',
-          sql: `-- Run this for each table: PRAGMA table_info(table_name);
-                -- This will give you column information for each table`,
-          description: 'Get column information (run PRAGMA table_info for each table)'
-        });
-        break;
+        return sqliteDiscoveryQueries();
+      default:
+        return [];
     }
-
-    return queries;
   }
 
   /**

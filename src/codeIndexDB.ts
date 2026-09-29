@@ -841,6 +841,168 @@ function matchesMetadataFilter(
   return true;
 }
 
+/** Identity key for a function row: name, file path, and line number. */
+function functionRowKey(f: any): string {
+  return `${(f as any).name ?? f.name}:${(f as any).filePath ?? f.file_path}:${(f as any).lineNumber ?? f.line_number}`;
+}
+
+/** Update one function's row in place, rebuilding the SET list from the row's
+ *  keys (minus the identity columns) so new metadata columns flow through
+ *  without a schema change. */
+function upsertFunctionRow(
+  db: SqliteDatabase,
+  id: unknown,
+  row: Record<string, any>,
+  stats: { updated: number },
+): void {
+  const sets: string[] = [];
+  for (const k of Object.keys(row)) {
+    if (k === 'name' || k === 'file_path') continue;
+    assertSqlIdentifier(k, ASSERT_COLUMN_NAME);
+    sets.push(`"${k}" = @${k}`);
+  }
+  db.prepare(`UPDATE functions SET ${sets.join(', ')} WHERE id = @_id`).run({ ...row, _id: id });
+  stats.updated++;
+}
+
+/** Insert a fresh function row from a prepared row object. */
+function insertFunctionRow(
+  db: SqliteDatabase,
+  row: Record<string, any>,
+  stats: { added: number },
+): void {
+  const keys = Object.keys(row);
+  const sql = `INSERT INTO functions ("${keys.join('", "')}") VALUES (${keys.map(k => '@' + k).join(', ')})`;
+  db.prepare(sql).run(row);
+  stats.added++;
+}
+
+/** Delete rows for functions that no longer exist in the current set. */
+function removeStaleFunctionRows(
+  db: SqliteDatabase,
+  existing: any[],
+  currentMap: Map<string, unknown>,
+  stats: { removed: number },
+): void {
+  for (const e of existing) {
+    if (!currentMap.has(functionRowKey(e))) {
+      db.prepare('DELETE FROM functions WHERE id = ?').run(e.id);
+      stats.removed++;
+    }
+  }
+}
+
+/** Clear call edges for a scope — one file, or the whole table when unscoped. */
+function clearCallEdges(db: SqliteDatabase, filePath?: string): void {
+  if (filePath) {
+    db.prepare(`DELETE FROM function_calls WHERE caller_id IN (SELECT id FROM functions WHERE file_path = ?)`).run(filePath);
+  } else {
+    db.prepare('DELETE FROM function_calls').run();
+  }
+}
+
+/** Clear dependency edges for a scope — one file, or the whole table when unscoped. */
+function clearDependencyEdges(db: SqliteDatabase, filePath?: string): void {
+  if (filePath) {
+    db.prepare(`DELETE FROM function_dependencies WHERE function_id IN (SELECT id FROM functions WHERE file_path = ?)`).run(filePath);
+  } else {
+    db.prepare('DELETE FROM function_dependencies').run();
+  }
+}
+
+/** Read the function rows a graph rebuild needs, scoped to a file when given. */
+function loadGraphFunctions(db: SqliteDatabase, filePath?: string): any[] {
+  return filePath
+    ? db.prepare('SELECT id, name, file_path, metadata_json FROM functions WHERE file_path = ?').all(filePath) as any[]
+    : db.prepare('SELECT id, name, file_path, metadata_json FROM functions').all() as any[];
+}
+
+/** Rebuild call and dependency edges from function metadata. */
+function insertGraphEdges(db: SqliteDatabase, allFns: any[]): void {
+  const insertCall = db.prepare('INSERT OR IGNORE INTO function_calls (caller_id, callee_name) VALUES (?, ?)');
+  const insertFnDep = db.prepare('INSERT OR IGNORE INTO function_dependencies (function_id, dependency) VALUES (?, ?)');
+  for (const fn of allFns) {
+    const meta = tryParseJson(fn.metadata_json) ?? {};
+    if (meta.functionCalls) {
+      for (const callee of meta.functionCalls) {
+        insertCall.run(fn.id, callee);
+      }
+    }
+    // Add specifier-level dependencies (e.g., useState, useEffect)
+    const usedImports: string[] = meta.usedImports ?? [];
+    for (const imp of usedImports) {
+      insertFnDep.run(fn.id, imp);
+    }
+    // Add module-level dependencies (e.g., react, express) — stored in
+    // metadata.dependencies since v3.0.4 to power the dep: operator
+    const moduleDeps: string[] = meta.dependencies ?? [];
+    for (const dep of moduleDeps) {
+      insertFnDep.run(fn.id, dep);
+    }
+  }
+}
+
+/** Migration 16 → 17: drop the always-empty `signature` column (Spec 63 R6) and
+ *  rebuild the FTS surface without it. Kept as a free function (not a method) so
+ *  the schema-upgrade code stays split into query-budget-sized units. */
+function migrateSchemaUsageToV17(db: SqliteDatabase, currentVersion: number): void {
+  if (currentVersion >= 17) return;
+  // Clear the derived index FIRST, while the existing FTS surface and its
+  // triggers are still the ones that match the current schema. `DELETE FROM
+  // functions` fires the live `functions_ad` trigger per row, keeping
+  // `functions_fts` in step, and cascades to `function_calls` /
+  // `function_dependencies`. It must precede the FTS drop: firing the
+  // `functions_ad` trigger against a freshly recreated (empty) external-content
+  // `functions_fts` while `functions` still holds rows yields
+  // SQLITE_CORRUPT, not a clean delete.
+  db.exec(`DELETE FROM functions`);
+
+  // Drop the FTS surface — SQLite refuses DROP COLUMN while the FTS triggers
+  // reference the column, and the FTS table's column list must shed
+  // `signature` too.
+  db.exec(`
+    DROP TRIGGER IF EXISTS functions_ai;
+    DROP TRIGGER IF EXISTS functions_ad;
+    DROP TRIGGER IF EXISTS functions_au;
+    DROP TABLE IF EXISTS functions_fts;
+  `);
+
+  // Drop the column only if it still exists. A fresh DB is created by
+  // `createSchema` *without* the column (it already reflects v17), and the
+  // migrations then run on top of it with `currentVersion` 0 — so this guard
+  // is what lets an old index be upgraded in place without breaking a brand
+  // new one (same idempotence as the 14→15 / 15→16 column guards).
+  const fnCols = db
+    .prepare(`PRAGMA table_info('functions')`)
+    .all() as Array<{ name: string }>;
+  if (fnCols.some((c) => c.name === 'signature')) {
+    db.exec(`ALTER TABLE functions DROP COLUMN signature`);
+  }
+
+  // Rebuild the FTS surface without `signature`.
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS functions_fts USING fts5(
+      name, jsdoc_description, purpose, context, body,
+      content='functions', content_rowid='id',
+      tokenize='porter unicode61'
+    );
+    CREATE TRIGGER IF NOT EXISTS functions_ai AFTER INSERT ON functions BEGIN
+      INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
+      VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
+    END;
+    CREATE TRIGGER IF NOT EXISTS functions_ad AFTER DELETE ON functions BEGIN
+      INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
+      VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
+    END;
+    CREATE TRIGGER IF NOT EXISTS functions_au AFTER UPDATE ON functions BEGIN
+      INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
+      VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
+      INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
+      VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
+    END;
+  `);
+}
+
 /**
  * SQLite-backed code index storing functions, whitelist entries, audit
  * results, analyzer configs, code maps, schemas, project tasks, and coverage
@@ -1534,62 +1696,7 @@ export class CodeIndexDB {
     //      go. SQLite refuses `DROP COLUMN` while the FTS triggers reference the
     //      column, so the triggers and FTS table are dropped first, the column is
     //      dropped, and the FTS surface is rebuilt without `signature`.
-    if (currentVersion < 17) {
-      // Clear the derived index FIRST, while the existing FTS surface and its
-      // triggers are still the ones that match the current schema. `DELETE FROM
-      // functions` fires the live `functions_ad` trigger per row, keeping
-      // `functions_fts` in step, and cascades to `function_calls` /
-      // `function_dependencies`. It must precede the FTS drop: firing the
-      // `functions_ad` trigger against a freshly recreated (empty) external-content
-      // `functions_fts` while `functions` still holds rows yields
-      // SQLITE_CORRUPT, not a clean delete.
-      this.db.exec(`DELETE FROM functions`);
-
-      // Drop the FTS surface — SQLite refuses DROP COLUMN while the FTS triggers
-      // reference the column, and the FTS table's column list must shed
-      // `signature` too.
-      this.db.exec(`
-        DROP TRIGGER IF EXISTS functions_ai;
-        DROP TRIGGER IF EXISTS functions_ad;
-        DROP TRIGGER IF EXISTS functions_au;
-        DROP TABLE IF EXISTS functions_fts;
-      `);
-
-      // Drop the column only if it still exists. A fresh DB is created by
-      // `createSchema` *without* the column (it already reflects v17), and the
-      // migrations then run on top of it with `currentVersion` 0 — so this guard
-      // is what lets an old index be upgraded in place without breaking a brand
-      // new one (same idempotence as the 14→15 / 15→16 column guards).
-      const fnCols = this.db
-        .prepare(`PRAGMA table_info('functions')`)
-        .all() as Array<{ name: string }>;
-      if (fnCols.some((c) => c.name === 'signature')) {
-        this.db.exec(`ALTER TABLE functions DROP COLUMN signature`);
-      }
-
-      // Rebuild the FTS surface without `signature`.
-      this.db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS functions_fts USING fts5(
-          name, jsdoc_description, purpose, context, body,
-          content='functions', content_rowid='id',
-          tokenize='porter unicode61'
-        );
-        CREATE TRIGGER IF NOT EXISTS functions_ai AFTER INSERT ON functions BEGIN
-          INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
-          VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
-        END;
-        CREATE TRIGGER IF NOT EXISTS functions_ad AFTER DELETE ON functions BEGIN
-          INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
-          VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
-        END;
-        CREATE TRIGGER IF NOT EXISTS functions_au AFTER UPDATE ON functions BEGIN
-          INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
-          VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
-          INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
-          VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
-        END;
-      `);
-    }
+    migrateSchemaUsageToV17(this.db, currentVersion);
 
     // Migration 17 → 18: the phase facts store (Spec 68 §12). The index stops
     // being a function cache and becomes the processed-facts store of record:
@@ -2047,39 +2154,20 @@ export class CodeIndexDB {
       'SELECT id, name, file_path, line_number FROM functions WHERE file_path = ?'
     ).all(filePath) as any[];
 
-    const createKey = (f: any) => `${(f as any).name ?? f.name}:${(f as any).filePath ?? f.file_path}:${(f as any).lineNumber ?? f.line_number}`;
-    const currentMap = new Map(currentFunctions.map(f => [createKey(f), f]));
+    const currentMap = new Map(currentFunctions.map(f => [functionRowKey(f), f]));
 
     // Insert/update current functions
     for (const func of currentFunctions) {
       const exists = existing.find(e => e.name === func.name && e.line_number === func.lineNumber);
       if (exists) {
-        const row = this.functionToRow(func, lastModified);
-        const sets: string[] = [];
-        for (const k of Object.keys(row)) {
-          if (k === 'name' || k === 'file_path') continue;
-          assertSqlIdentifier(k, ASSERT_COLUMN_NAME);
-          sets.push(`"${k}" = @${k}`);
-        }
-        const params = { ...row, _id: exists.id };
-        this.db.prepare(`UPDATE functions SET ${sets.join(', ')} WHERE id = @_id`).run(params);
-        stats.updated++;
+        upsertFunctionRow(this.db, exists.id, this.functionToRow(func, lastModified), stats);
       } else {
-        const row = this.functionToRow(func, lastModified);
-        const keys = Object.keys(row);
-        const sql = `INSERT INTO functions ("${keys.join('", "')}") VALUES (${keys.map(k => '@' + k).join(', ')})`;
-        this.db.prepare(sql).run(row);
-        stats.added++;
+        insertFunctionRow(this.db, this.functionToRow(func, lastModified), stats);
       }
     }
 
     // Remove stale functions
-    for (const e of existing) {
-      if (!currentMap.has(createKey(e))) {
-        this.db.prepare('DELETE FROM functions WHERE id = ?').run(e.id);
-        stats.removed++;
-      }
-    }
+    removeStaleFunctionRows(this.db, existing, currentMap, stats);
   }
 
   /**
@@ -2166,60 +2254,12 @@ export class CodeIndexDB {
     this.ensureInitialized();
 
     const txn = this.db.transaction(() => {
-      // Clear existing call edges for scoped functions
-      if (filePath) {
-        this.db.prepare(
-          `DELETE FROM function_calls WHERE caller_id IN (SELECT id FROM functions WHERE file_path = ?)`
-        ).run(filePath);
-      } else {
-        this.db.prepare('DELETE FROM function_calls').run();
-      }
-
-      // Clear existing dependency edges for scoped functions
-      if (filePath) {
-        this.db.prepare(
-          `DELETE FROM function_dependencies WHERE function_id IN (SELECT id FROM functions WHERE file_path = ?)`
-        ).run(filePath);
-      } else {
-        this.db.prepare('DELETE FROM function_dependencies').run();
-      }
-
       // Rebuild edges from metadata. When scoped to one file, read only that
       // file's functions — a per-file call previously re-read every function
       // in the index, making the detached-audit loop O(files × functions).
-      const allFns = filePath
-        ? this.db.prepare('SELECT id, name, file_path, metadata_json FROM functions WHERE file_path = ?').all(filePath) as any[]
-        : this.db.prepare('SELECT id, name, file_path, metadata_json FROM functions').all() as any[];
-
-      const insertCall = this.db.prepare(
-        'INSERT OR IGNORE INTO function_calls (caller_id, callee_name) VALUES (?, ?)'
-      );
-      const insertFnDep = this.db.prepare(
-        'INSERT OR IGNORE INTO function_dependencies (function_id, dependency) VALUES (?, ?)'
-      );
-
-      for (const fn of allFns) {
-        const meta = tryParseJson(fn.metadata_json) ?? {};
-
-        if (meta.functionCalls) {
-          for (const callee of meta.functionCalls) {
-            insertCall.run(fn.id, callee);
-          }
-        }
-
-        // Add specifier-level dependencies (e.g., useState, useEffect)
-        const usedImports: string[] = meta.usedImports ?? [];
-        for (const imp of usedImports) {
-          insertFnDep.run(fn.id, imp);
-        }
-
-        // Add module-level dependencies (e.g., react, express) — stored in
-        // metadata.dependencies since v3.0.4 to power the dep: operator
-        const moduleDeps: string[] = meta.dependencies ?? [];
-        for (const dep of moduleDeps) {
-          insertFnDep.run(fn.id, dep);
-        }
-      }
+      clearCallEdges(this.db, filePath);
+      clearDependencyEdges(this.db, filePath);
+      insertGraphEdges(this.db, loadGraphFunctions(this.db, filePath));
     });
 
     txn.immediate();
@@ -2627,20 +2667,26 @@ export class CodeIndexDB {
   async clearIndex(): Promise<void> {
     this.ensureInitialized();
     this.db.transaction(() => {
-      this.db.prepare('DELETE FROM functions').run();
-      // FTS5 triggers handle cleanup
-      this.db.prepare('DELETE FROM audit_results').run();
-      this.db.prepare('DELETE FROM code_maps').run();
-      this.db.prepare('DELETE FROM schema_definitions').run();
-      this.db.prepare('DELETE FROM schema_usage').run();
-      this.db.prepare('DELETE FROM conventions').run();
-      this.db.prepare('DELETE FROM file_churn').run();
-      this.db.prepare('DELETE FROM function_churn').run();
-      this.db.prepare('DELETE FROM hotspot_scores').run();
-      this.db.prepare('DELETE FROM dry_pair_history').run();
-      this.db.prepare('DELETE FROM graph_cache').run();
+      // Delete every index table in one pass. `meta` is deleted separately — it
+      // keeps the keyed subset below while the FTS5 triggers handle functions_fts
+      // cleanup on the functions delete. Preserved by design: project_tasks,
+      // analyzer_configs, whitelist, findings_ledger_runs, findings_ledger_findings.
+      for (const table of [
+        'functions',
+        'audit_results',
+        'code_maps',
+        'schema_definitions',
+        'schema_usage',
+        'conventions',
+        'file_churn',
+        'function_churn',
+        'hotspot_scores',
+        'dry_pair_history',
+        'graph_cache',
+      ]) {
+        this.db.prepare(`DELETE FROM ${table}`).run();
+      }
       this.db.prepare("DELETE FROM meta WHERE key IN ('churn_hash', 'conventions_hash', 'style_last_sync')").run();
-      // Preserve: project_tasks, analyzer_configs, whitelist, findings_ledger_runs, findings_ledger_findings
     })();
   }
 
