@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { ResolvedQuery, ThresholdValues, Finding } from '../phase/types.js';
+import type { ResolvedQuery, ThresholdValues, Finding, TableCatalog } from '../phase/types.js';
 import { dataAccessRules } from '../phase/rules/dataAccess.js';
 
 /** A minimal ResolvedQuery with the irrelevant fields defaulted. */
@@ -36,10 +36,13 @@ function q(overrides: Partial<ResolvedQuery> = {}): ResolvedQuery {
   };
 }
 
-function analyze(ruleId: string, calls: ResolvedQuery[], thresholds: ThresholdValues = {}): Finding[] {
+function analyze(ruleId: string, calls: ResolvedQuery[], thresholds: ThresholdValues = {}, catalog?: TableCatalog): Finding[] {
   const rule = dataAccessRules.find((r) => r.id === ruleId)!;
   const ctx = {
-    facts: { 'data-access-calls': calls },
+    facts: {
+      'data-access-calls': calls,
+      'table-catalog': catalog ?? { tables: [], aliases: {} },
+    },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
   };
@@ -146,6 +149,22 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
         q({ queryText: 'SELECT * FROM config', tables: ['config'], hasFilter: false }),
       ]);
       expect(out).toEqual([]);
+    });
+
+    it('flags a filterless read of a DDL-only tenant table (Tier 3) — §69 Fix 4', () => {
+      const catalog: TableCatalog = {
+        tables: [{ name: 'orders', source: '/fixture/schema.sql', columns: ['organization_id'], uniqueColumns: [] }],
+        aliases: {},
+      };
+      const out = analyze(
+        'unfiltered-query',
+        [q({ queryText: 'SELECT * FROM orders', tables: ['orders'], hasFilter: false })],
+        {},
+        catalog,
+      );
+      expect(out).toHaveLength(1);
+      expect(out[0].message).toContain('Unfiltered read');
+      expect(out[0].message).toContain('tenant table orders');
     });
 
     it('skips test/spec files (Spec 55 R3)', () => {

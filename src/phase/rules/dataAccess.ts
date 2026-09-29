@@ -132,26 +132,40 @@ function isUnfilteredWrite(call: ResolvedQuery): boolean {
 
 /**
  * True when a call is an unfiltered *read* of a tenant table: a filterless read
- * against a table carrying declared tenancy (config-only — Tiers 1–2; Tier 3
- * DDL discovery belongs to the §5 corpus reduction, not this Stage-2 rule).
+ * against a table carrying declared tenancy across all three tiers — config
+ * (Tiers 1–2) AND DDL discovery (Tier 3, from the `table-catalog` fact). The
+ * read half once read Tiers 1–2 only, so a DDL-only tenant table's filterless
+ * read was missed (§69 Fix 4).
  */
-function isUnfilteredRead(call: ResolvedQuery, thresholds: ThresholdValues): boolean {
+function isUnfilteredRead(
+  call: ResolvedQuery,
+  thresholds: ThresholdValues,
+  catalog: TableCatalog,
+): boolean {
   return !call.hasFilter
     && !hasWriteVerb(call.queryText)
-    && requiresOrgFilter(call.tables, thresholds);
+    && tableRequiresOrgFilter(call.tables, buildTierSet(thresholds, catalog));
 }
 
-/** Config-only tenancy: does any referenced table require an org/tenant filter? */
-function requiresOrgFilter(tables: string[], thresholds: ThresholdValues): boolean {
-  const tierSet = buildOrgFilterTierSet(
+/**
+ * The tenant-scoping tier set from config thresholds + the `table-catalog` fact
+ * (Tier 3 DDL discovery). Both `unfiltered-query` (read half) and
+ * `missing-org-filter` derive their tier set here, so Tier 3 is never dropped
+ * from one and not the other (§69 Fix 4).
+ */
+function buildTierSet(thresholds: ThresholdValues, catalog: TableCatalog) {
+  const ddlTableColumns: Record<string, string[]> = {};
+  for (const table of catalog.tables) {
+    ddlTableColumns[table.name] = [...table.columns];
+  }
+  return buildOrgFilterTierSet(
     {
       orgFilterTables: asStringArray(thresholds.orgFilterTables),
       orgFilterColumns: asStringArray(thresholds.orgFilterColumns),
       schemas: (thresholds.schemas as OrgFilterConfig['schemas']) ?? [],
     },
-    undefined,
+    ddlTableColumns,
   );
-  return tableRequiresOrgFilter(tables, tierSet);
 }
 
 function asStringArray(v: unknown): string[] | undefined {
@@ -266,10 +280,10 @@ const complexQuery: RuleDefinition<DataAccessNeeds> = {
 
 // ── unfiltered-query ────────────────────────────────────────────────────────
 
-const unfilteredQuery: RuleDefinition<DataAccessNeeds> = {
+const unfilteredQuery: RuleDefinition<MissingOrgFilterNeeds> = {
   id: 'unfiltered-query',
   analyzer: 'data-access',
-  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['data-access-calls'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['data-access-calls', 'table-catalog'] },
   severity: 'high',
   message: META['unfiltered-query'].message,
   docs: META['unfiltered-query'].docs,
@@ -293,7 +307,7 @@ const unfilteredQuery: RuleDefinition<DataAccessNeeds> = {
       if (call.tables.length > joinedTableCount) continue;
 
       const isWrite = isUnfilteredWrite(call);
-      const isRead = isUnfilteredRead(call, ctx.thresholds);
+      const isRead = isUnfilteredRead(call, ctx.thresholds, ctx.facts['table-catalog']);
       if ((!isWrite && !isRead) || call.tables.length === 0) continue;
 
       const kind = isWrite ? 'write' : 'read';
@@ -410,20 +424,10 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
     // Tier 3 (DDL discovery) comes from the corpus reduction of the schema facts
     // into `table-catalog`; Tiers 1–2 come from the config thresholds. The one
     // `buildOrgFilterTierSet` is shared with the applicability predicate, so
-    // firing and applicability cannot drift to different tier sets (Spec 62 B).
+    // firing and applicability cannot drift to different tier sets (Spec 62 B),
+    // and with the `unfiltered-query` read half (§69 Fix 4).
     const catalog = ctx.facts['table-catalog'];
-    const ddlTableColumns: Record<string, string[]> = {};
-    for (const table of catalog.tables) {
-      ddlTableColumns[table.name] = [...table.columns];
-    }
-    const tierSet = buildOrgFilterTierSet(
-      {
-        orgFilterTables: asStringArray(ctx.thresholds.orgFilterTables),
-        orgFilterColumns: asStringArray(ctx.thresholds.orgFilterColumns),
-        schemas: (ctx.thresholds.schemas as OrgFilterConfig['schemas']) ?? [],
-      },
-      ddlTableColumns,
-    );
+    const tierSet = buildTierSet(ctx.thresholds, catalog);
 
     // The tenant-scoping column names this config treats as evidence (lowercased
     // by `buildOrgFilterTierSet`), matched against a raw-SQL INSERT column list.

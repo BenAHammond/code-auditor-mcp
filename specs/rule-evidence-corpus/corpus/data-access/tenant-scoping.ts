@@ -22,22 +22,25 @@
  * A query against it with no predicate is a genuine miss the corpus pins.
  *
  * ── Expected verdicts (human, not the tool) ────────────────────────────────
- *   @quiet missing-org-filter 71 — inline eq on a non-dotted value is scoped
- *   @quiet missing-org-filter 79 — dotted value is STILL scoped, but the helper detector rejects a dotted 2nd arg → false positive
- *   @quiet missing-org-filter 90 — conditions array built across statements is scoped, but the candidate node's text lacks the predicate → false positive
- *   @fires missing-org-filter 102 — conditional push: the predicate is not on every path, so the query is genuinely unscoped on some branch
- *   @quiet missing-org-filter 114 — generic scoping wrapper: scoped, but the wrapper lives in another statement → false positive
- *   @fires missing-org-filter 120 — RLS with no predicate at all: no in-code tenant predicate to verify
- *   @quiet missing-org-filter 125 — options-object key: where({ tenant_id }) is a recognized object filter
- *   @quiet missing-org-filter 133 — tagged template: org_id = is a recognized comparison
- *   @quiet missing-org-filter 138 — Kysely: where('organization_id', …) is a recognized positional filter
- *   @quiet missing-org-filter 145 — workspace_id predicate is scoped, but workspace_id is outside the org-pattern vocabulary → false positive
- *   @quiet missing-org-filter 153 — teamId predicate is scoped, but teamId is outside the vocabulary → false positive
- *   @quiet missing-org-filter 161 — projectId predicate is scoped, but projectId is outside the vocabulary → false positive
- *   @quiet missing-org-filter 169 — environmentId predicate is scoped, but environmentId is outside the vocabulary → false positive
- *   @fires missing-org-filter 177 — camelCase DDL table (projects_v2): its "organizationId" column lowercases to one token, so Tier 3 never sees the table → false negative
- *   @quiet missing-org-filter 182 — Prisma object form: where: { organizationId } is a recognized object filter
- *   @quiet missing-org-filter 189 — bootstrap lookup by natural UNIQUE prefix on api_keys is structurally scoped
+ *   @quiet missing-org-filter 74 — inline eq on a non-dotted value is scoped
+ *   @quiet missing-org-filter 82 — dotted value is STILL scoped, but the helper detector rejects a dotted 2nd arg → false positive
+ *   @quiet missing-org-filter 93 — conditions array built across statements is scoped, but the candidate node's text lacks the predicate → false positive
+ *   @fires missing-org-filter 105 — conditional push: the predicate is not on every path, so the query is genuinely unscoped on some branch
+ *   @quiet missing-org-filter 117 — generic scoping wrapper: scoped, but the wrapper lives in another statement → false positive
+ *   @fires missing-org-filter 123 — RLS with no predicate at all: no in-code tenant predicate to verify
+ *   @quiet missing-org-filter 128 — options-object key: where({ tenant_id }) is a recognized object filter
+ *   @quiet missing-org-filter 136 — tagged template: org_id = is a recognized comparison
+ *   @quiet missing-org-filter 141 — Kysely: where('organization_id', …) is a recognized positional filter
+ *   @quiet missing-org-filter 148 — workspace_id predicate is scoped, but workspace_id is outside the org-pattern vocabulary → false positive
+ *   @quiet missing-org-filter 156 — teamId predicate is scoped, but teamId is outside the vocabulary → false positive
+ *   @quiet missing-org-filter 164 — projectId predicate is scoped, but projectId is outside the vocabulary → false positive
+ *   @quiet missing-org-filter 172 — environmentId predicate is scoped, but environmentId is outside the vocabulary → false positive
+ *   @fires missing-org-filter 180 — camelCase DDL table (projects_v2): its "organizationId" column lowercases to one token, so Tier 3 never sees the table → false negative
+ *   @quiet missing-org-filter 185 — Prisma object form: where: { organizationId } is a recognized object filter
+ *   @quiet missing-org-filter 192 — bootstrap lookup by natural UNIQUE prefix on api_keys is structurally scoped
+ *   @quiet unfiltered-query 117 — generic scoping wrapper: the read is scoped via withOrgScope, but the rule reads only the candidate statement → R3 false positive
+ *   @fires unfiltered-query 123 — RLS with no in-code filter: a filterless read of a tenant table
+ *   @fires unfiltered-query 180 — camelCase DDL table (projects_v2): a filterless read of a tenant table
  */
 
 import { eq, and, sql } from 'drizzle-orm';
