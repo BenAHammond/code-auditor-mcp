@@ -26,7 +26,7 @@ import { buildDismissalEntry, upsertDismissal } from './dismissals.js';
 import { resolveTelemetryConfig, signatureForFinding, buildTelemetryPayload, formatTelemetryPreview, sendTelemetry, languageHint } from './telemetry.js';
 import { getInstallId } from './installConfig.js';
 import { computeGatingDecision } from './enforcement/gate.js';
-import { BLOCKING_SEVERITIES, SEVERITIES, type Severity, type AuditScope, type SearchOptions } from './types.js';
+import { BLOCKING_SEVERITIES, SEVERITIES, type Severity, type AuditScope, type SearchOptions, type AuditResult } from './types.js';
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 import { describeSqliteBackend } from './sqlite/driver.js';
@@ -119,6 +119,425 @@ program
   .description('TypeScript/JavaScript code quality auditor with AI tool integration')
   .version(`${PACKAGE_VERSION} (sqlite: ${describeSqliteBackend()})`);
 
+/**
+ * Print the pre-delta diagnostic panels: coverage, skipped analyzers, ignored
+ * config keys, coverage gaps, test coverage, size distributions, and dead
+ * clusters. Pure reporting over `result.metadata`.
+ */
+function printAuditDiagnostics(result: AuditResult): void {
+  // ── Coverage panel leads the report (Spec 47 R2) ─────────────
+  const coverage = result.metadata?.coverage;
+  if (coverage && coverage.length > 0) {
+    const covFired = coverage.filter(c => c.state === 'fired').length;
+    const covClean = coverage.filter(c => c.state === 'clean').length;
+    const covIncomplete = coverage.filter(c => c.state === 'incomplete').length;
+    const covNotApplicable = coverage.filter(c => c.state === 'notApplicable').length;
+    const covCannotFire = coverage.filter(c => c.state === 'cannot-fire').length;
+    console.log(
+      chalk.gray(
+        `── Coverage panel ── ${covFired} fired · ${covClean} clean · ` +
+        `${covIncomplete} incomplete · ${covNotApplicable} not-applicable · ` +
+        `${covCannotFire} cannot-fire`
+      )
+    );
+  }
+
+  // ── Skipped analyzers (Spec 61) ──────────────────────────────
+  const skippedAnalyzers = (result.metadata?.diagnostics ?? []).filter(
+    (d: any) => d.kind === 'go-toolchain-missing' ||
+      d.kind === 'go-analyzer-wrong-arch' ||
+      d.kind === 'go-analyzer-build-failed'
+  );
+  if (skippedAnalyzers.length > 0) {
+    console.log(chalk.yellow(`── Skipped analyzers ── ${skippedAnalyzers.length}`));
+    for (const d of skippedAnalyzers) {
+      const name = d.analyzerName || 'go';
+      console.log(chalk.yellow(`  ${name} [${d.kind}] — ${d.message}`));
+    }
+  }
+
+  // ── Ignored config keys (Spec 61 R1.4) ─────────────────────────
+  const ignoredConfigKeys = (result.metadata?.diagnostics ?? []).filter(
+    (d: any) => d.kind === 'config-key-rejected'
+  );
+  if (ignoredConfigKeys.length > 0) {
+    console.log(chalk.yellow(`── Ignored config keys ── ${ignoredConfigKeys.length}`));
+    for (const d of ignoredConfigKeys) {
+      console.log(chalk.yellow(`  ${d.message}`));
+    }
+  }
+
+  // ── Coverage gaps (Spec 58 follow-up) ─────────────────────────
+  const coverageDiagnostics = (result.metadata?.diagnostics ?? []).filter(
+    (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import' || d.kind === 'undefined-class-not-found' || d.kind === 'cannot-fire'
+  );
+  if (coverageDiagnostics.length > 0) {
+    const byKind: Record<string, number> = {};
+    for (const d of coverageDiagnostics) byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
+    const totals = Object.entries(byKind)
+      .map(([kind, n]) => `${n} ${kind}`)
+      .join(' · ');
+    console.log(chalk.gray(`── Coverage gaps ── ${totals}`));
+    for (const d of coverageDiagnostics.slice(0, 20)) {
+      const loc = d.file ? `${d.file}${typeof d.line === 'number' ? `:${d.line}` : ''}` : '(unknown)';
+      console.log(chalk.gray(`  ${loc} [${d.kind}] — ${d.message}`));
+    }
+    if (coverageDiagnostics.length > 20) {
+      console.log(chalk.gray(`  … and ${coverageDiagnostics.length - 20} more`));
+    }
+  }
+
+  // ── Spec 60 R1 — test coverage (reporting, not detection) ─────
+  const testCoverage = result.metadata?.testCoverage;
+  if (testCoverage) {
+    const pct = testCoverage.total > 0
+      ? ((testCoverage.tested / testCoverage.total) * 100).toFixed(1)
+      : '0.0';
+    let line = `tested ${testCoverage.tested}/${testCoverage.total} (${pct}%)` +
+      ` · untested-live ${testCoverage.untestedLive}` +
+      ` · untested-dead ${testCoverage.untestedDead}`;
+    if (testCoverage.deadDrop > 0) {
+      line += ` (was ${testCoverage.deadPreException} pre-exception; −${testCoverage.deadDrop} entry points exempted)`;
+    }
+    console.log(chalk.gray(`── Test coverage ── ${line}`));
+  }
+
+  // ── Spec 60 R2 — size distributions (median / p95 / max) ──────
+  const sizeDistributions = result.metadata?.sizeDistributions;
+  if (sizeDistributions && sizeDistributions.length > 0) {
+    console.log(chalk.gray(`── Size distributions ──`));
+    for (const d of sizeDistributions) {
+      const fmt = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(1);
+      const tail = d.maxEntry
+        ? ` (${d.maxEntry.name}${d.maxEntry.fileType ? ` · ${d.maxEntry.fileType}` : ''} · ${d.maxEntry.entityType})`
+        : '';
+      const pop = d.population ? `${d.population}, n=${d.count}` : `n=${d.count}`;
+      console.log(chalk.gray(
+        `  ${d.measure} [${pop}]: median ${fmt(d.median)} · p95 ${fmt(d.p95)} · max ${fmt(d.max)}${tail}`
+      ));
+    }
+  }
+
+  // ── Spec 60 R3 — dead-and-duplicated clusters ─────────────────
+  const deadClusters = result.metadata?.deadClusters;
+  if (deadClusters && deadClusters.length > 0) {
+    console.log(chalk.gray(`── Dead-and-duplicated ── ${deadClusters.length} clusters`));
+    for (const c of deadClusters.slice(0, 10)) {
+      console.log(chalk.gray(`  ${c.count} × ${c.basename}`));
+    }
+    if (deadClusters.length > 10) {
+      console.log(chalk.gray(`  … and ${deadClusters.length - 10} more clusters`));
+    }
+  }
+}
+
+/**
+ * Print the findings summary: the delta view when a baseline exists, or the
+ * absolute summary otherwise. Recomputes the dismissed/gating suffixes so the
+ * summary is self-contained.
+ */
+function printFindingSummary(result: AuditResult, violations: any[], baseline: any, options: any): void {
+  // Spec 57 — dismissed count is reported alongside the total, never
+  // subtracted from it ("43 findings, 3 dismissed").
+  const dismissedCount = result.summary.dismissed ?? 0;
+  const dismissedSuffix = dismissedCount > 0 ? `, ${dismissedCount} dismissed` : '';
+  const gateExcludedCount = violations.filter((v: any) => v.gateExcluded).length;
+  const gatingCount = (severity: Severity) =>
+    violations.filter(
+      (v: any) => v.severity === severity && !v.gateExcluded && !v.dismissed
+    ).length;
+  const findingsSuffix =
+    `${dismissedSuffix}${gateExcludedCount > 0 ? ` (${gateExcludedCount.toLocaleString()} excluded from gate)` : ''}`;
+  const summaryLine = (label: string, total: number, severity: Severity) =>
+    gateExcludedCount > 0
+      ? `${label}: ${total} (${gatingCount(severity)} gating)`
+      : `${label}: ${total}`;
+
+  // ── Delta output (Spec 18 R2) ─────────────────────────────────
+  if (baseline && !options.full) {
+    const newViolations = violations.filter((v: any) => v.new === true);
+    const knownCount = baseline.knownCount ?? 0;
+    const fixedCount = baseline.fixedCount ?? 0;
+    const previousKnown = baseline.previousKnownCount ?? 0;
+    const currentDebt = newViolations.length + knownCount;
+    const debtDelta = currentDebt - previousKnown;
+    const trendIcon = debtDelta > 0 ? '↑' : debtDelta < 0 ? '↓' : '→';
+    const trendLabel = debtDelta > 0
+      ? `(debt increased since last baseline)`
+      : debtDelta < 0
+        ? `(debt decreased since last baseline)`
+        : '(unchanged)';
+
+    console.log(`\n📊 Delta: +${newViolations.length} new · −${fixedCount} fixed · ${knownCount} known  ${trendIcon} ${trendLabel}`);
+
+    if (newViolations.length > 0) {
+      console.log(chalk.gray(`\n── New readings (${newViolations.length}) ──────────────────────────`));
+      for (const v of newViolations) {
+        const icon =
+          v.severity === 'critical' ? '🔴' :
+          v.severity === 'severe' ? '🟠' : '🟡';
+        console.log(
+          `${icon} ${chalk.bold(v.file)}${lineSuffix(v.line)} [${v.severity}] ${v.message}`
+        );
+      }
+    } else {
+      console.log(chalk.green('\n✓ No new readings since last baseline.'));
+      if (knownCount > 0) {
+        console.log(chalk.gray(`  ${knownCount} known reading(s) are still open — recorded, not resolved.`));
+      }
+    }
+
+    // Debt by analyzer
+    console.log(chalk.gray(`\n── Debt by Analyzer ──────────────────────────`));
+    const analyzerCounts: Record<string, { known: number; new: number }> = {};
+    for (const v of violations) {
+      const a = (v as any).analyzer || 'unknown';
+      if (!analyzerCounts[a]) analyzerCounts[a] = { known: 0, new: 0 };
+      if ((v as any).new === false) analyzerCounts[a].known++;
+      else if ((v as any).new === true) analyzerCounts[a].new++;
+    }
+    for (const [analyzer, counts] of Object.entries(analyzerCounts).sort()) {
+      const newPart = counts.new > 0 ? ` (+${counts.new})` : '';
+      console.log(`${analyzer}: ${counts.known.toLocaleString()} known${newPart}`);
+    }
+
+    // Top files
+    console.log(chalk.gray(`\n── Top Files ─────────────────────────────────`));
+    const fileCounts = new Map<string, number>();
+    for (const v of violations) {
+      const f = v.file || '';
+      fileCounts.set(f, (fileCounts.get(f) || 0) + 1);
+    }
+    const topFiles = [...fileCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+    for (const [file, count] of topFiles) {
+      console.log(`${file} — ${count} reading${count !== 1 ? 's' : ''}`);
+    }
+
+    console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit --full')} to see all ${currentDebt.toLocaleString()} readings.`));
+  } else if (!baseline) {
+    // No baseline: current behavior + hint
+    console.log(`\nFound ${result.summary.totalViolations} findings${findingsSuffix}`);
+    console.log(summaryLine('Critical', result.summary.criticalIssues, 'critical'));
+    console.log(summaryLine('Severe', result.summary.severe, 'severe'));
+    console.log(summaryLine('High', result.summary.high, 'high'));
+
+    console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
+    console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
+  } else {
+    // --full with baseline: full itemized inventory (current behavior)
+    console.log(`\nFound ${result.summary.totalViolations} findings${findingsSuffix}`);
+    console.log(summaryLine('Critical', result.summary.criticalIssues, 'critical'));
+    console.log(summaryLine('Severe', result.summary.severe, 'severe'));
+    console.log(summaryLine('High', result.summary.high, 'high'));
+
+    console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
+  }
+}
+
+/**
+ * Print unparsed-file failures and skipped-extension notice.
+ */
+function printUnparsedAndSkipped(result: AuditResult): void {
+  // Spec 32 — unparsed files are never silent.
+  const unparsedFiles = result.metadata?.unparsedFiles ?? [];
+  if (unparsedFiles.length > 0) {
+    console.error(chalk.red(`\n⚠️  ${unparsedFiles.length} file${unparsedFiles.length !== 1 ? 's' : ''} failed to parse:`));
+    for (const u of unparsedFiles.slice(0, 20)) {
+      console.error(`    ${u.filePath} — ${u.reason}`);
+    }
+    if (unparsedFiles.length > 20) {
+      console.error(`    … and ${unparsedFiles.length - 20} more`);
+    }
+  }
+
+  // Spec 43 R5 follow-up — extensions present on disk that discovery skipped.
+  const skippedExtensions = result.metadata?.skippedExtensions ?? [];
+  if (skippedExtensions.length > 0) {
+    console.log(chalk.gray(`\n── Not analyzed (skipped extensions) ────────`));
+    const parts = skippedExtensions.map(s => `${s.ext} (${s.count})`);
+    console.log(`  ${parts.join(', ')}`);
+  }
+}
+
+/**
+ * Print per-analyzer pipeline activity and the detailed coverage breakdown.
+ */
+function printPipelineStages(result: AuditResult, options: any): void {
+  if (options.json) return;
+
+  const analyzerFiles: string[] = [];
+  for (const [name, ar] of Object.entries(result.analyzerResults)) {
+    const vCount = ar.violations.length;
+    if (isVisitorStatus(ar.status)) {
+      analyzerFiles.push(`${name} [visitor-ran]: ${getFilesProcessed(ar.status)} files, ${vCount} violations`);
+    } else if (isReducerStatus(ar.status)) {
+      analyzerFiles.push(`${name} [reducer-ran]: ${getFactsConsumed(ar.status)} facts, ${vCount} violations`);
+    } else {
+      analyzerFiles.push(`${name} [notRun]: ${vCount} violations`);
+    }
+  }
+  if (analyzerFiles.length > 0) {
+    console.log(chalk.gray(`\n── Pipeline Stages ──────────────────────────`));
+    console.log(analyzerFiles.join('\n'));
+  }
+
+  // ── Coverage (Spec 27) ──────────────────────────────────────────
+  const coverage = result.metadata?.coverage;
+  if (coverage && coverage.length > 0) {
+    const fired = coverage.filter(c => c.state === 'fired');
+    const clean = coverage.filter(c => c.state === 'clean');
+    const incomplete = coverage.filter(c => c.state === 'incomplete');
+    const notApplicable = coverage.filter(c => c.state === 'notApplicable');
+    const cannotFire = coverage.filter(c => c.state === 'cannot-fire');
+    const firedCount = fired.reduce((s, c) => s + c.count, 0);
+
+    console.log(chalk.gray(`\n── Coverage ─────────────────────────────────`));
+    console.log(
+      `  ${fired.length} fired (${firedCount.toLocaleString()} violations), ` +
+      `${clean.length} clean, ` +
+      `${incomplete.length} incomplete, ` +
+      `${notApplicable.length} notApplicable, ` +
+      `${cannotFire.length} cannot-fire ` +
+      `(${coverage.length} rules registered)`
+    );
+
+    if (cannotFire.length > 0) {
+      console.log(chalk.yellow(`  ── Cannot Fire (broken in the tool) ──`));
+      for (const c of cannotFire) {
+        console.log(`    ${c.ruleId}: ${c.reason ?? 'unknown'}`);
+      }
+    }
+    if (notApplicable.length > 0) {
+      console.log(chalk.gray(`  ── Not Applicable ──`));
+      for (const c of notApplicable) {
+        console.log(`    ${c.ruleId}: ${c.reason ?? 'unknown'}`);
+      }
+    }
+    if (clean.length > 0) {
+      console.log(chalk.gray(`  ── Clean ──`));
+      for (const c of clean) {
+        console.log(`    ${c.ruleId} (0)`);
+      }
+    }
+    if (incomplete.length > 0) {
+      console.log(chalk.gray(`  ── Incomplete (missing facts for some files) ──`));
+      for (const c of incomplete) {
+        console.log(`    ${c.ruleId} (0)`);
+      }
+    }
+  }
+}
+
+/**
+ * Generate and write the formatted report when --format is specified.
+ */
+async function writeReport(result: AuditResult, options: any): Promise<void> {
+  if (!options.format) return;
+
+  const validFormats = ['html', 'json', 'csv', 'sarif'];
+  if (!validFormats.includes(options.format)) {
+    console.error(chalk.red(`Unknown format: "${options.format}". Must be one of: ${validFormats.join(', ')}`));
+    process.exit(1);
+  }
+
+  const { generateReport } = await import('./reporting/reportGenerator.js');
+  const { readVersionControlProvenance } = await import('./reporting/sarifReportGenerator.js');
+  const rootDir = resolve(options.path || process.cwd());
+  const config = options.format === 'sarif'
+    ? { rootDir, ...readVersionControlProvenance(rootDir) }
+    : { rootDir };
+  const report = generateReport(result, options.format as any, config);
+  const ext = options.format === 'sarif' ? 'sarif' : options.format;
+
+  if (options.output) {
+    const outputDir = resolve(options.output);
+    const reportPath = join(outputDir, `audit-report.${ext}`);
+    let exists = false;
+    try { await fs.access(reportPath); exists = true; } catch { /* ok */ }
+    if (exists && !options.overwrite) {
+      console.error(
+        chalk.red(`Refusing to overwrite existing report ${reportPath} — pass --overwrite to replace it.`)
+      );
+      process.exit(1);
+    }
+    await fs.mkdir(dirname(reportPath), { recursive: true });
+    await fs.writeFile(reportPath, report, 'utf-8');
+    console.log(chalk.green(`\nReport written to ${reportPath}`));
+  } else {
+    // No output path — default to stdout.
+    process.stdout.write(report + '\n');
+  }
+}
+
+/**
+ * Apply the exit-code gates: fail-on-regression, zero-files, parse-failure,
+ * and --fail-on severity thresholds.
+ */
+function applyFailOnGates(
+  result: AuditResult,
+  violations: any[],
+  baseline: any,
+  options: any,
+  failOnSeverity: Severity | undefined
+): void {
+  // --fail-on-regression: compare total high debt to baseline snapshot
+  if (baseline && options.failOnRegression) {
+    const currentDebt = violations.filter((v: any) => v.new || v.new === false).length;
+    const snapshotDebt = baseline.previousKnownCount ?? 0;
+    if (currentDebt > snapshotDebt) {
+      console.error(
+        chalk.red(`Debt regression: ${currentDebt - snapshotDebt} readings added without re-baselining.`)
+      );
+      process.exit(2);
+    }
+  }
+
+  // Zero-files gate — any enabled analyzer matching zero source files is a
+  // dark-analyzer failure; fail the run so the bug can't hide.
+  {
+    const diagnostics = result.metadata?.diagnostics ?? [];
+    const zeroFileWarnings = diagnostics.filter((d: any) => d.kind === 'zero-files');
+    if (zeroFileWarnings.length > 0) {
+      const names = zeroFileWarnings.map((d: any) => d.analyzerName ?? d.analyzer).join(', ');
+      console.error(`Zero-files failure: ${zeroFileWarnings.length} analyzer(s) matched zero source files (${names})`);
+      process.exit(2);
+    }
+  }
+
+  // Spec 32 — a run where any file failed to parse is incomplete and must
+  // not exit 0.
+  {
+    const unparsedFiles = result.metadata?.unparsedFiles ?? [];
+    if (unparsedFiles.length > 0) {
+      console.error(`Parse-failure: ${unparsedFiles.length} file(s) could not be parsed; analysis is incomplete.`);
+      process.exit(2);
+    }
+  }
+
+  // --fail-on: evaluate new + invariant findings only (unless --include-baseline)
+  if (failOnSeverity) {
+    const evaluableViolations = (baseline && !options.includeBaseline)
+      ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
+      : violations;
+    const severityOrder: Severity[] = SEVERITIES;
+    const failIndex = severityOrder.indexOf(failOnSeverity);
+    const hasAtOrAbove = evaluableViolations.some((v: any) => {
+      // Spec 57 — a dismissed finding never blocks the gate.
+      if (v.dismissed) return false;
+      // Spec 36 R4 — a finding from a path-profile-excluded file never blocks.
+      if (v.gateExcluded) return false;
+      const vIndex = severityOrder.indexOf(v.severity);
+      return vIndex >= 0 && vIndex <= failIndex;
+    });
+
+    if (hasAtOrAbove) {
+      process.exit(2);
+    }
+  }
+}
+
 // Legacy audit command (default behavior)
 program
   .command('audit', { isDefault: true })
@@ -186,330 +605,15 @@ program
         (r: any) => r.violations || []
       );
       const baseline = result.metadata?.baseline;
-      // Spec 57 — dismissed count is reported alongside the total, never
-      // subtracted from it ("43 findings, 3 dismissed").
-      const dismissedCount = result.summary.dismissed ?? 0;
-      const dismissedSuffix = dismissedCount > 0 ? `, ${dismissedCount} dismissed` : '';
-
-      // Spec 36 R4 — a path-profile-excluded finding reports at its real
-      // severity but never gates. When any finding is gate-excluded, surface
-      // the gating count next to the total so a clean exit doesn't read as
-      // "0 findings" beside a non-zero critical count (e.g. knex: 38 critical,
-      // all test-dir, exit 0). The excluded total still reads in full — the
-      // distinction is gating vs. reporting, never subtraction.
-      const gateExcludedCount = violations.filter((v: any) => v.gateExcluded).length;
-      const gatingCount = (severity: Severity) =>
-        violations.filter(
-          (v: any) => v.severity === severity && !v.gateExcluded && !v.dismissed
-        ).length;
-      const findingsSuffix =
-        `${dismissedSuffix}${gateExcludedCount > 0 ? ` (${gateExcludedCount.toLocaleString()} excluded from gate)` : ''}`;
-      const summaryLine = (label: string, total: number, severity: Severity) =>
-        gateExcludedCount > 0
-          ? `${label}: ${total} (${gatingCount(severity)} gating)`
-          : `${label}: ${total}`;
-
-      // ── Coverage panel leads the report (Spec 47 R2) ─────────────
-      // A diagnostic report opens with what was measured before it lists any
-      // readings, so a zero-reading report can't be mistaken for a clean tree.
-      const coverage = result.metadata?.coverage;
-      if (coverage && coverage.length > 0) {
-        const covFired = coverage.filter(c => c.state === 'fired').length;
-        const covClean = coverage.filter(c => c.state === 'clean').length;
-        const covIncomplete = coverage.filter(c => c.state === 'incomplete').length;
-        const covNotApplicable = coverage.filter(c => c.state === 'notApplicable').length;
-        const covCannotFire = coverage.filter(c => c.state === 'cannot-fire').length;
-        console.log(
-          chalk.gray(
-            `── Coverage panel ── ${covFired} fired · ${covClean} clean · ` +
-            `${covIncomplete} incomplete · ${covNotApplicable} not-applicable · ` +
-            `${covCannotFire} cannot-fire`
-          )
-        );
-      }
-
-      // ── Skipped analyzers (Spec 61) ──────────────────────────────
-      // A language present on disk but never analyzed is a stated gap, not a
-      // silent zero. The Go path surfaces a named runtime failure (missing
-      // toolchain, wrong-arch prebuilt binary, failed rebuild) as a
-      // metadata.diagnostics entry; before this section those kinds were
-      // invisible outside --json, so a polyglot repo with .go files and no Go
-      // toolchain printed zero Go findings and exited clean — the silent-zero
-      // failure mode. These lead above coverage gaps: a skipped analyzer is a
-      // whole language unmeasured, more severe than a per-file visibility gap.
-      const skippedAnalyzers = (result.metadata?.diagnostics ?? []).filter(
-        (d: any) => d.kind === 'go-toolchain-missing' ||
-          d.kind === 'go-analyzer-wrong-arch' ||
-          d.kind === 'go-analyzer-build-failed'
-      );
-      if (skippedAnalyzers.length > 0) {
-        console.log(chalk.yellow(`── Skipped analyzers ── ${skippedAnalyzers.length}`));
-        for (const d of skippedAnalyzers) {
-          const name = d.analyzerName || 'go';
-          console.log(chalk.yellow(`  ${name} [${d.kind}] — ${d.message}`));
-        }
-      }
-
-      // ── Ignored config keys (Spec 61 R1.4) ─────────────────────────
-      // Keys dropped by sanitizeProjectFileConfig: undeclared keys (like
-      // `scope`, which previously reached execSync via mergeConfig's raw-key
-      // iteration) and path keys resolving outside the project root. Surfaced
-      // so a silently-ignored config never reads as "loaded fine".
-      const ignoredConfigKeys = (result.metadata?.diagnostics ?? []).filter(
-        (d: any) => d.kind === 'config-key-rejected'
-      );
-      if (ignoredConfigKeys.length > 0) {
-        console.log(chalk.yellow(`── Ignored config keys ── ${ignoredConfigKeys.length}`));
-        for (const d of ignoredConfigKeys) {
-          console.log(chalk.yellow(`  ${d.message}`));
-        }
-      }
-
-      // ── Coverage gaps (Spec 58 follow-up) ─────────────────────────
-      // Coverage diagnostics are the analyzer saying "my visibility ends here",
-      // not "the code is wrong". They lead with counts, then per-occurrence
-      // file:line — visible and counted, never blocking (they never reach the
-      // gate). Rendered alongside the coverage panel that leads the report.
-      const coverageDiagnostics = (result.metadata?.diagnostics ?? []).filter(
-        (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import' || d.kind === 'undefined-class-not-found' || d.kind === 'cannot-fire'
-      );
-      if (coverageDiagnostics.length > 0) {
-        const byKind: Record<string, number> = {};
-        for (const d of coverageDiagnostics) byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
-        const totals = Object.entries(byKind)
-          .map(([kind, n]) => `${n} ${kind}`)
-          .join(' · ');
-        console.log(chalk.gray(`── Coverage gaps ── ${totals}`));
-        for (const d of coverageDiagnostics.slice(0, 20)) {
-          const loc = d.file ? `${d.file}${typeof d.line === 'number' ? `:${d.line}` : ''}` : '(unknown)';
-          console.log(chalk.gray(`  ${loc} [${d.kind}] — ${d.message}`));
-        }
-        if (coverageDiagnostics.length > 20) {
-          console.log(chalk.gray(`  … and ${coverageDiagnostics.length - 20} more`));
-        }
-      }
-
-      // ── Spec 60 R1 — test coverage (reporting, not detection) ─────
-      // Classifies every non-test module as tested / untested-live /
-      // untested-dead off the file-level import edges. The dead count is
-      // post-entry-point-exception, with the drop attributed.
-      const testCoverage = result.metadata?.testCoverage;
-      if (testCoverage) {
-        const pct = testCoverage.total > 0
-          ? ((testCoverage.tested / testCoverage.total) * 100).toFixed(1)
-          : '0.0';
-        let line = `tested ${testCoverage.tested}/${testCoverage.total} (${pct}%)` +
-          ` · untested-live ${testCoverage.untestedLive}` +
-          ` · untested-dead ${testCoverage.untestedDead}`;
-        if (testCoverage.deadDrop > 0) {
-          line += ` (was ${testCoverage.deadPreException} pre-exception; −${testCoverage.deadDrop} entry points exempted)`;
-        }
-        console.log(chalk.gray(`── Test coverage ── ${line}`));
-      }
-
-      // ── Spec 60 R2 — size distributions (median / p95 / max) ──────
-      const sizeDistributions = result.metadata?.sizeDistributions;
-      if (sizeDistributions && sizeDistributions.length > 0) {
-        console.log(chalk.gray(`── Size distributions ──`));
-        for (const d of sizeDistributions) {
-          const fmt = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(1);
-          const tail = d.maxEntry
-            ? ` (${d.maxEntry.name}${d.maxEntry.fileType ? ` · ${d.maxEntry.fileType}` : ''} · ${d.maxEntry.entityType})`
-            : '';
-          const pop = d.population ? `${d.population}, n=${d.count}` : `n=${d.count}`;
-          console.log(chalk.gray(
-            `  ${d.measure} [${pop}]: median ${fmt(d.median)} · p95 ${fmt(d.p95)} · max ${fmt(d.max)}${tail}`
-          ));
-        }
-      }
-
-      // ── Spec 60 R3 — dead-and-duplicated clusters ─────────────────
-      const deadClusters = result.metadata?.deadClusters;
-      if (deadClusters && deadClusters.length > 0) {
-        console.log(chalk.gray(`── Dead-and-duplicated ── ${deadClusters.length} clusters`));
-        for (const c of deadClusters.slice(0, 10)) {
-          console.log(chalk.gray(`  ${c.count} × ${c.basename}`));
-        }
-        if (deadClusters.length > 10) {
-          console.log(chalk.gray(`  … and ${deadClusters.length - 10} more clusters`));
-        }
-      }
-
-      // ── Delta output (Spec 18 R2) ─────────────────────────────────
-      if (baseline && !options.full) {
-        const newViolations = violations.filter((v: any) => v.new === true);
-        const knownCount = baseline.knownCount ?? 0;
-        const fixedCount = baseline.fixedCount ?? 0;
-        const previousKnown = baseline.previousKnownCount ?? 0;
-        const currentDebt = newViolations.length + knownCount;
-        const debtDelta = currentDebt - previousKnown;
-        const trendIcon = debtDelta > 0 ? '↑' : debtDelta < 0 ? '↓' : '→';
-        const trendLabel = debtDelta > 0
-          ? `(debt increased since last baseline)`
-          : debtDelta < 0
-            ? `(debt decreased since last baseline)`
-            : '(unchanged)';
-
-        console.log(`\n📊 Delta: +${newViolations.length} new · −${fixedCount} fixed · ${knownCount} known  ${trendIcon} ${trendLabel}`);
-
-        if (newViolations.length > 0) {
-          console.log(chalk.gray(`\n── New readings (${newViolations.length}) ──────────────────────────`));
-          for (const v of newViolations) {
-            const icon =
-              v.severity === 'critical' ? '🔴' :
-              v.severity === 'severe' ? '🟠' : '🟡';
-            console.log(
-              `${icon} ${chalk.bold(v.file)}${lineSuffix(v.line)} [${v.severity}] ${v.message}`
-            );
-          }
-        } else {
-          console.log(chalk.green('\n✓ No new readings since last baseline.'));
-          if (knownCount > 0) {
-            console.log(chalk.gray(`  ${knownCount} known reading(s) are still open — recorded, not resolved.`));
-          }
-        }
-
-        // Debt by analyzer
-        console.log(chalk.gray(`\n── Debt by Analyzer ──────────────────────────`));
-        const analyzerCounts: Record<string, { known: number; new: number }> = {};
-        for (const v of violations) {
-          const a = (v as any).analyzer || 'unknown';
-          if (!analyzerCounts[a]) analyzerCounts[a] = { known: 0, new: 0 };
-          if ((v as any).new === false) analyzerCounts[a].known++;
-          else if ((v as any).new === true) analyzerCounts[a].new++;
-        }
-        for (const [analyzer, counts] of Object.entries(analyzerCounts).sort()) {
-          const newPart = counts.new > 0 ? ` (+${counts.new})` : '';
-          console.log(`${analyzer}: ${counts.known.toLocaleString()} known${newPart}`);
-        }
-
-        // Top files
-        console.log(chalk.gray(`\n── Top Files ─────────────────────────────────`));
-        const fileCounts = new Map<string, number>();
-        for (const v of violations) {
-          const f = v.file || '';
-          fileCounts.set(f, (fileCounts.get(f) || 0) + 1);
-        }
-        const topFiles = [...fileCounts.entries()]
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 5);
-        for (const [file, count] of topFiles) {
-          console.log(`${file} — ${count} reading${count !== 1 ? 's' : ''}`);
-        }
-
-        console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit --full')} to see all ${currentDebt.toLocaleString()} readings.`));
-      } else if (!baseline) {
-        // No baseline: current behavior + hint
-        console.log(`\nFound ${result.summary.totalViolations} findings${findingsSuffix}`);
-        console.log(summaryLine('Critical', result.summary.criticalIssues, 'critical'));
-        console.log(summaryLine('Severe', result.summary.severe, 'severe'));
-        console.log(summaryLine('High', result.summary.high, 'high'));
-
-        console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
-        console.log(chalk.gray(`\n💡 Run ${chalk.cyan('code-audit baseline')} to adopt the ratchet and track changes over time.`));
-      } else {
-        // --full with baseline: full itemized inventory (current behavior)
-        console.log(`\nFound ${result.summary.totalViolations} findings${findingsSuffix}`);
-        console.log(summaryLine('Critical', result.summary.criticalIssues, 'critical'));
-        console.log(summaryLine('Severe', result.summary.severe, 'severe'));
-        console.log(summaryLine('High', result.summary.high, 'high'));
-
-        console.log(chalk.gray(`\nEvery reading is a defect — severity is urgency, the order to act.`));
-      }
+      printAuditDiagnostics(result);
+      printFindingSummary(result, violations, baseline, options);
 
       // Spec 44 R4 — file accounting: analyzed/dropped totals + optional breakdown.
       printFileAccounting(result, !!options.explainSkipped);
 
-      // Spec 32 — unparsed files are never silent. A run where any file failed
-      // to parse (WASM abort, read error, …) must surface the count + reasons.
-      const unparsedFiles = result.metadata?.unparsedFiles ?? [];
-      if (unparsedFiles.length > 0) {
-        console.error(chalk.red(`\n⚠️  ${unparsedFiles.length} file${unparsedFiles.length !== 1 ? 's' : ''} failed to parse:`));
-        for (const u of unparsedFiles.slice(0, 20)) {
-          console.error(`    ${u.filePath} — ${u.reason}`);
-        }
-        if (unparsedFiles.length > 20) {
-          console.error(`    … and ${unparsedFiles.length - 20} more`);
-        }
-      }
+      printUnparsedAndSkipped(result);
 
-      // Spec 43 R5 follow-up — extensions present on disk that discovery skipped.
-      // Informational: surfaces "what isn't being analyzed here" so an unlisted
-      // extension (e.g. `.mdx`) never vanishes silently at discovery. Not an
-      // error — a skipped extension is not necessarily a defect (`.md`/`.svg`
-      // are legitimately not source), unlike `unparsedFiles` above.
-      const skippedExtensions = result.metadata?.skippedExtensions ?? [];
-      if (skippedExtensions.length > 0) {
-        console.log(chalk.gray(`\n── Not analyzed (skipped extensions) ────────`));
-        const parts = skippedExtensions.map(s => `${s.ext} (${s.count})`);
-        console.log(`  ${parts.join(', ')}`);
-      }
-
-      // Per-analyzer activity (read from result data, not serialized summary)
-      // — surfaces zero-scan failures that would otherwise be invisible.
-      if (!options.json) {
-        const analyzerFiles: string[] = [];
-        for (const [name, ar] of Object.entries(result.analyzerResults)) {
-          const vCount = ar.violations.length;
-          if (isVisitorStatus(ar.status)) {
-            analyzerFiles.push(`${name} [visitor-ran]: ${getFilesProcessed(ar.status)} files, ${vCount} violations`);
-          } else if (isReducerStatus(ar.status)) {
-            analyzerFiles.push(`${name} [reducer-ran]: ${getFactsConsumed(ar.status)} facts, ${vCount} violations`);
-          } else {
-            analyzerFiles.push(`${name} [notRun]: ${vCount} violations`);
-          }
-        }
-        if (analyzerFiles.length > 0) {
-          console.log(chalk.gray(`\n── Pipeline Stages ──────────────────────────`));
-          console.log(analyzerFiles.join('\n'));
-        }
-
-        // ── Coverage (Spec 27) ──────────────────────────────────────────
-        const coverage = result.metadata?.coverage;
-        if (coverage && coverage.length > 0) {
-          const fired = coverage.filter(c => c.state === 'fired');
-          const clean = coverage.filter(c => c.state === 'clean');
-          const incomplete = coverage.filter(c => c.state === 'incomplete');
-          const notApplicable = coverage.filter(c => c.state === 'notApplicable');
-          const cannotFire = coverage.filter(c => c.state === 'cannot-fire');
-          const firedCount = fired.reduce((s, c) => s + c.count, 0);
-
-          console.log(chalk.gray(`\n── Coverage ─────────────────────────────────`));
-          console.log(
-            `  ${fired.length} fired (${firedCount.toLocaleString()} violations), ` +
-            `${clean.length} clean, ` +
-            `${incomplete.length} incomplete, ` +
-            `${notApplicable.length} notApplicable, ` +
-            `${cannotFire.length} cannot-fire ` +
-            `(${coverage.length} rules registered)`
-          );
-
-          if (cannotFire.length > 0) {
-            console.log(chalk.yellow(`  ── Cannot Fire (broken in the tool) ──`));
-            for (const c of cannotFire) {
-              console.log(`    ${c.ruleId}: ${c.reason ?? 'unknown'}`);
-            }
-          }
-          if (notApplicable.length > 0) {
-            console.log(chalk.gray(`  ── Not Applicable ──`));
-            for (const c of notApplicable) {
-              console.log(`    ${c.ruleId}: ${c.reason ?? 'unknown'}`);
-            }
-          }
-          if (clean.length > 0) {
-            console.log(chalk.gray(`  ── Clean ──`));
-            for (const c of clean) {
-              console.log(`    ${c.ruleId} (0)`);
-            }
-          }
-          if (incomplete.length > 0) {
-            console.log(chalk.gray(`  ── Incomplete (missing facts for some files) ──`));
-            for (const c of incomplete) {
-              console.log(`    ${c.ruleId} (0)`);
-            }
-          }
-        }
-      }
+      printPipelineStages(result, options);
 
       // Spec-20 R4: built-in profile visibility — silent behavior changes
       // are never acceptable. Notify when scripts-and-tests excludes findings
@@ -521,107 +625,9 @@ program
         console.log(chalk.gray(`   Set ${chalk.cyan('"builtin": false')} in .codeauditor.json to disable.`));
       }
 
-      // Generate formatted report if --format is specified
-      if (options.format) {
-        const validFormats = ['html', 'json', 'csv', 'sarif'];
-        if (!validFormats.includes(options.format)) {
-          console.error(chalk.red(`Unknown format: "${options.format}". Must be one of: ${validFormats.join(', ')}`));
-          process.exit(1);
-        }
+      await writeReport(result, options);
 
-        const { generateReport } = await import('./reporting/reportGenerator.js');
-        const { readVersionControlProvenance } = await import('./reporting/sarifReportGenerator.js');
-        const rootDir = resolve(options.path || process.cwd());
-        const config = options.format === 'sarif'
-          ? { rootDir, ...readVersionControlProvenance(rootDir) }
-          : { rootDir };
-        const report = generateReport(result, options.format as any, config);
-        const ext = options.format === 'sarif' ? 'sarif' : options.format;
-
-        if (options.output) {
-          // Explicit output path — write a file. Refuse to clobber an existing
-          // report unless --overwrite is passed. A report write is destructive;
-          // a silent overwrite of `audit-report.json` in a consuming repo is the
-          // defect this guard removes.
-          const outputDir = resolve(options.output);
-          const reportPath = join(outputDir, `audit-report.${ext}`);
-          let exists = false;
-          try { await fs.access(reportPath); exists = true; } catch { /* ok */ }
-          if (exists && !options.overwrite) {
-            console.error(
-              chalk.red(`Refusing to overwrite existing report ${reportPath} — pass --overwrite to replace it.`)
-            );
-            process.exit(1);
-          }
-          await fs.mkdir(dirname(reportPath), { recursive: true });
-          await fs.writeFile(reportPath, report, 'utf-8');
-          console.log(chalk.green(`\nReport written to ${reportPath}`));
-        } else {
-          // No output path — default to stdout. Never write a report into the
-          // audited project without an explicit --output on the command line.
-          process.stdout.write(report + '\n');
-        }
-      }
-
-      // ── Fail-on logic (Spec 18 R3) ───────────────────────────────
-      // --fail-on-regression: compare total high debt to baseline snapshot
-      if (baseline && options.failOnRegression) {
-        const currentDebt = violations.filter((v: any) => v.new || v.new === false).length;
-        const snapshotDebt = baseline.previousKnownCount ?? 0;
-        if (currentDebt > snapshotDebt) {
-          console.error(
-            chalk.red(`Debt regression: ${currentDebt - snapshotDebt} readings added without re-baselining.`)
-          );
-          process.exit(2);
-        }
-      }
-
-      // Zero-files gate — any enabled analyzer matching zero source files is a
-      // dark-analyzer failure; fail the run so the bug can't hide.
-      {
-        const diagnostics = result.metadata?.diagnostics ?? [];
-        const zeroFileWarnings = diagnostics.filter((d: any) => d.kind === 'zero-files');
-        if (zeroFileWarnings.length > 0) {
-          const names = zeroFileWarnings.map((d: any) => d.analyzerName ?? d.analyzer).join(', ');
-          console.error(`Zero-files failure: ${zeroFileWarnings.length} analyzer(s) matched zero source files (${names})`);
-          process.exit(2);
-        }
-      }
-
-      // Spec 32 — a run where any file failed to parse is incomplete and must
-      // not exit 0. This mirrors the zero-files gate: a silent dark-analyzer
-      // failure at file granularity is a hard failure.
-      {
-        const unparsedFiles = result.metadata?.unparsedFiles ?? [];
-        if (unparsedFiles.length > 0) {
-          console.error(`Parse-failure: ${unparsedFiles.length} file(s) could not be parsed; analysis is incomplete.`);
-          process.exit(2);
-        }
-      }
-
-      // --fail-on: evaluate new + invariant findings only (unless --include-baseline)
-      if (failOnSeverity) {
-        const evaluableViolations = (baseline && !options.includeBaseline)
-          ? violations.filter((v: any) => v.new || v.analyzer === 'invariants')
-          : violations;
-        const severityOrder: Severity[] = SEVERITIES;
-        const failIndex = severityOrder.indexOf(failOnSeverity);
-        const hasAtOrAbove = evaluableViolations.some((v: any) => {
-          // Spec 57 — a dismissed finding never blocks the gate.
-          if (v.dismissed) return false;
-          // Spec 36 R4 — a finding from a path-profile-excluded file (e.g. a
-          // test/script under "scripts-and-tests") never blocks the gate,
-          // whatever its severity. The file is doing its job; a hardcoded
-          // connection string in a stress-test script is not a defect to block on.
-          if (v.gateExcluded) return false;
-          const vIndex = severityOrder.indexOf(v.severity);
-          return vIndex >= 0 && vIndex <= failIndex;
-        });
-
-        if (hasAtOrAbove) {
-          process.exit(2);
-        }
-      }
+      applyFailOnGates(result, violations, baseline, options, failOnSeverity);
 
     } catch (error) {
       console.error(chalk.red('Error:'), error);
