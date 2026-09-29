@@ -206,6 +206,21 @@ describe('Spec 62 B2 — tier conformance (enumerated from RULE_REGISTRY)', () =
     }
   });
 
+  it('recognizes a quoted camelCase DDL column as tenant-scoped (§69 Fix 3)', () => {
+    // `"organizationId"` is extracted by the DDL reducer as `organizationid`
+    // (one lowercased token, the underscore folded away). The tier-discovery
+    // vocabulary must carry the camelCase form too, matching what the predicate
+    // vocabulary (`orgPredicateVocabulary`) already recognizes — otherwise a
+    // camelCase tenant column is invisible to Tier 3 and the table is never
+    // declared (the corpus `projects_v2` trap).
+    const camelDdl: Record<string, string[]> = {
+      projects_v2: ['id', 'organizationid', 'title'],
+    };
+    const tierSet = buildOrgFilterTierSet(undefined, camelDdl);
+    expect(tableRequiresOrgFilter(['projects_v2'], tierSet)).toBe(true);
+    expect(hasDeclaredTenancy(tierSet)).toBe(true);
+  });
+
   it('reports the full B2 table (acceptance criterion 21)', () => {
     const rows = buildTierTable();
     // Render the table so it is a human-readable artifact, and assert none of

@@ -252,7 +252,9 @@ export interface OrgFilterTierSet {
   schemaOrgTables: Set<string>;
   /** Tier 3 — DDL-discovered tables carrying a tenant column, lowercased. */
   ddlOrgTables: Set<string>;
-  /** The tenant-scoping column names this config treats as evidence, lowercased. */
+  /** The tenant-scoping column names this config treats as evidence — each
+   *  snake_case spelling plus its lowercased camelCase form (so a quoted
+   *  camelCase DDL column like `"organizationId"` is still recognized). */
   tenantColumns: string[];
 }
 
@@ -270,8 +272,19 @@ export function buildOrgFilterTierSet(
   config: OrgFilterConfig | undefined,
   ddlTableColumns: Record<string, string[]> | undefined,
 ): OrgFilterTierSet {
-  const tenantColumns = (config?.orgFilterColumns ?? DEFAULT_ORG_FILTER_COLUMNS).map((c) =>
-    String(c).toLowerCase(),
+  // The tier-discovery vocabulary carries BOTH the snake_case spelling and its
+  // lowercased camelCase form. A quoted camelCase DDL identifier
+  // (`"organizationId"`) lowercases to `organizationid` — one token, not
+  // `organization_id` — and would otherwise be invisible to Tier 3, while the
+  // predicate vocabulary (`orgPredicateVocabulary`) already recognizes the
+  // camelCase spelling. This is the same "two vocabularies for one concept"
+  // asymmetry §69 Fix 1 closed; expanding the tier set here closes the
+  // discovery half (§69 Fix 3).
+  const tenantColumns = dedupe(
+    (config?.orgFilterColumns ?? DEFAULT_ORG_FILTER_COLUMNS).flatMap((c) => {
+      const lower = String(c).toLowerCase();
+      return [lower, toCamelCase(lower).toLowerCase()];
+    }),
   );
   const tenantSet = new Set(tenantColumns);
 
