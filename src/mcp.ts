@@ -246,275 +246,54 @@ function registerProcessReliabilityHandlers(): void {
 
 // ── Tool registration ────────────────────────────────────────────────────────
 
-/**
- * Register every MCP tool and its actions on the given registry.
- * @param registry - The tool registry to register tools on.
- */
-export function registerAllTools(registry: ToolRegistry): void {
-  // ── audit ──────────────────────────────────────────────────────────────────
-  const auditActions: ActionDefinition[] = [
-    {
-      name: 'run',
-      description: 'Run a synchronous audit on the specified path. Returns a full audit result with violations.',
-      parameters: [
-        {
-          name: 'path',
-          type: 'string',
-          required: false,
-          description: 'File or directory path to audit (defaults to current directory).',
-          default: process.cwd(),
-        },
-        {
-          name: 'minSeverity',
-          type: 'string',
-          required: false,
-          description: 'Minimum severity level to report (high included by default).',
-          default: 'high',
-          enum: ['high', 'severe', 'critical'],
-        },
-        {
-          name: 'indexFunctions',
-          type: 'boolean',
-          required: false,
-          description: 'Index functions during audit (default: true).',
-          default: true,
-        },
-        {
-          name: 'analyzerConfigs',
-          type: 'object',
-          required: false,
-          description: OPTION_ANALYZER_OVERRIDES,
-        },
-        {
-          name: 'scope',
-          type: 'string',
-          required: false,
-          description: 'Audit scope: "all" (default), "changed" (files differing from index), "git:<ref>" (diff against a git ref), or a comma-separated list of file paths.',
-          default: 'all',
-        },
-      ],
-      handler: async (args, signal) => {
-        return withAbortSignal(signal, 'audit.run', async () => {
-          const auditPath = path.resolve((args.path as string) || process.cwd());
-          await assertAuditPathExists(auditPath);
-          const minSeverity = ((args.minSeverity as string) || 'high') as Severity;
-          const indexFunctions = (args.indexFunctions as boolean) !== false;
-
-          const db = CodeIndexDB.getInstance();
-          await db.initialize();
-          const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
-          const analyzerConfigs = {
-            ...storedConfigs,
-            ...((args.analyzerConfigs as Record<string, any>) || {}),
-          };
-
-          const scope = (args.scope as string) || 'all';
-          // Route through the single audit entry point shared with the CLI, so
-          // `.go` files dispatch to the Go phase rules instead of being silently
-          // skipped (task #255 — the stdio MCP server bypassed per-language
-          // dispatch and left every Go rule `notApplicable`).
-          const auditResult = await createAuditRunner({
-            projectRoot: auditPath,
-            minSeverity,
-            verbose: false,
-            indexFunctions,
-            scope: scope !== 'all' ? (scope as AuditScope) : undefined,
-            ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
-          }).run();
-
-          if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
-            try {
-              for (const [filePath, functions] of Object.entries(
-                auditResult.metadata.fileToFunctionsMap,
-              )) {
-                await syncFileIndex(filePath, functions as FunctionMetadata[]);
-              }
-            } catch {
-              // indexing is best-effort for sync audit
-            }
-          }
-
-          return {
-            success: true,
-            summary: auditResult.summary,
-            violations: auditResult.analyzerResults,
-            metadata: auditResult.metadata,
-            guidance:
-              'The audit takes readings, not verdicts. Severity is urgency — how fast a defect bites, never whether you may ignore it; there is no "noise" tier. Work criticals first, then severe, then high. The coverage panel tells you what was actually measured. Documentation readings (missing JSDoc) are maintainability gaps. If you decline a reading, record why instead of silently dismissing it.',
-          };
-        });
+// ── audit ──────────────────────────────────────────────────────────────────
+const auditActions: ActionDefinition[] = [
+  {
+    name: 'run',
+    description: 'Run a synchronous audit on the specified path. Returns a full audit result with violations.',
+    parameters: [
+      {
+        name: 'path',
+        type: 'string',
+        required: false,
+        description: 'File or directory path to audit (defaults to current directory).',
+        default: process.cwd(),
       },
-    },
-    {
-      name: 'start',
-      description:
-        'Start a background audit job. Returns immediately with a jobId. Poll `audit.status` until completed, then fetch pages with `audit.results`.',
-      parameters: [
-        {
-          name: 'path',
-          type: 'string',
-          required: false,
-          description: 'File or directory path to audit (defaults to current directory).',
-          default: process.cwd(),
-        },
-        {
-          name: 'minSeverity',
-          type: 'string',
-          required: false,
-          description: 'Minimum severity level to report (high included by default).',
-          default: 'high',
-          enum: ['high', 'severe', 'critical'],
-        },
-        {
-          name: 'indexFunctions',
-          type: 'boolean',
-          required: false,
-          description: 'Index functions during audit (default: true).',
-          default: true,
-        },
-        {
-          name: 'analyzerConfigs',
-          type: 'object',
-          required: false,
-          description: OPTION_ANALYZER_OVERRIDES,
-        },
-        {
-          name: 'scope',
-          type: 'string',
-          required: false,
-          description: 'Audit scope: "all" (default), "changed" (files differing from index), "git:<ref>" (diff against a git ref), or a comma-separated list of file paths.',
-          default: 'all',
-        },
-        {
-          name: 'jobTimeoutMs',
-          type: 'number',
-          required: false,
-          description: 'Max wall time for the audit job (default 30m, cap 4h).',
-        },
-        {
-          name: 'generateCodeMap',
-          type: 'boolean',
-          required: false,
-          description: 'Generate code map artifacts during audit (default: false).',
-          default: false,
-        },
-      ],
-      handler: async (args, signal) => {
-        return withAbortSignal(signal, 'audit.start', () =>
-          startAuditJob(args, {
-            defaultMinSeverity: 'high',
-            defaultGenerateCodeMap: false,
-          }),
-        );
+      {
+        name: 'minSeverity',
+        type: 'string',
+        required: false,
+        description: 'Minimum severity level to report (high included by default).',
+        default: 'high',
+        enum: ['high', 'severe', 'critical'],
       },
-    },
-    {
-      name: 'status',
-      description: 'Get current status for a previously started background audit job.',
-      parameters: [
-        {
-          name: 'jobId',
-          type: 'string',
-          required: true,
-          description: 'Job ID returned by `audit start`.',
-        },
-      ],
-      handler: async (args) => {
-        const jobId = args.jobId as string | undefined;
-        if (!jobId) throw new Error('audit.status requires jobId');
-        return await getAuditJobStatus(jobId);
+      {
+        name: 'indexFunctions',
+        type: 'boolean',
+        required: false,
+        description: 'Index functions during audit (default: true).',
+        default: true,
       },
-    },
-    {
-      name: 'results',
-      description: 'Fetch paginated violations for a completed audit result by resultId.',
-      parameters: [
-        {
-          name: 'resultId',
-          type: 'string',
-          required: false,
-          description: 'Result ID returned by `audit status` when completed. Also accepts legacy `auditId`.',
-        },
-        {
-          name: 'auditId',
-          type: 'string',
-          required: false,
-          description: 'Backward-compatible alias for resultId.',
-        },
-        {
-          name: 'limit',
-          type: 'number',
-          required: false,
-          description: 'Maximum violations per page (default: 50, max: 100).',
-          default: 50,
-        },
-        {
-          name: 'offset',
-          type: 'number',
-          required: false,
-          description: 'Violation offset for pagination (default: 0).',
-          default: 0,
-        },
-        {
-          name: 'format',
-          type: 'string',
-          required: false,
-          description: 'Output format. "json" (default, structured data) or "sarif" (SARIF 2.1.0 JSON string).',
-        },
-      ],
-      handler: async (args, signal) => {
-        const format = (args.format as string) || 'json';
-        if (format === 'sarif') {
-          return withAbortSignal(signal, 'audit.results', () => getAuditResultsAsSarif(args));
-        }
-        return withAbortSignal(signal, 'audit.results', () => getAuditResultsPage(args));
+      {
+        name: 'analyzerConfigs',
+        type: 'object',
+        required: false,
+        description: OPTION_ANALYZER_OVERRIDES,
       },
-    },
-    {
-      name: 'health',
-      description: 'Quick health check of a codebase with key metrics and optional code map generation.',
-      parameters: [
-        {
-          name: 'path',
-          type: 'string',
-          required: false,
-          description: 'The directory path to check.',
-          default: process.cwd(),
-        },
-        {
-          name: 'threshold',
-          type: 'number',
-          required: false,
-          description: 'Health score threshold (0-100) for pass/fail.',
-          default: 70,
-        },
-        {
-          name: 'indexFunctions',
-          type: 'boolean',
-          required: false,
-          description: 'Automatically index functions during health check.',
-          default: true,
-        },
-        {
-          name: 'analyzerConfigs',
-          type: 'object',
-          required: false,
-          description: OPTION_ANALYZER_OVERRIDES,
-        },
-        {
-          name: 'generateCodeMap',
-          type: 'boolean',
-          required: false,
-          description: 'Generate and return a human-readable code map.',
-          default: true,
-        },
-      ],
-      handler: async (args) => {
+      {
+        name: 'scope',
+        type: 'string',
+        required: false,
+        description: 'Audit scope: "all" (default), "changed" (files differing from index), "git:<ref>" (diff against a git ref), or a comma-separated list of file paths.',
+        default: 'all',
+      },
+    ],
+    handler: async (args, signal) => {
+      return withAbortSignal(signal, 'audit.run', async () => {
         const auditPath = path.resolve((args.path as string) || process.cwd());
         await assertAuditPathExists(auditPath);
-        const threshold = (args.threshold as number) || 70;
+        const minSeverity = ((args.minSeverity as string) || 'high') as Severity;
         const indexFunctions = (args.indexFunctions as boolean) !== false;
-        const generateCodeMap = (args.generateCodeMap as boolean) !== false;
 
         const db = CodeIndexDB.getInstance();
         await db.initialize();
@@ -524,127 +303,346 @@ export function registerAllTools(registry: ToolRegistry): void {
           ...((args.analyzerConfigs as Record<string, any>) || {}),
         };
 
+        const scope = (args.scope as string) || 'all';
+        // Route through the single audit entry point shared with the CLI, so
+        // `.go` files dispatch to the Go phase rules instead of being silently
+        // skipped (task #255 — the stdio MCP server bypassed per-language
+        // dispatch and left every Go rule `notApplicable`).
         const auditResult = await createAuditRunner({
           projectRoot: auditPath,
-          minSeverity: 'high' as Severity,
+          minSeverity,
           verbose: false,
           indexFunctions,
+          scope: scope !== 'all' ? (scope as AuditScope) : undefined,
           ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
-          progressCallback: (p) => {
-            if (
-              p.phase === 'function-indexing' &&
-              typeof p.current === 'number' &&
-              typeof p.total === 'number' &&
-              p.total > 0 &&
-              p.current % 50 !== 0 &&
-              p.current !== p.total
-            )
-              return;
-            logMcpDebug('audit.health', p.message ?? p.phase ?? 'progress', {
-              phase: p.phase,
-              analyzer: p.analyzer,
-              current: p.current,
-              total: p.total,
-            });
-          },
         }).run();
-        const healthScore = calculateHealthScore(auditResult);
 
-        let indexingResult: any = null;
         if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
           try {
-            const syncStats = { added: 0, updated: 0, removed: 0 };
             for (const [filePath, functions] of Object.entries(
               auditResult.metadata.fileToFunctionsMap,
             )) {
-              const fileStats = await syncFileIndex(filePath, functions as FunctionMetadata[]);
-              syncStats.added += fileStats.added;
-              syncStats.updated += fileStats.updated;
-              syncStats.removed += fileStats.removed;
+              await syncFileIndex(filePath, functions as FunctionMetadata[]);
             }
-            indexingResult = {
-              success: true,
-              registered: syncStats.added + syncStats.updated,
-              failed: 0,
-              syncStats,
-            };
           } catch {
-            // best-effort
-          }
-        }
-
-        let codeMapResult: any = null;
-        if (generateCodeMap && indexingResult && indexingResult.success) {
-          try {
-            const mapGenerator = new CodeMapGenerator();
-            const mapOptions = {
-              includeComplexity: true,
-              includeDocumentation: true,
-              includeDependencies: true,
-              includeUsage: false,
-              groupByDirectory: true,
-              maxDepth: 8,
-              showUnusedImports: true,
-              minComplexity: 7,
-            };
-            let documentation: any;
-            try {
-              const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
-              if (files.length > 0) {
-                const docResult = await analyzeDocumentation(files);
-                documentation = docResult.metrics;
-              }
-            } catch {
-              // best-effort
-            }
-            const paginatedResult = await mapGenerator.generatePaginatedCodeMap(auditPath, {
-              ...mapOptions,
-              includeDocumentation: !!documentation,
-            });
-            codeMapResult = {
-              success: true,
-              mapId: paginatedResult.mapId,
-              summary: paginatedResult.summary,
-              quickPreview: paginatedResult.quickPreview,
-              sections: paginatedResult.summary.sectionsAvailable,
-              documentationCoverage: documentation?.coverageScore,
-            };
-          } catch (error) {
-            codeMapResult = {
-              success: false,
-              error: error instanceof Error ? error.message : 'Failed to generate code map',
-            };
+            // indexing is best-effort for sync audit
           }
         }
 
         return {
-          healthScore,
-          threshold,
-          passed: healthScore >= threshold,
-          status: healthScore >= threshold ? 'healthy' : 'needs-attention',
-          metrics: {
-            filesAnalyzed: auditResult.metadata.filesAnalyzed,
-            totalViolations: auditResult.summary.totalViolations,
-            criticalViolations: auditResult.summary.criticalIssues,
-            severeViolations: auditResult.summary.severe,
-            highViolations: auditResult.summary.high,
-          },
-          recommendation: getHealthRecommendation(healthScore, auditResult),
-          ...(indexingResult && { functionIndexing: indexingResult }),
-          ...(codeMapResult && { codeMap: codeMapResult }),
+          success: true,
+          summary: auditResult.summary,
+          violations: auditResult.analyzerResults,
+          metadata: auditResult.metadata,
+          guidance:
+            'The audit takes readings, not verdicts. Severity is urgency — how fast a defect bites, never whether you may ignore it; there is no "noise" tier. Work criticals first, then severe, then high. The coverage panel tells you what was actually measured. Documentation readings (missing JSDoc) are maintainability gaps. If you decline a reading, record why instead of silently dismissing it.',
         };
-      },
+      });
     },
-  ];
+  },
+  {
+    name: 'start',
+    description:
+      'Start a background audit job. Returns immediately with a jobId. Poll `audit.status` until completed, then fetch pages with `audit.results`.',
+    parameters: [
+      {
+        name: 'path',
+        type: 'string',
+        required: false,
+        description: 'File or directory path to audit (defaults to current directory).',
+        default: process.cwd(),
+      },
+      {
+        name: 'minSeverity',
+        type: 'string',
+        required: false,
+        description: 'Minimum severity level to report (high included by default).',
+        default: 'high',
+        enum: ['high', 'severe', 'critical'],
+      },
+      {
+        name: 'indexFunctions',
+        type: 'boolean',
+        required: false,
+        description: 'Index functions during audit (default: true).',
+        default: true,
+      },
+      {
+        name: 'analyzerConfigs',
+        type: 'object',
+        required: false,
+        description: OPTION_ANALYZER_OVERRIDES,
+      },
+      {
+        name: 'scope',
+        type: 'string',
+        required: false,
+        description: 'Audit scope: "all" (default), "changed" (files differing from index), "git:<ref>" (diff against a git ref), or a comma-separated list of file paths.',
+        default: 'all',
+      },
+      {
+        name: 'jobTimeoutMs',
+        type: 'number',
+        required: false,
+        description: 'Max wall time for the audit job (default 30m, cap 4h).',
+      },
+      {
+        name: 'generateCodeMap',
+        type: 'boolean',
+        required: false,
+        description: 'Generate code map artifacts during audit (default: false).',
+        default: false,
+      },
+    ],
+    handler: async (args, signal) => {
+      return withAbortSignal(signal, 'audit.start', () =>
+        startAuditJob(args, {
+          defaultMinSeverity: 'high',
+          defaultGenerateCodeMap: false,
+        }),
+      );
+    },
+  },
+  {
+    name: 'status',
+    description: 'Get current status for a previously started background audit job.',
+    parameters: [
+      {
+        name: 'jobId',
+        type: 'string',
+        required: true,
+        description: 'Job ID returned by `audit start`.',
+      },
+    ],
+    handler: async (args) => {
+      const jobId = args.jobId as string | undefined;
+      if (!jobId) throw new Error('audit.status requires jobId');
+      return await getAuditJobStatus(jobId);
+    },
+  },
+  {
+    name: 'results',
+    description: 'Fetch paginated violations for a completed audit result by resultId.',
+    parameters: [
+      {
+        name: 'resultId',
+        type: 'string',
+        required: false,
+        description: 'Result ID returned by `audit status` when completed. Also accepts legacy `auditId`.',
+      },
+      {
+        name: 'auditId',
+        type: 'string',
+        required: false,
+        description: 'Backward-compatible alias for resultId.',
+      },
+      {
+        name: 'limit',
+        type: 'number',
+        required: false,
+        description: 'Maximum violations per page (default: 50, max: 100).',
+        default: 50,
+      },
+      {
+        name: 'offset',
+        type: 'number',
+        required: false,
+        description: 'Violation offset for pagination (default: 0).',
+        default: 0,
+      },
+      {
+        name: 'format',
+        type: 'string',
+        required: false,
+        description: 'Output format. "json" (default, structured data) or "sarif" (SARIF 2.1.0 JSON string).',
+      },
+    ],
+    handler: async (args, signal) => {
+      const format = (args.format as string) || 'json';
+      if (format === 'sarif') {
+        return withAbortSignal(signal, 'audit.results', () => getAuditResultsAsSarif(args));
+      }
+      return withAbortSignal(signal, 'audit.results', () => getAuditResultsPage(args));
+    },
+  },
+  {
+    name: 'health',
+    description: 'Quick health check of a codebase with key metrics and optional code map generation.',
+    parameters: [
+      {
+        name: 'path',
+        type: 'string',
+        required: false,
+        description: 'The directory path to check.',
+        default: process.cwd(),
+      },
+      {
+        name: 'threshold',
+        type: 'number',
+        required: false,
+        description: 'Health score threshold (0-100) for pass/fail.',
+        default: 70,
+      },
+      {
+        name: 'indexFunctions',
+        type: 'boolean',
+        required: false,
+        description: 'Automatically index functions during health check.',
+        default: true,
+      },
+      {
+        name: 'analyzerConfigs',
+        type: 'object',
+        required: false,
+        description: OPTION_ANALYZER_OVERRIDES,
+      },
+      {
+        name: 'generateCodeMap',
+        type: 'boolean',
+        required: false,
+        description: 'Generate and return a human-readable code map.',
+        default: true,
+      },
+    ],
+    handler: async (args) => {
+      const auditPath = path.resolve((args.path as string) || process.cwd());
+      await assertAuditPathExists(auditPath);
+      const threshold = (args.threshold as number) || 70;
+      const indexFunctions = (args.indexFunctions as boolean) !== false;
+      const generateCodeMap = (args.generateCodeMap as boolean) !== false;
 
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+      const analyzerConfigs = {
+        ...storedConfigs,
+        ...((args.analyzerConfigs as Record<string, any>) || {}),
+      };
+
+      const auditResult = await createAuditRunner({
+        projectRoot: auditPath,
+        minSeverity: 'high' as Severity,
+        verbose: false,
+        indexFunctions,
+        ...(Object.keys(analyzerConfigs).length > 0 && { analyzerConfigs }),
+        progressCallback: (p) => {
+          if (
+            p.phase === 'function-indexing' &&
+            typeof p.current === 'number' &&
+            typeof p.total === 'number' &&
+            p.total > 0 &&
+            p.current % 50 !== 0 &&
+            p.current !== p.total
+          )
+            return;
+          logMcpDebug('audit.health', p.message ?? p.phase ?? 'progress', {
+            phase: p.phase,
+            analyzer: p.analyzer,
+            current: p.current,
+            total: p.total,
+          });
+        },
+      }).run();
+      const healthScore = calculateHealthScore(auditResult);
+
+      let indexingResult: any = null;
+      if (indexFunctions && auditResult.metadata.fileToFunctionsMap) {
+        try {
+          const syncStats = { added: 0, updated: 0, removed: 0 };
+          for (const [filePath, functions] of Object.entries(
+            auditResult.metadata.fileToFunctionsMap,
+          )) {
+            const fileStats = await syncFileIndex(filePath, functions as FunctionMetadata[]);
+            syncStats.added += fileStats.added;
+            syncStats.updated += fileStats.updated;
+            syncStats.removed += fileStats.removed;
+          }
+          indexingResult = {
+            success: true,
+            registered: syncStats.added + syncStats.updated,
+            failed: 0,
+            syncStats,
+          };
+        } catch {
+          // best-effort
+        }
+      }
+
+      let codeMapResult: any = null;
+      if (generateCodeMap && indexingResult && indexingResult.success) {
+        try {
+          const mapGenerator = new CodeMapGenerator();
+          const mapOptions = {
+            includeComplexity: true,
+            includeDocumentation: true,
+            includeDependencies: true,
+            includeUsage: false,
+            groupByDirectory: true,
+            maxDepth: 8,
+            showUnusedImports: true,
+            minComplexity: 7,
+          };
+          let documentation: any;
+          try {
+            const files = Object.keys(auditResult.metadata.fileToFunctionsMap || {});
+            if (files.length > 0) {
+              const docResult = await analyzeDocumentation(files);
+              documentation = docResult.metrics;
+            }
+          } catch {
+            // best-effort
+          }
+          const paginatedResult = await mapGenerator.generatePaginatedCodeMap(auditPath, {
+            ...mapOptions,
+            includeDocumentation: !!documentation,
+          });
+          codeMapResult = {
+            success: true,
+            mapId: paginatedResult.mapId,
+            summary: paginatedResult.summary,
+            quickPreview: paginatedResult.quickPreview,
+            sections: paginatedResult.summary.sectionsAvailable,
+            documentationCoverage: documentation?.coverageScore,
+          };
+        } catch (error) {
+          codeMapResult = {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to generate code map',
+          };
+        }
+      }
+
+      return {
+        healthScore,
+        threshold,
+        passed: healthScore >= threshold,
+        status: healthScore >= threshold ? 'healthy' : 'needs-attention',
+        metrics: {
+          filesAnalyzed: auditResult.metadata.filesAnalyzed,
+          totalViolations: auditResult.summary.totalViolations,
+          criticalViolations: auditResult.summary.criticalIssues,
+          severeViolations: auditResult.summary.severe,
+          highViolations: auditResult.summary.high,
+        },
+        recommendation: getHealthRecommendation(healthScore, auditResult),
+        ...(indexingResult && { functionIndexing: indexingResult }),
+        ...(codeMapResult && { codeMap: codeMapResult }),
+      };
+    },
+  },
+];
+
+function registerAuditTool(registry: ToolRegistry): void {
   registry.register({
     name: 'audit',
     description:
       'Run code quality audits (synchronous or background), check status, fetch paginated results, and get health checks. Actions: run (sync audit, returns full results), start (background job), status (poll a job), results (paginated violations), health (score + code map).',
     actions: auditActions,
   });
+}
 
-  // ── search ─────────────────────────────────────────────────────────────────
+// ── search ─────────────────────────────────────────────────────────────────
+function registerSearchTool(registry: ToolRegistry): void {
   registry.register({
     name: 'search',
     description:
@@ -719,8 +717,10 @@ export function registerAllTools(registry: ToolRegistry): void {
       },
     ],
   });
+}
 
-  // ── index ──────────────────────────────────────────────────────────────────
+// ── index ──────────────────────────────────────────────────────────────────
+function registerIndexTool(registry: ToolRegistry): void {
   registry.register({
     name: 'index',
     description:
@@ -852,433 +852,439 @@ export function registerAllTools(registry: ToolRegistry): void {
       },
     ],
   });
+}
 
-  // ── config ─────────────────────────────────────────────────────────────────
+// ── config ─────────────────────────────────────────────────────────────────
+const configActions: ActionDefinition[] = [
+  {
+    name: 'get',
+    description: 'Get current configuration for an analyzer (or all).',
+    parameters: [
+      {
+        name: 'analyzerName',
+        type: 'string',
+        required: false,
+        description: 'Specific analyzer name, or omit to get all configs.',
+      },
+      {
+        name: 'projectPath',
+        type: 'string',
+        required: false,
+        description: 'Optional project path for project-specific config.',
+      },
+    ],
+    handler: async (args) => {
+      const analyzerName = args.analyzerName as string | undefined;
+      const projectPath = args.projectPath as string | undefined;
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      if (analyzerName) {
+        const config = await db.getAnalyzerConfig(analyzerName, projectPath);
+        return {
+          success: true,
+          analyzer: analyzerName,
+          config: config || null,
+          scope: projectPath ? 'project' : 'global',
+          message: config ? 'Configuration found' : 'No custom configuration found, using defaults',
+        };
+      }
+      const configs = await db.getAllAnalyzerConfigs(projectPath);
+      return {
+        success: true,
+        configs,
+        scope: projectPath ? 'project' : 'global',
+        message: `Found ${Object.keys(configs).length} analyzer configurations`,
+      };
+    },
+  },
+  {
+    name: 'set',
+    description: 'Set or update analyzer configuration that persists across audit runs.',
+    parameters: [
+      {
+        name: 'analyzerName',
+        type: 'string',
+        required: true,
+        description: 'The analyzer to configure (solid, dry, security, etc.).',
+      },
+      {
+        name: 'config',
+        type: 'object',
+        required: true,
+        description: 'Configuration object for the analyzer (e.g., thresholds, rules).',
+      },
+      {
+        name: 'projectPath',
+        type: 'string',
+        required: false,
+        description: 'Optional project path for project-specific config.',
+      },
+    ],
+    handler: async (args) => {
+      const analyzerName = args.analyzerName as string;
+      const config = args.config as Record<string, any>;
+      const projectPath = args.projectPath as string | undefined;
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      await db.storeAnalyzerConfig(analyzerName, config, {
+        projectPath,
+        isGlobal: !projectPath,
+      });
+      return {
+        success: true,
+        message: `Configuration for ${analyzerName} analyzer has been saved${projectPath ? ` for project ${projectPath}` : ' globally'}`,
+        analyzer: analyzerName,
+        scope: projectPath ? 'project' : 'global',
+        config,
+      };
+    },
+  },
+  {
+    name: 'reset',
+    description: 'Reset analyzer configuration to defaults.',
+    parameters: [
+      {
+        name: 'analyzerName',
+        type: 'string',
+        required: false,
+        description: 'Specific analyzer to reset, or omit to reset all.',
+      },
+      {
+        name: 'projectPath',
+        type: 'string',
+        required: false,
+        description: 'Optional project path to reset only project-specific config.',
+      },
+    ],
+    handler: async (args) => {
+      const analyzerName = args.analyzerName as string | undefined;
+      const projectPath = args.projectPath as string | undefined;
+      const db = CodeIndexDB.getInstance();
+      await db.initialize();
+      if (analyzerName) {
+        const deleted = await db.deleteAnalyzerConfig(analyzerName, {
+          projectPath,
+          isGlobal: !projectPath,
+        });
+        return {
+          success: deleted,
+          message: deleted
+            ? `Configuration for ${analyzerName} analyzer has been reset${projectPath ? ` for project ${projectPath}` : ' globally'}`
+            : `No configuration found for ${analyzerName} analyzer`,
+          analyzer: analyzerName,
+          scope: projectPath ? 'project' : 'global',
+        };
+      }
+      await db.resetAnalyzerConfigs(projectPath);
+      return {
+        success: true,
+        message: projectPath
+          ? `All project-specific configurations for ${projectPath} have been reset`
+          : 'All analyzer configurations have been reset to defaults',
+        scope: projectPath ? 'project' : 'global',
+      };
+    },
+  },
+  {
+    name: 'generate',
+    description: 'Generate configuration files for AI coding assistants (Cursor, Claude, Copilot, etc.).',
+    parameters: [
+      {
+        name: 'tools',
+        type: 'array',
+        required: true,
+        description: 'AI tools to configure (claude, codex, cursor, gemini, copilot, continue, awsq, codeium, vscode, cline, zcode).',
+      },
+      {
+        name: 'outputDir',
+        type: 'string',
+        required: false,
+        description: 'Output directory for configuration files.',
+        default: '.',
+      },
+      {
+        name: 'serverUrl',
+        type: 'string',
+        required: false,
+        description: 'MCP server URL (default: auto-detected).',
+        default: DEFAULT_SERVER_URL,
+      },
+      {
+        name: 'overwrite',
+        type: 'boolean',
+        required: false,
+        description: 'Overwrite existing files (default: false).',
+        default: false,
+      },
+    ],
+    handler: async (args) => {
+      const tools = args.tools as string[];
+      const serverUrl = (args.serverUrl as string) || DEFAULT_SERVER_URL;
+      const rawOutputDir = (args.outputDir as string) || '.';
+      // Containment (Spec 61 R5.1): generated configs land only inside the
+      // working directory. `~` expansion still resolves (so a project under
+      // `~` keeps working), but it is no longer a way to escape cwd.
+      const outputDir = resolveConfigGenerateDir(rawOutputDir, process.cwd());
+      const overwrite = (args.overwrite as boolean) || false;
+
+      if (!Array.isArray(tools) || tools.length === 0)
+        throw new Error('tools parameter must be a non-empty array');
+
+      const factory = new ConfigGeneratorFactory(serverUrl);
+      const generatedFiles: string[] = [];
+      const errors: string[] = [];
+
+      for (const tool of tools) {
+        try {
+          const generator = factory.createGenerator(tool);
+          if (!generator) {
+            errors.push(`Unknown tool: ${tool}`);
+            continue;
+          }
+          const config = generator.generateConfig();
+          const outputPath = path.resolve(outputDir, config.filename);
+
+          let fileExists = false;
+          try {
+            await fs.access(outputPath);
+            fileExists = true;
+          } catch {
+            // doesn't exist
+          }
+          if (fileExists && !overwrite) {
+            errors.push(`File already exists: ${config.filename} (use overwrite: true to replace)`);
+            continue;
+          }
+          await fs.mkdir(path.dirname(outputPath), { recursive: true });
+          await fs.writeFile(outputPath, config.content);
+          generatedFiles.push(config.filename);
+
+          if (config.additionalFiles) {
+            for (const additionalFile of config.additionalFiles) {
+              const additionalPath = path.resolve(outputDir, additionalFile.filename);
+              await fs.mkdir(path.dirname(additionalPath), { recursive: true });
+              await fs.writeFile(additionalPath, additionalFile.content);
+              generatedFiles.push(additionalFile.filename);
+            }
+          }
+        } catch (error) {
+          errors.push(
+            `Failed to generate config for ${tool}: ${errorMessage(error)}`,
+          );
+        }
+      }
+
+      return {
+        success: errors.length === 0,
+        generatedFiles,
+        errors: errors.length > 0 ? errors : undefined,
+        totalRequested: tools.length,
+        totalGenerated: generatedFiles.length,
+      };
+    },
+  },
+  {
+    name: 'whitelist_list',
+    description: 'Get current whitelist entries for dependency and class instantiation checks.',
+    parameters: [
+      {
+        name: 'type',
+        type: 'string',
+        required: false,
+        description: 'Filter by type: platform-api, framework-class, project-dep, shared-library, node-builtin.',
+        enum: ['platform-api', 'framework-class', 'project-dep', 'shared-library', 'node-builtin'],
+      },
+      {
+        name: 'status',
+        type: 'string',
+        required: false,
+        description: 'Filter by status: active, pending, rejected, disabled.',
+        enum: ['active', 'pending', 'rejected', 'disabled'],
+      },
+    ],
+    handler: async (args) => {
+      const { handleWhitelistGet } = await import('./mcp-tools/whitelistTools.js');
+      return handleWhitelistGet(args);
+    },
+  },
+  {
+    name: 'whitelist_add',
+    description: 'Add a new entry to the whitelist.',
+    parameters: [
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description: 'Class name or import path to whitelist.',
+      },
+      {
+        name: 'type',
+        type: 'string',
+        required: true,
+        description: 'Type of whitelist entry.',
+        enum: ['platform-api', 'framework-class', 'project-dep', 'shared-library', 'node-builtin'],
+      },
+      {
+        name: 'description',
+        type: 'string',
+        required: false,
+        description: 'Explanation of why this is whitelisted.',
+      },
+      {
+        name: 'patterns',
+        type: 'array',
+        required: false,
+        description: 'Additional patterns to match (e.g., ["fs/*", "node:fs"]).',
+      },
+    ],
+    handler: async (args) => {
+      const { handleWhitelistAdd } = await import('./mcp-tools/whitelistTools.js');
+      return handleWhitelistAdd(args);
+    },
+  },
+  {
+    name: 'whitelist_update',
+    description: 'Update the status of a whitelist entry.',
+    parameters: [
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description: 'Name of the whitelist entry to update.',
+      },
+      {
+        name: 'status',
+        type: 'string',
+        required: true,
+        description: 'New status for the entry.',
+        enum: ['active', 'pending', 'rejected', 'disabled'],
+      },
+    ],
+    handler: async (args) => {
+      const { handleWhitelistUpdateStatus } = await import('./mcp-tools/whitelistTools.js');
+      return handleWhitelistUpdateStatus(args);
+    },
+  },
+  {
+    name: 'whitelist_detect',
+    description: 'Detect potential whitelist candidates from package.json and usage patterns.',
+    parameters: [
+      {
+        name: 'path',
+        type: 'string',
+        required: false,
+        description: 'Project path to analyze (defaults to current directory).',
+        default: process.cwd(),
+      },
+      {
+        name: 'includePackageJson',
+        type: 'boolean',
+        required: false,
+        description: 'Include dependencies from package.json.',
+        default: true,
+      },
+      {
+        name: 'autoPopulate',
+        type: 'boolean',
+        required: false,
+        description: 'Automatically add high-confidence entries.',
+        default: false,
+      },
+    ],
+    handler: async (args) => {
+      const { handleWhitelistDetect } = await import('./mcp-tools/whitelistTools.js');
+      return handleWhitelistDetect(args);
+    },
+  },
+  {
+    name: 'rules_list',
+    description: 'List all configured invariant rules from .codeauditor.json. Shows rule IDs, kinds, severity, and messages.',
+    parameters: [
+      {
+        name: 'configPath',
+        type: 'string',
+        required: false,
+        description: 'Path to .codeauditor.json (defaults to auto-detect in current working tree).',
+      },
+    ],
+    handler: async (args) => {
+      const { readFileSync } = await import('fs');
+      const path = await import('path');
+      const configPath = (args.configPath as string) ||
+        path.join(process.cwd(), '.codeauditor.json');
+      try {
+        const raw = readFileSync(configPath, 'utf-8');
+        const config = JSON.parse(raw);
+        const rules = config?.rules ?? [];
+        return {
+          rules: rules.map((r: any) => ({
+            id: r.id,
+            kind: r.kind,
+            severity: r.severity,
+            message: r.message || null,
+          })),
+          count: rules.length,
+          configPath,
+        };
+      } catch (err: any) {
+        return {
+          error: `Failed to read rules: ${err.message}`,
+          configPath,
+          rules: [],
+          count: 0,
+        };
+      }
+    },
+  },
+  {
+    name: 'rules_check',
+    description: 'Validate the current .codeauditor.json rules (schema, duplicate IDs, valid globs/regex, mutual exclusivity). Returns any config errors.',
+    parameters: [
+      {
+        name: 'configPath',
+        type: 'string',
+        required: false,
+        description: 'Path to .codeauditor.json (defaults to auto-detect in current working tree).',
+      },
+    ],
+    handler: async (args) => {
+      const { validateRulesConfig } = await import('./invariants/ruleValidator.js');
+      const { readFileSync } = await import('fs');
+      const path = await import('path');
+      const configPath = (args.configPath as string) ||
+        path.join(process.cwd(), '.codeauditor.json');
+      try {
+        const raw = readFileSync(configPath, 'utf-8');
+        const config = JSON.parse(raw);
+        const rulesArray = config?.rules;
+        const errors = validateRulesConfig({ rules: rulesArray ?? [] });
+        return {
+          valid: errors.length === 0,
+          errors: errors.map(e => ({ ruleId: e.ruleId || null, message: e.message })),
+          configPath,
+        };
+      } catch (err: any) {
+        return {
+          valid: false,
+          errors: [{ message: `Failed to read/parse config: ${err.message}` }],
+          configPath,
+        };
+      }
+    },
+  },
+];
+
+function registerConfigTool(registry: ToolRegistry): void {
   registry.register({
     name: 'config',
     description:
       'Manage analyzer configurations, generate AI tool configs, manage whitelists, and manage invariant rules. Actions: get, set, reset (analyzer configs), generate (AI tool config files), whitelist_list, whitelist_add, whitelist_update, whitelist_detect, rules_list, rules_check.',
-    actions: [
-      {
-        name: 'get',
-        description: 'Get current configuration for an analyzer (or all).',
-        parameters: [
-          {
-            name: 'analyzerName',
-            type: 'string',
-            required: false,
-            description: 'Specific analyzer name, or omit to get all configs.',
-          },
-          {
-            name: 'projectPath',
-            type: 'string',
-            required: false,
-            description: 'Optional project path for project-specific config.',
-          },
-        ],
-        handler: async (args) => {
-          const analyzerName = args.analyzerName as string | undefined;
-          const projectPath = args.projectPath as string | undefined;
-          const db = CodeIndexDB.getInstance();
-          await db.initialize();
-          if (analyzerName) {
-            const config = await db.getAnalyzerConfig(analyzerName, projectPath);
-            return {
-              success: true,
-              analyzer: analyzerName,
-              config: config || null,
-              scope: projectPath ? 'project' : 'global',
-              message: config ? 'Configuration found' : 'No custom configuration found, using defaults',
-            };
-          }
-          const configs = await db.getAllAnalyzerConfigs(projectPath);
-          return {
-            success: true,
-            configs,
-            scope: projectPath ? 'project' : 'global',
-            message: `Found ${Object.keys(configs).length} analyzer configurations`,
-          };
-        },
-      },
-      {
-        name: 'set',
-        description: 'Set or update analyzer configuration that persists across audit runs.',
-        parameters: [
-          {
-            name: 'analyzerName',
-            type: 'string',
-            required: true,
-            description: 'The analyzer to configure (solid, dry, security, etc.).',
-          },
-          {
-            name: 'config',
-            type: 'object',
-            required: true,
-            description: 'Configuration object for the analyzer (e.g., thresholds, rules).',
-          },
-          {
-            name: 'projectPath',
-            type: 'string',
-            required: false,
-            description: 'Optional project path for project-specific config.',
-          },
-        ],
-        handler: async (args) => {
-          const analyzerName = args.analyzerName as string;
-          const config = args.config as Record<string, any>;
-          const projectPath = args.projectPath as string | undefined;
-          const db = CodeIndexDB.getInstance();
-          await db.initialize();
-          await db.storeAnalyzerConfig(analyzerName, config, {
-            projectPath,
-            isGlobal: !projectPath,
-          });
-          return {
-            success: true,
-            message: `Configuration for ${analyzerName} analyzer has been saved${projectPath ? ` for project ${projectPath}` : ' globally'}`,
-            analyzer: analyzerName,
-            scope: projectPath ? 'project' : 'global',
-            config,
-          };
-        },
-      },
-      {
-        name: 'reset',
-        description: 'Reset analyzer configuration to defaults.',
-        parameters: [
-          {
-            name: 'analyzerName',
-            type: 'string',
-            required: false,
-            description: 'Specific analyzer to reset, or omit to reset all.',
-          },
-          {
-            name: 'projectPath',
-            type: 'string',
-            required: false,
-            description: 'Optional project path to reset only project-specific config.',
-          },
-        ],
-        handler: async (args) => {
-          const analyzerName = args.analyzerName as string | undefined;
-          const projectPath = args.projectPath as string | undefined;
-          const db = CodeIndexDB.getInstance();
-          await db.initialize();
-          if (analyzerName) {
-            const deleted = await db.deleteAnalyzerConfig(analyzerName, {
-              projectPath,
-              isGlobal: !projectPath,
-            });
-            return {
-              success: deleted,
-              message: deleted
-                ? `Configuration for ${analyzerName} analyzer has been reset${projectPath ? ` for project ${projectPath}` : ' globally'}`
-                : `No configuration found for ${analyzerName} analyzer`,
-              analyzer: analyzerName,
-              scope: projectPath ? 'project' : 'global',
-            };
-          }
-          await db.resetAnalyzerConfigs(projectPath);
-          return {
-            success: true,
-            message: projectPath
-              ? `All project-specific configurations for ${projectPath} have been reset`
-              : 'All analyzer configurations have been reset to defaults',
-            scope: projectPath ? 'project' : 'global',
-          };
-        },
-      },
-      {
-        name: 'generate',
-        description: 'Generate configuration files for AI coding assistants (Cursor, Claude, Copilot, etc.).',
-        parameters: [
-          {
-            name: 'tools',
-            type: 'array',
-            required: true,
-            description: 'AI tools to configure (claude, codex, cursor, gemini, copilot, continue, awsq, codeium, vscode, cline, zcode).',
-          },
-          {
-            name: 'outputDir',
-            type: 'string',
-            required: false,
-            description: 'Output directory for configuration files.',
-            default: '.',
-          },
-          {
-            name: 'serverUrl',
-            type: 'string',
-            required: false,
-            description: 'MCP server URL (default: auto-detected).',
-            default: DEFAULT_SERVER_URL,
-          },
-          {
-            name: 'overwrite',
-            type: 'boolean',
-            required: false,
-            description: 'Overwrite existing files (default: false).',
-            default: false,
-          },
-        ],
-        handler: async (args) => {
-          const tools = args.tools as string[];
-          const serverUrl = (args.serverUrl as string) || DEFAULT_SERVER_URL;
-          const rawOutputDir = (args.outputDir as string) || '.';
-          // Containment (Spec 61 R5.1): generated configs land only inside the
-          // working directory. `~` expansion still resolves (so a project under
-          // `~` keeps working), but it is no longer a way to escape cwd.
-          const outputDir = resolveConfigGenerateDir(rawOutputDir, process.cwd());
-          const overwrite = (args.overwrite as boolean) || false;
-
-          if (!Array.isArray(tools) || tools.length === 0)
-            throw new Error('tools parameter must be a non-empty array');
-
-          const factory = new ConfigGeneratorFactory(serverUrl);
-          const generatedFiles: string[] = [];
-          const errors: string[] = [];
-
-          for (const tool of tools) {
-            try {
-              const generator = factory.createGenerator(tool);
-              if (!generator) {
-                errors.push(`Unknown tool: ${tool}`);
-                continue;
-              }
-              const config = generator.generateConfig();
-              const outputPath = path.resolve(outputDir, config.filename);
-
-              let fileExists = false;
-              try {
-                await fs.access(outputPath);
-                fileExists = true;
-              } catch {
-                // doesn't exist
-              }
-              if (fileExists && !overwrite) {
-                errors.push(`File already exists: ${config.filename} (use overwrite: true to replace)`);
-                continue;
-              }
-              await fs.mkdir(path.dirname(outputPath), { recursive: true });
-              await fs.writeFile(outputPath, config.content);
-              generatedFiles.push(config.filename);
-
-              if (config.additionalFiles) {
-                for (const additionalFile of config.additionalFiles) {
-                  const additionalPath = path.resolve(outputDir, additionalFile.filename);
-                  await fs.mkdir(path.dirname(additionalPath), { recursive: true });
-                  await fs.writeFile(additionalPath, additionalFile.content);
-                  generatedFiles.push(additionalFile.filename);
-                }
-              }
-            } catch (error) {
-              errors.push(
-                `Failed to generate config for ${tool}: ${errorMessage(error)}`,
-              );
-            }
-          }
-
-          return {
-            success: errors.length === 0,
-            generatedFiles,
-            errors: errors.length > 0 ? errors : undefined,
-            totalRequested: tools.length,
-            totalGenerated: generatedFiles.length,
-          };
-        },
-      },
-      {
-        name: 'whitelist_list',
-        description: 'Get current whitelist entries for dependency and class instantiation checks.',
-        parameters: [
-          {
-            name: 'type',
-            type: 'string',
-            required: false,
-            description: 'Filter by type: platform-api, framework-class, project-dep, shared-library, node-builtin.',
-            enum: ['platform-api', 'framework-class', 'project-dep', 'shared-library', 'node-builtin'],
-          },
-          {
-            name: 'status',
-            type: 'string',
-            required: false,
-            description: 'Filter by status: active, pending, rejected, disabled.',
-            enum: ['active', 'pending', 'rejected', 'disabled'],
-          },
-        ],
-        handler: async (args) => {
-          const { handleWhitelistGet } = await import('./mcp-tools/whitelistTools.js');
-          return handleWhitelistGet(args);
-        },
-      },
-      {
-        name: 'whitelist_add',
-        description: 'Add a new entry to the whitelist.',
-        parameters: [
-          {
-            name: 'name',
-            type: 'string',
-            required: true,
-            description: 'Class name or import path to whitelist.',
-          },
-          {
-            name: 'type',
-            type: 'string',
-            required: true,
-            description: 'Type of whitelist entry.',
-            enum: ['platform-api', 'framework-class', 'project-dep', 'shared-library', 'node-builtin'],
-          },
-          {
-            name: 'description',
-            type: 'string',
-            required: false,
-            description: 'Explanation of why this is whitelisted.',
-          },
-          {
-            name: 'patterns',
-            type: 'array',
-            required: false,
-            description: 'Additional patterns to match (e.g., ["fs/*", "node:fs"]).',
-          },
-        ],
-        handler: async (args) => {
-          const { handleWhitelistAdd } = await import('./mcp-tools/whitelistTools.js');
-          return handleWhitelistAdd(args);
-        },
-      },
-      {
-        name: 'whitelist_update',
-        description: 'Update the status of a whitelist entry.',
-        parameters: [
-          {
-            name: 'name',
-            type: 'string',
-            required: true,
-            description: 'Name of the whitelist entry to update.',
-          },
-          {
-            name: 'status',
-            type: 'string',
-            required: true,
-            description: 'New status for the entry.',
-            enum: ['active', 'pending', 'rejected', 'disabled'],
-          },
-        ],
-        handler: async (args) => {
-          const { handleWhitelistUpdateStatus } = await import('./mcp-tools/whitelistTools.js');
-          return handleWhitelistUpdateStatus(args);
-        },
-      },
-      {
-        name: 'whitelist_detect',
-        description: 'Detect potential whitelist candidates from package.json and usage patterns.',
-        parameters: [
-          {
-            name: 'path',
-            type: 'string',
-            required: false,
-            description: 'Project path to analyze (defaults to current directory).',
-            default: process.cwd(),
-          },
-          {
-            name: 'includePackageJson',
-            type: 'boolean',
-            required: false,
-            description: 'Include dependencies from package.json.',
-            default: true,
-          },
-          {
-            name: 'autoPopulate',
-            type: 'boolean',
-            required: false,
-            description: 'Automatically add high-confidence entries.',
-            default: false,
-          },
-        ],
-        handler: async (args) => {
-          const { handleWhitelistDetect } = await import('./mcp-tools/whitelistTools.js');
-          return handleWhitelistDetect(args);
-        },
-      },
-      {
-        name: 'rules_list',
-        description: 'List all configured invariant rules from .codeauditor.json. Shows rule IDs, kinds, severity, and messages.',
-        parameters: [
-          {
-            name: 'configPath',
-            type: 'string',
-            required: false,
-            description: 'Path to .codeauditor.json (defaults to auto-detect in current working tree).',
-          },
-        ],
-        handler: async (args) => {
-          const { readFileSync } = await import('fs');
-          const path = await import('path');
-          const configPath = (args.configPath as string) ||
-            path.join(process.cwd(), '.codeauditor.json');
-          try {
-            const raw = readFileSync(configPath, 'utf-8');
-            const config = JSON.parse(raw);
-            const rules = config?.rules ?? [];
-            return {
-              rules: rules.map((r: any) => ({
-                id: r.id,
-                kind: r.kind,
-                severity: r.severity,
-                message: r.message || null,
-              })),
-              count: rules.length,
-              configPath,
-            };
-          } catch (err: any) {
-            return {
-              error: `Failed to read rules: ${err.message}`,
-              configPath,
-              rules: [],
-              count: 0,
-            };
-          }
-        },
-      },
-      {
-        name: 'rules_check',
-        description: 'Validate the current .codeauditor.json rules (schema, duplicate IDs, valid globs/regex, mutual exclusivity). Returns any config errors.',
-        parameters: [
-          {
-            name: 'configPath',
-            type: 'string',
-            required: false,
-            description: 'Path to .codeauditor.json (defaults to auto-detect in current working tree).',
-          },
-        ],
-        handler: async (args) => {
-          const { validateRulesConfig } = await import('./invariants/ruleValidator.js');
-          const { readFileSync } = await import('fs');
-          const path = await import('path');
-          const configPath = (args.configPath as string) ||
-            path.join(process.cwd(), '.codeauditor.json');
-          try {
-            const raw = readFileSync(configPath, 'utf-8');
-            const config = JSON.parse(raw);
-            const rulesArray = config?.rules;
-            const errors = validateRulesConfig({ rules: rulesArray ?? [] });
-            return {
-              valid: errors.length === 0,
-              errors: errors.map(e => ({ ruleId: e.ruleId || null, message: e.message })),
-              configPath,
-            };
-          } catch (err: any) {
-            return {
-              valid: false,
-              errors: [{ message: `Failed to read/parse config: ${err.message}` }],
-              configPath,
-            };
-          }
-        },
-      },
-    ],
+    actions: configActions,
   });
+}
 
-  // ── telemetry ──────────────────────────────────────────────────────────────
+// ── telemetry ──────────────────────────────────────────────────────────────
+function registerTelemetryTool(registry: ToolRegistry): void {
   registry.register({
     name: 'telemetry',
     description:
@@ -1332,8 +1338,10 @@ export function registerAllTools(registry: ToolRegistry): void {
       },
     ],
   });
+}
 
-  // ── code_map ───────────────────────────────────────────────────────────────
+// ── code_map ───────────────────────────────────────────────────────────────
+function registerCodeMapTool(registry: ToolRegistry): void {
   registry.register({
     name: 'code_map',
     description:
@@ -1390,8 +1398,10 @@ export function registerAllTools(registry: ToolRegistry): void {
       },
     ],
   });
+}
 
-  // ── tasks ──────────────────────────────────────────────────────────────────
+// ── tasks ──────────────────────────────────────────────────────────────────
+function registerTasksTool(registry: ToolRegistry): void {
   registry.register({
     name: 'tasks',
     description:
@@ -1521,8 +1531,10 @@ export function registerAllTools(registry: ToolRegistry): void {
       },
     ],
   });
+}
 
-  // ── guide ──────────────────────────────────────────────────────────────────
+// ── guide ──────────────────────────────────────────────────────────────────
+function registerGuideTool(registry: ToolRegistry): void {
   registry.register({
     name: 'guide',
     description:
@@ -1569,6 +1581,21 @@ export function registerAllTools(registry: ToolRegistry): void {
       },
     ],
   });
+}
+
+/**
+ * Register every MCP tool and its actions on the given registry.
+ * @param registry - The tool registry to register tools on.
+ */
+export function registerAllTools(registry: ToolRegistry): void {
+  registerAuditTool(registry);
+  registerSearchTool(registry);
+  registerIndexTool(registry);
+  registerConfigTool(registry);
+  registerTelemetryTool(registry);
+  registerCodeMapTool(registry);
+  registerTasksTool(registry);
+  registerGuideTool(registry);
 }
 
 // ── MCP Server ───────────────────────────────────────────────────────────────
