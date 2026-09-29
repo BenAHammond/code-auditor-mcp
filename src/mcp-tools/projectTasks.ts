@@ -113,6 +113,180 @@ function parseListTaskOptions(
 }
 
 /**
+ * Handle the `from_audit` action: derive project tasks from the violations in
+ * a stored audit result, deduping against open tasks by fingerprint.
+ */
+async function handleFromAudit(
+  args: Record<string, unknown>,
+  db: CodeIndexDB,
+  options?: { signal?: AbortSignal }
+): Promise<Record<string, unknown>> {
+  const { fingerprint: computeFingerprint, buildFingerprintInput } = await import(
+    '../fingerprint.js'
+  );
+  const { projectPath, projectPathDefaulted } =
+    resolveProjectPathForTasks(args);
+
+  // 1. Retrieve audit results
+  const rawAuditJobId = args.auditJobId;
+  const auditJobId =
+    typeof rawAuditJobId === 'string' && rawAuditJobId.trim() !== ''
+      ? rawAuditJobId.trim()
+      : undefined;
+
+  let auditRecord: any;
+  if (auditJobId) {
+    auditRecord = await db.getAuditResults(auditJobId);
+    if (!auditRecord) {
+      return {
+        success: false,
+        error: `Audit result not found or expired: ${auditJobId}`
+      };
+    }
+  } else {
+    // Prefer the most recent full audit; fall back to scoped or
+    // legacy results without scope metadata.
+    auditRecord = await db.getMostRecentAuditResults(projectPath, 'full');
+    if (!auditRecord) {
+      auditRecord = await db.getMostRecentAuditResults(projectPath, 'scoped');
+    }
+    if (!auditRecord) {
+      // Legacy: results stored before scope metadata was added
+      auditRecord = await db.getMostRecentAuditResults(projectPath);
+    }
+    if (!auditRecord) {
+      return {
+        success: false,
+        error:
+          'No audit results found. Run an audit first, or provide an auditJobId.'
+      };
+    }
+  }
+
+  // 2. Filters
+  const severities: string[] = Array.isArray(args.severities)
+    ? (args.severities as string[]).map((s) => String(s).trim()).filter(Boolean)
+    : ['critical', 'severe', 'high'];
+  const pathGlobs: string[] | undefined = Array.isArray(args.paths)
+    ? (args.paths as string[]).map((s) => String(s).trim()).filter(Boolean)
+    : undefined;
+
+  // 3. Walk violations from all analyzer results
+  const analyzerResults: Record<string, any> =
+    auditRecord.analyzerResults ?? {};
+  const severitySet = new Set(severities);
+
+  const priorityMap: Record<string, 'high' | 'medium' | 'low'> = {
+    critical: 'high',
+    severe: 'medium',
+    high: 'low'
+  };
+
+  let created = 0;
+  let skipped = 0;
+  const createdTasks: any[] = [];
+
+  for (const [analyzerName, analyzerResult] of Object.entries(
+    analyzerResults
+  )) {
+    const violations: any[] = Array.isArray(analyzerResult.violations)
+      ? analyzerResult.violations
+      : [];
+
+    for (const violation of violations) {
+      const severity = String(violation.severity ?? '').trim();
+      if (!severitySet.has(severity)) {
+        continue;
+      }
+
+      // Path filter (simple substring/glob match)
+      if (pathGlobs && pathGlobs.length > 0) {
+        const filePath = String(violation.file ?? '');
+        const matches = pathGlobs.some((g) => {
+          // Basic glob: ** matches any path segment
+          if (g.includes('**')) {
+            const regex = new RegExp(
+              g
+                .replace(/\./g, '\\.')
+                .replace(/\*\*/g, '___DOUBLESTAR___')
+                .replace(/\*/g, '[^/]*')
+                .replace(/___DOUBLESTAR___/g, '.*')
+            );
+            return regex.test(filePath);
+          }
+          // Simple contains
+          return filePath.includes(g);
+        });
+        if (!matches) {
+          continue;
+        }
+      }
+
+      // Build canonical fingerprint via the shared input resolver.
+      // Destructure so the display fields (file, symbol, rule) are
+      // available for task creation below.
+      const fpInput = buildFingerprintInput(violation);
+      const fp = computeFingerprint(fpInput);
+      const file = fpInput.file;
+      const symbol = fpInput.symbol;
+      const rule = fpInput.rule;
+
+      // Dedupe: skip if open task with same fingerprint exists
+      if (db.hasOpenTaskByFingerprint(fp)) {
+        skipped++;
+        continue;
+      }
+
+      // Create task
+      try {
+        const task = await db.createProjectTask({
+          projectPath,
+          title: String(violation.message ?? '').substring(0, 200),
+          description: [
+            `**Analyzer:** ${analyzerName}`,
+            rule ? `**Rule:** ${rule}` : '',
+            violation.details
+              ? `**Details:** ${typeof violation.details === 'string' ? violation.details : JSON.stringify(violation.details)}`
+              : '',
+            violation.recommendation
+              ? `**Recommendation:** ${violation.recommendation}`
+              : '',
+            violation.suggestion
+              ? `**Suggestion:** ${violation.suggestion}`
+              : '',
+            violation.line
+              ? `**Line:** ${violation.line}`
+              : ''
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+          priority: priorityMap[severity] ?? 'low',
+          source: 'audit',
+          relatedFiles: file ? [file] : [],
+          relatedSymbols: symbol ? [symbol] : [],
+          fingerprint: fp
+        });
+        createdTasks.push(task);
+        created++;
+      } catch {
+        // Skip task creation errors — don't let one bad violation
+        // block the whole batch.
+      }
+    }
+  }
+
+  return {
+    success: true,
+    projectPath,
+    projectPathDefaulted,
+    auditJobId: auditRecord.auditId ?? auditJobId,
+    created,
+    skipped,
+    tasks: createdTasks
+  };
+}
+
+/**
  * Dispatch a project-task action (list, create, get, update, delete, from_audit).
  * @param args - The tool arguments, including the `action` to perform.
  * @param options - Optional abort signal to cancel the request.
@@ -278,169 +452,7 @@ export async function handleProjectTasks(
         if (options?.signal?.aborted) {
           throw new Error(TASKS_REQUEST_ABORTED);
         }
-        const { fingerprint: computeFingerprint, buildFingerprintInput } = await import(
-          '../fingerprint.js'
-        );
-        const { projectPath, projectPathDefaulted } =
-          resolveProjectPathForTasks(args);
-
-        // 1. Retrieve audit results
-        const rawAuditJobId = args.auditJobId;
-        const auditJobId =
-          typeof rawAuditJobId === 'string' && rawAuditJobId.trim() !== ''
-            ? rawAuditJobId.trim()
-            : undefined;
-
-        let auditRecord: any;
-        if (auditJobId) {
-          auditRecord = await db.getAuditResults(auditJobId);
-          if (!auditRecord) {
-            return {
-              success: false,
-              error: `Audit result not found or expired: ${auditJobId}`
-            };
-          }
-        } else {
-          // Prefer the most recent full audit; fall back to scoped or
-          // legacy results without scope metadata.
-          auditRecord = await db.getMostRecentAuditResults(projectPath, 'full');
-          if (!auditRecord) {
-            auditRecord = await db.getMostRecentAuditResults(projectPath, 'scoped');
-          }
-          if (!auditRecord) {
-            // Legacy: results stored before scope metadata was added
-            auditRecord = await db.getMostRecentAuditResults(projectPath);
-          }
-          if (!auditRecord) {
-            return {
-              success: false,
-              error:
-                'No audit results found. Run an audit first, or provide an auditJobId.'
-            };
-          }
-        }
-
-        // 2. Filters
-        const severities: string[] = Array.isArray(args.severities)
-          ? (args.severities as string[]).map((s) => String(s).trim()).filter(Boolean)
-          : ['critical', 'severe', 'high'];
-        const pathGlobs: string[] | undefined = Array.isArray(args.paths)
-          ? (args.paths as string[]).map((s) => String(s).trim()).filter(Boolean)
-          : undefined;
-
-        // 3. Walk violations from all analyzer results
-        const analyzerResults: Record<string, any> =
-          auditRecord.analyzerResults ?? {};
-        const severitySet = new Set(severities);
-
-        const priorityMap: Record<string, 'high' | 'medium' | 'low'> = {
-          critical: 'high',
-          severe: 'medium',
-          high: 'low'
-        };
-
-        let created = 0;
-        let skipped = 0;
-        const createdTasks: any[] = [];
-
-        for (const [analyzerName, analyzerResult] of Object.entries(
-          analyzerResults
-        )) {
-          const violations: any[] = Array.isArray(analyzerResult.violations)
-            ? analyzerResult.violations
-            : [];
-
-          for (const violation of violations) {
-            const severity = String(violation.severity ?? '').trim();
-            if (!severitySet.has(severity)) {
-              continue;
-            }
-
-            // Path filter (simple substring/glob match)
-            if (pathGlobs && pathGlobs.length > 0) {
-              const filePath = String(violation.file ?? '');
-              const matches = pathGlobs.some((g) => {
-                // Basic glob: ** matches any path segment
-                if (g.includes('**')) {
-                  const regex = new RegExp(
-                    g
-                      .replace(/\./g, '\\.')
-                      .replace(/\*\*/g, '___DOUBLESTAR___')
-                      .replace(/\*/g, '[^/]*')
-                      .replace(/___DOUBLESTAR___/g, '.*')
-                  );
-                  return regex.test(filePath);
-                }
-                // Simple contains
-                return filePath.includes(g);
-              });
-              if (!matches) {
-                continue;
-              }
-            }
-
-            // Build canonical fingerprint via the shared input resolver.
-            // Destructure so the display fields (file, symbol, rule) are
-            // available for task creation below.
-            const fpInput = buildFingerprintInput(violation);
-            const fp = computeFingerprint(fpInput);
-            const file = fpInput.file;
-            const symbol = fpInput.symbol;
-            const rule = fpInput.rule;
-
-            // Dedupe: skip if open task with same fingerprint exists
-            if (db.hasOpenTaskByFingerprint(fp)) {
-              skipped++;
-              continue;
-            }
-
-            // Create task
-            try {
-              const task = await db.createProjectTask({
-                projectPath,
-                title: String(violation.message ?? '').substring(0, 200),
-                description: [
-                  `**Analyzer:** ${analyzerName}`,
-                  rule ? `**Rule:** ${rule}` : '',
-                  violation.details
-                    ? `**Details:** ${typeof violation.details === 'string' ? violation.details : JSON.stringify(violation.details)}`
-                    : '',
-                  violation.recommendation
-                    ? `**Recommendation:** ${violation.recommendation}`
-                    : '',
-                  violation.suggestion
-                    ? `**Suggestion:** ${violation.suggestion}`
-                    : '',
-                  violation.line
-                    ? `**Line:** ${violation.line}`
-                    : ''
-                ]
-                  .filter(Boolean)
-                  .join('\n\n'),
-                priority: priorityMap[severity] ?? 'low',
-                source: 'audit',
-                relatedFiles: file ? [file] : [],
-                relatedSymbols: symbol ? [symbol] : [],
-                fingerprint: fp
-              });
-              createdTasks.push(task);
-              created++;
-            } catch {
-              // Skip task creation errors — don't let one bad violation
-              // block the whole batch.
-            }
-          }
-        }
-
-        return {
-          success: true,
-          projectPath,
-          projectPathDefaulted,
-          auditJobId: auditRecord.auditId ?? auditJobId,
-          created,
-          skipped,
-          tasks: createdTasks
-        };
+        return handleFromAudit(args, db, options);
       }
       default:
         return {
