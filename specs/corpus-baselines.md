@@ -823,13 +823,22 @@ their construct).
 
 ### Un-re-pinned drift since 4.0.3 (pre-existing, surfaced now)
 
-**`data-access::missing-org-filter` 0 → 9 (hhra-org).** The Spec 63 R3 provenance
+**`data-access::missing-org-filter` 0 → 9 → 68 (hhra-org).** The Spec 63 R3 provenance
 fix (`f29e7a1`) made fluent ORM builder chains (kysely/drizzle/knex) resolve
 their root receiver instead of dropping provenance at the first call boundary.
 hhra-org's Drizzle queries touch `organization_id`-scoped tables; the resolver now
 sees them, so the nine tenant-scoped queries without an org filter fire. Sampled:
 genuine — the `organization_id` column is declared across hhra's schema
 (`database/schema.ts`).
+
+Superseded by Spec 69 R5: the full hhra-org `missing-org-filter` count is now
+**68** — 71 before Fix 1, 70 after Fix 1 (`0385905`, one stray configured-column
+FP), 68 after R3 (`c8b49ea`, the two unconditional builders). The split — 69
+genuine + 2 false positives — and the per-file disposition are on record in
+`spec69-r5-hhra-redisposition.md`; the five conditional (some-paths) cases are
+pinned as must-fire fixtures in
+`src/__tests__/spec69-r5-conditional-mustfire.spec.ts`. The pinned hhra-org table
+below still shows 9 until the release re-pin (#338).
 
 **`styles::styles/value-drift` — length over-fire RESOLVED (fix #253): color-only
 routing.** The Spec 62 A4 fix (`41f39fa`) un-silenced value-drift by reading
