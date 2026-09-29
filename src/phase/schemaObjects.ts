@@ -97,7 +97,11 @@ function uniqueColumnsIn(body: string): string[] {
   return out;
 }
 
-/** Extract the per-file ORM schema-object declarations from one parsed file. */
+/** Extract the per-file ORM schema-object declarations from one parsed file.
+ *
+ * @param file The parsed file to extract from.
+ * @returns The schema-object declarations found in the file.
+ */
 export function extractSchemaObjects(file: ParsedFile): SchemaObject[] {
   const out: SchemaObject[] = [];
   for (const match of file.source.matchAll(ORM_OBJECT_RE)) {

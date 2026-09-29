@@ -453,6 +453,9 @@ export async function buildSchemaObjects(files: readonly InputFile[]): Promise<S
  * is config-driven (§10) and not reachable from this simple runner, so it is
  * dropped — this is the DDL-only slice of the catalog, the config-free half the
  * corpus processor consumes.
+ *
+ * @param files The input files to parse and process.
+ * @returns The reduced known-table catalog.
  */
 export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
   const [declarations, objects] = await Promise.all([

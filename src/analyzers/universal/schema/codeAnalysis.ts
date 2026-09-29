@@ -1434,7 +1434,11 @@ const SQL_QUERY_PATTERNS: ReadonlyArray<{ keyword: string; pattern: RegExp }> = 
   { keyword: 'DELETE', pattern: /DELETE\s+FROM/gi },
 ];
 
-/** Number of SQL-statement keyword occurrences a text slice contains. */
+/** Number of SQL-statement keyword occurrences a text slice contains.
+ *
+ * @param text The text slice to count SQL keywords over.
+ * @returns The number of SQL-statement keyword occurrences.
+ */
 export function countSqlKeywordOccurrences(text: string): number {
   let count = 0;
   for (const { pattern } of SQL_QUERY_PATTERNS) {

@@ -753,6 +753,8 @@ export function fileProducerFor<K extends FileFactKind>(
  * not a per-run state: a processor that *could* state an oracle but does not is
  * caught at compile time (the `oracle` field is required), so this is only ever
  * the processors that genuinely have none.
+ *
+ * @returns The `${kind}.${format}` id and reason for every oracle-less processor.
  */
 export function noOracleProcessors(): readonly { processor: string; reason: string }[] {
   const out: { processor: string; reason: string }[] = [];

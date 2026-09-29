@@ -26,7 +26,11 @@ const COLOR_KEYWORDS = new Set([
   'transparent', 'currentcolor', 'inherit', 'initial', 'unset', 'none',
 ]);
 
-/** sRGB → CIELAB Lab (D65), the same transform `value-drift` ran in its body. */
+/** sRGB → CIELAB Lab (D65), the same transform `value-drift` ran in its body.
+ *
+ * @param rgb The sRGB triple, each channel in [0, 255].
+ * @returns The CIELAB Lab triple (L, a, b).
+ */
 export function rgbToLab([r, g, b]: RGB): Lab {
   const linear = (c: number): number => {
     const v = c / 255;
@@ -54,7 +58,11 @@ export function rgbToLab([r, g, b]: RGB): Lab {
   return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
 }
 
-/** Raw color string → sRGB, or null when it is not a parseable color. */
+/** Raw color string → sRGB, or null when it is not a parseable color.
+ *
+ * @param raw The raw color string (hex, `rgb()`, or a keyword).
+ * @returns The sRGB triple, or null when the string is not a parseable color.
+ */
 export function parseColorToRGB(raw: string): RGB | null {
   try {
     let v = raw.toLowerCase().trim();
@@ -102,7 +110,12 @@ export function parseColorToRGB(raw: string): RGB | null {
   }
 }
 
-/** ΔE76 — the Euclidean distance between two Lab triples. */
+/** ΔE76 — the Euclidean distance between two Lab triples.
+ *
+ * @param a The first Lab triple.
+ * @param b The second Lab triple.
+ * @returns The ΔE76 color distance.
+ */
 export function labDistance(a: Lab, b: Lab): number {
   const dl = a[0] - b[0];
   const da = a[1] - b[1];

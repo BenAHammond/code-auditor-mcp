@@ -87,6 +87,10 @@ function dedupe(items: string[]): string[] {
  * it is absent (no config), fall back to the historical predicate default
  * (8 names) ∪ the discovery default (4 names) — so a default-discovered
  * `workspace_id` is also a recognized predicate, not a false positive.
+ *
+ * @param orgFilterColumns The declared tenant-column vocabulary, when configured.
+ * @param organizationPatterns The legacy organization-name patterns, when configured.
+ * @returns The lowercased tenant-column names (each expanded to camelCase too).
  */
 export function orgPredicateVocabulary(
   orgFilterColumns?: readonly unknown[],

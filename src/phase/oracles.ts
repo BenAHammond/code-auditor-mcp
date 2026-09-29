@@ -40,7 +40,14 @@ import { isTestFile } from '../languages/testConventions.js';
 import { countSqlKeywordOccurrences } from '../analyzers/universal/schema/codeAnalysis.js';
 
 /** A counted oracle: `count` returns the units one file should yield; `measured`
- *  reads the same unit back out of the emitted fragments. */
+ *  reads the same unit back out of the emitted fragments.
+ *
+ * @param count The expected-unit counter, computed from the same input the
+ *  processor walks.
+ * @param measured Reads the same unit back out of the emitted fragments; defaults
+ *  to the fragment-array length for one-fragment-per-unit producers.
+ * @returns A counted completeness oracle pairing the two.
+ */
 export function countOracle(
   count: (file: ParsedFile) => number,
   measured: (fragments: readonly unknown[]) => number = (frags) => frags.length,
@@ -61,6 +68,13 @@ export function noOracle(reason: string): CompletenessOracle {
  * fragment, not the fragment array length. A `none` oracle never produces a
  * shortfall — its absence is enumerated by `noOracleProcessors`, not measured
  * here.
+ *
+ * @param oracle The completeness oracle to compare against (only `counted` ones).
+ * @param file The parsed file whose emission is being checked.
+ * @param fragments The fragments the file's processor actually emitted.
+ * @param processorId The id of the processor being checked, recorded on a shortfall.
+ * @returns A shortfall record when the emitted count fell below the expected
+ *  count, otherwise `null`.
  */
 export function oracleShortfall(
   oracle: CompletenessOracle,
@@ -101,7 +115,11 @@ function goNodeCount(types: readonly string[]): (file: ParsedFile) => number {
 /** file-symbols — count function-like, class, and interface declaration nodes
  *  off the tree. An upper bound: a method is a function-like node that rides on
  *  its class symbol, so a class with methods emits fewer symbols than the node
- *  count. */
+ *  count.
+ *
+ * @param file The parsed file to count over.
+ * @returns The number of function-like, class, and interface declaration nodes.
+ */
 export function countFileSymbols(file: ParsedFile): number {
   const ast = (file as AstFile).ast;
   return (file as AstFile).adapter.findNodes(ast, {
@@ -110,7 +128,11 @@ export function countFileSymbols(file: ParsedFile): number {
   }).length;
 }
 
-/** imports (TS/JS) — count `import_statement` nodes off the tree. */
+/** imports (TS/JS) — count `import_statement` nodes off the tree.
+ *
+ * @param file The parsed file to count over.
+ * @returns The number of `import_statement` nodes.
+ */
 export function countImports(file: ParsedFile): number {
   const ast = (file as AstFile).ast;
   return (file as AstFile).adapter.findNodes(ast, {
@@ -118,7 +140,11 @@ export function countImports(file: ParsedFile): number {
   }).length;
 }
 
-/** export-form (TS/JS) — count `export_statement` nodes off the tree. */
+/** export-form (TS/JS) — count `export_statement` nodes off the tree.
+ *
+ * @param file The parsed file to count over.
+ * @returns The number of `export_statement` nodes.
+ */
 export function countExportForm(file: ParsedFile): number {
   const ast = (file as AstFile).ast;
   return (file as AstFile).adapter.findNodes(ast, {
@@ -245,7 +271,11 @@ export function countDdlOps(file: ParsedFile): number {
  *  An upper bound, not exact: the producer projects only declarations inside a
  *  `rule_set` (skipping `@keyframes`/`@font-face`/`@page` declarations) and may
  *  expand a shorthand into several, so a declaration outside a rule_set is a
- *  positive residual. */
+ *  positive residual.
+ *
+ * @param file The parsed file to count over.
+ * @returns The number of `declaration` nodes off the CSS AST.
+ */
 export function countCssDeclarations(file: ParsedFile): number {
   const ast = (file as AstFile).ast;
   return (file as AstFile).adapter.findNodes(ast, {
@@ -340,7 +370,11 @@ export function measuredStyleDeclarations(fragments: readonly unknown[]): number
   return (fragments as StyleDeclarationsFile[]).reduce((n, f) => n + f.declarations.length, 0);
 }
 
-/** react-component — the JSX element count across the file's components. */
+/** react-component — the JSX element count across the file's components.
+ *
+ * @param fragments The emitted react-component fragments for one file.
+ * @returns The total JSX element count summed across every component.
+ */
 export function measuredJsxElements(fragments: readonly unknown[]): number {
   return (fragments as ReactComponentScan[]).reduce(
     (n, f) => n + f.components.reduce((m, c) => m + (c.jsxElementDetails?.length ?? 0), 0),
