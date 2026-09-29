@@ -30,6 +30,12 @@
           ]
         }
       ]
+    },
+    "react": {
+      "maxComponentComplexity": 8
     }
+  },
+  "rationales": {
+    "react.maxComponentComplexity": "Corpus lowers the default 20 to 8 so a realistic 9-complexity component (eight if-branches) fires without an artificial twelve-branch monster."
   }
 }
