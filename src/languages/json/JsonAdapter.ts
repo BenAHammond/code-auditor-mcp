@@ -318,6 +318,40 @@ export function parseJsonSource(source: string): { root: ASTNode; errors: AST['e
 // ---------------------------------------------------------------------------
 
 /**
+ * Depth-first node/pattern matcher. Extracted from `JsonAdapter.matches` so the
+ * adapter stays under the class-size method ceiling; `findNodes` passes a
+ * `getName` callback (bound to `getNodeName`) rather than `this`.
+ */
+function matchesNodePattern(
+  node: ASTNode,
+  pattern: NodePattern,
+  getName: (n: ASTNode) => string | null,
+): boolean {
+  if (pattern.type !== undefined) {
+    const types = Array.isArray(pattern.type) ? pattern.type : [pattern.type];
+    if (!types.includes(node.type)) return false;
+  }
+  if (pattern.name !== undefined) {
+    const name = getName(node);
+    if (typeof pattern.name === 'string') {
+      if (name !== pattern.name) return false;
+    } else if (pattern.name instanceof RegExp) {
+      if (name === null || !pattern.name.test(name)) return false;
+    }
+  }
+  if (pattern.hasChild !== undefined) {
+    if (!(node.children ?? []).some((c) => matchesNodePattern(c, pattern.hasChild!, getName))) return false;
+  }
+  if (pattern.hasParent !== undefined) {
+    if (!node.parent || !matchesNodePattern(node.parent, pattern.hasParent, getName)) return false;
+  }
+  if (pattern.custom !== undefined) {
+    if (!pattern.custom(node)) return false;
+  }
+  return true;
+}
+
+/**
  * JSON adapter. Every program-construct method is a stub: JSON is data, not
  * code. The one real method is {@link parse}, which produces a positioned
  * value tree so the `schema-json` producer can read a schema object's fields
@@ -364,7 +398,7 @@ export class JsonAdapter implements LanguageAdapter {
   findNodes(ast: AST, pattern: NodePattern): ASTNode[] {
     const results: ASTNode[] = [];
     const visit = (node: ASTNode) => {
-      if (this.matches(node, pattern)) results.push(node);
+      if (matchesNodePattern(node, pattern, (n) => this.getNodeName(n))) results.push(node);
       if (node.children) for (const child of node.children) visit(child);
     };
     visit(ast.root);
@@ -499,29 +533,4 @@ export class JsonAdapter implements LanguageAdapter {
    * @returns Always zero.
    */
   getComplexity(_node: ASTNode): number { return 0; }
-
-  private matches(node: ASTNode, pattern: NodePattern): boolean {
-    if (pattern.type !== undefined) {
-      const types = Array.isArray(pattern.type) ? pattern.type : [pattern.type];
-      if (!types.includes(node.type)) return false;
-    }
-    if (pattern.name !== undefined) {
-      const name = this.getNodeName(node);
-      if (typeof pattern.name === 'string') {
-        if (name !== pattern.name) return false;
-      } else if (pattern.name instanceof RegExp) {
-        if (name === null || !pattern.name.test(name)) return false;
-      }
-    }
-    if (pattern.hasChild !== undefined) {
-      if (!(node.children ?? []).some((c) => this.matches(c, pattern.hasChild!))) return false;
-    }
-    if (pattern.hasParent !== undefined) {
-      if (!node.parent || !this.matches(node.parent, pattern.hasParent)) return false;
-    }
-    if (pattern.custom !== undefined) {
-      if (!pattern.custom(node)) return false;
-    }
-    return true;
-  }
 }
