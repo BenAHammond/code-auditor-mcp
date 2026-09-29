@@ -862,6 +862,37 @@ export async function runPipeline(
     });
   }
 
+  return buildPipelineResult({
+    config,
+    indexHandle,
+    s1,
+    stage2,
+    stage3,
+    stage4,
+    combinedFacts,
+    stageTiming,
+    totalT0,
+  });
+}
+
+/**
+ * Assemble the pipeline result from stage outputs: merge per-stage analyzer
+ * results, collect diagnostics, and build the metadata block (input presence,
+ * table catalog, dependency-graph metrics, skipped files, file accounting,
+ * per-rule timing, and gate path-profile re-resolution).
+ */
+function buildPipelineResult(opts: {
+  config: PipelineConfig;
+  indexHandle: IndexHandle | undefined;
+  s1: any;
+  stage2: any;
+  stage3: any;
+  stage4: any;
+  combinedFacts: Record<string, unknown>;
+  stageTiming: Record<string, number>;
+  totalT0: number;
+}): PipelineResult {
+  const { config, indexHandle, s1, stage2, stage3, stage4, combinedFacts, stageTiming, totalT0 } = opts;
   // ── Build result ─────────────────────────────────────────────────────────
   const analyzerResults: Record<string, AnalyzerResult> = {};
 
