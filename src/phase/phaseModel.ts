@@ -376,7 +376,7 @@ async function processFile(
         const acc = fragments.get(kind) ?? [];
         acc.push(...emitted);
         fragments.set(kind, acc);
-        const sf = oracleShortfall(producer.oracle, parsed, emitted.length, producer.id);
+        const sf = oracleShortfall(producer.oracle, parsed, emitted, producer.id);
         if (sf) shortfalls.push(sf);
       } catch {
         incomplete.push(kind);

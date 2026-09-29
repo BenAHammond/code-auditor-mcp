@@ -1441,12 +1441,26 @@ export interface FileProcessor<K extends FileFactKind, F extends SupplyingFormat
  * `counted` oracle is a cheap, dumb count of what the processor should have
  * produced, computed from the same input and written for that processor — an
  * independent upper bound whose emitted shortfall the run records per file.
+ *
+ * `count` is the expected count off the raw input; `measured` reads the actual
+ * count back from the fragments the processor *did* emit. The two must measure
+ * the same unit. For a per-fragment producer they are both a count of the
+ * fragments themselves; for an aggregate producer (one fragment per file whose
+ * payload carries the units — e.g. a style-declarations file holding its
+ * declaration list) `count` is still a count of the units, so `measured` reads
+ * the units *inside* the fragment, not `fragments.length` (which would be a
+ * meaningless 1-against-1).
+ *
  * A `none` oracle states that no such count exists, with the reason; it is an
  * explicit report, not an exemption — the failure mode being closed is the
  * silently-unprovable fact.
  */
 export type CompletenessOracle =
-  | { status: 'counted'; count(file: ParsedFile): number }
+  | {
+      status: 'counted';
+      count(file: ParsedFile): number;
+      measured(fragments: readonly unknown[]): number;
+    }
   | { status: 'none'; reason: string };
 
 /**

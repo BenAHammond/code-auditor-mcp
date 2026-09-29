@@ -61,7 +61,7 @@ describe('Spec 69 R1 criterion 2 — per-file shortfall recording', () => {
 
   it('records a shortfall when a counted oracle emits fewer than expected', () => {
     const drop = countOracle(() => 3);
-    expect(oracleShortfall(drop, fake, 2, 'file-symbols.typescript')).toEqual({
+    expect(oracleShortfall(drop, fake, ['a', 'b'], 'file-symbols.typescript')).toEqual({
       file: '/x.ts',
       processor: 'file-symbols.typescript',
       expected: 3,
@@ -71,12 +71,24 @@ describe('Spec 69 R1 criterion 2 — per-file shortfall recording', () => {
 
   it('does not record a shortfall at equality or over-emission (an upper bound)', () => {
     const oracle = countOracle(() => 3);
-    expect(oracleShortfall(oracle, fake, 3, 'p')).toBeNull();
-    expect(oracleShortfall(oracle, fake, 4, 'p')).toBeNull();
+    expect(oracleShortfall(oracle, fake, ['a', 'b', 'c'], 'p')).toBeNull();
+    expect(oracleShortfall(oracle, fake, ['a', 'b', 'c', 'd'], 'p')).toBeNull();
   });
 
   it('never records a shortfall for a none oracle', () => {
-    expect(oracleShortfall(noOracle('no statable count'), fake, 0, 'p')).toBeNull();
+    expect(oracleShortfall(noOracle('no statable count'), fake, [], 'p')).toBeNull();
+  });
+
+  it('counts the unit inside an aggregate fragment, not the fragment array length', () => {
+    // One fragment holding three ops — `measured` reads `ops.length`, so the
+    // emitted count is 3 (not 1), and 3 < 5 is the shortfall.
+    const oracle = countOracle(() => 5, (frags) => (frags as Array<{ ops: unknown[] }>).reduce((n, f) => n + f.ops.length, 0));
+    expect(oracleShortfall(oracle, fake, [{ ops: [1, 2, 3] }], 'ddl-declarations.sql')).toEqual({
+      file: '/x.ts',
+      processor: 'ddl-declarations.sql',
+      expected: 5,
+      actual: 3,
+    });
   });
 
   it('threads the real file-symbols residual end to end', async () => {
@@ -115,11 +127,14 @@ describe('Spec 69 R1 criterion 3 — no-oracle enumeration', () => {
     expect(none.length).toBe(total - counted);
 
     const ids = new Set(none.map((e) => e.processor));
-    // Counted processors are absent; a known none is present, named with a reason.
+    // Counted processors are absent; the converted ones must not appear.
     for (const countedId of COUNTED_IDS) {
       expect(ids.has(countedId), `${countedId} is counted and must not be enumerated`).toBe(false);
     }
-    expect(ids.has('function-index.typescript'), 'function-index has no oracle and must be enumerated').toBe(true);
+    expect(ids.has('function-index.typescript'), 'function-index converted to counted and must not be enumerated').toBe(false);
+    expect(ids.has('ddl-declarations.sql'), 'ddl-declarations converted to counted and must not be enumerated').toBe(false);
+    // A known genuine none is present, named with a reason.
+    expect(ids.has('file-header.typescript'), 'file-header emits one fragment per file and must be enumerated').toBe(true);
     for (const e of none) {
       expect(e.reason.length, `${e.processor} must state a reason`).toBeGreaterThan(0);
     }

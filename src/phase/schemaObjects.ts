@@ -33,7 +33,9 @@ import type { ParsedFile, SchemaObject } from './types.js';
 /** `const <identifier> = <pgTable|mysqlTable|sqliteTable>('<table>', …)`. The
  *  `\b` before the keyword keeps `deconst`/`reconst` from matching; the optional
  *  `export` covers the idiomatic top-level `export const` schema module. */
-const ORM_OBJECT_RE =
+/** Exported so the completeness oracle can count the same raw matches the
+ *  producer emits one fact per. */
+export const ORM_OBJECT_RE =
   /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:pgTable|mysqlTable|sqliteTable)\s*\(\s*['"]([^'"]+)['"]/g;
 
 /**
