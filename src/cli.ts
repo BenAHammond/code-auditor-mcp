@@ -1923,64 +1923,90 @@ configCmd
         // Index not available — skip persistence
       }
 
-      if (options.json) {
-        process.stdout.write(JSON.stringify({
-          mode: detectionMode,
-          projectRoot,
-          filesScanned: files.slice(0, 500).length,
-          dbProvenanced: provenanced,
-          validatorProvenanced: validatorIdentifiers,
-          inferred,
-        }, null, 2) + '\n');
-      } else {
-        console.log(chalk.bold(`Detection mode: ${chalk.cyan(detectionMode)}`));
-        console.log(chalk.gray(`Scanned ${files.slice(0, 500).length} files`));
-        console.log();
-
-        if (provenanced.length > 0) {
-          console.log(chalk.bold('DB-Provenanced Identifiers:'));
-          for (const p of provenanced) {
-            const reasonColor = p.reason === 'fallback'
-              ? chalk.yellow
-              : p.reason === 'package'
-                ? chalk.green
-                : chalk.cyan;
-            console.log(`  ${chalk.white(p.identifier)} ${chalk.gray(`(${p.file})`)}`);
-            console.log(`    ${reasonColor(`reason: ${p.reason}`)} — ${chalk.gray(p.source)}`);
-            if (p.chain) {
-              console.log(`    ${chalk.gray(`chain: ${p.chain.join(' → ')}`)}`);
-            }
-          }
-          console.log();
-        }
-
-        if (inferred.length > 0) {
-          console.log(chalk.bold('Inferred Receivers:'));
-          for (const i of inferred) {
-            console.log(`  ${chalk.white(i.identifier)} ${chalk.gray(`(${i.file})`)}`);
-            console.log(`    ${chalk.magenta(i.reason)}`);
-          }
-          console.log();
-        }
-
-        if (validatorIdentifiers.length > 0) {
-          console.log(chalk.bold('Validator-Provenanced Identifiers:'));
-          for (const v of validatorIdentifiers) {
-            console.log(`  ${chalk.white(v.identifier)} ${chalk.gray(`(${v.file})`)}`);
-            console.log(`    ${chalk.green(`reason: ${v.reason}`)} — ${chalk.gray(v.source)}`);
-          }
-          console.log();
-        }
-
-        if (provenanced.length === 0 && inferred.length === 0 && validatorIdentifiers.length === 0) {
-          console.log(chalk.gray('No DB-provenanced, inferred, or validator-provenanced identifiers found.'));
-        }
-      }
+      printDetectionResults({
+        json: options.json,
+        mode: detectionMode,
+        projectRoot,
+        filesScanned: files.slice(0, 500).length,
+        dbProvenanced: provenanced,
+        validatorProvenanced: validatorIdentifiers,
+        inferred,
+      });
     } catch (error) {
       console.error(chalk.red('Error:'), error);
       process.exit(1);
     }
   });
+
+// Renders the `config detection` results — pulled out of the `.action` handler so
+// the scan/persist logic stays short and the two output shapes (JSON vs human) are
+// isolated from the provenance collection.
+function printDetectionResults(params: {
+  json: boolean;
+  mode: string;
+  projectRoot: string;
+  filesScanned: number;
+  dbProvenanced: Array<{ identifier: string; file: string; reason: string; source: string; chain?: string[] }>;
+  validatorProvenanced: Array<{ identifier: string; file: string; reason: string; source: string; chain?: string[] }>;
+  inferred: Array<{ identifier: string; file: string; reason: string }>;
+}): void {
+  const { json, mode, projectRoot, filesScanned, dbProvenanced, validatorProvenanced, inferred } = params;
+
+  if (json) {
+    process.stdout.write(JSON.stringify({
+      mode,
+      projectRoot,
+      filesScanned,
+      dbProvenanced,
+      validatorProvenanced,
+      inferred,
+    }, null, 2) + '\n');
+    return;
+  }
+
+  console.log(chalk.bold(`Detection mode: ${chalk.cyan(mode)}`));
+  console.log(chalk.gray(`Scanned ${filesScanned} files`));
+  console.log();
+
+  if (dbProvenanced.length > 0) {
+    console.log(chalk.bold('DB-Provenanced Identifiers:'));
+    for (const p of dbProvenanced) {
+      const reasonColor = p.reason === 'fallback'
+        ? chalk.yellow
+        : p.reason === 'package'
+          ? chalk.green
+          : chalk.cyan;
+      console.log(`  ${chalk.white(p.identifier)} ${chalk.gray(`(${p.file})`)}`);
+      console.log(`    ${reasonColor(`reason: ${p.reason}`)} — ${chalk.gray(p.source)}`);
+      if (p.chain) {
+        console.log(`    ${chalk.gray(`chain: ${p.chain.join(' → ')}`)}`);
+      }
+    }
+    console.log();
+  }
+
+  if (inferred.length > 0) {
+    console.log(chalk.bold('Inferred Receivers:'));
+    for (const i of inferred) {
+      console.log(`  ${chalk.white(i.identifier)} ${chalk.gray(`(${i.file})`)}`);
+      console.log(`    ${chalk.magenta(i.reason)}`);
+    }
+    console.log();
+  }
+
+  if (validatorProvenanced.length > 0) {
+    console.log(chalk.bold('Validator-Provenanced Identifiers:'));
+    for (const v of validatorProvenanced) {
+      console.log(`  ${chalk.white(v.identifier)} ${chalk.gray(`(${v.file})`)}`);
+      console.log(`    ${chalk.green(`reason: ${v.reason}`)} — ${chalk.gray(v.source)}`);
+    }
+    console.log();
+  }
+
+  if (dbProvenanced.length === 0 && inferred.length === 0 && validatorProvenanced.length === 0) {
+    console.log(chalk.gray('No DB-provenanced, inferred, or validator-provenanced identifiers found.'));
+  }
+}
 
 // Search command
 program
