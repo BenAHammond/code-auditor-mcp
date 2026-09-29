@@ -4,7 +4,18 @@
 
 import Ajv, { type ValidateFunction } from 'ajv';
 import picomatch from 'picomatch';
-import type { InvariantRule, RulesConfig, RuleKind } from './types.js';
+import type {
+  InvariantRule,
+  RulesConfig,
+  RuleKind,
+  ImportBanRule,
+  CallConstraintRule,
+  ModuleBoundaryRule,
+  NamingRule,
+  AstPatternRule,
+  StyleMechanismRule,
+  NoRawValuesRule,
+} from './types.js';
 import schema from './invariant-rules.schema.json' with { type: 'json' };
 
 function invalidGlobMessage(kind: string, value: string): string {
@@ -88,183 +99,196 @@ export function validateRulesConfig(config: unknown): RuleValidationError[] {
 }
 
 /**
+ * Validate a required glob-string field (e.g. module-boundary's "from", naming's
+ * "path"). Reports a "requires" error when missing, or an invalid-glob error.
+ */
+function validateRequiredGlobField(
+  rule: InvariantRule,
+  field: string,
+  kind: string,
+  value: string,
+  errors: RuleValidationError[]
+): void {
+  if (!value || typeof value !== 'string') {
+    errors.push({ ruleId: rule.id, message: `${kind} requires a "${field}" glob string` });
+  } else if (!isValidGlob(value)) {
+    errors.push({ ruleId: rule.id, message: invalidGlobMessage(field, value) });
+  }
+}
+
+/**
+ * Validate an optional glob-string field (ast-pattern / style-mechanism /
+ * no-raw-values "path"). Reports an invalid-glob error only when present and
+ * malformed.
+ */
+function validateOptionalGlobField(
+  rule: InvariantRule,
+  field: string,
+  value: string | undefined,
+  errors: RuleValidationError[]
+): void {
+  if (value !== undefined) {
+    if (typeof value !== 'string' || !isValidGlob(value)) {
+      errors.push({ ruleId: rule.id, message: invalidGlobMessage(field, value) });
+    }
+  }
+}
+
+/**
+ * Validate a required non-empty string-array field (style-mechanism "allow",
+ * no-raw-values "properties").
+ */
+function validateRequiredStringArray(
+  rule: InvariantRule,
+  field: string,
+  kind: string,
+  value: string[],
+  errors: RuleValidationError[]
+): void {
+  if (!value || !Array.isArray(value) || value.length === 0) {
+    errors.push({ ruleId: rule.id, message: `${kind} requires a non-empty "${field}" array` });
+  } else {
+    for (const item of value) {
+      if (typeof item !== 'string') {
+        errors.push({ ruleId: rule.id, message: `${kind} "${field}" entries must be strings` });
+        break;
+      }
+    }
+  }
+}
+
+/** Validate kind-specific fields for an `import-ban` rule. */
+function validateImportBan(rule: ImportBanRule, errors: RuleValidationError[]): void {
+  if (!rule.module || typeof rule.module !== 'string') {
+    errors.push({ ruleId: rule.id, message: 'import-ban requires a "module" string' });
+  }
+  if (rule.except !== undefined && !Array.isArray(rule.except)) {
+    errors.push({ ruleId: rule.id, message: '"except" must be an array of path glob strings' });
+  }
+  // Validate glob patterns in except
+  if (Array.isArray(rule.except)) {
+    for (const g of rule.except) {
+      if (!isValidGlob(g)) {
+        errors.push({ ruleId: rule.id, message: invalidGlobMessage('except', g) });
+      }
+    }
+  }
+}
+
+/** Validate kind-specific fields for a `call-constraint` rule. */
+function validateCallConstraint(rule: CallConstraintRule, errors: RuleValidationError[]): void {
+  const hasAllow = Array.isArray(rule.allowFrom) && rule.allowFrom.length > 0;
+  const hasDeny = Array.isArray(rule.denyFrom) && rule.denyFrom.length > 0;
+
+  if (!hasAllow && !hasDeny) {
+    errors.push({
+      ruleId: rule.id,
+      message: 'call-constraint requires exactly one of "allowFrom" or "denyFrom" (got neither)',
+    });
+  } else if (hasAllow && hasDeny) {
+    errors.push({
+      ruleId: rule.id,
+      message: 'call-constraint requires exactly one of "allowFrom" or "denyFrom" (got both)',
+    });
+  }
+
+  if (!rule.callee || typeof rule.callee !== 'string') {
+    errors.push({ ruleId: rule.id, message: 'call-constraint requires a "callee" string' });
+  }
+
+  // Validate glob patterns
+  for (const arr of [rule.allowFrom, rule.denyFrom]) {
+    if (Array.isArray(arr)) {
+      for (const g of arr) {
+        if (!isValidGlob(g)) {
+          errors.push({ ruleId: rule.id, message: `Invalid glob pattern: "${g}"` });
+        }
+      }
+    }
+  }
+}
+
+/** Validate kind-specific fields for a `module-boundary` rule. */
+function validateModuleBoundary(rule: ModuleBoundaryRule, errors: RuleValidationError[]): void {
+  validateRequiredGlobField(rule, 'from', 'module-boundary', rule.from, errors);
+  validateRequiredGlobField(rule, 'to', 'module-boundary', rule.to, errors);
+}
+
+/** Validate kind-specific fields for a `naming` rule. */
+function validateNaming(rule: NamingRule, errors: RuleValidationError[]): void {
+  validateRequiredGlobField(rule, 'path', 'naming', rule.path, errors);
+
+  if (!rule.exports || typeof rule.exports !== 'string') {
+    errors.push({ ruleId: rule.id, message: 'naming requires an "exports" regex string' });
+  } else {
+    try {
+      new RegExp(rule.exports);
+    } catch {
+      errors.push({
+        ruleId: rule.id,
+        message: `Invalid regex in "exports": "${rule.exports}"`,
+      });
+    }
+  }
+}
+
+/** Validate kind-specific fields for an `ast-pattern` rule. */
+function validateAstPattern(rule: AstPatternRule, errors: RuleValidationError[]): void {
+  if (!rule.pattern || typeof rule.pattern !== 'string' || rule.pattern.trim().length === 0) {
+    errors.push({ ruleId: rule.id, message: 'ast-pattern requires a non-empty "pattern" string' });
+  }
+
+  if (rule.language !== undefined) {
+    const validLanguages = ['typescript', 'javascript', 'go'];
+    if (!validLanguages.includes(rule.language)) {
+      errors.push({
+        ruleId: rule.id,
+        message: `ast-pattern language "${rule.language}" must be one of: ${validLanguages.join(', ')}`,
+      });
+    }
+  }
+
+  validateOptionalGlobField(rule, 'path', rule.path, errors);
+}
+
+/** Validate kind-specific fields for a `style-mechanism` rule. */
+function validateStyleMechanism(rule: StyleMechanismRule, errors: RuleValidationError[]): void {
+  validateRequiredStringArray(rule, 'allow', 'style-mechanism', rule.allow, errors);
+  validateOptionalGlobField(rule, 'path', rule.path, errors);
+}
+
+/** Validate kind-specific fields for a `no-raw-values` rule. */
+function validateNoRawValues(rule: NoRawValuesRule, errors: RuleValidationError[]): void {
+  validateRequiredStringArray(rule, 'properties', 'no-raw-values', rule.properties, errors);
+
+  if (rule.allowValues !== undefined) {
+    if (!Array.isArray(rule.allowValues)) {
+      errors.push({ ruleId: rule.id, message: '"allowValues" must be an array of strings' });
+    } else {
+      for (const item of rule.allowValues) {
+        if (typeof item !== 'string') {
+          errors.push({ ruleId: rule.id, message: '"allowValues" entries must be strings' });
+          break;
+        }
+      }
+    }
+  }
+
+  validateOptionalGlobField(rule, 'path', rule.path, errors);
+}
+
+/**
  * Validate the kind-specific fields for a rule. Mutates `errors` in place.
  */
 function validateKindSpecific(rule: InvariantRule, errors: RuleValidationError[]): void {
-  // Kind-specific validation
   switch (rule.kind) {
-    case 'import-ban': {
-      if (!rule.module || typeof rule.module !== 'string') {
-        errors.push({ ruleId: rule.id, message: 'import-ban requires a "module" string' });
-      }
-      if (rule.except !== undefined && !Array.isArray(rule.except)) {
-        errors.push({ ruleId: rule.id, message: '"except" must be an array of path glob strings' });
-      }
-      // Validate glob patterns in except
-      if (Array.isArray(rule.except)) {
-        for (const g of rule.except) {
-          if (!isValidGlob(g)) {
-            errors.push({ ruleId: rule.id, message: invalidGlobMessage('except', g) });
-          }
-        }
-      }
-      break;
-    }
-
-    case 'call-constraint': {
-      const hasAllow = Array.isArray(rule.allowFrom) && rule.allowFrom.length > 0;
-      const hasDeny = Array.isArray(rule.denyFrom) && rule.denyFrom.length > 0;
-
-      if (!hasAllow && !hasDeny) {
-        errors.push({
-          ruleId: rule.id,
-          message: 'call-constraint requires exactly one of "allowFrom" or "denyFrom" (got neither)',
-        });
-      } else if (hasAllow && hasDeny) {
-        errors.push({
-          ruleId: rule.id,
-          message: 'call-constraint requires exactly one of "allowFrom" or "denyFrom" (got both)',
-        });
-      }
-
-      if (!rule.callee || typeof rule.callee !== 'string') {
-        errors.push({ ruleId: rule.id, message: 'call-constraint requires a "callee" string' });
-      }
-
-      // Validate glob patterns
-      for (const arr of [rule.allowFrom, rule.denyFrom]) {
-        if (Array.isArray(arr)) {
-          for (const g of arr) {
-            if (!isValidGlob(g)) {
-              errors.push({ ruleId: rule.id, message: `Invalid glob pattern: "${g}"` });
-            }
-          }
-        }
-      }
-      break;
-    }
-
-    case 'module-boundary': {
-      if (!rule.from || typeof rule.from !== 'string') {
-        errors.push({ ruleId: rule.id, message: 'module-boundary requires a "from" glob string' });
-      } else if (!isValidGlob(rule.from)) {
-        errors.push({ ruleId: rule.id, message: invalidGlobMessage('from', rule.from) });
-      }
-
-      if (!rule.to || typeof rule.to !== 'string') {
-        errors.push({ ruleId: rule.id, message: 'module-boundary requires a "to" glob string' });
-      } else if (!isValidGlob(rule.to)) {
-        errors.push({ ruleId: rule.id, message: invalidGlobMessage('to', rule.to) });
-      }
-      break;
-    }
-
-    case 'naming': {
-      if (!rule.path || typeof rule.path !== 'string') {
-        errors.push({ ruleId: rule.id, message: 'naming requires a "path" glob string' });
-      } else if (!isValidGlob(rule.path)) {
-        errors.push({ ruleId: rule.id, message: invalidGlobMessage('path', rule.path) });
-      }
-
-      if (!rule.exports || typeof rule.exports !== 'string') {
-        errors.push({ ruleId: rule.id, message: 'naming requires an "exports" regex string' });
-      } else {
-        try {
-          new RegExp(rule.exports);
-        } catch {
-          errors.push({
-            ruleId: rule.id,
-            message: `Invalid regex in "exports": "${rule.exports}"`,
-          });
-        }
-      }
-      break;
-    }
-
-    case 'ast-pattern': {
-      if (!rule.pattern || typeof rule.pattern !== 'string' || rule.pattern.trim().length === 0) {
-        errors.push({ ruleId: rule.id, message: 'ast-pattern requires a non-empty "pattern" string' });
-      }
-
-      if (rule.language !== undefined) {
-        const validLanguages = ['typescript', 'javascript', 'go'];
-        if (!validLanguages.includes(rule.language)) {
-          errors.push({
-            ruleId: rule.id,
-            message: `ast-pattern language "${rule.language}" must be one of: ${validLanguages.join(', ')}`,
-          });
-        }
-      }
-
-      if (rule.path !== undefined) {
-        if (typeof rule.path !== 'string' || !isValidGlob(rule.path)) {
-          errors.push({
-            ruleId: rule.id,
-            message: invalidGlobMessage('path', rule.path),
-          });
-        }
-      }
-      break;
-    }
-
-    case 'style-mechanism': {
-      if (!rule.allow || !Array.isArray(rule.allow) || rule.allow.length === 0) {
-        errors.push({ ruleId: rule.id, message: 'style-mechanism requires a non-empty "allow" array' });
-      } else {
-        for (const item of rule.allow) {
-          if (typeof item !== 'string') {
-            errors.push({ ruleId: rule.id, message: 'style-mechanism "allow" entries must be strings' });
-            break;
-          }
-        }
-      }
-
-      if (rule.path !== undefined) {
-        if (typeof rule.path !== 'string' || !isValidGlob(rule.path)) {
-          errors.push({
-            ruleId: rule.id,
-            message: invalidGlobMessage('path', rule.path),
-          });
-        }
-      }
-      break;
-    }
-
-    case 'no-raw-values': {
-      if (!rule.properties || !Array.isArray(rule.properties) || rule.properties.length === 0) {
-        errors.push({ ruleId: rule.id, message: 'no-raw-values requires a non-empty "properties" array' });
-      } else {
-        for (const item of rule.properties) {
-          if (typeof item !== 'string') {
-            errors.push({ ruleId: rule.id, message: 'no-raw-values "properties" entries must be strings' });
-            break;
-          }
-        }
-      }
-
-      if (rule.allowValues !== undefined) {
-        if (!Array.isArray(rule.allowValues)) {
-          errors.push({ ruleId: rule.id, message: '"allowValues" must be an array of strings' });
-        } else {
-          for (const item of rule.allowValues) {
-            if (typeof item !== 'string') {
-              errors.push({ ruleId: rule.id, message: '"allowValues" entries must be strings' });
-              break;
-            }
-          }
-        }
-      }
-
-      if (rule.path !== undefined) {
-        if (typeof rule.path !== 'string' || !isValidGlob(rule.path)) {
-          errors.push({
-            ruleId: rule.id,
-            message: invalidGlobMessage('path', rule.path),
-          });
-        }
-      }
-      break;
-    }
+    case 'import-ban': validateImportBan(rule, errors); break;
+    case 'call-constraint': validateCallConstraint(rule, errors); break;
+    case 'module-boundary': validateModuleBoundary(rule, errors); break;
+    case 'naming': validateNaming(rule, errors); break;
+    case 'ast-pattern': validateAstPattern(rule, errors); break;
+    case 'style-mechanism': validateStyleMechanism(rule, errors); break;
+    case 'no-raw-values': validateNoRawValues(rule, errors); break;
   }
 }
 
