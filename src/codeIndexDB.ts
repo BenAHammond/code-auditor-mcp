@@ -1660,86 +1660,8 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_project_tasks_fingerprint ON project_tasks(fingerprint);
       `);
 
-      let taskCount = 0;
-      let configCount = 0;
-      let whitelistCount = 0;
-
-      // Migrate tasks
-      const tasksData = collections['projectTasks'] ?? [];
-      const insertTask = migDb.prepare(`INSERT OR IGNORE INTO project_tasks
-        (taskId, projectPath, title, description, status, priority, labels, source,
-         parentTaskId, blockedBy, dueAt, sortOrder, relatedFiles, relatedSymbols,
-         fingerprint, metadata, createdAt, updatedAt, completedAt)
-        VALUES (@taskId, @projectPath, @title, @description, @status, @priority, @labels, @source,
-                @parentTaskId, @blockedBy, @dueAt, @sortOrder, @relatedFiles, @relatedSymbols,
-                @fingerprint, @metadata, @createdAt, @updatedAt, @completedAt)`);
-      for (const t of tasksData) {
-        insertTask.run({
-          taskId: t.taskId ?? '',
-          projectPath: t.projectPath ?? '',
-          title: t.title ?? '',
-          description: t.description ?? '',
-          status: t.status ?? 'pending',
-          priority: t.priority ?? 'medium',
-          labels: JSON.stringify(t.labels ?? []),
-          source: t.source ?? 'manual',
-          parentTaskId: t.parentTaskId ?? null,
-          blockedBy: JSON.stringify(t.blockedBy ?? []),
-          dueAt: t.dueAt ?? null,
-          sortOrder: t.sortOrder ?? 0,
-          relatedFiles: JSON.stringify(t.relatedFiles ?? []),
-          relatedSymbols: JSON.stringify(t.relatedSymbols ?? []),
-          fingerprint: t.fingerprint ?? null,
-          metadata: JSON.stringify(t.metadata ?? t.metadata_json ?? {}),
-          createdAt: t.createdAt ?? t.created_at ?? new Date().toISOString(),
-          updatedAt: t.updatedAt ?? t.updated_at ?? new Date().toISOString(),
-          completedAt: t.completedAt ?? t.completed_at ?? null,
-        });
-        taskCount++;
-      }
-
-      // Migrate analyzer configs (snake_case columns matching createSchema)
-      const configsData = collections['analyzerConfigs'] ?? [];
-      const insertConfig = migDb.prepare(`INSERT OR IGNORE INTO analyzer_configs
-        (analyzer_name, project_path, is_global, config_json, version, created_by, created_at, updated_at, metadata_json)
-        VALUES (@analyzerName, @projectPath, @isGlobal, @configJson, @version, @createdBy, @createdAt, @updatedAt, @metadataJson)`);
-      for (const c of configsData) {
-        insertConfig.run({
-          analyzerName: c.analyzerName ?? '',
-          projectPath: c.projectPath ?? null,
-          isGlobal: c.isGlobal ? 1 : 0,
-          configJson: typeof c.config_json === 'string'
-            ? c.config_json
-            : JSON.stringify(c.config ?? c.config_json ?? {}),
-          version: c.version ?? null,
-          createdBy: c.createdBy ?? c.created_by ?? 'system',
-          createdAt: c.createdAt ?? c.created_at ?? new Date().toISOString(),
-          updatedAt: c.updatedAt ?? c.updated_at ?? new Date().toISOString(),
-          metadataJson: JSON.stringify(c.metadata ?? c.metadata_json ?? {}),
-        });
-        configCount++;
-      }
-
-      // Migrate whitelist (snake_case columns matching createSchema)
-      const whitelistData = collections['whitelist'] ?? [];
-      const insertWl = migDb.prepare(`INSERT OR IGNORE INTO whitelist
-        (name, type, status, category, description, patterns, added_by, added_at, updated_at, metadata_json)
-        VALUES (@name, @type, @status, @category, @description, @patterns, @addedBy, @addedAt, @updatedAt, @metadataJson)`);
-      for (const w of whitelistData) {
-        insertWl.run({
-          name: w.name ?? '',
-          type: w.type ?? 'PlatformAPI',
-          status: w.status ?? 'Active',
-          category: w.category ?? null,
-          description: w.description ?? null,
-          patterns: JSON.stringify(w.patterns ?? []),
-          addedBy: w.addedBy ?? w.added_by ?? 'system',
-          addedAt: w.addedAt ?? w.added_at ?? new Date().toISOString(),
-          updatedAt: w.updatedAt ?? w.updated_at ?? null,
-          metadataJson: JSON.stringify(w.metadata ?? w.metadata_json ?? {}),
-        });
-        whitelistCount++;
-      }
+      const { tasks: taskCount, configs: configCount, whitelist: whitelistCount } =
+        this.migrateLokiCollections(migDb, collections);
 
       migDb.close();
 
@@ -1760,6 +1682,101 @@ export class CodeIndexDB {
       } catch { /* best effort */ }
       return { migrated: false };
     }
+  }
+
+  /** Copy the three user-authored LokiJS collections (tasks, analyzer configs,
+   *  whitelist) into their SQLite tables, returning the row count of each.
+   *
+   * @param migDb The fresh SQLite database opened for the migration.
+   * @param collections The LokiJS collections keyed by name.
+   * @returns The migrated row counts, keyed `tasks` / `configs` / `whitelist`.
+   */
+  private migrateLokiCollections(
+    migDb: SqliteDatabase,
+    collections: Record<string, any[]>,
+  ): { tasks: number; configs: number; whitelist: number } {
+    let taskCount = 0;
+    let configCount = 0;
+    let whitelistCount = 0;
+
+    // Migrate tasks
+    const tasksData = collections['projectTasks'] ?? [];
+    const insertTask = migDb.prepare(`INSERT OR IGNORE INTO project_tasks
+      (taskId, projectPath, title, description, status, priority, labels, source,
+       parentTaskId, blockedBy, dueAt, sortOrder, relatedFiles, relatedSymbols,
+       fingerprint, metadata, createdAt, updatedAt, completedAt)
+      VALUES (@taskId, @projectPath, @title, @description, @status, @priority, @labels, @source,
+              @parentTaskId, @blockedBy, @dueAt, @sortOrder, @relatedFiles, @relatedSymbols,
+              @fingerprint, @metadata, @createdAt, @updatedAt, @completedAt)`);
+    for (const t of tasksData) {
+      insertTask.run({
+        taskId: t.taskId ?? '',
+        projectPath: t.projectPath ?? '',
+        title: t.title ?? '',
+        description: t.description ?? '',
+        status: t.status ?? 'pending',
+        priority: t.priority ?? 'medium',
+        labels: JSON.stringify(t.labels ?? []),
+        source: t.source ?? 'manual',
+        parentTaskId: t.parentTaskId ?? null,
+        blockedBy: JSON.stringify(t.blockedBy ?? []),
+        dueAt: t.dueAt ?? null,
+        sortOrder: t.sortOrder ?? 0,
+        relatedFiles: JSON.stringify(t.relatedFiles ?? []),
+        relatedSymbols: JSON.stringify(t.relatedSymbols ?? []),
+        fingerprint: t.fingerprint ?? null,
+        metadata: JSON.stringify(t.metadata ?? t.metadata_json ?? {}),
+        createdAt: t.createdAt ?? t.created_at ?? new Date().toISOString(),
+        updatedAt: t.updatedAt ?? t.updated_at ?? new Date().toISOString(),
+        completedAt: t.completedAt ?? t.completed_at ?? null,
+      });
+      taskCount++;
+    }
+
+    // Migrate analyzer configs (snake_case columns matching createSchema)
+    const configsData = collections['analyzerConfigs'] ?? [];
+    const insertConfig = migDb.prepare(`INSERT OR IGNORE INTO analyzer_configs
+      (analyzer_name, project_path, is_global, config_json, version, created_by, created_at, updated_at, metadata_json)
+      VALUES (@analyzerName, @projectPath, @isGlobal, @configJson, @version, @createdBy, @createdAt, @updatedAt, @metadataJson)`);
+    for (const c of configsData) {
+      insertConfig.run({
+        analyzerName: c.analyzerName ?? '',
+        projectPath: c.projectPath ?? null,
+        isGlobal: c.isGlobal ? 1 : 0,
+        configJson: typeof c.config_json === 'string'
+          ? c.config_json
+          : JSON.stringify(c.config ?? c.config_json ?? {}),
+        version: c.version ?? null,
+        createdBy: c.createdBy ?? c.created_by ?? 'system',
+        createdAt: c.createdAt ?? c.created_at ?? new Date().toISOString(),
+        updatedAt: c.updatedAt ?? c.updated_at ?? new Date().toISOString(),
+        metadataJson: JSON.stringify(c.metadata ?? c.metadata_json ?? {}),
+      });
+      configCount++;
+    }
+
+    // Migrate whitelist (snake_case columns matching createSchema)
+    const whitelistData = collections['whitelist'] ?? [];
+    const insertWl = migDb.prepare(`INSERT OR IGNORE INTO whitelist
+      (name, type, status, category, description, patterns, added_by, added_at, updated_at, metadata_json)
+      VALUES (@name, @type, @status, @category, @description, @patterns, @addedBy, @addedAt, @updatedAt, @metadataJson)`);
+    for (const w of whitelistData) {
+      insertWl.run({
+        name: w.name ?? '',
+        type: w.type ?? 'PlatformAPI',
+        status: w.status ?? 'Active',
+        category: w.category ?? null,
+        description: w.description ?? null,
+        patterns: JSON.stringify(w.patterns ?? []),
+        addedBy: w.addedBy ?? w.added_by ?? 'system',
+        addedAt: w.addedAt ?? w.added_at ?? new Date().toISOString(),
+        updatedAt: w.updatedAt ?? w.updated_at ?? null,
+        metadataJson: JSON.stringify(w.metadata ?? w.metadata_json ?? {}),
+      });
+      whitelistCount++;
+    }
+
+    return { tasks: taskCount, configs: configCount, whitelist: whitelistCount };
   }
 
   // ── Init guard ──────────────────────────────────────────────────────
