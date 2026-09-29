@@ -311,6 +311,478 @@ class SqliteCollectionAdapter {
   }
 }
 
+/** The full DDL for a fresh index, as a single idempotent script.
+ *  Split out of `createSchema` so the method stays a driver (is-fresh check →
+ *  exec → migrate → stamp version) and the schema shape lives as data, not
+ *  control flow. Every statement is `CREATE ... IF NOT EXISTS`, so re-running is
+ *  safe and a fresh DB is stamped at the current version without replaying
+ *  migrations.
+ */
+const SCHEMA_DDL = `
+      CREATE TABLE IF NOT EXISTS meta (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS functions (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        name              TEXT NOT NULL,
+        file_path         TEXT NOT NULL,
+        line_number       INTEGER,
+        start_line        INTEGER,
+        end_line          INTEGER,
+        language          TEXT DEFAULT 'typescript',
+        entity_type       TEXT DEFAULT 'function',
+        component_type    TEXT,
+        return_type       TEXT,
+        complexity        INTEGER DEFAULT 0,
+        is_exported       INTEGER DEFAULT 0,
+        has_jsdoc         INTEGER DEFAULT 0,
+        jsdoc_description TEXT,
+        jsdoc_tags        TEXT,
+        parameters        TEXT,
+        type_info         TEXT,
+        hooks             TEXT,
+        props             TEXT,
+        used_imports      TEXT,
+        unused_imports    TEXT,
+        import_usage      TEXT,
+        has_unused_imports INTEGER DEFAULT 0,
+        dependency_depth  INTEGER DEFAULT 0,
+        purpose           TEXT DEFAULT '',
+        context           TEXT DEFAULT '',
+        body              TEXT,
+        content_hash      TEXT,
+        last_modified     TEXT,
+        metadata_json     TEXT,
+        created_at        TEXT DEFAULT (datetime('now')),
+        updated_at        TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_functions_name ON functions(name);
+      CREATE INDEX IF NOT EXISTS idx_functions_file_path ON functions(file_path);
+      CREATE INDEX IF NOT EXISTS idx_functions_language ON functions(language);
+      CREATE INDEX IF NOT EXISTS idx_functions_entity_type ON functions(entity_type);
+      CREATE INDEX IF NOT EXISTS idx_functions_complexity ON functions(complexity);
+      CREATE INDEX IF NOT EXISTS idx_functions_content_hash ON functions(content_hash);
+      CREATE INDEX IF NOT EXISTS idx_functions_is_exported ON functions(is_exported);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS functions_fts USING fts5(
+        name, jsdoc_description, purpose, context, body,
+        content='functions', content_rowid='id',
+        tokenize='porter unicode61'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS functions_ai AFTER INSERT ON functions BEGIN
+        INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
+        VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
+      END;
+      CREATE TRIGGER IF NOT EXISTS functions_ad AFTER DELETE ON functions BEGIN
+        INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
+        VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
+      END;
+      CREATE TRIGGER IF NOT EXISTS functions_au AFTER UPDATE ON functions BEGIN
+        INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
+        VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
+        INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
+        VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
+      END;
+
+      CREATE TABLE IF NOT EXISTS function_calls (
+        caller_id   INTEGER NOT NULL REFERENCES functions(id) ON DELETE CASCADE,
+        callee_name TEXT NOT NULL,
+        PRIMARY KEY (caller_id, callee_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_function_calls_callee ON function_calls(callee_name);
+
+      CREATE TABLE IF NOT EXISTS function_dependencies (
+        function_id INTEGER NOT NULL REFERENCES functions(id) ON DELETE CASCADE,
+        dependency  TEXT NOT NULL,
+        PRIMARY KEY (function_id, dependency)
+      );
+      CREATE INDEX IF NOT EXISTS idx_function_dependencies_dep ON function_dependencies(dependency);
+
+      CREATE TABLE IF NOT EXISTS whitelist (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        name         TEXT NOT NULL,
+        type         TEXT NOT NULL,
+        status       TEXT DEFAULT 'Active',
+        category     TEXT,
+        description  TEXT,
+        patterns     TEXT,
+        added_by     TEXT DEFAULT 'system',
+        added_at     TEXT DEFAULT (datetime('now')),
+        updated_at   TEXT,
+        metadata_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_whitelist_name ON whitelist(name);
+      CREATE INDEX IF NOT EXISTS idx_whitelist_type ON whitelist(type);
+      CREATE INDEX IF NOT EXISTS idx_whitelist_status ON whitelist(status);
+
+      CREATE TABLE IF NOT EXISTS audit_results (
+        audit_id              TEXT PRIMARY KEY,
+        timestamp             TEXT NOT NULL,
+        project_path          TEXT NOT NULL,
+        summary_json          TEXT NOT NULL,
+        analyzer_results_json TEXT NOT NULL,
+        violations_json       TEXT,
+        recommendations_json  TEXT,
+        metadata_json         TEXT,
+        expires_at            TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_results_timestamp ON audit_results(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_audit_results_project_path ON audit_results(project_path);
+
+      CREATE TABLE IF NOT EXISTS analyzer_configs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        analyzer_name TEXT NOT NULL,
+        project_path  TEXT,
+        is_global     INTEGER DEFAULT 0,
+        config_json   TEXT NOT NULL DEFAULT '{}',
+        version       TEXT,
+        created_by    TEXT DEFAULT 'system',
+        created_at    TEXT DEFAULT (datetime('now')),
+        updated_at    TEXT DEFAULT (datetime('now')),
+        metadata_json TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_analyzer_configs_key
+        ON analyzer_configs(analyzer_name, COALESCE(project_path, '__global__'), is_global);
+
+      CREATE TABLE IF NOT EXISTS code_maps (
+        map_id        TEXT NOT NULL,
+        section_type  TEXT NOT NULL,
+        content       TEXT NOT NULL,
+        metadata_json TEXT DEFAULT '{}',
+        timestamp     TEXT DEFAULT (datetime('now')),
+        size          INTEGER DEFAULT 0,
+        PRIMARY KEY (map_id, section_type)
+      );
+      CREATE INDEX IF NOT EXISTS idx_code_maps_timestamp ON code_maps(timestamp);
+
+      CREATE TABLE IF NOT EXISTS schema_definitions (
+        schema_id     TEXT PRIMARY KEY,
+        schema_name   TEXT,
+        schema_json   TEXT NOT NULL,
+        metadata_json TEXT,
+        indexed_at    TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS schema_usage (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        schema_id     TEXT,
+        table_name    TEXT NOT NULL,
+        file_path     TEXT NOT NULL,
+        function_name TEXT,
+        function_start_line   INTEGER,
+        function_start_column INTEGER,
+        usage_type    TEXT NOT NULL,
+        line          INTEGER,
+        "column"      INTEGER,
+        raw_query     TEXT,
+        parameters    TEXT,
+        origin        TEXT,
+        recorded_at   TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_schema_usage_table ON schema_usage(table_name);
+      CREATE INDEX IF NOT EXISTS idx_schema_usage_file ON schema_usage(file_path);
+      CREATE INDEX IF NOT EXISTS idx_schema_usage_function ON schema_usage(function_name);
+      CREATE INDEX IF NOT EXISTS idx_schema_usage_usage_type ON schema_usage(usage_type);
+
+      -- Spec 60 — import classification at emission (one row per static import
+      -- specifier occurrence). classification is free TEXT (no constraint).
+      CREATE TABLE IF NOT EXISTS import_specifiers (
+        file_path       TEXT NOT NULL,
+        specifier       TEXT NOT NULL,
+        classification  TEXT NOT NULL,
+        resolved_path   TEXT,
+        line            INTEGER,
+        PRIMARY KEY (file_path, specifier, line)
+      );
+      CREATE INDEX IF NOT EXISTS idx_import_specifiers_class ON import_specifiers(classification);
+      CREATE INDEX IF NOT EXISTS idx_import_specifiers_resolved ON import_specifiers(resolved_path);
+
+      CREATE TABLE IF NOT EXISTS coverage_data (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        function_name TEXT NOT NULL,
+        file_path     TEXT NOT NULL,
+        line_number   INTEGER,
+        basis         TEXT NOT NULL DEFAULT 'static-reach',
+        covered       INTEGER NOT NULL DEFAULT 0,
+        source        TEXT,
+        imported_at   TEXT DEFAULT (datetime('now')),
+        UNIQUE(function_name, file_path, line_number)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cov_basis ON coverage_data(basis);
+      CREATE INDEX IF NOT EXISTS idx_cov_covered ON coverage_data(covered);
+      CREATE INDEX IF NOT EXISTS idx_cov_function ON coverage_data(function_name);
+
+      CREATE TABLE IF NOT EXISTS project_tasks (
+        taskId         TEXT PRIMARY KEY,
+        projectPath    TEXT NOT NULL,
+        title          TEXT NOT NULL,
+        description    TEXT DEFAULT '',
+        status         TEXT DEFAULT 'pending',
+        priority       TEXT DEFAULT 'medium',
+        labels         TEXT DEFAULT '[]',
+        source         TEXT DEFAULT 'manual',
+        parentTaskId   TEXT,
+        blockedBy      TEXT DEFAULT '[]',
+        dueAt          TEXT,
+        sortOrder      INTEGER DEFAULT 0,
+        relatedFiles   TEXT DEFAULT '[]',
+        relatedSymbols TEXT DEFAULT '[]',
+        fingerprint    TEXT,
+        metadata       TEXT DEFAULT '{}',
+        createdAt      TEXT DEFAULT (datetime('now')),
+        updatedAt      TEXT DEFAULT (datetime('now')),
+        completedAt    TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(projectPath);
+      CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status);
+      CREATE INDEX IF NOT EXISTS idx_project_tasks_source ON project_tasks(source);
+      CREATE INDEX IF NOT EXISTS idx_project_tasks_fingerprint ON project_tasks(fingerprint);
+      CREATE INDEX IF NOT EXISTS idx_project_tasks_sort ON project_tasks(sortOrder);
+
+      -- Spec 11 R1 — Findings Ledger: append-only audit history
+      CREATE TABLE IF NOT EXISTS findings_ledger_runs (
+        run_id       TEXT PRIMARY KEY,
+        timestamp    TEXT NOT NULL,
+        git_sha      TEXT,
+        git_dirty    INTEGER NOT NULL DEFAULT 0,
+        tool_version TEXT NOT NULL,
+        tool_git_sha TEXT,
+        command      TEXT NOT NULL,
+        surface      TEXT NOT NULL,
+        scope        TEXT NOT NULL,
+        target       TEXT NOT NULL,
+        duration_ms  INTEGER NOT NULL DEFAULT 0,
+        exit_status  INTEGER NOT NULL DEFAULT 0,
+        metadata_json TEXT DEFAULT '{}',
+        status        TEXT NOT NULL DEFAULT 'completed',
+        project_root  TEXT,
+        started_at    TEXT,
+        heartbeat_at  TEXT,
+        finished_at   TEXT,
+        error         TEXT,
+        progress_json TEXT,
+        stderr_log    TEXT,
+        content_hash  TEXT,
+        files_count   INTEGER,
+        file_manifest_json TEXT,
+        runner_pid           INTEGER,
+        runner_pid_started_at TEXT,
+        runner_host          TEXT
+      );
+      CREATE TABLE IF NOT EXISTS findings_ledger_findings (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id       TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
+        analyzer     TEXT NOT NULL,
+        rule         TEXT NOT NULL,
+        severity     TEXT NOT NULL,
+        message      TEXT NOT NULL,
+        file         TEXT NOT NULL,
+        line         INTEGER,
+        symbol       TEXT DEFAULT '',
+        fingerprint  TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
+        run_id    TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
+        analyzer  TEXT NOT NULL,
+        rule_id   TEXT NOT NULL,
+        state     TEXT NOT NULL,
+        count     INTEGER NOT NULL DEFAULT 0,
+        reason    TEXT,
+        PRIMARY KEY (run_id, analyzer, rule_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ledger_runs_surface    ON findings_ledger_runs(surface);
+      CREATE INDEX IF NOT EXISTS idx_ledger_runs_timestamp   ON findings_ledger_runs(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_ledger_coverage_run     ON findings_ledger_coverage(run_id);
+      CREATE INDEX IF NOT EXISTS idx_ledger_findings_run     ON findings_ledger_findings(run_id);
+      CREATE INDEX IF NOT EXISTS idx_ledger_findings_fp      ON findings_ledger_findings(fingerprint);
+      CREATE INDEX IF NOT EXISTS idx_ledger_findings_rule    ON findings_ledger_findings(analyzer, rule);
+
+      -- Spec 10: Style intelligence tables
+      CREATE TABLE IF NOT EXISTS style_declarations (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        property        TEXT NOT NULL,
+        raw_value       TEXT NOT NULL,
+        normalized_value TEXT,
+        mechanism       TEXT NOT NULL,
+        file_path       TEXT NOT NULL,
+        line            INTEGER NOT NULL,
+        context         TEXT,
+        variant_context TEXT,
+        token_ref       TEXT,
+        content_hash    TEXT,
+        created_at      TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_decls_property   ON style_declarations(property);
+      CREATE INDEX IF NOT EXISTS idx_style_decls_mechanism  ON style_declarations(mechanism);
+      CREATE INDEX IF NOT EXISTS idx_style_decls_file_path  ON style_declarations(file_path);
+      CREATE INDEX IF NOT EXISTS idx_style_decls_token_ref  ON style_declarations(token_ref);
+      CREATE INDEX IF NOT EXISTS idx_style_decls_content_hash ON style_declarations(content_hash);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS style_declarations_fts USING fts5(
+        property, raw_value, normalized_value,
+        content='style_declarations', content_rowid='id',
+        tokenize='porter unicode61'
+      );
+
+      CREATE TABLE IF NOT EXISTS style_tokens (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT NOT NULL,
+        value      TEXT NOT NULL,
+        file_path  TEXT NOT NULL,
+        mechanism  TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_tokens_name ON style_tokens(name);
+
+      CREATE TABLE IF NOT EXISTS style_class_usage (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        class_name   TEXT NOT NULL,
+        file_path    TEXT NOT NULL,
+        line         INTEGER NOT NULL,
+        mechanism    TEXT NOT NULL,
+        unresolvable INTEGER DEFAULT 0,
+        created_at   TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_class_usage_name   ON style_class_usage(class_name);
+      CREATE INDEX IF NOT EXISTS idx_style_class_usage_file   ON style_class_usage(file_path);
+      CREATE INDEX IF NOT EXISTS idx_style_class_usage_unres  ON style_class_usage(unresolvable);
+
+      -- Spec 45 R5: Stylesheet sources the style indexer could not read.
+      -- When any rows exist, styles/undefined-class findings carry them as
+      -- incomplete-definition context instead of going silent.
+      CREATE TABLE IF NOT EXISTS style_unread_sources (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path  TEXT NOT NULL UNIQUE,
+        reason     TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+
+      -- Spec 45 R5: defined-class catalog (class_name, file_path) so the
+      -- undefined-class detector can resolve a class name with an indexed
+      -- "class_name IN (...)" lookup. Populated by the style indexer on insert.
+      CREATE TABLE IF NOT EXISTS style_defined_classes (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        class_name TEXT NOT NULL,
+        file_path  TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(class_name, file_path)
+      );
+      CREATE INDEX IF NOT EXISTS idx_style_defined_class_name ON style_defined_classes(class_name);
+
+      -- Spec 12: Convention mining
+      CREATE TABLE IF NOT EXISTS conventions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain TEXT NOT NULL,
+        rule_id TEXT NOT NULL,
+        antecedent TEXT,
+        consequent TEXT,
+        pattern TEXT,
+        directory TEXT,
+        file_path TEXT,
+        line INTEGER,
+        support INTEGER DEFAULT 0,
+        total_cases INTEGER DEFAULT 0,
+        confidence REAL DEFAULT 0,
+        exemplar_file TEXT,
+        exemplar_line INTEGER,
+        export_kind TEXT,
+        hash TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_conv_domain ON conventions(domain);
+      CREATE INDEX IF NOT EXISTS idx_conv_rule_id ON conventions(rule_id);
+      CREATE INDEX IF NOT EXISTS idx_conv_directory ON conventions(directory);
+      CREATE INDEX IF NOT EXISTS idx_conv_file_path ON conventions(file_path);
+      CREATE INDEX IF NOT EXISTS idx_conv_hash ON conventions(hash);
+
+      -- Spec 13: Hotspots & temporal analysis
+      CREATE TABLE IF NOT EXISTS file_churn (
+        file_path            TEXT PRIMARY KEY,
+        commit_count         INTEGER NOT NULL DEFAULT 0,
+        lines_added          INTEGER NOT NULL DEFAULT 0,
+        lines_deleted        INTEGER NOT NULL DEFAULT 0,
+        distinct_authors     INTEGER NOT NULL DEFAULT 0,
+        dominant_author      TEXT,
+        dominant_author_share REAL DEFAULT 0,
+        last_touched         TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_file_churn_cc ON file_churn(commit_count);
+
+      CREATE TABLE IF NOT EXISTS function_churn (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        function_id          INTEGER REFERENCES functions(id) ON DELETE CASCADE,
+        function_name        TEXT NOT NULL,
+        file_path            TEXT NOT NULL,
+        commit_count         INTEGER NOT NULL DEFAULT 0,
+        distinct_authors     INTEGER NOT NULL DEFAULT 0,
+        dominant_author      TEXT,
+        dominant_author_share REAL DEFAULT 0,
+        renamed              INTEGER DEFAULT 0,
+        confidence           REAL DEFAULT 1.0
+      );
+      CREATE INDEX IF NOT EXISTS idx_func_churn_fid ON function_churn(function_id);
+
+      CREATE TABLE IF NOT EXISTS hotspot_scores (
+        target       TEXT PRIMARY KEY,
+        type         TEXT NOT NULL,
+        score        REAL NOT NULL DEFAULT 0,
+        churn_pct    REAL NOT NULL DEFAULT 0,
+        complexity_pct REAL NOT NULL DEFAULT 0,
+        commit_count INTEGER NOT NULL DEFAULT 0,
+        distinct_authors INTEGER NOT NULL DEFAULT 0,
+        dominant_author TEXT,
+        dominant_author_share REAL DEFAULT 0,
+        bus_factor_risk INTEGER DEFAULT 0,
+        complexity   INTEGER NOT NULL DEFAULT 0,
+        updated_at   TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hotspot_scores_score ON hotspot_scores(score DESC);
+
+      CREATE TABLE IF NOT EXISTS dry_pair_history (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        pair_fingerprint TEXT NOT NULL,
+        file1           TEXT NOT NULL,
+        symbol1         TEXT,
+        line1           INTEGER NOT NULL,
+        content_hash1   TEXT NOT NULL,
+        file2           TEXT NOT NULL,
+        symbol2         TEXT,
+        line2           INTEGER NOT NULL,
+        content_hash2   TEXT NOT NULL,
+        similarity      REAL NOT NULL,
+        timestamp       TEXT DEFAULT (datetime('now')),
+        run_id          TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_dph_fingerprint ON dry_pair_history(pair_fingerprint);
+      CREATE INDEX IF NOT EXISTS idx_dph_run ON dry_pair_history(run_id);
+
+      -- Spec 14: graph cache for call/import graph construction
+      CREATE TABLE IF NOT EXISTS graph_cache (
+        graph_type   TEXT NOT NULL,
+        node_key     TEXT NOT NULL,
+        neighbor_key TEXT NOT NULL,
+        weight       REAL NOT NULL,
+        PRIMARY KEY (graph_type, node_key, neighbor_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_gc_type_node ON graph_cache(graph_type, node_key);
+      CREATE INDEX IF NOT EXISTS idx_gc_type_neighbor ON graph_cache(graph_type, neighbor_key);
+
+      -- Spec 68 §12: processed-facts store (see migration 17 → 18).
+      CREATE TABLE IF NOT EXISTS phase_facts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        fact_kind   TEXT NOT NULL,
+        file_path   TEXT,
+        payload     TEXT NOT NULL,
+        created_at  TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_phase_facts_kind_file ON phase_facts(fact_kind, file_path);
+`;
+
 // ── Main class ──────────────────────────────────────────────────────────
 
 /**
@@ -1070,480 +1542,17 @@ export class CodeIndexDB {
   }
 
   private createSchema(): void {
-    // A fresh database is created by `CREATE TABLE` below at the *current* schema
-    // shape — there is no history to replay. Migrations run only against an
-    // existing index being upgraded in place. Stamping a fresh DB at the current
-    // version and skipping the blocks turns "every future migration author must
-    // remember to write an idempotence guard" into "there is nothing to guard
-    // against" — the same structural move as the tier function and the
+    // A fresh database is created by `CREATE TABLE` in SCHEMA_DDL at the
+    // *current* schema shape — there is no history to replay. Migrations run
+    // only against an existing index being upgraded in place. Stamping a fresh DB
+    // at the current version and skipping the blocks turns "every future migration
+    // author must remember to write an idempotence guard" into "there is nothing
+    // to guard against" — the same structural move as the tier function and the
     // exhaustiveness assertion. Detected before the exec because `functions` is
     // created by it.
     const isFresh = !this.tableExists('functions');
 
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS meta (
-        key    TEXT PRIMARY KEY,
-        value  TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS functions (
-        id                INTEGER PRIMARY KEY AUTOINCREMENT,
-        name              TEXT NOT NULL,
-        file_path         TEXT NOT NULL,
-        line_number       INTEGER,
-        start_line        INTEGER,
-        end_line          INTEGER,
-        language          TEXT DEFAULT 'typescript',
-        entity_type       TEXT DEFAULT 'function',
-        component_type    TEXT,
-        return_type       TEXT,
-        complexity        INTEGER DEFAULT 0,
-        is_exported       INTEGER DEFAULT 0,
-        has_jsdoc         INTEGER DEFAULT 0,
-        jsdoc_description TEXT,
-        jsdoc_tags        TEXT,
-        parameters        TEXT,
-        type_info         TEXT,
-        hooks             TEXT,
-        props             TEXT,
-        used_imports      TEXT,
-        unused_imports    TEXT,
-        import_usage      TEXT,
-        has_unused_imports INTEGER DEFAULT 0,
-        dependency_depth  INTEGER DEFAULT 0,
-        purpose           TEXT DEFAULT '',
-        context           TEXT DEFAULT '',
-        body              TEXT,
-        content_hash      TEXT,
-        last_modified     TEXT,
-        metadata_json     TEXT,
-        created_at        TEXT DEFAULT (datetime('now')),
-        updated_at        TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_functions_name ON functions(name);
-      CREATE INDEX IF NOT EXISTS idx_functions_file_path ON functions(file_path);
-      CREATE INDEX IF NOT EXISTS idx_functions_language ON functions(language);
-      CREATE INDEX IF NOT EXISTS idx_functions_entity_type ON functions(entity_type);
-      CREATE INDEX IF NOT EXISTS idx_functions_complexity ON functions(complexity);
-      CREATE INDEX IF NOT EXISTS idx_functions_content_hash ON functions(content_hash);
-      CREATE INDEX IF NOT EXISTS idx_functions_is_exported ON functions(is_exported);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
-
-      CREATE VIRTUAL TABLE IF NOT EXISTS functions_fts USING fts5(
-        name, jsdoc_description, purpose, context, body,
-        content='functions', content_rowid='id',
-        tokenize='porter unicode61'
-      );
-
-      CREATE TRIGGER IF NOT EXISTS functions_ai AFTER INSERT ON functions BEGIN
-        INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
-        VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
-      END;
-      CREATE TRIGGER IF NOT EXISTS functions_ad AFTER DELETE ON functions BEGIN
-        INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
-        VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
-      END;
-      CREATE TRIGGER IF NOT EXISTS functions_au AFTER UPDATE ON functions BEGIN
-        INSERT INTO functions_fts(functions_fts, rowid, name, jsdoc_description, purpose, context, body)
-        VALUES ('delete', old.id, old.name, old.jsdoc_description, old.purpose, old.context, old.body);
-        INSERT INTO functions_fts(rowid, name, jsdoc_description, purpose, context, body)
-        VALUES (new.id, new.name, new.jsdoc_description, new.purpose, new.context, new.body);
-      END;
-
-      CREATE TABLE IF NOT EXISTS function_calls (
-        caller_id   INTEGER NOT NULL REFERENCES functions(id) ON DELETE CASCADE,
-        callee_name TEXT NOT NULL,
-        PRIMARY KEY (caller_id, callee_name)
-      );
-      CREATE INDEX IF NOT EXISTS idx_function_calls_callee ON function_calls(callee_name);
-
-      CREATE TABLE IF NOT EXISTS function_dependencies (
-        function_id INTEGER NOT NULL REFERENCES functions(id) ON DELETE CASCADE,
-        dependency  TEXT NOT NULL,
-        PRIMARY KEY (function_id, dependency)
-      );
-      CREATE INDEX IF NOT EXISTS idx_function_dependencies_dep ON function_dependencies(dependency);
-
-      CREATE TABLE IF NOT EXISTS whitelist (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        name         TEXT NOT NULL,
-        type         TEXT NOT NULL,
-        status       TEXT DEFAULT 'Active',
-        category     TEXT,
-        description  TEXT,
-        patterns     TEXT,
-        added_by     TEXT DEFAULT 'system',
-        added_at     TEXT DEFAULT (datetime('now')),
-        updated_at   TEXT,
-        metadata_json TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_whitelist_name ON whitelist(name);
-      CREATE INDEX IF NOT EXISTS idx_whitelist_type ON whitelist(type);
-      CREATE INDEX IF NOT EXISTS idx_whitelist_status ON whitelist(status);
-
-      CREATE TABLE IF NOT EXISTS audit_results (
-        audit_id              TEXT PRIMARY KEY,
-        timestamp             TEXT NOT NULL,
-        project_path          TEXT NOT NULL,
-        summary_json          TEXT NOT NULL,
-        analyzer_results_json TEXT NOT NULL,
-        violations_json       TEXT,
-        recommendations_json  TEXT,
-        metadata_json         TEXT,
-        expires_at            TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_audit_results_timestamp ON audit_results(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_audit_results_project_path ON audit_results(project_path);
-
-      CREATE TABLE IF NOT EXISTS analyzer_configs (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        analyzer_name TEXT NOT NULL,
-        project_path  TEXT,
-        is_global     INTEGER DEFAULT 0,
-        config_json   TEXT NOT NULL DEFAULT '{}',
-        version       TEXT,
-        created_by    TEXT DEFAULT 'system',
-        created_at    TEXT DEFAULT (datetime('now')),
-        updated_at    TEXT DEFAULT (datetime('now')),
-        metadata_json TEXT
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_analyzer_configs_key
-        ON analyzer_configs(analyzer_name, COALESCE(project_path, '__global__'), is_global);
-
-      CREATE TABLE IF NOT EXISTS code_maps (
-        map_id        TEXT NOT NULL,
-        section_type  TEXT NOT NULL,
-        content       TEXT NOT NULL,
-        metadata_json TEXT DEFAULT '{}',
-        timestamp     TEXT DEFAULT (datetime('now')),
-        size          INTEGER DEFAULT 0,
-        PRIMARY KEY (map_id, section_type)
-      );
-      CREATE INDEX IF NOT EXISTS idx_code_maps_timestamp ON code_maps(timestamp);
-
-      CREATE TABLE IF NOT EXISTS schema_definitions (
-        schema_id     TEXT PRIMARY KEY,
-        schema_name   TEXT,
-        schema_json   TEXT NOT NULL,
-        metadata_json TEXT,
-        indexed_at    TEXT DEFAULT (datetime('now'))
-      );
-
-      CREATE TABLE IF NOT EXISTS schema_usage (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        schema_id     TEXT,
-        table_name    TEXT NOT NULL,
-        file_path     TEXT NOT NULL,
-        function_name TEXT,
-        function_start_line   INTEGER,
-        function_start_column INTEGER,
-        usage_type    TEXT NOT NULL,
-        line          INTEGER,
-        "column"      INTEGER,
-        raw_query     TEXT,
-        parameters    TEXT,
-        origin        TEXT,
-        recorded_at   TEXT DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_schema_usage_table ON schema_usage(table_name);
-      CREATE INDEX IF NOT EXISTS idx_schema_usage_file ON schema_usage(file_path);
-      CREATE INDEX IF NOT EXISTS idx_schema_usage_function ON schema_usage(function_name);
-      CREATE INDEX IF NOT EXISTS idx_schema_usage_usage_type ON schema_usage(usage_type);
-
-      -- Spec 60 — import classification at emission (one row per static import
-      -- specifier occurrence). classification is free TEXT (no constraint).
-      CREATE TABLE IF NOT EXISTS import_specifiers (
-        file_path       TEXT NOT NULL,
-        specifier       TEXT NOT NULL,
-        classification  TEXT NOT NULL,
-        resolved_path   TEXT,
-        line            INTEGER,
-        PRIMARY KEY (file_path, specifier, line)
-      );
-      CREATE INDEX IF NOT EXISTS idx_import_specifiers_class ON import_specifiers(classification);
-      CREATE INDEX IF NOT EXISTS idx_import_specifiers_resolved ON import_specifiers(resolved_path);
-
-      CREATE TABLE IF NOT EXISTS coverage_data (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        function_name TEXT NOT NULL,
-        file_path     TEXT NOT NULL,
-        line_number   INTEGER,
-        basis         TEXT NOT NULL DEFAULT 'static-reach',
-        covered       INTEGER NOT NULL DEFAULT 0,
-        source        TEXT,
-        imported_at   TEXT DEFAULT (datetime('now')),
-        UNIQUE(function_name, file_path, line_number)
-      );
-      CREATE INDEX IF NOT EXISTS idx_cov_basis ON coverage_data(basis);
-      CREATE INDEX IF NOT EXISTS idx_cov_covered ON coverage_data(covered);
-      CREATE INDEX IF NOT EXISTS idx_cov_function ON coverage_data(function_name);
-
-      CREATE TABLE IF NOT EXISTS project_tasks (
-        taskId         TEXT PRIMARY KEY,
-        projectPath    TEXT NOT NULL,
-        title          TEXT NOT NULL,
-        description    TEXT DEFAULT '',
-        status         TEXT DEFAULT 'pending',
-        priority       TEXT DEFAULT 'medium',
-        labels         TEXT DEFAULT '[]',
-        source         TEXT DEFAULT 'manual',
-        parentTaskId   TEXT,
-        blockedBy      TEXT DEFAULT '[]',
-        dueAt          TEXT,
-        sortOrder      INTEGER DEFAULT 0,
-        relatedFiles   TEXT DEFAULT '[]',
-        relatedSymbols TEXT DEFAULT '[]',
-        fingerprint    TEXT,
-        metadata       TEXT DEFAULT '{}',
-        createdAt      TEXT DEFAULT (datetime('now')),
-        updatedAt      TEXT DEFAULT (datetime('now')),
-        completedAt    TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(projectPath);
-      CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status);
-      CREATE INDEX IF NOT EXISTS idx_project_tasks_source ON project_tasks(source);
-      CREATE INDEX IF NOT EXISTS idx_project_tasks_fingerprint ON project_tasks(fingerprint);
-      CREATE INDEX IF NOT EXISTS idx_project_tasks_sort ON project_tasks(sortOrder);
-
-      -- Spec 11 R1 — Findings Ledger: append-only audit history
-      CREATE TABLE IF NOT EXISTS findings_ledger_runs (
-        run_id       TEXT PRIMARY KEY,
-        timestamp    TEXT NOT NULL,
-        git_sha      TEXT,
-        git_dirty    INTEGER NOT NULL DEFAULT 0,
-        tool_version TEXT NOT NULL,
-        tool_git_sha TEXT,
-        command      TEXT NOT NULL,
-        surface      TEXT NOT NULL,
-        scope        TEXT NOT NULL,
-        target       TEXT NOT NULL,
-        duration_ms  INTEGER NOT NULL DEFAULT 0,
-        exit_status  INTEGER NOT NULL DEFAULT 0,
-        metadata_json TEXT DEFAULT '{}',
-        status        TEXT NOT NULL DEFAULT 'completed',
-        project_root  TEXT,
-        started_at    TEXT,
-        heartbeat_at  TEXT,
-        finished_at   TEXT,
-        error         TEXT,
-        progress_json TEXT,
-        stderr_log    TEXT,
-        content_hash  TEXT,
-        files_count   INTEGER,
-        file_manifest_json TEXT,
-        runner_pid           INTEGER,
-        runner_pid_started_at TEXT,
-        runner_host          TEXT
-      );
-      CREATE TABLE IF NOT EXISTS findings_ledger_findings (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        run_id       TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
-        analyzer     TEXT NOT NULL,
-        rule         TEXT NOT NULL,
-        severity     TEXT NOT NULL,
-        message      TEXT NOT NULL,
-        file         TEXT NOT NULL,
-        line         INTEGER,
-        symbol       TEXT DEFAULT '',
-        fingerprint  TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
-        run_id    TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
-        analyzer  TEXT NOT NULL,
-        rule_id   TEXT NOT NULL,
-        state     TEXT NOT NULL,
-        count     INTEGER NOT NULL DEFAULT 0,
-        reason    TEXT,
-        PRIMARY KEY (run_id, analyzer, rule_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_ledger_runs_surface    ON findings_ledger_runs(surface);
-      CREATE INDEX IF NOT EXISTS idx_ledger_runs_timestamp   ON findings_ledger_runs(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_ledger_coverage_run     ON findings_ledger_coverage(run_id);
-      CREATE INDEX IF NOT EXISTS idx_ledger_findings_run     ON findings_ledger_findings(run_id);
-      CREATE INDEX IF NOT EXISTS idx_ledger_findings_fp      ON findings_ledger_findings(fingerprint);
-      CREATE INDEX IF NOT EXISTS idx_ledger_findings_rule    ON findings_ledger_findings(analyzer, rule);
-
-      -- Spec 10: Style intelligence tables
-      CREATE TABLE IF NOT EXISTS style_declarations (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        property        TEXT NOT NULL,
-        raw_value       TEXT NOT NULL,
-        normalized_value TEXT,
-        mechanism       TEXT NOT NULL,
-        file_path       TEXT NOT NULL,
-        line            INTEGER NOT NULL,
-        context         TEXT,
-        variant_context TEXT,
-        token_ref       TEXT,
-        content_hash    TEXT,
-        created_at      TEXT DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_style_decls_property   ON style_declarations(property);
-      CREATE INDEX IF NOT EXISTS idx_style_decls_mechanism  ON style_declarations(mechanism);
-      CREATE INDEX IF NOT EXISTS idx_style_decls_file_path  ON style_declarations(file_path);
-      CREATE INDEX IF NOT EXISTS idx_style_decls_token_ref  ON style_declarations(token_ref);
-      CREATE INDEX IF NOT EXISTS idx_style_decls_content_hash ON style_declarations(content_hash);
-
-      CREATE VIRTUAL TABLE IF NOT EXISTS style_declarations_fts USING fts5(
-        property, raw_value, normalized_value,
-        content='style_declarations', content_rowid='id',
-        tokenize='porter unicode61'
-      );
-
-      CREATE TABLE IF NOT EXISTS style_tokens (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        name       TEXT NOT NULL,
-        value      TEXT NOT NULL,
-        file_path  TEXT NOT NULL,
-        mechanism  TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_style_tokens_name ON style_tokens(name);
-
-      CREATE TABLE IF NOT EXISTS style_class_usage (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        class_name   TEXT NOT NULL,
-        file_path    TEXT NOT NULL,
-        line         INTEGER NOT NULL,
-        mechanism    TEXT NOT NULL,
-        unresolvable INTEGER DEFAULT 0,
-        created_at   TEXT DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_style_class_usage_name   ON style_class_usage(class_name);
-      CREATE INDEX IF NOT EXISTS idx_style_class_usage_file   ON style_class_usage(file_path);
-      CREATE INDEX IF NOT EXISTS idx_style_class_usage_unres  ON style_class_usage(unresolvable);
-
-      -- Spec 45 R5: Stylesheet sources the style indexer could not read.
-      -- When any rows exist, styles/undefined-class findings carry them as
-      -- incomplete-definition context instead of going silent.
-      CREATE TABLE IF NOT EXISTS style_unread_sources (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_path  TEXT NOT NULL UNIQUE,
-        reason     TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-
-      -- Spec 45 R5: defined-class catalog (class_name, file_path) so the
-      -- undefined-class detector can resolve a class name with an indexed
-      -- "class_name IN (...)" lookup. Populated by the style indexer on insert.
-      CREATE TABLE IF NOT EXISTS style_defined_classes (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        class_name TEXT NOT NULL,
-        file_path  TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        UNIQUE(class_name, file_path)
-      );
-      CREATE INDEX IF NOT EXISTS idx_style_defined_class_name ON style_defined_classes(class_name);
-
-      -- Spec 12: Convention mining
-      CREATE TABLE IF NOT EXISTS conventions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        domain TEXT NOT NULL,
-        rule_id TEXT NOT NULL,
-        antecedent TEXT,
-        consequent TEXT,
-        pattern TEXT,
-        directory TEXT,
-        file_path TEXT,
-        line INTEGER,
-        support INTEGER DEFAULT 0,
-        total_cases INTEGER DEFAULT 0,
-        confidence REAL DEFAULT 0,
-        exemplar_file TEXT,
-        exemplar_line INTEGER,
-        export_kind TEXT,
-        hash TEXT,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_conv_domain ON conventions(domain);
-      CREATE INDEX IF NOT EXISTS idx_conv_rule_id ON conventions(rule_id);
-      CREATE INDEX IF NOT EXISTS idx_conv_directory ON conventions(directory);
-      CREATE INDEX IF NOT EXISTS idx_conv_file_path ON conventions(file_path);
-      CREATE INDEX IF NOT EXISTS idx_conv_hash ON conventions(hash);
-
-      -- Spec 13: Hotspots & temporal analysis
-      CREATE TABLE IF NOT EXISTS file_churn (
-        file_path            TEXT PRIMARY KEY,
-        commit_count         INTEGER NOT NULL DEFAULT 0,
-        lines_added          INTEGER NOT NULL DEFAULT 0,
-        lines_deleted        INTEGER NOT NULL DEFAULT 0,
-        distinct_authors     INTEGER NOT NULL DEFAULT 0,
-        dominant_author      TEXT,
-        dominant_author_share REAL DEFAULT 0,
-        last_touched         TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_file_churn_cc ON file_churn(commit_count);
-
-      CREATE TABLE IF NOT EXISTS function_churn (
-        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-        function_id          INTEGER REFERENCES functions(id) ON DELETE CASCADE,
-        function_name        TEXT NOT NULL,
-        file_path            TEXT NOT NULL,
-        commit_count         INTEGER NOT NULL DEFAULT 0,
-        distinct_authors     INTEGER NOT NULL DEFAULT 0,
-        dominant_author      TEXT,
-        dominant_author_share REAL DEFAULT 0,
-        renamed              INTEGER DEFAULT 0,
-        confidence           REAL DEFAULT 1.0
-      );
-      CREATE INDEX IF NOT EXISTS idx_func_churn_fid ON function_churn(function_id);
-
-      CREATE TABLE IF NOT EXISTS hotspot_scores (
-        target       TEXT PRIMARY KEY,
-        type         TEXT NOT NULL,
-        score        REAL NOT NULL DEFAULT 0,
-        churn_pct    REAL NOT NULL DEFAULT 0,
-        complexity_pct REAL NOT NULL DEFAULT 0,
-        commit_count INTEGER NOT NULL DEFAULT 0,
-        distinct_authors INTEGER NOT NULL DEFAULT 0,
-        dominant_author TEXT,
-        dominant_author_share REAL DEFAULT 0,
-        bus_factor_risk INTEGER DEFAULT 0,
-        complexity   INTEGER NOT NULL DEFAULT 0,
-        updated_at   TEXT DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_hotspot_scores_score ON hotspot_scores(score DESC);
-
-      CREATE TABLE IF NOT EXISTS dry_pair_history (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        pair_fingerprint TEXT NOT NULL,
-        file1           TEXT NOT NULL,
-        symbol1         TEXT,
-        line1           INTEGER NOT NULL,
-        content_hash1   TEXT NOT NULL,
-        file2           TEXT NOT NULL,
-        symbol2         TEXT,
-        line2           INTEGER NOT NULL,
-        content_hash2   TEXT NOT NULL,
-        similarity      REAL NOT NULL,
-        timestamp       TEXT DEFAULT (datetime('now')),
-        run_id          TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_dph_fingerprint ON dry_pair_history(pair_fingerprint);
-      CREATE INDEX IF NOT EXISTS idx_dph_run ON dry_pair_history(run_id);
-
-      -- Spec 14: graph cache for call/import graph construction
-      CREATE TABLE IF NOT EXISTS graph_cache (
-        graph_type   TEXT NOT NULL,
-        node_key     TEXT NOT NULL,
-        neighbor_key TEXT NOT NULL,
-        weight       REAL NOT NULL,
-        PRIMARY KEY (graph_type, node_key, neighbor_key)
-      );
-      CREATE INDEX IF NOT EXISTS idx_gc_type_node ON graph_cache(graph_type, node_key);
-      CREATE INDEX IF NOT EXISTS idx_gc_type_neighbor ON graph_cache(graph_type, neighbor_key);
-
-      -- Spec 68 §12: processed-facts store (see migration 17 → 18).
-      CREATE TABLE IF NOT EXISTS phase_facts (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        fact_kind   TEXT NOT NULL,
-        file_path   TEXT,
-        payload     TEXT NOT NULL,
-        created_at  TEXT DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_phase_facts_kind_file ON phase_facts(fact_kind, file_path);
-    `);
+    this.db.exec(SCHEMA_DDL);
 
     // Run schema migrations (only an existing index needs upgrading)
     if (!isFresh) {
@@ -1555,7 +1564,6 @@ export class CodeIndexDB {
       `INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)`
     ).run(String(CodeIndexDB.SCHEMA_VERSION));
   }
-
   // ── LokiJS migration ────────────────────────────────────────────────
 
   private maybeMigrateFromLokiJS(): { migrated: boolean; counts?: { tasks: number; configs: number; whitelist: number } } {
