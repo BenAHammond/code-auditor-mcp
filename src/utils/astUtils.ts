@@ -734,6 +734,111 @@ function isNodeInTypePosition(identifier: ASTNode, typeNode: ASTNode): boolean {
 }
 
 /**
+ * Return true when `identifier` sits inside the `type_arguments` node of
+ * `container` (e.g. `Array<SomeType>`). Shared by the direct generic-type
+ * position and the call/new/tagged-template type-argument positions.
+ */
+function isInTypeArguments(identifier: ASTNode, container: ASTNode): boolean {
+  const typeArgs = findChildOfType(container, 'type_arguments');
+  if (!typeArgs) return false;
+  for (const arg of typeArgs.children ?? []) {
+    if (isNodeInTypePosition(identifier, arg)) return true;
+  }
+  return false;
+}
+
+/**
+ * `interface X extends SomeType<...>` — the identifier names the base type of an
+ * `extends` heritage clause. Covers both the bare `generic_type` parent and the
+ * `namespace.Type` (`member_expression`) parent wrapped in a `generic_type`.
+ */
+function isHeritageExtendsTypeUsage(identifier: ASTNode, parent: ASTNode): boolean {
+  let typeNode: ASTNode | undefined;
+  if (parent.type === 'generic_type' && parent.children?.[0] === identifier) {
+    typeNode = parent;
+  } else if (parent.type === 'member_expression' && parent.children?.[0] === identifier) {
+    typeNode = parent.parent;
+    if (typeNode?.type !== 'generic_type') return false;
+  } else {
+    return false;
+  }
+  const heritageClause = typeNode.parent;
+  if (heritageClause?.type !== 'heritage_clause') return false;
+  if (!hasModifier(heritageClause, 'extends')) return false;
+  const interfaceNode = heritageClause.parent;
+  return interfaceNode?.type === 'interface_declaration';
+}
+
+/**
+ * `class X implements SomeType` — the identifier is a base type in an
+ * `implements` heritage clause of a class declaration.
+ */
+function isClassImplementsTypeUsage(identifier: ASTNode, parent: ASTNode): boolean {
+  if (parent.type !== 'class_declaration') return false;
+  for (const child of parent.children ?? []) {
+    if (child.type !== 'heritage_clause') continue;
+    if (!hasModifier(child, 'implements')) continue;
+    for (const typeNode of child.children ?? []) {
+      if (typeNode === identifier) return true;
+      if (typeNode.type === 'member_expression' && typeNode.children?.[0] === identifier) return true;
+      if (typeNode.type === 'generic_type' && typeNode.children?.[0] === identifier) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * `function test<T extends SomeType>()` — the identifier is a type-parameter
+ * constraint. When a direct `type_annotation` constraint exists it is decisive
+ * (return its result, do not fall through to the secondary child scan).
+ */
+function isTypeParameterConstraintUsage(identifier: ASTNode, parent: ASTNode): boolean {
+  if (parent.type !== 'type_parameter') return false;
+  const constraint = findChildOfType(parent, 'type_annotation');
+  if (constraint) {
+    return isNodeInTypePosition(identifier, constraint);
+  }
+  for (const child of parent.children ?? []) {
+    if (child.type !== 'identifier' && child.type !== 'type_parameter') {
+      if (isNodeInTypePosition(identifier, child)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Mapped type (`{ [K in T]: ... }`) — the identifier is a mapped-type constraint
+ * or value type.
+ */
+function isMappedTypeUsage(identifier: ASTNode, parent: ASTNode): boolean {
+  if (parent.type !== 'mapped_type_clause') return false;
+  const typeParam = findChildOfType(parent, 'type_parameter');
+  if (typeParam) {
+    const constraint = findChildOfType(typeParam, 'type_annotation');
+    if (constraint && isNodeInTypePosition(identifier, constraint)) return true;
+  }
+  const typeAnnot = findChildOfType(parent, 'type_annotation');
+  if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
+  return false;
+}
+
+/**
+ * Type positions reachable through the parent's own parent — a generic type in a
+ * heritage clause, or type arguments on call/new/tagged-template expressions.
+ */
+function isAncestorTypeUsage(identifier: ASTNode, parent: ASTNode): boolean {
+  if (!parent.parent) return false;
+  if (parent.type === 'generic_type' && parent.parent.type === 'heritage_clause') {
+    return true;
+  }
+  const grand = parent.parent;
+  if (grand.type === 'call_expression' || grand.type === 'new_expression' || grand.type === 'tagged_template_literal') {
+    return isInTypeArguments(identifier, grand);
+  }
+  return false;
+}
+
+/**
  * Check if an identifier node is used only as a type.
  * Uses tree-sitter node type checks instead of TS API's `isTypeNode` etc.
  */
@@ -742,86 +847,26 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
   if (!parent) return false;
 
   // Direct type position — parent is a type_annotation, type_reference, etc.
-  if (TYPE_NODE_TYPES.has(parent.type)) {
-    return true;
-  }
+  if (TYPE_NODE_TYPES.has(parent.type)) return true;
 
   // Type query: `typeof X`
-  if (parent.type === 'typeof_expression') {
-    return true;
-  }
+  if (parent.type === 'typeof_expression') return true;
 
   // Qualified name in type position
   if (parent.type === 'qualified_name' && parent.children?.[0] === identifier) {
     return isTypeOnlyUsage(parent);
   }
 
-  // Generic type arguments: `SomeType<X>` where X is the identifier
-  if (parent.type === 'generic_type' && parent.children?.[0] === identifier) {
-    const heritageClause = parent.parent;
-    if (heritageClause?.type === 'heritage_clause') {
-      const isExtends = hasModifier(heritageClause, 'extends');
-      if (isExtends) {
-        const interfaceNode = heritageClause.parent;
-        if (interfaceNode?.type === 'interface_declaration') {
-          return true;
-        }
-      }
-    }
-  }
-
-  // `namespace.Type` in type position — check if left side is identifier
-  if (parent.type === 'member_expression' && parent.children?.[0] === identifier) {
-    const grandParent = parent.parent;
-    if (grandParent?.type === 'generic_type') {
-      const heritageClause = grandParent.parent;
-      if (heritageClause?.type === 'heritage_clause') {
-        const isExtends = hasModifier(heritageClause, 'extends');
-        if (isExtends) {
-          const interfaceNode = heritageClause.parent;
-          if (interfaceNode?.type === 'interface_declaration') {
-            return true;
-          }
-        }
-      }
-    }
-  }
+  if (isHeritageExtendsTypeUsage(identifier, parent)) return true;
 
   // Type alias: `type X = SomeType`
   if (parent.type === 'type_alias_declaration') {
     const typeAnnotation = findChildOfType(parent, 'type_annotation');
-    if (typeAnnotation) {
-      return isNodeInTypePosition(identifier, typeAnnotation);
-    }
+    if (typeAnnotation) return isNodeInTypePosition(identifier, typeAnnotation);
   }
 
-  // Class implements: `class X implements SomeType`
-  if (parent.type === 'class_declaration') {
-    for (const child of parent.children ?? []) {
-      if (child.type !== 'heritage_clause') continue;
-      const isImplements = hasModifier(child, 'implements');
-      if (!isImplements) continue;
-      for (const typeNode of child.children ?? []) {
-        if (typeNode === identifier) return true;
-        if (typeNode.type === 'member_expression' && typeNode.children?.[0] === identifier) return true;
-        if (typeNode.type === 'generic_type' && typeNode.children?.[0] === identifier) return true;
-      }
-    }
-  }
-
-  // Generic constraints: `function test<T extends SomeType>()`
-  if (parent.type === 'type_parameter') {
-    const constraint = findChildOfType(parent, 'type_annotation'); // or constraint
-    if (constraint) {
-      return isNodeInTypePosition(identifier, constraint);
-    }
-    // Also check for generic_type in constraint position
-    for (const child of parent.children ?? []) {
-      if (child.type !== 'identifier' && child.type !== 'type_parameter') {
-        if (isNodeInTypePosition(identifier, child)) return true;
-      }
-    }
-  }
+  if (isClassImplementsTypeUsage(identifier, parent)) return true;
+  if (isTypeParameterConstraintUsage(identifier, parent)) return true;
 
   // Type annotations in variable declarations: `const x: SomeType = ...`
   if (parent.type === 'variable_declarator') {
@@ -844,12 +889,7 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
 
   // Type parameters/arguments: `Array<SomeType>`, `Promise<SomeType>`
   if (parent.type === 'type_identifier' || parent.type === 'generic_type') {
-    const typeArgs = findChildOfType(parent, 'type_arguments');
-    if (typeArgs) {
-      for (const arg of typeArgs.children ?? []) {
-        if (isNodeInTypePosition(identifier, arg)) return true;
-      }
-    }
+    if (isInTypeArguments(identifier, parent)) return true;
   }
 
   // Return type annotations: `function test(): SomeType`
@@ -858,16 +898,7 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
     if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
   }
 
-  // Mapped type constraint or type
-  if (parent.type === 'mapped_type_clause') {
-    const typeParam = findChildOfType(parent, 'type_parameter');
-    if (typeParam) {
-      const constraint = findChildOfType(typeParam, 'type_annotation');
-      if (constraint && isNodeInTypePosition(identifier, constraint)) return true;
-    }
-    const typeAnnot = findChildOfType(parent, 'type_annotation');
-    if (typeAnnot && isNodeInTypePosition(identifier, typeAnnot)) return true;
-  }
+  if (isMappedTypeUsage(identifier, parent)) return true;
 
   // Conditional types: `T extends SomeType ? X : Y`
   if (parent.type === 'conditional_type') {
@@ -889,45 +920,215 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
     if (annot && isNodeInTypePosition(identifier, annot)) return true;
   }
 
-  // Walk up: if parent is itself in a type position, check further up
-  if (parent.parent) {
-    // Heritage clauses
-    if (parent.type === 'generic_type' && parent.parent.type === 'heritage_clause') {
-      return true;
-    }
-
-    // Type arguments in call expressions: `func<SomeType>()`
-    if (parent.parent.type === 'call_expression') {
-      const typeArgs = findChildOfType(parent.parent, 'type_arguments');
-      if (typeArgs) {
-        for (const arg of typeArgs.children ?? []) {
-          if (isNodeInTypePosition(identifier, arg)) return true;
-        }
-      }
-    }
-
-    // Type arguments in new expressions: `new Class<SomeType>()`
-    if (parent.parent.type === 'new_expression') {
-      const typeArgs = findChildOfType(parent.parent, 'type_arguments');
-      if (typeArgs) {
-        for (const arg of typeArgs.children ?? []) {
-          if (isNodeInTypePosition(identifier, arg)) return true;
-        }
-      }
-    }
-
-    // Type arguments in tagged template expressions
-    if (parent.parent.type === 'tagged_template_literal') {
-      const typeArgs = findChildOfType(parent.parent, 'type_arguments');
-      if (typeArgs) {
-        for (const arg of typeArgs.children ?? []) {
-          if (isNodeInTypePosition(identifier, arg)) return true;
-        }
-      }
-    }
-  }
+  if (isAncestorTypeUsage(identifier, parent)) return true;
 
   return false;
+}
+
+/**
+ * Extract identifier usage to track which imports are used.
+ * Uses tree-sitter AST traversal with walkAST.
+ *
+ * @param root - The root AST node to walk.
+/**
+ * Record a single usage of an imported name in the usage map: increments the
+ * count, appends the line, and returns the (possibly freshly-created) entry so
+ * callers that classify the usage (type / reexport) can mutate it in place.
+ */
+function recordUsage(
+  usageMap: Map<string, UsageInfo>,
+  name: string,
+  node: ASTNode
+): UsageInfo {
+  const { line } = bridgeGetLineAndColumn(node);
+  const existing = usageMap.get(name) || {
+    usageType: 'direct' as const,
+    usageCount: 0,
+    lineNumbers: [] as number[],
+  };
+  existing.usageCount++;
+  existing.lineNumbers.push(line);
+  usageMap.set(name, existing);
+  return existing;
+}
+
+/**
+ * Plain identifier references. Skips identifiers inside import declarations,
+ * and for member/subscript access counts only the leftmost (object) identifier.
+ * Classifies the usage as type-only or re-export where applicable.
+ */
+function recordIdentifierUsage(
+  node: ASTNode,
+  sourceCode: string,
+  importNames: Set<string>,
+  usageMap: Map<string, UsageInfo>
+): void {
+  const name = getNodeText(node, sourceCode);
+  if (!importNames.has(name)) return;
+
+  let shouldCount = true;
+  let p = node.parent;
+  while (p) {
+    if (p.type === 'import_statement' || p.type === 'import_specifier' ||
+        p.type === 'import_clause' || p.type === 'named_imports') {
+      shouldCount = false;
+      break;
+    }
+    p = p.parent;
+  }
+
+  // For member expressions, only count the leftmost (object) identifier
+  if (shouldCount && node.parent?.type === 'member_expression') {
+    shouldCount = node.parent.children?.[0] === node;
+  }
+
+  // For subscript expressions (element access), only count expression side
+  if (shouldCount && node.parent?.type === 'subscript_expression') {
+    shouldCount = node.parent.children?.[0] === node;
+  }
+
+  if (!shouldCount) return;
+
+  const existing = recordUsage(usageMap, name, node);
+  if (isTypeOnlyUsage(node)) {
+    existing.usageType = 'type';
+  } else if (node.parent?.type === 'export_specifier') {
+    existing.usageType = 'reexport';
+  }
+}
+
+/**
+ * Spread elements (`...Imported`, rest params) whose spread expression is an
+ * imported identifier.
+ */
+function recordSpreadUsage(
+  node: ASTNode,
+  sourceCode: string,
+  importNames: Set<string>,
+  usageMap: Map<string, UsageInfo>
+): void {
+  const expr = node.children?.find(c => c.type !== '...');
+  if (expr?.type === 'identifier' && importNames.has(getNodeText(expr, sourceCode))) {
+    recordUsage(usageMap, getNodeText(expr, sourceCode), expr);
+  }
+}
+
+/**
+ * JSX elements (`<Button />`, `<Button.Primary />`) whose tag (or the leftmost
+ * member of the tag) is an imported identifier.
+ */
+function recordJsxUsage(
+  node: ASTNode,
+  sourceCode: string,
+  importNames: Set<string>,
+  usageMap: Map<string, UsageInfo>
+): void {
+  let tagNameNode: ASTNode | undefined;
+  if (node.type === 'jsx_element') {
+    const openTag = findChildOfType(node, 'open_tag');
+    if (openTag) {
+      tagNameNode = openTag.children?.find(c =>
+        c.type === 'identifier' || c.type === 'member_expression');
+    }
+  } else {
+    tagNameNode = node.children?.find(c =>
+      c.type === 'identifier' || c.type === 'member_expression');
+  }
+
+  if (!tagNameNode) return;
+
+  if (tagNameNode.type === 'identifier' && importNames.has(getNodeText(tagNameNode, sourceCode))) {
+    recordUsage(usageMap, getNodeText(tagNameNode, sourceCode), tagNameNode);
+  } else if (tagNameNode.type === 'member_expression') {
+    const leftmost = tagNameNode.children?.[0];
+    if (leftmost?.type === 'identifier' && importNames.has(getNodeText(leftmost, sourceCode))) {
+      recordUsage(usageMap, getNodeText(leftmost, sourceCode), leftmost);
+    }
+  }
+}
+
+/**
+ * Decorators (`@withAuth`, `@Component()`): the decorator identifier, or the
+ * callee identifier of a call-expression decorator.
+ */
+function recordDecoratorUsage(
+  node: ASTNode,
+  sourceCode: string,
+  importNames: Set<string>,
+  usageMap: Map<string, UsageInfo>
+): void {
+  const id = findChildOfType(node, 'identifier');
+  if (id && importNames.has(getNodeText(id, sourceCode))) {
+    recordUsage(usageMap, getNodeText(id, sourceCode), id);
+  }
+
+  const callExpr = findChildOfType(node, 'call_expression');
+  if (callExpr) {
+    const callee = callExpr.children?.[0];
+    if (callee?.type === 'identifier' && importNames.has(getNodeText(callee, sourceCode))) {
+      recordUsage(usageMap, getNodeText(callee, sourceCode), callee);
+    }
+  }
+}
+
+/**
+ * Object-literal property assignments (`{ key: ImportedValue }`): the value
+ * identifier when it is an imported name.
+ */
+function recordPairUsage(
+  node: ASTNode,
+  sourceCode: string,
+  importNames: Set<string>,
+  usageMap: Map<string, UsageInfo>
+): void {
+  const key = node.children?.find(c => c.type === 'property_identifier');
+  const value = node.children?.find(c => c.type === 'identifier' && c !== key);
+  if (value && importNames.has(getNodeText(value, sourceCode))) {
+    recordUsage(usageMap, getNodeText(value, sourceCode), value);
+  }
+}
+
+/**
+ * Shorthand property assignments (`{ ComponentA }`): the identifier child that
+ * references the imported name.
+ */
+function recordShorthandUsage(
+  node: ASTNode,
+  sourceCode: string,
+  importNames: Set<string>,
+  usageMap: Map<string, UsageInfo>
+): void {
+  const ref = node.children?.find(c => c.type === 'identifier');
+  if (ref && importNames.has(getNodeText(ref, sourceCode))) {
+    recordUsage(usageMap, getNodeText(ref, sourceCode), ref);
+  } else if (ref && importNames.has(getNodeText(ref, sourceCode))) {
+    // shorthand_property_identifier might itself be just text
+    recordUsage(usageMap, getNodeText(node, sourceCode), node);
+  }
+}
+
+/**
+ * Dispatch a single walked node to its usage recorder based on node type.
+ */
+function recordNodeUsage(
+  node: ASTNode,
+  sourceCode: string,
+  importNames: Set<string>,
+  usageMap: Map<string, UsageInfo>
+): void {
+  if (node.type === 'identifier') {
+    recordIdentifierUsage(node, sourceCode, importNames, usageMap);
+  } else if (SPREAD_TYPES.has(node.type)) {
+    recordSpreadUsage(node, sourceCode, importNames, usageMap);
+  } else if (node.type === 'jsx_element' || node.type === 'jsx_self_closing_element') {
+    recordJsxUsage(node, sourceCode, importNames, usageMap);
+  } else if (node.type === 'decorator') {
+    recordDecoratorUsage(node, sourceCode, importNames, usageMap);
+  } else if (node.type === 'pair') {
+    recordPairUsage(node, sourceCode, importNames, usageMap);
+  } else if (node.type === 'shorthand_property_identifier') {
+    recordShorthandUsage(node, sourceCode, importNames, usageMap);
+  }
 }
 
 /**
@@ -947,193 +1148,7 @@ export function extractIdentifierUsage(
   const usageMap = new Map<string, UsageInfo>();
 
   walkAST(root, (node) => {
-    // --- identifiers ---
-    if (node.type === 'identifier') {
-      const name = getNodeText(node, sourceCode);
-
-      if (importNames.has(name)) {
-        let shouldCount = true;
-
-        // Skip if part of an import declaration
-        let p = node.parent;
-        while (p) {
-          if (p.type === 'import_statement' || p.type === 'import_specifier' ||
-              p.type === 'import_clause' || p.type === 'named_imports') {
-            shouldCount = false;
-            break;
-          }
-          p = p.parent;
-        }
-
-        // For member expressions, only count the leftmost (object) identifier
-        if (shouldCount && node.parent?.type === 'member_expression') {
-          shouldCount = node.parent.children?.[0] === node;
-        }
-
-        // For subscript expressions (element access), only count expression side
-        if (shouldCount && node.parent?.type === 'subscript_expression') {
-          shouldCount = node.parent.children?.[0] === node;
-        }
-
-        if (shouldCount) {
-          const { line } = bridgeGetLineAndColumn(node);
-          const existing = usageMap.get(name) || {
-            usageType: 'direct' as const,
-            usageCount: 0,
-            lineNumbers: [] as number[],
-          };
-
-          existing.usageCount++;
-          existing.lineNumbers.push(line);
-
-          if (isTypeOnlyUsage(node)) {
-            existing.usageType = 'type';
-          } else if (node.parent?.type === 'export_specifier') {
-            existing.usageType = 'reexport';
-          }
-
-          usageMap.set(name, existing);
-        }
-      }
-    }
-
-    // --- spread elements ---
-    else if (SPREAD_TYPES.has(node.type)) {
-      const expr = node.children?.find(c => c.type !== '...');
-      if (expr?.type === 'identifier' && importNames.has(getNodeText(expr, sourceCode))) {
-        const { line } = bridgeGetLineAndColumn(expr);
-        const existing = usageMap.get(getNodeText(expr, sourceCode)) || {
-          usageType: 'direct' as const,
-          usageCount: 0,
-          lineNumbers: [] as number[],
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line);
-        usageMap.set(getNodeText(expr, sourceCode), existing);
-      }
-    }
-
-    // --- JSX elements: <Button /> or <Button.Primary /> ---
-    else if (node.type === 'jsx_element' || node.type === 'jsx_self_closing_element') {
-      let tagNameNode: ASTNode | undefined;
-
-      if (node.type === 'jsx_element') {
-        const openTag = findChildOfType(node, 'open_tag');
-        if (openTag) {
-          tagNameNode = openTag.children?.find(c =>
-            c.type === 'identifier' || c.type === 'member_expression');
-        }
-      } else {
-        tagNameNode = node.children?.find(c =>
-          c.type === 'identifier' || c.type === 'member_expression');
-      }
-
-      if (tagNameNode) {
-        if (tagNameNode.type === 'identifier' && importNames.has(getNodeText(tagNameNode, sourceCode))) {
-          const { line } = bridgeGetLineAndColumn(tagNameNode);
-          const existing = usageMap.get(getNodeText(tagNameNode, sourceCode)) || {
-            usageType: 'direct' as const,
-            usageCount: 0,
-            lineNumbers: [] as number[],
-          };
-          existing.usageCount++;
-          existing.lineNumbers.push(line);
-          usageMap.set(getNodeText(tagNameNode, sourceCode), existing);
-        } else if (tagNameNode.type === 'member_expression') {
-          const leftmost = tagNameNode.children?.[0];
-          if (leftmost?.type === 'identifier' && importNames.has(getNodeText(leftmost, sourceCode))) {
-            const { line } = bridgeGetLineAndColumn(leftmost);
-            const existing = usageMap.get(getNodeText(leftmost, sourceCode)) || {
-              usageType: 'direct' as const,
-              usageCount: 0,
-              lineNumbers: [] as number[],
-            };
-            existing.usageCount++;
-            existing.lineNumbers.push(line);
-            usageMap.set(getNodeText(leftmost, sourceCode), existing);
-          }
-        }
-      }
-    }
-
-    // --- decorators: @withAuth ---
-    else if (node.type === 'decorator') {
-      // decorator → identifier (e.g., @deprecated)
-      const id = findChildOfType(node, 'identifier');
-      if (id && importNames.has(getNodeText(id, sourceCode))) {
-        const { line } = bridgeGetLineAndColumn(id);
-        const existing = usageMap.get(getNodeText(id, sourceCode)) || {
-          usageType: 'direct' as const,
-          usageCount: 0,
-          lineNumbers: [] as number[],
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line);
-        usageMap.set(getNodeText(id, sourceCode), existing);
-      }
-
-      // decorator → call_expression → identifier (e.g., @Component())
-      const callExpr = findChildOfType(node, 'call_expression');
-      if (callExpr) {
-        const callee = callExpr.children?.[0];
-        if (callee?.type === 'identifier' && importNames.has(getNodeText(callee, sourceCode))) {
-          const { line } = bridgeGetLineAndColumn(callee);
-          const existing = usageMap.get(getNodeText(callee, sourceCode)) || {
-            usageType: 'direct' as const,
-            usageCount: 0,
-            lineNumbers: [] as number[],
-          };
-          existing.usageCount++;
-          existing.lineNumbers.push(line);
-          usageMap.set(getNodeText(callee, sourceCode), existing);
-        }
-      }
-    }
-
-    // --- Object literal property assignments: { key: ImportedValue } ---
-    else if (node.type === 'pair') {
-      const key = node.children?.find(c => c.type === 'property_identifier');
-      const value = node.children?.find(c => c.type === 'identifier' && c !== key);
-      if (value && importNames.has(getNodeText(value, sourceCode))) {
-        const { line } = bridgeGetLineAndColumn(value);
-        const existing = usageMap.get(getNodeText(value, sourceCode)) || {
-          usageType: 'direct' as const,
-          usageCount: 0,
-          lineNumbers: [] as number[],
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line);
-        usageMap.set(getNodeText(value, sourceCode), existing);
-      }
-    }
-
-    // --- Shorthand property assignments: { ComponentA, ComponentB } ---
-    else if (node.type === 'shorthand_property_identifier') {
-      // The value node is a reference to an imported name
-      const ref = node.children?.find(c => c.type === 'identifier');
-      if (ref && importNames.has(getNodeText(ref, sourceCode))) {
-        const { line } = bridgeGetLineAndColumn(ref);
-        const existing = usageMap.get(getNodeText(ref, sourceCode)) || {
-          usageType: 'direct' as const,
-          usageCount: 0,
-          lineNumbers: [] as number[],
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line);
-        usageMap.set(getNodeText(ref, sourceCode), existing);
-      } else if (ref && importNames.has(getNodeText(ref, sourceCode))) {
-        // shorthand_property_identifier might itself be just text
-        const { line } = bridgeGetLineAndColumn(node);
-        const existing = usageMap.get(getNodeText(node, sourceCode)) || {
-          usageType: 'direct' as const,
-          usageCount: 0,
-          lineNumbers: [] as number[],
-        };
-        existing.usageCount++;
-        existing.lineNumbers.push(line);
-        usageMap.set(getNodeText(node, sourceCode), existing);
-      }
-    }
+    recordNodeUsage(node, sourceCode, importNames, usageMap);
   });
 
   return usageMap;
